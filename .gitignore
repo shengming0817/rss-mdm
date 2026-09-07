@@ -1,0 +1,68 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.pdb
+# 产品仓提交 Cargo.lock，不忽略。
+
+# Coverage
+*.profraw
+lcov.info
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+rust-project.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+/.cache/
+/.claude/tools/
+tmp/
+*.tmp
+.tmp
+.azlogs
+.codex-tmp/
+/.local-ci-runs/
+/.codex-backups/
+
+# Local env / secrets
+/.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.env.e2e
+.env.e2e
+.env.local
+*.env.local
+
+# Claude Code
+worktrees/
+.claude/scheduled_tasks.lock
+.claude/agent-memory/
+
+# Cursor hooks runtime state（会话 ID、调用载荷与日志，不入库）
+/.cursor/hooks/state/
+
+# Azure CLI（仓库目录下生成的运行时缓存，不入库）
+.azconfig/
+
+# 个人本地随笔（见 docs/notes/README.md，不属于项目文档）
+docs/notes/
+
+# Generated（选择性提交）
+bak/
+
+
+# 本地历史参考快照与归档，不作为产品源码入库
+/reference/winmdm20260220-develop/
+/reference/*.zip
