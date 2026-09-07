@@ -5,3 +5,5 @@
 - [文档维护](documentation.md)：内容归属、命名、引用与状态。
 
 协作入口为 [AGENTS.md](../../AGENTS.md)。规则按唯一职责维护，新增 owner 后更新此索引。
+
+- [Rust 与 RSS 消费](rust-rss-dependencies.md)：artifact、独立 workspace、兼容与跨仓协议。

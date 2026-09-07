@@ -3,6 +3,7 @@
 rss-mdm 是面向 Windows 与 macOS 的终端管理产品仓库。本文件是协作入口，参考 RSS 的工作方式，产品需求以 [产品 PRD](docs/product/rss-mdm-prd.md) 为准。
 
 - [仓库入口](README.md)：当前仓库状态与材料入口。
+- [工程目标](docs/product/project-goals.md)：Rust/RSS、两仓职责与实施顺序。
 - [产品需求](docs/product/rss-mdm-prd.md)：需求、范围、证据边界与待评审目标。
 - [历史参考](reference/README.md)：WinMDM 快照来源与本地恢复方式。
 - [文档导航](docs/README.md)：产品、架构、指南、部署、参考、评审与规则目录。
@@ -21,6 +22,8 @@ rss-mdm 是面向 Windows 与 macOS 的终端管理产品仓库。本文件是�
 ## 产品与基础库边界
 
 遵循 [范围规则](docs/rules/project-scope.md)。PRD 目标、历史实现与当前验证状态分别标识；产品需求不自动扩展 RSS 基础库职责。
+
+自有实现使用 Rust；依赖与跨仓契约遵循 [Rust/RSS 消费规则](docs/rules/rust-rss-dependencies.md)。先消费现有公共组件，缺口回原 owner 修复，禁止复制通用机制或用父仓 path 作为交付前提。
 
 ## 历史代码参考
 

@@ -4,6 +4,8 @@ Windows + macOS｜统一执行、双通道管理与私有软件仓库
 
 **版本：v0.2｜日期：2026-09-07｜状态：评审草案**
 
+工程目标见 [项目目标](project-goals.md)，实施切片见 [Rust 重写路线](202609072231-002-rust-rewrite-roadmap.md)。自有服务端与 Agent 使用 Rust，直接消费 RSS；功能需求与本文件的验收编号继续保持稳定。
+
 ## 阅读说明
 
 本文定义 rss-mdm 的产品目标，包含 144 项 WMD-* 需求、22 个功能模块及相应验收场景。需求编号保持稳定；数量不代表完成度。
@@ -137,6 +139,8 @@ MDM 原生通道和 Agent 通道分别承担适用的管理能力，共用产品
 | R1：双平台管理基线 | macOS 手动 MDM、签名 Agent、Profile 与基础资产；Agent/osquery 与脚本；最小扩展字段字典；跨 OS 一套请求与视图。 | Win/Mac 各自 MDM-only、Agent-only、双通道场景通过；同一采集目标和逻辑配置模板工作，原生差异可见。 |
 | R2：企业软件与管理闭环 | WinGet/Brew 私有源审批发布及完整生命周期；ADE、DDM、FileVault/令牌、更新、字段驱动策略；继承 Windows LAPS/BitLocker、应用、Webhook/合规包。 | 两类私有源都经过真实端消费、撤销/恢复验证；各承诺 macOS/Windows 企业用例均有界面、API、运行与故障证据。 |
 | R3：可选深化 | 自助、Platform SSO、复杂多用户/源码构建、第三方源连接器、osquery 扩展、远程桌面、MSP 等。 | 单项批准范围、支持矩阵及必要性；不以这些增强阻塞已冻结的 R1/R2。 |
+
+Windows MDM 只读纵切 V1 是 R0/R1 的基础增量，不代替 R0 的 Windows Agent 真执行退出条件。具体依赖按 [实施路线](202609072231-002-rust-rewrite-roadmap.md) 推进；工程先后顺序不降低 macOS、三类采集与 WinGet/Brew 的正式范围。
 
 ## 自底向上的依赖顺序
 
@@ -1051,7 +1055,7 @@ R0/R1 不提前强制建设所有 R3 T3；但发布范围内任何危险动作�
 
 不得以新语言重写为由把已有搜索、组重算、SSO 映射、WNS 重载、审计可靠性增强重新降为“待从零研发”；也不得因 RSS 存在 outbox/saga 等组件就标记应用安装、脚本或 EA 已完成。
 
-Rust 服务端迁移、Windows Agent 是否同步重写、外部前端版本与兼容期限是待决策项。各端重写范围须分别确认。
+自有服务端与 Windows Agent 最终均采用 Rust；服务端位于 rss-mdm，Agent 位于 rss-mdm-agent，macOS 自有 Agent 沿 Rust 平台适配路线建设。现有前端先保留。分仓契约与迁移路线见 [项目目标](project-goals.md)；具体切换节奏、前端版本和兼容期限在对应交付冻结。
 
 具体工程路线写入 [架构文档](../architecture/README.md)，遵循本仓范围与验证规则。
 
@@ -1091,7 +1095,7 @@ Rust 服务端迁移、Windows Agent 是否同步重写、外部前端版本与�
 | 性能、预算、数据保留 | 容量、时延和 RPO/RTO 须按场景冻结；新增 osquery 与软件下载负载需单独压测。 |
 | 敏感材料方案 | 统一加密与访问设施，但 PRK/Token/Recovery Lock/LAPS 各有验证方法；秘密不得放普通字段。 |
 | 身份与多租户 | 管理台本地/OIDC 继承；Mac Platform SSO、MSP 隔离另议，不能因多 IdP 或多 APNs topic 自动宣称多租户产品。 |
-| 端重写与兼容窗口 | 自有 Rust 服务端方向保留；Windows Agent 的迁移节奏、Mac Agent 支持、前端适配和旧 API 期限须明确，禁止双 owner 长期并存。 |
+| 兼容窗口与切换节奏 | 两端自有实现采用 Rust；冻结 Windows Agent 切换批次、Mac Agent 支持矩阵、实际前端 revision 与旧 API 期限，禁止同设备双控制 owner 长期并存。 |
 | 版本强制包与人力 | 无客户规模/预算/资源信息，不编造交付日期；依赖不受冲突影响的 R0/R1 可先推进。 |
 
 “待冻结参数”不改变已列明的核心能力范围；它们决定实现 profile、支持矩阵和验收条件，而不是否定目标。
@@ -1102,7 +1106,7 @@ Rust 服务端迁移、Windows Agent 是否同步重写、外部前端版本与�
 
 RSS MDM 的产品目标是：基于统一业务契约和可恢复执行，组合 Agent 与原生 MDM 管理 Windows/macOS，并通过统一资产字段、组、策略及私有软件仓库实现企业终端运维闭环。
 
-本产品应先冻结共享模型、字段与执行语义，再落地 Mac 注册/Agent 与三类采集来源；随后完成 WinGet/Brew 私有源和 Apple 企业能力。不能先分别做两套 OS 控制面，最后仅在 UI 合并列表；也不能为统一而抹去 Apple 权限、WinGet 用户上下文或 Brew 前缀/用户模型的差异。
+本产品先冻结身份、字段与持久化消费边界，以 Windows MDM 只读纵切证明真实接入，再推进原生策略与 Rust Agent；Mac 注册/Agent、三类采集按依赖并行，随后完成 WinGet/Brew 私有源和 Apple 企业能力。不能先分别做两套 OS 控制面，最后仅在 UI 合并列表；也不能为统一而抹去 Apple 权限、WinGet 用户上下文或 Brew 前缀/用户模型的差异。
 
 产品负责人确认功能包与默认行为，安全负责人确认执行/源代码/凭据权限，运维负责人确认 Apple 外部依赖与支持矩阵，研发负责人确认适配器/兼容边界，前端负责人确认状态与证据展示。未经这些闭环，本文中的目标不得转换为产品已支持声明。
 

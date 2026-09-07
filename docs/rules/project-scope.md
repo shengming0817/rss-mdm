@@ -2,6 +2,8 @@
 
 rss-mdm 面向 Windows 与 macOS 的企业私有化终端管理。功能目标、排除项与待冻结参数以 [PRD](../product/rss-mdm-prd.md) 为准；目标范围不代表已实现或已批准发布。
 
+工程方向遵循 [项目目标](../product/project-goals.md)：自有 Rust 服务端与 Agent 分别在 rss-mdm、rss-mdm-agent；首期不新增 RSS 通用 crate，不使用孵化仓或第三共享仓，现有前端先保留。
+
 ## 产品拥有
 
 设备身份与注册生命周期、Windows/macOS 协议与认证、MDM/Agent 通道选择、策略和准入、软件源与应用模型、采集字段与资产解释、分组与合规、控制台，以及应用装配、业务表、生产迁移、部署运维与产品 T3。
