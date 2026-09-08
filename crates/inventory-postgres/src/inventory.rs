@@ -1,4 +1,4 @@
-use crate::{model, storage::Clock};
+use rss_mdm_inventory as model;
 use rss_observation::{Body, ErrorKind};
 use rss_observation_postgres::PgSource;
 use rss_projection::{DefinitionIdentity, Event, ProjectionScope};
@@ -15,15 +15,21 @@ pub fn definition() -> DefinitionIdentity {
         .into(),
     )
 }
-pub struct Inventory {
-    source: Arc<PgSource<Clock>>,
+/// Inventory effect consumes a source without exposing its internal handle.
+/// ```compile_fail
+/// fn bypass<C: rss_observation::Clock>(effect: rss_mdm_inventory_postgres::Inventory<C>) {
+///     let _ = effect.source;
+/// }
+/// ```
+pub struct Inventory<C: rss_observation::Clock> {
+    source: Arc<PgSource<C>>,
 }
-impl Inventory {
-    pub(crate) fn new(source: Arc<PgSource<Clock>>) -> Self {
+impl<C: rss_observation::Clock> Inventory<C> {
+    pub fn new(source: Arc<PgSource<C>>) -> Self {
         Self { source }
     }
 }
-impl PgEffect for Inventory {
+impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
     async fn apply(
         &self,
         tx: &mut PgTransaction<'_>,

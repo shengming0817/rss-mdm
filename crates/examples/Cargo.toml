@@ -1,0 +1,40 @@
+[package]
+name = "rss-mdm-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-mdm-inventory.workspace = true
+rss-mdm-inventory-postgres.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+rss-request-context.workspace = true
+rss-observation.workspace = true
+rss-observation-postgres.workspace = true
+rss-projection.workspace = true
+rss-projection-postgres.workspace = true
+
+[dev-dependencies]
+rss-contract.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+integration = ["dep:rss-contract", "rss-observation-postgres/integration", "rss-projection-postgres/integration"]
+
+[[bin]]
+name = "rss-mdm"
+path = "src/main.rs"
+
+[dependencies.rss-contract]
+workspace = true
+optional = true

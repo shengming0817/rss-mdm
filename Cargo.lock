@@ -606,6 +606,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory-postgres-integration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rss-mdm-examples",
+ "tokio",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -823,11 +832,13 @@ version = "0.1.0"
 source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
 
 [[package]]
-name = "rss-mdm"
+name = "rss-mdm-examples"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "rss-contract",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-postgres",
  "rss-observation",
  "rss-observation-postgres",
  "rss-projection",
@@ -839,6 +850,29 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "rss-mdm-inventory"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-observation",
+]
+
+[[package]]
+name = "rss-mdm-inventory-postgres"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rss-mdm-inventory",
+ "rss-observation",
+ "rss-observation-postgres",
+ "rss-projection",
+ "rss-projection-postgres",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
 ]
 
 [[package]]

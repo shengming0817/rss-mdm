@@ -1,8 +1,7 @@
-mod admission;
+//! Local fixture composition and verification support; not a production MDM server.
 pub mod app;
 pub mod failure;
-mod inventory;
-pub mod model;
+pub mod fixture;
 mod storage;
 pub use storage::{BUDGET, Clock, migrate, options};
 mod window;

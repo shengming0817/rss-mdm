@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rss_mdm::{Clock, app::App, failure, model::FixtureAuthority};
+use rss_mdm_examples::{Clock, app::App, failure, fixture::FixtureAuthority};
 use rss_observation::{Batch, Id, ReceiveOutcome, Scope};
 use std::{io::Read, path::Path};
 use tokio_util::sync::CancellationToken;
@@ -21,7 +21,7 @@ async fn main() -> std::process::ExitCode {
         }
         // Avoid printing provider chains: they can contain SQL values or credentials.
         Err(error) => {
-            eprintln!("{}", rss_mdm::failure::report(error));
+            eprintln!("{}", rss_mdm_examples::failure::report(error));
             std::process::ExitCode::FAILURE
         }
     }
@@ -36,9 +36,9 @@ async fn execute() -> Result<serde_json::Value> {
         ("migrate" | "project", 1) | ("ingest-fixture" | "inspect", 2) => {}
         _ => return Err(failure::at("usage", anyhow::anyhow!("invalid arguments"))),
     }
-    let options = rss_mdm::options().map_err(|e| failure::at("config", e))?;
+    let options = rss_mdm_examples::options().map_err(|e| failure::at("config", e))?;
     if command == "migrate" {
-        rss_mdm::migrate(&options)
+        rss_mdm_examples::migrate(&options)
             .await
             .map_err(|e| failure::at("migration", e))?;
         return Ok(serde_json::json!({"migration":"complete"}));
@@ -81,7 +81,7 @@ async fn execute() -> Result<serde_json::Value> {
                 let interrupted = failure::signal(signal);
                 // Cooperatively drain; dropping the operation after the budget quarantines
                 // unconfirmed component transactions before pool shutdown begins.
-                let _ = tokio::time::timeout(rss_mdm::BUDGET, &mut operation).await;
+                let _ = tokio::time::timeout(rss_mdm_examples::BUDGET, &mut operation).await;
                 Err(interrupted)
             }
         }

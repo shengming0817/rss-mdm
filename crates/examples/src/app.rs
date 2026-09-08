@@ -1,7 +1,10 @@
+use rss_mdm_inventory as model;
+use rss_mdm_inventory_postgres::{Inventory, definition};
+const JOURNAL: &str = "mdm.observation.v1";
+const GENERATION: &str = "inventory-v1";
 use crate::failure;
 use crate::{
-    inventory::{Inventory, definition},
-    model::{self, FixtureAuthority},
+    fixture::FixtureAuthority,
     storage::{self, BUDGET, Clock},
 };
 use anyhow::Result;
@@ -19,21 +22,18 @@ use sqlx::{Row, postgres::PgConnectOptions};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// Product operations own component authority and lifecycle.
+/// Fixture operations own component authority and lifecycle.
 /// ```compile_fail
-/// fn bypass(app: rss_mdm::app::App) { let _ = app.observation; }
+/// fn bypass(app: rss_mdm_examples::app::App) { let _ = app.observation; }
 /// ```
 /// ```compile_fail
-/// fn bypass(app: rss_mdm::app::App) { let _ = app.projection; }
+/// fn bypass(app: rss_mdm_examples::app::App) { let _ = app.projection; }
 /// ```
 /// ```compile_fail
-/// fn replace(app: rss_mdm::app::App) { let _ = app.clock; }
+/// fn replace(app: rss_mdm_examples::app::App) { let _ = app.clock; }
 /// ```
 /// ```compile_fail
-/// use rss_mdm::inventory::Inventory;
-/// ```
-/// ```compile_fail
-/// fn bypass(app: rss_mdm::app::App) { let _ = app.source(); }
+/// fn bypass(app: rss_mdm_examples::app::App) { let _ = app.source(); }
 /// ```
 pub struct App {
     observation: Arc<rss_observation_postgres::PgStore<Clock>>,
@@ -67,10 +67,11 @@ impl App {
         drop(pool);
         let projection = async {
             let pool = storage::pool(options).await?;
-            if let Err(error) = tokio::time::timeout(BUDGET, crate::admission::verify(&pool))
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|r| r)
+            if let Err(error) =
+                tokio::time::timeout(BUDGET, rss_mdm_inventory_postgres::verify_admission(&pool))
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|r| r)
             {
                 return failure::finish(
                     Err(failure::at("inventory_admission", error)),
@@ -116,16 +117,13 @@ impl App {
         }
     }
     fn source_scope(&self) -> Result<SourceScope> {
-        Ok(SourceScope::new(
-            self.authority.scope().tenant(),
-            model::JOURNAL,
-        )?)
+        Ok(SourceScope::new(self.authority.scope().tenant(), JOURNAL)?)
     }
     fn projection_scope(&self) -> Result<ProjectionScope> {
         Ok(ProjectionScope::new(
             self.source_scope()?,
             "inventory",
-            model::GENERATION,
+            GENERATION,
         )?)
     }
     fn source(&self) -> Result<Arc<PgSource<Clock>>> {
@@ -232,11 +230,11 @@ impl App {
         let control = Control::new(&self.clock, self.clock.cutoff(BUDGET), &cancel);
         let (position, assets, projected) = self.projection.local_tx(&source, &control, move |tx| Box::pin(async move {
             tx.with_connection(move |conn| Box::pin(async move {
-                let position: Option<i64> = sqlx::query_scalar("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id='inventory' AND generation=$3").bind(&tenant).bind(model::JOURNAL).bind(model::GENERATION).fetch_optional(&mut *conn).await?.flatten();
-                let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 ORDER BY field").bind(&tenant).bind(model::JOURNAL).bind(model::GENERATION).bind(&scope).fetch_all(&mut *conn).await?;
+                let position: Option<i64> = sqlx::query_scalar("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id='inventory' AND generation=$3").bind(&tenant).bind(JOURNAL).bind(GENERATION).fetch_optional(&mut *conn).await?.flatten();
+                let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 ORDER BY field").bind(&tenant).bind(JOURNAL).bind(GENERATION).bind(&scope).fetch_all(&mut *conn).await?;
                 let mut assets = Vec::new();
                 for r in rows { assets.push(serde_json::json!({"field":r.try_get::<String,_>("field")?,"value":r.try_get::<String,_>("value")?,"batchId":r.try_get::<String,_>("batch_id")?,"observedAt":r.try_get::<i64,_>("observed_at")?,"receivedAt":r.try_get::<i64,_>("received_at")?})); }
-                let projected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_projection.receipts WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id='inventory' AND generation=$3 AND event_id=$4)").bind(&tenant).bind(model::JOURNAL).bind(model::GENERATION).bind(event_id).fetch_one(&mut *conn).await?;
+                let projected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_projection.receipts WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id='inventory' AND generation=$3 AND event_id=$4)").bind(&tenant).bind(JOURNAL).bind(GENERATION).bind(event_id).fetch_one(&mut *conn).await?;
                 Ok((position, assets, projected))
             })).await
         })).await?;

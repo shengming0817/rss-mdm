@@ -1,0 +1,20 @@
+[package]
+name = "rss-mdm-inventory-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-mdm-inventory.workspace = true
+rss-observation.workspace = true
+rss-observation-postgres.workspace = true
+rss-projection.workspace = true
+rss-projection-postgres.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

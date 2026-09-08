@@ -1,14 +1,19 @@
+# 与 RSS 一致的扁平 workspace；产品实现按职责放在 crates/ 下。
 [workspace]
 resolver = "3"
+members = ["crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration"]
+default-members = ["crates/inventory", "crates/inventory-postgres", "crates/examples"]
 
-[package]
-name = "rss-mdm"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 publish = false
 
-[dependencies]
+[workspace.dependencies]
+rss-mdm-inventory = { path = "crates/inventory" }
+rss-mdm-inventory-postgres = { path = "crates/inventory-postgres" }
+rss-mdm-examples = { path = "crates/examples" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -22,19 +27,10 @@ rss-observation-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git
 rss-projection = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "bf5dd1350997d01aa834094a3347fce30247814e", default-features = false }
 rss-projection-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "bf5dd1350997d01aa834094a3347fce30247814e", default-features = false }
 
-[dev-dependencies]
 rss-contract = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "bf5dd1350997d01aa834094a3347fce30247814e", default-features = false }
 
-[features]
-default = []
-integration = ["rss-observation-postgres/integration", "rss-projection-postgres/integration"]
-
-[[test]]
-name = "t2"
-required-features = ["integration"]
-
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 disallowed_methods = "deny"

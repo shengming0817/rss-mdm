@@ -17,17 +17,27 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
+LOCAL_PACKAGES = {
+    "rss-mdm-inventory": "crates/inventory",
+    "rss-mdm-inventory-postgres": "crates/inventory-postgres",
+    "rss-mdm-examples": "crates/examples",
+    "inventory-postgres-integration": "tests/inventory-postgres-integration",
+}
+
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
 
-def rss_pin(manifest):
+def rss_pin(manifest, required=True):
     require('patch' not in manifest and 'replace' not in manifest, 'RSS patches/replacements are forbidden')
     pins = set()
-    for owner in [manifest, *manifest.get("target", {}).values()]:
+    for owner in [manifest, manifest.get("workspace", {}), *manifest.get("target", {}).values()]:
         for section in ("dependencies", "dev-dependencies", "build-dependencies"):
             for alias, dependency in owner.get(section, {}).items():
                 name = dependency.get("package", alias) if isinstance(dependency, dict) else alias
+                if name in LOCAL_PACKAGES:
+                    require(dependency == {"path": LOCAL_PACKAGES[name]}, f"invalid local member source: {alias}")
+                    continue
                 if not name.startswith("rss-"):
                     continue
                 require(isinstance(dependency, dict), f"RSS dependency {alias} must use git + rev")
@@ -35,8 +45,27 @@ def rss_pin(manifest):
                 url, rev = dependency.get("git"), dependency.get("rev")
                 require(isinstance(url, str) and url.startswith("https://") and isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev), f"invalid RSS pin: {alias}")
                 pins.add((url, rev))
+    if not pins and not required:
+        return None
     require(len(pins) == 1, "all direct RSS dependencies must share one git URL and full revision")
     return next(iter(pins))
+
+def workspace_pin(root):
+    manifest = tomllib.loads((root / "Cargo.toml").read_text())
+    pin = rss_pin(manifest)
+    shared = manifest["workspace"]["dependencies"]
+    for member in manifest["workspace"]["members"]:
+        package = tomllib.loads((root / member / "Cargo.toml").read_text())
+        require('patch' not in package and 'replace' not in package, 'RSS patches/replacements are forbidden')
+        for owner in [package, *package.get("target", {}).values()]:
+            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                for alias, dep in list(owner.get(section, {}).items()):
+                    if isinstance(dep, dict) and dep.get("workspace") is True:
+                        require(alias in shared, f"unknown workspace dependency: {alias}")
+                        require(not any(k in dep for k in ("path", "git", "rev", "branch", "tag", "version", "package")), f"invalid inherited source: {alias}")
+                        owner[section][alias] = shared[alias]
+        require(rss_pin(package, required=False) in (None, pin), f"RSS source differs in {member}")
+    return pin
 
 def noninteractive(env=None):
     value = dict(os.environ if env is None else env)
@@ -51,18 +80,18 @@ def verify_metadata(data, root, mode, pin):
     url, rev = pin
     expected = f"git+{url}?rev={rev}#{rev}"
     for package in data["packages"]:
-        if package["name"] == "rss-mdm":
-            require(Path(package['manifest_path']).resolve() == root / 'Cargo.toml', 'dependency isolation check failed')
+        if package["name"] in LOCAL_PACKAGES:
+            require(package['source'] is None and Path(package['manifest_path']).resolve() == root / LOCAL_PACKAGES[package["name"]] / 'Cargo.toml', 'dependency isolation check failed')
         elif package["name"].startswith("rss-"):
             require(package['source'] == expected, (package['name'], package['source']))
         else:
             require(package['source'] and package['source'].startswith('registry+https://github.com/rust-lang/crates.io-index'), package['name'])
-    require(len(data['workspace_members']) == 1, 'dependency isolation check failed')
+    require({p["name"] for p in data["packages"] if p["id"] in data["workspace_members"]} == set(LOCAL_PACKAGES), 'dependency isolation check failed')
     packages = {p["id"]: p["name"] for p in data["packages"]}
     features = {packages[n["id"]]: n["features"] for n in data["resolve"]["nodes"]}
     for name in ("rss-observation-postgres", "rss-projection-postgres"):
         require(("integration" in features[name]) == (mode == "integration"), f"unexpected {mode} features for {name}")
-    return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] != "rss-mdm")
+    return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES)
 
 def isolate():
     # HEAD is the proof input; refuse an uncommitted tracked implementation.
@@ -79,15 +108,15 @@ def isolate():
                 require(not path.exists() or parent == checkout, f'ancestor Cargo config: {path}')
         env = {k:v for k,v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
         env.update(CARGO_HOME=str(base / "cargo-home"), CARGO_TARGET_DIR=str(base / "target"))
-        pin = rss_pin(tomllib.loads((checkout / "Cargo.toml").read_text()))
+        pin = workspace_pin(checkout)
         logs = []
-        for extra in [[], ["--features", "integration"]]:
+        for extra in [[], ["--workspace", "--all-features"]]:
             args = ["cargo", "clippy", "--locked", "--all-targets", *extra, "--", "-D", "warnings"]
             result = command(args, checkout, env)
             logs.append(result.stdout)
             (OUT / "isolated-build.log").write_text("\n".join(logs))
             require(result.returncode == 0, 'isolated locked build failed; see isolated-build.log')
-        for mode, extra in [("normal", []), ("integration", ["--features", "integration"])]:
+        for mode, extra in [("normal", []), ("integration", ["--all-features"])]:
             result = subprocess.run(["cargo","metadata","--locked","--format-version","1", *extra], cwd=checkout, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, capture_output=True)
             (OUT / f"metadata-{mode}.stderr.log").write_text(result.stderr)
             require(result.returncode == 0, result.stderr)
@@ -109,17 +138,17 @@ def main():
     start_head = head.stdout.strip()
     gates = [
         ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_ci.py"]),
-        ("fmt",["cargo","fmt","--check"]),
-        ("check",["cargo","check","--locked","--all-targets"]),
-        ("clippy",["cargo","clippy","--locked","--all-targets","--all-features","--","-D","warnings"]),
-        ("t1",["cargo","test","--locked","--lib","--bin","rss-mdm","--test","model"]),
-        ("api-boundary",["cargo","test","--locked","--doc"]),
+        ("fmt",["cargo","fmt","--all","--check"]),
+        ("check",["cargo","check","--locked","--workspace","--all-targets"]),
+        ("clippy",["cargo","clippy","--locked","--workspace","--all-targets","--all-features","--","-D","warnings"]),
+        ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
+        ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("t2",[sys.executable,"hack/t2.py"]),
     ]
     results = {}
     pin = None
     try:
-        pin = rss_pin(tomllib.loads((ROOT / "Cargo.toml").read_text()))
+        pin = workspace_pin(ROOT)
         results["pin"] = "passed"
     except Exception as error:
         (OUT / "pin.log").write_text(str(error))

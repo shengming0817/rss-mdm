@@ -77,7 +77,7 @@ pub fn finish<T>(
 }
 /// Only closed classifications can reach the serialized report.
 /// ```compile_fail
-/// let e = rss_mdm::failure::classified("read", "db", String::from("secret"));
+/// let e = rss_mdm_examples::failure::classified("read", "db", String::from("secret"));
 /// ```
 pub fn report(error: anyhow::Error) -> serde_json::Value {
     let problems = problems("operation", error);

@@ -10,7 +10,9 @@
 不保留 path patch、candidate 解包或 registry 备用构建路径；源码不可取得时明确失败。
 
 Git checkout 内上游自身的 workspace/path 关系由 Cargo 解析为同一 Git source identity，
-不允许产品直接引用父仓或机器目录。metadata 必须验证所有 RSS 包属于同一固定 Git commit。
+不允许产品直接引用父仓或机器目录。metadata 必须验证所有上游 RSS 包属于同一固定 Git commit。
+本仓 `rss-mdm-*` 成员使用根 manifest 声明的 workspace 内部 path，CI 校验精确成员身份和位置；
+这不允许引用仓外 RSS checkout，也不改变上游 Git pin 规则。
 只读凭据由系统 Git credential helper 提供，不写入 manifest、lock 或日志。
 这是 Git revision 独立消费，不是 `.crate` 摘要、candidate 或 registry 发布证明。
 以后切换发布来源必须另行明确变更，不把本次 Git 证据混称为制品发布证据。

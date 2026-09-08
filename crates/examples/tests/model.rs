@@ -1,5 +1,6 @@
-use rss_mdm::model::{FixtureAuthority, coverage, validate};
-use rss_observation::{Access, Authority, Batch, Body, Change, Id, Scope};
+use rss_mdm_examples::fixture::FixtureAuthority;
+use rss_mdm_inventory::{coverage, validate};
+use rss_observation::{Access, Authority, Batch, Id, Scope};
 fn scope() -> Scope {
     serde_json::from_str(r#"{"tenant":"00000000-0000-0000-0000-000000000001","object":"device-1","registration":"reg-1","source":"fixture","dataset":"inventory","epoch":"epoch-1"}"#).unwrap()
 }
@@ -32,39 +33,8 @@ fn explicit_authority_rejects_foreign_scope_and_coverage() {
     );
 }
 #[test]
-fn rejects_unknown_fields_and_invalid_values() {
-    for (key, value) in [
-        ("password", b"x".as_slice()),
-        ("device.model", b""),
-        ("device.model", &[255]),
-    ] {
-        let b = Batch::new(
-            Id::new("b").unwrap(),
-            0,
-            rss_contract::Timepoint::try_from(100).unwrap(),
-            coverage(),
-            Body::Snapshot(vec![Change::upsert(Id::new(key).unwrap(), value.to_vec())]),
-        )
-        .unwrap();
-        assert!(validate(&b).is_err());
-    }
-    let b = Batch::new(
-        Id::new("b").unwrap(),
-        0,
-        rss_contract::Timepoint::try_from(100).unwrap(),
-        coverage(),
-        Body::Partial(vec![Change::upsert(
-            Id::new("device.model").unwrap(),
-            b"Model".to_vec(),
-        )]),
-    )
-    .unwrap();
-    assert!(validate(&b).is_ok());
-}
-
-#[test]
 fn operation_and_both_cleanup_failures_remain_visible_without_secrets() {
-    use rss_mdm::failure;
+    use rss_mdm_examples::failure;
     let result: anyhow::Result<()> = failure::finish(
         Err(failure::at("ingest", anyhow::anyhow!("SECRET-primary"))),
         [
@@ -85,13 +55,13 @@ fn operation_and_both_cleanup_failures_remain_visible_without_secrets() {
 }
 #[test]
 fn committed_fixture_uses_public_batch_encoding() {
-    let batch = Batch::decode(include_bytes!("../fixtures/snapshot.json")).unwrap();
+    let batch = Batch::decode(include_bytes!("../../../fixtures/snapshot.json")).unwrap();
     validate(&batch).unwrap();
 }
 
 #[test]
 fn signal_errors_are_distinct_and_redacted_with_cleanup() {
-    use rss_mdm::failure;
+    use rss_mdm_examples::failure;
     let cancelled = failure::report(failure::signal(Ok(())));
     assert_eq!(cancelled["problems"][0]["stage"], "cancelled");
     assert_eq!(cancelled["problems"][0]["kind"], "Cancelled");
@@ -124,8 +94,9 @@ fn shared_clock_derives_observation_projection_and_deadlines() {
     let anchor = Instant::now();
     let ticks = Arc::new(AtomicU64::new(0));
     let input = ticks.clone();
-    let clock =
-        rss_mdm::Clock::new(move || anchor + Duration::from_secs(input.load(Ordering::SeqCst)));
+    let clock = rss_mdm_examples::Clock::new(move || {
+        anchor + Duration::from_secs(input.load(Ordering::SeqCst))
+    });
     let cloned = clock.clone();
     ticks.store(90, Ordering::SeqCst);
     assert_eq!(
@@ -133,7 +104,10 @@ fn shared_clock_derives_observation_projection_and_deadlines() {
         anchor + Duration::from_secs(90)
     );
     assert_eq!(rss_projection::Timer::now(&clock), Duration::from_secs(90));
-    assert_eq!(clock.cutoff(rss_mdm::BUDGET), Duration::from_secs(120));
+    assert_eq!(
+        clock.cutoff(rss_mdm_examples::BUDGET),
+        Duration::from_secs(120)
+    );
     assert_eq!(
         clock.deadline(),
         rss_request_context::Deadline::at(anchor + Duration::from_secs(120))

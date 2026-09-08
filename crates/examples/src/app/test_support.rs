@@ -1,10 +1,7 @@
-use crate::{
-    app::App,
-    inventory::{Inventory, definition},
-    model::{self, FixtureAuthority},
-    storage,
-};
+use crate::{app::App, fixture::FixtureAuthority, storage};
 use anyhow::{Result, ensure};
+use rss_mdm_inventory as model;
+use rss_mdm_inventory_postgres::{Inventory, definition};
 use rss_observation::{
     Batch, Body, Change, Id, ObservationStore, ReceiveOutcome, Scope, VerifiedBatch,
 };
@@ -191,7 +188,7 @@ pub async fn matrix(executable: &str) -> Result<()> {
     Box::pin(empty_and_delete()).await?;
     Ok(())
 }
-struct RejectAfterWrite(Inventory);
+struct RejectAfterWrite(Inventory<storage::Clock>);
 impl PgEffect for RejectAfterWrite {
     async fn apply(
         &self,

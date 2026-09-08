@@ -1,0 +1,15 @@
+[package]
+name = "rss-mdm-inventory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-observation.workspace = true
+
+[dev-dependencies]
+rss-contract.workspace = true
+
+[lints]
+workspace = true

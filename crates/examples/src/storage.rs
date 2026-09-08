@@ -94,10 +94,7 @@ async fn migrate_on(conn: &mut PgConnection) -> Result<()> {
     for (name, sql) in [
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
         ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
-        (
-            "inventory-v1",
-            include_str!("../migrations/0001_inventory.sql"),
-        ),
+        ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
     ] {
         let digest = format!("{:x}", Sha256::digest(sql));
         let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
