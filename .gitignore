@@ -66,3 +66,9 @@ bak/
 # 本地历史参考快照与归档，不作为产品源码入库
 /reference/winmdm20260220-develop/
 /reference/*.zip
+
+/target/
+/artifacts/
+/worktrees/
+
+__pycache__/

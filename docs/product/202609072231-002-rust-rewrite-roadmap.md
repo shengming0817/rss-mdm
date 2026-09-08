@@ -4,15 +4,15 @@
 
 ## 第一件事：F01 最小独立消费与资产持久化组合
 
-在当前目标 PR 合并后，第一项实施 PR 为：**固定可取得的 RSS artifact，在独立 Rust workspace 中证明 Observation → Projection → 产品 Inventory 的真实 PostgreSQL 组合**。
+#2346 按维护者决定固定 RSS 最新 Git commit（完整 pin 由 Cargo.toml 持有），使用独立
+workspace/lock/toolchain 和本地 CI。此决定取代本项 candidate/registry artifact 前置要求。
+实际公共依赖闭包由 metadata/tree 派生，不固定包数量，不新增远端 CI。
 
-先记录 RSS commit/artifact/hash/features 与 product lock/toolchain；最小引入 observation、observation-postgres 的 projection-postgres feature、projection/postgres；当前 RSS 内部 artifact 闭包为 contract、redact-derive、redact、request-context、observation、observation-postgres、projection、projection-postgres 八包（上游依赖仍由 lock 锁定，不宣称总依赖只有八包）。创建真实需要的 app/存储消费代码和最小 Inventory 表，不先搭八个空 crate；迁移与运行角色分离，明确各 pool 的关闭 owner。
-
-最小验证包括：正常 report→资产、重复报告不重复作用、同 batch 不同内容被拒绝、投影中途失败时资产/checkpoint 一起回滚、worker 重启重放、跨租户拒绝、receipt 已提交但投影失败仍可恢复，以及低权限角色真实执行 bridge；提交结果未知后查询/重试不生成另一份产品事实。完整/部分报告策略由产品 fixture 表达，后续替换为真实 CollectionRun。
-
-这是产品基础 T2，不是第一条产品 T3，也不证明设备身份认证已完成。缺少 artifact、可达 PG 或某公共事务接缝时明确失败并定位 RSS owner；不降级为纯 mock 冒充完成。最小 schema 安装与 role/lifecycle 是本项必需部分。
-
-**暂不作为前置**：RabbitMQ、Reconcile/Command 全组合、所有 Provider、完整 OIDC、Agent installer、跨平台软件源、全量旧数据导入。
+单 package/CLI 实现 Observation 持久 receipt → journal → Projection 原子 Inventory/checkpoint。
+覆盖最低运行角色、完整/部分报告、重传与冲突、tenant 隔离、回滚、重启、commit unknown、
+迁移与 pool 关闭。具体入口、证据和未覆盖项见
+[F01 指南](../guides/202609080000-2346-local-inventory.md)。
+这是产品基础 T2，不是设备认证或真机 T3；缺真实 PG 必须失败。
 
 ## 第一条产品垂直闭环 V1：真实 Windows 只读管理
 
@@ -39,7 +39,7 @@ V1 对应 WMD-E01/E02/E04、D01/D02、Q01/Q02/Q05、A01/A03、M01/M02、COL07/08
 
 | 切片 | 前置 | 仓库 / 主要文件 owner | 结果与验收 |
 | --- | --- | --- | --- |
-| F01 独立 artifact + 资产组合 | 本目标 PR | rss-mdm：Cargo/lock/toolchain、消费代码、migrations、T2 | 上述最小真实 PG 证明；不扩建通用组件 |
+| F01 独立 Git 消费 + 资产组合 | 本目标 PR | rss-mdm：Cargo/lock/toolchain、消费代码、migrations、T2 | 上述最小真实 PG 证明；不扩建通用组件 |
 | F02 最小管理员会话与审计 | F01 | rss-mdm：access/audit 用例与表 | 本地会话、注册许可、凭据动作与查询/拒绝审计；关键变更和成功审计同事务，失败不静默放行 |
 | I01 通道中立身份与报告契约 | F01/F02 | rss-mdm：device/registration/principal、report scope | tenant/设备/注册世代/凭据/通道映射及授权；中立 Scope/coverage/报告身份，不依赖 Windows codec |
 | F03 XML/SOAP/SyncML codec | 本目标 PR，可与 F01 并行 | rss-mdm：windows-mdm 协议模块 | namespace、结构、输入预算、Fault、MsgRef/CmdRef；固定协议样本 T1 |
@@ -105,7 +105,7 @@ F01/F02/F03/F04/F05 为 R0/R1 提供基础，但 V1 并不完成 R0 的 Windows 
 
 ## 现在需要落实的输入
 
-- F01：RSS artifact 可取得性、完整 dependency closure、工具链和真实 PG；本次只有源码/脚本审查，不填写虚构 artifact hash 或测试通过结果。
+- F01：固定 RSS Git revision、完整依赖闭包、工具链和真实 PG；实际结果绑定产品 PR 的本地 CI HEAD，不伪称 artifact 发布或远端 CI。
 - F04/V1：测试 Windows 与注册管理员、DNS/TLS/签发方式、受支持字段；缺真机只允许完成 T1/T2，不勾选 T3。
 - F06/M01：现有前端 revision、实际 API/会话契约、存量设备/凭据/证书/控制URL；仅历史 ZIP 不能证明生产状态；rss-web 不是旧 WinMDM 前端。
 - X01：Apple 组织/证书与测试 Mac；不阻塞无此依赖的 Windows 或 Mac Agent-only 工作。

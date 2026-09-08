@@ -4,6 +4,14 @@
 
 目标 owner 为 [项目目标](../../product/project-goals.md)；源码复核见 [当前基线](../../reference/202609072231-003-rss-current-baseline.md)。
 
+## F01 已定实现约束（#2346）
+
+本项改用 Cargo.toml 固定的 RSS Git revision 和独立 Cargo.lock；只做本地 CI，不等待或宣称
+candidate/registry 发布。一个 package/CLI 提供 migrate、ingest-fixture、project、inspect；
+fixture 是可信本地输入，不代替设备认证。只投影固定 coverage 的设备型号与 OS 版本，
+按完整流身份隔离资产，不加入跨来源解析。运行及恢复语义见
+[F01 指南](../../guides/202609080000-2346-local-inventory.md)。
+
 ## 仓库与依赖边界
 
 | 仓库 | 拥有 | 不拥有 |

@@ -1,6 +1,6 @@
 # rss-mdm
 
-面向 Windows 与 macOS 的企业私有化终端管理产品仓库。当前处于需求与设计阶段，默认分支为 `develop`。
+面向 Windows 与 macOS 的企业私有化终端管理产品仓库。默认分支为 `develop`。F01 提供基于 RSS 的独立 Rust Inventory 组合和本地 CI；其它产品目标仍按路线分期实现。
 
 - [项目目标](docs/product/project-goals.md)：基于 RSS 的 Rust 服务端与独立 Rust Agent，保留现有前端。
 - [实施路线](docs/product/202609072231-002-rust-rewrite-roadmap.md)：第一项消费验证与真实 Windows 只读闭环。
@@ -10,3 +10,5 @@
 - [历史参考](reference/README.md)：本地 WinMDM 快照来源与恢复方式，代码由 Git 忽略。
 
 历史能力与产品目标不代表本仓已经实现或完成验证。
+
+- [F01 本地运行与验证](docs/guides/202609080000-2346-local-inventory.md)：固定 Git 依赖、迁移、fixture 接收、投影与恢复。

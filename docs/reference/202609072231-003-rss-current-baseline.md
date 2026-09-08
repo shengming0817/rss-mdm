@@ -39,7 +39,7 @@ RSS 固定版本可从 [Azure DevOps](https://dev.azure.com/shengming0923/rss/_g
 
 ## Artifact 可取得性
 
-本轮只读查询 crates.io sparse index：Observation/Projection 等首项目标包尚无公开条目；diag-context、trace-context 已有较早 0.1.0，不能据此认定全体 RSS 从未发布，也不能把同号旧产物当本 HEAD。实现 F01 时重新核对所选八包及其完整上游闭包的可取得性；候选 bundle 必须真实生成/取得并验证，当前没有填写产品 lock 或已验证摘要。
+本轮只读查询 crates.io sparse index：Observation/Projection 等首项目标包尚无公开条目；diag-context、trace-context 已有较早 0.1.0，不能据此认定全体 RSS 从未发布，也不能把同号旧产物当本 HEAD。以上为本文件记录时的候选制品判断。#2346 后续已改用固定 Git revision 与独立 lock，本段不再作为 F01 的候选 bundle 前置；当前依赖决定以 Cargo.toml 和产品依赖规则为准。
 
 查询入口：[Observation index](https://index.crates.io/rs/s-/rss-observation)、[Projection index](https://index.crates.io/rs/s-/rss-projection)、[diag-context index](https://index.crates.io/rs/s-/rss-diag-context)、[trace-context index](https://index.crates.io/rs/s-/rss-trace-context)。不存在公开条目不排除已有私有制品；发布策略由 RSS owner 处理，本目标 PR 不修改其 registry 或兼容 metadata。
 
