@@ -5,3 +5,5 @@
 新增指南明确适用版本、前置条件、执行步骤和可观察结果；部署与升级操作归 [deployment](../deployment/README.md)，协作约定归 [AGENTS.md](../../AGENTS.md)。
 
 - [F01 本地 Inventory](202609080000-2346-local-inventory.md)
+
+- [Windows MDM V1 编解码与关联](202609080000-2349-windows-mdm-codec.md)：协议配置、有界接口与 T1 证据边界。

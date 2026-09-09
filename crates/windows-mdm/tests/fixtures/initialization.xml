@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncHdr>
+    <VerDTD>1.2</VerDTD>
+    <VerProto>DM/1.2</VerProto>
+    <SessionID>1</SessionID>
+    <MsgID>1</MsgID>
+    <Target><LocURI>https://mdm.example.com/ManagementServer/MDM.svc</LocURI></Target>
+    <Source><LocURI>test-device</LocURI></Source>
+  </SyncHdr>
+  <SyncBody>
+    <Alert>
+      <CmdID>2</CmdID>
+      <Data>1201</Data>
+    </Alert>
+    <Replace>
+      <CmdID>3</CmdID>
+      <Item>
+        <Source><LocURI>./DevInfo/DevId</LocURI></Source>
+        <Data>test-device</Data>
+      </Item>
+      <Item>
+        <Source><LocURI>./DevInfo/Man</LocURI></Source>
+        <Data>Example</Data>
+      </Item>
+      <Item>
+        <Source><LocURI>./DevInfo/Mod</LocURI></Source>
+        <Data>Test Model</Data>
+      </Item>
+      <Item>
+        <Source><LocURI>./DevInfo/DmV</LocURI></Source>
+        <Data>1.3</Data>
+      </Item>
+      <Item>
+        <Source><LocURI>./DevInfo/Lang</LocURI></Source>
+        <Data>en-US</Data>
+      </Item>
+    </Replace>
+    <Final/>
+  </SyncBody>
+</SyncML>

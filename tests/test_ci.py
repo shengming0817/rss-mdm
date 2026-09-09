@@ -85,3 +85,14 @@ class IsolationGates(unittest.TestCase):
                 bad = copy.deepcopy(manifest)
                 bad["workspace"]["dependencies"]["rss-mdm-inventory"] = source
                 with self.assertRaises(RuntimeError): ci.rss_pin(bad)
+
+class CodecFixtures(unittest.TestCase):
+    def test_protocol_member_and_fixture_provenance_are_exact(self):
+        import hashlib
+        import json
+        self.assertEqual(ci.LOCAL_PACKAGES["rss-mdm-windows-mdm"], "crates/windows-mdm")
+        root = ci.ROOT / "crates/windows-mdm/tests/fixtures"
+        manifest = json.loads((root / "provenance.json").read_text())
+        self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
+        for name, digest in manifest["fixtures"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)

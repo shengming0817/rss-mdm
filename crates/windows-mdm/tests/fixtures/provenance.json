@@ -1,0 +1,124 @@
+{
+  "sources": [
+    {
+      "title": "MS-MDE2 overview",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/98547779-b770-4730-9261-8ecaa1604c10",
+      "sha256": "1446cff24603f47c4ffef03ea572f990f5ae696d795637670c2e877a55b82dc3",
+      "bytes": 42785,
+      "retrieved_utc": "2026-09-08T20:34:18.922680+00:00"
+    },
+    {
+      "title": "MS-MDE2 On-Premise RST",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/09c69d4c-5315-4226-be5e-4cea54058317",
+      "sha256": "0a99c3a682618030c5ef9459788efeb94edf21265ec2957f245cbddbe2715424",
+      "bytes": 51598,
+      "retrieved_utc": "2026-09-08T20:34:19.074641+00:00"
+    },
+    {
+      "title": "MS-MDE2 RSTRC",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/3452fe7d-2441-49f7-8801-c056b58edb6a",
+      "sha256": "0f32beac6b32e3c1899c5802bf00f5a64000a4f7c7da805a369db111be118f03",
+      "bytes": 39245,
+      "retrieved_utc": "2026-09-08T20:34:19.008215+00:00"
+    },
+    {
+      "title": "MS-MDE2 On-Premise GetPolicies",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/ff0847a2-c85f-41e6-99f4-b29556f37719",
+      "sha256": "1ee40d78b43cb6073d715efa4aeffa1c18640d5a96fccfc25c3eb61d639ee77b",
+      "bytes": 38508,
+      "retrieved_utc": "2026-09-08T20:34:19.005062+00:00"
+    },
+    {
+      "title": "MS-XCEP GetPoliciesResponse",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-xcep/a20aff6f-9a3f-4fbe-bdbb-70763a50b1f2",
+      "sha256": "bae9e4328bdce0f14592604f4ab034dcc42604db13268a3b4189e5f6a27331cd",
+      "bytes": 36880,
+      "retrieved_utc": "2026-09-08T20:34:20.144442+00:00"
+    },
+    {
+      "title": "MS-MDM Status",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mdm/36b1a4d9-fd93-48ce-b865-6a9d396c52a4",
+      "sha256": "20a5434b5bccc0596fd3be86ead1bd85e276cef121b860f420ee46175b606d21",
+      "bytes": 42678,
+      "retrieved_utc": "2026-09-08T20:34:20.217620+00:00"
+    },
+    {
+      "title": "MS-MDM v20210407 2.2.7.8 Results",
+      "url": "https://winprotocoldoc.z19.web.core.windows.net/MS-MDM/%5BMS-MDM%5D-210407.pdf",
+      "sha256": "f1a0689cf591482502840400a448156fee69ca4dc8122cdb419c3caf6a695587",
+      "bytes": 1324791,
+      "retrieved_utc": "2026-09-08T20:34:21.406883+00:00"
+    },
+    {
+      "title": "XML 1.0 fifth edition",
+      "url": "https://www.w3.org/TR/2008/REC-xml-20081126/",
+      "sha256": "f58a4b9e1e5b8bac13fb55c4e5c7c8c5e2c176aa45ee68e2f1ab2498511927ec",
+      "bytes": 219926,
+      "retrieved_utc": "2026-09-08T20:34:20.416949+00:00"
+    },
+    {
+      "title": "MS-MDE2 DiscoveryRequest all-group",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/36e33def-59ab-484f-b0bc-701496346925",
+      "sha256": "b4346913c14f0743b6fadaa5d12857659a00a813cbcd903f359dd9a58ee1e0d3",
+      "bytes": 39243,
+      "retrieved_utc": "2026-09-08T20:58:28.208626+00:00"
+    },
+    {
+      "title": "MS-MDE2 SHA256 policy response",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/59c5989c-517a-4e9f-af5d-64b4c4a45ccb",
+      "sha256": "d671eb1e6b7b45f6d6bb87d02327903b2d09a148f904c23d50b8d7e3d780070d",
+      "bytes": 45974,
+      "retrieved_utc": "2026-09-08T20:58:28.333629+00:00"
+    },
+    {
+      "title": "MS-WSTEP RSTR unordered fields",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wstep/3dfcedfb-86ad-4b61-ae42-a2a96c4f2b18",
+      "sha256": "a66285038d83486fe1c833084cac073633ed932e3c8f1970988b5836248f04ef",
+      "bytes": 41362,
+      "retrieved_utc": "2026-09-08T20:58:28.389970+00:00"
+    },
+    {
+      "title": "MS-WSTEP full WSDL string RequestID",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wstep/a66793bc-ffea-4888-80c6-aef23beb64ab",
+      "sha256": "0d1b16c0874fb5532a20c3cd7f3ce402e8b6ce2ff3bd30dcd35c88e46b4ae08d",
+      "bytes": 37921,
+      "retrieved_utc": "2026-09-08T20:58:28.200696+00:00"
+    },
+    {
+      "title": "Windows OnPremise enrollment examples",
+      "url": "https://learn.microsoft.com/en-us/windows/client-management/on-premise-authentication-device-enrollment",
+      "sha256": "0b1b9780b7c6eb64fcd5a42aa28a43364914bb12b34cfe7844f6ea2f6a2eb0d6",
+      "bytes": 76288,
+      "retrieved_utc": "2026-09-08T20:58:29.102200+00:00"
+    },
+    {
+      "title": "MS-MDM complete exchange package #1 (1224 LoginStatus)",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mdm/71a45e87-4c0a-43bc-b76f-b427ac8322be",
+      "sha256": "3c0e23f6c17f98ca0f708e68052a78fe9648d99f7c4cd1f4f949f72470f06e62",
+      "bytes": 46708,
+      "retrieved_utc": "2026-09-09T01:19:25.524651+00:00"
+    }
+  ],
+  "archive": {
+    "name": "winmdm20260220-develop.zip",
+    "sha256": "bb08749e671080dd96a3d61dd31c662730604cd288303fa67e7917aaf9778e67"
+  },
+  "fixtures": {
+    "discovery-request.xml": "a8c0a91a9b0dccfc4e3adb292ced60acb57260795cddf850bb0e59417efeb8c2",
+    "discovery-response.xml": "5a058202233a6b0040c6c1db8fbb1846b667c84e84511d0c8a7d03ec02793543",
+    "fault-authentication.xml": "d1cf98023b3acb2e4c7516c4482be95202f063201b8695494b9c0405110d4a81",
+    "fault-authorization.xml": "f0691302a62c902d6a4db6cd3662290e646a8219cc8ebea1df62ec9bde712bab",
+    "fault-certificate-request.xml": "01075fc9838848345d02e9b001185b01c100dd1291053f78727bf42ffe4abd61",
+    "fault-enrollment-server.xml": "13d1b2b2c1afbcd7b212e4dfe171f11e563f2dd464c0413661d317c7391ebda6",
+    "fault-message-format.xml": "624c782882c757ac715b4d10df5e7bf0727c4ef3d35dddbad87a5a4afccc846f",
+    "get.xml": "cabd4704c319b191fa6967326388998e8f1a1de285dc3b8a8c92e706b1262512",
+    "initialization.xml": "30194ee975c2700b82b1427f754be4da8a38a6cb311604279ec657005180ef44",
+    "issue-request.xml": "925624a907c1b3dfee3f2a4fee4665683b4222fdb10f3fd34bd02e45b7980533",
+    "issue-response.xml": "cfb02121282166e1b2c357d945d303d457697f077aec45b1a8e85a97eea8a73e",
+    "policy-request.xml": "dac721a6460244b751548f2bc9198cdc5f74c009e8d9110b3f5c2cb49a5be4c0",
+    "policy-response.xml": "6c2e7a3ce3b71fdebd1bdc15df353c061439cfd35c68cc5b55f9febf5cf5f0d0",
+    "results.xml": "ee0a113d248e51bcacef3b4dab050ef11e60657ae46b5df879d8095d56f326b2",
+    "status-details.xml": "2e025e65a5d3b988d95b5e359ead470d4c95be4614f3899db21e33dd65e19e19",
+    "initialization-login-status.xml": "8464249f4165518c9bb5bb45924b80d243a2a560cd0dbf4df46041d5d886cf15"
+  }
+}
