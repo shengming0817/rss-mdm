@@ -710,3 +710,18 @@ fn historical_nested_criteria_has_one_literal_interpretation() {
     }
     assert!(r.predicate_at(&[1]).is_none());
 }
+
+#[test]
+fn empty_results_keep_the_tenant_coordinate() {
+    let r = rule(
+        FieldType::Scalar(ScalarType::String),
+        Op::Eq,
+        Some(string("x")),
+    );
+    let mut s = snapshot(FactState::Missing);
+    s.objects.clear();
+    let first = r.evaluate(&s, time(10)).unwrap();
+    s.tenant = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    let second = r.evaluate(&s, time(10)).unwrap();
+    assert_ne!(first, second);
+}

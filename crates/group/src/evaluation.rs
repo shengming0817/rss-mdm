@@ -62,6 +62,7 @@ pub struct ObjectEvaluation {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Evaluation {
+    pub tenant: rss_request_context::TenantId,
     pub rule_version: String,
     pub dictionary_version: String,
     pub snapshot_id: String,
@@ -221,6 +222,7 @@ impl Rule {
             })
             .collect();
         Ok(Evaluation {
+            tenant: s.tenant,
             rule_version: self.version.clone(),
             dictionary_version: self.dictionary_version.clone(),
             snapshot_id: s.id.clone(),
