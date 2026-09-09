@@ -9,6 +9,15 @@
 
 F01 的完整验证入口为本地 `make ci`，模型测试为 `make test`，真实 PostgreSQL 组合为 `make t2`。本期不建立远端 CI；不执行父仓库 CI 充当产品验证。结果绑定受测 HEAD，未完成的 gate 不得宣布通过。
 
+Make 入口通过 Git common directory 将所有本仓 worktree 的 Cargo 产物统一写入主 checkout 的
+`target/`；可选 sccache 位于主 checkout 的 `.cache/sccache/`，不与 RSS 或其它产品仓共享。
+显式 `CARGO_TARGET_DIR`、`SCCACHE_DIR` 仍可覆盖本地默认值；隔离消费验证保留独立临时目录。
+
 发布记录绑定版本、OS/架构、注册方式、权限与外部依赖、实际请求和结果。模拟终端、组件测试、历史代码或厂商能力不替代真实产品证据；未测试的组合不得宣称支持。
 
 性能容量、兼容窗口与 RPO/RTO 在发布前按场景冻结并验证，不沿用冲突的历史指标。未覆盖的验证项如实记录。
+
+可选缓存不可用（无 Git 元数据、目录无法创建、sccache 执行失败）时直接执行 rustc；
+sccache 失败最多直接重试一次，最终保留 rustc 退出码，编译错误可能输出两次。
+默认 socket 位于有效 `SCCACHE_DIR` 内；显式 `SCCACHE_SERVER_UDS` 覆盖时由调用方保证
+服务与缓存配置一致，修改同一服务的缓存配置需重启该服务。

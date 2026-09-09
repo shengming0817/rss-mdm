@@ -23,15 +23,18 @@
 | `crates/policy` | [不可变版本、生命周期与计划差分](crates/policy/README.md)，独立纯核心 |
 | `crates/inventory` | `rss-mdm-inventory`：资产字段、coverage 和报告校验；不依赖 PostgreSQL 或示例授权 |
 | `crates/inventory-postgres` | `rss-mdm-inventory-postgres`：资产投影、SQL schema 与运行角色/RLS 检查；消费 Inventory 核心和 RSS 公共适配 |
-| `crates/examples` | `rss-mdm-examples`：fixture CLI、受信操作员 scope、组件装配、配置、迁移执行、时钟及关闭；不是生产 MDM 服务 |
+| `crates/app` | `rss-mdm-app`：唯一生产 binary、OIDC/Identity消费、静态资源授权、HTTP与迁移装配 |
+| `crates/examples` | `rss-mdm-examples`：fixture CLI、受信操作员 scope、组件装配、配置、时钟及关闭；不是生产 MDM 服务 |
 | `tests/inventory-postgres-integration` | 独立真实 PostgreSQL T2 入口；启用 examples 的故障场景支撑 |
 | `tests/test_ci.py`、`hack/` | CI 脚本测试与本地验证入口 |
 | `fixtures/` | 从仓库根目录运行示例 CLI 的输入样本 |
 
 根目录 `Cargo.toml` 统一管理 workspace members、元数据、依赖和 lint。依赖方向为
-examples → inventory-postgres → inventory；核心和适配均不依赖 examples 或集成测试包。
+app → inventory-postgres/inventory/Identity client；examples → inventory-postgres → inventory；核心和适配均不依赖 examples 或集成测试包。
 本仓成员使用 workspace 内部 path，RSS 上游公共库继续固定 Git revision；两者不混同。
 
-根目录 `cargo run --locked -p rss-mdm-examples -- ...` 运行名为 `rss-mdm` 的示例 CLI。
+根目录 `cargo run --locked -p rss-mdm-examples -- ...` 运行名为 `rss-mdm-fixture` 的示例 CLI。
 `make test` 验证全部成员的 T1，`make t2` 运行真实 PostgreSQL 组合，`make ci` 完成全部本地验证。
 故障注入矩阵留在 examples 的 `integration` feature 下以访问示例内部状态，不编译进普通示例或产品能力库。
+
+管理员接入与生产命令见 [MDM Identity 接入](docs/guides/202609091600-2343-mdm-identity.md)。

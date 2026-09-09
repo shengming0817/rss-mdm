@@ -82,13 +82,10 @@ pub fn finish<T>(
 pub fn report(error: anyhow::Error) -> serde_json::Value {
     let problems = problems("operation", error);
     let hint = match problems[0].stage {
-        "usage" => "usage: rss-mdm migrate | ingest-fixture FILE | project | inspect BATCH_ID",
+        "usage" => "usage: rss-mdm-fixture ingest-fixture FILE | project | inspect BATCH_ID",
         "config" => "provide DATABASE_URL and PG_CA_FILE via trusted local configuration",
         "scope" => "provide MDM_SCOPE_FILE containing the trusted operator scope",
         "fixture_read" | "decode" => "check the fixture file, size and versioned report encoding",
-        "migration" => {
-            "check owner privileges and migration ledger; restore interrupted installation before retry"
-        }
         "cancelled" => {
             "operation cancelled; inspect durable state before retry; inspect cleanup stages"
         }

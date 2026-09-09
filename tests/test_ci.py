@@ -14,7 +14,7 @@ class IsolationGates(unittest.TestCase):
             ci.require(False, "reject")
 
     def test_source_and_feature_mismatch_are_rejected(self):
-        root = Path("/tmp/consumer").resolve()
+        root = ci.ROOT
         pin = ci.rss_pin(ci.tomllib.loads((ci.ROOT / "Cargo.toml").read_text()))
         url, rev = pin
         source = f"git+{url}?rev={rev}#{rev}"
@@ -24,7 +24,29 @@ class IsolationGates(unittest.TestCase):
             {"id":"proj","name":"rss-projection-postgres","source":source}],
             "workspace_members":list(ci.LOCAL_PACKAGES), "resolve":{"nodes":[
                 *[{"id":name,"features":[]} for name in ci.LOCAL_PACKAGES],{"id":"obs","features":[]},{"id":"proj","features":[]}]}}
+        registry = 'registry+https://github.com/rust-lang/crates.io-index'
+        identity_url,revision = ci.identity_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
+        identity_source = f'git+{identity_url}?rev={revision}#{revision}'
+        extra = [{'id':name,'name':name,'version':version,'source':registry} for name,version in [('openidconnect','4.0.1'),('rsa','0.9.10')]]
+        extra += [{'id':name,'name':name,'source':identity_source} for name in ci.IDENTITY_PACKAGES]
+        data['packages'][-2:-2] = extra
+        for node in data['resolve']['nodes']: node['deps'] = []
+        next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')['deps'] = [{'pkg':'openidconnect'},{'pkg':'rss-identity-client'}]
+        data['resolve']['nodes'][-2:-2] = [{'id':p['id'],'features':[],'deps':([{'pkg':'rsa'}] if p['id']=='openidconnect' else [])} for p in extra]
         ci.verify_metadata(data,root,"normal",pin)
+        for name in ci.IDENTITY_PACKAGES:
+            target = next(p for p in data['packages'] if p['name']==name)
+            previous=target['source'];target['source']='path+file:///untrusted'
+            with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)
+            target['source']=previous
+        rsa=next(p for p in data['packages'] if p['name']=='rsa');rsa['version']='0.9.11'
+        with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)
+        rsa['version']='0.9.10'
+        app=next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')
+        for injected in ['rsa','rss-mdm-examples']:
+            app['deps'].append({'pkg':injected})
+            with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)
+            app['deps'].pop()
         with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,"integration",pin)
         data["resolve"]["nodes"][-2]["features"] = ["integration"]
         with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,"normal",pin)
@@ -59,6 +81,7 @@ class IsolationGates(unittest.TestCase):
                 (root / path).mkdir(parents=True)
                 (root / path / "Cargo.toml").write_text((ci.ROOT / path / "Cargo.toml").read_text())
             (root / "Cargo.toml").write_text((ci.ROOT / "Cargo.toml").read_text())
+            (root / "deny.toml").write_text((ci.ROOT / "deny.toml").read_text())
             member = root / "crates/inventory/Cargo.toml"
             original = (ci.ROOT / "crates/inventory/Cargo.toml").read_text()
             member.write_text(original)
@@ -73,7 +96,7 @@ class IsolationGates(unittest.TestCase):
                     with self.assertRaises(RuntimeError): ci.workspace_pin(root)
 
     def test_old_root_package_location_is_rejected(self):
-        root = Path("/tmp/consumer").resolve()
+        root = ci.ROOT
         data = {"packages": [{"id": "app", "name": "rss-mdm-inventory", "manifest_path": str(root / "Cargo.toml"), "source": None}]}
         with self.assertRaises(RuntimeError):
             ci.verify_metadata(data, root, "normal", ci.workspace_pin(ci.ROOT))
@@ -96,6 +119,17 @@ class CodecFixtures(unittest.TestCase):
         self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
         for name, digest in manifest["fixtures"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
+
+    def test_advisory_acceptance_is_exact(self):
+        manifest=ci.tomllib.loads((ci.ROOT/'Cargo.toml').read_text())
+        policy=ci.tomllib.loads((ci.ROOT/'deny.toml').read_text())
+        ci.verify_policy(policy,manifest)
+        for ignores in [[],['RUSTSEC-2023-0071','RUSTSEC-9999-0001'],['RUSTSEC-9999-0001']]:
+            changed=copy.deepcopy(policy);changed['advisories']['ignore']=ignores
+            with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
+        changed=copy.deepcopy(policy);changed['sources']['allow-git'].append('https://example.com/unapproved')
+        with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
+
 
 class CoreConsumerGate(unittest.TestCase):
     def test_core_closure_rejects_foreign_core_provider_and_wrong_sources(self):
