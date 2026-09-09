@@ -2049,7 +2049,7 @@ dependencies = [
  "rss-contract",
  "rss-request-context",
  "sha2 0.10.9",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2058,7 +2058,7 @@ version = "0.1.0"
 dependencies = [
  "rss-contract",
  "rss-request-context",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
