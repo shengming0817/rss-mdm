@@ -229,6 +229,9 @@ def group_consumer(head):
         for parent in [consumer, *consumer.parents]:
             for name in ["config", "config.toml"]:
                 require(not (parent / ".cargo" / name).exists(), "ancestor Cargo config leaks into consumer")
+        # Own only credential transport configuration; do not inherit parent build/features.
+        (consumer / ".cargo").mkdir()
+        (consumer / ".cargo/config.toml").write_text("[net]\ngit-fetch-with-cli = true\n")
         for source, destination in [("crates/group/tests/consumer.rs", "tests/consumer.rs"), ("rust-toolchain.toml", "rust-toolchain.toml")]:
             result = command(["/usr/bin/git", "show", f"{head}:{source}"])
             require(result.returncode == 0, result.stdout)
@@ -240,6 +243,7 @@ def group_consumer(head):
         (consumer / "Cargo.toml").write_text(manifest)
         env = {k:v for k,v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
         env.update(CARGO_HOME=str(base / "cargo-home"), CARGO_TARGET_DIR=str(base / "target"))
+        env["PATH"] = "/usr/bin:" + env.get("PATH", "")
         logs = [f"tested HEAD: {head}"]
         for args in [["cargo", "generate-lockfile"], ["cargo", "check", "--locked"], ["cargo", "test", "--locked"],
                      ["cargo", "metadata", "--locked", "--format-version", "1"], ["cargo", "tree", "--locked", "-e", "features"]]:
