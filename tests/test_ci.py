@@ -96,3 +96,22 @@ class CodecFixtures(unittest.TestCase):
         self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
         for name, digest in manifest["fixtures"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
+
+class SourceConsumerBoundary(unittest.TestCase):
+    def test_source_identity_and_transitive_forbidden_dependencies(self):
+        spec = importlib.util.spec_from_file_location("source_consumers", ci.ROOT / "hack/source-consumers.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        product = "rss-mdm-resource"
+        data = {"packages": [{"id": "p", "name": product, "source": "product-sha"}], "resolve": {"nodes": [{"id": "p", "deps": []}]}}
+        self.assertEqual(module.verify_graph(data, product, "product-sha", "rss-sha"), [product])
+        with self.assertRaises(RuntimeError):
+            module.verify_graph(data, product, "other-sha", "rss-sha")
+        data["packages"].append({"id": "http", "name": "reqwest", "source": "registry"})
+        data["resolve"]["nodes"].extend([{"id": "http", "deps": []}])
+        data["resolve"]["nodes"][0]["deps"].append({"pkg": "http", "dep_kinds": [{"kind": None}]})
+        with self.assertRaises(RuntimeError):
+            module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["packages"][1]["name"] = "rss-mdm-brew-source"
+        with self.assertRaises(RuntimeError):
+            module.verify_graph(data, product, "product-sha", "rss-sha")

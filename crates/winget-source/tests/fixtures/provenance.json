@@ -1,0 +1,17 @@
+[
+  {
+    "file": "msi.json",
+    "sha256": "cb208e9fb18a9ec63ab6347bfeb3737cc9839c6004db90deb9c682de42b3bf23",
+    "origin": "RSS synthetic controlled MSI fixture; REST 1.0 shape"
+  },
+  {
+    "file": "upstream-information.json",
+    "sha256": "93e60db58fadcc5d1dfb8cab47e47f9af931faea4c8fe0e05b2b4338e9ad4f25",
+    "origin": "Microsoft winget-cli c17eadbcacf2f5244b13de0d563d921c33ac4af6"
+  },
+  {
+    "file": "upstream-exe.json",
+    "sha256": "b1485a68a3428c5880fbbbf4c27f92bf70a68f31015169730b89e5e54f6febf8",
+    "origin": "Microsoft winget-cli c17eadbcacf2f5244b13de0d563d921c33ac4af6"
+  }
+]

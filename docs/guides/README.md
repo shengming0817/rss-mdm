@@ -7,3 +7,5 @@
 - [F01 本地 Inventory](202609080000-2346-local-inventory.md)
 
 - [Windows MDM V1 编解码与关联](202609080000-2349-windows-mdm-codec.md)：协议配置、有界接口与 T1 证据边界。
+
+- [Resource 与 WinGet/Brew 后端元数据](202609090000-2383-resource-sources.md)：冻结版本、受控协议/模板、本地 Git 与独立消费。

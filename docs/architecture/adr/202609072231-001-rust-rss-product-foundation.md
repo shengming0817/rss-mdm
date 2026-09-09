@@ -29,7 +29,7 @@ Agent wire schema/DTO 由 `rss-mdm` 中的独立协议包拥有，经版本化 a
 
 ## 独立后端能力契约（N01 / #2379）
 
-状态：契约与 package 名称已冻结；本节不声明实现、独立消费验证或 registry 发布完成。
+状态：契约与 package 名称已冻结。N05/N06/N07 的实现细节与支持矩阵见 [Resource 与软件源指南](../../guides/202609090000-2383-resource-sources.md)；各项验证以固定源码 HEAD 的实际结果为准，不代表 registry 发布。
 本节唯一拥有契约与 package 身份；目录、PBI owner 和实施依赖见[路线](../../product/202609072231-002-rust-rewrite-roadmap.md#独立后端能力-n01n12)，证明方法见[消费规则](../../rules/rust-rss-dependencies.md#产品内部逐-crate-独立消费)。
 
 ### Package 身份与分层
