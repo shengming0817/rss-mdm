@@ -40,7 +40,7 @@ V1 对应 WMD-E01/E02/E04、D01/D02、Q01/Q02/Q05、A01/A03、M01/M02、COL07/08
 | 切片 | 前置 | 仓库 / 主要文件 owner | 结果与验收 |
 | --- | --- | --- | --- |
 | F01 独立 Git 消费 + 资产组合 | 本目标 PR | rss-mdm：Cargo/lock/toolchain、消费代码、migrations、T2 | 上述最小真实 PG 证明；不扩建通用组件 |
-| F02 最小管理员会话与审计 | F01 | rss-mdm：access/audit 用例与表 | 本地会话、注册许可、凭据动作与查询/拒绝审计；关键变更和成功审计同事务，失败不静默放行 |
+| F02 最小管理员会话与审计 | F01 | rss-mdm：access/audit 用例与表 | 消费 #2343 的 Identity/产品会话，提供注册许可、凭据动作与查询/拒绝审计；关键变更和成功审计同事务，失败不静默放行 |
 | I01 通道中立身份与报告契约 | F01/F02 | rss-mdm：device/registration/principal、report scope | tenant/设备/注册世代/凭据/通道映射及授权；中立 Scope/coverage/报告身份，不依赖 Windows codec |
 | F03 XML/SOAP/SyncML codec | 本目标 PR，可与 F01 并行 | rss-mdm：windows-mdm 协议模块 | namespace、结构、输入预算、Fault、MsgRef/CmdRef；固定协议样本 T1 |
 | F04 Windows 原生注册 | I01/F03 | rss-mdm：Windows registration、credential、gateway | CSR/公钥绑定、签发未知恢复、证书验证/撤销、重复注册及持久审计；T2 |

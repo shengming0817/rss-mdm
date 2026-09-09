@@ -3,5 +3,5 @@ pub mod app;
 pub mod failure;
 pub mod fixture;
 mod storage;
-pub use storage::{BUDGET, Clock, migrate, options};
+pub use storage::{BUDGET, Clock, options};
 mod window;

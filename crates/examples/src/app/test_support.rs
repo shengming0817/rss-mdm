@@ -62,8 +62,6 @@ async fn inspect(a: &App, id: &str) -> Result<serde_json::Value> {
 
 /// Runs the real provider fault and lifecycle scenarios without exposing component handles.
 pub async fn matrix(executable: &str) -> Result<()> {
-    storage::migrate(&url("MDM_OWNER_URL")?).await?;
-    storage::migrate(&url("MDM_OWNER_URL")?).await?; // exact migration replay
     let a = app(scope(1, "d1")).await?;
     let cancel = CancellationToken::new();
     let first = batch("first", 0, Body::Snapshot(facts("Model-A")));
