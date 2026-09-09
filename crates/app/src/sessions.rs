@@ -83,6 +83,15 @@ impl Sessions {
     }
     pub fn begin(&self, state: String, pending: Pending) -> Result<(), Error> {
         let (mut inner, now) = self.lock()?;
+        if inner
+            .pending
+            .values()
+            .filter(|p| p.browser == pending.browser)
+            .count()
+            >= 4
+        {
+            return Err(Error::Unavailable);
+        }
         if inner.pending.len() >= self.pending_limit || inner.pending.contains_key(&state) {
             return Err(Error::Unavailable);
         }
@@ -196,5 +205,21 @@ mod tests {
         clock.0.store(999, Ordering::SeqCst);
         assert!(store.get(&id).is_err());
         store.remove(&id, "csrf").unwrap();
+    }
+    #[test]
+    fn one_browser_cannot_exhaust_global_pending_and_recovers_after_expiry() {
+        let clock = Arc::new(Time(AtomicI64::new(1000)));
+        let store = Sessions::new(clock.clone(), 1000, 10);
+        for i in 0..4 {
+            store.begin(format!("state-{i}"), pending()).unwrap();
+        }
+        assert!(store.begin("fifth".into(), pending()).is_err());
+        let mut different = pending();
+        different.browser = "another".into();
+        store.begin("another".into(), different).unwrap();
+        clock.0.store(1100, Ordering::SeqCst);
+        let mut renewed = pending();
+        renewed.expires = 1200;
+        store.begin("renewed".into(), renewed).unwrap();
     }
 }

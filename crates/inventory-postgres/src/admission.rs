@@ -9,6 +9,10 @@ pub(super) async fn verify_reader(pool: &PgPool) -> Result<()> {
     verify_profile(pool, true).await
 }
 async fn verify_profile(pool: &PgPool, reader: bool) -> Result<()> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("SET LOCAL statement_timeout='5s'")
+        .execute(&mut *transaction)
+        .await?;
     let row = sqlx::query(r#"
 WITH target AS (SELECT * FROM pg_class WHERE oid='mdm.inventory'::regclass),
 reachable AS (SELECT * FROM pg_roles WHERE oid=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR pg_has_role(current_user,oid,'MEMBER'))
@@ -23,7 +27,12 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.oid=t.relnamespace AND (a.grantee=0 OR (a.grantee IN (SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a WHERE c.attrelid=t.oid AND (a.grantee=0 OR (a.grantee IN (SELECT oid FROM reachable) AND (a.is_grantable OR a.privilege_type='REFERENCES')))) AS acl,
  CASE WHEN $1 THEN
- has_table_privilege(current_user,t.oid,'SELECT')
+ session_user=current_user
+ AND has_schema_privilege(current_user,'mdm','USAGE')
+ AND NOT has_database_privilege(current_user,current_database(),'CREATE')
+ AND NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,n.oid,'CREATE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user))
+ AND has_table_privilege(current_user,t.oid,'SELECT')
  AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'INSERT,UPDATE,DELETE')
  OR has_any_column_privilege(r.oid,t.oid,'INSERT,UPDATE,REFERENCES'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -33,12 +42,13 @@ SELECT
  ELSE (SELECT bool_and(has_table_privilege(current_user,t.oid,p)) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p) END AS dml,
  EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, coverage, field)') AS identity
 FROM target t
-"#).bind(reader).fetch_one(pool).await?;
+"#).bind(reader).fetch_one(&mut *transaction).await?;
     for field in ["rls", "policy", "roles", "acl", "dml", "identity"] {
         ensure!(
             row.try_get::<bool, _>(field)?,
             "Inventory admission rejected: {field}"
         );
     }
+    transaction.commit().await?;
     Ok(())
 }

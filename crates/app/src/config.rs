@@ -31,7 +31,7 @@ impl Database {
             .username(&self.user)
             .password(&secret(&self.password_file)?)
             .ssl_mode(PgSslMode::VerifyFull)
-            .ssl_root_cert(&self.ca_file))
+            .ssl_root_cert_from_pem(read(&self.ca_file, 1024 * 1024, false)?.to_vec()))
     }
 }
 #[derive(Deserialize)]
@@ -71,7 +71,11 @@ impl Config {
                 return Err(Error::Configuration);
             }
         }
-        https_url(&self.identity.issuer)?;
+        let issuer = https_url(&self.identity.issuer)?;
+        let product = https_url(&self.product_origin)?;
+        if issuer.host_str() == product.host_str() {
+            return Err(Error::Configuration);
+        }
         if self.identity.origin == self.product_origin {
             return Err(Error::Configuration);
         }
@@ -101,8 +105,14 @@ pub(crate) fn https_url(value: &str) -> Result<url::Url, Error> {
     }
     Ok(u)
 }
-pub fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Error> {
-    serde_json::from_slice(&read(path, 1024 * 1024, true)?).map_err(|_| Error::Configuration)
+pub fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, crate::ProcessError> {
+    let bytes = read(path, 1024 * 1024, true)
+        .map_err(|_| crate::ProcessError::ConfigFile(path.to_owned()))?;
+    serde_json::from_slice(&bytes).map_err(|e| crate::ProcessError::ConfigJson {
+        path: path.to_owned(),
+        line: e.line(),
+        column: e.column(),
+    })
 }
 pub(crate) fn read(path: &Path, limit: u64, private: bool) -> Result<Zeroizing<Vec<u8>>, Error> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -134,4 +144,48 @@ pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
         return Err(Error::Configuration);
     }
     Ok(Zeroizing::new(text.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cookie_authorities_cannot_share_a_hostname() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        value["product_origin"] = serde_json::json!("https://identity.example.test:8443");
+        let config: Config = serde_json::from_value(value).unwrap();
+        assert!(config.validate().is_err());
+    }
+    #[test]
+    fn ca_inputs_reject_symlinks_directories_and_oversize() {
+        let root = std::env::temp_dir().join(format!("mdm-ca-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let ca = root.join("ca");
+        std::fs::write(&ca, b"public certificate").unwrap();
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&ca, &alias).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let password = root.join("password");
+        std::fs::write(&password, "fixture").unwrap();
+        std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut database = Database {
+            host: "localhost".into(),
+            port: 5432,
+            name: "mdm".into(),
+            user: "mdm_api".into(),
+            password_file: password,
+            ca_file: alias,
+        };
+        assert!(database.options().is_err());
+        database.ca_file = root.clone();
+        assert!(database.options().is_err());
+        database.ca_file = ca.clone();
+        std::fs::write(&ca, vec![0; 1024 * 1024 + 1]).unwrap();
+        assert!(database.options().is_err());
+        std::fs::write(&ca, b"public certificate").unwrap();
+        assert!(database.options().is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -1,7 +1,7 @@
 //! MDM alone owns roles and device permissions. Identity facts never contain them.
 use crate::Error;
 use rss_identity_client::VerifiedIdentity;
-use rss_observation::Scope;
+use rss_observation::{Epoch, Id, Registration, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -113,7 +113,15 @@ impl Policy {
         c: Coordinates,
     ) -> Result<InventoryRead<'a>, Error> {
         self.device(proof, device)?;
-        let scope = serde_json::from_value(serde_json::json!({"tenant":proof.tenant_id(),"object":device,"registration":c.registration,"source":c.source,"epoch":c.epoch,"dataset":"inventory"})).map_err(|_|Error::Malformed)?;
+        let scope = Scope::new(
+            rss_request_context::TenantId::parse(proof.tenant_id())
+                .map_err(|_| Error::Unauthorized)?,
+            Id::new(device).map_err(|_| Error::Malformed)?,
+            Registration::new(c.registration).map_err(|_| Error::Malformed)?,
+            Id::new(c.source).map_err(|_| Error::Malformed)?,
+            Id::new("inventory").expect("static dataset"),
+            Epoch::new(c.epoch).map_err(|_| Error::Malformed)?,
+        );
         Ok(InventoryRead { proof, scope })
     }
     pub fn dangerous<'a>(
@@ -133,6 +141,23 @@ impl Policy {
         Ok(DangerousAction { _proof: proof })
     }
 }
+#[derive(Serialize)]
+pub(crate) struct InventoryResponse {
+    tenant_id: String,
+    device_id: String,
+    registration: String,
+    source: String,
+    epoch: String,
+    fields: Vec<FieldResponse>,
+}
+#[derive(Serialize)]
+struct FieldResponse {
+    field: String,
+    value: String,
+    batch_id: String,
+    observed_at: i64,
+    received_at: i64,
+}
 pub(crate) struct InventoryService {
     reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
 }
@@ -140,7 +165,7 @@ impl InventoryService {
     pub(super) fn new(reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>) -> Self {
         Self { reader }
     }
-    pub async fn read(&self, grant: InventoryRead<'_>) -> Result<serde_json::Value, Error> {
+    pub async fn read(&self, grant: InventoryRead<'_>) -> Result<InventoryResponse, Error> {
         // The request's proof is retained until the read completes; no authority cache.
         let fields = self
             .reader
@@ -150,9 +175,24 @@ impl InventoryService {
         if fields.is_empty() {
             return Err(Error::NotFound);
         }
-        Ok(
-            serde_json::json!({"tenant_id":grant.proof.tenant_id(),"scope":grant.scope(),"fields":fields}),
-        )
+        let scope = grant.scope();
+        Ok(InventoryResponse {
+            tenant_id: grant.proof.tenant_id().into(),
+            device_id: scope.object().as_str().into(),
+            registration: scope.registration().as_str().into(),
+            source: scope.source().as_str().into(),
+            epoch: scope.epoch().as_str().into(),
+            fields: fields
+                .into_iter()
+                .map(|v| FieldResponse {
+                    field: v.field,
+                    value: v.value,
+                    batch_id: v.batch_id,
+                    observed_at: v.observed_at,
+                    received_at: v.received_at,
+                })
+                .collect(),
+        })
     }
 }
 

@@ -1,13 +1,13 @@
 //! One protected path: current SDK proof -> MDM capability -> private data access.
 use crate::{
     Error,
-    access::{Coordinates, InventoryService, Policy},
+    access::{Coordinates, InventoryResponse, InventoryService, Policy},
     config::Config,
     identity::Identity,
     sessions::{self, Lease, Sessions},
 };
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, header},
     middleware::{self, Next},
@@ -27,6 +27,31 @@ struct App {
     policy: Policy,
     inventory: InventoryService,
     origin: String,
+}
+
+#[derive(Clone)]
+struct RequestAuth {
+    proof: Arc<VerifiedIdentity>,
+    lease: Arc<Lease>,
+}
+async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+    let (mut parts, body) = request.into_parts();
+    if parts.method != axum::http::Method::GET
+        && parts.method != axum::http::Method::HEAD
+        && let Err(error) = same_origin(&app, &parts.headers)
+    {
+        return error.into_response();
+    }
+    match authenticate(&app, &parts.headers).await {
+        Ok((proof, lease)) => {
+            parts.extensions.insert(RequestAuth {
+                proof: Arc::new(proof),
+                lease: Arc::new(lease),
+            });
+            next.run(Request::from_parts(parts, body)).await
+        }
+        Err(error) => error.into_response(),
+    }
 }
 
 pub async fn application(
@@ -51,21 +76,25 @@ pub async fn application(
         .strip_prefix("https://")
         .ok_or(Error::Configuration)?
         .to_owned();
+    let protected = Router::new()
+        .route("/auth/me", get(me))
+        .route("/devices/{id}/inventory", get(inventory))
+        .route("/devices/{id}/actions", post(action))
+        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     Ok(Router::new()
+        .nest("/api/v1", protected)
         .route("/auth/login", post(login))
         .route(
             "/auth/callback",
             get(callback).head(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED }),
         )
-        .route("/api/v1/auth/me", get(me))
         .route("/api/v1/auth/logout", post(logout))
-        .route("/api/v1/devices/{id}/inventory", get(inventory))
-        .route("/api/v1/devices/{id}/actions", post(action))
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .with_state(state)
         .layer(DefaultBodyLimit::max(16384))
         .layer(middleware::from_fn_with_state(host, envelope)))
 }
+
 async fn envelope(State(host): State<String>, request: Request, next: Next) -> Response {
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -94,7 +123,7 @@ async fn envelope(State(host): State<String>, request: Request, next: Next) -> R
     );
     response
 }
-fn cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
+fn cookie_raw(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
     let mut result = None;
     for line in headers.get_all(header::COOKIE) {
         let line = line.to_str().map_err(|_| Error::Unauthorized)?;
@@ -105,7 +134,7 @@ fn cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
             if let Some((key, value)) = part.trim().split_once('=')
                 && key == name
             {
-                if result.is_some() || !sessions::valid(value) {
+                if result.is_some() {
                     return Err(Error::Unauthorized);
                 }
                 result = Some(value.to_owned());
@@ -114,8 +143,17 @@ fn cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
     }
     Ok(result)
 }
+fn cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
+    let value = cookie_raw(headers, name)?;
+    if value.as_deref().is_some_and(|v| !sessions::valid(v)) {
+        return Err(Error::Unauthorized);
+    }
+    Ok(value)
+}
+
 fn same_origin(app: &App, h: &HeaderMap) -> Result<(), Error> {
-    if h.get_all(header::ORIGIN).iter().count() != 1
+    if h.get_all("x-mdm-request").iter().count() != 1
+        || h.get_all(header::ORIGIN).iter().count() != 1
         || h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(&app.origin)
         || h.get("x-mdm-request").and_then(|v| v.to_str().ok()) != Some("1")
     {
@@ -151,8 +189,12 @@ fn set_cookie(r: &mut Response, name: &str, value: &str, max_age: i64) -> Result
 }
 async fn login(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, Error> {
     same_origin(&app, &headers)?;
-    let presented = cookie(&headers, COOKIE)?;
-    let old = match presented.as_deref().map(|id| app.sessions.get(id)) {
+    let presented = cookie_raw(&headers, COOKIE)?;
+    let old = match presented
+        .as_deref()
+        .filter(|id| sessions::valid(id))
+        .map(|id| app.sessions.get(id))
+    {
         Some(Ok(session)) => {
             if !sessions::equal(&session.csrf, csrf(&headers)?) {
                 return Err(Error::Forbidden);
@@ -163,7 +205,9 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Respon
         Some(Err(error)) => return Err(error),
     };
     let clear_stale = presented.is_some() && old.is_none();
-    let browser = cookie(&headers, BROWSER)?.unwrap_or_else(sessions::random);
+    let browser = cookie_raw(&headers, BROWSER)?
+        .filter(|value| sessions::valid(value))
+        .unwrap_or_else(sessions::random);
     let (url, state, pending) = app
         .identity
         .begin(browser.clone(), old, app.sessions.now()?);
@@ -215,12 +259,16 @@ async fn callback(
     set_cookie(&mut response, COOKIE, &id, age)?;
     Ok(response)
 }
-async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Json<Value>, Error> {
-    let (proof, lease) = authenticate(&app, &headers).await?;
+async fn me(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<Value>, Error> {
+    let proof = &auth.proof;
     Ok(Json(
-        json!({"subject":proof.subject(),"tenant_id":proof.tenant_id(),"client_id":proof.client_id(),"roles":app.policy.roles(&proof)?,"csrf_token":lease.csrf,"expires_at":proof.expires_at()}),
+        json!({"subject":proof.subject(),"tenant_id":proof.tenant_id(),"client_id":proof.client_id(),"roles":app.policy.roles(proof)?,"csrf_token":auth.lease.csrf,"expires_at":proof.expires_at()}),
     ))
 }
+
 async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, Error> {
     same_origin(&app, &headers)?;
     let id = cookie(&headers, COOKIE)?.ok_or(Error::Unauthorized)?;
@@ -231,16 +279,16 @@ async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Respo
 }
 async fn inventory(
     State(app): State<Arc<App>>,
-    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
     input: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<Value>, Error> {
-    let (proof, _) = authenticate(&app, &headers).await?;
+) -> Result<Json<InventoryResponse>, Error> {
     let grant = app
         .policy
-        .inventory(&proof, &id, input.map_err(|_| Error::Malformed)?.0)?;
+        .inventory(&auth.proof, &id, input.map_err(|_| Error::Malformed)?.0)?;
     app.inventory.read(grant).await.map(Json)
 }
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Action {
@@ -249,15 +297,14 @@ struct Action {
 async fn action(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
-    same_origin(&app, &headers)?;
-    let (proof, lease) = authenticate(&app, &headers).await?;
-    if !sessions::equal(&lease.csrf, csrf(&headers)?) {
+    if !sessions::equal(&auth.lease.csrf, csrf(&headers)?) {
         return Err(Error::Forbidden);
     }
-    let _grant = app.policy.dangerous(&proof, &id)?;
+    let _grant = app.policy.dangerous(&auth.proof, &id)?;
     if input.map_err(|_| Error::Malformed)?.0.action != "wipe" {
         return Err(Error::Malformed);
     }

@@ -201,6 +201,16 @@ impl Browser {
         path: &str,
         body: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
+        self.call_headers(app, method, path, body, None).await
+    }
+    async fn call_headers(
+        &mut self,
+        app: &Router,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        headers: Option<(&[&str], &[&str])>,
+    ) -> Result<(StatusCode, Value)> {
         let mut request = Request::builder()
             .method(&method)
             .uri(path)
@@ -230,7 +240,22 @@ impl Browser {
             }
             None => Body::empty(),
         };
-        let response = app.clone().oneshot(request.body(body)?).await?;
+        let mut request = request.body(body)?;
+        if let Some((origins, markers)) = headers {
+            request.headers_mut().remove("origin");
+            request.headers_mut().remove("x-mdm-request");
+            for origin in origins {
+                request
+                    .headers_mut()
+                    .append("origin", axum::http::HeaderValue::from_str(origin)?);
+            }
+            for marker in markers {
+                request
+                    .headers_mut()
+                    .append("x-mdm-request", axum::http::HeaderValue::from_str(marker)?);
+            }
+        }
+        let response = app.clone().oneshot(request).await?;
         let status = response.status();
         ensure!(
             response
@@ -392,6 +417,24 @@ async fn matrix() -> Result<()> {
     ensure!(me["roles"] == json!([]));
     let query = format!("{DEVICE}/inventory?registration=reg-1&source=fixture&epoch=epoch-1");
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
+    let mut damaged = Browser::default();
+    damaged
+        .cookies
+        .insert("__Host-mdm-session".into(), "old-or-damaged-cookie".into());
+    ensure!(
+        damaged
+            .call(&initial, Method::GET, "/api/v1/auth/me", None)
+            .await?
+            .0
+            == StatusCode::UNAUTHORIZED
+    );
+    ensure!(
+        damaged
+            .login(&initial, &web, &origin, &central_csrf)
+            .await?
+            == StatusCode::SEE_OTHER,
+        "invalid old cookie prevented login"
+    );
     let mut allowed = base.clone();
     allowed["bindings"] = json!([{"tenant_id":TENANT,"client_id":"mdm","subject":subject,"roles":["super_admin"],"devices":["device-1"],"allow_wipe":true}]);
     let authorized = app(&allowed, reader.clone()).await?;
@@ -466,6 +509,46 @@ async fn matrix() -> Result<()> {
             == StatusCode::BAD_REQUEST
     );
     let rows = pg("SELECT count(*) FROM mdm.inventory;")?;
+    let initial_cookies = browser.cookies.clone();
+    let initial_validations = count()?;
+    for path in [
+        "/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/devices/device-1/actions",
+    ] {
+        for (origins, markers) in [
+            (&[][..], &["1"][..]),
+            (&["https://attacker.test"][..], &["1"][..]),
+            (
+                &["https://mdm.example.test", "https://attacker.test"][..],
+                &["1"][..],
+            ),
+            (&["https://mdm.example.test"][..], &[][..]),
+            (&["https://mdm.example.test"][..], &["wrong"][..]),
+            (&["https://mdm.example.test"][..], &["1", "1"][..]),
+        ] {
+            ensure!(
+                browser
+                    .call_headers(
+                        &authorized,
+                        Method::POST,
+                        path,
+                        Some(json!({"action":"wipe"})),
+                        Some((origins, markers))
+                    )
+                    .await?
+                    .0
+                    == StatusCode::FORBIDDEN,
+                "invalid request origin/marker accepted"
+            );
+            ensure!(browser.cookies == initial_cookies);
+        }
+    }
+    ensure!(
+        count()? == initial_validations,
+        "invalid origin caused remote authentication work"
+    );
+
     ensure!(
         browser
             .call(
@@ -515,6 +598,24 @@ async fn matrix() -> Result<()> {
             )
             .await?
             .0 == StatusCode::FORBIDDEN
+        );
+    }
+    for role in ["super_admin", "mdm_admin"] {
+        let mut v = allowed.clone();
+        v["bindings"][0]["roles"] = json!([role]);
+        let scoped = app(&v, reader.clone()).await?;
+        let mut b = Browser::default();
+        ensure!(b.login(&scoped, &web, &origin, &central_csrf).await? == StatusCode::SEE_OTHER);
+        ensure!(
+            b.call(
+                &scoped,
+                Method::POST,
+                &format!("{DEVICE}/actions"),
+                Some(json!({"action":"wipe"}))
+            )
+            .await?
+            .0 == StatusCode::NOT_IMPLEMENTED,
+            "explicit administrator wipe permission rejected"
         );
     }
     ensure!(

@@ -1,5 +1,7 @@
 //! Product-owned OIDC relying party, local session and resource authorization.
 mod access;
+mod diagnostic;
+pub use diagnostic::ProcessError;
 mod api;
 pub mod config;
 mod identity;

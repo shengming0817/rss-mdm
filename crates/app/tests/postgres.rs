@@ -66,6 +66,10 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     let mut owner = PgConnection::connect_with(&owner).await?;
     for (grant, revoke) in [
         (
+            "REVOKE USAGE ON SCHEMA mdm FROM mdm_api",
+            "GRANT USAGE ON SCHEMA mdm TO mdm_api",
+        ),
+        (
             "GRANT INSERT ON mdm.inventory TO mdm_api",
             "REVOKE INSERT ON mdm.inventory FROM mdm_api",
         ),
@@ -83,6 +87,27 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         owner.execute(revoke).await?;
         assert!(rejected, "reader accepted privilege drift");
     }
+    let administrator: PgConnectOptions = std::env::var("MDM_ADMIN_URL")?
+        .parse::<PgConnectOptions>()?
+        .ssl_mode(PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let mut administrator = PgConnection::connect_with(&administrator).await?;
+    for (grant, revoke) in [
+        (
+            "GRANT CREATE ON DATABASE mdm_test TO mdm_api",
+            "REVOKE CREATE ON DATABASE mdm_test FROM mdm_api",
+        ),
+        (
+            "GRANT CREATE ON SCHEMA public TO mdm_api",
+            "REVOKE CREATE ON SCHEMA public FROM mdm_api",
+        ),
+    ] {
+        administrator.execute(grant).await?;
+        let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
+        administrator.execute(revoke).await?;
+        assert!(rejected, "reader accepted CREATE privilege");
+    }
+    administrator.close().await?;
     owner.close().await?;
     api.close().await?;
     reader.close().await;

@@ -86,9 +86,6 @@ pub fn report(error: anyhow::Error) -> serde_json::Value {
         "config" => "provide DATABASE_URL and PG_CA_FILE via trusted local configuration",
         "scope" => "provide MDM_SCOPE_FILE containing the trusted operator scope",
         "fixture_read" | "decode" => "check the fixture file, size and versioned report encoding",
-        "migration" => {
-            "check owner privileges and migration ledger; restore interrupted installation before retry"
-        }
         "cancelled" => {
             "operation cancelled; inspect durable state before retry; inspect cleanup stages"
         }

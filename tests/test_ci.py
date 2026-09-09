@@ -25,8 +25,8 @@ class IsolationGates(unittest.TestCase):
             "workspace_members":list(ci.LOCAL_PACKAGES), "resolve":{"nodes":[
                 *[{"id":name,"features":[]} for name in ci.LOCAL_PACKAGES],{"id":"obs","features":[]},{"id":"proj","features":[]}]}}
         registry = 'registry+https://github.com/rust-lang/crates.io-index'
-        revision = ci.identity_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
-        identity_source = f'git+{ci.IDENTITY_URL}?rev={revision}#{revision}'
+        identity_url,revision = ci.identity_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
+        identity_source = f'git+{identity_url}?rev={revision}#{revision}'
         extra = [{'id':name,'name':name,'version':version,'source':registry} for name,version in [('openidconnect','4.0.1'),('rsa','0.9.10')]]
         extra += [{'id':name,'name':name,'source':identity_source} for name in ci.IDENTITY_PACKAGES]
         data['packages'][-2:-2] = extra
@@ -81,6 +81,7 @@ class IsolationGates(unittest.TestCase):
                 (root / path).mkdir(parents=True)
                 (root / path / "Cargo.toml").write_text((ci.ROOT / path / "Cargo.toml").read_text())
             (root / "Cargo.toml").write_text((ci.ROOT / "Cargo.toml").read_text())
+            (root / "deny.toml").write_text((ci.ROOT / "deny.toml").read_text())
             member = root / "crates/inventory/Cargo.toml"
             original = (ci.ROOT / "crates/inventory/Cargo.toml").read_text()
             member.write_text(original)
@@ -118,3 +119,13 @@ class CodecFixtures(unittest.TestCase):
         self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
         for name, digest in manifest["fixtures"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
+
+    def test_advisory_acceptance_is_exact(self):
+        manifest=ci.tomllib.loads((ci.ROOT/'Cargo.toml').read_text())
+        policy=ci.tomllib.loads((ci.ROOT/'deny.toml').read_text())
+        ci.verify_policy(policy,manifest)
+        for ignores in [[],['RUSTSEC-2023-0071','RUSTSEC-9999-0001'],['RUSTSEC-9999-0001']]:
+            changed=copy.deepcopy(policy);changed['advisories']['ignore']=ignores
+            with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
+        changed=copy.deepcopy(policy);changed['sources']['allow-git'].append('https://example.com/unapproved')
+        with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)

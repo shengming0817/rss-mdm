@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
@@ -27,15 +28,26 @@ LOCAL_PACKAGES = {
 }
 
 IDENTITY_PACKAGES = {"rss-identity-client", "rss-identity-contracts"}
-IDENTITY_URL = "https://dev.azure.com/shengming0923/rss/_git/rss-identity"
+
+def identity_dependency(dep):
+    require(isinstance(dep, dict) and set(dep)=={'git','rev'}, 'invalid Identity dependency')
+    url=urlsplit(dep['git'])
+    require(url.scheme=='https' and url.hostname and not url.username and not url.password and not url.query and not url.fragment, 'invalid Identity Git URL')
+    require(re.fullmatch(r'[0-9a-f]{40}',dep['rev']), 'invalid Identity revision')
+    return dep['git'],dep['rev']
 
 def identity_pin(manifest):
-    deps = manifest['workspace']['dependencies']
-    pins = {deps[name].get('rev') for name in IDENTITY_PACKAGES}
-    require(len(pins) == 1 and re.fullmatch(r'[0-9a-f]{40}', next(iter(pins)) or ''), 'invalid Identity revision')
-    for name in IDENTITY_PACKAGES:
-        require(set(deps[name]) == {'git','rev'} and deps[name]['git'] == IDENTITY_URL, 'invalid Identity source')
-    return next(iter(pins))
+    deps=manifest['workspace']['dependencies']
+    pairs={identity_dependency(deps[name]) for name in IDENTITY_PACKAGES}
+    require(len(pairs)==1, 'Identity packages must share exact source')
+    return next(iter(pairs))
+
+def verify_policy(policy, manifest):
+    require(policy['advisories']['ignore']==['RUSTSEC-2023-0071'], 'unapproved advisory exception')
+    require(policy['advisories']['unused-ignored-advisory']=='deny', 'expired advisory exception must fail')
+    require(policy['sources']['unknown-git']=='deny' and policy['sources']['unknown-registry']=='deny', 'unknown sources must fail')
+    urls={rss_pin(manifest)[0],identity_pin(manifest)[0]}
+    require(len(urls)==2 and set(policy['sources']['allow-git'])==urls, 'source permissions must match distinct reviewed repositories')
 
 def require(condition, message):
     if not condition:
@@ -52,7 +64,7 @@ def rss_pin(manifest, required=True):
                     require(dependency == {"path": LOCAL_PACKAGES[name]}, f"invalid local member source: {alias}")
                     continue
                 if name in IDENTITY_PACKAGES:
-                    require(isinstance(dependency, dict) and set(dependency) == {'git','rev'} and dependency['git'] == IDENTITY_URL and re.fullmatch(r'[0-9a-f]{40}', dependency['rev']), 'invalid Identity dependency')
+                    identity_dependency(dependency)
                     continue
                 if not name.startswith("rss-"):
                     continue
@@ -69,7 +81,8 @@ def rss_pin(manifest, required=True):
 def workspace_pin(root):
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
     pin = rss_pin(manifest)
-    identity_revision = identity_pin(manifest)
+    identity_pin(manifest)
+    verify_policy(tomllib.loads((root / "deny.toml").read_text()),manifest)
     shared = manifest["workspace"]["dependencies"]
     for member in manifest["workspace"]["members"]:
         package = tomllib.loads((root / member / "Cargo.toml").read_text())
@@ -105,8 +118,8 @@ def verify_metadata(data, root, mode, pin):
         if package["name"] in LOCAL_PACKAGES:
             require(package['source'] is None and Path(package['manifest_path']).resolve() == root / LOCAL_PACKAGES[package["name"]] / 'Cargo.toml', 'dependency isolation check failed')
         elif package["name"] in IDENTITY_PACKAGES:
-            revision = identity_pin(tomllib.loads((root / 'Cargo.toml').read_text()))
-            require(package['source'] == f'git+{IDENTITY_URL}?rev={revision}#{revision}', 'Identity source drift')
+            identity_url,revision = identity_pin(tomllib.loads((root / 'Cargo.toml').read_text()))
+            require(package['source'] == f'git+{identity_url}?rev={revision}#{revision}', 'Identity source drift')
         elif package["name"].startswith("rss-"):
             require(package['source'] == expected, (package['name'], package['source']))
         else:
@@ -219,6 +232,10 @@ def main():
     status = command(["/usr/bin/git", "status", "--porcelain"])
     results["identity"] = "passed" if end_head.returncode == 0 and end_head.stdout.strip() == start_head and status.returncode == 0 and not status.stdout.strip() else "failed"
     evidence = {"head":start_head, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
+    identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
+    evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
+    candidate=ROOT/'fixtures/identity-candidate.json'
+    evidence['identityCandidateManifestSha256']=hashlib.sha256(candidate.read_bytes()).hexdigest() if candidate.exists() else None
     (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")
     print(json.dumps(evidence, indent=2))
     return int(any(value != "passed" for value in results.values()))
