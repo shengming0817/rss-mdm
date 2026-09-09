@@ -66,6 +66,14 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     let mut owner = PgConnection::connect_with(&owner).await?;
     for (grant, revoke) in [
         (
+            "GRANT INSERT ON public.mdm_migrations TO mdm_api",
+            "REVOKE INSERT ON public.mdm_migrations FROM mdm_api",
+        ),
+        (
+            "GRANT SELECT ON public.mdm_migrations TO mdm_api",
+            "REVOKE SELECT ON public.mdm_migrations FROM mdm_api",
+        ),
+        (
             "REVOKE USAGE ON SCHEMA mdm FROM mdm_api",
             "GRANT USAGE ON SCHEMA mdm TO mdm_api",
         ),
@@ -86,6 +94,24 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
         owner.execute(revoke).await?;
         assert!(rejected, "reader accepted privilege drift");
+    }
+    for (create, drop) in [
+        (
+            "CREATE SEQUENCE mdm.reader_test_sequence; GRANT USAGE ON SEQUENCE mdm.reader_test_sequence TO mdm_api",
+            "DROP SEQUENCE mdm.reader_test_sequence",
+        ),
+        (
+            "CREATE FUNCTION mdm.reader_test_function() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
+            "DROP FUNCTION mdm.reader_test_function()",
+        ),
+    ] {
+        sqlx::raw_sql(create).execute(&mut owner).await?;
+        let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
+        owner.execute(drop).await?;
+        assert!(
+            rejected,
+            "reader accepted additional sequence/function privilege"
+        );
     }
     let administrator: PgConnectOptions = std::env::var("MDM_ADMIN_URL")?
         .parse::<PgConnectOptions>()?
