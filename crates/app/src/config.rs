@@ -1,4 +1,5 @@
 //! Configuration is read once; all changes require a process restart.
+use crate::ConfigIssue;
 use crate::{Error, access::Binding};
 use serde::Deserialize;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
@@ -22,16 +23,23 @@ pub struct Database {
 impl Database {
     pub fn options(&self) -> Result<PgConnectOptions, Error> {
         if self.host.is_empty() || self.name.is_empty() || self.user.is_empty() || self.port == 0 {
-            return Err(Error::Configuration);
+            return Err(Error::Configuration(ConfigIssue::DatabaseAddress));
         }
         Ok(PgConnectOptions::new()
             .host(&self.host)
             .port(self.port)
             .database(&self.name)
             .username(&self.user)
-            .password(&secret(&self.password_file)?)
+            .password(
+                &secret(&self.password_file)
+                    .map_err(|_| Error::Configuration(ConfigIssue::DatabasePassword))?,
+            )
             .ssl_mode(PgSslMode::VerifyFull)
-            .ssl_root_cert_from_pem(read(&self.ca_file, 1024 * 1024, false)?.to_vec()))
+            .ssl_root_cert_from_pem(
+                read(&self.ca_file, 1024 * 1024, false)
+                    .map_err(|_| Error::Configuration(ConfigIssue::DatabaseCa))?
+                    .to_vec(),
+            ))
     }
 }
 #[derive(Deserialize)]
@@ -60,40 +68,52 @@ pub struct Config {
     pub database: Database,
     pub bindings: Vec<Binding>,
 }
+pub(crate) struct Compiled {
+    pub config: Config,
+    pub policy: crate::access::Policy,
+}
 impl Config {
-    pub fn validate(&self) -> Result<(), Error> {
-        if !self.listen.ip().is_loopback() || self.database.user != "mdm_api" {
-            return Err(Error::Configuration);
+    pub(crate) fn compile(mut self) -> Result<Compiled, Error> {
+        if !self.listen.ip().is_loopback() {
+            return Err(Error::Configuration(ConfigIssue::Listen));
         }
-        for value in [&self.product_origin, &self.identity.origin] {
-            let u = https_url(value)?;
+        if self.database.user != "mdm_api" {
+            return Err(Error::Configuration(ConfigIssue::DatabaseRole));
+        }
+        for (value, field) in [
+            (&self.product_origin, ConfigIssue::ProductOrigin),
+            (&self.identity.origin, ConfigIssue::IdentityOrigin),
+        ] {
+            let u = https_url(value).map_err(|_| Error::Configuration(field))?;
             if u.origin().ascii_serialization() != *value {
-                return Err(Error::Configuration);
+                return Err(Error::Configuration(field));
             }
         }
-        let issuer = https_url(&self.identity.issuer)?;
-        let product = https_url(&self.product_origin)?;
-        if issuer.host_str() == product.host_str() {
-            return Err(Error::Configuration);
+        let issuer = https_url(&self.identity.issuer)
+            .map_err(|_| Error::Configuration(ConfigIssue::Issuer))?;
+        let product = https_url(&self.product_origin)
+            .map_err(|_| Error::Configuration(ConfigIssue::ProductOrigin))?;
+        if issuer.host_str() == product.host_str() || self.identity.origin == self.product_origin {
+            return Err(Error::Configuration(ConfigIssue::CookieAuthority));
         }
-        if self.identity.origin == self.product_origin {
-            return Err(Error::Configuration);
-        }
-        let tenant =
-            uuid::Uuid::parse_str(&self.identity.tenant_id).map_err(|_| Error::Configuration)?;
+        let tenant = uuid::Uuid::parse_str(&self.identity.tenant_id)
+            .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
-            return Err(Error::Configuration);
+            return Err(Error::Configuration(ConfigIssue::Tenant));
         }
-        crate::access::Policy::new(
+        let policy = crate::access::Policy::new(
             &self.identity.tenant_id,
             &self.identity.client_id,
-            self.bindings.clone(),
+            std::mem::take(&mut self.bindings),
         )?;
-        Ok(())
+        Ok(Compiled {
+            config: self,
+            policy,
+        })
     }
 }
 pub(crate) fn https_url(value: &str) -> Result<url::Url, Error> {
-    let u = url::Url::parse(value).map_err(|_| Error::Configuration)?;
+    let u = url::Url::parse(value).map_err(|_| Error::Configuration(ConfigIssue::Issuer))?;
     if u.scheme() != "https"
         || u.host_str().is_none()
         || !u.username().is_empty()
@@ -101,7 +121,7 @@ pub(crate) fn https_url(value: &str) -> Result<url::Url, Error> {
         || u.query().is_some()
         || u.fragment().is_some()
     {
-        return Err(Error::Configuration);
+        return Err(Error::Configuration(ConfigIssue::Issuer));
     }
     Ok(u)
 }
@@ -121,27 +141,29 @@ pub(crate) fn read(path: &Path, limit: u64, private: bool) -> Result<Zeroizing<V
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
-        .map_err(|_| Error::Configuration)?;
-    let meta = file.metadata().map_err(|_| Error::Configuration)?;
+        .map_err(|_| Error::Configuration(ConfigIssue::FileAccess))?;
+    let meta = file
+        .metadata()
+        .map_err(|_| Error::Configuration(ConfigIssue::FileAccess))?;
     if !meta.is_file() || (private && meta.permissions().mode() & 0o077 != 0) {
-        return Err(Error::Configuration);
+        return Err(Error::Configuration(ConfigIssue::FileShape));
     }
     let mut bytes = Zeroizing::new(Vec::new());
     file.take(limit + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| Error::Configuration)?;
+        .map_err(|_| Error::Configuration(ConfigIssue::FileAccess))?;
     if bytes.len() as u64 > limit {
-        return Err(Error::Configuration);
+        return Err(Error::Configuration(ConfigIssue::FileSize));
     }
     Ok(bytes)
 }
 pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
     let bytes = read(path, 16384, true)?;
     let text = std::str::from_utf8(&bytes)
-        .map_err(|_| Error::Configuration)?
+        .map_err(|_| Error::Configuration(ConfigIssue::SecretEncoding))?
         .trim_end_matches('\n');
     if text.is_empty() || text.chars().any(char::is_control) {
-        return Err(Error::Configuration);
+        return Err(Error::Configuration(ConfigIssue::SecretContents));
     }
     Ok(Zeroizing::new(text.to_owned()))
 }
@@ -156,7 +178,52 @@ mod tests {
                 .unwrap();
         value["product_origin"] = serde_json::json!("https://identity.example.test:8443");
         let config: Config = serde_json::from_value(value).unwrap();
-        assert!(config.validate().is_err());
+        assert!(config.compile().is_err());
+    }
+    #[test]
+    fn startup_configuration_diagnostics_identify_safe_fields() {
+        for (pointer, value, field) in [
+            ("/listen", serde_json::json!("0.0.0.0:8080"), "Listen"),
+            (
+                "/database/user",
+                serde_json::json!("postgres"),
+                "DatabaseRole",
+            ),
+            (
+                "/product_origin",
+                serde_json::json!("https://synthetic-secret@example.test"),
+                "ProductOrigin",
+            ),
+            (
+                "/identity/origin",
+                serde_json::json!("http://synthetic-secret.example.test"),
+                "IdentityOrigin",
+            ),
+            (
+                "/identity/issuer",
+                serde_json::json!("http://synthetic-secret.example.test"),
+                "Issuer",
+            ),
+            (
+                "/identity/tenant_id",
+                serde_json::json!("synthetic-secret"),
+                "Tenant",
+            ),
+            ("/identity/client_id", serde_json::json!("*"), "ClientId"),
+        ] {
+            let mut value_config: serde_json::Value =
+                serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
+                    .unwrap();
+            *value_config.pointer_mut(pointer).unwrap() = value;
+            let config: Config = serde_json::from_value(value_config).unwrap();
+            let error = match config.compile() {
+                Err(error) => error,
+                Ok(_) => panic!("invalid configuration accepted"),
+            };
+            let diagnostic = crate::ProcessError::at("startup.configuration", error).to_string();
+            assert!(diagnostic.contains(field));
+            assert!(!diagnostic.contains("synthetic-secret"));
+        }
     }
     #[test]
     fn ca_inputs_reject_symlinks_directories_and_oversize() {

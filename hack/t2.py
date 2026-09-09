@@ -15,6 +15,9 @@ import uuid
 IMAGE = "postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 ROOT = Path(__file__).resolve().parents[1]
 
+def require(condition,message):
+    if not condition:raise RuntimeError(message)
+
 def run(args, **kw):
     return subprocess.run(args, check=True, text=True, **kw)
 
@@ -30,11 +33,11 @@ def verify_migrations(container, binary, config, root, env):
     admin["database"].update(user="postgres",password_file=str(root/"admin-password"))
     admin_config=root/"admin-migrate.json";admin_config.write_text(json.dumps(admin));os.chmod(admin_config,0o600)
     migrate(admin_config,accepted=False)
-    assert sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL"
+    require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
     migrate(); migrate()
     original = sql("SELECT digest FROM public.mdm_migrations WHERE name='inventory-v1'")
     import hashlib
-    assert original == hashlib.sha256((ROOT/'crates/inventory-postgres/migrations/0001_inventory.sql').read_bytes()).hexdigest()
+    require(original == hashlib.sha256((ROOT/'crates/inventory-postgres/migrations/0001_inventory.sql').read_bytes()).hexdigest(), "migration invariant rejected")
     for change in ["complete=false", "digest=repeat('0',64)"]:
         sql("UPDATE public.mdm_migrations SET " + change + " WHERE name='inventory-v1'")
         migrate(accepted=False)
@@ -56,7 +59,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        assert sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "4"
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "4", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -80,10 +83,10 @@ def verify_startup_deadlines(binary, root, port, env):
             path=root/'stalled.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
             start=time.monotonic()
             result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
-            assert result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget'
+            require(result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget')
             expected='startup.reader_connection_or_admission' if stage=='database' else 'startup.identity'
-            assert expected in result.stderr, 'startup failure lost safe stage classification'
-            assert 'api-fixture' not in result.stderr and 'o'*40 not in result.stderr, 'startup diagnostics exposed credentials'
+            require(expected in result.stderr, 'startup failure lost safe stage classification')
+            require('api-fixture' not in result.stderr and 'o'*40 not in result.stderr, 'startup diagnostics exposed credentials')
     print('startup dependency stalls rejected within budget with safe stage diagnostics',flush=True)
 
 def main():

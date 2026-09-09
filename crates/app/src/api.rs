@@ -1,4 +1,5 @@
 //! One protected path: current SDK proof -> MDM capability -> private data access.
+use crate::{ConfigIssue, Failure};
 use crate::{
     Error,
     access::{Coordinates, InventoryResponse, InventoryService, Policy},
@@ -27,6 +28,7 @@ struct App {
     policy: Policy,
     inventory: InventoryService,
     origin: String,
+    requests: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
@@ -42,7 +44,19 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
     {
         return error.into_response();
     }
-    match authenticate(&app, &parts.headers).await {
+    let lease = match local(&app, &parts.headers) {
+        Ok(lease) => lease,
+        Err(error) => return error.into_response(),
+    };
+    let _session = match lease.requests.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return Error::Unavailable(Failure::Capacity).into_response(),
+    };
+    let _global = match app.requests.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return Error::Unavailable(Failure::Capacity).into_response(),
+    };
+    match authenticate(&app, lease).await {
         Ok((proof, lease)) => {
             parts.extensions.insert(RequestAuth {
                 proof: Arc::new(proof),
@@ -55,27 +69,34 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
 }
 
 pub async fn application(
-    config: &Config,
+    config: Config,
     clock: Arc<dyn Clock>,
+    monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
 ) -> Result<Router, Error> {
-    config.validate()?;
-    let state = Arc::new(App {
-        identity: Identity::connect(config, clock.clone()).await?,
-        sessions: Sessions::new(clock, 1000, 10000),
-        policy: Policy::new(
-            &config.identity.tenant_id,
-            &config.identity.client_id,
-            config.bindings.clone(),
-        )?,
-        inventory: InventoryService::new(reader),
-        origin: config.product_origin.clone(),
-    });
+    from_compiled(config.compile()?, clock, monotonic, reader).await
+}
+pub(crate) async fn from_compiled(
+    compiled: crate::config::Compiled,
+    clock: Arc<dyn Clock>,
+    monotonic: Arc<dyn rss_observation::Clock>,
+    reader: Arc<InventoryReader>,
+) -> Result<Router, Error> {
+    let crate::config::Compiled { config, policy } = compiled;
+    let identity = Identity::connect(&config, clock.clone()).await?;
     let host = config
         .product_origin
         .strip_prefix("https://")
-        .ok_or(Error::Configuration)?
+        .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
+    let state = Arc::new(App {
+        identity,
+        sessions: Sessions::new(clock, 1000, 10000),
+        policy,
+        inventory: InventoryService::new(reader),
+        origin: config.product_origin,
+        requests: Arc::new(tokio::sync::Semaphore::new(4)),
+    });
     let protected = Router::new()
         .route("/auth/me", get(me))
         .route("/devices/{id}/inventory", get(inventory))
@@ -92,10 +113,24 @@ pub async fn application(
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .with_state(state)
         .layer(DefaultBodyLimit::max(16384))
-        .layer(middleware::from_fn_with_state(host, envelope)))
+        .layer(middleware::from_fn_with_state(
+            Envelope {
+                host,
+                clock: monotonic,
+            },
+            envelope,
+        )))
 }
 
-async fn envelope(State(host): State<String>, request: Request, next: Next) -> Response {
+#[derive(Clone)]
+struct Envelope {
+    host: String,
+    clock: Arc<dyn rss_observation::Clock>,
+}
+async fn envelope(State(envelope): State<Envelope>, request: Request, next: Next) -> Response {
+    let started = envelope.clock.now();
+    let host = &envelope.host;
+    let request_id = uuid::Uuid::new_v4();
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
@@ -108,8 +143,16 @@ async fn envelope(State(host): State<String>, request: Request, next: Next) -> R
     } else {
         tokio::time::timeout(Duration::from_secs(10), next.run(request))
             .await
-            .unwrap_or_else(|_| Error::Unavailable.into_response())
+            .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
     };
+    eprintln!(
+        "{}",
+        json!({"event":"mdm_request","request_id":request_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
+    );
+    response.headers_mut().insert(
+        "x-request-id",
+        HeaderValue::from_str(&request_id.to_string()).expect("UUID header"),
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -173,8 +216,7 @@ fn local(app: &App, h: &HeaderMap) -> Result<Lease, Error> {
     app.sessions
         .get(&cookie(h, COOKIE)?.ok_or(Error::Unauthorized)?)
 }
-async fn authenticate(app: &App, h: &HeaderMap) -> Result<(VerifiedIdentity, Lease), Error> {
-    let lease = local(app, h)?;
+async fn authenticate(app: &App, lease: Lease) -> Result<(VerifiedIdentity, Lease), Error> {
     let proof = app.identity.validate(&lease).await?;
     app.sessions.get(&lease.id)?; // Reject local logout/replacement during remote verification.
     Ok((proof, lease))
@@ -183,7 +225,7 @@ fn set_cookie(r: &mut Response, name: &str, value: &str, max_age: i64) -> Result
     let v = HeaderValue::from_str(&format!(
         "{name}={value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}"
     ))
-    .map_err(|_| Error::Unavailable)?;
+    .map_err(|_| Error::Unavailable(Failure::Runtime))?;
     r.headers_mut().append(header::SET_COOKIE, v);
     Ok(())
 }
@@ -220,7 +262,6 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Respon
     Ok(response)
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Callback {
     code: Option<String>,
     state: String,
@@ -236,6 +277,11 @@ async fn callback(
     input: Result<Query<Callback>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, Error> {
     let c = input.map_err(|_| Error::Malformed)?.0;
+    let _global = app
+        .requests
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Error::Unavailable(Failure::Capacity))?;
     let browser = cookie(&headers, BROWSER)?.ok_or(Error::Unauthorized)?;
     let old = cookie(&headers, COOKIE)?;
     let pending = app.sessions.consume(&c.state, &browser, old.as_deref())?;
@@ -309,4 +355,96 @@ async fn action(
         return Err(Error::Malformed);
     }
     Err(Error::Unsupported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test fixture selects the monotonic provider outside request handling"
+    )]
+    fn monotonic() -> Arc<dyn rss_observation::Clock> {
+        Arc::new(crate::Monotonic(std::time::Instant::now))
+    }
+    #[tokio::test]
+    async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
+        use tower::ServiceExt;
+        for reason in [
+            Failure::RequestDeadline,
+            Failure::IdentityTransport,
+            Failure::IdentityServer,
+            Failure::InventoryPool,
+            Failure::InventoryQuery,
+            Failure::Clock,
+            Failure::Capacity,
+        ] {
+            let router = Router::new()
+                .route(
+                    "/probe",
+                    get(move || async move { Error::Unavailable(reason) }),
+                )
+                .layer(middleware::from_fn_with_state(
+                    Envelope {
+                        host: "mdm.example.test".to_owned(),
+                        clock: monotonic(),
+                    },
+                    envelope,
+                ));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/probe")
+                        .header("host", "mdm.example.test")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert!(
+                uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap()).is_ok()
+            );
+            assert!(matches!(
+                response.extensions().get::<Error>(),
+                Some(Error::Unavailable(_))
+            ));
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&bytes).unwrap(),
+                json!({"code":"service_unavailable"})
+            );
+        }
+    }
+    #[test]
+    fn oauth_extensions_are_ignored_but_known_duplicates_rejected() {
+        for query in [
+            "state=s&code=c&session_state=extension",
+            "state=s&error=access_denied&custom=extension",
+        ] {
+            assert!(
+                Query::<Callback>::try_from_uri(
+                    &format!("/auth/callback?{query}").parse().unwrap()
+                )
+                .is_ok()
+            );
+        }
+        for query in [
+            "state=a&state=b&code=c",
+            "state=a&code=b&code=c",
+            "state=a&iss=a&iss=b",
+        ] {
+            assert!(
+                Query::<Callback>::try_from_uri(
+                    &format!("/auth/callback?{query}").parse().unwrap()
+                )
+                .is_err()
+            );
+        }
+    }
 }

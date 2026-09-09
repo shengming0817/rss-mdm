@@ -144,7 +144,7 @@ def fixture(c):
                 docker(*args,stage='candidate '+(suffix or command[0]))
                 return name+'-'+suffix if suffix else None
             pg=name+'-pg';created.append(pg)
-            pg_stage='cp /fixture/tls.key /tmp/server.key; cp /fixture/tls.crt /tmp/server.crt; cp /fixture/owner /tmp/owner; chown postgres:postgres /tmp/server.key /tmp/server.crt /tmp/owner; chmod 600 /tmp/server.key /tmp/owner; export POSTGRES_PASSWORD_FILE=/tmp/owner; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'
+            pg_stage='cp /fixture/tls.key /tmp/server.key; cp /fixture/tls.crt /tmp/server.crt; cp /fixture/owner /tmp/owner; chown postgres:postgres /tmp/server.key /tmp/server.crt /tmp/owner; chmod 600 /tmp/server.key /tmp/owner; export POSTGRES_PASSWORD_FILE=/tmp/owner; exec docker-entrypoint.sh postgres -c shared_preload_libraries=pg_stat_statements -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'
             docker('run','-d','--name',pg,'--label','rss.test=2343','--network',network,'--ip',ips['pg'],'--network-alias','pg','-p','127.0.0.1::5432','-v',str(root)+':/fixture:ro',c['providers']['postgres'],'sh','-ec',pg_stage)
             pg_port=int(docker('port',pg,'5432/tcp').rsplit(':',1)[1])
             wait(lambda:docker('exec',pg,'pg_isready','-h','127.0.0.1','-U','postgres',timeout=5) is not None,'PostgreSQL')
@@ -152,7 +152,7 @@ def fixture(c):
             for role,key in [('mdm_owner','mdm-owner'),('mdm_runtime','mdm-runtime'),('mdm_api','mdm-api')]:sql+="CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+values[key]+"';"
             sql+='GRANT CREATE ON DATABASE mdm TO mdm_owner;'
             docker('exec','-i',pg,'psql','-X','-U','postgres','-v','ON_ERROR_STOP=1',input=sql)
-            docker('exec','-i',pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input='GRANT CREATE ON SCHEMA public TO mdm_owner;')
+            docker('exec','-i',pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input='GRANT CREATE ON SCHEMA public TO mdm_owner; CREATE SCHEMA test_probe; CREATE EXTENSION pg_stat_statements WITH SCHEMA test_probe; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA test_probe FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA test_probe FROM PUBLIC;')
             app_run(c['images']['operator'],['identity-migrate','--config',PREFIX+'migration.json'])
             app_run(c['providers']['hydra'],['hydra','migrate','sql','-e','--yes','--config',PREFIX+'hydra.json'])
             hydra_container=app_run(c['providers']['hydra'],['hydra','serve','all','--config',PREFIX+'hydra.json'],suffix='hydra',ip=ips['hydra'],extra=['--network-alias','hydra-admin'])

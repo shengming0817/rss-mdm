@@ -1,5 +1,6 @@
 """Run the actual login rate profile against a scoped local content server, not a mock Identity."""
 import http.client
+import socket
 from pathlib import Path
 import subprocess
 import tempfile
@@ -24,11 +25,13 @@ def verify(image):
         try:
             subprocess.run(['docker','run','-d','--rm','--name',name,'--label','rss.test=2343','-p','127.0.0.1::8080','-v',str(root/'nginx.conf')+':/tmp/input.conf:ro',image,'nginx','-e','stderr','-c','/tmp/input.conf','-g','daemon off;'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             port=int(subprocess.check_output(['docker','port',name,'8080'],text=True).strip().rsplit(':',1)[1])
-            def request(path,forward=''):
+            def request(path,forward='',body=None):
                 c=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
                 try:
-                    c.request('POST',path,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-MDM-Request':'1','X-Forwarded-For':forward})
-                    r=c.getresponse();body=r.read();return r.status,body
+                    c.request('POST',path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-MDM-Request':'1','X-Forwarded-For':forward})
+                    r=c.getresponse();body=r.read()
+                    if r.status>=400 and any(r.getheader(k)!=v for k,v in [('Cache-Control','no-store'),('Referrer-Policy','no-referrer'),('X-Content-Type-Options','nosniff')]):raise RuntimeError('gateway rejection omitted security headers')
+                    return r.status,body
                 finally:c.close()
             end=time.monotonic()+30
             while True:
@@ -40,10 +43,30 @@ def verify(image):
             statuses=[]
             for n in range(25):
                 status,body=request('/auth/login','203.0.113.'+str(n));statuses.append(status)
-                if status==429 and json.loads(body)!={'code':'login_rate_limited'}:raise RuntimeError('incorrect rate-limit response')
+                if status==429 and json.loads(body)!={'code':'request_limited'}:raise RuntimeError('incorrect rate-limit response')
             if 200 not in statuses or 429 not in statuses or statuses.count(200)>14:raise RuntimeError('caller-controlled source bypassed login admission')
             time.sleep(3.2)
             if request('/auth/login')[0]!=200:raise RuntimeError('login budget did not recover')
+            if request('/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
+            if request('/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
+            held=[]
+            try:
+                for _ in range(8):
+                    connection=socket.create_connection(('127.0.0.1',port),timeout=3)
+                    connection.sendall(b'POST /probe HTTP/1.1\r\nHost: mdm.example.test\r\nContent-Length: 1024\r\n\r\nx')
+                    held.append(connection)
+                deadline=time.monotonic()+3
+                while request('/probe','198.51.100.99')[0]!=429:
+                    if time.monotonic()>deadline:raise RuntimeError('peer connection cap not enforced')
+                    time.sleep(.05)
+            finally:
+                for connection in held:connection.close()
+            deadline=time.monotonic()+3
+            while request('/probe')[0]!=200:
+                if time.monotonic()>deadline:raise RuntimeError('connection slots did not recover')
+                time.sleep(.05)
+            log=subprocess.run(['docker','logs',name],check=True,capture_output=True,text=True,timeout=10)
+            if 'synthetic-sensitive-value' in log.stdout+log.stderr or 'mdm_gateway' not in log.stdout:raise RuntimeError('gateway logging contract failed')
             print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery passed')
         finally:
             primary=sys.exception()

@@ -359,9 +359,166 @@ impl Browser {
 }
 async fn app(value: &Value, reader: Arc<InventoryReader>) -> Result<Router> {
     let c: Config = serde_json::from_value(value.clone())?;
-    Ok(rss_mdm_app::application(&c, Arc::new(rss_identity_client::SystemClock), reader).await?)
+    Ok(rss_mdm_app::application(
+        c,
+        Arc::new(rss_identity_client::SystemClock),
+        monotonic(),
+        reader,
+    )
+    .await?)
 }
-#[tokio::test(flavor = "multi_thread")]
+// Pause the official SDK's post-response clock read, without replacing validation.
+#[derive(Default)]
+struct GateClock {
+    state: std::sync::Mutex<(usize, bool)>,
+    released: std::sync::Condvar,
+    blocked: tokio::sync::Notify,
+}
+impl GateClock {
+    fn arm(&self) {
+        *self.state.lock().unwrap() = (3, false);
+    }
+    fn release(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.released.notify_all();
+    }
+}
+impl rss_identity_client::Clock for GateClock {
+    fn unix_seconds(&self) -> std::result::Result<i64, rss_identity_client::Error> {
+        let mut state = self.state.lock().unwrap();
+        if state.0 > 0 {
+            state.0 -= 1;
+            if state.0 == 0 {
+                self.blocked.notify_one();
+                while !state.1 {
+                    let (next, timeout) = self
+                        .released
+                        .wait_timeout(state, Duration::from_secs(8))
+                        .unwrap();
+                    state = next;
+                    if timeout.timed_out() {
+                        return Err(rss_identity_client::Error::Unavailable);
+                    }
+                }
+            }
+        }
+        rss_identity_client::Clock::unix_seconds(&rss_identity_client::SystemClock)
+    }
+}
+struct ReleaseGate(Arc<GateClock>);
+impl Drop for ReleaseGate {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+fn reads() -> Result<i64> {
+    Ok(pg("SELECT coalesce(sum(calls),0)::bigint FROM test_probe.pg_stat_statements WHERE userid=(SELECT oid FROM pg_roles WHERE rolname='mdm_api') AND query LIKE 'SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory%'")?.trim().parse()?)
+}
+async fn session_races_and_admission(
+    value: &Value,
+    reader: Arc<InventoryReader>,
+    web: &Client,
+    origin: &str,
+    csrf: &str,
+    query: &str,
+) -> Result<()> {
+    let clock = Arc::new(GateClock::default());
+    let router = rss_mdm_app::application(
+        serde_json::from_value(value.clone())?,
+        clock.clone(),
+        monotonic(),
+        reader,
+    )
+    .await?;
+    for replace in [false, true] {
+        let mut browser = Browser::default();
+        ensure!(browser.login(&router, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+        ensure!(browser.call(&router, Method::GET, query, None).await?.0 == StatusCode::OK);
+        let before = reads()?;
+        ensure!(
+            before > 0,
+            "inventory query counter did not observe actual reads"
+        );
+        let mut old = browser.clone();
+        let r = router.clone();
+        let q = query.to_owned();
+        let guard = ReleaseGate(clock.clone());
+        clock.arm();
+        let task = tokio::spawn(async move { old.call(&r, Method::GET, &q, None).await });
+        tokio::time::timeout(Duration::from_secs(5), clock.blocked.notified()).await?;
+        let validated = count()?;
+        ensure!(
+            browser
+                .call(&router, Method::GET, "/api/v1/auth/me", None)
+                .await?
+                .0
+                == StatusCode::SERVICE_UNAVAILABLE,
+            "session admission did not shed concurrent validation"
+        );
+        ensure!(count()? == validated, "shed request reached Identity");
+        if replace {
+            ensure!(browser.login(&router, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+        } else {
+            ensure!(
+                browser
+                    .call(&router, Method::POST, "/api/v1/auth/logout", None)
+                    .await?
+                    .0
+                    == StatusCode::NO_CONTENT
+            );
+        }
+        drop(guard);
+        ensure!(
+            task.await??.0 == StatusCode::UNAUTHORIZED,
+            "in-flight old session survived logout/replacement"
+        );
+        ensure!(
+            reads()? == before,
+            "revoked request reached inventory reader"
+        );
+    }
+    let mut browsers = Vec::new();
+    for _ in 0..5 {
+        let mut b = Browser::default();
+        ensure!(b.login(&router, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+        browsers.push(b);
+    }
+    let guard = ReleaseGate(clock.clone());
+    let mut tasks = Vec::new();
+    for browser in &browsers[..4] {
+        let mut b = browser.clone();
+        let r = router.clone();
+        clock.arm();
+        tasks.push(tokio::spawn(async move {
+            b.call(&r, Method::GET, "/api/v1/auth/me", None).await
+        }));
+        tokio::time::timeout(Duration::from_secs(5), clock.blocked.notified()).await?;
+    }
+    let before = count()?;
+    ensure!(
+        browsers[4]
+            .call(&router, Method::GET, "/api/v1/auth/me", None)
+            .await?
+            .0
+            == StatusCode::SERVICE_UNAVAILABLE,
+        "global admission not enforced"
+    );
+    ensure!(count()? == before, "global shed request reached Identity");
+    drop(guard);
+    for task in tasks {
+        ensure!(task.await??.0 == StatusCode::OK);
+    }
+    ensure!(
+        browsers[4]
+            .call(&router, Method::GET, "/api/v1/auth/me", None)
+            .await?
+            .0
+            == StatusCode::OK,
+        "admission capacity did not recover"
+    );
+    Ok(())
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2-identity: approved Identity candidate and real providers"]
 async fn real_identity_mdm_authorization_and_revocation() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(240), matrix()).await??;
@@ -390,13 +547,37 @@ async fn matrix() -> Result<()> {
         .call(&initial, Method::POST, "/auth/login", None)
         .await?;
     ensure!(status == StatusCode::OK);
-    let callback = authorize(
+    let mut callback = authorize(
         &web,
         &origin,
         &central_csrf,
         Url::parse(value["authorization_url"].as_str().unwrap())?,
     )
     .await?;
+    callback
+        .query_pairs_mut()
+        .append_pair("session_state", "opaque-extension");
+    let mut declined = Browser::default();
+    let (_, start) = declined
+        .call(&initial, Method::POST, "/auth/login", None)
+        .await?;
+    let authorization = Url::parse(start["authorization_url"].as_str().unwrap())?;
+    let mut failure = Url::parse("https://mdm.example.test/auth/callback")?;
+    failure
+        .query_pairs_mut()
+        .append_pair("state", &param(&authorization, "state")?)
+        .append_pair("error", "access_denied")
+        .append_pair("session_state", "extension");
+    let before = count()?;
+    ensure!(
+        declined.callback(&initial, &failure).await? == StatusCode::UNAUTHORIZED,
+        "extended OAuth error callback was malformed"
+    );
+    ensure!(
+        count()? == before,
+        "OAuth error callback reached validation"
+    );
+    ensure!(!declined.cookies.contains_key("__Host-mdm-session"));
     ensure!(
         Browser::default().callback(&initial, &callback).await? == StatusCode::UNAUTHORIZED,
         "wrong browser accepted"
@@ -729,6 +910,15 @@ async fn matrix() -> Result<()> {
         bad_nonce.callback(&authorized, &callback).await? == StatusCode::UNAUTHORIZED,
         "wrong nonce accepted"
     );
+    session_races_and_admission(
+        &allowed,
+        reader.clone(),
+        &web,
+        &origin,
+        &central_csrf,
+        &query,
+    )
+    .await?;
     for property in ["enabled", "membership"] {
         post(
             &admin,
@@ -823,4 +1013,12 @@ async fn matrix() -> Result<()> {
     reader.close().await;
     println!("MDM_IDENTITY_MATRIX_PASSED");
     Ok(())
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test composition root selects the real monotonic provider"
+)]
+fn monotonic() -> Arc<dyn rss_observation::Clock> {
+    Arc::new(rss_mdm_app::Monotonic(std::time::Instant::now))
 }

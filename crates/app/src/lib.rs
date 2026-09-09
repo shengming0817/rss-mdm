@@ -1,7 +1,7 @@
 //! Product-owned OIDC relying party, local session and resource authorization.
 mod access;
 mod diagnostic;
-pub use diagnostic::ProcessError;
+pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError};
 mod api;
 pub mod config;
 mod identity;
@@ -16,10 +16,11 @@ use axum::{
 };
 pub use lifecycle::{serve, signal};
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
     #[error("invalid product configuration")]
-    Configuration,
+    Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
     #[error("identity rejected")]
@@ -27,7 +28,12 @@ pub enum Error {
     #[error("permission denied")]
     Forbidden,
     #[error("dependency unavailable")]
-    Unavailable,
+    Unavailable(Failure),
+    #[error("identity server rejected request")]
+    IdentityServer {
+        code: rss_identity_contracts::ValidationFailureCode,
+        correlation_id: uuid::Uuid,
+    },
     #[error("inventory not found")]
     NotFound,
     #[error("action not supported")]
@@ -41,10 +47,18 @@ impl IntoResponse for Error {
             Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
-            Self::Configuration | Self::Unavailable => {
+            Self::IdentityServer {
+                code:
+                    rss_identity_contracts::ValidationFailureCode::InvalidCredential
+                    | rss_identity_contracts::ValidationFailureCode::IdentityNotActive,
+                ..
+            } => (StatusCode::UNAUTHORIZED, "invalid_identity"),
+            Self::Configuration(_) | Self::Unavailable(_) | Self::IdentityServer { .. } => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
         };
-        (status, Json(serde_json::json!({"code":code}))).into_response()
+        let mut response = (status, Json(serde_json::json!({"code":code}))).into_response();
+        response.extensions_mut().insert(self);
+        response
     }
 }

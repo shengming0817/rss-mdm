@@ -31,7 +31,7 @@ SELECT
  AND has_schema_privilege(current_user,'mdm','USAGE')
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,n.oid,'CREATE'))
- AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user))
+ AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR roleid=(SELECT oid FROM pg_roles WHERE rolname=current_user))
  AND has_table_privilege(current_user,t.oid,'SELECT')
  AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'INSERT,UPDATE,DELETE')
  OR has_any_column_privilege(r.oid,t.oid,'INSERT,UPDATE,REFERENCES'))

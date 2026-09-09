@@ -1,5 +1,6 @@
 //! Bounded process-local credential storage; no cached verified identity.
 use crate::Error;
+use crate::Failure;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use openidconnect::{Nonce, PkceCodeVerifier};
 use rand::RngCore;
@@ -37,6 +38,7 @@ pub(crate) struct Session {
     pub expires: i64,
 }
 pub(crate) struct Lease {
+    pub requests: Arc<tokio::sync::Semaphore>,
     pub id: String,
     pub credential: Zeroizing<String>,
     pub subject: String,
@@ -45,7 +47,7 @@ pub(crate) struct Lease {
 }
 struct Inner {
     pending: HashMap<String, Pending>,
-    sessions: HashMap<String, Session>,
+    sessions: HashMap<String, (Session, Arc<tokio::sync::Semaphore>)>,
     last_time: i64,
 }
 pub(crate) struct Sessions {
@@ -68,14 +70,22 @@ impl Sessions {
         }
     }
     fn lock(&self) -> Result<(std::sync::MutexGuard<'_, Inner>, i64), Error> {
-        let now = self.clock.unix_seconds().map_err(|_| Error::Unavailable)?;
-        let mut state = self.inner.lock().map_err(|_| Error::Unavailable)?;
+        let now = self
+            .clock
+            .unix_seconds()
+            .map_err(|_| Error::Unavailable(Failure::Clock))?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| Error::Unavailable(Failure::SessionState))?;
         if now <= 0 || now < state.last_time {
-            return Err(Error::Unavailable);
+            return Err(Error::Unavailable(Failure::Clock));
         }
-        state.last_time = now;
-        state.pending.retain(|_, p| p.expires > now);
-        state.sessions.retain(|_, s| s.expires > now);
+        if now > state.last_time {
+            state.pending.retain(|_, p| p.expires > now);
+            state.sessions.retain(|_, (s, _)| s.expires > now);
+            state.last_time = now;
+        }
         Ok((state, now))
     }
     pub fn now(&self) -> Result<i64, Error> {
@@ -90,10 +100,10 @@ impl Sessions {
             .count()
             >= 4
         {
-            return Err(Error::Unavailable);
+            return Err(Error::Unavailable(Failure::Capacity));
         }
         if inner.pending.len() >= self.pending_limit || inner.pending.contains_key(&state) {
-            return Err(Error::Unavailable);
+            return Err(Error::Unavailable(Failure::Capacity));
         }
         if pending.expires <= now || pending.expires > now + 300 {
             return Err(Error::Malformed);
@@ -120,19 +130,23 @@ impl Sessions {
             return Err(Error::Unauthorized);
         }
         if old.is_none() && inner.sessions.len() >= self.session_limit {
-            return Err(Error::Unavailable);
+            return Err(Error::Unavailable(Failure::Capacity));
         }
         let id = random();
         if let Some(old) = old {
             inner.sessions.remove(old);
         }
-        inner.sessions.insert(id.clone(), session);
+        inner.sessions.insert(
+            id.clone(),
+            (session, Arc::new(tokio::sync::Semaphore::new(1))),
+        );
         Ok(id)
     }
     pub fn get(&self, id: &str) -> Result<Lease, Error> {
         let (inner, _) = self.lock()?;
-        let s = inner.sessions.get(id).ok_or(Error::Unauthorized)?;
+        let (s, requests) = inner.sessions.get(id).ok_or(Error::Unauthorized)?;
         Ok(Lease {
+            requests: requests.clone(),
             id: id.into(),
             credential: Zeroizing::new(s.credential.to_string()),
             subject: s.subject.clone(),
@@ -142,8 +156,11 @@ impl Sessions {
     }
     pub fn remove(&self, id: &str, csrf: &str) -> Result<(), Error> {
         // Cleanup never depends on remote Identity or the wall clock being available.
-        let mut inner = self.inner.lock().map_err(|_| Error::Unavailable)?;
-        let s = inner.sessions.get(id).ok_or(Error::Unauthorized)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| Error::Unavailable(Failure::SessionState))?;
+        let (s, _) = inner.sessions.get(id).ok_or(Error::Unauthorized)?;
         if !equal(&s.csrf, csrf) {
             return Err(Error::Forbidden);
         }

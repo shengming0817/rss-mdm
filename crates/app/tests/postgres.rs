@@ -133,6 +133,18 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         administrator.execute(revoke).await?;
         assert!(rejected, "reader accepted CREATE privilege");
     }
+    administrator
+        .execute("CREATE ROLE reader_inheritor LOGIN")
+        .await?;
+    administrator
+        .execute("GRANT mdm_api TO reader_inheritor")
+        .await?;
+    let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
+    administrator
+        .execute("REVOKE mdm_api FROM reader_inheritor")
+        .await?;
+    administrator.execute("DROP ROLE reader_inheritor").await?;
+    assert!(rejected, "reader accepted incoming role membership");
     administrator.close().await?;
     owner.close().await?;
     api.close().await?;

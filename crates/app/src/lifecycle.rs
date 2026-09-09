@@ -1,4 +1,5 @@
 //! Product process lifetime, driven by the existing RSS managed listener.
+use crate::{ConfigIssue, Failure};
 use crate::{Error, ProcessError, config::Config};
 use rss_mdm_inventory_postgres::InventoryReader;
 use rss_runtime::{
@@ -21,49 +22,53 @@ impl ManagedResource for ReaderResource {
 pub async fn serve(
     config: Config,
     stop: impl std::future::Future<Output = Result<(), std::io::Error>>,
+    monotonic: Arc<dyn rss_observation::Clock>,
 ) -> Result<(), ProcessError> {
-    config
-        .validate()
+    let compiled = config
+        .compile()
         .map_err(|e| ProcessError::at("startup.configuration", e))?;
     let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(20))
-            .map_err(|_| ProcessError::at("startup.budget", Error::Configuration))?,
+        TotalDrainBudget::new(Duration::from_secs(20)).map_err(|_| {
+            ProcessError::at("startup.budget", Error::Configuration(ConfigIssue::Budget))
+        })?,
     )
-    .map_err(|_| ProcessError::at("startup.scope", Error::Unavailable))?;
+    .map_err(|_| ProcessError::at("startup.scope", Error::Unavailable(Failure::Runtime)))?;
     let outcome = scope
         .drive(
             |mut startup| {
                 Box::pin(async move {
                     let (listener, app) = tokio::time::timeout(Duration::from_secs(15), async {
                         let reader = Arc::new(
-                            InventoryReader::connect(config.database.options().map_err(|e| {
-                                ProcessError::at("startup.database_configuration", e)
-                            })?)
+                            InventoryReader::connect(compiled.config.database.options().map_err(
+                                |e| ProcessError::at("startup.database_configuration", e),
+                            )?)
                             .await
                             .map_err(|_| {
                                 ProcessError::at(
                                     "startup.reader_connection_or_admission",
-                                    Error::Unavailable,
+                                    Error::Unavailable(Failure::InventoryPool),
                                 )
                             })?,
                         );
                         startup.stage_resource(DynManagedResource::new_box(ReaderResource(
                             reader.clone(),
                         )));
-                        let app = crate::application(
-                            &config,
+                        let listen = compiled.config.listen;
+                        let app = crate::api::from_compiled(
+                            compiled,
                             Arc::new(rss_identity_client::SystemClock),
+                            monotonic,
                             reader,
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.identity", e))?;
                         let listener =
-                            tokio::net::TcpListener::bind(config.listen)
-                                .await
-                                .map_err(|e| ProcessError::Io {
+                            tokio::net::TcpListener::bind(listen).await.map_err(|e| {
+                                ProcessError::Io {
                                     stage: "startup.listener_bind",
                                     kind: e.kind(),
-                                })?;
+                                }
+                            })?;
                         Ok::<_, ProcessError>((listener, app))
                     })
                     .await
@@ -88,7 +93,7 @@ pub async fn serve(
             stop,
         )
         .await
-        .map_err(|_| ProcessError::at("lifecycle.drive", Error::Unavailable))?;
+        .map_err(|_| ProcessError::at("lifecycle.drive", Error::Unavailable(Failure::Runtime)))?;
     if !outcome.shutdown().as_ref().is_ok_and(|r| r.is_clean()) {
         return Err(ProcessError::Stage {
             stage: "shutdown",

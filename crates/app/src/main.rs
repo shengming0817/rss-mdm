@@ -28,7 +28,9 @@ async fn execute() -> Result<(), ProcessError> {
     }
     let path = std::path::Path::new(&args[2]);
     match args[0].as_str() {
-        "serve" => rss_mdm_app::serve(config::load(path)?, rss_mdm_app::signal()).await,
+        "serve" => {
+            rss_mdm_app::serve(config::load(path)?, rss_mdm_app::signal(), monotonic()).await
+        }
         "migrate" => {
             let config: config::MigrationConfig = config::load(path)?;
             let options = config
@@ -43,4 +45,12 @@ async fn execute() -> Result<(), ProcessError> {
             kind: "use rss-mdm --help",
         }),
     }
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "composition root selects the provider; the application receives the Clock trait explicitly"
+)]
+fn monotonic() -> std::sync::Arc<dyn rss_observation::Clock> {
+    std::sync::Arc::new(rss_mdm_app::Monotonic(std::time::Instant::now))
 }

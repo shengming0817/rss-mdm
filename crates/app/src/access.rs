@@ -1,5 +1,6 @@
 //! MDM alone owns roles and device permissions. Identity facts never contain them.
 use crate::Error;
+use crate::{ConfigIssue, Failure};
 use rss_identity_client::VerifiedIdentity;
 use rss_observation::{Epoch, Id, Registration, Scope};
 use serde::{Deserialize, Serialize};
@@ -55,7 +56,7 @@ impl Policy {
             || client.contains(':')
             || bindings.len() > 10000
         {
-            return Err(Error::Configuration);
+            return Err(Error::Configuration(ConfigIssue::ClientId));
         }
         let mut entries = BTreeMap::new();
         for b in bindings {
@@ -78,7 +79,7 @@ impl Policy {
                         .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin)))
                 || entries.insert(b.subject.clone(), b).is_some()
             {
-                return Err(Error::Configuration);
+                return Err(Error::Configuration(ConfigIssue::Bindings));
             }
         }
         Ok(Self {
@@ -167,11 +168,18 @@ impl InventoryService {
     }
     pub async fn read(&self, grant: InventoryRead<'_>) -> Result<InventoryResponse, Error> {
         // The request's proof is retained until the read completes; no authority cache.
-        let fields = self
-            .reader
-            .read(grant.scope())
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        let fields = self.reader.read(grant.scope()).await.map_err(|error| {
+            Error::Unavailable(
+                if matches!(
+                    error.downcast_ref::<sqlx::Error>(),
+                    Some(sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed)
+                ) {
+                    Failure::InventoryPool
+                } else {
+                    Failure::InventoryQuery
+                },
+            )
+        })?;
         if fields.is_empty() {
             return Err(Error::NotFound);
         }
