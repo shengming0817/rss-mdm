@@ -125,7 +125,6 @@ impl AccessStore {
             tx.rollback().await.map_err(db)?;
             return Ok(receipt);
         }
-        audit.0.writing.store(true, Ordering::Release);
         let revoke = matches!(command, Command::Revoke { .. });
         let receipt = match command {
             Command::Issue { device_id } => {
@@ -190,6 +189,7 @@ impl AccessStore {
             tx.rollback().await.map_err(db)?;
             return Err(Error::Unavailable(Failure::AccessStore));
         }
+        audit.0.commit_started.store(true, Ordering::Release);
         tx.commit().await.map_err(|_| Error::CommitUnknown)?;
         #[cfg(test)]
         if self.fault.swap(0, Ordering::AcqRel) == 2 {
@@ -233,7 +233,7 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND has_schema_privilege(current_user,'mdm_access','USAGE')
  AND (SELECT count(*)=4 AND bool_and(c.relname IN ('grants','requests','operations','audit') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
- AND has_table_privilege(current_user,c.oid,'SELECT') AND has_table_privilege(current_user,c.oid,'INSERT')
+ AND (CASE WHEN c.relname IN ('grants','operations') THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
  AND has_column_privilege(current_user,'mdm_access.grants','state','UPDATE')
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname='grants' AND a.attname='state') AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
@@ -484,6 +484,8 @@ mod tests {
             .await?;
         assert_eq!(visible, 0);
         for sql in [
+            "SELECT * FROM mdm_access.audit",
+            "SELECT * FROM mdm_access.requests",
             "DELETE FROM mdm_access.audit",
             "UPDATE mdm_access.audit SET result='success'",
             "SELECT * FROM mdm.inventory",
@@ -494,7 +496,7 @@ mod tests {
         for (grant, revoke) in [
             (
                 "GRANT SELECT ON mdm_access.audit TO mdm_access WITH GRANT OPTION",
-                "REVOKE GRANT OPTION FOR SELECT ON mdm_access.audit FROM mdm_access",
+                "REVOKE SELECT ON mdm_access.audit FROM mdm_access",
             ),
             (
                 "GRANT UPDATE ON mdm_access.audit TO mdm_access",

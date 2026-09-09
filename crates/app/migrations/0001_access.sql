@@ -36,6 +36,7 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('CREATE POLICY tenant ON mdm_access.%I USING (tenant_id = nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK (tenant_id = nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
  END LOOP;
 END $$;
-GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_access TO mdm_access;
+GRANT SELECT,INSERT ON mdm_access.grants,mdm_access.operations TO mdm_access;
+GRANT INSERT ON mdm_access.requests,mdm_access.audit TO mdm_access;
 GRANT UPDATE(state) ON mdm_access.grants TO mdm_access;
 COMMIT;

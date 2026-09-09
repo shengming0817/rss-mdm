@@ -87,7 +87,7 @@ def verify_startup_deadlines(binary, root, port, env):
             result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
             require(result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget')
             expected='startup.reader_connection_or_admission' if stage=='database' else 'startup.identity'
-            require(expected in result.stderr, 'startup failure lost safe stage classification')
+            require(expected in result.stderr, 'startup failure lost safe stage classification: ' + result.stderr)
             require('api-fixture' not in result.stderr and 'o'*40 not in result.stderr, 'startup diagnostics exposed credentials')
     print('startup dependency stalls rejected within budget with safe stage diagnostics',flush=True)
 

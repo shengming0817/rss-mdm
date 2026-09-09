@@ -11,7 +11,7 @@ pub(crate) struct Context {
     pub tenant: String,
     pub fact: Mutex<Fact>,
     pub committed: AtomicBool,
-    pub writing: AtomicBool,
+    pub commit_started: AtomicBool,
     pub finalized: AtomicBool,
 }
 #[derive(Clone)]
@@ -35,7 +35,7 @@ impl Audit {
                 operation_id: None,
             }),
             committed: AtomicBool::new(false),
-            writing: AtomicBool::new(false),
+            commit_started: AtomicBool::new(false),
             finalized: AtomicBool::new(false),
         }))
     }
@@ -66,13 +66,49 @@ impl Audit {
         );
     }
 }
+impl Context {
+    fn cancellation_event(&self) -> serde_json::Value {
+        let fact = self
+            .fact
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let outcome = if self.committed.load(Ordering::Acquire) {
+            "committed"
+        } else if self.commit_started.load(Ordering::Acquire) {
+            "unknown"
+        } else {
+            "commit_not_started"
+        };
+        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":fact.operation_id,"action":fact.action,"reason":"audit_finalization_cancelled","write_outcome":outcome})
+    }
+}
 impl Drop for Context {
     fn drop(&mut self) {
         if !self.finalized.load(Ordering::Acquire) {
-            eprintln!(
-                "{}",
-                serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"reason":"request_cancelled","write_outcome":"unknown"})
-            );
+            eprintln!("{}", self.cancellation_event());
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
+        let a = Audit::new("tenant".into(), "grant_issue");
+        let key = Uuid::new_v4();
+        a.operation(key, "grant_issue");
+        a.target("sensitive-target-not-for-logs");
+        assert_eq!(
+            a.0.cancellation_event()["write_outcome"],
+            "commit_not_started"
+        );
+        a.0.commit_started.store(true, Ordering::Release);
+        let event = a.0.cancellation_event();
+        assert_eq!(event["write_outcome"], "unknown");
+        assert_eq!(event["operation_id"], key.to_string());
+        assert!(!event.to_string().contains("sensitive-target"));
+        a.0.committed.store(true, Ordering::Release);
+        assert_eq!(a.0.cancellation_event()["write_outcome"], "committed");
+        a.0.finalized.store(true, Ordering::Release);
     }
 }

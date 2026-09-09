@@ -151,7 +151,7 @@ impl Policy {
         device: &str,
     ) -> Result<DangerousAction<'a>, Error> {
         let b = self.device(proof, device)?;
-        if !(b.allow_wipe || b.allow_enrollment)
+        if !b.allow_wipe
             || !b
                 .roles
                 .iter()

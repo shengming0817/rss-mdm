@@ -1084,6 +1084,43 @@ async fn enrollment_matrix(
     query: &str,
 ) -> Result<()> {
     let issue = "/api/v1/enrollment-grants";
+    let mut enrollment_only = config.clone();
+    enrollment_only["bindings"][0]["allow_wipe"] = json!(false);
+    let enrollment_router = app(&enrollment_only, reader.clone()).await?;
+    let mut enrollment_browser = Browser::default();
+    ensure!(
+        enrollment_browser
+            .login(&enrollment_router, web, origin, csrf)
+            .await?
+            == StatusCode::SEE_OTHER
+    );
+    ensure!(
+        enrollment_browser
+            .call(
+                &enrollment_router,
+                Method::POST,
+                &format!("{DEVICE}/actions"),
+                Some(json!({"action":"wipe"}))
+            )
+            .await?
+            .0
+            == StatusCode::FORBIDDEN,
+        "enrollment permission authorized wipe"
+    );
+    enrollment_browser.operation = Some(uuid::Uuid::new_v4());
+    ensure!(
+        enrollment_browser
+            .call(
+                &enrollment_router,
+                Method::POST,
+                issue,
+                Some(json!({"device_id":"device-1"}))
+            )
+            .await?
+            .0
+            == StatusCode::OK
+    );
+
     browser.operation = Some(uuid::Uuid::new_v4());
     let (status, grant) = browser
         .call(
@@ -1195,6 +1232,20 @@ async fn enrollment_matrix(
     ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE);
     browser.operation = None;
     ensure!(browser.call(router, Method::GET, query, None).await?.0 == StatusCode::OK);
+    let mut anonymous = Browser::default();
+    ensure!(
+        anonymous
+            .call(
+                router,
+                Method::POST,
+                issue,
+                Some(json!({"device_id":"device-1"}))
+            )
+            .await?
+            .0
+            == StatusCode::UNAUTHORIZED
+    );
+    ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='grant_issue' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
     Ok(())
 }

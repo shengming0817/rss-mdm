@@ -146,10 +146,21 @@ struct Envelope {
 async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: Next) -> Response {
     let started = envelope.clock.now();
     let host = &envelope.host;
-    let action = if request.uri().path().starts_with("/auth/") {
-        "authentication"
-    } else {
-        "protected_request"
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str())
+        .unwrap_or("");
+    let action = match route {
+        "/api/v1/enrollment-grants" => "grant_issue",
+        "/api/v1/enrollment-grants/{id}/revoke" => "grant_revoke",
+        "/api/v1/registration-requests" => "registration_accept",
+        "/api/v1/devices/{id}/inventory" => "inventory_read",
+        "/api/v1/devices/{id}/actions" => "device_action",
+        "/auth/login" | "/auth/callback" | "/api/v1/auth/logout" | "/api/v1/auth/me" => {
+            "authentication"
+        }
+        _ => "protected_request",
     };
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.0.request_id;
@@ -169,7 +180,7 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
             .await
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
     };
-    if audit.0.writing.load(Ordering::Acquire)
+    if audit.0.commit_started.load(Ordering::Acquire)
         && matches!(
             response.extensions().get::<Error>(),
             Some(Error::Unavailable(Failure::RequestDeadline))
@@ -179,7 +190,7 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
     }
     if audited && !audit.0.committed.load(Ordering::Acquire) {
         let status = response.status().as_u16();
-        let result = if audit.0.writing.load(Ordering::Acquire) && status >= 500 {
+        let result = if audit.0.commit_started.load(Ordering::Acquire) && status >= 500 {
             "unknown"
         } else if status == 401 || status == 403 {
             "denied"
