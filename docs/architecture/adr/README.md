@@ -5,3 +5,5 @@
 每项记录说明问题与需求编号、候选方案、决定及原因、影响与验证、状态和替代关系。文件名遵循 [文档规则](../../rules/documentation.md)，草案不能描述为已批准事实。
 
 - [基于 RSS 的 Rust 产品重写](202609072231-001-rust-rss-product-foundation.md)：分仓、组件组合、权威与迁移边界。
+
+- [单一身份验证入口与 MDM 请求授权](202609091750-2343-identity-authorization.md)（#2343）

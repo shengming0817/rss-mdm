@@ -1,0 +1,48 @@
+[package]
+name = "rss-mdm-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-mdm-inventory.workspace = true
+rss-mdm-inventory-postgres.workspace = true
+rss-identity-client.workspace = true
+rss-identity-contracts.workspace = true
+rss-observation.workspace = true
+rss-observation-postgres.workspace = true
+rss-projection-postgres.workspace = true
+rss-runtime.workspace = true
+rss-axum.workspace = true
+rss-request-context.workspace = true
+axum.workspace = true
+openidconnect.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true
+subtle.workspace = true
+libc.workspace = true
+rand.workspace = true
+base64.workspace = true
+sha2.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["cookies"] }
+http-body-util.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rss-mdm"
+path = "src/main.rs"

@@ -33,16 +33,10 @@ async fn execute() -> Result<serde_json::Value> {
         .context("command required")
         .map_err(|e| failure::at("usage", e))?;
     match (command.as_str(), args.len()) {
-        ("migrate" | "project", 1) | ("ingest-fixture" | "inspect", 2) => {}
+        ("project", 1) | ("ingest-fixture" | "inspect", 2) => {}
         _ => return Err(failure::at("usage", anyhow::anyhow!("invalid arguments"))),
     }
     let options = rss_mdm_examples::options().map_err(|e| failure::at("config", e))?;
-    if command == "migrate" {
-        rss_mdm_examples::migrate(&options)
-            .await
-            .map_err(|e| failure::at("migration", e))?;
-        return Ok(serde_json::json!({"migration":"complete"}));
-    }
     let scope: Scope = serde_json::from_slice(
         &read_bounded(&std::env::var("MDM_SCOPE_FILE").map_err(|e| failure::at("scope", e))?)
             .map_err(|e| failure::at("scope", e))?,
