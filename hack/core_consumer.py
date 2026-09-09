@@ -51,7 +51,7 @@ def verify_closure(data, core, product_source, pin, locked_registry):
 
 
 def isolated_env(base):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN")}
     env.update(CARGO_HOME=str(base / "cargo-home"), CARGO_TARGET_DIR=str(base / "target"))
     return ci.noninteractive(env)
 
@@ -83,6 +83,8 @@ def run_consumer(source, base, core, defaults, head, pin, out):
     shutil.copyfile(source / "Cargo.lock", root / "Cargo.lock")
     env = isolated_env(root)
     env["CARGO_NET_GIT_FETCH_WITH_CLI"] = "true"
+    # Explicit pin also overrides ambient rustup directory overrides.
+    env["RUSTUP_TOOLCHAIN"] = ci.tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     log = out / f"{name}.log"
     log.write_text("")
     commands = []
@@ -97,6 +99,7 @@ def run_consumer(source, base, core, defaults, head, pin, out):
         ci.require(result.returncode == 0, f"{name}: command failed; see {log}")
         return result.stdout
 
+    toolchain = {"rustc": run(["rustc", "-Vv"]), "cargo": run(["cargo", "-V"])}
     # Prepare a consumer-specific lock, seeded with the product's locked dependencies.
     run(["cargo", "metadata", "--format-version", "1"])
     lock = root / "Cargo.lock"
@@ -111,13 +114,20 @@ def run_consumer(source, base, core, defaults, head, pin, out):
     ci.require(hashlib.sha256(lock.read_bytes()).hexdigest() == lock_digest, "consumer lock changed during locked verification")
     shutil.copyfile(lock, out / f"{name}-Cargo.lock")
     return {"package": product, "defaultFeatures": defaults, "head": head, "rssRevision": rev,
-            "lockSha256": lock_digest, "commands": commands, "status": "passed",
+            "lockSha256": lock_digest, "commands": commands, "status": "passed", "toolchain": toolchain,
             "features": {p["id"]: p["features"] for p in data["resolve"]["nodes"]}}
+
+
+def prepare_output(out):
+    # This directory owns only regenerable artifacts from this gate.
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
 
 
 def main():
     out = ci.OUT / "core-consumers"
-    out.mkdir(parents=True, exist_ok=True)
+    prepare_output(out)
     head = ci.command(["/usr/bin/git", "rev-parse", "HEAD"]).stdout.strip()
     ci.require(ci.command(["/usr/bin/git", "status", "--porcelain"]).stdout.strip() == "", "commit implementation before core consumer verification")
     results = []

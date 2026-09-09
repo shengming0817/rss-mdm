@@ -4,25 +4,36 @@ use rss_request_context::TenantId;
 fn tenant() -> TenantId {
     TenantId::parse("00000000-0000-0000-0000-000000000001").unwrap()
 }
-fn key(s: &str) -> ObjectKey {
-    ObjectKey::new(tenant(), s).unwrap()
+fn key(s: &str) -> DeviceId {
+    DeviceId::new(tenant(), s).unwrap()
 }
 fn version(n: u64) -> Version {
     Version::new(
-        key("policy"),
+        PolicyId::new(tenant(), "policy").unwrap(),
         n,
-        PayloadRef::new(key("payload"), n, [n as u8; 32]).unwrap(),
+        PayloadRef::new(
+            PayloadId::new(tenant(), "payload").unwrap(),
+            n,
+            [n as u8; 32],
+        )
+        .unwrap(),
         RemovalRule::CancelOutstandingRetainEffects,
     )
     .unwrap()
 }
 fn active(n: u64) -> Policy {
-    Policy::draft(key("policy"))
+    Policy::draft(PolicyId::new(tenant(), "policy").unwrap())
         .transition(0, Transition::Activate(version(n)))
         .unwrap()
 }
 fn targets(m: &[&str]) -> TargetSnapshot {
-    TargetSnapshot::new(key("targets"), 1, true, m.iter().map(|s| key(s)).collect()).unwrap()
+    TargetSnapshot::new(
+        TargetSnapshotId::new(tenant(), "targets").unwrap(),
+        1,
+        SnapshotCompleteness::Complete,
+        m.iter().map(|s| key(s)).collect(),
+    )
+    .unwrap()
 }
 fn record(n: u64, progress: Progress) -> ExecutionRecord {
     ExecutionRecord::new(version(n), key("d1"), progress, Effect::Unverified).unwrap()
@@ -32,7 +43,7 @@ fn compute(p: &Policy, t: &TargetSnapshot, f: &[ExecutionRecord]) -> Result<Plan
         policy: p,
         targets: t,
         executions: f,
-        request: key("request"),
+        request: RequestId::new(tenant(), "request").unwrap(),
         as_of: Timepoint::try_from(10).unwrap(),
     })
 }
@@ -41,7 +52,7 @@ fn lifecycle_and_revision_conflicts() {
     let p = active(1);
     assert!(matches!(
         p.transition(0, Transition::Pause),
-        Err(PolicyError::RevisionConflict)
+        Err(PolicyError::RevisionConflict { .. })
     ));
     let paused = p.transition(1, Transition::Pause).unwrap();
     assert_eq!(paused.status(), Status::Paused);
@@ -49,11 +60,11 @@ fn lifecycle_and_revision_conflicts() {
     let archived = resumed.transition(3, Transition::Archive).unwrap();
     assert!(matches!(
         archived.transition(4, Transition::Resume),
-        Err(PolicyError::InvalidTransition)
+        Err(PolicyError::InvalidTransition { .. })
     ));
     assert!(matches!(
         p.transition(1, Transition::Activate(version(1))),
-        Err(PolicyError::StaleVersion)
+        Err(PolicyError::StaleVersion { .. })
     ));
 }
 #[test]
@@ -110,9 +121,13 @@ fn pause_resume_preserve_identity_and_exit_does_not_claim_rollback() {
 #[test]
 fn incomplete_targets_contradictions_and_stale_expectations_fail_closed() {
     let p = active(1);
-    let incomplete = TargetSnapshot::new(key("targets"), 1, false, vec![]).unwrap();
     assert!(matches!(
-        compute(&p, &incomplete, &[]),
+        TargetSnapshot::new(
+            TargetSnapshotId::new(tenant(), "targets").unwrap(),
+            1,
+            SnapshotCompleteness::Incomplete,
+            vec![]
+        ),
         Err(PolicyError::IncompleteTargets)
     ));
     let t = targets(&["d1"]);
@@ -122,11 +137,11 @@ fn incomplete_targets_contradictions_and_stale_expectations_fail_closed() {
             &t,
             &[record(1, Progress::Planned), record(1, Progress::Succeeded)]
         ),
-        Err(PolicyError::ConflictingExecution)
+        Err(PolicyError::ConflictingExecution { .. })
     ));
     assert!(matches!(
         compute(&p, &t, &[record(2, Progress::Succeeded)]),
-        Err(PolicyError::StaleVersion)
+        Err(PolicyError::StaleVersion { .. })
     ));
 }
 
@@ -191,7 +206,7 @@ fn plan_identity_excludes_request_clock_but_covers_decisions_and_preconditions()
         policy: &p,
         targets: &t,
         executions: &[],
-        request: key("another"),
+        request: RequestId::new(tenant(), "another").unwrap(),
         as_of: Timepoint::try_from(20).unwrap(),
     })
     .unwrap();
@@ -203,7 +218,13 @@ fn plan_identity_excludes_request_clock_but_covers_decisions_and_preconditions()
         a.id(),
         compute(
             &p,
-            &TargetSnapshot::new(key("targets"), 2, true, vec![key("d1")]).unwrap(),
+            &TargetSnapshot::new(
+                TargetSnapshotId::new(tenant(), "targets").unwrap(),
+                2,
+                SnapshotCompleteness::Complete,
+                vec![key("d1")]
+            )
+            .unwrap(),
             &[]
         )
         .unwrap()
@@ -263,7 +284,12 @@ fn archive_and_reentry_preserve_terminal_evidence() {
             reason: RetainReason::Current
         }]
     );
-    let empty = compute(&Policy::draft(key("policy")), &targets(&["d1"]), &[]).unwrap();
+    let empty = compute(
+        &Policy::draft(PolicyId::new(tenant(), "policy").unwrap()),
+        &targets(&["d1"]),
+        &[],
+    )
+    .unwrap();
     assert!(!empty.scheduling_open());
     assert!(empty.intents().is_empty());
 }
@@ -271,38 +297,50 @@ fn archive_and_reentry_preserve_terminal_evidence() {
 fn immutable_version_and_payload_conflicts_are_rejected() {
     let p = active(1);
     let changed = Version::new(
-        key("policy"),
+        PolicyId::new(tenant(), "policy").unwrap(),
         1,
-        PayloadRef::new(key("payload"), 1, [9; 32]).unwrap(),
+        PayloadRef::new(PayloadId::new(tenant(), "payload").unwrap(), 1, [9; 32]).unwrap(),
         RemovalRule::CancelOutstandingRetainEffects,
     )
     .unwrap();
     assert_eq!(
         p.transition(1, Transition::Activate(changed.clone()))
             .unwrap_err(),
-        PolicyError::VersionConflict
+        PolicyError::VersionConflict { version: 1 }
     );
     let bad = ExecutionRecord::new(changed, key("d1"), Progress::Planned, Effect::Unknown).unwrap();
     assert_eq!(
         compute(&p, &targets(&["d1"]), &[bad]).unwrap_err(),
-        PolicyError::VersionConflict
+        PolicyError::VersionConflict { version: 1 }
     );
     let reused_payload = Version::new(
-        key("policy"),
+        PolicyId::new(tenant(), "policy").unwrap(),
         2,
-        PayloadRef::new(key("payload"), 1, [9; 32]).unwrap(),
+        PayloadRef::new(PayloadId::new(tenant(), "payload").unwrap(), 1, [9; 32]).unwrap(),
         RemovalRule::CancelOutstandingRetainEffects,
     )
     .unwrap();
     assert_eq!(
         p.transition(1, Transition::Activate(reused_payload.clone()))
             .unwrap_err(),
-        PolicyError::PayloadConflict
+        PolicyError::PayloadConflict {
+            object: PayloadId::new(tenant(), "payload").unwrap(),
+            revision: 1
+        }
     );
-    let p = Policy::restore(key("policy"), 2, Status::Active, Some(reused_payload)).unwrap();
+    let p = Policy::restore(
+        PolicyId::new(tenant(), "policy").unwrap(),
+        2,
+        Status::Active,
+        Some(reused_payload),
+    )
+    .unwrap();
     assert_eq!(
         compute(&p, &targets(&["d1"]), &[record(1, Progress::Planned)]).unwrap_err(),
-        PolicyError::PayloadConflict
+        PolicyError::PayloadConflict {
+            object: PayloadId::new(tenant(), "payload").unwrap(),
+            revision: 1
+        }
     );
 }
 #[test]
@@ -314,9 +352,15 @@ fn all_lifecycle_edges_and_restore_guards() {
         Status::Archived,
     ] {
         let p = if state == Status::Draft {
-            Policy::draft(key("policy"))
+            Policy::draft(PolicyId::new(tenant(), "policy").unwrap())
         } else {
-            Policy::restore(key("policy"), 1, state, Some(version(1))).unwrap()
+            Policy::restore(
+                PolicyId::new(tenant(), "policy").unwrap(),
+                1,
+                state,
+                Some(version(1)),
+            )
+            .unwrap()
         };
         for (op, expected) in [
             (Transition::Pause, state == Status::Active),
@@ -330,10 +374,40 @@ fn all_lifecycle_edges_and_restore_guards() {
             assert_eq!(p.transition(p.revision(), op).is_ok(), expected);
         }
     }
-    assert!(Policy::restore(key("policy"), 1, Status::Draft, None).is_err());
-    assert!(Policy::restore(key("policy"), 0, Status::Active, Some(version(1))).is_err());
-    assert!(Policy::restore(key("policy"), 1, Status::Active, None).is_err());
-    let p = Policy::restore(key("policy"), u64::MAX, Status::Active, Some(version(1))).unwrap();
+    assert!(
+        Policy::restore(
+            PolicyId::new(tenant(), "policy").unwrap(),
+            1,
+            Status::Draft,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        Policy::restore(
+            PolicyId::new(tenant(), "policy").unwrap(),
+            0,
+            Status::Active,
+            Some(version(1))
+        )
+        .is_err()
+    );
+    assert!(
+        Policy::restore(
+            PolicyId::new(tenant(), "policy").unwrap(),
+            1,
+            Status::Active,
+            None
+        )
+        .is_err()
+    );
+    let p = Policy::restore(
+        PolicyId::new(tenant(), "policy").unwrap(),
+        u64::MAX,
+        Status::Active,
+        Some(version(1)),
+    )
+    .unwrap();
     assert_eq!(
         p.transition(u64::MAX, Transition::Pause).unwrap_err(),
         PolicyError::RevisionOverflow
@@ -342,7 +416,7 @@ fn all_lifecycle_edges_and_restore_guards() {
 #[test]
 fn tenant_policy_and_value_boundaries() {
     let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
-    let foreign = ObjectKey::new(other, "d1").unwrap();
+    let foreign = DeviceId::new(other, "d1").unwrap();
     assert!(
         ExecutionRecord::new(
             version(1),
@@ -352,9 +426,22 @@ fn tenant_policy_and_value_boundaries() {
         )
         .is_err()
     );
-    assert!(TargetSnapshot::new(key("t"), 1, true, vec![foreign.clone()]).is_err());
-    let foreign_targets =
-        TargetSnapshot::new(foreign.clone(), 1, true, vec![foreign.clone()]).unwrap();
+    assert!(
+        TargetSnapshot::new(
+            TargetSnapshotId::new(tenant(), "t").unwrap(),
+            1,
+            SnapshotCompleteness::Complete,
+            vec![foreign.clone()]
+        )
+        .is_err()
+    );
+    let foreign_targets = TargetSnapshot::new(
+        TargetSnapshotId::new(other, "targets").unwrap(),
+        1,
+        SnapshotCompleteness::Complete,
+        vec![foreign.clone()],
+    )
+    .unwrap();
     assert_eq!(
         compute(&active(1), &foreign_targets, &[]).unwrap_err(),
         PolicyError::TenantMismatch
@@ -366,14 +453,14 @@ fn tenant_policy_and_value_boundaries() {
             policy: &p,
             targets: &t,
             executions: &[],
-            request: foreign,
+            request: RequestId::new(other, "request").unwrap(),
             as_of: Timepoint::try_from(10).unwrap()
         })
         .unwrap_err(),
         PolicyError::TenantMismatch
     );
     let wrong = Version::new(
-        key("other-policy"),
+        PolicyId::new(tenant(), "other-policy").unwrap(),
         1,
         version(1).payload().clone(),
         RemovalRule::CancelOutstandingRetainEffects,
@@ -393,16 +480,124 @@ fn tenant_policy_and_value_boundaries() {
         .unwrap_err(),
         PolicyError::PolicyMismatch
     );
-    assert!(ObjectKey::new(tenant(), "bad/url").is_err());
-    assert!(ObjectKey::new(tenant(), "a".repeat(129)).is_err());
+    assert!(DeviceId::new(tenant(), "bad/url").is_err());
+    assert!(DeviceId::new(tenant(), "a".repeat(129)).is_err());
     assert!(
         Version::new(
-            key("policy"),
+            PolicyId::new(tenant(), "policy").unwrap(),
             0,
             version(1).payload().clone(),
             RemovalRule::CancelOutstandingRetainEffects
         )
         .is_err()
     );
-    assert!(PayloadRef::new(key("payload"), 0, [1; 32]).is_err());
+    assert!(PayloadRef::new(PayloadId::new(tenant(), "payload").unwrap(), 0, [1; 32]).is_err());
+}
+
+#[test]
+fn terminal_evidence_is_historical_after_archive_exit_and_supersession() {
+    let p = active(1);
+    let archived = p.transition(1, Transition::Archive).unwrap();
+    let scenarios = [
+        (archived, targets(&["d1"])),
+        (p.clone(), targets(&[])),
+        (active(2), targets(&["d1"])),
+    ];
+    for progress in [Progress::Succeeded, Progress::Failed, Progress::Cancelled] {
+        let terminal =
+            ExecutionRecord::new(version(1), key("d1"), progress, Effect::VerifiedPresent).unwrap();
+        for (policy, targets) in &scenarios {
+            let plan = compute(policy, targets, std::slice::from_ref(&terminal)).unwrap();
+            assert!(plan.intents().contains(&Intent::Retain {
+                execution: terminal.clone(),
+                reason: RetainReason::Historical
+            }));
+            assert!(!plan.intents().iter().any(
+                |i| matches!(i,Intent::Cancel{execution,..} if execution.key()==terminal.key())
+            ));
+        }
+    }
+    let planned = record(1, Progress::Planned);
+    let exited = compute(&p, &targets(&[]), std::slice::from_ref(&planned)).unwrap();
+    assert_eq!(
+        exited.intents(),
+        &[Intent::Cancel {
+            execution: planned,
+            reason: CancelReason::ScopeExit
+        }]
+    );
+}
+
+#[test]
+fn activating_then_pausing_still_cancels_superseded_executions() {
+    let policy = active(1)
+        .transition(1, Transition::Activate(version(2)))
+        .unwrap()
+        .transition(2, Transition::Pause)
+        .unwrap();
+    let old = record(1, Progress::Running);
+    let plan = compute(&policy, &targets(&["d1"]), std::slice::from_ref(&old)).unwrap();
+    assert!(!plan.scheduling_open());
+    assert_eq!(
+        plan.intents(),
+        &[Intent::Cancel {
+            execution: old,
+            reason: CancelReason::Superseded
+        }]
+    );
+}
+
+#[test]
+fn conflict_errors_identify_the_failed_precondition_or_record() {
+    let p = active(1);
+    assert_eq!(
+        p.transition(0, Transition::Pause).unwrap_err(),
+        PolicyError::RevisionConflict {
+            expected: 0,
+            actual: 1
+        }
+    );
+    assert_eq!(
+        p.transition(1, Transition::Resume).unwrap_err(),
+        PolicyError::InvalidTransition {
+            status: Status::Active,
+            operation: TransitionKind::Resume
+        }
+    );
+    assert_eq!(
+        p.transition(1, Transition::Activate(version(1)))
+            .unwrap_err(),
+        PolicyError::StaleVersion {
+            requested: 1,
+            latest: 1
+        }
+    );
+    let t = targets(&["d1"]);
+    let old = record(1, Progress::Planned);
+    assert_eq!(
+        compute(&p, &t, &[old.clone(), record(1, Progress::Succeeded)]).unwrap_err(),
+        PolicyError::ConflictingExecution {
+            execution: old.key()
+        }
+    );
+    assert_eq!(
+        compute(&p, &t, &[record(2, Progress::Planned)]).unwrap_err(),
+        PolicyError::StaleVersion {
+            requested: 2,
+            latest: 1
+        }
+    );
+    assert_eq!(
+        Policy::restore(
+            PolicyId::new(tenant(), "policy").unwrap(),
+            7,
+            Status::Draft,
+            None
+        )
+        .unwrap_err(),
+        PolicyError::InvalidSnapshot {
+            status: Status::Draft,
+            revision: 7
+        }
+    );
 }

@@ -158,3 +158,17 @@ class CoreConsumerGate(unittest.TestCase):
 
         bad=copy.deepcopy(data);bad['packages'][-1]['version']='999.0.0'
         with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+
+    def test_consumer_drops_ambient_toolchain_and_stale_evidence(self):
+        import sys
+        from unittest.mock import patch
+        sys.path.insert(0,str(ci.ROOT/'hack'))
+        import core_consumer as core
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with patch.dict(core.os.environ,{'RUSTUP_TOOLCHAIN':'nightly'}):
+                self.assertFalse('RUSTUP_TOOLCHAIN' in core.isolated_env(root))
+            out=root/'evidence';out.mkdir();(out/'result.json').write_text('old success')
+            (out/'old-metadata.json').write_text('{}')
+            core.prepare_output(out)
+            self.assertEqual(list(out.iterdir()),[])

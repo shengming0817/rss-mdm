@@ -2,6 +2,8 @@
 
 N04 / #2382 的纯策略版本、生命周期与计划差分核心。无 Scope/Group/Resource、PG、HTTP 或设备通道依赖。
 载荷是调用方解析的不可变引用与 SHA-256 摘要，不是下载 URL、凭据或平台指令。
+公共 ID 分为 PolicyId、PayloadId、DeviceId、TargetSnapshotId、RequestId，不提供通用 ObjectKey 或跨角色转换。
+Scope 到 Policy 的设备身份由 N12 在明确映射点按 canonical tenant 和值重新构造。
 
 ## 生命周期和快照
 
@@ -14,10 +16,13 @@ Activate 可选择更高版本并进入 Active，Resume 只恢复原版本。
 相同载荷身份不能对应不同摘要。`restore` 供可信存储读取使用，只验证结构，不证明数据库内容真实性。
 同一输入中所有历史版本也须满足不可变约束；跨请求的不可变存储和 revision CAS 归 N10。
 
-`TargetSnapshot` 必须完整，否则 `reconcile` 拒绝；同 tenant 的设备键排序去重。
+`TargetSnapshot::new` 要求具名 `SnapshotCompleteness` 声明；Incomplete 在构造边界立即拒绝，
+成功构造的快照均为完整输入；同 tenant 的设备键排序去重。
 现阶段键为 1–128 字节 ASCII 字母、数字、`.`、`_`、`-`，不接受 URL。
 已有执行输入是每个执行的当前事实快照，完全重复允许，互相矛盾拒绝；历史事件归并由调用方拥有。
 未来版本事实、其他策略事实及混租户输入整体拒绝，范围退出设备的事实则是合法输入。
+错误携带 revision 的 expected/actual、状态/操作、冲突版本号、载荷身份/revision 或 ExecutionKey，
+调用方可直接定位失败记录；Display 保持稳定分类，不输出任意底层正文。
 
 ## 差分与事实
 
@@ -26,7 +31,7 @@ Activate 可选择更高版本并进入 Active，Resume 只恢复原版本。
 | Active 目标无历史执行 | Add，产生稳定 Apply 执行键 |
 | 同版本已有任意进度的执行 | Retain，保持身份和原始事实；失败/取消不隐式重试 |
 | 新版本目标有旧版本执行 | Supersede 关联旧键；旧非终态另产生 Cancel(Superseded) |
-| Paused | 不新增、不推进 Apply，范围内记录 Retain(Paused)；恢复沿用原键 |
+| Paused | 不新增、不推进 Apply；范围内同版本记录 Retain(Paused)，旧版本非终态仍 Cancel(Superseded)；恢复沿用原键 |
 | 范围退出 | 非终态 Cancel(ScopeExit)，终态保留历史；暂停期间也处理明确范围退出 |
 | Archived | 非终态 Cancel(Archived)，终态保留历史，无新增 Apply |
 

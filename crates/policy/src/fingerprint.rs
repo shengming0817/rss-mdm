@@ -1,7 +1,7 @@
 //! V1 plan identity encoding. Never hash Debug output, memory layout or request time.
 use crate::{
-    Effect, ExecutionKey, ExecutionRecord, ObjectKey, PayloadRef, PlanId, Policy, Progress,
-    RemovalRule, Status, TargetSnapshot, Version,
+    Effect, ExecutionKey, ExecutionRecord, PayloadRef, PlanId, Policy, Progress, RemovalRule,
+    Status, TargetSnapshot, Version,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -14,17 +14,17 @@ impl Encoding {
         self.number(value.len() as u64);
         self.0.update(value);
     }
-    fn object(&mut self, key: &ObjectKey) {
-        self.0.update(key.tenant().octets());
-        self.bytes(key.value().as_bytes());
+    fn object(&mut self, tenant: rss_request_context::TenantId, value: &str) {
+        self.0.update(tenant.octets());
+        self.bytes(value.as_bytes());
     }
     fn payload(&mut self, p: &PayloadRef) {
-        self.object(p.object());
+        self.object(p.object().tenant(), p.object().value());
         self.number(p.revision());
         self.0.update(p.digest());
     }
     fn version(&mut self, v: &Version) {
-        self.object(v.policy());
+        self.object(v.policy().tenant(), v.policy().value());
         self.number(v.number());
         self.payload(v.payload());
         match v.removal() {
@@ -33,7 +33,7 @@ impl Encoding {
     }
     fn fact(&mut self, f: &ExecutionRecord) {
         self.version(f.version());
-        self.object(f.device());
+        self.object(f.device().tenant(), f.device().value());
         self.number(0); // Apply action in V1.
         self.number(match f.progress() {
             Progress::Planned => 0,
@@ -58,7 +58,7 @@ pub(crate) fn plan_id(
 ) -> PlanId {
     let mut e = Encoding(Sha256::new());
     e.bytes(b"rss-mdm-policy/plan/v1");
-    e.object(policy.key());
+    e.object(policy.key().tenant(), policy.key().value());
     e.number(policy.revision());
     e.number(match policy.status() {
         Status::Draft => 0,
@@ -72,11 +72,11 @@ pub(crate) fn plan_id(
     } else {
         e.number(0);
     }
-    e.object(targets.key());
+    e.object(targets.key().tenant(), targets.key().value());
     e.number(targets.revision());
     e.number(targets.members().len() as u64);
     for target in targets.members() {
-        e.object(target);
+        e.object(target.tenant(), target.value());
     }
     e.number(facts.len() as u64);
     for fact in facts.values() {

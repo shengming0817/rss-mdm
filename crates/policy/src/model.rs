@@ -1,67 +1,22 @@
-use rss_request_context::TenantId;
-use std::{cmp::Ordering, fmt, num::NonZeroU64};
-
-/// Policy-owned object identity, not a device-registration or authorization claim.
-#[derive(Clone, Eq, PartialEq)]
-pub struct ObjectKey {
-    tenant: TenantId,
-    value: String,
-}
-impl ObjectKey {
-    pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, PolicyError> {
-        let value = value.into();
-        if value.is_empty()
-            || value.len() > 128
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        {
-            return Err(PolicyError::InvalidKey);
-        }
-        Ok(Self { tenant, value })
-    }
-    pub fn tenant(&self) -> TenantId {
-        self.tenant
-    }
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-}
-impl Ord for ObjectKey {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.tenant.octets(), &self.value).cmp(&(other.tenant.octets(), &other.value))
-    }
-}
-impl PartialOrd for ObjectKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl fmt::Debug for ObjectKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ObjectKey")
-            .field("tenant", &self.tenant.to_string())
-            .field("value", &self.value)
-            .finish()
-    }
-}
+use crate::{DeviceId, PayloadId, PolicyId};
+use std::num::NonZeroU64;
 
 /// Immutable, caller-resolved content reference. Never a download URL or credential.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PayloadRef {
-    object: ObjectKey,
+    object: PayloadId,
     revision: NonZeroU64,
     digest: [u8; 32],
 }
 impl PayloadRef {
-    pub fn new(object: ObjectKey, revision: u64, digest: [u8; 32]) -> Result<Self, PolicyError> {
+    pub fn new(object: PayloadId, revision: u64, digest: [u8; 32]) -> Result<Self, PolicyError> {
         Ok(Self {
             object,
             revision: nonzero(revision)?,
             digest,
         })
     }
-    pub fn object(&self) -> &ObjectKey {
+    pub fn object(&self) -> &PayloadId {
         &self.object
     }
     pub fn revision(&self) -> u64 {
@@ -78,14 +33,14 @@ pub enum RemovalRule {
 }
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Version {
-    policy: ObjectKey,
+    policy: PolicyId,
     number: NonZeroU64,
     payload: PayloadRef,
     removal: RemovalRule,
 }
 impl Version {
     pub fn new(
-        policy: ObjectKey,
+        policy: PolicyId,
         number: u64,
         payload: PayloadRef,
         removal: RemovalRule,
@@ -100,7 +55,7 @@ impl Version {
             removal,
         })
     }
-    pub fn policy(&self) -> &ObjectKey {
+    pub fn policy(&self) -> &PolicyId {
         &self.policy
     }
     pub fn number(&self) -> u64 {
@@ -116,9 +71,9 @@ impl Version {
 /// Structured semantic identity: request IDs and evaluation time are not executions.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ExecutionKey {
-    policy: ObjectKey,
+    policy: PolicyId,
     version: NonZeroU64,
-    device: ObjectKey,
+    device: DeviceId,
     action: Action,
 }
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -126,7 +81,7 @@ pub enum Action {
     Apply,
 }
 impl ExecutionKey {
-    pub(crate) fn new(version: &Version, device: ObjectKey) -> Self {
+    pub(crate) fn new(version: &Version, device: DeviceId) -> Self {
         Self {
             policy: version.policy.clone(),
             version: version.number,
@@ -134,13 +89,13 @@ impl ExecutionKey {
             action: Action::Apply,
         }
     }
-    pub fn policy(&self) -> &ObjectKey {
+    pub fn policy(&self) -> &PolicyId {
         &self.policy
     }
     pub fn version(&self) -> u64 {
         self.version.get()
     }
-    pub fn device(&self) -> &ObjectKey {
+    pub fn device(&self) -> &DeviceId {
         &self.device
     }
     pub fn action(&self) -> Action {
@@ -172,14 +127,14 @@ pub enum Effect {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ExecutionRecord {
     version: Version,
-    device: ObjectKey,
+    device: DeviceId,
     progress: Progress,
     effect: Effect,
 }
 impl ExecutionRecord {
     pub fn new(
         version: Version,
-        device: ObjectKey,
+        device: DeviceId,
         progress: Progress,
         effect: Effect,
     ) -> Result<Self, PolicyError> {
@@ -199,7 +154,7 @@ impl ExecutionRecord {
     pub fn version(&self) -> &Version {
         &self.version
     }
-    pub fn device(&self) -> &ObjectKey {
+    pub fn device(&self) -> &DeviceId {
         &self.device
     }
     pub fn progress(&self) -> Progress {
@@ -223,19 +178,27 @@ pub enum PolicyError {
     #[error("policy identity does not match")]
     PolicyMismatch,
     #[error("expected policy revision does not match")]
-    RevisionConflict,
+    RevisionConflict { expected: u64, actual: u64 },
     #[error("policy revision overflow")]
     RevisionOverflow,
     #[error("invalid lifecycle transition or snapshot")]
-    InvalidTransition,
+    InvalidTransition {
+        status: crate::Status,
+        operation: crate::TransitionKind,
+    },
+    #[error("invalid policy snapshot")]
+    InvalidSnapshot {
+        status: crate::Status,
+        revision: u64,
+    },
     #[error("policy version is stale")]
-    StaleVersion,
+    StaleVersion { requested: u64, latest: u64 },
     #[error("immutable version contents conflict")]
-    VersionConflict,
+    VersionConflict { version: u64 },
     #[error("immutable payload contents conflict")]
-    PayloadConflict,
+    PayloadConflict { object: PayloadId, revision: u64 },
     #[error("target snapshot is incomplete")]
     IncompleteTargets,
     #[error("execution snapshots contradict each other")]
-    ConflictingExecution,
+    ConflictingExecution { execution: ExecutionKey },
 }

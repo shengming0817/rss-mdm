@@ -5,14 +5,13 @@ use rss_request_context::TenantId;
 fn tenant() -> TenantId {
     TenantId::parse("00000000-0000-0000-0000-000000000001").unwrap()
 }
-fn key(s: &str) -> ObjectKey {
-    ObjectKey::new(tenant(), s).unwrap()
+fn key(s: &str) -> DeviceId {
+    DeviceId::new(tenant(), s).unwrap()
 }
 fn source(id: &str, members: &[&str]) -> ResolvedSource {
     ResolvedSource {
         source: SourceRef::new(
-            key(id),
-            SourceKind::Group,
+            SourceId::Group(GroupId::new(tenant(), id).unwrap()),
             1,
             Timepoint::try_from(10).unwrap(),
         )
@@ -76,7 +75,7 @@ fn incomplete_failure_and_cross_tenant_are_not_empty_sets() {
     i.targets[0].resolution = Resolution::Failed;
     assert!(matches!(resolve(&i), Err(ScopeError::SourceFailed(_))));
     let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
-    i.targets[0].resolution = Resolution::Complete(vec![ObjectKey::new(other, "d1").unwrap()]);
+    i.targets[0].resolution = Resolution::Complete(vec![DeviceId::new(other, "d1").unwrap()]);
     assert!(matches!(resolve(&i), Err(ScopeError::TenantMismatch)));
 }
 #[test]
@@ -84,8 +83,7 @@ fn direct_group_dedup_empty_targets_and_conflicting_snapshot() {
     let mut i = input();
     let direct = ResolvedSource {
         source: SourceRef::new(
-            key("d1"),
-            SourceKind::Direct,
+            SourceId::Direct(key("d1")),
             1,
             Timepoint::try_from(10).unwrap(),
         )
@@ -109,8 +107,7 @@ fn source_version_cannot_change_contents_with_a_different_resolution_time() {
     let mut i = input();
     let mut conflict = source("a", &["other"]);
     conflict.source = SourceRef::new(
-        key("a"),
-        SourceKind::Group,
+        SourceId::Group(GroupId::new(tenant(), "a").unwrap()),
         1,
         Timepoint::try_from(11).unwrap(),
     )
@@ -128,8 +125,7 @@ fn invalid_sources_rejected_even_when_no_target_can_match() {
     assert!(matches!(resolve(&i), Err(ScopeError::IncompleteSource(_))));
     let mut i = input();
     i.targets[0].source = SourceRef::new(
-        key("a"),
-        SourceKind::Direct,
+        SourceId::Direct(key("a")),
         1,
         Timepoint::try_from(10).unwrap(),
     )
@@ -140,8 +136,7 @@ fn invalid_sources_rejected_even_when_no_target_can_match() {
     ));
     let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
     i.targets[0].source = SourceRef::new(
-        ObjectKey::new(other, "a").unwrap(),
-        SourceKind::Group,
+        SourceId::Group(GroupId::new(other, "a").unwrap()),
         1,
         Timepoint::try_from(10).unwrap(),
     )
@@ -174,17 +169,33 @@ fn finite_membership_truth_table_and_key_boundaries() {
         }
     }
     for bad in ["", "has space", "../path", "\n"] {
-        assert!(ObjectKey::new(tenant(), bad).is_err());
+        assert!(DeviceId::new(tenant(), bad).is_err());
     }
-    assert!(ObjectKey::new(tenant(), "a".repeat(128)).is_ok());
-    assert!(ObjectKey::new(tenant(), "a".repeat(129)).is_err());
+    assert!(DeviceId::new(tenant(), "a".repeat(128)).is_ok());
+    assert!(DeviceId::new(tenant(), "a".repeat(129)).is_err());
     assert!(
         SourceRef::new(
-            key("a"),
-            SourceKind::Group,
+            SourceId::Group(GroupId::new(tenant(), "a").unwrap()),
             0,
             Timepoint::try_from(0).unwrap()
         )
         .is_err()
     );
+}
+
+#[test]
+fn explanations_preserve_empty_targets_and_nonmatching_exclusion_sources() {
+    let empty = source("empty-target", &[]);
+    let excluded = source("unrelated-exclusion", &["other"]);
+    let i = ScopeInput {
+        tenant: tenant(),
+        targets: vec![empty.clone(), empty.clone()],
+        limitations: Limitations::Unrestricted,
+        exclusions: vec![excluded.clone()],
+    };
+    let r = resolve(&i).unwrap();
+    assert!(r.members.is_empty());
+    assert!(r.explanations.is_empty());
+    assert_eq!(r.target_sources, vec![empty.source]);
+    assert_eq!(r.exclusion_sources, vec![excluded.source]);
 }

@@ -1,8 +1,19 @@
 //! Deterministic scope algebra over caller-resolved, complete tenant snapshots.
 //! Storage, source authorization and group expansion belong to the caller.
+//! Group references cannot become device members through an accidental argument swap:
+//! ```compile_fail
+//! use rss_mdm_scope::{GroupId, Resolution};
+//! fn wrong_role(group: GroupId) { let _ = Resolution::Complete(vec![group]); }
+//! ```
+//! ```compile_fail
+//! use rss_mdm_scope::{GroupId, SourceId};
+//! fn wrong_role(group: GroupId) { let _ = SourceId::Direct(group); }
+//! ```
 #![forbid(unsafe_code)]
 #![warn(clippy::cognitive_complexity)]
 
+mod identity;
+pub use identity::{DeviceId, GroupId};
 mod model;
 pub use model::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,32 +55,35 @@ pub fn resolve(input: &ScopeInput) -> Result<ScopeResolution, ScopeError> {
         });
     }
     Ok(ScopeResolution {
+        target_sources: references(&input.targets),
         limitation_sources: match &input.limitations {
             Limitations::Unrestricted => None,
-            Limitations::Restricted(_) => Some(
-                limits
-                    .iter()
-                    .map(|s| s.source.clone())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
-            ),
+            Limitations::Restricted(_) => Some(references(limits)),
         },
+        exclusion_sources: references(&input.exclusions),
         members,
         explanations,
     })
 }
+fn references(sources: &[ResolvedSource]) -> Vec<SourceRef> {
+    sources
+        .iter()
+        .map(|s| s.source.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
 
-type Snapshots = BTreeMap<(ObjectKey, SourceKind, u64), BTreeSet<ObjectKey>>;
-fn source_identity(source: &SourceRef) -> (ObjectKey, SourceKind, u64) {
-    (source.object().clone(), source.kind(), source.version())
+type Snapshots = BTreeMap<(SourceId, u64), BTreeSet<DeviceId>>;
+fn source_identity(source: &SourceRef) -> (SourceId, u64) {
+    (source.id().clone(), source.version())
 }
 fn validate_source(
     tenant: rss_request_context::TenantId,
     input: &ResolvedSource,
     snapshots: &mut Snapshots,
 ) -> Result<(), ScopeError> {
-    if input.source.object().tenant() != tenant {
+    if input.source.id().tenant() != tenant {
         return Err(ScopeError::TenantMismatch);
     }
     let members = match &input.resolution {
@@ -81,8 +95,8 @@ fn validate_source(
         return Err(ScopeError::TenantMismatch);
     }
     let members: BTreeSet<_> = members.iter().cloned().collect();
-    if input.source.kind() == SourceKind::Direct
-        && members != BTreeSet::from([input.source.object().clone()])
+    if let SourceId::Direct(device) = input.source.id()
+        && members != BTreeSet::from([device.clone()])
     {
         return Err(ScopeError::InvalidDirectSource(input.source.clone()));
     }
@@ -99,8 +113,8 @@ fn validate_source(
 fn index(
     sources: &[ResolvedSource],
     snapshots: &Snapshots,
-) -> BTreeMap<ObjectKey, BTreeSet<SourceRef>> {
-    let mut index: BTreeMap<ObjectKey, BTreeSet<SourceRef>> = BTreeMap::new();
+) -> BTreeMap<DeviceId, BTreeSet<SourceRef>> {
+    let mut index: BTreeMap<DeviceId, BTreeSet<SourceRef>> = BTreeMap::new();
     for source in sources {
         // Only validated snapshots reach this private helper.
         if let Some(members) = snapshots.get(&source_identity(&source.source)) {

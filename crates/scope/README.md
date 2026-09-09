@@ -4,8 +4,8 @@ N03 / #2381 的纯集合核心。`resolve(&ScopeInput)` 只接受调用方已经
 
 ## 输入与解释
 
-对象键包含 canonical `TenantId` 与 1–128 字节的 ASCII 字母、数字、`.`、`_`、`-` 标识。
-`SourceRef` 包含对象键、Direct/Group、非零来源版本与显式 `Timepoint`。
+`DeviceId` 与 `GroupId` 是独立角色类型，不能互传；两者包含 canonical `TenantId` 与 1–128 字节的 ASCII 字母、数字、`.`、`_`、`-` 标识。
+`SourceRef` 包含 `SourceId::Direct(DeviceId)` / `Group(GroupId)`、非零来源版本与显式 `Timepoint`。
 同一对象/来源种类/版本的成员必须一致；解析时间是解释依据，不允许据此改变同版本内容。
 Direct 来源必须恰好包含自己的对象；Group 来源允许完整空集合。
 
@@ -13,6 +13,7 @@ Direct 来源必须恰好包含自己的对象；Group 来源允许完整空集�
 结果为 Target 并集与 Limitation 并集的交集减 Exclusion 并集；未配置限制时不做交集。
 所有来源先通过完整性、tenant 和内容冲突检查，失败整体返回错误，绝不返回部分结果。
 
+输出 `target_sources`、`limitation_sources`、`exclusion_sources` 保留所有参与来源，包含空目标组与未命中排除。
 输出成员和全部 Target 候选的解释均按对象/来源稳定排序去重；解释保存命中来源及限制未命中、
 显式排除原因。`limitation_sources` 保留实际考虑的限制来源，即使没有匹配；None 与 Some([]) 分开。
 相同成员来自多个输入来源时保留全部出处；同一来源的完全重复输入折叠。

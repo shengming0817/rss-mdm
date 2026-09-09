@@ -1,5 +1,6 @@
 use crate::{
-    ExecutionKey, ExecutionRecord, ObjectKey, PayloadRef, Policy, PolicyError, Status, Version,
+    DeviceId, ExecutionKey, ExecutionRecord, PayloadId, PayloadRef, Policy, PolicyError, PolicyId,
+    RequestId, Status, TargetSnapshotId, Version,
 };
 use rss_contract::Timepoint;
 use std::{
@@ -7,37 +8,44 @@ use std::{
     num::NonZeroU64,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotCompleteness {
+    Complete,
+    Incomplete,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetSnapshot {
-    key: ObjectKey,
+    key: TargetSnapshotId,
     revision: NonZeroU64,
-    complete: bool,
-    members: BTreeSet<ObjectKey>,
+    members: BTreeSet<DeviceId>,
 }
 impl TargetSnapshot {
     pub fn new(
-        key: ObjectKey,
+        key: TargetSnapshotId,
         revision: u64,
-        complete: bool,
-        members: Vec<ObjectKey>,
+        completeness: SnapshotCompleteness,
+        members: Vec<DeviceId>,
     ) -> Result<Self, PolicyError> {
+        if completeness == SnapshotCompleteness::Incomplete {
+            return Err(PolicyError::IncompleteTargets);
+        }
         if members.iter().any(|m| m.tenant() != key.tenant()) {
             return Err(PolicyError::TenantMismatch);
         }
         Ok(Self {
             key,
             revision: crate::model::nonzero(revision)?,
-            complete,
             members: members.into_iter().collect(),
         })
     }
-    pub fn key(&self) -> &ObjectKey {
+    pub fn key(&self) -> &TargetSnapshotId {
         &self.key
     }
     pub fn revision(&self) -> u64 {
         self.revision.get()
     }
-    pub fn members(&self) -> &BTreeSet<ObjectKey> {
+    pub fn members(&self) -> &BTreeSet<DeviceId> {
         &self.members
     }
 }
@@ -46,7 +54,7 @@ pub struct PlanInput<'a> {
     pub targets: &'a TargetSnapshot,
     /// One current fact per execution; exact duplicates are accepted, contradictions rejected.
     pub executions: &'a [ExecutionRecord],
-    pub request: ObjectKey,
+    pub request: RequestId,
     pub as_of: Timepoint,
 }
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -55,7 +63,7 @@ pub struct DesiredExecution {
     payload: PayloadRef,
 }
 impl DesiredExecution {
-    fn new(version: &Version, target: ObjectKey) -> Self {
+    fn new(version: &Version, target: DeviceId) -> Self {
         Self {
             key: ExecutionKey::new(version, target),
             payload: version.payload().clone(),
@@ -108,26 +116,26 @@ impl PlanId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Plan {
     id: PlanId,
-    policy: ObjectKey,
+    policy: PolicyId,
     expected_revision: u64,
-    targets: ObjectKey,
+    targets: TargetSnapshotId,
     target_revision: u64,
     scheduling_open: bool,
     intents: Vec<Intent>,
-    request: ObjectKey,
+    request: RequestId,
     as_of: Timepoint,
 }
 impl Plan {
     pub fn id(&self) -> PlanId {
         self.id
     }
-    pub fn policy(&self) -> &ObjectKey {
+    pub fn policy(&self) -> &PolicyId {
         &self.policy
     }
     pub fn expected_revision(&self) -> u64 {
         self.expected_revision
     }
-    pub fn targets(&self) -> &ObjectKey {
+    pub fn targets(&self) -> &TargetSnapshotId {
         &self.targets
     }
     pub fn target_revision(&self) -> u64 {
@@ -140,7 +148,7 @@ impl Plan {
     pub fn intents(&self) -> &[Intent] {
         &self.intents
     }
-    pub fn request(&self) -> &ObjectKey {
+    pub fn request(&self) -> &RequestId {
         &self.request
     }
     pub fn as_of(&self) -> Timepoint {
@@ -178,9 +186,6 @@ fn validate(input: &PlanInput<'_>) -> Result<Facts, PolicyError> {
     if input.request.tenant() != tenant || input.targets.key.tenant() != tenant {
         return Err(PolicyError::TenantMismatch);
     }
-    if !input.targets.complete {
-        return Err(PolicyError::IncompleteTargets);
-    }
     let mut versions = BTreeMap::new();
     let mut payloads = BTreeMap::new();
     if let Some(current) = input.policy.version() {
@@ -194,12 +199,15 @@ fn validate(input: &PlanInput<'_>) -> Result<Facts, PolicyError> {
             .version()
             .is_none_or(|v| record.version().number() > v.number())
         {
-            return Err(PolicyError::StaleVersion);
+            return Err(PolicyError::StaleVersion {
+                requested: record.version().number(),
+                latest: input.policy.version().map_or(0, Version::number),
+            });
         }
         register_version(record.version(), &mut versions, &mut payloads)?;
         let key = record.key();
         if facts.get(&key).is_some_and(|old| old != record) {
-            return Err(PolicyError::ConflictingExecution);
+            return Err(PolicyError::ConflictingExecution { execution: key });
         }
         facts.insert(key, record.clone());
     }
@@ -208,15 +216,20 @@ fn validate(input: &PlanInput<'_>) -> Result<Facts, PolicyError> {
 fn register_version(
     v: &Version,
     versions: &mut BTreeMap<u64, Version>,
-    payloads: &mut BTreeMap<(ObjectKey, u64), PayloadRef>,
+    payloads: &mut BTreeMap<(PayloadId, u64), PayloadRef>,
 ) -> Result<(), PolicyError> {
     if versions.get(&v.number()).is_some_and(|old| old != v) {
-        return Err(PolicyError::VersionConflict);
+        return Err(PolicyError::VersionConflict {
+            version: v.number(),
+        });
     }
     let p = v.payload();
     let key = (p.object().clone(), p.revision());
     if payloads.get(&key).is_some_and(|old| old != p) {
-        return Err(PolicyError::PayloadConflict);
+        return Err(PolicyError::PayloadConflict {
+            object: p.object().clone(),
+            revision: p.revision(),
+        });
     }
     versions.insert(v.number(), v.clone());
     payloads.insert(key, p.clone());
@@ -229,7 +242,7 @@ fn add_desired(
     intents: &mut Vec<Intent>,
 ) {
     // Index once instead of rescanning all executions for each target.
-    let mut previous: BTreeMap<&ObjectKey, Vec<ExecutionKey>> = BTreeMap::new();
+    let mut previous: BTreeMap<&DeviceId, Vec<ExecutionKey>> = BTreeMap::new();
     for fact in facts
         .values()
         .filter(|f| f.version().number() < version.number())
@@ -261,10 +274,9 @@ fn classify_existing(
         Some(CancelReason::Archived)
     } else if !targets.members.contains(fact.device()) {
         Some(CancelReason::ScopeExit)
-    } else if policy.status() == Status::Active
-        && policy
-            .version()
-            .is_some_and(|v| v.number() != fact.version().number())
+    } else if policy
+        .version()
+        .is_some_and(|v| v.number() != fact.version().number())
     {
         Some(CancelReason::Superseded)
     } else {
