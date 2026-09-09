@@ -287,12 +287,24 @@ async fn callback(
     let pending = app.sessions.consume(&c.state, &browser, old.as_deref())?;
     // Error descriptions and URIs are never followed, rendered or logged.
     let _ = (c.error_description, c.error_uri, c.scope);
-    if c.error.is_some()
-        || c.iss
-            .as_deref()
-            .is_some_and(|iss| !app.identity.is_issuer(iss))
+    if c.iss
+        .as_deref()
+        .is_some_and(|iss| !app.identity.is_issuer(iss))
     {
         return Err(Error::Unauthorized);
+    }
+    if let Some(error) = c.error {
+        return Err(match error.as_str() {
+            "access_denied"
+            | "invalid_request"
+            | "unauthorized_client"
+            | "unsupported_response_type"
+            | "invalid_scope" => Error::Unauthorized,
+            "server_error" | "temporarily_unavailable" => {
+                Error::Unavailable(Failure::IdentityServer)
+            }
+            _ => Error::Unavailable(Failure::IdentityProtocol),
+        });
     }
     let code = c
         .code

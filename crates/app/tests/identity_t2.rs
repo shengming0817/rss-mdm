@@ -557,27 +557,33 @@ async fn matrix() -> Result<()> {
     callback
         .query_pairs_mut()
         .append_pair("session_state", "opaque-extension");
-    let mut declined = Browser::default();
-    let (_, start) = declined
-        .call(&initial, Method::POST, "/auth/login", None)
-        .await?;
-    let authorization = Url::parse(start["authorization_url"].as_str().unwrap())?;
-    let mut failure = Url::parse("https://mdm.example.test/auth/callback")?;
-    failure
-        .query_pairs_mut()
-        .append_pair("state", &param(&authorization, "state")?)
-        .append_pair("error", "access_denied")
-        .append_pair("session_state", "extension");
-    let before = count()?;
-    ensure!(
-        declined.callback(&initial, &failure).await? == StatusCode::UNAUTHORIZED,
-        "extended OAuth error callback was malformed"
-    );
-    ensure!(
-        count()? == before,
-        "OAuth error callback reached validation"
-    );
-    ensure!(!declined.cookies.contains_key("__Host-mdm-session"));
+    for (failure_code, expected) in [
+        ("access_denied", StatusCode::UNAUTHORIZED),
+        ("temporarily_unavailable", StatusCode::SERVICE_UNAVAILABLE),
+        ("unknown_failure", StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let mut declined = Browser::default();
+        let (_, start) = declined
+            .call(&initial, Method::POST, "/auth/login", None)
+            .await?;
+        let authorization = Url::parse(start["authorization_url"].as_str().unwrap())?;
+        let mut failure = Url::parse("https://mdm.example.test/auth/callback")?;
+        failure
+            .query_pairs_mut()
+            .append_pair("state", &param(&authorization, "state")?)
+            .append_pair("error", failure_code)
+            .append_pair("session_state", "extension");
+        let before = count()?;
+        ensure!(
+            declined.callback(&initial, &failure).await? == expected,
+            "extended OAuth error callback was malformed"
+        );
+        ensure!(
+            count()? == before,
+            "OAuth error callback reached validation"
+        );
+        ensure!(!declined.cookies.contains_key("__Host-mdm-session"));
+    }
     ensure!(
         Browser::default().callback(&initial, &callback).await? == StatusCode::UNAUTHORIZED,
         "wrong browser accepted"

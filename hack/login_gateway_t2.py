@@ -51,10 +51,20 @@ def verify(image):
             if request('/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
             held=[]
             try:
-                for _ in range(8):
+                deadline=time.monotonic()+3
+                while len(held)<8:
                     connection=socket.create_connection(('127.0.0.1',port),timeout=3)
-                    connection.sendall(b'POST /probe HTTP/1.1\r\nHost: mdm.example.test\r\nContent-Length: 1024\r\n\r\nx')
-                    held.append(connection)
+                    connection.sendall(b'POST /probe HTTP/1.1\r\nHost: mdm.example.test\r\nContent-Length: 1024\r\nExpect: 100-continue\r\n\r\n')
+                    reply=b''
+                    while b'\r\n\r\n' not in reply:
+                        chunk=connection.recv(4096)
+                        if not chunk:break
+                        reply+=chunk
+                    if reply.startswith(b'HTTP/1.1 100 '):held.append(connection)
+                    else:
+                        connection.close()
+                        if time.monotonic()>deadline:raise RuntimeError('could not establish admitted connection set')
+                        time.sleep(.05)
                 deadline=time.monotonic()+3
                 while request('/probe','198.51.100.99')[0]!=429:
                     if time.monotonic()>deadline:raise RuntimeError('peer connection cap not enforced')
