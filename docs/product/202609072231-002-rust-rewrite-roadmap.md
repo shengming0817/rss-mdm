@@ -48,7 +48,7 @@ V1 对应 WMD-E01/E02/E04、D01/D02、Q01/Q02/Q05、A01/A03、M01/M02、COL07/08
 | V1-T3 真机只读 | F05 | rss-mdm：限定 tests/t3 与证据 | 上述第一产品闭环，含最小审计；独立 issue/PR |
 | F06 前端与 OIDC/证书补齐 | F02/F05；需取得前端基线 | rss-mdm + 前端：API兼容、身份生命周期 | 现有页面可查询、会话/OIDC契约一致；续期/撤销独立用例 |
 | F07 命令事务组合 | F01/I01，可与 F04/F05 并行 | rss-mdm：操作/审计表、RSS adapter T2 | 可选 messaging protect + 同 runtime 的 Command/Outbox；区分三套权威坐标，验证 rollback/unknown/取消与 pool owner |
-| F08 单一原生策略闭环 | F05/F07 | rss-mdm：Criteria、EffectiveDevicePlan、delivery、compliance | 一个支持的防火墙期望经命令下发、实际回读与收敛；离线/重复/撤回 T3 独立 |
+| F08 单一原生策略闭环 | F05/F07；消费已交付的 Group/Scope/Policy 及计划持久化接缝 | rss-mdm：EffectiveDevicePlan、delivery、compliance；复用 N02/N03/N04/N09/N10，不重复实现核心 | 一个支持的防火墙期望经命令下发、实际回读与收敛；离线/重复/撤回 T3 独立 |
 | P01 Agent wire artifact 生产 | I01 | rss-mdm：独立协议包、版本化 schema 与协议 fixtures | 先完成 producer PR，产生可取得的精确版本/hash artifact；无 domain/PG 依赖，定义兼容与能力协商 |
 | P02 产品 Agent 接入 | P01/F01/I01 | rss-mdm：Agent 注册/报告 API adapter | 独立注册授权、principal绑定、公共报告持久接收及审计；不要求设备先 MDM 注册 |
 | A00 Rust Agent 公共核心 | P01 artifact 已取得 | rss-mdm-agent：workspace/lock、core/journal、协议消费 | consumer PR 锁定 P01 的版本/hash，持久报告/结果与回执机制；平台中立测试，无 Windows MDM 依赖 |
@@ -57,7 +57,7 @@ V1 对应 WMD-E01/E02/E04、D01/D02、Q01/Q02/Q05、A01/A03、M01/M02、COL07/08
 | X01 macOS 原生基线 | I01/F01；Apple签名/APNs前提 | rss-mdm：Apple adapter | 手动 MDM Profile/资产，复用中立身份和报告；不依赖 Windows F04/F05 |
 | X02 macOS Agent 只读 | A00/P02 | rss-mdm-agent：Mac adapter | Rust Mac Agent-only，不依赖 Windows Agent adapter 或 APNs；与 X01 就绪后验收双通道关联 |
 | X03 三类采集与统一执行 | A01/X01/X02；可信脚本执行部分依赖 A02 | 两产品仓：采集绑定、字段、能力计划 | osquery/脚本/MDM 进入同一字段/组；Mac/Windows原生差异可见，跨仓先更新契约再分别实施 |
-| X04 WinGet/Brew 与企业管理 | A02/X03，原生专属项依赖 X01 | 产品软件源/应用与两端执行器 | 精确源、审批、安装检测/撤销；ADE/DDM/安全与更新按 PRD 分包 |
+| X04 WinGet/Brew 与企业管理 | A02/X03；软件闭环消费 N11/N12，原生专属项依赖 X01 | 产品应用与两端执行器；复用后端源/资源/发布能力 | 精确源、审批结果接线、安装检测/撤销；ADE/DDM/安全与更新按 PRD 分包 |
 | M01 存量兼容与设备群切换 | 公共前置 V1/F06；MDM 策略群另需 F08，Agent 管理群另需 A02；按所迁群承诺能力就绪 | rss-mdm：migration、cutover、deployment；Agent兼容 | 身份/证书/旧任务对账，实际停 Go worker 后单 owner接管；切换/恢复分别 T3 |
 | M02 自有 Go 退出 | M01 所有已承诺群完成 | 两产品仓及实际旧部署 owner | 无运行/恢复依赖旧服务、旧Agent或同步开关；第三方NanoMDM不属于自有Go退出 |
 
@@ -98,6 +98,35 @@ flowchart LR
 ```
 
 图为主依赖概览，精确前置与特殊依赖以表格为准。F03/F01 可并行；命令组合不挡 V1。P01 producer 先于 A00 consumer，A00 拥有 Agent 公共基础文件；A01 与 X02 仅改各平台 adapter，避免并行争写 workspace/journal。中立身份/报告契约稳定后即可推进 Agent 与 Mac，不依赖 Windows MDM 注册完成。跨仓工作包必须拆为各仓 PR，不能把一个工作包当单个跨仓 PR。
+
+## 独立后端能力 N01–N12
+
+#2378 的后端切片可在端侧执行之前交付，不等待 V1、Windows 注册/采集或父 Epic 整体关闭。
+契约与 package 身份唯一归 [ADR](../architecture/adr/202609072231-001-rust-rss-product-foundation.md#独立后端能力契约n01--2379)；
+以下目录是未来实现 owner，登记不表示包已创建或验收通过。核心与 PG adapter 均须[独立消费证明](../rules/rust-rss-dependencies.md#产品内部逐-crate-独立消费)。
+
+| PBI | 硬前置 | 目录 owner | 独立验收 |
+| --- | --- | --- | --- |
+| N01 #2379 | 无 | 当前 ADR、路线、PRD、消费规则 | 冻结名称与契约，不创建空包 |
+| N02 #2380 Group | N01 | `crates/group` | 固定时钟、类型/预算、未知值、历史对照、成员差分 T1 |
+| N03 #2381 Scope | N01 | `crates/scope` | 未配置/空限制、来源解释、去重、输入顺序与混租户 T1 |
+| N04 #2382 Policy | N01 | `crates/policy` | 版本竞争、稳定计划身份、重复计算、取消与未知事实 T1 |
+| N05 #2383 Resource | N01 | `crates/resource` | 不可变版本、平台身份、摘要和引用约束 T1 |
+| N06 #2384 WinGet | N01 | `crates/winget-source` | 官方协议 fixtures T1、真实 HTTP T2，不调用 CLI |
+| N07 #2385 Brew | N01 | `crates/brew-source` | Formula/Cask 与模板转义 T1、受控本地 Git T2 |
+| N08 #2386 发布 | N01 | `crates/software-release` | 审批摘要变化、晋级/撤回、非法转换、未知发布恢复 T1 |
+| N09 #2387 Group PG | N02 | `crates/group-postgres`，专属 migrations/T2 | 规则/成员/事件原子性、并发重算、tenant 隔离、重启/提交未知 T2 |
+| N10 #2388 Policy PG | N04 | `crates/policy-postgres`，专属 migrations/T2 | 计划/事件原子性、旧版本隔离、回滚/提交未知 T2，不派发 |
+| N11 #2389 发布后端组装 | N05/N06/N07/N08 | `crates/resource-postgres`、`crates/software-release-postgres`，应用骨架的软件源组装模块及 T2 | 真实 PG + 存储/兼容源/Git；外部成功而本地失败或未知时按原身份对账 |
+| N12 #2390 管理 API | N03/N09/N10/N11、#2347/#2348 | 复用 #2343 实际应用骨架（`crates/app` 以实际路径为准）、设备资产映射、路由/权限/审计/T2 | 真实 PG + HTTP：资产→组→范围→持久计划、资源→审批→源发布；无端侧派发 |
+
+N01 后 N02–N08 可并行；N09/N10 各随对应核心就绪推进，N11 随四项核心就绪推进，不等待其他无消费关系的任务。
+N12 复用 #2343 身份接入、#2347 对象授权/审计、#2348 设备映射和 F01 资产；#2363 管理员身份组映射不是设备 Group 前置。
+与 #2353 协调应用装配文件 owner，但 #2353 整项和 #2354 真机 T3 均不是 N12 硬前置。
+功能 DAG 不代表共享文件可并行写：Cargo.toml/Cargo.lock、CI 包身份登记、公共入口和统一迁移/路由/配置由单一集成人串行集成；每个核心只修改所属目录，PG schema/T2 随 adapter 交付，不为抢占目录创建空包。
+
+F08 消费已交付的组/范围/计划机制后另做命令与真机闭环；软件相关 X04 消费 N11/N12，不再重复建设源协议和审批核心。
+本批不包含 Agent、端侧安装/用户切换、领取回执、可信升级、MDM 变更派发或 T3；后端 Published 不等于设备已安装，也不完成 PRD R0–R3 的发布退出门。
 
 ## 与 PRD 分期的关系
 

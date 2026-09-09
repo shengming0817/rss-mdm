@@ -25,7 +25,52 @@ Agent wire schema/DTO 由 `rss-mdm` 中的独立协议包拥有，经版本化 a
 
 通道中立的身份与报告模型先由产品定义；Agent 协议 producer PR 先产出版本化 artifact，Agent 公共 core/journal 的 consumer PR 锁定后，Windows 与 Mac 平台 adapter 才分别接入。Agent-only 与 Mac 原生注册均不依赖 Windows MDM 注册完成。
 
-产品组合根 → 用例与产品/RSS adapter → 产品 domain / RSS capability core。domain 不依赖 HTTP/SQL/broker；RSS 不依赖产品。业务模块先按类型与可见性隔离，出现实际边界再建包，不预建所有领域 crate 或全局依赖容器。
+产品组合根 → 用例与产品/RSS adapter → 产品 domain / RSS capability core。domain 不依赖 HTTP/SQL/broker；RSS 不依赖产品。本批后端能力已由 #2379 确定独立 crate 边界，按下节契约在对应实现 PBI 创建有行为的包，不预建空包或全局依赖容器。
+
+## 独立后端能力契约（N01 / #2379）
+
+状态：契约与 package 名称已冻结；本节不声明实现、独立消费验证或 registry 发布完成。
+本节唯一拥有契约与 package 身份；目录、PBI owner 和实施依赖见[路线](../../product/202609072231-002-rust-rewrite-roadmap.md#独立后端能力-n01n12)，证明方法见[消费规则](../../rules/rust-rss-dependencies.md#产品内部逐-crate-独立消费)。
+
+### Package 身份与分层
+
+沿用 `rss-mdm-<能力>`，核心不追加 `-core`，PG adapter 追加 `-postgres`；Rust 导入名将连字符替换为下划线。
+核心为 `rss-mdm-group`、`rss-mdm-scope`、`rss-mdm-policy`、`rss-mdm-resource`、
+`rss-mdm-winget-source`、`rss-mdm-brew-source`、`rss-mdm-software-release`；PG adapter 为
+`rss-mdm-group-postgres`、`rss-mdm-policy-postgres`、`rss-mdm-resource-postgres`、`rss-mdm-software-release-postgres`。
+当前 `publish = false` 与固定 Git revision 消费保持；名称不表示 registry 已占用。不建立旧名 alias、facade 或双路径。
+不新增 scope-postgres、common/types 包或聚合 SDK，应用组装复用 #2343 的实际骨架，不另起独立库发布名。
+
+七项能力相互无业务 Cargo 依赖，不在公共签名泄漏另一核心的业务类型；产品 composition 显式映射输入输出。
+Group/Scope/Policy/Resource/发布核心不依赖 PG、HTTP、设备通道或应用装配；平台源只带自身必要协议/Git 接缝依赖。
+PG adapter 只依赖对应核心与必要 RSS/PG，拥有专属 schema、原子持久化和恢复；不读取其他能力的业务表来绕过组合边界。
+N11 组装拥有 Resource、发布与平台源之间的映射、外部提交及对账；N12 拥有资产到组/范围/计划的映射、管理 API、真实权限及审计。
+产品 migrator 统一执行各 adapter 的迁移，通用事务消息与恢复机制复用 RSS，不另建 Outbox/UnitOfWork。
+
+### 输入、输出与失败语义
+
+| 唯一 owner | 调用方输入 | 输出与错误/未知语义 |
+| --- | --- | --- |
+| Group | tenant、对象键、字段定义与事实快照/版本、Criteria AST/版本、固定 as_of、已有成员 | Match/NoMatch/Unknown 及原因、稳定 added/removed/unchanged；仅明确匹配进入新成员集，未知对象单列。规则/字段/操作类型错误、超预算、混租户输入拒绝；整次重算失败不提交成员差分。 |
+| Scope | 同租户完整解析的 Target/Limitation/Exclusion 集合及来源引用/版本 | 目标并集与限制并集的交集减排除并集，输出稳定去重成员和来源解释。未配置 Limitation 不缩小目标，配置为空则结果为空；不完整、解析失败或混租户输入拒绝，不伪装为空集合；不取 Group 仓储。 |
+| Policy | tenant、不可变策略版本、显式目标快照、不可变载荷引用、已有执行事实、请求身份/as_of、显式移除规则 | 激活/暂停/归档转换及新增/保留/取代/取消意图；相同版本和输入保持计划身份。非法转换、冲突/过时版本拒绝；旧事实不覆盖新期望。未执行、结果未知、状态已核实分开；取消不证明终端撤销。不解析 Scope，不取 Group/Resource 仓储。 |
+| Resource | tenant、资源键、software/script/configuration、不可变版本、平台/架构/variant、源/包/版本、摘要与产物引用 | 校验后的资源版本及激活/弃用/归档结果；冻结后不能改字节/摘要，被引用版本不能静默删除。身份/摘要冲突、非法转换、缺失或不支持变体明确拒绝；不隐式回退公共同名包。安装/检测/卸载定义只是数据，不代表执行。 |
+| WinGet 源 | 精确 source/package/version/architecture/installer、受支持 manifest、产物摘要/引用、源与下载凭据引用 | 校验结果、REST Source 查询/响应转换、供组装提交的发布元数据。未知协议/manifest 版本明确不支持；错误摘要、非成功响应、超时各自可诊断，不转为空结果或发布成功；不调用 winget CLI。 |
+| Brew 源 | 精确 Tap/Formula/Cask 标识、受控模板、架构/依赖清单、Bottle/Cask 产物摘要与引用、Tap/产物凭据引用 | 受控元数据、校验结果及 Git 接缝的不可变 commit 身份；转义/路径/身份冲突、摘要或依赖不匹配拒绝，Git 结果未知保留待对账。只支持专用 Tap，不执行任意 Ruby、brew 安装或覆写未经批准的共享 Tap。 |
+| 软件发布 | tenant、候选描述、源快照/manifest/产物摘要、验证证据、发布者/审批者引用、环境、请求身份/as_of、外部结果证据 | 候选/验证/批准/发布/隔离/弃用状态与 Test/Pilot/Production 晋级、撤回和恢复决策。非法转换、身份约束不满足、证据不足阻断；任一批准输入变化使批准失效。外部提交未知按原发布身份对账，不换身份盲目重试。 |
+
+发布核心保存外部结果与审批快照的关联，只有组装确认结果符合批准内容才转为后端 Published。
+这里的 Published 是源元数据发布事实，与消息 Published、设备 Applied/Converged 不同；撤回只阻止新发布授权，不承诺终端卸载、降级或缓存即时消失。
+WinGet 首期接已有兼容 REST Source；Brew 首期使用专用 Tap 与受控模板。具体协议版本、endpoint、模板支持矩阵和输入/响应预算在 N06/N07 对照官方上游源码冻结，N01 不承诺任意生态特性。
+
+### 基础值、身份与确定性
+
+- tenant/time 复用既有公共值类型（`rss-request-context::TenantId`、`rss-contract::Timepoint`），不在各核心重复定义或 re-export。业务对象键由对应能力拥有；首期接线为设备键，不引入端侧用户/通道展开。完整键包含 tenant，比较、去重、请求幂等与持久唯一性均不得丢失租户边界。
+- 身份由调用方提供；核心仅检查输入结构、tenant 一致性及声明的 actor 约束，不把参数存在当作认证/授权证明。N12 通过 #2343/#2347 接入会话、对象权限与审计，通过 #2348 映射可信 Device/tenant；不以序列号、自报 tenant 或 channel ID 替代设备主体。N09–N11 可使用受控 fixture/服务身份独立验证，无需等待设备身份实现。
+- 字段定义包含键、类型、单位及可用操作；值为字符串、布尔、整数、UTC 时间或同类型集合，不隐式字符串转数值/时间。事实携带来源、快照身份和采集/有效期信息；合法 Null 与 Missing/Stale/Unsupported 分开，错误字段与无权限字段不能静默忽略。N12 当前只映射已交付的 `device.model`、`device.os.version` 字符串，不将历史字段字典当作当前资产能力。
+- 所有时间决策显式传入固定 `as_of`，核心不读系统时钟；相同规则/版本、快照、时钟和旧事实得到相同结果与稳定身份，集合去重和解释输出顺序稳定。未知值不能默认成为匹配；调用方不得将不完整资产快照冒充完整输入以触发批量成员删除。
+- N02 首版为受限比较、集合和 AND/OR；复杂表达式及组引用明确拒绝。AST 深度、节点、集合和字符串预算由 N02 实现冻结并测试；不引入任意表达式/SQL 拼接。历史 Criteria/expr/SQL 只作固定时钟行为对照，不保留旧解释器、兼容转换或静默语义降级。
+- 凭据只保存引用，不进入内容摘要材料或日志；源元数据授权与产物下载授权分域。组装校验目标地址与访问策略，限定网络/下载预算并脱敏错误；真实管理 API 在暴露成员/字段解释前验证对象权限，关键变更与成功审计原子提交，失败不放宽权限。
 
 ## 首期运行结构
 
@@ -90,7 +135,7 @@ Reconcile observe/diff → 受保护事务：产品操作 + Device Command + Out
 
 Agent 先做只读上报与持久回执，再做可信脚本/单一 MSI。安装前后检测、崩溃恢复、结果持久化与重传分开；在安装已发生而日志未提交时先检测，不盲目重跑。updater/bootstrap 独立于被替换进程，签名、坏包、启动失败、凭据和状态保留均独立验收。
 
-前端暂不重写；实际 WinMDM 前端当前未取得，现有 rss-web 属 RSS 浏览器客户端且明确排除 MDM，不能用它替代。先取得仓库 revision、API/错误/分页/会话契约再冻结兼容。旧 expr-lang 表达式不能直接换解释器；优先保留受限 Criteria AST、空值/时间/正则语义，以固定时钟和同一资产对照验证，无法转换时阻断。
+前端暂不重写；实际 WinMDM 前端当前未取得，现有 rss-web 属 RSS 浏览器客户端且明确排除 MDM，不能用它替代。先取得仓库 revision、API/错误/分页/会话契约再冻结兼容。本批 Group 直接采用上述类型化契约；旧 Criteria/expr/SQL 仅提供行为对照，不承诺表达式向后兼容，不支持的旧规则明确拒绝。存量规则盘点与显式重建归 M01，不在核心保留旧解释器或自动转换路径。
 
 按设备群停止 Go 的真实写入与派发 → 对账未确定任务 → 映射身份和最终事实 → Rust 先观测再控制 → 扩群。旧命令行不直接伪造 RSS receipt；旧审计保留来源。回退前停止 Rust 派发、核对新证书/协议/动作，不能只切流量。恢复旧备份先暂停派发并核对 broker/receipt/设备实际状态，再决定恢复。
 

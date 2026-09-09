@@ -146,7 +146,7 @@ Windows MDM 只读纵切 V1 是 R0/R1 的基础增量，不代替 R0 的 Windows
 
 已接纳 RSS 库/成熟外部依赖 → 产品共享契约与持久任务 → Windows/macOS 通道适配和 Agent 执行器 → 能力预检、单一写 owner 与计划 → 统一采集/字段、软件源控制面 → 组/策略/安装/更新/合规 → 控制台、部署与产品 T3。
 
-macOS MDM 与 Agent 可并行建设；ADE 依赖 Apple 组织接入，不依赖 WinGet；Brew/WinGet 依赖可信 Agent、产物授权和应用模型；DDM 依赖 Apple 注册与声明/状态服务；更新环不依赖 Windows LAPS。不能把每个节点强行串成单条瀑布，也不能越过任务/身份/结果的基础依赖。
+macOS MDM 与 Agent 可并行建设；ADE 依赖 Apple 组织接入，不依赖 WinGet；Brew/WinGet 的终端执行闭环依赖可信 Agent、产物授权和应用模型；Group/Scope/Policy、Resource、软件源元数据与发布后端可按 N01–N12 提前独立交付，不等待 Agent 或 V1 真机验收；DDM 依赖 Apple 注册与声明/状态服务；更新环不依赖 Windows LAPS。不能把每个节点强行串成单条瀑布，也不能越过任务/身份/结果的基础依赖。
 
 R2 可按“私有软件源闭环”“Apple 自动化与安全”“Windows 企业闭环”分别交付，但每个子发布都必须列出已承诺矩阵。日期、人员和生产容量未给定，不在 PRD 中编造工期。产品 T3 的 issue/PR 与功能开发 PR 分开、与 RSS 组件验证分开。[验证规则](../rules/verification-scope.md)
 
@@ -1106,7 +1106,7 @@ R0/R1 不提前强制建设所有 R3 T3；但发布范围内任何危险动作�
 
 RSS MDM 的产品目标是：基于统一业务契约和可恢复执行，组合 Agent 与原生 MDM 管理 Windows/macOS，并通过统一资产字段、组、策略及私有软件仓库实现企业终端运维闭环。
 
-本产品先冻结身份、字段与持久化消费边界，以 Windows MDM 只读纵切证明真实接入，再推进原生策略与 Rust Agent；Mac 注册/Agent、三类采集按依赖并行，随后完成 WinGet/Brew 私有源和 Apple 企业能力。不能先分别做两套 OS 控制面，最后仅在 UI 合并列表；也不能为统一而抹去 Apple 权限、WinGet 用户上下文或 Brew 前缀/用户模型的差异。
+本产品先冻结身份、字段与持久化消费边界，以 Windows MDM 只读纵切证明真实接入，再推进原生策略与 Rust Agent；Mac 注册/Agent、三类采集按依赖并行，WinGet/Brew 源元数据与发布后端可提前独立建设，终端执行和真实安装验收仍消费可信 Agent 与已交付后端，Apple 企业能力按自身依赖推进。不能先分别做两套 OS 控制面，最后仅在 UI 合并列表；也不能为统一而抹去 Apple 权限、WinGet 用户上下文或 Brew 前缀/用户模型的差异。
 
 产品负责人确认功能包与默认行为，安全负责人确认执行/源代码/凭据权限，运维负责人确认 Apple 外部依赖与支持矩阵，研发负责人确认适配器/兼容边界，前端负责人确认状态与证据展示。未经这些闭环，本文中的目标不得转换为产品已支持声明。
 

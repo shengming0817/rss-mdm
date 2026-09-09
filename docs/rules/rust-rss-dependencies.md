@@ -25,6 +25,24 @@ Git checkout 内上游自身的 workspace/path 关系由 Cargo 解析为同一 G
 
 升级 RSS 时同时核对公共 API、features、schema、错误/取消/提交不确定语义、资源关闭与产品行为。发现消费缺口回对应 RSS crate 修复；产品只保留业务 adapter，不建立临时修正版。
 
+## 产品内部逐 crate 独立消费
+
+本批能力名称与依赖禁边由 [ADR](../architecture/adr/202609072231-001-rust-rss-product-foundation.md#独立后端能力契约n01--2379) 唯一持有。
+以下是各实现 PBI 的验收方法；N01 只冻结方法，不新增 gate，也不声明逐包验证已经通过。
+
+每个待验核心或 adapter 从已提交源码的固定 Git SHA 获取，由 RSS 与 rss-mdm workspace 外的最小 consumer
+仅直接依赖该一个产品 package；使用独立 workspace、Cargo.lock、Cargo 配置及 target，不通过父仓 path/patch、其他成员或隐式 feature 合并补齐依赖。
+准备独立 lock 后执行 `cargo check --locked`、`cargo test --locked`，consumer 的测试通过公共 API 断言实际结果；
+同时保存 `cargo metadata --locked --format-version 1` 和 `cargo tree --locked -e features`，分别检查默认及实际选择的 feature 组合。
+核验祖先 Cargo 配置、package source identity 与依赖闭包，不能只设置 CARGO_HOME 就宣称隔离。
+
+七项核心的闭包不得出现其他 MDM 核心、PG adapter、应用/Agent 或设备通道；纯决策核心不得带 HTTP/PG，平台源可带自身必要协议/Git 依赖。
+PG adapter 可依赖对应核心及必要 RSS/PG，但不得夹带无关业务；真实 PG 验证 tenant/最低运行角色、并发、原子事件、回滚与 commit unknown 恢复。
+WinGet 使用真实 HTTP、Brew 使用受控 Git，N11/N12 按路线承担实际组合 T2；核心 fixtures 不代替真实接缝，整仓编译不代替逐包消费，T1/T2 不代替 T3。
+
+证明记录产品源码 SHA、RSS revision、consumer lock 摘要、实际 features/命令/结果与未覆盖项；Git 消费不称为 registry 发布。
+consumer 行为用例及必要脚本随各实现 owner 入库，临时 workspace 可再生，不持有唯一测试源码；公共 Cargo/lock/CI 调整由单一集成人串行合并。
+
 ## 终端约束
 
 Agent 仅消费确有需求且支持目标平台的公共核心/值类型，不带服务端 PostgreSQL、AMQP 或运行角色依赖。共享 wire 协议由产品协议包唯一维护；schema 版本、能力协商、未知字段、状态兼容和可升级窗口独立于 RSS crate 版本验证。
