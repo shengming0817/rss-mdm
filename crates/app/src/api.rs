@@ -1,5 +1,5 @@
 //! One protected path: current SDK proof -> MDM capability -> private data access.
-use crate::{ConfigIssue, Failure};
+use crate::{AccessStore, ConfigIssue, Failure, audit::Audit, enrollment::Command};
 use crate::{
     Error,
     access::{Coordinates, InventoryResponse, InventoryService, Policy},
@@ -19,6 +19,7 @@ use rss_identity_client::{Clock, VerifiedIdentity};
 use rss_mdm_inventory_postgres::InventoryReader;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::atomic::Ordering;
 use std::{sync::Arc, time::Duration};
 const COOKIE: &str = "__Host-mdm-session";
 const BROWSER: &str = "__Host-mdm-login";
@@ -27,6 +28,7 @@ struct App {
     sessions: Sessions,
     policy: Policy,
     inventory: InventoryService,
+    access: Arc<AccessStore>,
     origin: String,
     requests: Arc<tokio::sync::Semaphore>,
 }
@@ -58,6 +60,9 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
     };
     match authenticate(&app, lease).await {
         Ok((proof, lease)) => {
+            if let Some(audit) = parts.extensions.get::<Audit>() {
+                audit.identify(&proof);
+            }
             parts.extensions.insert(RequestAuth {
                 proof: Arc::new(proof),
                 lease: Arc::new(lease),
@@ -73,14 +78,16 @@ pub async fn application(
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
+    access: Arc<AccessStore>,
 ) -> Result<Router, Error> {
-    from_compiled(config.compile()?, clock, monotonic, reader).await
+    from_compiled(config.compile()?, clock, monotonic, reader, access).await
 }
 pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
+    access: Arc<AccessStore>,
 ) -> Result<Router, Error> {
     let crate::config::Compiled { config, policy } = compiled;
     let identity = Identity::connect(&config, clock.clone()).await?;
@@ -89,7 +96,9 @@ pub(crate) async fn from_compiled(
         .strip_prefix("https://")
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
+    let audit_tenant = config.identity.tenant_id.clone();
     let state = Arc::new(App {
+        access: access.clone(),
         identity,
         sessions: Sessions::new(clock, 1000, 10000),
         policy,
@@ -98,6 +107,9 @@ pub(crate) async fn from_compiled(
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     let protected = Router::new()
+        .route("/enrollment-grants", post(issue_grant))
+        .route("/enrollment-grants/{id}/revoke", post(revoke_grant))
+        .route("/registration-requests", post(register))
         .route("/auth/me", get(me))
         .route("/devices/{id}/inventory", get(inventory))
         .route("/devices/{id}/actions", post(action))
@@ -117,6 +129,8 @@ pub(crate) async fn from_compiled(
             Envelope {
                 host,
                 clock: monotonic,
+                access,
+                tenant: audit_tenant,
             },
             envelope,
         )))
@@ -126,11 +140,21 @@ pub(crate) async fn from_compiled(
 struct Envelope {
     host: String,
     clock: Arc<dyn rss_observation::Clock>,
+    access: Arc<AccessStore>,
+    tenant: String,
 }
-async fn envelope(State(envelope): State<Envelope>, request: Request, next: Next) -> Response {
+async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: Next) -> Response {
     let started = envelope.clock.now();
     let host = &envelope.host;
-    let request_id = uuid::Uuid::new_v4();
+    let action = if request.uri().path().starts_with("/auth/") {
+        "authentication"
+    } else {
+        "protected_request"
+    };
+    let audit = Audit::new(envelope.tenant.clone(), action);
+    let request_id = audit.0.request_id;
+    let audited = request.uri().path() != "/livez";
+    request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
@@ -141,10 +165,56 @@ async fn envelope(State(envelope): State<Envelope>, request: Request, next: Next
     {
         Error::Malformed.into_response()
     } else {
-        tokio::time::timeout(Duration::from_secs(10), next.run(request))
+        tokio::time::timeout(Duration::from_secs(8), next.run(request))
             .await
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
     };
+    if audit.0.writing.load(Ordering::Acquire)
+        && matches!(
+            response.extensions().get::<Error>(),
+            Some(Error::Unavailable(Failure::RequestDeadline))
+        )
+    {
+        response = Error::CommitUnknown.into_response();
+    }
+    if audited && !audit.0.committed.load(Ordering::Acquire) {
+        let status = response.status().as_u16();
+        let result = if audit.0.writing.load(Ordering::Acquire) && status >= 500 {
+            "unknown"
+        } else if status == 401 || status == 403 {
+            "denied"
+        } else if status >= 400 {
+            "failed"
+        } else if audit.fact().operation_id.is_some() {
+            "replay"
+        } else {
+            "success"
+        };
+        {
+            let store = &envelope.access;
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(2), store.record(&audit, status, result))
+                    .await,
+                Ok(Ok(()))
+            ) {
+                audit.alarm("persistent_audit_unavailable");
+                response = Error::Unavailable(Failure::Audit).into_response();
+            }
+        }
+    }
+    if matches!(
+        response.extensions().get::<Error>(),
+        Some(Error::Unavailable(Failure::Audit))
+    ) {
+        audit.alarm("transaction_audit_failed");
+    }
+    if let Some(key) = audit.fact().operation_id {
+        response.headers_mut().insert(
+            "idempotency-key",
+            HeaderValue::from_str(&key.to_string()).expect("UUID"),
+        );
+    }
+    audit.0.finalized.store(true, Ordering::Release);
     eprintln!(
         "{}",
         json!({"event":"mdm_request","request_id":request_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
@@ -339,8 +409,13 @@ async fn inventory(
     State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
+    Extension(audit): Extension<Audit>,
     input: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<InventoryResponse>, Error> {
+    if rss_observation::Id::new(&id).is_ok() {
+        audit.target(&id);
+    }
+    audit.0.fact.lock().expect("audit lock").action = "inventory_read";
     let grant = app
         .policy
         .inventory(&auth.proof, &id, input.map_err(|_| Error::Malformed)?.0)?;
@@ -357,16 +432,127 @@ async fn action(
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
+    Extension(audit): Extension<Audit>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
     if !sessions::equal(&auth.lease.csrf, csrf(&headers)?) {
         return Err(Error::Forbidden);
     }
+    if rss_observation::Id::new(&id).is_ok() {
+        audit.target(&id);
+    }
+    audit.0.fact.lock().expect("audit lock").action = "device_action";
     let _grant = app.policy.dangerous(&auth.proof, &id)?;
     if input.map_err(|_| Error::Malformed)?.0.action != "wipe" {
         return Err(Error::Malformed);
     }
     Err(Error::Unsupported)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrantInput {
+    device_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistrationInput {
+    device_id: String,
+    grant_id: uuid::Uuid,
+}
+fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
+    if headers.get_all("idempotency-key").iter().count() != 1 {
+        return Err(Error::Malformed);
+    }
+    let id = uuid::Uuid::parse_str(
+        headers
+            .get("idempotency-key")
+            .and_then(|v| v.to_str().ok())
+            .ok_or(Error::Malformed)?,
+    )
+    .map_err(|_| Error::Malformed)?;
+    if id.is_nil() {
+        return Err(Error::Malformed);
+    }
+    Ok(id)
+}
+async fn enrollment(
+    app: &App,
+    headers: HeaderMap,
+    auth: RequestAuth,
+    audit: Audit,
+    command: Command,
+) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let key = operation_key(&headers)?;
+    audit.operation(key, command.action());
+    command.validate()?;
+    audit.target(command.device());
+    if !sessions::equal(&auth.lease.csrf, csrf(&headers)?) {
+        return Err(Error::Forbidden);
+    }
+    let permit = app.policy.enrollment(&auth.proof, command.device())?;
+    app.access
+        .execute(permit, key, command, &audit)
+        .await
+        .map(Json)
+}
+async fn issue_grant(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    input: Result<Json<GrantInput>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    enrollment(
+        &app,
+        headers,
+        auth,
+        audit,
+        Command::Issue {
+            device_id: input.map_err(|_| Error::Malformed)?.0.device_id,
+        },
+    )
+    .await
+}
+async fn revoke_grant(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path(id): Path<uuid::Uuid>,
+    input: Result<Json<GrantInput>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    enrollment(
+        &app,
+        headers,
+        auth,
+        audit,
+        Command::Revoke {
+            device_id: input.map_err(|_| Error::Malformed)?.0.device_id,
+            grant_id: id,
+        },
+    )
+    .await
+}
+async fn register(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    input: Result<Json<RegistrationInput>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let input = input.map_err(|_| Error::Malformed)?.0;
+    enrollment(
+        &app,
+        headers,
+        auth,
+        audit,
+        Command::Consume {
+            device_id: input.device_id,
+            grant_id: input.grant_id,
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -393,20 +579,22 @@ mod tests {
         ] {
             let router = Router::new()
                 .route(
-                    "/probe",
+                    "/livez",
                     get(move || async move { Error::Unavailable(reason) }),
                 )
                 .layer(middleware::from_fn_with_state(
                     Envelope {
                         host: "mdm.example.test".to_owned(),
                         clock: monotonic(),
+                        access: Arc::new(AccessStore::unconnected()),
+                        tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },
                     envelope,
                 ));
             let response = router
                 .oneshot(
                     Request::builder()
-                        .uri("/probe")
+                        .uri("/livez")
                         .header("host", "mdm.example.test")
                         .body(axum::body::Body::empty())
                         .unwrap(),

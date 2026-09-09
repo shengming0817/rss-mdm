@@ -7,3 +7,5 @@
 - [基于 RSS 的 Rust 产品重写](202609072231-001-rust-rss-product-foundation.md)：分仓、组件组合、权威与迁移边界。
 
 - [单一身份验证入口与 MDM 请求授权](202609091750-2343-identity-authorization.md)（#2343）
+
+- [管理员注册许可与持久审计](202609090001-2347-enrollment-audit.md)（#2347）
