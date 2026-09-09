@@ -4,13 +4,13 @@
 
 ## 依赖身份
 
-#2346 已决定：当前服务端仅使用 Azure RSS Git 公共包，所有直接 RSS 依赖固定同一完整
+#2346 已决定：RSS主仓公共包使用Azure Git，所有直接RSS主仓依赖固定同一完整
 `git + rev`，精确值由 Cargo.toml 持有，完整上游依赖由 Cargo.lock 持有。
 更新上游必须显式修改 pin、重新锁定并运行本地 CI；不得浮动跟踪 develop。
 不保留 path patch、candidate 解包或 registry 备用构建路径；源码不可取得时明确失败。
 
 Git checkout 内上游自身的 workspace/path 关系由 Cargo 解析为同一 Git source identity，
-不允许产品直接引用父仓或机器目录。metadata 必须验证所有上游 RSS 包属于同一固定 Git commit。
+不允许产品直接引用父仓或机器目录。metadata 必须验证所有RSS主仓包属于同一固定Git commit。
 本仓 `rss-mdm-*` 成员使用根 manifest 声明的 workspace 内部 path，CI 校验精确成员身份和位置；
 这不允许引用仓外 RSS checkout，也不改变上游 Git pin 规则。
 只读凭据由系统 Git credential helper 提供，不写入 manifest、lock 或日志。
@@ -28,3 +28,8 @@ Git checkout 内上游自身的 workspace/path 关系由 Cargo 解析为同一 G
 ## 终端约束
 
 Agent 仅消费确有需求且支持目标平台的公共核心/值类型，不带服务端 PostgreSQL、AMQP 或运行角色依赖。共享 wire 协议由产品协议包唯一维护；schema 版本、能力协商、未知字段、状态兼容和可升级窗口独立于 RSS crate 版本验证。
+
+## Identity 消费（#2343）
+
+独立产品 rss-identity 仅以固定新仓 Git URL + 完整 SHA 消费 rss-identity-client/contracts；不能仅因包名 rss-* 就归入RSS主仓来源，也不能放宽成任意Identity包。SDK与wire类型唯一由Identity持有，MDM不复制验证器、不引入其服务端/PG/装配。精确来源由manifest/lock持有，CI校验两组来源和普通/测试依赖图。
+OIDC只使用公钥验签；#2365 单独限定 MDM app → openidconnect 4.0.1 → rsa 0.9.10 的当前registry路径，禁止其它用途或消费者，修复可用后退出。不存在源码不可取得时的path/registry备用路径。

@@ -1,0 +1,23 @@
+{
+  "listen": "127.0.0.1:8081",
+  "product_origin": "https://mdm.example.test",
+  "identity": {
+    "origin": "https://identity-private.example.test",
+    "issuer": "https://identity.example.test/oidc",
+    "client_id": "mdm",
+    "tenant_id": "11111111-1111-4111-8111-111111111111",
+    "audience": "mdm-api",
+    "oidc_secret_file": "/private/mdm-oidc-secret",
+    "validation_secret_file": "/private/mdm-validation-secret",
+    "ca_file": "/private/identity-ca.pem"
+  },
+  "database": {
+    "host": "postgres.example.test",
+    "port": 5432,
+    "name": "mdm",
+    "user": "mdm_api",
+    "password_file": "/private/mdm-api-password",
+    "ca_file": "/private/database-ca.pem"
+  },
+  "bindings": []
+}

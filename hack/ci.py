@@ -18,12 +18,24 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-app": "crates/app",
     "rss-mdm-windows-mdm": "crates/windows-mdm",
     "rss-mdm-inventory": "crates/inventory",
     "rss-mdm-inventory-postgres": "crates/inventory-postgres",
     "rss-mdm-examples": "crates/examples",
     "inventory-postgres-integration": "tests/inventory-postgres-integration",
 }
+
+IDENTITY_PACKAGES = {"rss-identity-client", "rss-identity-contracts"}
+IDENTITY_URL = "https://dev.azure.com/shengming0923/rss/_git/rss-identity"
+
+def identity_pin(manifest):
+    deps = manifest['workspace']['dependencies']
+    pins = {deps[name].get('rev') for name in IDENTITY_PACKAGES}
+    require(len(pins) == 1 and re.fullmatch(r'[0-9a-f]{40}', next(iter(pins)) or ''), 'invalid Identity revision')
+    for name in IDENTITY_PACKAGES:
+        require(set(deps[name]) == {'git','rev'} and deps[name]['git'] == IDENTITY_URL, 'invalid Identity source')
+    return next(iter(pins))
 
 def require(condition, message):
     if not condition:
@@ -38,6 +50,9 @@ def rss_pin(manifest, required=True):
                 name = dependency.get("package", alias) if isinstance(dependency, dict) else alias
                 if name in LOCAL_PACKAGES:
                     require(dependency == {"path": LOCAL_PACKAGES[name]}, f"invalid local member source: {alias}")
+                    continue
+                if name in IDENTITY_PACKAGES:
+                    require(isinstance(dependency, dict) and set(dependency) == {'git','rev'} and dependency['git'] == IDENTITY_URL and re.fullmatch(r'[0-9a-f]{40}', dependency['rev']), 'invalid Identity dependency')
                     continue
                 if not name.startswith("rss-"):
                     continue
@@ -54,6 +69,7 @@ def rss_pin(manifest, required=True):
 def workspace_pin(root):
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
     pin = rss_pin(manifest)
+    identity_revision = identity_pin(manifest)
     shared = manifest["workspace"]["dependencies"]
     for member in manifest["workspace"]["members"]:
         package = tomllib.loads((root / member / "Cargo.toml").read_text())
@@ -65,6 +81,11 @@ def workspace_pin(root):
                         require(alias in shared, f"unknown workspace dependency: {alias}")
                         require(not any(k in dep for k in ("path", "git", "rev", "branch", "tag", "version", "package")), f"invalid inherited source: {alias}")
                         owner[section][alias] = shared[alias]
+        for owner in [package, *package.get("target", {}).values()]:
+            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                for alias, dep in owner.get(section, {}).items():
+                    name = dep.get('package', alias) if isinstance(dep, dict) else alias
+                    if name in IDENTITY_PACKAGES: require(dep == shared[name], 'Identity source mismatch')
         require(rss_pin(package, required=False) in (None, pin), f"RSS source differs in {member}")
     return pin
 
@@ -83,6 +104,9 @@ def verify_metadata(data, root, mode, pin):
     for package in data["packages"]:
         if package["name"] in LOCAL_PACKAGES:
             require(package['source'] is None and Path(package['manifest_path']).resolve() == root / LOCAL_PACKAGES[package["name"]] / 'Cargo.toml', 'dependency isolation check failed')
+        elif package["name"] in IDENTITY_PACKAGES:
+            revision = identity_pin(tomllib.loads((root / 'Cargo.toml').read_text()))
+            require(package['source'] == f'git+{IDENTITY_URL}?rev={revision}#{revision}', 'Identity source drift')
         elif package["name"].startswith("rss-"):
             require(package['source'] == expected, (package['name'], package['source']))
         else:
@@ -92,7 +116,25 @@ def verify_metadata(data, root, mode, pin):
     features = {packages[n["id"]]: n["features"] for n in data["resolve"]["nodes"]}
     for name in ("rss-observation-postgres", "rss-projection-postgres"):
         require(("integration" in features[name]) == (mode == "integration"), f"unexpected {mode} features for {name}")
-    return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES)
+    require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES, 'Identity SDK missing')
+    nodes = {n['id']: n for n in data['resolve']['nodes']}
+    app_id = next(p['id'] for p in data['packages'] if p['name'] == 'rss-mdm-app')
+    visited, todo = set(), [app_id]
+    while todo:
+        ident = todo.pop()
+        if ident in visited: continue
+        visited.add(ident)
+        for dep in nodes[ident]['deps']:
+            if any(k.get('kind') != 'dev' for k in dep.get('dep_kinds', [{'kind':None}])): todo.append(dep['pkg'])
+    require(not any(packages[p] == 'rss-mdm-examples' for p in visited), 'production application depends on fixtures')
+
+    # Accepted public-verification path; no additional root or version is allowed.
+    for name, version, parent in [('rsa','0.9.10','openidconnect'),('openidconnect','4.0.1','rss-mdm-app')]:
+        found = [p for p in data['packages'] if p['name'] == name]
+        require(len(found) == 1 and found[0]['version'] == version and found[0]['source'] == 'registry+https://github.com/rust-lang/crates.io-index', 'OIDC public-verification source drift')
+        parents = {packages[n['id']] for n in data['resolve']['nodes'] if any(d['pkg'] == found[0]['id'] for d in n['deps'])}
+        require(parents == {parent}, 'OIDC public-verification root drift')
+    return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES and p["name"] not in IDENTITY_PACKAGES)
 
 def isolate():
     # HEAD is the proof input; refuse an uncommitted tracked implementation.
@@ -138,13 +180,15 @@ def main():
     require(head.returncode == 0, "cannot resolve tested HEAD")
     start_head = head.stdout.strip()
     gates = [
-        ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_ci.py"]),
+        ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_*.py"]),
         ("fmt",["cargo","fmt","--all","--check"]),
         ("check",["cargo","check","--locked","--workspace","--all-targets"]),
         ("clippy",["cargo","clippy","--locked","--workspace","--all-targets","--all-features","--","-D","warnings"]),
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("t2",[sys.executable,"hack/t2.py"]),
+        ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
+        ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
     results = {}
     pin = None

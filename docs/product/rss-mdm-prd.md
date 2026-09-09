@@ -522,14 +522,16 @@ AC-U01-02　设备离线、等待重启、安装失败和没有评估数据时�
 
 # 06.13　F-A：账户、SSO、会话与权限
 
+当前接入边界见 [#2343 指南](../guides/202609091600-2343-mdm-identity.md)：首期单租户、静态角色、真实资产查询与危险动作授权拒绝。危险动作有权时仍返回不支持，不表示命令执行已交付；完整注册许可与审计归 #2347。
+
 *主要用户：系统管理员、安全管理员、集成系统。*
 
 历史基础：本地账户、SSO/JIT/组角色映射、RBAC 及内部主体校验已存在；MFA 和 M2M 仍需确定产品闭环。[C01](../reference/historical-sources.md#c01)[C17](../reference/historical-sources.md#c17)[C18](../reference/historical-sources.md#c18)
 
 | 需求编号 / 名称 | 产品要求 | 历史基础 / 分级 |
 | --- | --- | --- |
-| WMD-A01<br>本地身份 / 会话 | 保留登录、刷新、退出、用户管理、禁用与会话策略；本地管理不依赖 AD。 | 已有<br>一级 |
-| WMD-A02<br>OIDC SSO / 映射 | 支持 IdP 配置、连接测试、SSO 登录、JIT 及组映射；以有效账户和授权角色发放会话。 | 已有<br>一级 |
+| WMD-A01<br>本地身份 / 会话 | 本地认证、用户管理、禁用及中央会话由 Identity 持有；MDM 消费 OIDC 与每请求在线复核，持有产品 cookie 和本地退出。本地身份不依赖 AD。 | 已有<br>一级 |
+| WMD-A02<br>OIDC SSO / 映射 | IdP 配置、测试、SSO/JIT 与身份关联由 Identity 持有；MDM 持有资源角色与组映射授权。#2343 首期静态 subject 映射，可信组映射另归 #2363。 | 已有<br>一级 |
 | WMD-A03<br>角色与危险权限 | 保留 super_admin、mdm_admin、security_admin、help_desk、auditor 的现有 API 边界；危险动作和密钥读取单独授权。 | 已有基础<br>一级 |
 | WMD-A04<br>管理员 MFA | 为商用管理面确定 MFA 实现与恢复方案，可依托选定 IdP；本地应急账户的使用及审计规则须明确。 | 规划<br>二级 |
 | WMD-A05<br>M2M / 多租户 SSO | 人类会话与 M2M client_credentials 分离；多 IdP 配置不等同 MSP 数据隔离，多租户产品范围须另立项。 | 规划<br>三级 |
