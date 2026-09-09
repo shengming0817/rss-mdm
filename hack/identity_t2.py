@@ -25,6 +25,7 @@ ADMIN = '11111111-2222-4333-8444-555555555555'
 def run(args, **kwargs):
     stage=kwargs.pop('stage',' '.join(str(v) for v in args[:3]))
     test_output=kwargs.pop('test_output',False)
+    kwargs.setdefault('timeout',900 if args[0]=='cargo' else 120)
     result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
     if result.returncode:
         # Commands can contain disposable database configuration; never echo argv or provider output.
@@ -56,11 +57,12 @@ def candidate():
 
 def wait(check, label, seconds=60):
     end = time.monotonic() + seconds
+    last='no response'
     while True:
         try:
             if check(): return
-        except (RuntimeError, OSError): pass
-        if time.monotonic() >= end: raise RuntimeError(label + ' readiness failed')
+        except (RuntimeError, OSError) as error: last=str(error)
+        if time.monotonic() >= end: raise RuntimeError(label + ' readiness failed: '+last)
         time.sleep(.25)
 
 def build_binary():
@@ -74,6 +76,8 @@ def fixture(c):
     name = 'mdm2343-' + uuid.uuid4().hex[:10]
     created = []
     network = name + '-net'
+    architecture=docker('info','--format','{{.Architecture}}')
+    native='linux/'+{'aarch64':'arm64','arm64':'arm64','x86_64':'amd64','amd64':'amd64'}[architecture]
     with tempfile.TemporaryDirectory(prefix=name+'-') as directory:
         root = Path(directory)
         def write(name, value, public=False):
@@ -83,7 +87,7 @@ def fixture(c):
         SENSITIVE.update(values.values())
         SENSITIVE.add('Fixture-only-correct-horse-battery-2026!')
         write('state-key',secrets.token_hex(32));write('new-password','Fixture-only-correct-horse-battery-2026!')
-        run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=MDM T2 CA','-addext','basicConstraints=critical,CA:TRUE','-keyout',str(root/'ca.key'),'-out',str(root/'ca.crt')],timeout=30)
+        run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=MDM T2 CA','-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign','-keyout',str(root/'ca.key'),'-out',str(root/'ca.crt')],timeout=30)
         run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN=localhost','-keyout',str(root/'tls.key'),'-out',str(root/'tls.csr')],timeout=30)
         write('extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:pg,DNS:hydra-admin,IP:127.0.0.1\n',True)
         run(['openssl','x509','-req','-in',str(root/'tls.csr'),'-CA',str(root/'ca.crt'),'-CAkey',str(root/'ca.key'),'-CAcreateserial','-days','1','-extfile',str(root/'extensions'),'-out',str(root/'tls.crt')],timeout=30)
@@ -93,7 +97,7 @@ def fixture(c):
         used=[]
         if ids:
             for net in json.loads(docker('network','inspect',*ids)):
-                used.extend(ipaddress.ip_network(v['Subnet']) for v in net.get('IPAM',{}).get('Config',[]) if v.get('Subnet'))
+                used.extend(ipaddress.ip_network(v['Subnet']) for v in (net.get('IPAM',{}).get('Config') or []) if v.get('Subnet'))
         subnet=next(ipaddress.ip_network(f'10.234.{n}.0/24') for n in range(10,250) if not any(ipaddress.ip_network(f'10.234.{n}.0/24').overlaps(u) for u in used if u.version==4))
         ips={n:str(subnet.network_address+i) for n,i in [('public',2),('private',3),('identity',4),('hydra',5),('pg',6)]}
         try:
@@ -128,7 +132,8 @@ def fixture(c):
             write('admin.conf',nginx('server { listen 8443 ssl; '+tls+' if ($http_authorization != "Bearer '+values['hydra-service']+'") { return 403; } location / { proxy_set_header Authorization ""; proxy_pass http://127.0.0.1:4445; } }'))
             stage='cp -R /fixture /tmp/mdm-identity-input; chown -R 10001:10001 /tmp/mdm-identity-input; exec setpriv --reuid=10001 --regid=10001 --clear-groups "$@"'
             def app_run(image, command, *, suffix=None, ip=None, extra=(), shared=None):
-                args=['run','--platform','linux/amd64','--label','rss.test=2343','--user','0:0','--entrypoint','sh','-v',str(root)+':/fixture:ro']
+                args=['run','--label','rss.test=2343','--user','0:0','--entrypoint','sh','-v',str(root)+':/fixture:ro']
+                args+=['--platform','linux/amd64' if image in c['images'].values() else native]
                 if suffix:
                     container=name+'-'+suffix;created.append(container);args+=['-d','--name',container]
                 else:args+=['--rm']
@@ -142,7 +147,7 @@ def fixture(c):
             pg_stage='cp /fixture/tls.key /tmp/server.key; cp /fixture/tls.crt /tmp/server.crt; cp /fixture/owner /tmp/owner; chown postgres:postgres /tmp/server.key /tmp/server.crt /tmp/owner; chmod 600 /tmp/server.key /tmp/owner; export POSTGRES_PASSWORD_FILE=/tmp/owner; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'
             docker('run','-d','--name',pg,'--label','rss.test=2343','--network',network,'--ip',ips['pg'],'--network-alias','pg','-p','127.0.0.1::5432','-v',str(root)+':/fixture:ro',c['providers']['postgres'],'sh','-ec',pg_stage)
             pg_port=int(docker('port',pg,'5432/tcp').rsplit(':',1)[1])
-            wait(lambda:docker('exec',pg,'pg_isready','-h','127.0.0.1','-U','postgres') is not None,'PostgreSQL')
+            wait(lambda:docker('exec',pg,'pg_isready','-h','127.0.0.1','-U','postgres',timeout=5) is not None,'PostgreSQL')
             sql="CREATE DATABASE identity; CREATE USER hydra PASSWORD '"+values['hydra-db']+"'; CREATE DATABASE hydra OWNER hydra; CREATE DATABASE mdm;"
             for role,key in [('mdm_owner','mdm-owner'),('mdm_runtime','mdm-runtime'),('mdm_api','mdm-api')]:sql+="CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+values[key]+"';"
             sql+='GRANT CREATE ON DATABASE mdm TO mdm_owner;'
@@ -155,14 +160,16 @@ def fixture(c):
             app_run(c['images']['operator'],['identity-clients','--config',PREFIX+'runtime.json'],shared=hydra_container)
             app_run(c['images']['operator'],['identity-admin',PREFIX+'maintenance.json','initialize',ADMIN,'admin',PREFIX+'new-password'])
             identity_container=app_run(c['images']['server'],['identity-server','--config',PREFIX+'runtime.json'],suffix='identity',ip=ips['identity'])
-            wait(lambda:docker('exec',identity_container,'identity-server','--probe','127.0.0.1:8080') is not None,'Identity')
+            wait(lambda:docker('exec',identity_container,'identity-server','--probe','127.0.0.1:8080',timeout=5) is not None,'Identity')
             app_run(c['images']['gateway'],['nginx','-e','stderr','-c',PREFIX+'public.conf','-g','daemon off;'],suffix='public',shared=public_network)
             private_container=app_run(c['images']['gateway'],['nginx','-e','stderr','-c',PREFIX+'private.conf','-g','daemon off;'],suffix='private',shared=private_network)
             context=ssl.create_default_context(cafile=str(root/'ca.crt'))
             def tls_ready(port,path,expected):
                 conn=http.client.HTTPSConnection('localhost',port,context=context,timeout=3)
                 try:
-                    conn.request('GET',path);response=conn.getresponse();response.read();return response.status==expected
+                    conn.request('GET',path);response=conn.getresponse();response.read()
+                    if response.status!=expected:raise RuntimeError('TLS readiness HTTP status '+str(response.status))
+                    return True
                 finally:conn.close()
             wait(lambda:tls_ready(public_port,'/oidc/.well-known/openid-configuration',200),'public OIDC gateway')
             wait(lambda:tls_ready(private_port,'/',404),'private validation gateway')
@@ -171,7 +178,7 @@ def fixture(c):
             migrate=write('mdm-migration.json',{'database':db});run([binary,'migrate','--config',str(migrate)],cwd=ROOT)
             mdm={'listen':'127.0.0.1:0','product_origin':product,'identity':{'origin':f'https://localhost:{private_port}','issuer':origin+'/oidc','client_id':'mdm','tenant_id':TENANT,'audience':'mdm-api','oidc_secret_file':str(root/'oidc-client'),'validation_secret_file':str(root/'validation'),'ca_file':str(root/'ca.crt')},'database':{**db,'user':'mdm_api','password_file':str(root/'mdm-api')},'bindings':[]}
             config_path=write('mdm.json',mdm)
-            yield {**os.environ,'MDM_TEST_CONFIG':str(config_path),'MDM_TEST_PUBLIC_ORIGIN':origin,'MDM_TEST_PASSWORD_FILE':str(root/'new-password'),'MDM_TEST_PG_CONTAINER':pg,'MDM_TEST_PRIVATE_CONTAINER':private_container,'MDM_TEST_HYDRA_CONTAINER':hydra_container,'MDM_TEST_IDENTITY_CONTAINER':identity_container}
+            yield {**os.environ,'MDM_TEST_CONFIG':str(config_path),'MDM_TEST_PUBLIC_ORIGIN':origin,'MDM_TEST_PASSWORD_FILE':str(root/'new-password'),'MDM_TEST_PG_CONTAINER':pg,'MDM_TEST_PRIVATE_CONTAINER':private_container,'MDM_TEST_HYDRA_CONTAINER':hydra_container,'MDM_TEST_IDENTITY_CONTAINER':identity_container,'MDM_TEST_PROVIDER_PLATFORM':native}
         finally:
             primary=sys.exception()
             failures=[]
@@ -189,7 +196,8 @@ def main():
     from login_gateway_t2 import verify
     verify(c['providers']['nginx'])
     with fixture(c) as env:
+        provider_platform=env['MDM_TEST_PROVIDER_PLATFORM']
         output=run(['cargo','test','--locked','-p','rss-mdm-app','--test','identity_t2','--','--ignored','--nocapture'],cwd=ROOT,env=env,test_output=True,stage='real Identity router matrix')
         if 'MDM_IDENTITY_MATRIX_PASSED' not in output or '1 passed; 0 failed;' not in output:raise RuntimeError('identity test proof incomplete')
-    print(json.dumps({'identity_revision':c['revision'],'identity_archives':c['archives'],'provider_digests':c['providers'],'result':'passed','scope':'MDM Router / SDK / immutable Identity binary / real PG and Hydra / TLS; not production T3'}))
+    print(json.dumps({'identity_revision':c['revision'],'identity_archives':c['archives'],'provider_digests':c['providers'],'provider_platform':provider_platform,'candidate_platform':c['platform'],'result':'passed','scope':'MDM Router / SDK / immutable Identity binary / real PG and Hydra / TLS; not production T3'}))
 if __name__=='__main__':main()

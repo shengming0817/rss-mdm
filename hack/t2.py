@@ -64,6 +64,28 @@ def verify_migrations(container, binary, config, root, env):
             if child.poll() is None: child.terminate();child.wait(timeout=5)
     print("migration admission, immutable digest, interrupted ledger and concurrent installers passed",flush=True)
 
+def verify_startup_deadlines(binary, root, port, env):
+    import socket
+    config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
+    for name,value in [('api-password','api-fixture'),('oidc-secret','o'*40),('validation-secret','v'*40)]:
+        (root/name).write_text(value);os.chmod(root/name,0o600)
+    config['database']={'host':'localhost','port':int(port),'name':'mdm_test','user':'mdm_api','password_file':str(root/'api-password'),'ca_file':str(root/'ca.crt')}
+    config['identity'].update(oidc_secret_file=str(root/'oidc-secret'),validation_secret_file=str(root/'validation-secret'),ca_file=str(root/'ca.crt'))
+    for stage in ['database','identity']:
+        with socket.socket() as stalled:
+            stalled.bind(('127.0.0.1',0));stalled.listen(8)
+            stalled_port=stalled.getsockname()[1]
+            config['database']['port']=stalled_port if stage=='database' else int(port)
+            config['identity']['issuer']='https://localhost:'+str(stalled_port)+'/oidc'
+            path=root/'stalled.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
+            start=time.monotonic()
+            result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
+            assert result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget'
+            expected='startup.reader_connection_or_admission' if stage=='database' else 'startup.identity'
+            assert expected in result.stderr, 'startup failure lost safe stage classification'
+            assert 'api-fixture' not in result.stderr and 'o'*40 not in result.stderr, 'startup diagnostics exposed credentials'
+    print('startup dependency stalls rejected within budget with safe stage diagnostics',flush=True)
+
 def main():
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
     executables = [item["executable"] for line in build.stdout.splitlines() if (item := json.loads(line)).get("reason") == "compiler-artifact" and item.get("executable") and item["target"]["name"] == "rss-mdm-fixture"]
@@ -102,6 +124,7 @@ def main():
             migration_config.write_text(json.dumps({"database":{"host":"localhost","port":int(port),"name":"mdm_test","user":"mdm_owner","password_file":str(root/"owner-password"),"ca_file":str(root/"ca.crt")}}))
             os.chmod(migration_config, 0o600)
             verify_migrations(name, migrators[0], migration_config, root, env)
+            verify_startup_deadlines(migrators[0],root,port,env)
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)
             run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
             run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)

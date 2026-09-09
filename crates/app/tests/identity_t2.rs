@@ -147,10 +147,29 @@ fn param(url: &Url, key: &str) -> Result<String> {
     url.query_pairs()
         .find(|(k, _)| k == key)
         .map(|(_, v)| v.into_owned())
-        .ok_or_else(|| anyhow::anyhow!("missing protocol parameter"))
+        .ok_or_else(|| {
+            let code = url
+                .query_pairs()
+                .find(|(k, _)| k == "error")
+                .map(|(_, v)| match v.as_ref() {
+                    "invalid_request" => "invalid_request",
+                    "invalid_scope" => "invalid_scope",
+                    "unauthorized_client" => "unauthorized_client",
+                    "access_denied" => "access_denied",
+                    _ => "unclassified",
+                })
+                .unwrap_or("none");
+            anyhow::anyhow!("missing protocol parameter {key}; oauth error={code}")
+        })
 }
 async fn authorize(web: &Client, origin: &str, csrf: &str, url: Url) -> Result<Url> {
     let login = location(web, url).await?;
+    if login.host_str() == Some("mdm.example.test")
+        && login.path() == "/auth/callback"
+        && login.query_pairs().any(|(key, _)| key == "error")
+    {
+        return Ok(login);
+    }
     let challenge = param(&login, "login_challenge")?;
     let flow = post(
         web,
@@ -413,6 +432,7 @@ async fn matrix() -> Result<()> {
     let (_, me) = browser
         .call(&initial, Method::GET, "/api/v1/auth/me", None)
         .await?;
+    println!("identity matrix: initial PKCE login and callback protections passed");
     let subject = me["subject"].as_str().unwrap();
     ensure!(me["roles"] == json!([]));
     let query = format!("{DEVICE}/inventory?registration=reg-1&source=fixture&epoch=epoch-1");
@@ -622,6 +642,7 @@ async fn matrix() -> Result<()> {
         pg("SELECT count(*) FROM mdm.inventory;")? == rows,
         "device action wrote business data"
     );
+    println!("identity matrix: role/device/Origin/CSRF/query/501 cases passed");
     for (field, value) in [
         ("audience", "wrong-api"),
         ("tenant_id", "22222222-2222-4222-8222-222222222222"),
@@ -637,6 +658,31 @@ async fn matrix() -> Result<()> {
             "wrong identity binding accepted"
         );
     }
+    // Separate service credentials are operational failures, never an anonymous fallback.
+    let invalid_secret = std::path::Path::new(&config.identity.oidc_secret_file)
+        .with_file_name("invalid-service-secret");
+    std::fs::write(
+        &invalid_secret,
+        "invalid-service-credential-xxxxxxxxxxxxxxxx",
+    )?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&invalid_secret, std::fs::Permissions::from_mode(0o600))?;
+    for field in ["validation_secret_file", "oidc_secret_file"] {
+        let mut value = base.clone();
+        value["identity"][field] = json!(invalid_secret);
+        let wrong = app(&value, reader.clone()).await?;
+        let mut browser = Browser::default();
+        ensure!(
+            browser.login(&wrong, &web, &origin, &central_csrf).await?
+                == StatusCode::SERVICE_UNAVAILABLE,
+            "invalid service credential did not fail closed as 503"
+        );
+        ensure!(
+            !browser.cookies.contains_key("__Host-mdm-session"),
+            "failed exchange issued a session"
+        );
+    }
+    std::fs::remove_file(invalid_secret)?;
     let mut other = Browser::default();
     let (_, start) = other
         .call(&authorized, Method::POST, "/auth/login", None)
