@@ -145,12 +145,16 @@ class CoreConsumerGate(unittest.TestCase):
             {'id':'scope','name':'rss-mdm-scope','source':product},
             {'id':'contract','name':'rss-contract','source':upstream},
             {'id':'context','name':'rss-request-context','source':upstream},
-            {'id':'error','name':'thiserror','source':registry}]}
-        core.verify_closure(data,'rss-mdm-scope',product,pin)
-        for name,source in [('rss-mdm-policy',product),('sqlx-core',registry),('hyper',registry),('rss-observation',upstream),('helper','path+file:///parent')]:
+            {'id':'error','name':'thiserror','version':'2.0.20','source':registry}]}
+        locked={('thiserror','2.0.20',registry)}
+        core.verify_closure(data,'rss-mdm-scope',product,pin,locked)
+        for name,source in [('rss-mdm-policy',product),('sqlx-core',registry),('hyper',registry),('mongodb',registry),('rss-observation',upstream),('helper','path+file:///parent')]:
             bad=copy.deepcopy(data);bad['packages'].append({'id':'bad','name':name,'source':source})
-            with self.subTest(name=name),self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin)
+            with self.subTest(name=name),self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
         bad=copy.deepcopy(data);bad['packages'][1]['source']='path+file:///parent'
-        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin)
+        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
         bad=copy.deepcopy(data);bad['packages'].pop(1)
-        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin)
+        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+
+        bad=copy.deepcopy(data);bad['packages'][-1]['version']='999.0.0'
+        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)

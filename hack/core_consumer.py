@@ -11,13 +11,24 @@ import tempfile
 import ci
 
 CORES = ("scope", "policy")
-# Provider/runtime families cannot appear transitively in a pure decision core.
-FORBIDDEN = ("sqlx", "postgres", "tokio", "hyper", "reqwest", "axum", "actix", "async-std", "surf", "ureq", "diesel")
+# Closed capability admission: names are reviewed here; exact versions/sources
+# remain owned by the product Cargo.lock, not a second version inventory.
+SUPPORT = frozenset({
+    "bumpalo", "cfg-if", "futures-core", "futures-task", "futures-util", "js-sys",
+    "once_cell", "pin-project-lite", "proc-macro2", "quote", "rustversion", "slab",
+    "syn", "thiserror", "thiserror-impl", "unicode-ident", "uuid", "wasm-bindgen",
+    "wasm-bindgen-macro", "wasm-bindgen-macro-support", "wasm-bindgen-shared",
+})
+HASH_SUPPORT = frozenset({
+    "block-buffer", "cpufeatures", "crypto-common", "digest", "generic-array",
+    "libc", "sha2", "typenum", "version_check",
+})
 
 
-def verify_closure(data, core, product_source, pin):
+def verify_closure(data, core, product_source, pin, locked_registry):
     url, rev = pin
     upstream = f"git+{url}?rev={rev}#{rev}"
+    allowed = SUPPORT | (HASH_SUPPORT if core == "rss-mdm-policy" else frozenset())
     roots = set(data["workspace_members"])
     ci.require(len(roots) == 1, "consumer must have exactly one workspace member")
     found = set()
@@ -33,8 +44,9 @@ def verify_closure(data, core, product_source, pin):
             found.add(name)
         else:
             ci.require(not name.startswith("rss-"), f"unrelated RSS/product dependency: {name}")
-            ci.require(not any(name == p or name.startswith(p + "-") for p in FORBIDDEN), f"provider/runtime in pure core: {name}")
+            ci.require(name in allowed, f"unapproved pure-core support dependency: {name}")
             ci.require(source == "registry+https://github.com/rust-lang/crates.io-index", f"unexpected dependency source: {name}")
+            ci.require((name, package["version"], source) in locked_registry, f"dependency differs from product lock: {name}")
     ci.require(found == {core, "rss-contract", "rss-request-context"}, "missing tested core or canonical types")
 
 
@@ -90,7 +102,8 @@ def run_consumer(source, base, core, defaults, head, pin, out):
     lock = root / "Cargo.lock"
     lock_digest = hashlib.sha256(lock.read_bytes()).hexdigest()
     data = json.loads(run(["cargo", "metadata", "--locked", "--format-version", "1"]))
-    verify_closure(data, product, f"git+{source.as_uri()}?rev={head}#{head}", pin)
+    locked_registry = {(p["name"], p["version"], p.get("source")) for p in ci.tomllib.loads((source / "Cargo.lock").read_text())["package"] if p.get("source", "").startswith("registry+")}
+    verify_closure(data, product, f"git+{source.as_uri()}?rev={head}#{head}", pin, locked_registry)
     (out / f"{name}-metadata.json").write_text(json.dumps(data))
     (out / f"{name}-tree.txt").write_text(run(["cargo", "tree", "--locked", "-e", "features"]))
     run(["cargo", "check", "--locked"])
