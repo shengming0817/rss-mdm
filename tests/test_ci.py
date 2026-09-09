@@ -96,3 +96,28 @@ class CodecFixtures(unittest.TestCase):
         self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
         for name, digest in manifest["fixtures"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
+
+class GroupConsumer(unittest.TestCase):
+    def test_only_pinned_group_and_value_types_are_consumed(self):
+        pin = ci.workspace_pin(ci.ROOT)
+        source = 'git+file:///tmp/source?rev=' + 'a' * 40 + '#' + 'a' * 40
+        rss_source = f'git+{pin[0]}?rev={pin[1]}#{pin[1]}'
+        names = ['group-consumer', 'rss-mdm-group', 'rss-contract', 'rss-request-context']
+        data = {'workspace_members': ['group-consumer'], 'packages': [
+            {'id': n, 'name': n, 'source': None if i == 0 else source if i == 1 else rss_source}
+            for i, n in enumerate(names)], 'resolve': {'root': 'group-consumer', 'nodes': [
+                {'id': n, 'deps': [{'pkg': p} for p in (names[1:] if i == 0 else names[2:] if i == 1 else [])]}
+                for i, n in enumerate(names)]}}
+        ci.verify_group_consumer(data, source, pin)
+        for bad_source in [None, 'path+file:///parent/rss', rss_source.replace(pin[1], '0' * 40)]:
+            bad = copy.deepcopy(data); bad['packages'][2]['source'] = bad_source
+            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        for dependency in ['rss-mdm-inventory', 'rss-mdm-group-postgres', 'reqwest', 'sqlx', 'rss-mdm-windows-mdm']:
+            bad = copy.deepcopy(data)
+            bad['packages'].append({'id': dependency, 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'})
+            bad['resolve']['nodes'][1]['deps'].append({'pkg': dependency})
+            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        bad = copy.deepcopy(data); bad['packages'][1]['source'] = 'path+file:///tmp/group'
+        with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        bad = copy.deepcopy(data); bad['resolve']['nodes'][0]['deps'].pop()
+        with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)

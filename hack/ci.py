@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-group": "crates/group",
     "rss-mdm-windows-mdm": "crates/windows-mdm",
     "rss-mdm-inventory": "crates/inventory",
     "rss-mdm-inventory-postgres": "crates/inventory-postgres",
@@ -130,9 +131,78 @@ def isolate():
             print(f"isolated {mode}: {', '.join(closure)}", flush=True)
         return "clean checkout, fresh Cargo home/target, both feature graphs passed"
 
+
+def verify_group_consumer(data, group_source, pin):
+    """Check resolved package identities and the actual production dependency edges."""
+    packages = {p["id"]: p for p in data["packages"]}
+    root = data["resolve"]["root"]
+    require(data["workspace_members"] == [root], "consumer must be the sole workspace member")
+    require(packages[root]["name"] == "group-consumer" and packages[root]["source"] is None, "invalid consumer root")
+    value_types = {"rss-contract", "rss-request-context"}
+    expected_rss = f"git+{pin[0]}?rev={pin[1]}#{pin[1]}"
+    group_ids = []
+    for key, package in packages.items():
+        name, source = package["name"], package["source"]
+        if key == root:
+            continue
+        if name == "rss-mdm-group":
+            require(source == group_source, "Group source must equal the tested Git SHA")
+            group_ids.append(key)
+        elif name.startswith("rss-"):
+            require(name in value_types and source == expected_rss, "unexpected RSS/product dependency or revision")
+        else:
+            require(source and source.startswith("registry+https://github.com/rust-lang/crates.io-index"), "unexpected path/source in consumer closure")
+    require(len(group_ids) == 1, "exactly one Group package required")
+    nodes = {n["id"]: n for n in data["resolve"]["nodes"]}
+    def dependencies(key):
+        return {packages[d["pkg"]]["name"] for d in nodes[key]["deps"]}
+    require(dependencies(root) == value_types | {"rss-mdm-group"}, "consumer must directly use only Group and its public value types")
+    require(dependencies(group_ids[0]) == value_types, "Group must depend only on public tenant/time values")
+
+def group_consumer(head):
+    """One package consumed from committed Git source; fixture source stays in Group tests."""
+    status = command(["/usr/bin/git", "status", "--porcelain"])
+    require(status.returncode == 0 and not status.stdout.strip(), "commit inputs before Group consumer proof")
+    pin = workspace_pin(ROOT)
+    url = ROOT.as_uri()
+    with tempfile.TemporaryDirectory(prefix="mdm-group-consumer-", dir="/tmp") as directory:
+        base = Path(directory).resolve()
+        consumer = base / "consumer"
+        (consumer / "tests").mkdir(parents=True)
+        for parent in [consumer, *consumer.parents]:
+            for name in ["config", "config.toml"]:
+                require(not (parent / ".cargo" / name).exists(), "ancestor Cargo config leaks into consumer")
+        for source, destination in [("crates/group/tests/consumer.rs", "tests/consumer.rs"), ("rust-toolchain.toml", "rust-toolchain.toml")]:
+            result = command(["/usr/bin/git", "show", f"{head}:{source}"])
+            require(result.returncode == 0, result.stdout)
+            (consumer / destination).write_text(result.stdout)
+        manifest = '[workspace]\n[package]\nname = "group-consumer"\nversion = "0.0.0"\nedition = "2024"\n[dependencies]\n'
+        for name, source, rev in [("rss-mdm-group", url, head), ("rss-contract", *pin), ("rss-request-context", *pin)]:
+            manifest += f'{name} = {{ git = {json.dumps(source)}, rev = {json.dumps(rev)}, default-features = false }}\n'
+        (consumer / "Cargo.toml").write_text(manifest)
+        env = {k:v for k,v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
+        env.update(CARGO_HOME=str(base / "cargo-home"), CARGO_TARGET_DIR=str(base / "target"))
+        logs = []
+        for args in [["cargo", "generate-lockfile"], ["cargo", "check", "--locked"], ["cargo", "test", "--locked"],
+                     ["cargo", "metadata", "--locked", "--format-version", "1"], ["cargo", "tree", "--locked", "-e", "features"]]:
+            result = subprocess.run(args, cwd=consumer, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, capture_output=True)
+            logs.append("$ " + " ".join(args) + "\n" + result.stdout + result.stderr)
+            (OUT / "group-consumer.log").write_text("\n".join(logs))
+            require(result.returncode == 0, "Group consumer command failed; see group-consumer.log")
+            if args[1] == "metadata":
+                verify_group_consumer(json.loads(result.stdout), f"git+{url}?rev={head}#{head}", pin)
+                (OUT / "group-metadata.json").write_text(result.stdout)
+            if args[1] == "tree":
+                (OUT / "group-tree.txt").write_text(result.stdout)
+        lock = (consumer / "Cargo.lock").read_bytes()
+        (OUT / "group-consumer.lock").write_bytes(lock)
+        (OUT / "group-consumer.json").write_text(json.dumps({"head": head, "rssRevision": pin[1], "lockSha256": hashlib.sha256(lock).hexdigest(),
+            "features": "default (Group has no optional features)", "source": "local committed Git revision", "T3": "not run"}, indent=2) + "\n")
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    for stale in ["isolation-error.txt", "result.json"]:
+    for stale in ["isolation-error.txt", "group-consumer-error.txt", "group-consumer.json", "group-consumer.lock", "group-metadata.json", "group-tree.txt", "result.json"]:
         (OUT / stale).unlink(missing_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     require(head.returncode == 0, "cannot resolve tested HEAD")
@@ -171,6 +241,13 @@ def main():
     except Exception as error:
         (OUT / "isolation-error.txt").write_text(str(error))
         results["isolation"] = "failed"
+    try:
+        print("local CI: Group public API consumer", flush=True)
+        group_consumer(start_head)
+        results["group-consumer"] = "passed"
+    except Exception as error:
+        (OUT / "group-consumer-error.txt").write_text(str(error))
+        results["group-consumer"] = "failed"
     end_head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     status = command(["/usr/bin/git", "status", "--porcelain"])
     results["identity"] = "passed" if end_head.returncode == 0 and end_head.stdout.strip() == start_head and status.returncode == 0 and not status.stdout.strip() else "failed"

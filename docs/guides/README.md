@@ -7,3 +7,5 @@
 - [F01 本地 Inventory](202609080000-2346-local-inventory.md)
 
 - [Windows MDM V1 编解码与关联](202609080000-2349-windows-mdm-codec.md)：协议配置、有界接口与 T1 证据边界。
+
+- [Group 类型化规则与成员差分](202609090000-2380-group-core.md)：纯核心 API、未知/完整性语义、历史对照与独立消费证据。
