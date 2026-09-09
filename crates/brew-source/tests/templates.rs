@@ -91,7 +91,10 @@ fn interpolation_is_literal_and_order_is_canonical() {
             "description",
             "https://acme.example/",
             variants,
-            CaskArtifact::Pkg("App.pkg".into()),
+            CaskArtifact::Pkg {
+                path: "App.pkg".into(),
+                receipts: vec!["com.acme.app".into()],
+            },
         )
         .unwrap()
         .render()
@@ -158,4 +161,28 @@ fn dependency_and_artifact_checks_are_explicit() {
     )
     .unwrap();
     assert!(!format!("{binding:?}").contains("secret"));
+}
+
+#[test]
+fn pkg_requires_literal_anchored_receipt_uninstall_metadata() {
+    let make = |receipts| {
+        Cask::new(
+            PackageKey::new(tenant(), "acme/private", "app").unwrap(),
+            "1",
+            "App",
+            "desc",
+            "https://acme.example/",
+            vec![(Architecture::Arm64, artifact())],
+            CaskArtifact::Pkg {
+                path: "App.pkg".into(),
+                receipts,
+            },
+        )
+    };
+    assert!(make(vec![]).is_err());
+    assert!(make(vec!["com.acme.*".into()]).is_err());
+    let doc = make(vec!["com.acme.app".into()]).unwrap().render().unwrap();
+    let text = std::str::from_utf8(doc.bytes()).unwrap();
+    assert!(text.contains(r#"uninstall pkgutil: ["^com\\.acme\\.app$"]"#));
+    assert!(text.contains("depends_on arch: :arm64"));
 }

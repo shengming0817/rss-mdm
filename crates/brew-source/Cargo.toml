@@ -10,8 +10,11 @@ rss-request-context = { workspace = true }
 rss-contract = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "time", "macros"] }
 tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -22,7 +22,16 @@ fn exact_manifest_and_publish_output() {
     assert_eq!(m.version(), "1.2");
     assert_eq!(m.sha256(), [0x11; 32]);
     let bytes = m.publication_metadata().unwrap();
-    assert_eq!(parse_manifest(&query(), &bytes).unwrap(), m);
+    let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(request.get("Data").is_none());
+    let envelope = serde_json::json!({"Data":request});
+    assert_eq!(
+        parse_manifest(&query(), &serde_json::to_vec(&envelope).unwrap()).unwrap(),
+        m
+    );
+    assert_eq!(m.query().architecture(), Architecture::X64);
+    assert_eq!(m.query().installer_type(), InstallerType::Msi);
+    assert_eq!(m.query().scope(), Scope::Machine);
 }
 #[test]
 fn malformed_unsupported_and_ambiguous_are_not_empty_success() {

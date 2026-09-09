@@ -8,10 +8,13 @@ publish.workspace = true
 [dependencies]
 rss-request-context = { workspace = true }
 reqwest = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+jsonschema = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }

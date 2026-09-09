@@ -1,7 +1,12 @@
 [
   {
+    "file": "publish-schema.json",
+    "sha256": "f2644bc45d5d4177bc36025b640c82b77ec3b18a3404c0f830aecc7569f5d377",
+    "origin": "Microsoft winget-cli-restsource 21cd5dda3dab39aa059f4d34914959736af7ee70 documentation/WinGet-1.0.0.yaml; ManifestSchema closure, nullable normalized"
+  },
+  {
     "file": "msi.json",
-    "sha256": "cb208e9fb18a9ec63ab6347bfeb3737cc9839c6004db90deb9c682de42b3bf23",
+    "sha256": "113acdb6215e3393fa3820a79a3ac5aa93a76c5d8b26a188b94d6f9c51cdf4eb",
     "origin": "RSS synthetic controlled MSI fixture; REST 1.0 shape"
   },
   {

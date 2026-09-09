@@ -100,10 +100,29 @@ async fn real_http_failures_do_not_look_successful() {
             302,
             "Location: http://127.0.0.1:1/secret\r\n".into(),
             String::new(),
-            Error::HttpStatus(302),
+            Error::HttpStatus {
+                stage: RequestStage::Information,
+                status: 302,
+            },
         ),
-        (404, String::new(), String::new(), Error::HttpStatus(404)),
-        (503, String::new(), String::new(), Error::HttpStatus(503)),
+        (
+            404,
+            String::new(),
+            String::new(),
+            Error::HttpStatus {
+                stage: RequestStage::Information,
+                status: 404,
+            },
+        ),
+        (
+            503,
+            String::new(),
+            String::new(),
+            Error::HttpStatus {
+                stage: RequestStage::Information,
+                status: 503,
+            },
+        ),
         (200, String::new(), "invalid".into(), Error::InvalidResponse),
         (
             200,
@@ -151,7 +170,12 @@ async fn total_timeout_and_cross_tenant_before_io() {
     let other = TenantId::parse("20000000-0000-0000-0000-000000000001").unwrap();
     let a = Access::new(other, "private", "source-token", None).unwrap();
     assert_eq!(client.query(&query(), &a).await, Err(Error::TenantMismatch));
-    assert_eq!(client.query(&query(), &access()).await, Err(Error::Timeout));
+    assert!(matches!(
+        client.query(&query(), &access()).await,
+        Err(Error::Timeout(
+            RequestStage::Information | RequestStage::Query
+        ))
+    ));
     assert!(
         Source::new(
             tenant(),
@@ -174,4 +198,152 @@ async fn total_timeout_and_cross_tenant_before_io() {
         )
         .is_err()
     );
+}
+
+#[tokio::test]
+#[ignore = "explicit real-provider T2 target"]
+async fn chunked_body_is_bounded_without_content_length() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let source = Source::new(
+        tenant(),
+        "private",
+        &format!("http://127.0.0.1:{port}/"),
+        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        "source-token",
+        Network::LoopbackHttp,
+    )
+    .unwrap();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(socket.read_u8().await.unwrap());
+            assert!(request.len() < 16384);
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let chunk = "a".repeat(96);
+        // Each frame fits; the cumulative second frame exceeds the 128-byte budget.
+        for _ in 0..2 {
+            socket
+                .write_all(format!("60\r\n{chunk}\r\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        let _ = socket.write_all(b"0\r\n\r\n").await;
+    });
+    let client =
+        Client::with_limits(source, Duration::from_secs(1), Duration::from_secs(2), 128).unwrap();
+    assert_eq!(
+        client.query(&query(), &access()).await,
+        Err(Error::BudgetExceeded)
+    );
+    tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "explicit real-provider T2 target"]
+async fn manifest_404_is_not_an_information_endpoint_failure() {
+    let (source, task) = server(vec![
+        (200, String::new(), info()),
+        (404, String::new(), String::new()),
+    ])
+    .await;
+    assert_eq!(
+        Client::new(source)
+            .unwrap()
+            .query(&query(), &access())
+            .await,
+        Err(Error::NotFound)
+    );
+    task.await.unwrap();
+    let (source, task) = server(vec![
+        (200, String::new(), info()),
+        (503, String::new(), String::new()),
+    ])
+    .await;
+    assert_eq!(
+        Client::new(source)
+            .unwrap()
+            .query(&query(), &access())
+            .await,
+        Err(Error::HttpStatus {
+            stage: RequestStage::Manifest,
+            status: 503
+        })
+    );
+    task.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "explicit real-provider T2 target"]
+async fn total_budget_spans_information_and_manifest() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let source = Source::new(
+        tenant(),
+        "private",
+        &format!("http://127.0.0.1:{port}/"),
+        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        "source-token",
+        Network::LoopbackHttp,
+    )
+    .unwrap();
+    let task = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(3), async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(first.read_u8().await.unwrap());
+                assert!(request.len() < 16384);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let body = info();
+            first
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(second.read_u8().await.unwrap());
+                assert!(request.len() < 16384);
+            }
+            assert!(request.starts_with(b"GET /packageManifests/"));
+            // Keep the second response pending until the total query budget cancels it.
+            assert_eq!(
+                second.read_u8().await.unwrap_err().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        })
+        .await
+        .unwrap();
+    });
+    let client = Client::with_limits(
+        source,
+        Duration::from_millis(100),
+        Duration::from_millis(600),
+        1024,
+    )
+    .unwrap();
+    assert_eq!(
+        client.query(&query(), &access()).await,
+        Err(Error::Timeout(RequestStage::Query))
+    );
+    task.await.unwrap();
 }

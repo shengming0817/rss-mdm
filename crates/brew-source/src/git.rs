@@ -29,11 +29,27 @@ impl CommitId {
         &self.0
     }
 }
+/// Verified fixed-commit content. Only Repository::read can construct it.
+/// ```compile_fail
+/// use rss_mdm_brew_source::{Snapshot, CommitId};
+/// fn forge(commit: CommitId) -> Snapshot { Snapshot { blob: commit.clone(), commit, digest: [0;32] } }
+/// ```
 #[derive(Clone, Debug)]
 pub struct Snapshot {
-    pub commit: CommitId,
-    pub blob: CommitId,
-    pub digest: [u8; 32],
+    commit: CommitId,
+    blob: CommitId,
+    digest: [u8; 32],
+}
+impl Snapshot {
+    pub fn commit(&self) -> &CommitId {
+        &self.commit
+    }
+    pub fn blob(&self) -> &CommitId {
+        &self.blob
+    }
+    pub const fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Prepared {
@@ -102,12 +118,23 @@ impl Repository {
         }
         Ok(())
     }
+    async fn object_type(&self, specification: &str) -> Result<Vec<u8>, Error> {
+        let input = format!("{specification}\n");
+        let out = self
+            .run(
+                &["cat-file", "--batch-check=%(objecttype)"],
+                Some(input.as_bytes()),
+                None,
+                None,
+            )
+            .await?;
+        if out == format!("{specification} missing\n").as_bytes() {
+            return Err(Error::NotFound);
+        }
+        Ok(out)
+    }
     async fn commit(&self, id: &CommitId) -> Result<(), Error> {
-        if self
-            .run(&["cat-file", "-t", id.as_str()], None, None, None)
-            .await?
-            != b"commit\n"
-        {
+        if self.object_type(id.as_str()).await? != b"commit\n" {
             return Err(Error::InvalidInput);
         }
         Ok(())
@@ -270,6 +297,9 @@ impl Repository {
         self.commit(commit).await?;
         self.check_path(commit, expected).await?;
         let path = format!("{}:{}", commit.as_str(), expected.path());
+        if self.object_type(&path).await? != b"blob\n" {
+            return Err(Error::PathDenied);
+        }
         let blob = output_id(
             &self
                 .run(&["rev-parse", "--verify", &path], None, None, None)
@@ -305,6 +335,21 @@ impl Repository {
         index: Option<&Path>,
         at: Option<Timepoint>,
     ) -> Result<Vec<u8>, Error> {
+        let stage = match args.first().copied() {
+            Some("read-tree") => GitStage::ReadTree,
+            Some("hash-object") => GitStage::HashObject,
+            Some("update-index") => GitStage::UpdateIndex,
+            Some("write-tree") => GitStage::WriteTree,
+            Some("commit-tree") => GitStage::CommitTree,
+            Some("for-each-ref") => GitStage::ReadRef,
+            Some("update-ref") => GitStage::UpdateRef,
+            Some("cat-file" | "ls-tree") => GitStage::ReadObject,
+            _ => GitStage::Inspect,
+        };
+        let failure = Error::GitFailure {
+            stage,
+            exit_code: None,
+        };
         let mut command = Command::new("/usr/bin/git");
         command
             .env_clear()
@@ -346,13 +391,13 @@ impl Repository {
                     .env(format!("GIT_{role}_DATE"), &date);
             }
         }
-        let mut child = command.spawn().map_err(|_| Error::Git)?;
-        let mut stdin = child.stdin.take().ok_or(Error::Git)?;
-        let stdout = child.stdout.take().ok_or(Error::Git)?;
+        let mut child = command.spawn().map_err(|_| failure)?;
+        let mut stdin = child.stdin.take().ok_or(failure)?;
+        let stdout = child.stdout.take().ok_or(failure)?;
         let operation = async {
             let writer = async {
                 if let Some(input) = input {
-                    stdin.write_all(input).await.map_err(|_| Error::Git)?;
+                    stdin.write_all(input).await.map_err(|_| failure)?;
                 }
                 drop(stdin);
                 Ok::<_, Error>(())
@@ -363,15 +408,19 @@ impl Repository {
                     .take((MAX_DOCUMENT + 1) as u64)
                     .read_to_end(&mut out)
                     .await
-                    .map_err(|_| Error::Git)?;
+                    .map_err(|_| failure)?;
                 if out.len() > MAX_DOCUMENT {
                     return Err(Error::BudgetExceeded);
                 }
                 Ok(out)
             };
             let (_, out) = tokio::try_join!(writer, reader)?;
-            if !child.wait().await.map_err(|_| Error::Git)?.success() {
-                return Err(Error::Git);
+            let status = child.wait().await.map_err(|_| failure)?;
+            if !status.success() {
+                return Err(Error::GitFailure {
+                    stage,
+                    exit_code: status.code(),
+                });
             }
             Ok(out)
         };
@@ -382,7 +431,7 @@ impl Repository {
                 let _ = child.wait().await;
                 match result {
                     Ok(Err(e)) => Err(e),
-                    _ => Err(Error::Timeout),
+                    _ => Err(Error::GitTimeout(stage)),
                 }
             }
         }

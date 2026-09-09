@@ -19,7 +19,7 @@ fn variant(arch: Architecture, byte: u8) -> Variant {
         arch,
         id("msi"),
         Declaration::Software {
-            package: Package::new(id("private"), id("Acme.App"), id("1.2")).unwrap(),
+            package: Package::new(id("private"), id("Acme.App"), id("1.2")),
             artifact,
             install: id("msi-install"),
             detect: id("product-code"),

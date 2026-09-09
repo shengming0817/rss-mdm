@@ -39,9 +39,20 @@ impl Manifest {
             Err(Error::InvalidDigest)
         }
     }
-    /// REST-shaped metadata for a future controlled publisher; performs no write.
+    /// POST /packageManifests request body (not the GET response envelope). No write.
     pub fn publication_metadata(&self) -> Result<Vec<u8>, Error> {
-        serde_json::to_vec(&self.document).map_err(|_| Error::InvalidResponse)
+        let mut request = self.document["Data"].clone();
+        let version = &mut request["Versions"][0];
+        // Empty Channel is common in GET responses, but violates POST minLength=1.
+        version
+            .as_object_mut()
+            .ok_or(Error::InvalidResponse)?
+            .remove("Channel");
+        let license = text(&version["DefaultLocale"], "License")?;
+        if !(3..=512).contains(&license.chars().count()) {
+            return Err(Error::InvalidResponse);
+        }
+        serde_json::to_vec(&request).map_err(|_| Error::InvalidResponse)
     }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, Error> {
@@ -101,7 +112,7 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
         }
         if version
             .get("Channel")
-            .is_some_and(|v| v.as_str() != Some(""))
+            .is_some_and(|v| !v.is_null() && v.as_str() != Some(""))
         {
             return Err(Error::Unsupported);
         }
@@ -141,6 +152,7 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
         ] {
             text(locale, key)?;
         }
+        validate_locale(locale)?;
         let installers = version["Installers"]
             .as_array()
             .ok_or(Error::InvalidResponse)?;
@@ -162,7 +174,7 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
             let arch = text(installer, "Architecture")?;
             let ty = text(installer, "InstallerType")?;
             let scope = match installer.get("Scope") {
-                None => "unspecified",
+                None | Some(Value::Null) => "unspecified",
                 Some(_) => text(installer, "Scope")?,
             };
             let installer_id = installer
@@ -175,7 +187,7 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
             if !["x64", "arm64"].contains(&arch)
                 || !["msi", "exe"].contains(&ty)
                 || !["user", "machine", "unspecified"].contains(&scope)
-                || (scope == "unspecified" && installer.get("Scope").is_some())
+                || (scope == "unspecified" && installer.get("Scope").is_some_and(|s| !s.is_null()))
             {
                 return Err(Error::Unsupported);
             }
@@ -205,4 +217,70 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
         }
     }
     found.ok_or(Error::NotFound)
+}
+
+fn validate_locale(locale: &Value) -> Result<(), Error> {
+    for (key, value) in locale.as_object().ok_or(Error::InvalidResponse)? {
+        if value.is_null()
+            && ![
+                "Publisher",
+                "PackageName",
+                "ShortDescription",
+                "License",
+                "PackageLocale",
+            ]
+            .contains(&key.as_str())
+        {
+            continue;
+        }
+        if key == "Tags" {
+            let tags = value.as_array().ok_or(Error::InvalidResponse)?;
+            if tags.len() > 16 {
+                return Err(Error::BudgetExceeded);
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for tag in tags {
+                let tag = tag.as_str().ok_or(Error::InvalidResponse)?;
+                if tag.is_empty()
+                    || tag.chars().count() > 40
+                    || tag.chars().any(char::is_whitespace)
+                    || !seen.insert(tag)
+                {
+                    return Err(Error::InvalidResponse);
+                }
+            }
+            continue;
+        }
+        let value = value.as_str().ok_or(Error::InvalidResponse)?;
+        let (min, max) = match key.as_str() {
+            "Publisher" | "PackageName" | "Author" => (2, 256),
+            "ShortDescription" => (3, 256),
+            "License" | "Copyright" => (3, 512),
+            "Description" => (3, 10000),
+            "PackageLocale" => (2, 20),
+            "Moniker" => (1, 40),
+            _ => (1, 2048),
+        };
+        if !(min..=max).contains(&value.chars().count()) || value.chars().any(char::is_control) {
+            return Err(Error::InvalidResponse);
+        }
+        if key.ends_with("Url") {
+            safe_url(value)?;
+        }
+        if key == "Moniker" && value.chars().any(char::is_whitespace) {
+            return Err(Error::InvalidResponse);
+        }
+        if key == "PackageLocale" {
+            let parts: Vec<_> = value.split('-').collect();
+            if parts[0].len() != 2
+                || !parts[0].bytes().all(|b| b.is_ascii_alphabetic())
+                || parts[1..].iter().any(|p| {
+                    p.is_empty() || p.len() > 8 || !p.bytes().all(|b| b.is_ascii_alphabetic())
+                })
+            {
+                return Err(Error::Unsupported);
+            }
+        }
+    }
+    Ok(())
 }

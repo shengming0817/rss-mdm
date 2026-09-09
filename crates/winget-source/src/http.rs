@@ -168,7 +168,7 @@ impl Client {
             .connect_timeout(connect)
             .timeout(total)
             .build()
-            .map_err(|_| Error::Transport)?;
+            .map_err(|_| Error::Transport(RequestStage::Setup))?;
         Ok(Self {
             source,
             http,
@@ -188,7 +188,7 @@ impl Client {
         }
         tokio::time::timeout(self.total, self.query_inner(query, access))
             .await
-            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::Timeout(RequestStage::Query))?
     }
     async fn query_inner(&self, query: &Query, access: &Access) -> Result<Manifest, Error> {
         let info = self
@@ -198,6 +198,7 @@ impl Client {
                     .join("information")
                     .map_err(|_| Error::InvalidInput)?,
                 access,
+                RequestStage::Information,
             )
             .await?;
         let info: serde_json::Value =
@@ -228,9 +229,9 @@ impl Client {
             .pop_if_empty()
             .push(&query.package);
         url.query_pairs_mut().append_pair("Version", &query.version);
-        parse_manifest(query, &self.get(url, access).await?)
+        parse_manifest(query, &self.get(url, access, RequestStage::Manifest).await?)
     }
-    async fn get(&self, url: Url, access: &Access) -> Result<Vec<u8>, Error> {
+    async fn get(&self, url: Url, access: &Access, stage: RequestStage) -> Result<Vec<u8>, Error> {
         let mut request = self
             .http
             .get(url)
@@ -239,9 +240,15 @@ impl Client {
         if let Some(token) = &access.bearer {
             request = request.header(AUTHORIZATION, token.clone())
         }
-        let mut response = request.send().await.map_err(transport)?;
+        let mut response = request.send().await.map_err(|e| transport(stage, e))?;
         if !response.status().is_success() {
-            return Err(Error::HttpStatus(response.status().as_u16()));
+            if stage == RequestStage::Manifest && response.status().as_u16() == 404 {
+                return Err(Error::NotFound);
+            }
+            return Err(Error::HttpStatus {
+                stage,
+                status: response.status().as_u16(),
+            });
         }
         if response
             .content_length()
@@ -250,7 +257,7 @@ impl Client {
             return Err(Error::BudgetExceeded);
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        while let Some(chunk) = response.chunk().await.map_err(|e| transport(stage, e))? {
             if chunk.len() > self.limit - bytes.len() {
                 return Err(Error::BudgetExceeded);
             }
@@ -259,10 +266,10 @@ impl Client {
         Ok(bytes)
     }
 }
-fn transport(e: reqwest::Error) -> Error {
+fn transport(stage: RequestStage, e: reqwest::Error) -> Error {
     if e.is_timeout() {
-        Error::Timeout
+        Error::Timeout(stage)
     } else {
-        Error::Transport
+        Error::Transport(stage)
     }
 }

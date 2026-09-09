@@ -18,11 +18,18 @@ pub enum Error {
     NotFound,
     Ambiguous,
     InvalidResponse,
-    HttpStatus(u16),
-    Timeout,
+    HttpStatus { stage: RequestStage, status: u16 },
+    Timeout(RequestStage),
     BudgetExceeded,
-    Transport,
+    Transport(RequestStage),
     AddressDenied,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestStage {
+    Setup,
+    Information,
+    Manifest,
+    Query,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -87,6 +94,9 @@ pub(crate) fn identity(s: &str) -> Result<(), Error> {
     }
 }
 pub(crate) fn safe_url(s: &str) -> Result<url::Url, Error> {
+    if s.len() > 2048 || s.chars().any(char::is_whitespace) || s.chars().any(char::is_control) {
+        return Err(Error::InvalidInput);
+    }
     let u = url::Url::parse(s).map_err(|_| Error::InvalidInput)?;
     if u.scheme() != "https"
         || u.host_str().is_none()
@@ -123,6 +133,12 @@ impl Query {
         for s in [source, package, version] {
             identity(s)?;
         }
+        let segments: Vec<_> = package.split('.').collect();
+        if !(2..=4).contains(&segments.len())
+            || segments.iter().any(|p| p.is_empty() || p.len() > 32)
+        {
+            return Err(Error::InvalidInput);
+        }
         Ok(Self {
             tenant,
             source: source.into(),
@@ -141,6 +157,15 @@ impl Query {
     }
     pub fn installer_id(&self) -> Option<&str> {
         self.installer_id.as_deref()
+    }
+    pub const fn architecture(&self) -> Architecture {
+        self.architecture
+    }
+    pub const fn installer_type(&self) -> InstallerType {
+        self.installer
+    }
+    pub const fn scope(&self) -> Scope {
+        self.scope
     }
     pub const fn tenant(&self) -> TenantId {
         self.tenant

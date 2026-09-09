@@ -133,12 +133,12 @@ pub struct Package {
     version: Id,
 }
 impl Package {
-    pub fn new(source: Id, package: Id, version: Id) -> Result<Self, Error> {
-        Ok(Self {
+    pub fn new(source: Id, package: Id, version: Id) -> Self {
+        Self {
             source,
             package,
             version,
-        })
+        }
     }
     pub fn source(&self) -> &Id {
         &self.source
@@ -224,6 +224,10 @@ impl Variant {
     }
 }
 /// INVARIANT: RESOURCE-FROZEN-CONTENT-01: private fields, no Deserialize or mutation.
+/// ```compile_fail
+/// use rss_mdm_resource::{Version, Digest};
+/// fn overwrite(version: &mut Version) { version.digest = Digest::from_bytes([0;32]); }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Version {
     tenant: TenantId,

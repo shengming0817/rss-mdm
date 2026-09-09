@@ -111,13 +111,37 @@ impl Bottle {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CaskArtifact {
     App(String),
-    Pkg(String),
+    /// Exact pkgutil receipt IDs, never arbitrary shell or Ruby.
+    Pkg {
+        path: String,
+        receipts: Vec<String>,
+    },
 }
 impl CaskArtifact {
     fn validate(&self) -> Result<(), Error> {
         let (s, suffix) = match self {
             Self::App(s) => (s, ".app"),
-            Self::Pkg(s) => (s, ".pkg"),
+            Self::Pkg { path, receipts } => {
+                if receipts.is_empty() || receipts.len() > 32 {
+                    return Err(Error::InvalidInput);
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for id in receipts {
+                    if id.len() > 255
+                        || id.split('.').count() < 2
+                        || id.split('.').any(|s| {
+                            s.is_empty()
+                                || !s
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                        })
+                        || !seen.insert(id)
+                    {
+                        return Err(Error::InvalidInput);
+                    }
+                }
+                (path, ".pkg")
+            }
         };
         if s.len() > 128
             || !s.ends_with(suffix)
@@ -133,7 +157,16 @@ impl CaskArtifact {
     fn render(&self) -> String {
         match self {
             Self::App(s) => format!("app {}", quote(s)),
-            Self::Pkg(s) => format!("pkg {}", quote(s)),
+            Self::Pkg { path, receipts } => {
+                let mut receipts = receipts.clone();
+                receipts.sort();
+                let patterns = receipts
+                    .iter()
+                    .map(|id| quote(&format!("^{}$", id.replace('.', "\\."))))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("pkg {}\n  uninstall pkgutil: [{}]", quote(path), patterns)
+            }
         }
     }
 }

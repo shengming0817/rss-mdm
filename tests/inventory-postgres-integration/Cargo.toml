@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 
 [lints]
 workspace = true

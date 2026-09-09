@@ -19,9 +19,26 @@ pub enum Error {
     Conflict,
     NotFound,
     Git,
-    Timeout,
+    GitFailure {
+        stage: GitStage,
+        exit_code: Option<i32>,
+    },
+    GitTimeout(GitStage),
     BudgetExceeded,
     OutcomeUnknown,
+}
+/// Safe operation context; never contains argv, paths, URLs or stderr.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitStage {
+    Inspect,
+    ReadTree,
+    HashObject,
+    UpdateIndex,
+    WriteTree,
+    CommitTree,
+    ReadRef,
+    UpdateRef,
+    ReadObject,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

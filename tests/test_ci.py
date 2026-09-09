@@ -115,3 +115,49 @@ class SourceConsumerBoundary(unittest.TestCase):
         data["packages"][1]["name"] = "rss-mdm-brew-source"
         with self.assertRaises(RuntimeError):
             module.verify_graph(data, product, "product-sha", "rss-sha")
+
+class SourceConsumerFailureCollection(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("source_consumers", ci.ROOT / "hack/source-consumers.py")
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def test_setup_failure_does_not_skip_later_packages(self):
+        visited = []
+        def run_one(name, test):
+            visited.append(name)
+            if name == "resource":
+                raise OSError("injected fixture-copy failure")
+            return {"status": "passed"}
+        result = self.module.collect_consumers(run_one)
+        self.assertEqual(visited, list(self.module.PACKAGES))
+        self.assertEqual(result["resource"]["status"], "failed")
+        self.assertEqual(result["brew-source"]["status"], "passed")
+
+    def test_new_features_and_tokio_expansion_are_rejected(self):
+        product = "rss-mdm-brew-source"
+        data = {"packages": [{"id": "p", "name": product, "source": "product-sha", "features": {}}], "resolve": {"nodes": [{"id": "p", "deps": [], "features": []}]}}
+        self.module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["packages"][0]["features"] = {"default": ["new-capability"]}
+        with self.assertRaises(RuntimeError):
+            self.module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["packages"][0]["features"] = {}
+        data["packages"].append({"id": "tokio", "name": "tokio", "source": "registry"})
+        data["resolve"]["nodes"].append({"id": "tokio", "deps": [], "features": ["process", "time", "net"]})
+        data["resolve"]["nodes"][0]["deps"] = [{"pkg": "tokio", "dep_kinds": [{"kind": None}]}]
+        with self.assertRaises(RuntimeError):
+            self.module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["resolve"]["nodes"][1]["features"] = ["process", "time"]
+        self.module.verify_graph(data, product, "product-sha", "rss-sha")
+
+    def test_dirty_input_cannot_leave_previous_success_receipt(self):
+        from unittest.mock import patch
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "result.json").write_text('{"status":"passed","head":"old"}')
+            (out / "resource-metadata.json").write_text('{"old":true}')
+            with patch.object(self.module, "OUT", out), patch.object(self.module.subprocess, "check_output", return_value=" M changed"):
+                self.assertEqual(self.module.main(), 1)
+            self.assertFalse((out / "resource-metadata.json").exists())
+            self.assertEqual(json.loads((out / "result.json").read_text())["status"], "failed")
