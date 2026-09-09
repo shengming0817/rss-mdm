@@ -885,6 +885,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-policy"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-request-context",
+ "sha2 0.10.9",
+ "thiserror",
+]
+
+[[package]]
+name = "rss-mdm-scope"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-request-context",
+ "thiserror",
+]
+
+[[package]]
 name = "rss-mdm-windows-mdm"
 version = "0.1.0"
 dependencies = [

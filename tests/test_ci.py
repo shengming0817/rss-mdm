@@ -96,3 +96,27 @@ class CodecFixtures(unittest.TestCase):
         self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
         for name, digest in manifest["fixtures"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
+
+class CoreConsumerGate(unittest.TestCase):
+    def test_core_closure_rejects_foreign_core_provider_and_wrong_sources(self):
+        import sys
+        sys.path.insert(0,str(ci.ROOT/'hack'))
+        import core_consumer as core
+        pin=('https://example.com/rss','1'*40)
+        product='git+file:///isolated/source?rev='+'2'*40+'#'+'2'*40
+        upstream='git+'+pin[0]+'?rev='+pin[1]+'#'+pin[1]
+        registry='registry+https://github.com/rust-lang/crates.io-index'
+        data={'workspace_members':['consumer'],'packages':[
+            {'id':'consumer','name':'consumer','source':None},
+            {'id':'scope','name':'rss-mdm-scope','source':product},
+            {'id':'contract','name':'rss-contract','source':upstream},
+            {'id':'context','name':'rss-request-context','source':upstream},
+            {'id':'error','name':'thiserror','source':registry}]}
+        core.verify_closure(data,'rss-mdm-scope',product,pin)
+        for name,source in [('rss-mdm-policy',product),('sqlx-core',registry),('hyper',registry),('rss-observation',upstream),('helper','path+file:///parent')]:
+            bad=copy.deepcopy(data);bad['packages'].append({'id':'bad','name':name,'source':source})
+            with self.subTest(name=name),self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin)
+        bad=copy.deepcopy(data);bad['packages'][1]['source']='path+file:///parent'
+        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin)
+        bad=copy.deepcopy(data);bad['packages'].pop(1)
+        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin)

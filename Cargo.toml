@@ -1,8 +1,8 @@
 # 与 RSS 一致的扁平 workspace；产品实现按职责放在 crates/ 下。
 [workspace]
 resolver = "3"
-members = ["crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration"]
-default-members = ["crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples"]
+members = ["crates/scope", "crates/policy", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration"]
+default-members = ["crates/scope", "crates/policy", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,9 @@ rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
+rss-mdm-scope = { path = "crates/scope" }
+rss-mdm-policy = { path = "crates/policy" }
+thiserror = "2"
 rss-mdm-windows-mdm = { path = "crates/windows-mdm" }
 quick-xml = { version = "=0.42.0", default-features = false }
 base64 = "=0.22.1"
