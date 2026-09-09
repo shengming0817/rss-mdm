@@ -57,6 +57,7 @@ fn leaf(op: Op, value: Option<Value>) -> Criteria {
 }
 fn rule(kind: FieldType, op: Op, value: Option<Value>) -> Rule {
     Rule::new(
+        tenant(),
         "rule-1",
         "dictionary-1",
         vec![field(kind, &[op])],
@@ -361,7 +362,8 @@ fn nested_logic_collects_stable_explanations_and_checks_every_branch() {
                 Criteria::or(children)
             }
             .unwrap();
-            let r = Rule::new("1", "dictionary-1", vec![f.clone(), g.clone()], c).unwrap();
+            let r =
+                Rule::new(tenant(), "1", "dictionary-1", vec![f.clone(), g.clone()], c).unwrap();
             let mut s = snapshot(FactState::Known(string("yes")));
             s.complete = false;
             let e = evaluate(&r, &s, 10);
@@ -375,7 +377,7 @@ fn nested_logic_collects_stable_explanations_and_checks_every_branch() {
     let nested =
         Criteria::and(vec![yes.clone(), Criteria::or(vec![yes, unknown]).unwrap()]).unwrap();
     assert!(matches!(
-        Rule::new("1", "1", vec![f], nested),
+        Rule::new(tenant(), "1", "1", vec![f], nested),
         Err(Error::UnknownField)
     ));
 }
@@ -464,6 +466,7 @@ fn rule_types_units_and_operations_fail_before_any_evaluation() {
     let kind = FieldType::Scalar(ScalarType::String);
     assert!(matches!(
         Rule::new(
+            tenant(),
             "1",
             "1",
             vec![field(kind, &[Op::Lt])],
@@ -473,6 +476,7 @@ fn rule_types_units_and_operations_fail_before_any_evaluation() {
     ));
     assert!(matches!(
         Rule::new(
+            tenant(),
             "1",
             "1",
             vec![field(kind, &[Op::Eq])],
@@ -481,13 +485,25 @@ fn rule_types_units_and_operations_fail_before_any_evaluation() {
         Err(Error::InvalidType)
     ));
     assert!(matches!(
-        Rule::new("1", "1", vec![field(kind, &[Op::Eq])], leaf(Op::Eq, None)),
+        Rule::new(
+            tenant(),
+            "1",
+            "1",
+            vec![field(kind, &[Op::Eq])],
+            leaf(Op::Eq, None)
+        ),
         Err(Error::InvalidOperation)
     ));
     let mut f = field(FieldType::Scalar(ScalarType::Integer), &[Op::Eq]);
     f.unit = Some("MiB".into());
     assert!(matches!(
-        Rule::new("1", "1", vec![f.clone()], leaf(Op::Eq, Some(integer(1)))),
+        Rule::new(
+            tenant(),
+            "1",
+            "1",
+            vec![f.clone()],
+            leaf(Op::Eq, Some(integer(1)))
+        ),
         Err(Error::InvalidUnit)
     ));
     let c = Criteria::predicate(Predicate {
@@ -499,7 +515,7 @@ fn rule_types_units_and_operations_fail_before_any_evaluation() {
         }),
     })
     .unwrap();
-    assert!(Rule::new("1", "1", vec![f], c).is_ok());
+    assert!(Rule::new(tenant(), "1", "1", vec![f], c).is_ok());
     let mixed = set(
         ScalarType::Integer,
         vec![Scalar::Integer(1), Scalar::Boolean(true)],
@@ -518,6 +534,7 @@ fn rule_types_units_and_operations_fail_before_any_evaluation() {
     let mut f = field(kind, &[Op::Eq]);
     f.nullable = false;
     let r = Rule::new(
+        tenant(),
         "1",
         "dictionary-1",
         vec![f],
@@ -577,6 +594,7 @@ fn depth_nodes_sets_and_string_limits_have_inclusive_boundaries() {
     .unwrap();
     assert!(matches!(
         Rule::new(
+            tenant(),
             "1",
             "1",
             vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
@@ -612,6 +630,7 @@ fn batch_work_and_size_limits_are_enforced_without_partial_results() {
     );
     let c = Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); 99]).unwrap();
     let r = Rule::new(
+        tenant(),
         "1",
         "dictionary-1",
         vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
@@ -622,6 +641,7 @@ fn batch_work_and_size_limits_are_enforced_without_partial_results() {
     assert!(r.evaluate(&s, time(10)).is_ok()); // exactly 1,000,000 visits before deduplication
     let c = Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); 100]).unwrap();
     let r = Rule::new(
+        tenant(),
         "1",
         "dictionary-1",
         vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
@@ -641,7 +661,7 @@ fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
         fields.push(f);
     }
     let c = leaf(Op::Eq, Some(string("x")));
-    let r = Rule::new("1", "dictionary-1", fields.clone(), c.clone()).unwrap();
+    let r = Rule::new(tenant(), "1", "dictionary-1", fields.clone(), c.clone()).unwrap();
     assert_eq!(r.predicate_at(&[]).unwrap().field, "device.model");
     assert!(r.predicate_at(&[0]).is_none());
     let mut s = snapshot(FactState::Known(string("x")));
@@ -652,11 +672,11 @@ fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
     assert_eq!(r.evaluate(&s, time(10)), Err(Error::PermissionDenied));
     fields.push(fields[0].clone());
     assert!(matches!(
-        Rule::new("1", "1", fields, c.clone()),
+        Rule::new(tenant(), "1", "1", fields, c.clone()),
         Err(Error::LimitExceeded)
     ));
     assert!(matches!(
-        Rule::new("1", "1", vec![field(kind, &[Op::Eq]); 2], c),
+        Rule::new(tenant(), "1", "1", vec![field(kind, &[Op::Eq]); 2], c),
         Err(Error::InvalidStructure)
     ));
 }
@@ -688,7 +708,14 @@ fn historical_nested_criteria_has_one_literal_interpretation() {
         .unwrap(),
     ])
     .unwrap();
-    let r = Rule::new("historical-shape-1", "dictionary-1", vec![model, os], tree).unwrap();
+    let r = Rule::new(
+        tenant(),
+        "historical-shape-1",
+        "dictionary-1",
+        vec![model, os],
+        tree,
+    )
+    .unwrap();
     let mut s = snapshot(FactState::Known(string("DESKTOP-001")));
     let mut os_fact = s.objects[0].facts["device.model"].clone();
     os_fact.state = FactState::Known(string("10.0.26100"));
@@ -709,6 +736,39 @@ fn historical_nested_criteria_has_one_literal_interpretation() {
         assert!(r.predicate_at(&explanation.path).is_some());
     }
     assert!(r.predicate_at(&[1]).is_none());
+    for (os, model, expected, outcomes) in [
+        (
+            "other",
+            "DESKTOP-001",
+            Decision::NoMatch,
+            [Outcome::NoMatch, Outcome::Match, Outcome::NoMatch],
+        ),
+        (
+            "10.0.26100",
+            "SERVER-001",
+            Decision::NoMatch,
+            [Outcome::Match, Outcome::NoMatch, Outcome::NoMatch],
+        ),
+        (
+            "10.0.26100",
+            "LAPTOP-001",
+            Decision::Match,
+            [Outcome::Match, Outcome::NoMatch, Outcome::Match],
+        ),
+    ] {
+        s.objects[0]
+            .facts
+            .get_mut("device.os.version")
+            .unwrap()
+            .state = FactState::Known(string(os));
+        s.objects[0].facts.get_mut("device.model").unwrap().state = FactState::Known(string(model));
+        let e = evaluate(&r, &s, 10);
+        assert_eq!(e.decision, expected);
+        assert_eq!(
+            e.explanations.iter().map(|e| e.outcome).collect::<Vec<_>>(),
+            outcomes
+        );
+    }
 }
 
 #[test]
@@ -722,6 +782,144 @@ fn empty_results_keep_the_tenant_coordinate() {
     s.objects.clear();
     let first = r.evaluate(&s, time(10)).unwrap();
     s.tenant = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    let r = Rule::new(
+        s.tenant,
+        "rule-1",
+        "dictionary-1",
+        vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
+        leaf(Op::Eq, Some(string("x"))),
+    )
+    .unwrap();
     let second = r.evaluate(&s, time(10)).unwrap();
     assert_ne!(first, second);
+}
+
+#[test]
+fn rules_cannot_be_applied_to_another_tenants_consistent_snapshot() {
+    let r = rule(
+        FieldType::Scalar(ScalarType::String),
+        Op::Eq,
+        Some(string("x")),
+    );
+    let mut s = snapshot(FactState::Known(string("x")));
+    s.tenant = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    s.objects[0].key = ObjectKey::new(s.tenant, "device-a").unwrap();
+    for empty in [false, true] {
+        if empty {
+            s.objects.clear();
+        }
+        assert_eq!(r.evaluate(&s, time(10)), Err(Error::TenantMismatch));
+        assert_eq!(r.recalculate(&s, time(10), &[]), Err(Error::TenantMismatch));
+    }
+}
+
+#[test]
+fn recalculation_shares_the_input_byte_budget_with_old_members() {
+    let r = rule(
+        FieldType::Scalar(ScalarType::String),
+        Op::Eq,
+        Some(string("x")),
+    );
+    let old = vec![ObjectKey::new(tenant(), "a".repeat(4096)).unwrap(); 2100];
+    let mut s = snapshot(FactState::Known(string(&"x".repeat(4096))));
+    s.objects = vec![s.objects[0].clone(); 2100];
+    assert!(diff(tenant(), &old, &[]).is_ok());
+    assert!(r.evaluate(&s, time(10)).is_ok());
+    assert_eq!(r.recalculate(&s, time(10), &old), Err(Error::LimitExceeded));
+}
+
+#[test]
+fn explanation_materialization_is_bounded_before_output_allocation() {
+    let mut fields = Vec::new();
+    let mut criteria = Vec::new();
+    let mut s = snapshot(FactState::Known(string("x")));
+    let fact = s.objects[0].facts["device.model"].clone();
+    s.objects[0].facts.clear();
+    s.coverage.clear();
+    for i in 0..128 {
+        let key = format!("field-{i}");
+        let mut f = field(FieldType::Scalar(ScalarType::String), &[Op::Eq]);
+        f.key = key.clone();
+        fields.push(f);
+        criteria.push(
+            Criteria::predicate(Predicate {
+                field: key.clone(),
+                op: Op::Eq,
+                operand: Some(Operand {
+                    value: string("x"),
+                    unit: None,
+                }),
+            })
+            .unwrap(),
+        );
+        s.coverage.insert(key.clone());
+        s.objects[0].facts.insert(key, fact.clone());
+    }
+    let r = Rule::new(
+        tenant(),
+        "1",
+        "dictionary-1",
+        fields,
+        Criteria::and(criteria).unwrap(),
+    )
+    .unwrap();
+    let object = s.objects[0].clone();
+    s.objects = (0..512)
+        .map(|i| {
+            let mut o = object.clone();
+            o.key = ObjectKey::new(tenant(), format!("device-{i}")).unwrap();
+            o
+        })
+        .collect();
+    let result = r.evaluate(&s, time(10)).unwrap();
+    assert_eq!(
+        result
+            .objects
+            .iter()
+            .map(|o| o.explanations.len())
+            .sum::<usize>(),
+        65_536
+    );
+    assert_eq!(
+        result
+            .objects
+            .iter()
+            .map(|o| o.provenance.len())
+            .sum::<usize>(),
+        65_536
+    );
+    s.objects.push(s.objects[0].clone()); // duplicate inputs do not multiply output
+    assert_eq!(r.evaluate(&s, time(10)).unwrap(), result);
+    let mut extra = object;
+    extra.key = ObjectKey::new(tenant(), "extra").unwrap();
+    s.objects.push(extra);
+    assert_eq!(r.evaluate(&s, time(10)), Err(Error::LimitExceeded));
+    assert_eq!(r.recalculate(&s, time(10), &[]), Err(Error::LimitExceeded));
+}
+
+#[test]
+fn empty_differences_preserve_tenant_identity() {
+    let other = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    assert_ne!(
+        diff(tenant(), &[], &[]).unwrap(),
+        diff(other, &[], &[]).unwrap()
+    );
+    assert_eq!(diff(tenant(), &[], &[]).unwrap().tenant, tenant());
+}
+
+#[test]
+fn preview_evidence_distinguishes_a_partial_universe() {
+    let r = rule(
+        FieldType::Scalar(ScalarType::String),
+        Op::Eq,
+        Some(string("x")),
+    );
+    let mut s = snapshot(FactState::Known(string("x")));
+    let complete = r.evaluate(&s, time(10)).unwrap();
+    s.complete = false;
+    let partial = r.evaluate(&s, time(10)).unwrap();
+    assert_eq!(complete.objects, partial.objects);
+    assert_ne!(complete, partial);
+    assert!(!partial.complete);
+    assert_eq!(partial.coverage, s.coverage);
 }

@@ -13,6 +13,7 @@ pub struct ObjectKey {
     id: String,
 }
 impl ObjectKey {
+    /// Construct a key; rejects blank/control-character identifiers and overlong UTF-8 strings.
     pub fn new(tenant: TenantId, id: impl Into<String>) -> Result<Self> {
         let id = id.into();
         identity(&id, &mut 0)?;
@@ -36,6 +37,7 @@ impl PartialOrd for ObjectKey {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Supported primitive field types; no floating point or implicit coercions.
 pub enum ScalarType {
     String,
     Boolean,
@@ -43,11 +45,13 @@ pub enum ScalarType {
     Time,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A scalar or homogeneous set, including explicitly typed empty sets.
 pub enum FieldType {
     Scalar(ScalarType),
     Set(ScalarType),
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Typed literal; strings use exact UTF-8 equality and literal substring semantics.
 pub enum Scalar {
     String(String),
     Boolean(bool),
@@ -103,6 +107,7 @@ impl Value {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Closed V1 operator surface. Regex, legacy expressions and group references are absent.
 pub enum Op {
     Eq,
     Ne,
@@ -120,6 +125,7 @@ pub enum Op {
     IsNotNull,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Caller-owned dictionary entry. Units and allowed operations apply to every fact for this key.
 pub struct Field {
     pub key: String,
     pub kind: FieldType,
@@ -128,11 +134,13 @@ pub struct Field {
     pub nullable: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Predicate value with the exact dictionary unit (None means unitless); never converted.
 pub struct Operand {
     pub value: Value,
     pub unit: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Field comparison. IsNull/IsNotNull require no operand; all others require one.
 pub struct Predicate {
     pub field: String,
     pub op: Op,
@@ -149,6 +157,7 @@ pub enum FactState {
     Denied,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// One resolved source fact. Source selection is external; validity is [observed_at, valid_until).
 pub struct Fact {
     pub state: FactState,
     pub source: String,
@@ -157,6 +166,7 @@ pub struct Fact {
     pub valid_until: Option<Timepoint>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Facts for one complete tenant/device key. Each covered field must be present explicitly.
 pub struct ObjectSnapshot {
     pub key: ObjectKey,
     pub facts: BTreeMap<String, Fact>,
@@ -174,7 +184,9 @@ pub struct Snapshot {
     pub objects: Vec<ObjectSnapshot>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Canonical set differences, retaining the tenant even when all three sets are empty.
 pub struct Difference {
+    pub tenant: TenantId,
     pub added: Vec<ObjectKey>,
     pub removed: Vec<ObjectKey>,
     pub unchanged: Vec<ObjectKey>,
@@ -194,17 +206,26 @@ pub(crate) fn members(
     bound(*bytes, limits::BATCH_BYTES)?;
     Ok(input.iter().cloned().collect())
 }
-pub(crate) fn difference(old: &BTreeSet<ObjectKey>, new: &BTreeSet<ObjectKey>) -> Difference {
+pub(crate) fn difference(
+    tenant: TenantId,
+    old: &BTreeSet<ObjectKey>,
+    new: &BTreeSet<ObjectKey>,
+) -> Difference {
     Difference {
+        tenant,
         added: new.difference(old).cloned().collect(),
         removed: old.difference(new).cloned().collect(),
         unchanged: old.intersection(new).cloned().collect(),
     }
 }
 /// Pure set difference, including static members; no Criteria or persistence involved.
+///
+/// Returns TenantMismatch for any foreign key and LimitExceeded for list/string budgets.
+/// Input order and duplicate keys do not affect the result.
 pub fn diff(tenant: TenantId, old: &[ObjectKey], new: &[ObjectKey]) -> Result<Difference> {
     let mut bytes = 0;
     Ok(difference(
+        tenant,
         &members(tenant, old, &mut bytes)?,
         &members(tenant, new, &mut bytes)?,
     ))

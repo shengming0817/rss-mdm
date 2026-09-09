@@ -209,6 +209,7 @@ def verify_group_consumer(data, group_source, pin):
             require(source and source.startswith("registry+https://github.com/rust-lang/crates.io-index"), "unexpected path/source in consumer closure")
     require(len(group_ids) == 1, "exactly one Group package required")
     nodes = {n["id"]: n for n in data["resolve"]["nodes"]}
+    require(packages[group_ids[0]]["features"] == {} and nodes[group_ids[0]]["features"] == [], "Group feature surface changed; extend the consumer matrix explicitly")
     def dependencies(key):
         return {packages[d["pkg"]]["name"] for d in nodes[key]["deps"]}
     require(dependencies(root) == value_types | {"rss-mdm-group"}, "consumer must directly use only Group and its public value types")
@@ -216,6 +217,7 @@ def verify_group_consumer(data, group_source, pin):
 
 def group_consumer(head):
     """One package consumed from committed Git source; fixture source stays in Group tests."""
+    (OUT / "group-consumer.log").write_text(f"tested HEAD: {head}\n")
     status = command(["/usr/bin/git", "status", "--porcelain"])
     require(status.returncode == 0 and not status.stdout.strip(), "commit inputs before Group consumer proof")
     pin = workspace_pin(ROOT)
@@ -233,11 +235,12 @@ def group_consumer(head):
             (consumer / destination).write_text(result.stdout)
         manifest = '[workspace]\n[package]\nname = "group-consumer"\nversion = "0.0.0"\nedition = "2024"\n[dependencies]\n'
         for name, source, rev in [("rss-mdm-group", url, head), ("rss-contract", *pin), ("rss-request-context", *pin)]:
-            manifest += f'{name} = {{ git = {json.dumps(source)}, rev = {json.dumps(rev)}, default-features = false }}\n'
+            options = '' if name == 'rss-mdm-group' else ', default-features = false'
+            manifest += f'{name} = {{ git = {json.dumps(source)}, rev = {json.dumps(rev)}{options} }}\n'
         (consumer / "Cargo.toml").write_text(manifest)
         env = {k:v for k,v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
         env.update(CARGO_HOME=str(base / "cargo-home"), CARGO_TARGET_DIR=str(base / "target"))
-        logs = []
+        logs = [f"tested HEAD: {head}"]
         for args in [["cargo", "generate-lockfile"], ["cargo", "check", "--locked"], ["cargo", "test", "--locked"],
                      ["cargo", "metadata", "--locked", "--format-version", "1"], ["cargo", "tree", "--locked", "-e", "features"]]:
             result = subprocess.run(args, cwd=consumer, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, capture_output=True)
@@ -252,12 +255,12 @@ def group_consumer(head):
         lock = (consumer / "Cargo.lock").read_bytes()
         (OUT / "group-consumer.lock").write_bytes(lock)
         (OUT / "group-consumer.json").write_text(json.dumps({"head": head, "rssRevision": pin[1], "lockSha256": hashlib.sha256(lock).hexdigest(),
-            "features": "default (Group has no optional features)", "source": "local committed Git revision", "T3": "not run"}, indent=2) + "\n")
+            "features": "Group defaults enabled; empty declared/resolved feature sets verified", "source": "local committed Git revision", "T3": "not run"}, indent=2) + "\n")
 
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    for stale in ["isolation-error.txt", "group-consumer-error.txt", "group-consumer.json", "group-consumer.lock", "group-metadata.json", "group-tree.txt", "result.json"]:
+    for stale in ["isolation-error.txt", "group-consumer-error.txt", "group-consumer.log", "group-consumer.json", "group-consumer.lock", "group-metadata.json", "group-tree.txt", "result.json"]:
         (OUT / stale).unlink(missing_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     require(head.returncode == 0, "cannot resolve tested HEAD")

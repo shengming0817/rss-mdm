@@ -15,6 +15,8 @@ pub struct Criteria {
     depth: usize,
 }
 impl Criteria {
+    /// Build one bounded leaf; dictionary/operator compatibility is checked by Rule::new.
+    /// Rejects invalid identifiers, heterogeneous sets and string/collection budget overflow.
     pub fn predicate(predicate: Predicate) -> Result<Self> {
         let mut bytes = 0;
         identity(&predicate.field, &mut bytes)?;
@@ -31,9 +33,11 @@ impl Criteria {
             depth: 1,
         })
     }
+    /// Nonempty conjunction. Rejects node/depth overflow before constructing a recursive parent.
     pub fn and(children: Vec<Self>) -> Result<Self> {
         Self::group(children, true)
     }
+    /// Nonempty disjunction with the same construction budgets as and.
     pub fn or(children: Vec<Self>) -> Result<Self> {
         Self::group(children, false)
     }
@@ -62,6 +66,7 @@ impl Criteria {
 /// One immutable, completely validated rule/dictionary pair. Versions are opaque evidence IDs.
 #[derive(Clone, Debug)]
 pub struct Rule {
+    pub(crate) tenant: rss_request_context::TenantId,
     pub(crate) version: String,
     pub(crate) dictionary_version: String,
     pub(crate) fields: BTreeMap<String, Field>,
@@ -83,7 +88,11 @@ impl Rule {
             _ => None,
         }
     }
+    /// Bind a tenant and immutable evidence versions to a fully validated dictionary/AST.
+    /// Rejects duplicate/unknown fields, incompatible operators/types/units and budget overflow.
+    /// Versions identify caller-owned inputs; no legacy format or version dispatch is performed.
     pub fn new(
+        tenant: rss_request_context::TenantId,
         version: impl Into<String>,
         dictionary_version: impl Into<String>,
         fields: Vec<Field>,
@@ -109,6 +118,7 @@ impl Rule {
             }
         }
         let mut rule = Self {
+            tenant,
             version,
             dictionary_version,
             fields: dictionary,

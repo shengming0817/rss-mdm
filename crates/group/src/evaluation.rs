@@ -8,12 +8,14 @@ use rss_contract::Timepoint;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Three-valued result; only Match is eligible for a new membership set.
 pub enum Decision {
     Match,
     NoMatch,
     Unknown,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Distinct missing/empty/freshness/support causes; never substituted with zero values.
 pub enum UnknownReason {
     Null,
     Missing,
@@ -22,6 +24,7 @@ pub enum UnknownReason {
     Future,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A predicate result with its specific unknown reason.
 pub enum Outcome {
     Match,
     NoMatch,
@@ -54,6 +57,7 @@ pub struct Provenance {
     pub valid_until: Option<Timepoint>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Stable leaf explanations and once-per-field provenance; contains no fact values.
 pub struct ObjectEvaluation {
     pub key: ObjectKey,
     pub decision: Decision,
@@ -61,7 +65,11 @@ pub struct ObjectEvaluation {
     pub provenance: BTreeMap<String, Provenance>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Evidence-bound preview, including completeness so partial results remain distinguishable.
 pub struct Evaluation {
+    /// Caller-declared universe completeness; this is not a verified asset receipt.
+    pub complete: bool,
+    pub coverage: BTreeSet<String>,
     pub tenant: rss_request_context::TenantId,
     pub rule_version: String,
     pub dictionary_version: String,
@@ -71,6 +79,7 @@ pub struct Evaluation {
     pub objects: Vec<ObjectEvaluation>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Complete calculation, its stable difference and separately listed unknown objects.
 pub struct Recalculation {
     pub evaluation: Evaluation,
     pub difference: crate::Difference,
@@ -90,6 +99,9 @@ impl Rule {
         as_of: Timepoint,
         old: &[ObjectKey],
     ) -> Result<Recalculation> {
+        if self.tenant != snapshot.tenant {
+            return Err(Error::TenantMismatch);
+        }
         if !snapshot.complete || !self.required.is_subset(&snapshot.coverage) {
             return Err(Error::IncompleteSnapshot);
         }
@@ -109,7 +121,7 @@ impl Rule {
             .map(|o| o.key.clone())
             .collect();
         Ok(Recalculation {
-            difference: difference(&old, &new),
+            difference: difference(self.tenant, &old, &new),
             evaluation,
             unknown,
         })
@@ -120,6 +132,9 @@ impl Rule {
         as_of: Timepoint,
         bytes: &mut usize,
     ) -> Result<Evaluation> {
+        if self.tenant != s.tenant {
+            return Err(Error::TenantMismatch);
+        }
         identity(&s.id, bytes)?;
         identity(&s.version, bytes)?;
         identity(&s.dictionary_version, bytes)?;
@@ -185,10 +200,18 @@ impl Rule {
             bound(*bytes, limits::BATCH_BYTES)?;
         }
         bound(*bytes, limits::BATCH_BYTES)?;
+        let leaves = leaf_count(&self.criteria);
+        bound(
+            objects
+                .len()
+                .checked_mul(leaves)
+                .ok_or(Error::LimitExceeded)?,
+            limits::EXPLANATIONS,
+        )?;
         let objects = objects
             .values()
             .map(|object| {
-                let mut explanations = Vec::new();
+                let mut explanations = Vec::with_capacity(leaves);
                 let decision = evaluate_node(
                     &self.criteria,
                     &object.facts,
@@ -222,6 +245,8 @@ impl Rule {
             })
             .collect();
         Ok(Evaluation {
+            complete: s.complete,
+            coverage: s.coverage.clone(),
             tenant: s.tenant,
             rule_version: self.version.clone(),
             dictionary_version: self.dictionary_version.clone(),
@@ -329,4 +354,11 @@ fn predicate(fact: Option<&Fact>, op: Op, operand: Option<&Value>, now: Timepoin
         _ => unreachable!("rule and fact types are validated before evaluation"),
     };
     Outcome::from_bool(result)
+}
+
+fn leaf_count(c: &Criteria) -> usize {
+    match &c.node {
+        Node::Predicate(_) => 1,
+        Node::And(children) | Node::Or(children) => children.iter().map(leaf_count).sum(),
+    }
 }

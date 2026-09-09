@@ -127,9 +127,9 @@ class GroupConsumer(unittest.TestCase):
         rss_source = f'git+{pin[0]}?rev={pin[1]}#{pin[1]}'
         names = ['group-consumer', 'rss-mdm-group', 'rss-contract', 'rss-request-context']
         data = {'workspace_members': ['group-consumer'], 'packages': [
-            {'id': n, 'name': n, 'source': None if i == 0 else source if i == 1 else rss_source}
+            {'id': n, 'name': n, 'features': {}, 'source': None if i == 0 else source if i == 1 else rss_source}
             for i, n in enumerate(names)], 'resolve': {'root': 'group-consumer', 'nodes': [
-                {'id': n, 'deps': [{'pkg': p} for p in (names[1:] if i == 0 else names[2:] if i == 1 else [])]}
+                {'id': n, 'features': [], 'deps': [{'pkg': p} for p in (names[1:] if i == 0 else names[2:] if i == 1 else [])]}
                 for i, n in enumerate(names)]}}
         ci.verify_group_consumer(data, source, pin)
         for bad_source in [None, 'path+file:///parent/rss', rss_source.replace(pin[1], '0' * 40)]:
@@ -142,6 +142,9 @@ class GroupConsumer(unittest.TestCase):
             with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
         bad = copy.deepcopy(data); bad['packages'][1]['source'] = 'path+file:///tmp/group'
         with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        for declared, resolved in [({'default': ['new']}, []), ({}, ['new'])]:
+            bad = copy.deepcopy(data); bad['packages'][1]['features'] = declared; bad['resolve']['nodes'][1]['features'] = resolved
+            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
         bad = copy.deepcopy(data); bad['resolve']['nodes'][0]['deps'].pop()
         with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
 
@@ -155,3 +158,16 @@ class AdvisoryPolicy(unittest.TestCase):
             with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
         changed=copy.deepcopy(policy);changed['sources']['allow-git'].append('https://example.com/unapproved')
         with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
+
+class GroupEvidence(unittest.TestCase):
+    def test_early_failure_cannot_leave_an_old_success_log(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / 'group-consumer.log').write_text('old success')
+            with mock.patch.object(ci, 'OUT', out), mock.patch.object(ci, 'command', return_value=SimpleNamespace(returncode=0, stdout=' M tracked')):
+                with self.assertRaises(RuntimeError): ci.group_consumer('b' * 40)
+            log = (out / 'group-consumer.log').read_text()
+            self.assertNotIn('old success', log)
+            self.assertIn('b' * 40, log)
