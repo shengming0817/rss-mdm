@@ -120,6 +120,62 @@ class CodecFixtures(unittest.TestCase):
         for name, digest in manifest["fixtures"].items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
 
+class GroupConsumer(unittest.TestCase):
+    def test_only_pinned_group_and_value_types_are_consumed(self):
+        pin = ci.workspace_pin(ci.ROOT)
+        source = 'git+file:///tmp/source?rev=' + 'a' * 40 + '#' + 'a' * 40
+        rss_source = f'git+{pin[0]}?rev={pin[1]}#{pin[1]}'
+        names = ['group-consumer', 'rss-mdm-group', 'rss-contract', 'rss-request-context']
+        data = {'workspace_members': ['group-consumer'], 'packages': [
+            {'id': n, 'name': n, 'features': {}, 'source': None if i == 0 else source if i == 1 else rss_source}
+            for i, n in enumerate(names)], 'resolve': {'root': 'group-consumer', 'nodes': [
+                {'id': n, 'features': [], 'deps': [{'pkg': p} for p in (names[1:] if i == 0 else names[2:] if i == 1 else [])]}
+                for i, n in enumerate(names)]}}
+        ci.verify_group_consumer(data, source, pin)
+        for bad_source in [None, 'path+file:///parent/rss', rss_source.replace(pin[1], '0' * 40)]:
+            bad = copy.deepcopy(data); bad['packages'][2]['source'] = bad_source
+            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        for dependency in ['rss-mdm-inventory', 'rss-mdm-group-postgres', 'reqwest', 'sqlx', 'rss-mdm-windows-mdm']:
+            bad = copy.deepcopy(data)
+            bad['packages'].append({'id': dependency, 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'})
+            bad['resolve']['nodes'][1]['deps'].append({'pkg': dependency})
+            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        for parent, dependency in [('rss-contract', 'sqlx'), ('rss-request-context', 'reqwest')]:
+            with self.subTest(parent=parent, dependency=dependency):
+                bad = copy.deepcopy(data)
+                bad['packages'].append({'id': dependency, 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'})
+                bad['resolve']['nodes'].append({'id': dependency, 'features': [], 'deps': []})
+                next(n for n in bad['resolve']['nodes'] if n['id'] == parent)['deps'].append({'pkg': dependency, 'dep_kinds': [{'kind': None, 'target': None}]})
+                with self.assertRaisesRegex(RuntimeError, 'forbidden Group production dependency'):
+                    ci.verify_group_consumer(bad, source, pin)
+        for dependency in ['sqlx-postgres', 'hyper-util', 'postgres-types', 'axum-core']:
+            for kind, rejected in [(None, True), ('build', True), ('dev', False)]:
+                with self.subTest(dependency=dependency, kind=kind):
+                    bad = copy.deepcopy(data)
+                    # Distinct IDs/names model Cargo package identity and dependency renaming.
+                    bad['packages'].extend([
+                        {'id': 'bridge-id', 'name': 'benign-bridge', 'source': 'registry+https://github.com/rust-lang/crates.io-index'},
+                        {'id': 'forbidden-id', 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'},
+                    ])
+                    bad['resolve']['nodes'][2]['deps'].append({'pkg': 'bridge-id', 'dep_kinds': [{'kind': None}]})
+                    bad['resolve']['nodes'].extend([
+                        {'id': 'bridge-id', 'deps': [{'name': 'alias', 'pkg': 'forbidden-id', 'dep_kinds': [{'kind': kind, 'target': 'cfg(windows)'}]}]},
+                        {'id': 'forbidden-id', 'deps': []},
+                    ])
+                    if rejected:
+                        with self.assertRaisesRegex(RuntimeError, 'forbidden Group production dependency'):
+                            ci.verify_group_consumer(bad, source, pin)
+                    else:
+                        ci.verify_group_consumer(bad, source, pin)
+        bad = copy.deepcopy(data); bad['packages'][1]['source'] = 'path+file:///tmp/group'
+        with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        for declared, resolved in [({'default': ['new']}, []), ({}, ['new'])]:
+            bad = copy.deepcopy(data); bad['packages'][1]['features'] = declared; bad['resolve']['nodes'][1]['features'] = resolved
+            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        bad = copy.deepcopy(data); bad['resolve']['nodes'][0]['deps'].pop()
+        with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+
+class AdvisoryPolicy(unittest.TestCase):
     def test_advisory_acceptance_is_exact(self):
         manifest=ci.tomllib.loads((ci.ROOT/'Cargo.toml').read_text())
         policy=ci.tomllib.loads((ci.ROOT/'deny.toml').read_text())
@@ -197,3 +253,15 @@ class CoreConsumerGate(unittest.TestCase):
             (out/'old-metadata.json').write_text('{}')
             core.prepare_output(out)
             self.assertEqual(list(out.iterdir()),[])
+class GroupEvidence(unittest.TestCase):
+    def test_early_failure_cannot_leave_an_old_success_log(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / 'group-consumer.log').write_text('old success')
+            with mock.patch.object(ci, 'OUT', out), mock.patch.object(ci, 'command', return_value=SimpleNamespace(returncode=0, stdout=' M tracked')):
+                with self.assertRaises(RuntimeError): ci.group_consumer('b' * 40)
+            log = (out / 'group-consumer.log').read_text()
+            self.assertNotIn('old success', log)
+            self.assertIn('b' * 40, log)

@@ -6,6 +6,19 @@ use rss_runtime::{
     DynManagedResource, LifecycleScope, ManagedResource, ScopeExit, ShutdownError, TotalDrainBudget,
 };
 use std::{sync::Arc, time::Duration};
+struct AccessResource(std::sync::Arc<crate::AccessStore>);
+impl ManagedResource for AccessResource {
+    fn name(&self) -> &str {
+        "access-store"
+    }
+    async fn shutdown(&self) -> Result<(), ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+}
 struct ReaderResource(Arc<InventoryReader>);
 impl ManagedResource for ReaderResource {
     fn name(&self) -> &str {
@@ -53,12 +66,25 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(ReaderResource(
                             reader.clone(),
                         )));
+                        let access = Arc::new(
+                            crate::AccessStore::connect(
+                                compiled.config.access_database.options().map_err(|e| {
+                                    ProcessError::at("startup.access_configuration", e)
+                                })?,
+                            )
+                            .await
+                            .map_err(|e| ProcessError::at("startup.access_store", e))?,
+                        );
+                        startup.stage_resource(DynManagedResource::new_box(AccessResource(
+                            access.clone(),
+                        )));
                         let listen = compiled.config.listen;
                         let app = crate::api::from_compiled(
                             compiled,
                             Arc::new(rss_identity_client::SystemClock),
                             monotonic,
                             reader,
+                            access,
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.identity", e))?;

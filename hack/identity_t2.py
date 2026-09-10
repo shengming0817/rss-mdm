@@ -83,7 +83,7 @@ def fixture(c):
         def write(name, value, public=False):
             p=root/name;p.write_text(value if isinstance(value,str) else json.dumps(value));p.chmod(0o644 if public else 0o600);return p
         def secret(name): return write(name,secrets.token_urlsafe(32)).read_text()
-        values={n:secret(n) for n in ['owner','runtime','maintenance','hydra-db','hydra-system','hydra-service','oidc-client','validation','upstream','mdm-owner','mdm-runtime','mdm-api','oidc-other','validation-other']}
+        values={n:secret(n) for n in ['owner','runtime','maintenance','hydra-db','hydra-system','hydra-service','oidc-client','validation','upstream','mdm-owner','mdm-runtime','mdm-api','mdm-access','oidc-other','validation-other']}
         SENSITIVE.update(values.values())
         SENSITIVE.add('Fixture-only-correct-horse-battery-2026!')
         write('state-key',secrets.token_hex(32));write('new-password','Fixture-only-correct-horse-battery-2026!')
@@ -149,7 +149,7 @@ def fixture(c):
             pg_port=int(docker('port',pg,'5432/tcp').rsplit(':',1)[1])
             wait(lambda:docker('exec',pg,'pg_isready','-h','127.0.0.1','-U','postgres',timeout=5) is not None,'PostgreSQL')
             sql="CREATE DATABASE identity; CREATE USER hydra PASSWORD '"+values['hydra-db']+"'; CREATE DATABASE hydra OWNER hydra; CREATE DATABASE mdm;"
-            for role,key in [('mdm_owner','mdm-owner'),('mdm_runtime','mdm-runtime'),('mdm_api','mdm-api')]:sql+="CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+values[key]+"';"
+            for role,key in [('mdm_owner','mdm-owner'),('mdm_runtime','mdm-runtime'),('mdm_api','mdm-api'),('mdm_access','mdm-access')]:sql+="CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+values[key]+"';"
             sql+='GRANT CREATE ON DATABASE mdm TO mdm_owner;'
             docker('exec','-i',pg,'psql','-X','-U','postgres','-v','ON_ERROR_STOP=1',input=sql)
             docker('exec','-i',pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input='GRANT CREATE ON SCHEMA public TO mdm_owner; CREATE SCHEMA test_probe; CREATE EXTENSION pg_stat_statements WITH SCHEMA test_probe; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA test_probe FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA test_probe FROM PUBLIC;')
@@ -177,6 +177,7 @@ def fixture(c):
             db={'host':'localhost','port':pg_port,'name':'mdm','user':'mdm_owner','password_file':str(root/'mdm-owner'),'ca_file':str(root/'ca.crt')}
             migrate=write('mdm-migration.json',{'database':db});run([binary,'migrate','--config',str(migrate)],cwd=ROOT)
             mdm={'listen':'127.0.0.1:0','product_origin':product,'identity':{'origin':f'https://localhost:{private_port}','issuer':origin+'/oidc','client_id':'mdm','tenant_id':TENANT,'audience':'mdm-api','oidc_secret_file':str(root/'oidc-client'),'validation_secret_file':str(root/'validation'),'ca_file':str(root/'ca.crt')},'database':{**db,'user':'mdm_api','password_file':str(root/'mdm-api')},'bindings':[]}
+            mdm['access_database']={**db,'user':'mdm_access','password_file':str(root/'mdm-access')}
             config_path=write('mdm.json',mdm)
             yield {**os.environ,'MDM_TEST_CONFIG':str(config_path),'MDM_TEST_PUBLIC_ORIGIN':origin,'MDM_TEST_PASSWORD_FILE':str(root/'new-password'),'MDM_TEST_PG_CONTAINER':pg,'MDM_TEST_PRIVATE_CONTAINER':private_container,'MDM_TEST_HYDRA_CONTAINER':hydra_container,'MDM_TEST_IDENTITY_CONTAINER':identity_container,'MDM_TEST_PROVIDER_PLATFORM':native}
         finally:

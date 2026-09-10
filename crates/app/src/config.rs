@@ -66,6 +66,7 @@ pub struct Config {
     pub product_origin: String,
     pub identity: Identity,
     pub database: Database,
+    pub access_database: Database,
     pub bindings: Vec<Binding>,
 }
 pub(crate) struct Compiled {
@@ -79,6 +80,13 @@ impl Config {
         }
         if self.database.user != "mdm_api" {
             return Err(Error::Configuration(ConfigIssue::DatabaseRole));
+        }
+        if self.access_database.user != "mdm_access"
+            || self.access_database.host != self.database.host
+            || self.access_database.port != self.database.port
+            || self.access_database.name != self.database.name
+        {
+            return Err(Error::Configuration(ConfigIssue::AccessDatabase));
         }
         for (value, field) in [
             (&self.product_origin, ConfigIssue::ProductOrigin),
@@ -171,6 +179,21 @@ pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn enrollment_configuration_requires_explicit_permissions_and_store() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        let mut old = value.clone();
+        old.as_object_mut().unwrap().remove("access_database");
+        assert!(serde_json::from_value::<Config>(old).is_err());
+        let mut old = value;
+        old["bindings"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("allow_enrollment");
+        assert!(serde_json::from_value::<Config>(old).is_err());
+    }
     #[test]
     fn cookie_authorities_cannot_share_a_hostname() {
         let mut value: serde_json::Value =

@@ -15,6 +15,7 @@ impl rss_observation::Clock for Monotonic {
 pub enum ConfigIssue {
     Listen,
     DatabaseRole,
+    AccessDatabase,
     DatabaseAddress,
     DatabasePassword,
     DatabaseCa,
@@ -49,6 +50,9 @@ pub enum Failure {
     IdentityProtocol,
     IdentityServer,
     InventoryPool,
+    AccessStore,
+    AccessAdmission,
+    Audit,
     InventoryQuery,
     Clock,
     SessionState,
