@@ -12,3 +12,5 @@
 - [MDM Identity 接入](202609091600-2343-mdm-identity.md)
 
 - [注册许可与审计](202609090001-2347-enrollment-audit.md)（#2347）
+
+- [设备身份与报告边界](202609100445-2348-device-principal.md)（#2348）

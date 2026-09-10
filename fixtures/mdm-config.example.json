@@ -31,7 +31,8 @@
         "replace-with-device-id"
       ],
       "allow_wipe": false,
-      "allow_enrollment": false
+      "allow_enrollment": false,
+      "allow_manage_credentials": false
     }
   ],
   "access_database": {

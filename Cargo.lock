@@ -1973,6 +1973,7 @@ dependencies = [
  "rand 0.8.8",
  "reqwest",
  "rss-axum",
+ "rss-contract",
  "rss-identity-client",
  "rss-identity-contracts",
  "rss-mdm-inventory",

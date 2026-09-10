@@ -637,7 +637,7 @@ async fn matrix() -> Result<()> {
     println!("identity matrix: initial PKCE login and callback protections passed");
     let subject = me["subject"].as_str().unwrap();
     ensure!(me["roles"] == json!([]));
-    let query = format!("{DEVICE}/inventory?registration=reg-1&source=fixture&epoch=epoch-1");
+    let query = format!("{DEVICE}/inventory?channel=mdm&source=mdm.windows");
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
     let mut damaged = Browser::default();
     damaged
@@ -658,7 +658,7 @@ async fn matrix() -> Result<()> {
         "invalid old cookie prevented login"
     );
     let mut allowed = base.clone();
-    allowed["bindings"] = json!([{"tenant_id":TENANT,"client_id":"mdm","subject":subject,"roles":["super_admin"],"devices":["device-1"],"allow_wipe":true,"allow_enrollment":true}]);
+    allowed["bindings"] = json!([{"tenant_id":TENANT,"client_id":"mdm","subject":subject,"roles":["super_admin"],"devices":["device-1"],"allow_wipe":true,"allow_enrollment":true,"allow_manage_credentials":false}]);
     let authorized = app(&allowed, reader.clone()).await?;
     // A stale product cookie after process restart must not trap the user outside login.
     ensure!(
@@ -668,13 +668,23 @@ async fn matrix() -> Result<()> {
             == StatusCode::SEE_OTHER
     );
     let scope = serde_json::to_string(
-        &json!({"tenant":TENANT,"object":"device-1","registration":"reg-1","source":"fixture","dataset":"inventory","epoch":"epoch-1"}),
+        &json!({"tenant":TENANT,"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
     )?;
     // Use the public Scope encoder, not JSON map key order, for the persisted identity.
     let scope: rss_observation::Scope = serde_json::from_str(&scope)?;
     let encoded = scope.encode()?.replace('\'', "''");
+    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
+    // Read-path fixture only. Device registration/credential proof is exercised by device PG T2.
     pg(&format!(
-        "INSERT INTO mdm.inventory VALUES('{TENANT}','mdm.observation.v1','inventory-v1','{encoded}','coverage','device.model','Model-A','fixture',1,2);"
+        r#"
+        INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','mdm','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
+        INSERT INTO mdm_access.requests VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
+        INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
+        INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
+        INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
+        INSERT INTO mdm_access.report_sources VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);
+        INSERT INTO mdm.inventory VALUES('{TENANT}','mdm.observation.v1','inventory-v1','{encoded}','{coverage}','device.model','Model-A','fixture',1,2);
+    "#
     ))?;
     let before = count()?;
     ensure!(
@@ -694,6 +704,12 @@ async fn matrix() -> Result<()> {
     ensure!(count()? == before + 2, "identity success cached");
     let (status, assets) = browser.call(&authorized, Method::GET, &query, None).await?;
     ensure!(status == StatusCode::OK && assets["fields"][0]["value"] == "Model-A");
+    ensure!(assets["tenant_id"] == TENANT);
+    ensure!(assets["device_id"] == "device-1");
+    ensure!(assets["registration"] == "99999999-9999-4999-8999-999999999991");
+    ensure!(assets["source"] == "mdm.windows");
+    ensure!(assets["epoch"] == "99999999-9999-4999-8999-999999999992");
+    ensure!(assets["coverage"] == serde_json::to_value(rss_mdm_inventory::coverage())?);
     enrollment_matrix(
         &authorized,
         &allowed,
@@ -710,7 +726,7 @@ async fn matrix() -> Result<()> {
             .call(
                 &authorized,
                 Method::GET,
-                &query.replace("source=fixture", "source=missing"),
+                &query.replace("source=mdm.windows", "source=missing"),
                 None
             )
             .await?
@@ -729,18 +745,24 @@ async fn matrix() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    ensure!(
-        browser
-            .call(
-                &authorized,
-                Method::GET,
-                &format!("{query}&tenant={TENANT}"),
-                None
-            )
-            .await?
-            .0
-            == StatusCode::BAD_REQUEST
-    );
+    for coordinate in [
+        "tenant=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "registration=88888888-8888-4888-8888-888888888881",
+        "epoch=88888888-8888-4888-8888-888888888882",
+    ] {
+        ensure!(
+            browser
+                .call(
+                    &authorized,
+                    Method::GET,
+                    &format!("{query}&{coordinate}"),
+                    None
+                )
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+    }
     let rows = pg("SELECT count(*) FROM mdm.inventory;")?;
     let initial_cookies = browser.cookies.clone();
     let initial_validations = count()?;

@@ -29,7 +29,7 @@ const BROWSER: &str = "__Host-mdm-login";
 struct App {
     identity: Identity,
     sessions: Sessions,
-    policy: Policy,
+    policy: Arc<Policy>,
     inventory: InventoryService,
     access: Arc<AccessStore>,
     origin: String,
@@ -93,6 +93,13 @@ pub(crate) async fn from_compiled(
     access: Arc<AccessStore>,
 ) -> Result<Router, Error> {
     let crate::config::Compiled { config, policy } = compiled;
+    let policy = Arc::new(policy);
+    let devices = Arc::new(crate::device::DeviceService::new(
+        access.clone(),
+        policy.clone(),
+        None,
+        monotonic.clone(),
+    ));
     let identity = Identity::connect(&config, clock.clone()).await?;
     let host = config
         .product_origin
@@ -105,7 +112,7 @@ pub(crate) async fn from_compiled(
         identity,
         sessions: Sessions::new(clock, 1000, 10000),
         policy,
-        inventory: InventoryService::new(reader),
+        inventory: InventoryService::new(reader, devices),
         origin: config.product_origin,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
@@ -184,13 +191,11 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
     };
     let snapshot = audit.snapshot();
-    if snapshot.write_outcome != WriteOutcome::CommitNotStarted
-        && matches!(
-            response.extensions().get::<Error>(),
-            Some(Error::Unavailable(Failure::RequestDeadline))
-        )
-    {
-        response = Error::CommitUnknown.into_response();
+    if matches!(
+        response.extensions().get::<Error>(),
+        Some(Error::Unavailable(Failure::RequestDeadline))
+    ) {
+        response = snapshot.write_outcome.deadline_error().into_response();
     }
     let mut audit_failure = matches!(
         response.extensions().get::<Error>(),
@@ -199,7 +204,7 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
     .then_some(FailureReason::Transaction);
     if audited && snapshot.write_outcome != WriteOutcome::Committed {
         let status = response.status().as_u16();
-        let result = if snapshot.write_outcome != WriteOutcome::CommitNotStarted && status >= 500 {
+        let result = if snapshot.write_outcome == WriteOutcome::Unknown && status >= 500 {
             "unknown"
         } else if status == 401 || status == 403 {
             "denied"

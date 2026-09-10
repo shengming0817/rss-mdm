@@ -62,7 +62,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "6", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "7", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -95,6 +95,7 @@ def verify_startup_deadlines(binary, root, port, env):
     print('startup dependency stalls rejected within budget with safe stage diagnostics',flush=True)
 
 def main():
+    device_only = sys.argv[1:] == ["--device"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
     executables = [item["executable"] for line in build.stdout.splitlines() if (item := json.loads(line)).get("reason") == "compiler-artifact" and item.get("executable") and item["target"]["name"] == "rss-mdm-fixture"]
     if len(executables) != 1: raise RuntimeError("cannot locate the tested fixture executable")
@@ -132,11 +133,16 @@ def main():
             migration_config.write_text(json.dumps({"database":{"host":"localhost","port":int(port),"name":"mdm_test","user":"mdm_owner","password_file":str(root/"owner-password"),"ca_file":str(root/"ca.crt")}}))
             os.chmod(migration_config, 0o600)
             verify_migrations(name, migrators[0], migration_config, root, env)
-            verify_startup_deadlines(migrators[0],root,port,env)
+            if not device_only:
+                verify_startup_deadlines(migrators[0],root,port,env)
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)
-            run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
-            run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
-            run(["cargo","test","--locked","-p","rss-mdm-app","--lib","access_store::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env=env)
+            if not device_only:
+                run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
+                run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
+                run(["cargo","test","--locked","-p","rss-mdm-app","--lib","access_store::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env=env)
+            from device_t2 import identities
+            with identities(root) as origin:
+                run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
         finally:
             primary = sys.exception()
             try:

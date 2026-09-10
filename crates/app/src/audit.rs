@@ -21,14 +21,26 @@ pub(crate) struct Snapshot {
     pub action: &'static str,
     pub target: Option<String>,
     pub operation_id: Option<Uuid>,
+    pub registration_id: Option<Uuid>,
     pub write_outcome: WriteOutcome,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WriteOutcome {
     CommitNotStarted,
+    NotCommitted,
     Unknown,
     Committed,
+}
+impl WriteOutcome {
+    pub fn deadline_error(self) -> crate::Error {
+        match self {
+            Self::Unknown | Self::Committed => crate::Error::CommitUnknown,
+            Self::CommitNotStarted | Self::NotCommitted => {
+                crate::Error::Unavailable(crate::Failure::RequestDeadline)
+            }
+        }
+    }
 }
 #[derive(Clone, Copy, serde::Serialize)]
 pub(crate) enum FailureReason {
@@ -51,6 +63,7 @@ impl Audit {
                     action,
                     target: None,
                     operation_id: None,
+                    registration_id: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
                 },
                 finalized: false,
@@ -88,11 +101,30 @@ impl Audit {
         state.snapshot.operation_id = Some(id);
         state.snapshot.action = action;
     }
+    pub fn identify_device(&self, registration: Uuid) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(format!("device:{registration}"));
+        state.snapshot.client = Some("device".into());
+    }
+    pub fn registration(&self, id: Uuid) {
+        self.0
+            .state
+            .lock()
+            .expect("audit lock")
+            .snapshot
+            .registration_id = Some(id);
+    }
     pub fn mark_commit_started(&self) {
         let mut state = self.0.state.lock().expect("audit lock");
         if state.snapshot.write_outcome == WriteOutcome::CommitNotStarted {
             state.snapshot.write_outcome = WriteOutcome::Unknown;
         }
+    }
+    // A provider settled a report attempt and proved that its receipt did not commit.
+    pub fn mark_not_committed(&self) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
+        state.snapshot.write_outcome = WriteOutcome::NotCommitted;
     }
     pub fn mark_committed(&self) {
         let mut state = self.0.state.lock().expect("audit lock");
@@ -115,7 +147,7 @@ impl Audit {
 }
 impl Context {
     fn failure_event(&self, snapshot: &Snapshot, reason: FailureReason) -> serde_json::Value {
-        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":snapshot.operation_id,"action":snapshot.action,"reason":reason,"write_outcome":snapshot.write_outcome})
+        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":snapshot.operation_id,"registration_id":snapshot.registration_id,"action":snapshot.action,"reason":reason,"write_outcome":snapshot.write_outcome})
     }
 }
 impl Drop for Context {
@@ -137,10 +169,31 @@ impl Drop for Context {
 mod tests {
     use super::*;
     #[test]
+    fn settled_report_failure_is_distinct_from_cancellation() {
+        let audit = Audit::new("tenant".into(), "device_report");
+        audit.mark_commit_started();
+        assert_eq!(
+            audit
+                .0
+                .failure_event(&audit.snapshot(), FailureReason::Cancelled)["write_outcome"],
+            "unknown"
+        );
+        audit.mark_not_committed();
+        assert_eq!(
+            audit
+                .0
+                .failure_event(&audit.snapshot(), FailureReason::Persistent)["write_outcome"],
+            "not_committed"
+        );
+        audit.finalize(None);
+    }
+    #[test]
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
         let a = Audit::new("tenant".into(), "grant_issue");
         let key = Uuid::new_v4();
+        let registration = Uuid::new_v4();
         a.operation(key, "grant_issue");
+        a.registration(registration);
         a.target("sensitive-target-not-for-logs");
         a.identify_fixture("sensitive-actor", "sensitive-client");
         let event = |reason| a.0.failure_event(&a.snapshot(), reason);
@@ -162,6 +215,7 @@ mod tests {
             let event = event(reason);
             assert_eq!(event["write_outcome"], "committed");
             assert_eq!(event["action"], "grant_issue");
+            assert_eq!(event["registration_id"], registration.to_string());
             assert!(!event.to_string().contains("sensitive-target"));
             assert!(!event.to_string().contains("sensitive-actor"));
             assert!(!event.to_string().contains("sensitive-client"));

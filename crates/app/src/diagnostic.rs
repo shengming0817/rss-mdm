@@ -54,6 +54,7 @@ pub enum Failure {
     AccessAdmission,
     Audit,
     InventoryQuery,
+    Observation,
     Clock,
     SessionState,
     Capacity,
