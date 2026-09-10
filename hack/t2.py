@@ -142,7 +142,7 @@ def main():
                 run(["cargo","test","--locked","-p","rss-mdm-app","--lib","access_store::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env=env)
             from device_t2 import identities
             with identities(root) as origin:
-                run(["cargo","test","--locked","-p","rss-mdm-app","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
+                run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
         finally:
             primary = sys.exception()
             try:

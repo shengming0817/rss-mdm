@@ -206,6 +206,10 @@ impl Clock for Now {
 #[tokio::test]
 #[ignore = "make t2: real TLS PostgreSQL; SDK response authority and channel evidence are test fixtures"]
 async fn postgres_boundary() -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cfg!(feature = "integration"),
+        "device T2 requires integration; run make t2"
+    );
     let admin_a = admin(A, "admin-a").await?;
     let admin_b = admin(B, "admin-b").await?;
     let other = admin(A, "other-a").await?;
@@ -257,24 +261,27 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     );
     assert_ne!(first.registration, other_channel.registration);
     assert_eq!(service.bind(&admin_a, &mdm, command.clone()).await?, first);
-    // The product cap must let RSS settle its own Effects-stage deadline as unknown.
-    // A longer caller deadline used to let the outer product timeout erase that result.
-    observation.inject_next_fault(rss_observation_postgres::Fault::CommitPending);
-    assert!(matches!(
-        service
-            .ingest(
-                &mdm,
-                ReportSource::MdmWindows,
-                batch("deadline", 1, "A", false),
-                &observation,
-                rss_request_context::Deadline::at(Now.now() + Duration::from_secs(20))
-            )
-            .await,
-        Err(Error::CommitUnknown)
-    ));
-    let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND result='unknown'")
+    #[cfg(feature = "integration")]
+    {
+        // The product cap must let RSS settle its own Effects-stage deadline as unknown.
+        // A longer caller deadline used to let the outer product timeout erase that result.
+        observation.inject_next_fault(rss_observation_postgres::Fault::CommitPending);
+        assert!(matches!(
+            service
+                .ingest(
+                    &mdm,
+                    ReportSource::MdmWindows,
+                    batch("deadline", 1, "A", false),
+                    &observation,
+                    rss_request_context::Deadline::at(Now.now() + Duration::from_secs(20))
+                )
+                .await,
+            Err(Error::CommitUnknown)
+        ));
+        let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND result='unknown'")
         .bind(first.registration.to_string()).fetch_one(&mut root).await?;
-    assert_eq!(unknown, 1);
+        assert_eq!(unknown, 1);
+    }
     for bad in [
         service.bind(&other, &mdm, command.clone()).await,
         service.bind(&admin_b, &mdm, command.clone()).await,

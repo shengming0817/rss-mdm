@@ -37,10 +37,13 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 rss-contract.workspace = true
-rss-observation-postgres = { workspace = true, features = ["integration"] }
 reqwest = { workspace = true, features = ["cookies"] }
 http-body-util.workspace = true
 tower.workspace = true
+
+[features]
+default = []
+integration = ["rss-observation-postgres/integration"]
 
 [lints]
 workspace = true
