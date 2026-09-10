@@ -114,11 +114,18 @@ class CodecFixtures(unittest.TestCase):
         import hashlib
         import json
         self.assertEqual(ci.LOCAL_PACKAGES["rss-mdm-windows-mdm"], "crates/windows-mdm")
-        root = ci.ROOT / "crates/windows-mdm/tests/fixtures"
-        manifest = json.loads((root / "provenance.json").read_text())
-        self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
-        for name, digest in manifest["fixtures"].items():
-            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
+        for directory, extension in [("windows-mdm", "xml"), ("winget-source", "json")]:
+            root = ci.ROOT / f"crates/{directory}/tests/fixtures"
+            manifest = json.loads((root / "provenance.json").read_text())
+            if isinstance(manifest, list):
+                fixtures = {entry["file"]: entry["sha256"] for entry in manifest}
+                self.assertEqual(len(fixtures), len(manifest), "duplicate provenance entry")
+                self.assertTrue(all(entry["origin"].strip() for entry in manifest))
+            else:
+                fixtures = manifest["fixtures"]
+            self.assertEqual(set(fixtures), {p.name for p in root.glob(f"*.{extension}") if p.name != "provenance.json"})
+            for name, digest in fixtures.items():
+                self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
 
 class GroupConsumer(unittest.TestCase):
     def test_only_pinned_group_and_value_types_are_consumed(self):
@@ -186,6 +193,70 @@ class AdvisoryPolicy(unittest.TestCase):
         changed=copy.deepcopy(policy);changed['sources']['allow-git'].append('https://example.com/unapproved')
         with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
 
+class SourceConsumerBoundary(unittest.TestCase):
+    def test_source_identity_and_transitive_forbidden_dependencies(self):
+        spec = importlib.util.spec_from_file_location("source_consumers", ci.ROOT / "hack/source-consumers.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        product = "rss-mdm-resource"
+        data = {"packages": [{"id": "p", "name": product, "source": "product-sha"}], "resolve": {"nodes": [{"id": "p", "deps": []}]}}
+        self.assertEqual(module.verify_graph(data, product, "product-sha", "rss-sha"), [product])
+        with self.assertRaises(RuntimeError):
+            module.verify_graph(data, product, "other-sha", "rss-sha")
+        data["packages"].append({"id": "http", "name": "reqwest", "source": "registry"})
+        data["resolve"]["nodes"].extend([{"id": "http", "deps": []}])
+        data["resolve"]["nodes"][0]["deps"].append({"pkg": "http", "dep_kinds": [{"kind": None}]})
+        with self.assertRaises(RuntimeError):
+            module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["packages"][1]["name"] = "rss-mdm-brew-source"
+        with self.assertRaises(RuntimeError):
+            module.verify_graph(data, product, "product-sha", "rss-sha")
+
+class SourceConsumerFailureCollection(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("source_consumers", ci.ROOT / "hack/source-consumers.py")
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def test_setup_failure_does_not_skip_later_packages(self):
+        visited = []
+        def run_one(name, test):
+            visited.append(name)
+            if name == "resource":
+                raise OSError("injected fixture-copy failure")
+            return {"status": "passed"}
+        result = self.module.collect_consumers(run_one)
+        self.assertEqual(visited, list(self.module.PACKAGES))
+        self.assertEqual(result["resource"]["status"], "failed")
+        self.assertEqual(result["brew-source"]["status"], "passed")
+
+    def test_new_features_and_tokio_expansion_are_rejected(self):
+        product = "rss-mdm-brew-source"
+        data = {"packages": [{"id": "p", "name": product, "source": "product-sha", "features": {}}], "resolve": {"nodes": [{"id": "p", "deps": [], "features": []}]}}
+        self.module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["packages"][0]["features"] = {"default": ["new-capability"]}
+        with self.assertRaises(RuntimeError):
+            self.module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["packages"][0]["features"] = {}
+        data["packages"].append({"id": "tokio", "name": "tokio", "source": "registry"})
+        data["resolve"]["nodes"].append({"id": "tokio", "deps": [], "features": ["process", "time", "net"]})
+        data["resolve"]["nodes"][0]["deps"] = [{"pkg": "tokio", "dep_kinds": [{"kind": None}]}]
+        with self.assertRaises(RuntimeError):
+            self.module.verify_graph(data, product, "product-sha", "rss-sha")
+        data["resolve"]["nodes"][1]["features"] = ["process", "time"]
+        self.module.verify_graph(data, product, "product-sha", "rss-sha")
+
+    def test_dirty_input_cannot_leave_previous_success_receipt(self):
+        from unittest.mock import patch
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "result.json").write_text('{"status":"passed","head":"old"}')
+            (out / "resource-metadata.json").write_text('{"old":true}')
+            with patch.object(self.module, "OUT", out), patch.object(self.module.subprocess, "check_output", return_value=" M changed"):
+                self.assertEqual(self.module.main(), 1)
+            self.assertFalse((out / "resource-metadata.json").exists())
+            self.assertEqual(json.loads((out / "result.json").read_text())["status"], "failed")
 
 class CoreConsumerGate(unittest.TestCase):
     def test_core_closure_rejects_foreign_core_provider_and_wrong_sources(self):

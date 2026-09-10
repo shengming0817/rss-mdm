@@ -12,6 +12,13 @@ test:
 t2:
 	python3 hack/t2.py
 
+.PHONY: source-t2 source-consumers
+source-t2:
+	python3 hack/source-t2.py
+
+source-consumers:
+	python3 hack/source-consumers.py
+
 .PHONY: t2-identity
 t2-identity:
 	python3 hack/identity_t2.py

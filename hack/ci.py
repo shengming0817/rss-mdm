@@ -19,6 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-resource": "crates/resource",
+    "rss-mdm-winget-source": "crates/winget-source",
+    "rss-mdm-brew-source": "crates/brew-source",
+
     "rss-mdm-scope": "crates/scope",
     "rss-mdm-policy": "crates/policy",
     "rss-mdm-group": "crates/group",
@@ -303,6 +307,9 @@ def main():
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("core-consumers",[sys.executable,"hack/core_consumer.py"]),
         ("t2",[sys.executable,"hack/t2.py"]),
+        ("source-t2",[sys.executable,"hack/source-t2.py"]),
+        ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
+
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]

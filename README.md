@@ -37,4 +37,8 @@ app → inventory-postgres/inventory/Identity client；examples → inventory-po
 `make test` 验证全部成员的 T1，`make t2` 运行真实 PostgreSQL 组合，`make ci` 完成全部本地验证。
 故障注入矩阵留在 examples 的 `integration` feature 下以访问示例内部状态，不编译进普通示例或产品能力库。
 
+## 独立资源与软件源
+
+`rss-mdm-resource`、`rss-mdm-winget-source`、`rss-mdm-brew-source` 分别提供不可变资源、WinGet 元数据和受控 Tap 能力，三个 package 无相互业务依赖。使用与验证见 [指南](docs/guides/202609090000-2383-resource-sources.md)。
+
 管理员接入与生产命令见 [MDM Identity 接入](docs/guides/202609091600-2343-mdm-identity.md)。

@@ -13,7 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 tokio-util.workspace = true
 rss-request-context.workspace = true
 rss-observation.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "rss-mdm-brew-source"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-request-context = { workspace = true }
+rss-contract = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "time", "macros"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

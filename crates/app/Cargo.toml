@@ -18,7 +18,7 @@ rss-axum.workspace = true
 rss-request-context.workspace = true
 axum.workspace = true
 openidconnect.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
@@ -32,7 +32,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

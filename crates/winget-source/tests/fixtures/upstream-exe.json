@@ -1,0 +1,25 @@
+{
+        "Data": {
+            "PackageIdentifier": "Foo.Bar",
+            "Versions": [
+                {
+                    "PackageVersion": "5.0.0",
+                    "DefaultLocale": {
+                        "PackageLocale": "en-us",
+                        "Publisher": "Foo",
+                        "PackageName": "Bar",
+                        "License": "Foo bar license",
+                        "ShortDescription": "Foo bar description"
+                    },
+                    "Installers": [
+                        {
+                            "Architecture": "x64",
+                            "InstallerSha256": "011048877dfaef109801b3f3ab2b60afc74f3fc4f7b3430e0c897f5da1df84b6",
+                            "InstallerType": "exe",
+                            "InstallerUrl": "https://installer.example.com/foobar.exe"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
