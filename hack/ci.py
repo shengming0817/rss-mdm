@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-scope": "crates/scope",
+    "rss-mdm-policy": "crates/policy",
     "rss-mdm-group": "crates/group",
     "rss-mdm-app": "crates/app",
     "rss-mdm-windows-mdm": "crates/windows-mdm",
@@ -299,6 +301,7 @@ def main():
         ("clippy",["cargo","clippy","--locked","--workspace","--all-targets","--all-features","--","-D","warnings"]),
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
+        ("core-consumers",[sys.executable,"hack/core_consumer.py"]),
         ("t2",[sys.executable,"hack/t2.py"]),
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),

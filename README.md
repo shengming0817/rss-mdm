@@ -19,6 +19,8 @@
 
 | 目录 | 职责 |
 |---|---|
+| `crates/scope` | [完整集合解析与来源解释](crates/scope/README.md)，独立纯核心 |
+| `crates/policy` | [不可变版本、生命周期与计划差分](crates/policy/README.md)，独立纯核心 |
 | `crates/inventory` | `rss-mdm-inventory`：资产字段、coverage 和报告校验；不依赖 PostgreSQL 或示例授权 |
 | `crates/inventory-postgres` | `rss-mdm-inventory-postgres`：资产投影、SQL schema 与运行角色/RLS 检查；消费 Inventory 核心和 RSS 公共适配 |
 | `crates/app` | `rss-mdm-app`：唯一生产 binary、OIDC/Identity消费、静态资源授权、HTTP与迁移装配 |
