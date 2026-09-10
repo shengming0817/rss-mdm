@@ -139,7 +139,7 @@ def run_consumer(source, base, core, defaults, head, pin, out):
     run(["cargo", "test", "--locked"])
     ci.require(hashlib.sha256(lock.read_bytes()).hexdigest() == lock_digest, "consumer lock changed during locked verification")
     shutil.copyfile(lock, out / f"{name}-Cargo.lock")
-    return {"package": product, "defaultFeatures": defaults, "head": head, "rssRevision": rev,
+    return {"package": product, "defaultFeatures": defaults, "head": head, "rssRevision": pin[1],
             "lockSha256": lock_digest, "commands": commands, "status": "passed", "toolchain": toolchain,
             "features": {p["id"]: p["features"] for p in data["resolve"]["nodes"]}}
 
