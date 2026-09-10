@@ -1,91 +1,135 @@
 //! Closed, credential-free audit facts shared by request finalization and transactions.
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+//! ref: Rust 1.89.0 library/std/src/sync/poison/mutex.rs
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
 #[derive(Clone)]
-pub(crate) struct Audit(pub Arc<Context>);
-pub(crate) struct Context {
-    pub request_id: Uuid,
-    pub tenant: String,
-    pub fact: Mutex<Fact>,
-    pub committed: AtomicBool,
-    pub commit_started: AtomicBool,
-    pub finalized: AtomicBool,
+pub(crate) struct Audit(Arc<Context>);
+struct Context {
+    request_id: Uuid,
+    tenant: String,
+    state: Mutex<State>,
+}
+struct State {
+    snapshot: Snapshot,
+    finalized: bool,
 }
 #[derive(Clone)]
-pub(crate) struct Fact {
+pub(crate) struct Snapshot {
     pub actor: Option<String>,
     pub client: Option<String>,
     pub action: &'static str,
     pub target: Option<String>,
     pub operation_id: Option<Uuid>,
+    pub write_outcome: WriteOutcome,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WriteOutcome {
+    CommitNotStarted,
+    Unknown,
+    Committed,
+}
+#[derive(Clone, Copy, serde::Serialize)]
+pub(crate) enum FailureReason {
+    #[serde(rename = "persistent_audit_unavailable")]
+    Persistent,
+    #[serde(rename = "transaction_audit_failed")]
+    Transaction,
+    #[serde(rename = "audit_finalization_cancelled")]
+    Cancelled,
 }
 impl Audit {
     pub fn new(tenant: String, action: &'static str) -> Self {
         Self(Arc::new(Context {
             request_id: Uuid::new_v4(),
             tenant,
-            fact: Mutex::new(Fact {
-                actor: None,
-                client: None,
-                action,
-                target: None,
-                operation_id: None,
+            state: Mutex::new(State {
+                snapshot: Snapshot {
+                    actor: None,
+                    client: None,
+                    action,
+                    target: None,
+                    operation_id: None,
+                    write_outcome: WriteOutcome::CommitNotStarted,
+                },
+                finalized: false,
             }),
-            committed: AtomicBool::new(false),
-            commit_started: AtomicBool::new(false),
-            finalized: AtomicBool::new(false),
         }))
     }
-    pub fn fact(&self) -> Fact {
-        self.0
-            .fact
-            .lock()
-            .expect("audit mutation has no fallible work")
-            .clone()
+    pub fn request_id(&self) -> Uuid {
+        self.0.request_id
+    }
+    pub fn tenant(&self) -> &str {
+        &self.0.tenant
+    }
+    pub fn snapshot(&self) -> Snapshot {
+        self.0.state.lock().expect("audit lock").snapshot.clone()
     }
     pub fn identify(&self, proof: &rss_identity_client::VerifiedIdentity) {
-        let mut fact = self.0.fact.lock().expect("audit lock");
-        fact.actor = Some(proof.subject().into());
-        fact.client = Some(proof.client_id().into());
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(proof.subject().into());
+        state.snapshot.client = Some(proof.client_id().into());
+    }
+    #[cfg(test)]
+    pub fn identify_fixture(&self, actor: &str, client: &str) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(actor.into());
+        state.snapshot.client = Some(client.into());
+    }
+    pub fn set_action(&self, action: &'static str) {
+        self.0.state.lock().expect("audit lock").snapshot.action = action;
     }
     pub fn target(&self, target: &str) {
-        self.0.fact.lock().expect("audit lock").target = Some(target.into());
+        self.0.state.lock().expect("audit lock").snapshot.target = Some(target.into());
     }
     pub fn operation(&self, id: Uuid, action: &'static str) {
-        let mut f = self.0.fact.lock().expect("audit lock");
-        f.operation_id = Some(id);
-        f.action = action;
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.operation_id = Some(id);
+        state.snapshot.action = action;
     }
-    pub fn alarm(&self, reason: &'static str) {
-        eprintln!(
-            "{}",
-            serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.0.request_id,"operation_id":self.fact().operation_id,"reason":reason})
-        );
+    pub fn mark_commit_started(&self) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        if state.snapshot.write_outcome == WriteOutcome::CommitNotStarted {
+            state.snapshot.write_outcome = WriteOutcome::Unknown;
+        }
+    }
+    pub fn mark_committed(&self) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
+        state.snapshot.write_outcome = WriteOutcome::Committed;
+    }
+    pub fn finalize(&self, failure: Option<FailureReason>) {
+        let event = {
+            let mut state = self.0.state.lock().expect("audit lock");
+            if state.finalized {
+                return;
+            }
+            state.finalized = true;
+            failure.map(|reason| self.0.failure_event(&state.snapshot, reason))
+        };
+        if let Some(event) = event {
+            eprintln!("{event}");
+        }
     }
 }
 impl Context {
-    fn cancellation_event(&self) -> serde_json::Value {
-        let fact = self
-            .fact
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let outcome = if self.committed.load(Ordering::Acquire) {
-            "committed"
-        } else if self.commit_started.load(Ordering::Acquire) {
-            "unknown"
-        } else {
-            "commit_not_started"
-        };
-        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":fact.operation_id,"action":fact.action,"reason":"audit_finalization_cancelled","write_outcome":outcome})
+    fn failure_event(&self, snapshot: &Snapshot, reason: FailureReason) -> serde_json::Value {
+        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":snapshot.operation_id,"action":snapshot.action,"reason":reason,"write_outcome":snapshot.write_outcome})
     }
 }
 impl Drop for Context {
     fn drop(&mut self) {
-        if !self.finalized.load(Ordering::Acquire) {
-            eprintln!("{}", self.cancellation_event());
+        // Drop must still report cancellation if another thread poisoned the lock.
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !state.finalized {
+            eprintln!(
+                "{}",
+                self.failure_event(&state.snapshot, FailureReason::Cancelled)
+            );
         }
     }
 }
@@ -98,17 +142,30 @@ mod tests {
         let key = Uuid::new_v4();
         a.operation(key, "grant_issue");
         a.target("sensitive-target-not-for-logs");
+        a.identify_fixture("sensitive-actor", "sensitive-client");
+        let event = |reason| a.0.failure_event(&a.snapshot(), reason);
         assert_eq!(
-            a.0.cancellation_event()["write_outcome"],
+            event(FailureReason::Cancelled)["write_outcome"],
             "commit_not_started"
         );
-        a.0.commit_started.store(true, Ordering::Release);
-        let event = a.0.cancellation_event();
-        assert_eq!(event["write_outcome"], "unknown");
-        assert_eq!(event["operation_id"], key.to_string());
-        assert!(!event.to_string().contains("sensitive-target"));
-        a.0.committed.store(true, Ordering::Release);
-        assert_eq!(a.0.cancellation_event()["write_outcome"], "committed");
-        a.0.finalized.store(true, Ordering::Release);
+        a.mark_commit_started();
+        let unknown = event(FailureReason::Cancelled);
+        assert_eq!(unknown["write_outcome"], "unknown");
+        assert_eq!(unknown["operation_id"], key.to_string());
+        a.mark_committed();
+        a.mark_commit_started(); // A repeated notification cannot regress a known commit.
+        for reason in [
+            FailureReason::Cancelled,
+            FailureReason::Persistent,
+            FailureReason::Transaction,
+        ] {
+            let event = event(reason);
+            assert_eq!(event["write_outcome"], "committed");
+            assert_eq!(event["action"], "grant_issue");
+            assert!(!event.to_string().contains("sensitive-target"));
+            assert!(!event.to_string().contains("sensitive-actor"));
+            assert!(!event.to_string().contains("sensitive-client"));
+        }
+        a.finalize(None);
     }
 }

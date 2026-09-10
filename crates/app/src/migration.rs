@@ -78,6 +78,10 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             "inventory-api-reader-v1",
             rss_mdm_inventory_postgres::READER_MIGRATION_SQL,
         ),
+        (
+            "access-audit-request-index-v1",
+            include_str!("../migrations/0002_audit_request_index.sql"),
+        ),
     ] {
         let digest = format!("{:x}", Sha256::digest(sql));
         let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")

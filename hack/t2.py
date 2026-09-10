@@ -35,6 +35,9 @@ def verify_migrations(container, binary, config, root, env):
     migrate(admin_config,accepted=False)
     require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
     migrate(); migrate()
+    # Force index eligibility on the tiny fixture; this is not a throughput claim.
+    plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
+    require('request_id' in json.dumps(plan[0]['Plan'].get('Index Cond', '')), 'request-id lookup lacks an index condition')
     original = sql("SELECT digest FROM public.mdm_migrations WHERE name='inventory-v1'")
     import hashlib
     require(original == hashlib.sha256((ROOT/'crates/inventory-postgres/migrations/0001_inventory.sql').read_bytes()).hexdigest(), "migration invariant rejected")
@@ -59,7 +62,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "5", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "6", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)

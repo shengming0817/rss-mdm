@@ -1,5 +1,9 @@
 //! One protected path: current SDK proof -> MDM capability -> private data access.
-use crate::{AccessStore, ConfigIssue, Failure, audit::Audit, enrollment::Command};
+use crate::{
+    AccessStore, ConfigIssue, Failure,
+    audit::{Audit, FailureReason, WriteOutcome},
+    enrollment::Command,
+};
 use crate::{
     Error,
     access::{Coordinates, InventoryResponse, InventoryService, Policy},
@@ -19,7 +23,6 @@ use rss_identity_client::{Clock, VerifiedIdentity};
 use rss_mdm_inventory_postgres::InventoryReader;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::atomic::Ordering;
 use std::{sync::Arc, time::Duration};
 const COOKIE: &str = "__Host-mdm-session";
 const BROWSER: &str = "__Host-mdm-login";
@@ -163,7 +166,7 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
         _ => "protected_request",
     };
     let audit = Audit::new(envelope.tenant.clone(), action);
-    let request_id = audit.0.request_id;
+    let request_id = audit.request_id();
     let audited = request.uri().path() != "/livez";
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
@@ -180,7 +183,8 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
             .await
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
     };
-    if audit.0.commit_started.load(Ordering::Acquire)
+    let snapshot = audit.snapshot();
+    if snapshot.write_outcome != WriteOutcome::CommitNotStarted
         && matches!(
             response.extensions().get::<Error>(),
             Some(Error::Unavailable(Failure::RequestDeadline))
@@ -188,15 +192,20 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
     {
         response = Error::CommitUnknown.into_response();
     }
-    if audited && !audit.0.committed.load(Ordering::Acquire) {
+    let mut audit_failure = matches!(
+        response.extensions().get::<Error>(),
+        Some(Error::Unavailable(Failure::Audit))
+    )
+    .then_some(FailureReason::Transaction);
+    if audited && snapshot.write_outcome != WriteOutcome::Committed {
         let status = response.status().as_u16();
-        let result = if audit.0.commit_started.load(Ordering::Acquire) && status >= 500 {
+        let result = if snapshot.write_outcome != WriteOutcome::CommitNotStarted && status >= 500 {
             "unknown"
         } else if status == 401 || status == 403 {
             "denied"
         } else if status >= 400 {
             "failed"
-        } else if audit.fact().operation_id.is_some() {
+        } else if snapshot.operation_id.is_some() {
             "replay"
         } else {
             "success"
@@ -208,24 +217,18 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
                     .await,
                 Ok(Ok(()))
             ) {
-                audit.alarm("persistent_audit_unavailable");
+                audit_failure = Some(FailureReason::Persistent);
                 response = Error::Unavailable(Failure::Audit).into_response();
             }
         }
     }
-    if matches!(
-        response.extensions().get::<Error>(),
-        Some(Error::Unavailable(Failure::Audit))
-    ) {
-        audit.alarm("transaction_audit_failed");
-    }
-    if let Some(key) = audit.fact().operation_id {
+    if let Some(key) = snapshot.operation_id {
         response.headers_mut().insert(
             "idempotency-key",
             HeaderValue::from_str(&key.to_string()).expect("UUID"),
         );
     }
-    audit.0.finalized.store(true, Ordering::Release);
+    audit.finalize(audit_failure);
     eprintln!(
         "{}",
         json!({"event":"mdm_request","request_id":request_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
@@ -426,7 +429,7 @@ async fn inventory(
     if rss_observation::Id::new(&id).is_ok() {
         audit.target(&id);
     }
-    audit.0.fact.lock().expect("audit lock").action = "inventory_read";
+    audit.set_action("inventory_read");
     let grant = app
         .policy
         .inventory(&auth.proof, &id, input.map_err(|_| Error::Malformed)?.0)?;
@@ -452,7 +455,7 @@ async fn action(
     if rss_observation::Id::new(&id).is_ok() {
         audit.target(&id);
     }
-    audit.0.fact.lock().expect("audit lock").action = "device_action";
+    audit.set_action("device_action");
     let _grant = app.policy.dangerous(&auth.proof, &id)?;
     if input.map_err(|_| Error::Malformed)?.0.action != "wipe" {
         return Err(Error::Malformed);
@@ -569,6 +572,77 @@ async fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn audit_failure_logs_preserve_action_and_origin() {
+        use tower::ServiceExt;
+        const CHILD: &str = "MDM_AUDIT_LOG_TEST";
+        if let Ok(mode) = std::env::var(CHILD) {
+            let access = Arc::new(AccessStore::unconnected());
+            access.close().await;
+            let router = Router::new()
+                .route(
+                    "/api/v1/devices/{id}/inventory",
+                    get(move || async move {
+                        if mode == "transaction" {
+                            Error::Unavailable(Failure::Audit).into_response()
+                        } else {
+                            Json(json!({"sensitive":"inventory-result"})).into_response()
+                        }
+                    }),
+                )
+                .layer(middleware::from_fn_with_state(
+                    Envelope {
+                        host: "mdm.example.test".into(),
+                        clock: monotonic(),
+                        access,
+                        tenant: "11111111-1111-4111-8111-111111111111".into(),
+                    },
+                    envelope,
+                ));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/devices/sensitive-target/inventory")
+                        .header("host", "mdm.example.test")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            return;
+        }
+        for mode in ["read", "transaction"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "api::tests::audit_failure_logs_preserve_action_and_origin",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            let events: Vec<Value> = stderr
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|event| event["event"] == "audit_failure")
+                .collect();
+            assert_eq!(events.len(), 1, "{mode}: {stderr}");
+            assert_eq!(events[0]["reason"], "persistent_audit_unavailable");
+            assert_eq!(events[0]["action"], "inventory_read");
+            assert!(!stderr.contains("sensitive-target"));
+            assert!(!stderr.contains("inventory-result"));
+        }
+    }
     #[allow(
         clippy::disallowed_methods,
         reason = "test fixture selects the monotonic provider outside request handling"

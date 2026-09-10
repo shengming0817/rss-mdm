@@ -10,7 +10,9 @@ use sqlx::{
     PgPool, Postgres, Row, Transaction,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{sync::atomic::Ordering, time::Duration};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 use uuid::Uuid;
 pub struct AccessStore {
     pool: PgPool,
@@ -59,7 +61,7 @@ impl AccessStore {
         status: u16,
         result: &str,
     ) -> Result<(), Error> {
-        let mut tx = self.begin(&audit.0.tenant).await?;
+        let mut tx = self.begin(audit.tenant()).await?;
         append(&mut tx, audit, status, result, None).await?;
         tx.commit()
             .await
@@ -189,13 +191,13 @@ impl AccessStore {
             tx.rollback().await.map_err(db)?;
             return Err(Error::Unavailable(Failure::AccessStore));
         }
-        audit.0.commit_started.store(true, Ordering::Release);
+        audit.mark_commit_started();
         tx.commit().await.map_err(|_| Error::CommitUnknown)?;
         #[cfg(test)]
         if self.fault.swap(0, Ordering::AcqRel) == 2 {
             return Err(Error::CommitUnknown);
         }
-        audit.0.committed.store(true, Ordering::Release);
+        audit.mark_committed();
         Ok(receipt)
     }
 }
@@ -214,9 +216,9 @@ async fn append(
     result: &str,
     registration: Option<Uuid>,
 ) -> Result<(), Error> {
-    let f = audit.fact();
+    let f = audit.snapshot();
     sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,client,target,operation_id,registration_request,action,result,status) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11)")
-        .bind(&audit.0.tenant).bind(Uuid::new_v4().to_string()).bind(audit.0.request_id.to_string()).bind(f.actor).bind(f.client).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).execute(&mut **tx).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
+        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.client).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).execute(&mut **tx).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
     Ok(())
 }
 async fn admission(pool: &PgPool) -> Result<(), Error> {
@@ -270,19 +272,16 @@ mod tests {
     }
     fn audit(key: Uuid, command: &Command) -> Audit {
         let a = Audit::new(TENANT.into(), command.action());
-        a.0.finalized.store(true, Ordering::Release); // no HTTP owner in this PG-only carrier
         a.operation(key, command.action());
         a.target(command.device());
-        {
-            let mut f = a.0.fact.lock().unwrap();
-            f.actor = Some("administrator".into());
-            f.client = Some("mdm".into());
-        }
+        a.identify_fixture("administrator", "mdm");
         a
     }
     async fn execute(store: &AccessStore, command: Command, key: Uuid) -> Result<Receipt, Error> {
         let a = audit(key, &command);
-        store.execute_as(actor(), key, command, &a).await
+        let result = store.execute_as(actor(), key, command, &a).await;
+        a.finalize(None);
+        result
     }
     fn issue() -> Command {
         Command::Issue {

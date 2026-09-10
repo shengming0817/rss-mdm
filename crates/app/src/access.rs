@@ -53,6 +53,7 @@ pub(crate) struct Coordinates {
 impl Policy {
     pub fn new(tenant: &str, client: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
         if client.is_empty()
+            || client.len() > 255
             || client.contains('*')
             || client.contains(':')
             || bindings.len() > 10000
@@ -240,6 +241,14 @@ impl EnrollmentPermission<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn client_id_fits_persistent_audit_and_grants() {
+        assert!(Policy::new("tenant", &"a".repeat(255), vec![]).is_ok());
+        assert!(matches!(
+            Policy::new("tenant", &"a".repeat(256), vec![]),
+            Err(Error::Configuration(ConfigIssue::ClientId))
+        ));
+    }
     fn binding() -> Binding {
         Binding {
             tenant_id: "tenant".into(),
