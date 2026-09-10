@@ -129,17 +129,20 @@ pub struct DeviceService {
     access: Arc<AccessStore>,
     policy: Arc<Policy>,
     journal_tenant: Option<TenantId>,
+    clock: Arc<dyn rss_observation::Clock>,
 }
 impl DeviceService {
     pub(crate) fn new(
         access: Arc<AccessStore>,
         policy: Arc<Policy>,
         journal_tenant: Option<TenantId>,
+        clock: Arc<dyn rss_observation::Clock>,
     ) -> Self {
         Self {
             access,
             policy,
             journal_tenant,
+            clock,
         }
     }
     pub async fn bind(
@@ -181,8 +184,17 @@ impl DeviceService {
         deadline: rss_request_context::Deadline,
     ) -> Result<rss_observation::ReceiveOutcome, Error> {
         let audit = Audit::new(self.policy.tenant().into(), "device_report");
-        self.audited(&audit, async {
-            let (principal, authority) = self.authorize_report(credential, source).await?;
+        // One deadline domain; RSS owns cancellation/settlement of its writes.
+        let deadline = deadline.shortened_to(self.clock.now() + Duration::from_secs(8));
+        let result = async {
+            let budget = deadline
+                .remaining(self.clock.now())
+                .ok_or(Error::Unavailable(Failure::RequestDeadline))?;
+            // This transaction is read-only. It is safe to cancel before admitting effects.
+            let (principal, authority) =
+                tokio::time::timeout(budget, self.authorize_report(credential, source))
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::RequestDeadline))??;
             audit.target(principal.device());
             audit.registration(principal.registration());
             audit.identify_device(principal.registration());
@@ -194,21 +206,36 @@ impl DeviceService {
                 rss_observation::LifecycleGrant::verify(&authority, authority.scope.clone())
                     .map_err(|_| Error::Forbidden)?;
             use rss_observation::ObservationStore;
-            observation
-                .activate(
-                    &lifecycle,
-                    None,
-                    &rss_observation::Policy::new(86400, 3600, 3600).expect("fixed policy"),
-                    deadline,
-                )
-                .await
-                .map_err(observation_error)?;
-            observation
-                .receive(&verified, deadline)
-                .await
-                .map_err(observation_error)
-        })
-        .await
+            // Until RSS returns, cancelling the caller cannot prove absence of a receipt.
+            audit.mark_commit_started();
+            let received = async {
+                observation
+                    .activate(
+                        &lifecycle,
+                        None,
+                        &rss_observation::Policy::new(86400, 3600, 3600).expect("fixed policy"),
+                        deadline,
+                    )
+                    .await?;
+                observation.receive(&verified, deadline).await
+            }
+            .await;
+            match &received {
+                Ok(_) => audit.mark_committed(),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        rss_observation::ErrorKind::CommitUnknown
+                            | rss_observation::ErrorKind::RollbackFailed
+                    ) => {}
+                Err(_) => audit.mark_not_committed(),
+            }
+            received.map_err(observation_error)
+        }
+        .await;
+        // Observation receipts and product audit are separate transactions. Even a known
+        // receipt commit needs this audit; registration's atomic-audit shortcut does not apply.
+        self.record_result(&audit, result).await
     }
     async fn audited<T>(
         &self,
@@ -222,6 +249,9 @@ impl DeviceService {
             audit.finalize(None);
             return result;
         }
+        self.record_result(audit, result).await
+    }
+    async fn record_result<T>(&self, audit: &Audit, result: Result<T, Error>) -> Result<T, Error> {
         let (status, outcome) = match &result {
             Ok(_) => (
                 200,

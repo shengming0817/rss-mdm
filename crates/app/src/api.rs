@@ -98,6 +98,7 @@ pub(crate) async fn from_compiled(
         access.clone(),
         policy.clone(),
         None,
+        monotonic.clone(),
     ));
     let identity = Identity::connect(&config, clock.clone()).await?;
     let host = config
@@ -190,12 +191,13 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
     };
     let snapshot = audit.snapshot();
-    if snapshot.write_outcome != WriteOutcome::CommitNotStarted
-        && matches!(
-            response.extensions().get::<Error>(),
-            Some(Error::Unavailable(Failure::RequestDeadline))
-        )
-    {
+    if matches!(
+        snapshot.write_outcome,
+        WriteOutcome::Unknown | WriteOutcome::Committed
+    ) && matches!(
+        response.extensions().get::<Error>(),
+        Some(Error::Unavailable(Failure::RequestDeadline))
+    ) {
         response = Error::CommitUnknown.into_response();
     }
     let mut audit_failure = matches!(
@@ -205,7 +207,7 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
     .then_some(FailureReason::Transaction);
     if audited && snapshot.write_outcome != WriteOutcome::Committed {
         let status = response.status().as_u16();
-        let result = if snapshot.write_outcome != WriteOutcome::CommitNotStarted && status >= 500 {
+        let result = if snapshot.write_outcome == WriteOutcome::Unknown && status >= 500 {
             "unknown"
         } else if status == 401 || status == 403 {
             "denied"

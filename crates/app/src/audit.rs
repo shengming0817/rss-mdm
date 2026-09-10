@@ -28,6 +28,7 @@ pub(crate) struct Snapshot {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WriteOutcome {
     CommitNotStarted,
+    NotCommitted,
     Unknown,
     Committed,
 }
@@ -109,6 +110,12 @@ impl Audit {
             state.snapshot.write_outcome = WriteOutcome::Unknown;
         }
     }
+    // A provider settled a report attempt and proved that its receipt did not commit.
+    pub fn mark_not_committed(&self) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
+        state.snapshot.write_outcome = WriteOutcome::NotCommitted;
+    }
     pub fn mark_committed(&self) {
         let mut state = self.0.state.lock().expect("audit lock");
         assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
@@ -151,6 +158,25 @@ impl Drop for Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settled_report_failure_is_distinct_from_cancellation() {
+        let audit = Audit::new("tenant".into(), "device_report");
+        audit.mark_commit_started();
+        assert_eq!(
+            audit
+                .0
+                .failure_event(&audit.snapshot(), FailureReason::Cancelled)["write_outcome"],
+            "unknown"
+        );
+        audit.mark_not_committed();
+        assert_eq!(
+            audit
+                .0
+                .failure_event(&audit.snapshot(), FailureReason::Persistent)["write_outcome"],
+            "not_committed"
+        );
+        audit.finalize(None);
+    }
     #[test]
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
         let a = Audit::new("tenant".into(), "grant_issue");

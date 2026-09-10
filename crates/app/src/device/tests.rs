@@ -215,14 +215,16 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let service = DeviceService::new(access.clone(), policy(A, true, true), None);
-    let service_b = DeviceService::new(access.clone(), policy(B, true, true), None);
-    let no_permission = DeviceService::new(access.clone(), policy(A, false, false), None);
+    let service = DeviceService::new(access.clone(), policy(A, true, true), None, Arc::new(Now));
+    let service_b = DeviceService::new(access.clone(), policy(B, true, true), None, Arc::new(Now));
+    let no_permission =
+        DeviceService::new(access.clone(), policy(A, false, false), None, Arc::new(Now));
     let cancel = tokio_util::sync::CancellationToken::new();
     let host = DeviceService::new(
         access.clone(),
         policy(A, false, false),
         Some(TenantId::parse(A)?),
+        Arc::new(Now),
     );
     assert!(host.journal_grant(TenantId::parse(A)?, &cancel).is_ok());
     assert!(host.journal_grant(TenantId::parse(B)?, &cancel).is_err());
@@ -255,6 +257,24 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     );
     assert_ne!(first.registration, other_channel.registration);
     assert_eq!(service.bind(&admin_a, &mdm, command.clone()).await?, first);
+    // The product cap must let RSS settle its own Effects-stage deadline as unknown.
+    // A longer caller deadline used to let the outer product timeout erase that result.
+    observation.inject_next_fault(rss_observation_postgres::Fault::CommitPending);
+    assert!(matches!(
+        service
+            .ingest(
+                &mdm,
+                ReportSource::MdmWindows,
+                batch("deadline", 1, "A", false),
+                &observation,
+                rss_request_context::Deadline::at(Now.now() + Duration::from_secs(20))
+            )
+            .await,
+        Err(Error::CommitUnknown)
+    ));
+    let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND result='unknown'")
+        .bind(first.registration.to_string()).fetch_one(&mut root).await?;
+    assert_eq!(unknown, 1);
     for bad in [
         service.bind(&other, &mdm, command.clone()).await,
         service.bind(&admin_b, &mdm, command.clone()).await,
@@ -453,7 +473,12 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let restart = DeviceService::new(restart_access.clone(), policy(A, true, true), None);
+    let restart = DeviceService::new(
+        restart_access.clone(),
+        policy(A, true, true),
+        None,
+        Arc::new(Now),
+    );
     let receipt = restart
         .revoke(&admin_a, "same-serial", second.registration, revoke_key)
         .await?;
@@ -511,6 +536,18 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_err()
     );
+    assert!(matches!(
+        service
+            .ingest(
+                &agent,
+                ReportSource::AgentBuiltin,
+                batch("audit-retry", 2, "audit", false),
+                &observation,
+                deadline()
+            )
+            .await,
+        Err(Error::Unavailable(Failure::Audit))
+    ));
     root.execute("GRANT INSERT ON mdm_access.audit TO mdm_access")
         .await?;
     assert!(
@@ -519,6 +556,18 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_ok()
     );
+    assert!(matches!(
+        service
+            .ingest(
+                &agent,
+                ReportSource::AgentBuiltin,
+                batch("audit-retry", 2, "audit", false),
+                &observation,
+                deadline()
+            )
+            .await?,
+        rss_observation::ReceiveOutcome::Replay(_)
+    ));
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid").bind(A).bind(pending.request_id.to_string()).fetch_one(&mut root).await?;
     assert_eq!(count, 0);
     access.fail_next(1);
@@ -574,6 +623,77 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_ok()
     );
+    // Replacement commits with its old generation still active, then loses its ACK.
+    let fourth_proof = proof(A, Channel::Mdm, 4);
+    access.fail_next(2);
+    assert!(matches!(
+        service.bind(&admin_a, &fourth_proof, replace.clone()).await,
+        Err(Error::CommitUnknown)
+    ));
+    let fourth = restart
+        .bind(&admin_a, &fourth_proof, replace.clone())
+        .await?;
+    assert_eq!(fourth.generation, 4);
+    assert_eq!(fourth.device, third.device);
+    assert_eq!(
+        fourth,
+        restart.bind(&admin_a, &fourth_proof, replace).await?
+    );
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid",
+    )
+    .bind(A)
+    .bind(third.registration.to_string())
+    .fetch_one(&mut root)
+    .await?;
+    assert_eq!(state, "superseded");
+    let active: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND state='active'")
+        .bind(A).bind(&fourth.device).fetch_one(&mut root).await?;
+    assert_eq!(active, 1);
+    assert!(
+        restart
+            .authorize_report(&third_proof, ReportSource::MdmWindows)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        restart
+            .authorize_report(&fourth_proof, ReportSource::MdmWindows)
+            .await?
+            .0
+            .registration(),
+        fourth.registration
+    );
+    assert_eq!(
+        restart
+            .authorize_report(&agent, ReportSource::AgentBuiltin)
+            .await?
+            .0
+            .registration(),
+        other_channel.registration
+    );
+    // A fresh operation cannot reactivate superseded or revoked credential locators.
+    for retired in [&mdm, &newer] {
+        let retry = BindRegistration {
+            operation_id: Uuid::new_v4(),
+            request_id: request(&access, &service.policy, &admin_a, "same-serial").await?,
+            expected_generation: 4,
+            source: ReportSource::MdmWindows,
+        };
+        assert!(matches!(
+            service.bind(&admin_a, retired, retry).await,
+            Err(Error::Conflict)
+        ));
+        assert_eq!(
+            service
+                .authorize_report(&fourth_proof, ReportSource::MdmWindows)
+                .await?
+                .0
+                .registration(),
+            fourth.registration
+        );
+    }
+    credential_race(&service, &admin_a, &mut root).await?;
     // Two accepted requests racing for the same expected generation cannot silently overwrite.
     let left = BindRegistration {
         operation_id: Uuid::new_v4(),
@@ -597,8 +717,8 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     assert!(matches!(l, Err(Error::Conflict)) || matches!(r, Err(Error::Conflict)));
     // Revocation wins the row lock: an authorization waiting behind it must fail.
     let mut revoke_tx = root.begin().await?;
-    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(A).bind(third.registration.to_string()).execute(&mut *revoke_tx).await?;
-    let authorize = service.authorize_report(&third_proof, ReportSource::MdmWindows);
+    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(A).bind(fourth.registration.to_string()).execute(&mut *revoke_tx).await?;
+    let authorize = service.authorize_report(&fourth_proof, ReportSource::MdmWindows);
     let release = async {
         tokio::time::sleep(Duration::from_millis(100)).await;
         revoke_tx.commit().await
@@ -624,6 +744,100 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     root.close().await?;
     restart_access.close().await;
     access.close().await;
+    Ok(())
+}
+
+// Force both contenders past the locator precheck. Different device locks cannot
+// arbitrate this race: the database unique constraint must roll back the loser's retire.
+async fn credential_race(
+    service: &DeviceService,
+    admin: &VerifiedIdentity,
+    root: &mut PgConnection,
+) -> anyhow::Result<()> {
+    let pa = proof(A, Channel::Mdm, 60);
+    let pb = proof(A, Channel::Mdm, 61);
+    let (_, a) = bind(service, admin, &pa, "locator-left", 0).await?;
+    let (_, b) = bind(service, admin, &pb, "locator-right", 0).await?;
+    let mut commands = Vec::new();
+    for device in [&a.device, &b.device] {
+        commands.push(BindRegistration {
+            operation_id: Uuid::new_v4(),
+            request_id: request(&service.access, &service.policy, admin, device).await?,
+            expected_generation: 1,
+            source: ReportSource::MdmWindows,
+        });
+    }
+    let mut hold = root.begin().await?;
+    sqlx::query("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id IN ($2::uuid,$3::uuid) FOR UPDATE")
+        .bind(A).bind(a.registration.to_string()).bind(b.registration.to_string()).fetch_all(&mut *hold).await?;
+    let shared = proof(A, Channel::Mdm, 62);
+    let release = async {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let blocked:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE 'SELECT id::text AS id FROM mdm_access.registrations%'")
+                    .fetch_one(&mut *hold).await?;
+                if blocked == 2 { return Ok::<_, sqlx::Error>(()); }
+                // Clear the transaction-local statistics snapshot before the next poll.
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.context("both credential contenders must pass precheck")??;
+        hold.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (left, right, released) = tokio::join!(
+        service.bind(admin, &shared, commands[0].clone()),
+        service.bind(admin, &shared, commands[1].clone()),
+        release
+    );
+    released?;
+    let (winner, loser, old_proof) = match (left, right) {
+        (Ok(receipt), Err(Error::Conflict)) => (receipt, b, pb),
+        (Err(Error::Conflict), Ok(receipt)) => (receipt, a, pa),
+        _ => anyhow::bail!("credential race must have exactly one winner and one conflict"),
+    };
+    assert_eq!(winner.generation, 2);
+    assert_eq!(
+        service
+            .authorize_report(&shared, ReportSource::MdmWindows)
+            .await?
+            .0
+            .registration(),
+        winner.registration
+    );
+    assert_eq!(
+        service
+            .authorize_report(&old_proof, ReportSource::MdmWindows)
+            .await?
+            .0
+            .registration(),
+        loser.registration
+    );
+    let generations:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm'")
+        .bind(A).bind(&loser.device).fetch_one(&mut *root).await?;
+    assert_eq!(generations, 1);
+    // Even after revocation the winning locator cannot move to the other device.
+    service
+        .revoke(admin, &winner.device, winner.registration, Uuid::new_v4())
+        .await?;
+    let retry = BindRegistration {
+        operation_id: Uuid::new_v4(),
+        request_id: request(&service.access, &service.policy, admin, &loser.device).await?,
+        expected_generation: 1,
+        source: ReportSource::MdmWindows,
+    };
+    assert!(matches!(
+        service.bind(admin, &shared, retry).await,
+        Err(Error::Conflict)
+    ));
+    assert_eq!(
+        service
+            .authorize_report(&old_proof, ReportSource::MdmWindows)
+            .await?
+            .0
+            .registration(),
+        loser.registration
+    );
     Ok(())
 }
 
