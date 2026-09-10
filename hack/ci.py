@@ -187,6 +187,15 @@ def isolate():
         return "clean checkout, fresh Cargo home/target, both feature graphs passed"
 
 
+# Capability families include their subcrates (e.g. sqlx-postgres, hyper-util).
+# Product/RSS owners are separately restricted to Group and its two value types.
+GROUP_FORBIDDEN_DEPENDENCIES = {
+    "http", "hyper", "reqwest", "ureq", "surf", "awc", "attohttpc", "isahc",
+    "axum", "actix-web", "warp", "tide", "poem", "rocket", "salvo",
+    "postgres", "tokio-postgres", "sqlx", "diesel", "sea-orm", "sea-query",
+    "deadpool-postgres", "bb8-postgres",
+}
+
 def verify_group_consumer(data, group_source, pin):
     """Check resolved package identities and the actual production dependency edges."""
     packages = {p["id"]: p for p in data["packages"]}
@@ -214,6 +223,20 @@ def verify_group_consumer(data, group_source, pin):
         return {packages[d["pkg"]]["name"] for d in nodes[key]["deps"]}
     require(dependencies(root) == value_types | {"rss-mdm-group"}, "consumer must directly use only Group and its public value types")
     require(dependencies(group_ids[0]) == value_types, "Group must depend only on public tenant/time values")
+    visited, todo = set(), [group_ids[0]]
+    while todo:
+        key = todo.pop()
+        if key in visited:
+            continue
+        visited.add(key)
+        name = packages[key]["name"]
+        require(not any(name == banned or name.startswith(banned + "-") for banned in GROUP_FORBIDDEN_DEPENDENCIES),
+                f"forbidden Group production dependency: {name}")
+        for dep in nodes[key]["deps"]:
+            # Include normal/build edges on every target; dependency tests are not production.
+            if any(kind.get("kind") != "dev" for kind in dep.get("dep_kinds", [{"kind": None}])):
+                todo.append(dep["pkg"])
+
 
 def group_consumer(head):
     """One package consumed from committed Git source; fixture source stays in Group tests."""

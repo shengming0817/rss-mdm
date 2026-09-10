@@ -1,4 +1,4 @@
-use crate::{Error, Result, bound, identity, limits, text};
+use crate::{Budget, Error, LimitKind, Result};
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use std::{
@@ -16,7 +16,7 @@ impl ObjectKey {
     /// Construct a key; rejects blank/control-character identifiers and overlong UTF-8 strings.
     pub fn new(tenant: TenantId, id: impl Into<String>) -> Result<Self> {
         let id = id.into();
-        identity(&id, &mut 0)?;
+        Budget::new(LimitKind::BatchBytes).identity(&id)?;
         Ok(Self { tenant, id })
     }
     pub fn tenant(&self) -> TenantId {
@@ -67,9 +67,9 @@ impl Scalar {
             Self::Time(_) => ScalarType::Time,
         }
     }
-    pub(crate) fn validate(&self, bytes: &mut usize) -> Result<()> {
+    pub(crate) fn validate(&self, budget: &mut Budget) -> Result<()> {
         if let Self::String(s) = self {
-            text(s, bytes)?;
+            budget.text(s)?;
         }
         Ok(())
     }
@@ -90,16 +90,20 @@ impl Value {
             Self::Set { element, .. } => FieldType::Set(*element),
         }
     }
-    pub(crate) fn validate(&self, bytes: &mut usize) -> Result<()> {
+    pub(crate) fn validate(&self, budget: &mut Budget) -> Result<()> {
         match self {
-            Self::Scalar(v) => v.validate(bytes)?,
+            Self::Scalar(v) => {
+                budget.items(1)?;
+                v.validate(budget)?;
+            }
             Self::Set { element, values } => {
-                bound(values.len(), limits::SET_ITEMS)?;
+                LimitKind::SetItems.check(values.len())?;
+                budget.items(values.len())?; // Reserve before traversing any scalar.
                 for v in values {
                     if v.kind() != *element {
                         return Err(Error::InvalidType);
                     }
-                    v.validate(bytes)?;
+                    v.validate(budget)?;
                 }
             }
         }
@@ -194,16 +198,15 @@ pub struct Difference {
 pub(crate) fn members(
     tenant: TenantId,
     input: &[ObjectKey],
-    bytes: &mut usize,
+    budget: &mut Budget,
 ) -> Result<BTreeSet<ObjectKey>> {
-    bound(input.len(), limits::OBJECTS)?;
+    LimitKind::Objects.check(input.len())?;
     for key in input {
         if key.tenant != tenant {
             return Err(Error::TenantMismatch);
         }
-        text(&key.id, bytes)?;
+        budget.text(&key.id)?;
     }
-    bound(*bytes, limits::BATCH_BYTES)?;
     Ok(input.iter().cloned().collect())
 }
 pub(crate) fn difference(
@@ -223,10 +226,10 @@ pub(crate) fn difference(
 /// Returns TenantMismatch for any foreign key and LimitExceeded for list/string budgets.
 /// Input order and duplicate keys do not affect the result.
 pub fn diff(tenant: TenantId, old: &[ObjectKey], new: &[ObjectKey]) -> Result<Difference> {
-    let mut bytes = 0;
+    let mut budget = Budget::new(LimitKind::BatchBytes);
     Ok(difference(
         tenant,
-        &members(tenant, old, &mut bytes)?,
-        &members(tenant, new, &mut bytes)?,
+        &members(tenant, old, &mut budget)?,
+        &members(tenant, new, &mut budget)?,
     ))
 }

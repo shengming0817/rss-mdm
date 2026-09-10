@@ -1,8 +1,7 @@
 use crate::model::{difference, members};
 use crate::rule::{Criteria, Node};
 use crate::{
-    Error, Fact, FactState, ObjectKey, Op, Result, Rule, Scalar, Snapshot, Value, bound, identity,
-    limits, text,
+    Budget, Error, Fact, FactState, LimitKind, ObjectKey, Op, Result, Rule, Scalar, Snapshot, Value,
 };
 use rss_contract::Timepoint;
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,7 +88,7 @@ impl Rule {
     /// Preview accepts partial coverage. Uncovered referenced fields produce Unknown(Missing).
     /// Every input is validated before any result is returned, including unused fields.
     pub fn evaluate(&self, snapshot: &Snapshot, as_of: Timepoint) -> Result<Evaluation> {
-        self.evaluate_inner(snapshot, as_of, &mut 0)
+        self.evaluate_inner(snapshot, as_of, &mut Budget::new(LimitKind::BatchBytes))
     }
     /// Only a complete candidate universe may produce a replacement membership set.
     /// An old member now Unknown is removed and is also listed in `unknown`.
@@ -105,9 +104,9 @@ impl Rule {
         if !snapshot.complete || !self.required.is_subset(&snapshot.coverage) {
             return Err(Error::IncompleteSnapshot);
         }
-        let mut bytes = 0;
-        let old = members(snapshot.tenant, old, &mut bytes)?;
-        let evaluation = self.evaluate_inner(snapshot, as_of, &mut bytes)?;
+        let mut budget = Budget::new(LimitKind::BatchBytes);
+        let old = members(snapshot.tenant, old, &mut budget)?;
+        let evaluation = self.evaluate_inner(snapshot, as_of, &mut budget)?;
         let new: BTreeSet<_> = evaluation
             .objects
             .iter()
@@ -130,20 +129,20 @@ impl Rule {
         &self,
         s: &Snapshot,
         as_of: Timepoint,
-        bytes: &mut usize,
+        budget: &mut Budget,
     ) -> Result<Evaluation> {
         if self.tenant != s.tenant {
             return Err(Error::TenantMismatch);
         }
-        identity(&s.id, bytes)?;
-        identity(&s.version, bytes)?;
-        identity(&s.dictionary_version, bytes)?;
+        budget.identity(&s.id)?;
+        budget.identity(&s.version)?;
+        budget.identity(&s.dictionary_version)?;
         if s.dictionary_version != self.dictionary_version {
             return Err(Error::VersionMismatch);
         }
-        bound(s.coverage.len(), limits::FIELDS)?;
+        LimitKind::Fields.check(s.coverage.len())?;
         for key in &s.coverage {
-            identity(key, bytes)?;
+            budget.identity(key)?;
             if !self.fields.contains_key(key) {
                 return Err(Error::UnknownField);
             }
@@ -151,35 +150,29 @@ impl Rule {
         if s.complete && !self.required.is_subset(&s.coverage) {
             return Err(Error::IncompleteSnapshot);
         }
-        bound(s.objects.len(), limits::OBJECTS)?;
-        bound(
-            s.objects
-                .len()
-                .checked_mul(self.criteria.count)
-                .ok_or(Error::LimitExceeded)?,
-            limits::VISITS,
-        )?;
+        LimitKind::Objects.check(s.objects.len())?;
+        LimitKind::Visits.product(s.objects.len(), self.criteria.count)?;
         let mut objects = BTreeMap::new();
         for object in &s.objects {
             if object.key.tenant() != s.tenant {
                 return Err(Error::TenantMismatch);
             }
-            text(object.key.id(), bytes)?;
-            bound(object.facts.len(), limits::FIELDS)?;
+            budget.text(object.key.id())?;
+            LimitKind::Fields.check(object.facts.len())?;
             for (key, fact) in &object.facts {
-                identity(key, bytes)?;
+                budget.identity(key)?;
                 let field = self.fields.get(key).ok_or(Error::UnknownField)?;
                 if !s.coverage.contains(key) {
                     return Err(Error::InvalidStructure);
                 }
-                identity(&fact.source, bytes)?;
-                identity(&fact.snapshot_id, bytes)?;
+                budget.identity(&fact.source)?;
+                budget.identity(&fact.snapshot_id)?;
                 if fact.valid_until.is_some_and(|end| end <= fact.observed_at) {
                     return Err(Error::InvalidTime);
                 }
                 match &fact.state {
                     FactState::Known(value) => {
-                        value.validate(bytes)?;
+                        value.validate(budget)?;
                         if value.kind() != field.kind {
                             return Err(Error::InvalidType);
                         }
@@ -197,17 +190,9 @@ impl Rule {
             {
                 return Err(Error::ConflictingObject);
             }
-            bound(*bytes, limits::BATCH_BYTES)?;
         }
-        bound(*bytes, limits::BATCH_BYTES)?;
         let leaves = leaf_count(&self.criteria);
-        bound(
-            objects
-                .len()
-                .checked_mul(leaves)
-                .ok_or(Error::LimitExceeded)?,
-            limits::EXPLANATIONS,
-        )?;
+        LimitKind::Explanations.product(objects.len(), leaves)?;
         let objects = objects
             .values()
             .map(|object| {

@@ -1,3 +1,5 @@
+#![warn(clippy::cognitive_complexity)]
+
 use rss_mdm_group::{ObjectKey, diff};
 use rss_request_context::TenantId;
 
@@ -548,7 +550,7 @@ fn rule_types_units_and_operations_fail_before_any_evaluation() {
 }
 
 #[test]
-fn depth_nodes_sets_and_string_limits_have_inclusive_boundaries() {
+fn depth_and_node_limits_have_inclusive_boundaries() {
     assert!(matches!(
         Criteria::and(vec![]),
         Err(Error::InvalidStructure)
@@ -558,14 +560,27 @@ fn depth_nodes_sets_and_string_limits_have_inclusive_boundaries() {
     for _ in 1..limits::DEPTH {
         c = Criteria::and(vec![c]).unwrap();
     }
-    assert!(matches!(Criteria::or(vec![c]), Err(Error::LimitExceeded)));
+    assert!(matches!(
+        Criteria::or(vec![c]),
+        Err(Error::LimitExceeded(LimitKind::Depth))
+    ));
     let leaf = leaf(Op::Eq, Some(string("x")));
     assert!(Criteria::and(vec![leaf.clone(); limits::NODES - 1]).is_ok());
     assert!(matches!(
         Criteria::and(vec![leaf; limits::NODES]),
-        Err(Error::LimitExceeded)
+        Err(Error::LimitExceeded(LimitKind::Nodes))
     ));
-    for (count, ok) in [(limits::SET_ITEMS, true), (limits::SET_ITEMS + 1, false)] {
+}
+
+#[test]
+fn set_item_limits_have_inclusive_boundaries() {
+    for (count, expected) in [
+        (limits::SET_ITEMS, Ok(())),
+        (
+            limits::SET_ITEMS + 1,
+            Err(Error::LimitExceeded(LimitKind::SetItems)),
+        ),
+    ] {
         let value = set(
             ScalarType::Integer,
             (0..count).map(|i| Scalar::Integer(i as i64)).collect(),
@@ -576,16 +591,24 @@ fn depth_nodes_sets_and_string_limits_have_inclusive_boundaries() {
                 op: Op::In,
                 operand: Some(Operand { value, unit: None })
             })
-            .is_ok(),
-            ok
+            .map(|_| ()),
+            expected
         );
     }
+}
+
+#[test]
+fn string_byte_limits_have_inclusive_boundaries() {
     for (len, ok) in [
         (limits::STRING_BYTES, true),
         (limits::STRING_BYTES + 1, false),
     ] {
         assert_eq!(ObjectKey::new(tenant(), "x".repeat(len)).is_ok(), ok);
     }
+}
+
+#[test]
+fn rule_byte_limit_accumulates_across_predicates() {
     let c = Criteria::and(
         (0..17)
             .map(|_| crate::leaf(Op::Eq, Some(string(&"x".repeat(4096)))))
@@ -600,7 +623,7 @@ fn depth_nodes_sets_and_string_limits_have_inclusive_boundaries() {
             vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
             c
         ),
-        Err(Error::LimitExceeded)
+        Err(Error::LimitExceeded(LimitKind::RuleBytes))
     ));
 }
 
@@ -615,18 +638,21 @@ fn batch_work_and_size_limits_are_enforced_without_partial_results() {
     s.objects = vec![s.objects[0].clone(); limits::OBJECTS];
     assert_eq!(r.evaluate(&s, time(10)).unwrap().objects.len(), 1);
     s.objects.push(s.objects[0].clone());
-    assert_eq!(r.evaluate(&s, time(10)), Err(Error::LimitExceeded));
+    assert_eq!(
+        r.evaluate(&s, time(10)),
+        Err(Error::LimitExceeded(LimitKind::Objects))
+    );
     let key = ObjectKey::new(tenant(), "a").unwrap();
     assert!(diff(tenant(), &vec![key.clone(); limits::OBJECTS], &[]).is_ok());
     assert_eq!(
         diff(tenant(), &vec![key; limits::OBJECTS + 1], &[]),
-        Err(Error::LimitExceeded)
+        Err(Error::LimitExceeded(LimitKind::Objects))
     );
     let key = ObjectKey::new(tenant(), "a".repeat(4096)).unwrap();
     assert!(diff(tenant(), &vec![key.clone(); 4096], &[]).is_ok());
     assert_eq!(
         diff(tenant(), &vec![key; 4097], &[]),
-        Err(Error::LimitExceeded)
+        Err(Error::LimitExceeded(LimitKind::BatchBytes))
     );
     let c = Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); 99]).unwrap();
     let r = Rule::new(
@@ -648,7 +674,10 @@ fn batch_work_and_size_limits_are_enforced_without_partial_results() {
         c,
     )
     .unwrap();
-    assert_eq!(r.evaluate(&s, time(10)), Err(Error::LimitExceeded));
+    assert_eq!(
+        r.evaluate(&s, time(10)),
+        Err(Error::LimitExceeded(LimitKind::Visits))
+    );
 }
 
 #[test]
@@ -673,7 +702,7 @@ fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
     fields.push(fields[0].clone());
     assert!(matches!(
         Rule::new(tenant(), "1", "1", fields, c.clone()),
-        Err(Error::LimitExceeded)
+        Err(Error::LimitExceeded(LimitKind::Fields))
     ));
     assert!(matches!(
         Rule::new(tenant(), "1", "1", vec![field(kind, &[Op::Eq]); 2], c),
@@ -825,7 +854,10 @@ fn recalculation_shares_the_input_byte_budget_with_old_members() {
     s.objects = vec![s.objects[0].clone(); 2100];
     assert!(diff(tenant(), &old, &[]).is_ok());
     assert!(r.evaluate(&s, time(10)).is_ok());
-    assert_eq!(r.recalculate(&s, time(10), &old), Err(Error::LimitExceeded));
+    assert_eq!(
+        r.recalculate(&s, time(10), &old),
+        Err(Error::LimitExceeded(LimitKind::BatchBytes))
+    );
 }
 
 #[test]
@@ -893,8 +925,14 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
     let mut extra = object;
     extra.key = ObjectKey::new(tenant(), "extra").unwrap();
     s.objects.push(extra);
-    assert_eq!(r.evaluate(&s, time(10)), Err(Error::LimitExceeded));
-    assert_eq!(r.recalculate(&s, time(10), &[]), Err(Error::LimitExceeded));
+    assert_eq!(
+        r.evaluate(&s, time(10)),
+        Err(Error::LimitExceeded(LimitKind::Explanations))
+    );
+    assert_eq!(
+        r.recalculate(&s, time(10), &[]),
+        Err(Error::LimitExceeded(LimitKind::Explanations))
+    );
 }
 
 #[test]
@@ -922,4 +960,88 @@ fn preview_evidence_distinguishes_a_partial_universe() {
     assert_ne!(complete, partial);
     assert!(!partial.complete);
     assert_eq!(partial.coverage, s.coverage);
+}
+
+#[test]
+fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
+    for kind in [ScalarType::Integer, ScalarType::Time] {
+        let value = set(
+            kind,
+            (0..250)
+                .map(|i| match kind {
+                    ScalarType::Time => Scalar::Time(time(i)),
+                    _ => Scalar::Integer(i),
+                })
+                .collect(),
+        );
+        let mut fields = vec![field(FieldType::Set(kind), &[Op::ContainsAll])];
+        for i in 1..32 {
+            let mut f = fields[0].clone();
+            f.key = format!("field-{i}");
+            fields.push(f);
+        }
+        let mut s = snapshot(FactState::Known(value.clone()));
+        let fact = s.objects[0].facts["device.model"].clone();
+        s.coverage = fields.iter().map(|f| f.key.clone()).collect();
+        s.objects[0].facts = fields
+            .iter()
+            .map(|f| (f.key.clone(), fact.clone()))
+            .collect();
+        s.objects = vec![s.objects[0].clone(); 125]; // 125 * 32 * 250 = 1,000,000
+        let r = Rule::new(
+            tenant(),
+            "1",
+            "dictionary-1",
+            fields,
+            leaf(Op::ContainsAll, Some(value)),
+        )
+        .unwrap();
+        assert!(r.evaluate(&s, time(10)).is_ok());
+        assert!(r.recalculate(&s, time(10), &[]).is_ok());
+        let final_fact = s
+            .objects
+            .last_mut()
+            .unwrap()
+            .facts
+            .iter_mut()
+            .next_back()
+            .unwrap()
+            .1;
+        let FactState::Known(Value::Set { values, .. }) = &mut final_fact.state else {
+            unreachable!()
+        };
+        values.insert(match kind {
+            ScalarType::Time => Scalar::Time(time(250)),
+            _ => Scalar::Integer(250),
+        }); // exactly 1,000,001 items across the batch
+        assert_eq!(
+            r.evaluate(&s, time(10)),
+            Err(Error::LimitExceeded(LimitKind::Items))
+        );
+        assert_eq!(
+            r.recalculate(&s, time(10), &[]),
+            Err(Error::LimitExceeded(LimitKind::Items))
+        );
+        *s.objects.last_mut().unwrap() = s.objects[0].clone();
+        s.objects.push(s.objects[0].clone()); // duplicates still consume input work
+        assert_eq!(
+            r.evaluate(&s, time(10)),
+            Err(Error::LimitExceeded(LimitKind::Items))
+        );
+        assert_eq!(
+            r.recalculate(&s, time(10), &[]),
+            Err(Error::LimitExceeded(LimitKind::Items))
+        );
+    }
+}
+
+#[test]
+fn limit_diagnostics_distinguish_categories_without_input_values() {
+    let secret = "private-device".repeat(limits::STRING_BYTES);
+    let string_error = ObjectKey::new(tenant(), secret.clone()).unwrap_err();
+    let node_error =
+        Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); limits::NODES]).unwrap_err();
+    assert_eq!(string_error, Error::LimitExceeded(LimitKind::StringBytes));
+    assert_eq!(node_error, Error::LimitExceeded(LimitKind::Nodes));
+    assert!(!string_error.to_string().contains(&secret));
 }

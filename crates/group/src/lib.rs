@@ -75,7 +75,7 @@ pub enum Error {
     IncompleteSnapshot,
     VersionMismatch,
     ConflictingObject,
-    LimitExceeded,
+    LimitExceeded(LimitKind),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -95,25 +95,140 @@ pub mod limits {
     pub const RULE_BYTES: usize = 64 * 1024;
     pub const OBJECTS: usize = 10_000;
     pub const BATCH_BYTES: usize = 16 * 1024 * 1024;
+    pub const ITEMS: usize = 1_000_000;
     pub const VISITS: usize = 1_000_000;
     pub const EXPLANATIONS: usize = 65_536;
 }
-pub(crate) fn bound(n: usize, max: usize) -> Result<()> {
-    if n > max {
-        Err(Error::LimitExceeded)
-    } else {
+/// Closed, low-cardinality budget identity; never carries caller input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitKind {
+    Depth,
+    Nodes,
+    Fields,
+    SetItems,
+    StringBytes,
+    RuleBytes,
+    Objects,
+    BatchBytes,
+    Items,
+    Visits,
+    Explanations,
+}
+impl LimitKind {
+    fn maximum(self) -> usize {
+        match self {
+            Self::Depth => limits::DEPTH,
+            Self::Nodes => limits::NODES,
+            Self::Fields => limits::FIELDS,
+            Self::SetItems => limits::SET_ITEMS,
+            Self::StringBytes => limits::STRING_BYTES,
+            Self::RuleBytes => limits::RULE_BYTES,
+            Self::Objects => limits::OBJECTS,
+            Self::BatchBytes => limits::BATCH_BYTES,
+            Self::Items => limits::ITEMS,
+            Self::Visits => limits::VISITS,
+            Self::Explanations => limits::EXPLANATIONS,
+        }
+    }
+    pub(crate) fn check(self, n: usize) -> Result<()> {
+        if n > self.maximum() {
+            Err(Error::LimitExceeded(self))
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn add(self, total: &mut usize, n: usize) -> Result<()> {
+        let next = total.checked_add(n).ok_or(Error::LimitExceeded(self))?;
+        self.check(next)?;
+        *total = next;
+        Ok(())
+    }
+    pub(crate) fn product(self, a: usize, b: usize) -> Result<()> {
+        self.check(a.checked_mul(b).ok_or(Error::LimitExceeded(self))?)
+    }
+}
+
+/// Shared by the entire rule or input batch, including duplicate/unused facts.
+pub(crate) struct Budget {
+    bytes: usize,
+    byte_kind: LimitKind,
+    items: usize,
+}
+impl Budget {
+    pub(crate) fn new(byte_kind: LimitKind) -> Self {
+        Self {
+            bytes: 0,
+            byte_kind,
+            items: 0,
+        }
+    }
+    pub(crate) fn items(&mut self, n: usize) -> Result<()> {
+        LimitKind::Items.add(&mut self.items, n)
+    }
+    pub(crate) fn text(&mut self, s: &str) -> Result<()> {
+        LimitKind::StringBytes.check(s.len())?;
+        self.byte_kind.add(&mut self.bytes, s.len())
+    }
+    pub(crate) fn identity(&mut self, s: &str) -> Result<()> {
+        self.text(s)?;
+        if s.trim().is_empty() || s.chars().any(char::is_control) {
+            return Err(Error::InvalidIdentity);
+        }
         Ok(())
     }
 }
-pub(crate) fn text(s: &str, total: &mut usize) -> Result<()> {
-    bound(s.len(), limits::STRING_BYTES)?;
-    *total = total.checked_add(s.len()).ok_or(Error::LimitExceeded)?;
-    Ok(())
-}
-pub(crate) fn identity(s: &str, total: &mut usize) -> Result<()> {
-    text(s, total)?;
-    if s.trim().is_empty() || s.chars().any(char::is_control) {
-        return Err(Error::InvalidIdentity);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_budget_arithmetic_preserves_the_limit_category() {
+        for kind in [
+            LimitKind::Nodes,
+            LimitKind::RuleBytes,
+            LimitKind::BatchBytes,
+            LimitKind::Items,
+        ] {
+            let mut total = usize::MAX;
+            assert_eq!(kind.add(&mut total, 1), Err(Error::LimitExceeded(kind)));
+            assert_eq!(total, usize::MAX);
+        }
+        for kind in [LimitKind::Visits, LimitKind::Explanations] {
+            assert_eq!(kind.product(usize::MAX, 2), Err(Error::LimitExceeded(kind)));
+        }
     }
-    Ok(())
+
+    #[test]
+    fn every_scalar_kind_consumes_the_same_batch_item_budget() {
+        for scalar in [
+            Scalar::String(String::new()),
+            Scalar::Boolean(false),
+            Scalar::Integer(0),
+            Scalar::Time(rss_contract::Timepoint::try_from(0).unwrap()),
+        ] {
+            let mut budget = Budget::new(LimitKind::BatchBytes);
+            budget.items(limits::ITEMS - 1).unwrap();
+            let value = Value::Scalar(scalar);
+            assert_eq!(value.validate(&mut budget), Ok(()));
+            assert_eq!(
+                value.validate(&mut budget),
+                Err(Error::LimitExceeded(LimitKind::Items))
+            );
+        }
+    }
+
+    #[test]
+    fn set_reservation_rejects_over_budget_before_element_validation() {
+        let mut budget = Budget::new(LimitKind::BatchBytes);
+        budget.items(limits::ITEMS).unwrap();
+        let invalid = Value::Set {
+            element: ScalarType::Integer,
+            values: std::collections::BTreeSet::from([Scalar::Boolean(false)]),
+        };
+        assert_eq!(
+            invalid.validate(&mut budget),
+            Err(Error::LimitExceeded(LimitKind::Items))
+        );
+    }
 }

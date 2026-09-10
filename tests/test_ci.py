@@ -140,6 +140,33 @@ class GroupConsumer(unittest.TestCase):
             bad['packages'].append({'id': dependency, 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'})
             bad['resolve']['nodes'][1]['deps'].append({'pkg': dependency})
             with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        for parent, dependency in [('rss-contract', 'sqlx'), ('rss-request-context', 'reqwest')]:
+            with self.subTest(parent=parent, dependency=dependency):
+                bad = copy.deepcopy(data)
+                bad['packages'].append({'id': dependency, 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'})
+                bad['resolve']['nodes'].append({'id': dependency, 'features': [], 'deps': []})
+                next(n for n in bad['resolve']['nodes'] if n['id'] == parent)['deps'].append({'pkg': dependency, 'dep_kinds': [{'kind': None, 'target': None}]})
+                with self.assertRaisesRegex(RuntimeError, 'forbidden Group production dependency'):
+                    ci.verify_group_consumer(bad, source, pin)
+        for dependency in ['sqlx-postgres', 'hyper-util', 'postgres-types', 'axum-core']:
+            for kind, rejected in [(None, True), ('build', True), ('dev', False)]:
+                with self.subTest(dependency=dependency, kind=kind):
+                    bad = copy.deepcopy(data)
+                    # Distinct IDs/names model Cargo package identity and dependency renaming.
+                    bad['packages'].extend([
+                        {'id': 'bridge-id', 'name': 'benign-bridge', 'source': 'registry+https://github.com/rust-lang/crates.io-index'},
+                        {'id': 'forbidden-id', 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'},
+                    ])
+                    bad['resolve']['nodes'][2]['deps'].append({'pkg': 'bridge-id', 'dep_kinds': [{'kind': None}]})
+                    bad['resolve']['nodes'].extend([
+                        {'id': 'bridge-id', 'deps': [{'name': 'alias', 'pkg': 'forbidden-id', 'dep_kinds': [{'kind': kind, 'target': 'cfg(windows)'}]}]},
+                        {'id': 'forbidden-id', 'deps': []},
+                    ])
+                    if rejected:
+                        with self.assertRaisesRegex(RuntimeError, 'forbidden Group production dependency'):
+                            ci.verify_group_consumer(bad, source, pin)
+                    else:
+                        ci.verify_group_consumer(bad, source, pin)
         bad = copy.deepcopy(data); bad['packages'][1]['source'] = 'path+file:///tmp/group'
         with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
         for declared, resolved in [({'default': ['new']}, []), ({}, ['new'])]:
