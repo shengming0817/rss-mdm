@@ -35,6 +35,9 @@ def verify_migrations(container, binary, config, root, env):
     migrate(admin_config,accepted=False)
     require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
     migrate(); migrate()
+    # Force index eligibility on the tiny fixture; this is not a throughput claim.
+    plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
+    require('request_id' in json.dumps(plan[0]['Plan'].get('Index Cond', '')), 'request-id lookup lacks an index condition')
     original = sql("SELECT digest FROM public.mdm_migrations WHERE name='inventory-v1'")
     import hashlib
     require(original == hashlib.sha256((ROOT/'crates/inventory-postgres/migrations/0001_inventory.sql').read_bytes()).hexdigest(), "migration invariant rejected")
@@ -59,7 +62,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "4", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "6", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -70,22 +73,24 @@ def verify_migrations(container, binary, config, root, env):
 def verify_startup_deadlines(binary, root, port, env):
     import socket
     config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
-    for name,value in [('api-password','api-fixture'),('oidc-secret','o'*40),('validation-secret','v'*40)]:
+    for name,value in [('api-password','api-fixture'),('access-password','access-fixture'),('oidc-secret','o'*40),('validation-secret','v'*40)]:
         (root/name).write_text(value);os.chmod(root/name,0o600)
     config['database']={'host':'localhost','port':int(port),'name':'mdm_test','user':'mdm_api','password_file':str(root/'api-password'),'ca_file':str(root/'ca.crt')}
+    config['access_database']={**config['database'],'user':'mdm_access','password_file':str(root/'access-password')}
     config['identity'].update(oidc_secret_file=str(root/'oidc-secret'),validation_secret_file=str(root/'validation-secret'),ca_file=str(root/'ca.crt'))
     for stage in ['database','identity']:
         with socket.socket() as stalled:
             stalled.bind(('127.0.0.1',0));stalled.listen(8)
             stalled_port=stalled.getsockname()[1]
             config['database']['port']=stalled_port if stage=='database' else int(port)
+            config['access_database']['port']=config['database']['port']
             config['identity']['issuer']='https://localhost:'+str(stalled_port)+'/oidc'
             path=root/'stalled.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
             start=time.monotonic()
             result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
             require(result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget')
             expected='startup.reader_connection_or_admission' if stage=='database' else 'startup.identity'
-            require(expected in result.stderr, 'startup failure lost safe stage classification')
+            require(expected in result.stderr, 'startup failure lost safe stage classification: ' + result.stderr)
             require('api-fixture' not in result.stderr and 'o'*40 not in result.stderr, 'startup diagnostics exposed credentials')
     print('startup dependency stalls rejected within budget with safe stage diagnostics',flush=True)
 
@@ -117,7 +122,7 @@ def main():
                     if probe.returncode == 0: break
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
-            sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
+            sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")
@@ -131,6 +136,7 @@ def main():
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)
             run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
             run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
+            run(["cargo","test","--locked","-p","rss-mdm-app","--lib","access_store::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env=env)
         finally:
             primary = sys.exception()
             try:

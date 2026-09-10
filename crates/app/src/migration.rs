@@ -70,12 +70,17 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
     sqlx::raw_sql("CREATE TABLE IF NOT EXISTS public.mdm_migrations(name text PRIMARY KEY,digest text NOT NULL,complete boolean NOT NULL DEFAULT false)")
         .execute(&mut *conn).await.map_err(|_|MigrationError::at("installation","ledger initialization"))?;
     for (name, sql) in [
+        ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
         ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
         ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
         (
             "inventory-api-reader-v1",
             rss_mdm_inventory_postgres::READER_MIGRATION_SQL,
+        ),
+        (
+            "access-audit-request-index-v1",
+            include_str!("../migrations/0002_audit_request_index.sql"),
         ),
     ] {
         let digest = format!("{:x}", Sha256::digest(sql));

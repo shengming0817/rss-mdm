@@ -24,6 +24,7 @@ pub struct Binding {
     pub roles: BTreeSet<Role>,
     pub devices: BTreeSet<String>,
     pub allow_wipe: bool,
+    pub allow_enrollment: bool,
 }
 pub(crate) struct Policy {
     tenant: String,
@@ -52,6 +53,7 @@ pub(crate) struct Coordinates {
 impl Policy {
     pub fn new(tenant: &str, client: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
         if client.is_empty()
+            || client.len() > 255
             || client.contains('*')
             || client.contains(':')
             || bindings.len() > 10000
@@ -72,7 +74,7 @@ impl Policy {
                     .iter()
                     .any(|d| d != "*" && rss_observation::Id::new(d).is_err())
                 || (b.devices.contains("*") && b.devices.len() != 1)
-                || (b.allow_wipe
+                || ((b.allow_wipe || b.allow_enrollment)
                     && !b
                         .roles
                         .iter()
@@ -93,6 +95,25 @@ impl Policy {
             return Err(Error::Unauthorized);
         }
         Ok(self.bindings.get(proof.subject()))
+    }
+    pub fn enrollment<'a>(
+        &self,
+        proof: &'a VerifiedIdentity,
+        device: &str,
+    ) -> Result<EnrollmentPermission<'a>, Error> {
+        let b = self.device(proof, device)?;
+        if !b.allow_enrollment
+            || !b
+                .roles
+                .iter()
+                .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin))
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(EnrollmentPermission {
+            proof,
+            device: device.to_owned(),
+        })
     }
     pub fn roles(&self, proof: &VerifiedIdentity) -> Result<Vec<Role>, Error> {
         Ok(self
@@ -204,9 +225,30 @@ impl InventoryService {
     }
 }
 
+pub(crate) struct EnrollmentPermission<'a> {
+    proof: &'a VerifiedIdentity,
+    device: String,
+}
+impl EnrollmentPermission<'_> {
+    pub(super) fn proof(&self) -> &VerifiedIdentity {
+        self.proof
+    }
+    pub(super) fn device(&self) -> &str {
+        &self.device
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn client_id_fits_persistent_audit_and_grants() {
+        assert!(Policy::new("tenant", &"a".repeat(255), vec![]).is_ok());
+        assert!(matches!(
+            Policy::new("tenant", &"a".repeat(256), vec![]),
+            Err(Error::Configuration(ConfigIssue::ClientId))
+        ));
+    }
     fn binding() -> Binding {
         Binding {
             tenant_id: "tenant".into(),
@@ -215,6 +257,7 @@ mod tests {
             roles: [Role::Auditor].into(),
             devices: ["device".into()].into(),
             allow_wipe: false,
+            allow_enrollment: false,
         }
     }
     #[test]
