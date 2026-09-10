@@ -2,6 +2,7 @@
 mod access;
 mod access_store;
 mod audit;
+pub mod device;
 mod enrollment;
 pub use access_store::AccessStore;
 mod diagnostic;

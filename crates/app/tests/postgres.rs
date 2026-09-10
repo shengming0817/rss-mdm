@@ -30,8 +30,8 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .bind(tenant)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO mdm.inventory VALUES($1::uuid,'mdm.observation.v1','inventory-v1',$2,'coverage','device.model',$3,'read-test',1,2) ON CONFLICT DO NOTHING")
-            .bind(tenant).bind(scope(tenant,source).encode()?).bind(value).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm.inventory VALUES($1::uuid,'mdm.observation.v1','inventory-v1',$2,$4,'device.model',$3,'read-test',1,2) ON CONFLICT DO NOTHING")
+            .bind(tenant).bind(scope(tenant,source).encode()?).bind(value).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).execute(&mut *tx).await?;
         tx.commit().await?;
     }
     assert!(

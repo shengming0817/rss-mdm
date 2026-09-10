@@ -29,7 +29,7 @@ const BROWSER: &str = "__Host-mdm-login";
 struct App {
     identity: Identity,
     sessions: Sessions,
-    policy: Policy,
+    policy: Arc<Policy>,
     inventory: InventoryService,
     access: Arc<AccessStore>,
     origin: String,
@@ -93,6 +93,12 @@ pub(crate) async fn from_compiled(
     access: Arc<AccessStore>,
 ) -> Result<Router, Error> {
     let crate::config::Compiled { config, policy } = compiled;
+    let policy = Arc::new(policy);
+    let devices = Arc::new(crate::device::DeviceService::new(
+        access.clone(),
+        policy.clone(),
+        None,
+    ));
     let identity = Identity::connect(&config, clock.clone()).await?;
     let host = config
         .product_origin
@@ -105,7 +111,7 @@ pub(crate) async fn from_compiled(
         identity,
         sessions: Sessions::new(clock, 1000, 10000),
         policy,
-        inventory: InventoryService::new(reader),
+        inventory: InventoryService::new(reader, devices),
         origin: config.product_origin,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });

@@ -49,7 +49,7 @@ impl AccessStore {
     pub async fn close(&self) {
         self.pool.close().await;
     }
-    async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
+    pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)")
             .bind(tenant).execute(&mut *tx).await.map_err(db)?;
@@ -99,34 +99,19 @@ impl AccessStore {
         audit: &Audit,
     ) -> Result<Receipt, Error> {
         let mut tx = self.begin(proof.tenant).await?;
-        // Stable transaction lock serializes the same operation even before a receipt exists.
-        // Hash collisions only serialize unrelated operations; full identity is checked below.
-        let lock = format!(
-            "{}:{}:{}:{}",
-            proof.tenant,
-            proof.subject.len(),
-            proof.subject,
-            key
-        );
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2347))")
-            .bind(lock)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        let old = sqlx::query("SELECT digest,result,client FROM mdm_access.operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).fetch_optional(&mut *tx).await.map_err(db)?;
         let digest = command.digest();
-        if let Some(old) = old {
-            if old.try_get::<String, _>("digest").map_err(db)? != digest
-                || old.try_get::<String, _>("client").map_err(db)? != proof.client
-            {
-                return Err(Error::Conflict);
-            }
-            let receipt = serde_json::from_str(&old.try_get::<String, _>("result").map_err(db)?)
-                .map_err(|_| Error::Unavailable(Failure::AccessStore))?;
+        let operation = Operation {
+            actor: proof,
+            key,
+            digest: &digest,
+        };
+        if let Some(old) = Self::replay(&mut tx, &operation).await? {
+            let receipt =
+                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
             tx.rollback().await.map_err(db)?;
             return Ok(receipt);
         }
+        let proof = operation.actor;
         let revoke = matches!(command, Command::Revoke { .. });
         let receipt = match command {
             Command::Issue { device_id } => {
@@ -179,9 +164,73 @@ impl AccessStore {
                 }
             }
         };
+        self.finish(
+            tx,
+            &operation,
+            &serde_json::to_string(&receipt).expect("closed receipt"),
+            audit,
+            receipt.request_id,
+        )
+        .await?;
+        Ok(receipt)
+    }
+    pub(crate) async fn replay(
+        tx: &mut Transaction<'_, Postgres>,
+        operation: &Operation<'_>,
+    ) -> Result<Option<String>, Error> {
+        let Operation {
+            actor: proof,
+            key,
+            digest,
+        } = operation;
+        let lock = format!(
+            "{}:{}:{}:{}",
+            proof.tenant,
+            proof.subject.len(),
+            proof.subject,
+            key
+        );
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2347))")
+            .bind(lock)
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?;
+        let old = sqlx::query("SELECT digest,result,client FROM mdm_access.operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
+            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).fetch_optional(&mut **tx).await.map_err(db)?;
+        old.map(|old| {
+            if old.try_get::<String, _>("digest").map_err(db)? != *digest
+                || old.try_get::<String, _>("client").map_err(db)? != proof.client
+            {
+                return Err(Error::Conflict);
+            }
+            old.try_get("result").map_err(db)
+        })
+        .transpose()
+    }
+    pub(crate) async fn finish(
+        &self,
+        mut tx: Transaction<'_, Postgres>,
+        operation: &Operation<'_>,
+        result: &str,
+        audit: &Audit,
+        request: Option<Uuid>,
+    ) -> Result<(), Error> {
+        let Operation {
+            actor: proof,
+            key,
+            digest,
+        } = operation;
+        let facts = audit.snapshot();
+        if audit.tenant() != proof.tenant
+            || facts.actor.as_deref() != Some(proof.subject)
+            || facts.client.as_deref() != Some(proof.client)
+            || facts.operation_id != Some(*key)
+        {
+            return Err(Error::Forbidden);
+        }
         sqlx::query("INSERT INTO mdm_access.operations(tenant_id,actor,operation_id,digest,result,client) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(digest).bind(serde_json::to_string(&receipt).expect("closed receipt")).bind(proof.client).execute(&mut *tx).await.map_err(db)?;
-        append(&mut tx, audit, 200, "success", receipt.request_id).await?;
+            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.client).execute(&mut *tx).await.map_err(db)?;
+        append(&mut tx, audit, 200, "success", request).await?;
         #[cfg(test)]
         if self
             .fault
@@ -198,15 +247,32 @@ impl AccessStore {
             return Err(Error::CommitUnknown);
         }
         audit.mark_committed();
-        Ok(receipt)
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn fail_next(&self, point: u8) {
+        self.fault.store(point, Ordering::Release);
     }
 }
-struct Actor<'a> {
-    tenant: &'a str,
-    subject: &'a str,
-    client: &'a str,
+#[derive(Clone, Copy)]
+pub(crate) struct Actor<'a> {
+    pub tenant: &'a str,
+    pub subject: &'a str,
+    pub client: &'a str,
 }
-fn db(_: sqlx::Error) -> Error {
+pub(crate) struct Operation<'a> {
+    pub actor: Actor<'a>,
+    pub key: Uuid,
+    pub digest: &'a str,
+}
+
+pub(crate) fn db(error: sqlx::Error) -> Error {
+    #[cfg(test)]
+    eprintln!(
+        "test PG error category: {:?}",
+        error.as_database_error().and_then(|e| e.code())
+    );
+    let _ = error;
     Error::Unavailable(Failure::AccessStore)
 }
 async fn append(
@@ -217,8 +283,8 @@ async fn append(
     registration: Option<Uuid>,
 ) -> Result<(), Error> {
     let f = audit.snapshot();
-    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,client,target,operation_id,registration_request,action,result,status) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11)")
-        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.client).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).execute(&mut **tx).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
+    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,client,target,operation_id,registration_request,action,result,status,registration_id) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11,$12::uuid)")
+        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.client).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).bind(f.registration_id.map(|v|v.to_string())).execute(&mut **tx).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
     Ok(())
 }
 async fn admission(pool: &PgPool) -> Result<(), Error> {
@@ -234,11 +300,14 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND has_schema_privilege(current_user,'mdm_access','USAGE')
- AND (SELECT count(*)=4 AND bool_and(c.relname IN ('grants','requests','operations','audit') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
- AND (CASE WHEN c.relname IN ('grants','operations') THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')
+ AND (SELECT count(*)=8 AND bool_and(c.relname IN ('grants','requests','operations','audit','devices','registrations','credentials','report_sources') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+ AND (CASE WHEN c.relname <> 'audit' THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
  AND has_column_privilege(current_user,'mdm_access.grants','state','UPDATE')
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname='grants' AND a.attname='state') AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
+ AND has_column_privilege(current_user,'mdm_access.registrations','state','UPDATE')
+ AND has_column_privilege(current_user,'mdm_access.credentials','state','UPDATE')
+ AND has_column_privilege(current_user,'mdm_access.report_sources','enabled','UPDATE')
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('grants','registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname='enabled') AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute col JOIN pg_class c ON c.oid=col.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(col.attacl) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND (a.is_grantable OR a.privilege_type='REFERENCES'))))
@@ -252,7 +321,7 @@ SELECT current_user='mdm_access' AND session_user=current_user
     // Exact tenant policy; extra permissive policies cannot bypass isolation.
     let policies: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)"#).fetch_one(&mut *tx).await.map_err(db)?;
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access'").fetch_one(&mut *tx).await.map_err(db)?;
-    if policies != 4 || total != 4 {
+    if policies != 8 || total != 8 {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)
@@ -484,7 +553,6 @@ mod tests {
         assert_eq!(visible, 0);
         for sql in [
             "SELECT * FROM mdm_access.audit",
-            "SELECT * FROM mdm_access.requests",
             "DELETE FROM mdm_access.audit",
             "UPDATE mdm_access.audit SET result='success'",
             "SELECT * FROM mdm.inventory",

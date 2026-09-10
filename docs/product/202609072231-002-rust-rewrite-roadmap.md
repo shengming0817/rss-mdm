@@ -41,7 +41,7 @@ V1 对应 WMD-E01/E02/E04、D01/D02、Q01/Q02/Q05、A01/A03、M01/M02、COL07/08
 | --- | --- | --- | --- |
 | F01 独立 Git 消费 + 资产组合 | 本目标 PR | rss-mdm：Cargo/lock/toolchain、消费代码、migrations、T2 | 上述最小真实 PG 证明；不扩建通用组件 |
 | F02 管理员注册许可与审计 | F01/#2343 | rss-mdm：应用 access/enrollment/audit 与专属 PG 表 | 管理员签发/消费本人单次许可，申请受理与审计原子提交；查询/拒绝审计失败拒绝并告警。设备直接消费、身份/证书与凭据变更由 I01/F04 接入；见 [指南](../guides/202609090001-2347-enrollment-audit.md) |
-| I01 通道中立身份与报告契约 | F01/F02 | rss-mdm：device/registration/principal、report scope | tenant/设备/注册世代/凭据/通道映射及授权；中立 Scope/coverage/报告身份，不依赖 Windows codec |
+| I01 通道中立身份与报告契约 | F01/F02 | rss-mdm：device/registration/principal、report scope | tenant/设备/独立通道世代/凭据持久映射、精确来源授权和当前资产查询；真实证书归 F04，T1/T2 结果绑定实现 PR。见 [I01 指南](../guides/202609100445-2348-device-principal.md) |
 | F03 XML/SOAP/SyncML codec | 本目标 PR，可与 F01 并行 | rss-mdm：windows-mdm 协议模块 | namespace、结构、输入预算、Fault、MsgRef/CmdRef；固定协议样本 T1 |
 | F04 Windows 原生注册 | I01/F03 | rss-mdm：Windows registration、credential、gateway | CSR/公钥绑定、签发未知恢复、证书验证/撤销、重复注册及持久审计；T2 |
 | F05 原生 CollectionRun → 查询 | F01/F04 | rss-mdm：Windows collection、inventory、管理 API | 完整性与投影、授权查询及审计；T2 重放/隔离，不另定义通用报告协议 |

@@ -21,6 +21,7 @@ pub(crate) struct Snapshot {
     pub action: &'static str,
     pub target: Option<String>,
     pub operation_id: Option<Uuid>,
+    pub registration_id: Option<Uuid>,
     pub write_outcome: WriteOutcome,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -51,6 +52,7 @@ impl Audit {
                     action,
                     target: None,
                     operation_id: None,
+                    registration_id: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
                 },
                 finalized: false,
@@ -87,6 +89,19 @@ impl Audit {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.operation_id = Some(id);
         state.snapshot.action = action;
+    }
+    pub fn identify_device(&self, registration: Uuid) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(format!("device:{registration}"));
+        state.snapshot.client = Some("device".into());
+    }
+    pub fn registration(&self, id: Uuid) {
+        self.0
+            .state
+            .lock()
+            .expect("audit lock")
+            .snapshot
+            .registration_id = Some(id);
     }
     pub fn mark_commit_started(&self) {
         let mut state = self.0.state.lock().expect("audit lock");

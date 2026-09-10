@@ -82,6 +82,10 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             "access-audit-request-index-v1",
             include_str!("../migrations/0002_audit_request_index.sql"),
         ),
+        (
+            "device-identity-v1",
+            include_str!("../migrations/0003_device_identity.sql"),
+        ),
     ] {
         let digest = format!("{:x}", Sha256::digest(sql));
         let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
