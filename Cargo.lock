@@ -2219,6 +2219,7 @@ dependencies = [
  "rand 0.8.8",
  "reqwest",
  "rss-axum",
+ "rss-contract",
  "rss-identity-client",
  "rss-identity-contracts",
  "rss-mdm-inventory",
@@ -2276,6 +2277,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-group"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-request-context",
+]
+
+[[package]]
 name = "rss-mdm-inventory"
 version = "0.1.0"
 dependencies = [
@@ -2301,12 +2310,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-policy"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-request-context",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "rss-mdm-resource"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
  "rss-request-context",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "rss-mdm-scope"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-request-context",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

@@ -30,7 +30,17 @@
       "devices": [
         "replace-with-device-id"
       ],
-      "allow_wipe": false
+      "allow_wipe": false,
+      "allow_enrollment": false,
+      "allow_manage_credentials": false
     }
-  ]
+  ],
+  "access_database": {
+    "host": "postgres.example.test",
+    "port": 5432,
+    "name": "mdm",
+    "user": "mdm_access",
+    "password_file": "/private/mdm-access-password",
+    "ca_file": "/private/database-ca.pem"
+  }
 }

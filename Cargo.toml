@@ -1,8 +1,8 @@
 # 与 RSS 一致的扁平 workspace；产品实现按职责放在 crates/ 下。
 [workspace]
 resolver = "3"
-members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration"]
-default-members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples"]
+members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration", "crates/group", "crates/scope", "crates/policy"]
+default-members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/scope", "crates/policy"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,9 @@ rss-mdm-winget-source = { path = "crates/winget-source" }
 rss-mdm-brew-source = { path = "crates/brew-source" }
 tempfile = "3"
 jsonschema = { version = "=0.33.0", default-features = false }
+rss-mdm-scope = { path = "crates/scope" }
+rss-mdm-policy = { path = "crates/policy" }
+rss-mdm-group = { path = "crates/group" }
 rss-mdm-app = { path = "crates/app" }
 rss-identity-client = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "2e66cac2bb8064701c5e99c992858b178f875656" }
 rss-identity-contracts = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "2e66cac2bb8064701c5e99c992858b178f875656" }

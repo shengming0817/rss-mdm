@@ -1,8 +1,9 @@
 //! MDM alone owns roles and device permissions. Identity facts never contain them.
 use crate::Error;
+use crate::device::{Channel, DeviceService};
 use crate::{ConfigIssue, Failure};
 use rss_identity_client::VerifiedIdentity;
-use rss_observation::{Epoch, Id, Registration, Scope};
+use rss_observation::{Id, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +25,8 @@ pub struct Binding {
     pub roles: BTreeSet<Role>,
     pub devices: BTreeSet<String>,
     pub allow_wipe: bool,
+    pub allow_enrollment: bool,
+    pub allow_manage_credentials: bool,
 }
 pub(crate) struct Policy {
     tenant: String,
@@ -32,12 +35,8 @@ pub(crate) struct Policy {
 }
 pub(crate) struct InventoryRead<'a> {
     proof: &'a VerifiedIdentity,
-    scope: Scope,
-}
-impl InventoryRead<'_> {
-    pub(super) fn scope(&self) -> &Scope {
-        &self.scope
-    }
+    device: String,
+    coordinates: Coordinates,
 }
 pub(crate) struct DangerousAction<'a> {
     _proof: &'a VerifiedIdentity,
@@ -45,13 +44,13 @@ pub(crate) struct DangerousAction<'a> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Coordinates {
-    pub registration: String,
+    pub channel: Channel,
     pub source: String,
-    pub epoch: String,
 }
 impl Policy {
     pub fn new(tenant: &str, client: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
         if client.is_empty()
+            || client.len() > 255
             || client.contains('*')
             || client.contains(':')
             || bindings.len() > 10000
@@ -72,7 +71,7 @@ impl Policy {
                     .iter()
                     .any(|d| d != "*" && rss_observation::Id::new(d).is_err())
                 || (b.devices.contains("*") && b.devices.len() != 1)
-                || (b.allow_wipe
+                || ((b.allow_wipe || b.allow_enrollment || b.allow_manage_credentials)
                     && !b
                         .roles
                         .iter()
@@ -88,11 +87,33 @@ impl Policy {
             bindings: entries,
         })
     }
+    pub(crate) fn tenant(&self) -> &str {
+        &self.tenant
+    }
     fn binding(&self, proof: &VerifiedIdentity) -> Result<Option<&Binding>, Error> {
         if proof.tenant_id() != self.tenant || proof.client_id() != self.client {
             return Err(Error::Unauthorized);
         }
         Ok(self.bindings.get(proof.subject()))
+    }
+    pub fn enrollment<'a>(
+        &self,
+        proof: &'a VerifiedIdentity,
+        device: &str,
+    ) -> Result<EnrollmentPermission<'a>, Error> {
+        let b = self.device(proof, device)?;
+        if !b.allow_enrollment
+            || !b
+                .roles
+                .iter()
+                .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin))
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(EnrollmentPermission {
+            proof,
+            device: device.to_owned(),
+        })
     }
     pub fn roles(&self, proof: &VerifiedIdentity) -> Result<Vec<Role>, Error> {
         Ok(self
@@ -114,17 +135,26 @@ impl Policy {
         c: Coordinates,
     ) -> Result<InventoryRead<'a>, Error> {
         self.device(proof, device)?;
-        let scope = Scope::new(
-            rss_request_context::TenantId::parse(proof.tenant_id())
-                .map_err(|_| Error::Unauthorized)?,
-            Id::new(device).map_err(|_| Error::Malformed)?,
-            Registration::new(c.registration).map_err(|_| Error::Malformed)?,
-            Id::new(c.source).map_err(|_| Error::Malformed)?,
-            Id::new("inventory").expect("static dataset"),
-            Epoch::new(c.epoch).map_err(|_| Error::Malformed)?,
-        );
-        Ok(InventoryRead { proof, scope })
+        Id::new(&c.source).map_err(|_| Error::Malformed)?;
+        Ok(InventoryRead {
+            proof,
+            device: device.into(),
+            coordinates: c,
+        })
     }
+    pub(crate) fn credentials(&self, proof: &VerifiedIdentity, device: &str) -> Result<(), Error> {
+        let b = self.device(proof, device)?;
+        if !b.allow_manage_credentials
+            || !b
+                .roles
+                .iter()
+                .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin))
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
+    }
+
     pub fn dangerous<'a>(
         &self,
         proof: &'a VerifiedIdentity,
@@ -149,6 +179,7 @@ pub(crate) struct InventoryResponse {
     registration: String,
     source: String,
     epoch: String,
+    coverage: rss_observation::Coverage,
     fields: Vec<FieldResponse>,
 }
 #[derive(Serialize)]
@@ -161,14 +192,22 @@ struct FieldResponse {
 }
 pub(crate) struct InventoryService {
     reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
+    devices: std::sync::Arc<DeviceService>,
 }
 impl InventoryService {
-    pub(super) fn new(reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>) -> Self {
-        Self { reader }
+    pub(super) fn new(
+        reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
+        devices: std::sync::Arc<DeviceService>,
+    ) -> Self {
+        Self { reader, devices }
     }
     pub async fn read(&self, grant: InventoryRead<'_>) -> Result<InventoryResponse, Error> {
         // The request's proof is retained until the read completes; no authority cache.
-        let fields = self.reader.read(grant.scope()).await.map_err(|error| {
+        let scope: Scope = self
+            .devices
+            .current_scope(grant.proof, &grant.device, grant.coordinates)
+            .await?;
+        let fields = self.reader.read(&scope).await.map_err(|error| {
             Error::Unavailable(
                 if matches!(
                     error.downcast_ref::<sqlx::Error>(),
@@ -183,13 +222,13 @@ impl InventoryService {
         if fields.is_empty() {
             return Err(Error::NotFound);
         }
-        let scope = grant.scope();
         Ok(InventoryResponse {
             tenant_id: grant.proof.tenant_id().into(),
-            device_id: scope.object().as_str().into(),
+            device_id: grant.device,
             registration: scope.registration().as_str().into(),
             source: scope.source().as_str().into(),
             epoch: scope.epoch().as_str().into(),
+            coverage: rss_mdm_inventory::coverage(),
             fields: fields
                 .into_iter()
                 .map(|v| FieldResponse {
@@ -204,9 +243,48 @@ impl InventoryService {
     }
 }
 
+pub(crate) struct EnrollmentPermission<'a> {
+    proof: &'a VerifiedIdentity,
+    device: String,
+}
+impl EnrollmentPermission<'_> {
+    pub(super) fn proof(&self) -> &VerifiedIdentity {
+        self.proof
+    }
+    pub(super) fn device(&self) -> &str {
+        &self.device
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_inventory_rejects_caller_selected_generation() {
+        assert!(
+            serde_json::from_str::<Coordinates>(
+                r#"{"registration":"old","source":"mdm.windows","epoch":"old"}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<Coordinates>(r#"{"channel":"mdm","source":"mdm.windows"}"#)
+                .is_ok()
+        );
+    }
+    #[test]
+    fn credential_permission_is_explicit_and_not_inherited() {
+        let old = r#"{"tenant_id":"tenant","client_id":"mdm","subject":"subject","roles":["mdm_admin"],"devices":["device"],"allow_wipe":false,"allow_enrollment":true}"#;
+        assert!(serde_json::from_str::<Binding>(old).is_err());
+    }
+    #[test]
+    fn client_id_fits_persistent_audit_and_grants() {
+        assert!(Policy::new("tenant", &"a".repeat(255), vec![]).is_ok());
+        assert!(matches!(
+            Policy::new("tenant", &"a".repeat(256), vec![]),
+            Err(Error::Configuration(ConfigIssue::ClientId))
+        ));
+    }
     fn binding() -> Binding {
         Binding {
             tenant_id: "tenant".into(),
@@ -215,6 +293,8 @@ mod tests {
             roles: [Role::Auditor].into(),
             devices: ["device".into()].into(),
             allow_wipe: false,
+            allow_enrollment: false,
+            allow_manage_credentials: false,
         }
     }
     #[test]
@@ -232,6 +312,9 @@ mod tests {
         assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
         let mut b = binding();
         b.devices.insert("*".into());
+        assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
+        let mut b = binding();
+        b.allow_manage_credentials = true;
         assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
         assert!(serde_json::from_str::<Role>("\"administrator\"").is_err());
     }

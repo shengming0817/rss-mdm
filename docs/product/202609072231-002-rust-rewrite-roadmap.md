@@ -40,8 +40,8 @@ V1 对应 WMD-E01/E02/E04、D01/D02、Q01/Q02/Q05、A01/A03、M01/M02、COL07/08
 | 切片 | 前置 | 仓库 / 主要文件 owner | 结果与验收 |
 | --- | --- | --- | --- |
 | F01 独立 Git 消费 + 资产组合 | 本目标 PR | rss-mdm：Cargo/lock/toolchain、消费代码、migrations、T2 | 上述最小真实 PG 证明；不扩建通用组件 |
-| F02 最小管理员会话与审计 | F01 | rss-mdm：access/audit 用例与表 | 消费 #2343 的 Identity/产品会话，提供注册许可、凭据动作与查询/拒绝审计；关键变更和成功审计同事务，失败不静默放行 |
-| I01 通道中立身份与报告契约 | F01/F02 | rss-mdm：device/registration/principal、report scope | tenant/设备/注册世代/凭据/通道映射及授权；中立 Scope/coverage/报告身份，不依赖 Windows codec |
+| F02 管理员注册许可与审计 | F01/#2343 | rss-mdm：应用 access/enrollment/audit 与专属 PG 表 | 管理员签发/消费本人单次许可，申请受理与审计原子提交；查询/拒绝审计失败拒绝并告警。设备直接消费、身份/证书与凭据变更由 I01/F04 接入；见 [指南](../guides/202609090001-2347-enrollment-audit.md) |
+| I01 通道中立身份与报告契约 | F01/F02 | rss-mdm：device/registration/principal、report scope | tenant/设备/独立通道世代/凭据持久映射、精确来源授权和当前资产查询；真实证书归 F04，T1/T2 结果绑定实现 PR。见 [I01 指南](../guides/202609100445-2348-device-principal.md) |
 | F03 XML/SOAP/SyncML codec | 本目标 PR，可与 F01 并行 | rss-mdm：windows-mdm 协议模块 | namespace、结构、输入预算、Fault、MsgRef/CmdRef；固定协议样本 T1 |
 | F04 Windows 原生注册 | I01/F03 | rss-mdm：Windows registration、credential、gateway | CSR/公钥绑定、签发未知恢复、证书验证/撤销、重复注册及持久审计；T2 |
 | F05 原生 CollectionRun → 查询 | F01/F04 | rss-mdm：Windows collection、inventory、管理 API | 完整性与投影、授权查询及审计；T2 重放/隔离，不另定义通用报告协议 |
@@ -103,14 +103,14 @@ flowchart LR
 
 #2378 的后端切片可在端侧执行之前交付，不等待 V1、Windows 注册/采集或父 Epic 整体关闭。
 契约与 package 身份唯一归 [ADR](../architecture/adr/202609072231-001-rust-rss-product-foundation.md#独立后端能力契约n01--2379)；
-以下目录是未来实现 owner，登记不表示包已创建或验收通过。核心与 PG adapter 均须[独立消费证明](../rules/rust-rss-dependencies.md#产品内部逐-crate-独立消费)。
+以下目录登记实现 owner，除明确标注已实现的项外，不表示包已创建或验收通过。核心与 PG adapter 均须[独立消费证明](../rules/rust-rss-dependencies.md#产品内部逐-crate-独立消费)。
 
 | PBI | 硬前置 | 目录 owner | 独立验收 |
 | --- | --- | --- | --- |
 | N01 #2379 | 无 | 当前 ADR、路线、PRD、消费规则 | 冻结名称与契约，不创建空包 |
-| N02 #2380 Group | N01 | `crates/group` | 固定时钟、类型/预算、未知值、历史对照、成员差分 T1 |
-| N03 #2381 Scope | N01 | `crates/scope` | 未配置/空限制、来源解释、去重、输入顺序与混租户 T1 |
-| N04 #2382 Policy | N01 | `crates/policy` | 版本竞争、稳定计划身份、重复计算、取消与未知事实 T1 |
+| N02 #2380 Group | N01 | `crates/group`（纯核心已实现；[指南与验证入口](../guides/202609090000-2380-group-core.md)） | 固定时钟、类型/预算、未知值、历史对照、成员差分 T1；逐包 Git 消费结果绑定 local-ci 受测 SHA，不代表 N09/N12 或 T3 |
+| N03 #2381 Scope（纯核心已实现） | N01 | `crates/scope` | 未配置/空限制、来源解释、去重、输入顺序与混租户 T1 |
+| N04 #2382 Policy（纯核心已实现） | N01 | `crates/policy` | 版本竞争、稳定计划身份、重复计算、取消与未知事实 T1 |
 | N05 #2383 Resource | N01 | `crates/resource` | 不可变版本、平台身份、摘要和引用约束 T1 |
 | N06 #2384 WinGet | N01 | `crates/winget-source` | 官方协议 fixtures T1、真实 HTTP T2，不调用 CLI |
 | N07 #2385 Brew | N01 | `crates/brew-source` | Formula/Cask 与模板转义 T1、受控本地 Git T2 |
@@ -119,6 +119,9 @@ flowchart LR
 | N10 #2388 Policy PG | N04 | `crates/policy-postgres`，专属 migrations/T2 | 计划/事件原子性、旧版本隔离、回滚/提交未知 T2，不派发 |
 | N11 #2389 发布后端组装 | N05/N06/N07/N08 | `crates/resource-postgres`、`crates/software-release-postgres`，应用骨架的软件源组装模块及 T2 | 真实 PG + 存储/兼容源/Git；外部成功而本地失败或未知时按原身份对账 |
 | N12 #2390 管理 API | N03/N09/N10/N11、#2347/#2348 | 复用 #2343 实际应用骨架（`crates/app` 以实际路径为准）、设备资产映射、Scope 定义/版本/引用历史的应用 repository/迁移、路由/权限/审计/T2 | 真实 PG + HTTP：静态组管理、资产→组→范围→持久计划、资源→审批→源发布；Scope 重启恢复/并发版本更新/tenant 隔离、引用新增与删除竞争、被引用对象删除拒绝、审计失败整体回滚；无端侧派发 |
+
+N03/N04 的公共 API、有限行为及来源证据分别见 [Scope](../../crates/scope/README.md) 与 [Policy](../../crates/policy/README.md)。
+逐包消费与本地 CI 的实际结果绑定 PR 中的源码 SHA；实现状态不代表 N10/N12 组装或端侧 T3 已完成。
 
 N01 后 N02–N08 可并行；N09/N10 各随对应核心就绪推进，N11 随四项核心就绪推进，不等待其他无消费关系的任务。
 N12 复用 #2343 身份接入、#2347 对象授权/审计、#2348 设备映射和 F01 资产；#2363 管理员身份组映射不是设备 Group 前置。

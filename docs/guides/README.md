@@ -10,4 +10,9 @@
 
 - [Resource 与 WinGet/Brew 后端元数据](202609090000-2383-resource-sources.md)：冻结版本、受控协议/模板、本地 Git 与独立消费。
 
+- [Group 类型化规则与成员差分](202609090000-2380-group-core.md)：纯核心 API、未知/完整性语义、历史对照与独立消费证据。
 - [MDM Identity 接入](202609091600-2343-mdm-identity.md)
+
+- [注册许可与审计](202609090001-2347-enrollment-audit.md)（#2347）
+
+- [设备身份与报告边界](202609100445-2348-device-principal.md)（#2348）
