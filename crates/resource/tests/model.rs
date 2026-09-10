@@ -36,6 +36,12 @@ fn immutable_identity_and_canonical_order() {
     let b = variant(Architecture::Aarch64, 2);
     let v = version("one", vec![a.clone(), b.clone()]);
     assert_eq!(v.digest(), version("one", vec![b, a]).digest());
+    assert_eq!(
+        v.digest().bytes(),
+        Digest::parse("f820d2058997820f12d037252919197efa5d99377bc5d7a98542a47105e92a2b")
+            .unwrap()
+            .bytes()
+    );
     let mut r = Resource::new(tenant(), id("app"), Kind::Software);
     assert!(r.insert(v.clone(), now()).unwrap());
     assert!(!r.insert(v, now()).unwrap());
@@ -165,4 +171,79 @@ fn all_kinds_are_data_and_boundaries_do_not_mutate_state() {
         id("secret-artifact-reference"),
     );
     assert!(!format!("{binding:?}").contains("secret"));
+}
+
+#[test]
+fn v1_digest_goldens_cover_declarations_and_optional_tags() {
+    // Fixed vectors computed independently with Python hashlib/struct from the V1 encoding.
+    // Domain bytes, UUID octets, big-endian lengths, tags and field order are persistent identity.
+    let artifact = Artifact::new(id("payload"), 3, Digest::from_bytes([0xa5; 32])).unwrap();
+    for (declaration, expected) in [
+        (
+            Declaration::Software {
+                package: Package::new(id("private"), id("Acme.App"), id("1.2")),
+                artifact: artifact.clone(),
+                install: id("install"),
+                detect: id("detect"),
+                uninstall: None,
+            },
+            "5494e58566811eb82af4b811108d69ec8476d87d4702ef96ad4bfa9822c11aad",
+        ),
+        (
+            Declaration::Software {
+                package: Package::new(id("private"), id("Acme.App"), id("1.2")),
+                artifact: artifact.clone(),
+                install: id("install"),
+                detect: id("detect"),
+                uninstall: Some(id("remove")),
+            },
+            "76e813f5dc77d639c68c9c0c9d282cb3e021777ac59313733e7d512282f785cb",
+        ),
+        (
+            Declaration::Configuration {
+                artifact: artifact.clone(),
+                schema: id("schema"),
+                apply: id("apply"),
+                detect: id("detect"),
+                remove: None,
+            },
+            "aa852259d17921b4fb2ca529ad8c163e7b746f38b5a15d79fdc263adadbab265",
+        ),
+        (
+            Declaration::Configuration {
+                artifact: artifact.clone(),
+                schema: id("schema"),
+                apply: id("apply"),
+                detect: id("detect"),
+                remove: Some(id("remove")),
+            },
+            "22f34d4f621bf28e19abd175570820418fc113cf1070fdef76170f3a3b2c20df",
+        ),
+        (
+            Declaration::Script {
+                artifact: artifact.clone(),
+                interpreter: id("shell"),
+                detect: id("detect"),
+            },
+            "2e41740dffca1a9e1db83e3d0616b59f8997d5ef368d08505a88fd6911f1f928",
+        ),
+    ] {
+        let version = Version::new(
+            tenant(),
+            id("item"),
+            id("v1"),
+            declaration.kind(),
+            vec![Variant::new(
+                Platform::MacOS,
+                Architecture::Aarch64,
+                id("native"),
+                declaration,
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            version.digest().bytes(),
+            Digest::parse(expected).unwrap().bytes()
+        );
+    }
 }

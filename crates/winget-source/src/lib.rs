@@ -1,7 +1,7 @@
 //! Bounded REST Source 1.0 metadata consumption; no CLI, installation or publishing.
 mod http;
 mod manifest;
-pub use http::{Access, Client, Network, Source};
+pub use http::{Access, Client, Source};
 pub use manifest::{Manifest, parse_manifest};
 use rss_request_context::TenantId;
 use std::fmt;

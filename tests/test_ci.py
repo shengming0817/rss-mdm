@@ -114,11 +114,18 @@ class CodecFixtures(unittest.TestCase):
         import hashlib
         import json
         self.assertEqual(ci.LOCAL_PACKAGES["rss-mdm-windows-mdm"], "crates/windows-mdm")
-        root = ci.ROOT / "crates/windows-mdm/tests/fixtures"
-        manifest = json.loads((root / "provenance.json").read_text())
-        self.assertEqual(set(manifest["fixtures"]), {p.name for p in root.glob("*.xml")})
-        for name, digest in manifest["fixtures"].items():
-            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
+        for directory, extension in [("windows-mdm", "xml"), ("winget-source", "json")]:
+            root = ci.ROOT / f"crates/{directory}/tests/fixtures"
+            manifest = json.loads((root / "provenance.json").read_text())
+            if isinstance(manifest, list):
+                fixtures = {entry["file"]: entry["sha256"] for entry in manifest}
+                self.assertEqual(len(fixtures), len(manifest), "duplicate provenance entry")
+                self.assertTrue(all(entry["origin"].strip() for entry in manifest))
+            else:
+                fixtures = manifest["fixtures"]
+            self.assertEqual(set(fixtures), {p.name for p in root.glob(f"*.{extension}") if p.name != "provenance.json"})
+            for name, digest in fixtures.items():
+                self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
 
     def test_advisory_acceptance_is_exact(self):
         manifest=ci.tomllib.loads((ci.ROOT/'Cargo.toml').read_text())

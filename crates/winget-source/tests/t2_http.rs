@@ -1,9 +1,6 @@
 use rss_mdm_winget_source::*;
 use rss_request_context::TenantId;
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    time::Duration,
-};
+use std::{net::IpAddr, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -24,7 +21,7 @@ fn query() -> Query {
     .unwrap()
 }
 fn access() -> Access {
-    Access::new(tenant(), "private", "source-token", Some("never-log-this")).unwrap()
+    Access::new(tenant(), "private", "source-token", "never-log-this").unwrap()
 }
 fn info() -> String {
     r#"{"Data":{"SourceIdentifier":"private","ServerSupportedVersions":["1.0.0"]}}"#.into()
@@ -32,24 +29,16 @@ fn info() -> String {
 async fn server(
     responses: Vec<(u16, String, String)>,
 ) -> (Source, tokio::task::JoinHandle<Vec<String>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let source = Source::new(
-        tenant(),
-        "private",
-        &format!("http://localhost:{port}/api/"),
-        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
-        "source-token",
-        Network::LoopbackHttp,
-    )
-    .unwrap();
+    let (source, listener, tls) = fixture("source.invalid", "/api/").await;
     let task = tokio::spawn(async move {
         let mut requests = Vec::new();
         for (status, headers, body) in responses {
-            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            let (socket, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
                 .await
                 .unwrap()
                 .unwrap();
+            let mut socket = tls.accept(socket).await.unwrap();
+            assert_eq!(socket.get_ref().1.server_name(), Some("source.invalid"));
             let mut bytes = Vec::new();
             loop {
                 let b = socket.read_u8().await.unwrap();
@@ -72,7 +61,7 @@ async fn server(
 }
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
-async fn actual_http_exact_protocol_and_credentials() {
+async fn actual_https_exact_protocol_and_credentials() {
     let (source, task) = server(vec![
         (200, String::new(), info()),
         (200, String::new(), include_str!("fixtures/msi.json").into()),
@@ -94,7 +83,7 @@ async fn actual_http_exact_protocol_and_credentials() {
 }
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
-async fn real_http_failures_do_not_look_successful() {
+async fn real_https_failures_do_not_look_successful() {
     for (status, headers, body, expected) in [
         (
             302,
@@ -149,17 +138,7 @@ async fn real_http_failures_do_not_look_successful() {
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
 async fn total_timeout_and_cross_tenant_before_io() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let source = Source::new(
-        tenant(),
-        "private",
-        &format!("http://127.0.0.1:{port}/"),
-        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
-        "source-token",
-        Network::LoopbackHttp,
-    )
-    .unwrap();
+    let (source, listener, _tls) = fixture("source.invalid", "/").await;
     let client = Client::with_limits(
         source,
         Duration::from_millis(50),
@@ -168,13 +147,25 @@ async fn total_timeout_and_cross_tenant_before_io() {
     )
     .unwrap();
     let other = TenantId::parse("20000000-0000-0000-0000-000000000001").unwrap();
-    let a = Access::new(other, "private", "source-token", None).unwrap();
+    let a = Access::new(other, "private", "source-token", "token").unwrap();
     assert_eq!(client.query(&query(), &a).await, Err(Error::TenantMismatch));
+    for a in [
+        Access::new(tenant(), "other", "source-token", "token").unwrap(),
+        Access::new(tenant(), "private", "wrong-reference", "token").unwrap(),
+    ] {
+        assert_eq!(
+            client.query(&query(), &a).await,
+            Err(Error::IdentityMismatch)
+        );
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), listener.accept())
+            .await
+            .is_err()
+    );
     assert!(matches!(
         client.query(&query(), &access()).await,
-        Err(Error::Timeout(
-            RequestStage::Information | RequestStage::Query
-        ))
+        Err(Error::Timeout(RequestStage::Query))
     ));
     assert!(
         Source::new(
@@ -182,8 +173,7 @@ async fn total_timeout_and_cross_tenant_before_io() {
             "private",
             "http://example.com/",
             vec!["8.8.8.8".parse().unwrap()],
-            "ref",
-            Network::LoopbackHttp
+            "ref"
         )
         .is_err()
     );
@@ -193,8 +183,7 @@ async fn total_timeout_and_cross_tenant_before_io() {
             "private",
             "https://127.0.0.1/",
             vec!["8.8.8.8".parse().unwrap()],
-            "ref",
-            Network::Https
+            "ref"
         )
         .is_err()
     );
@@ -203,19 +192,10 @@ async fn total_timeout_and_cross_tenant_before_io() {
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
 async fn chunked_body_is_bounded_without_content_length() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let source = Source::new(
-        tenant(),
-        "private",
-        &format!("http://127.0.0.1:{port}/"),
-        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
-        "source-token",
-        Network::LoopbackHttp,
-    )
-    .unwrap();
+    let (source, listener, tls) = fixture("source.invalid", "/").await;
     let task = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tls.accept(socket).await.unwrap();
         let mut request = Vec::new();
         while !request.ends_with(b"\r\n\r\n") {
             request.push(socket.read_u8().await.unwrap());
@@ -286,20 +266,11 @@ async fn manifest_404_is_not_an_information_endpoint_failure() {
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
 async fn total_budget_spans_information_and_manifest() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let source = Source::new(
-        tenant(),
-        "private",
-        &format!("http://127.0.0.1:{port}/"),
-        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
-        "source-token",
-        Network::LoopbackHttp,
-    )
-    .unwrap();
+    let (source, listener, tls) = fixture("source.invalid", "/").await;
     let task = tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(3), async move {
-            let (mut first, _) = listener.accept().await.unwrap();
+            let (first, _) = listener.accept().await.unwrap();
+            let mut first = tls.accept(first).await.unwrap();
             let mut request = Vec::new();
             while !request.ends_with(b"\r\n\r\n") {
                 request.push(first.read_u8().await.unwrap());
@@ -318,7 +289,8 @@ async fn total_budget_spans_information_and_manifest() {
                 .await
                 .unwrap();
             drop(first);
-            let (mut second, _) = listener.accept().await.unwrap();
+            let (second, _) = listener.accept().await.unwrap();
+            let mut second = tls.accept(second).await.unwrap();
             let mut request = Vec::new();
             while !request.ends_with(b"\r\n\r\n") {
                 request.push(second.read_u8().await.unwrap());
@@ -346,4 +318,87 @@ async fn total_budget_spans_information_and_manifest() {
         Err(Error::Timeout(RequestStage::Query))
     );
     task.await.unwrap();
+}
+
+async fn fixture(host: &str, path: &str) -> (Source, TcpListener, tokio_rustls::TlsAcceptor) {
+    use tokio_rustls::rustls::{
+        ServerConfig,
+        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    };
+    let root =
+        std::path::PathBuf::from(std::env::var("SOURCE_T2_TLS").expect("run make source-t2"));
+    let address: IpAddr = std::env::var("SOURCE_T2_ADDRESS")
+        .expect("run make source-t2")
+        .parse()
+        .unwrap();
+    assert!(!address.is_loopback());
+    let listener = TcpListener::bind((address, 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let source = Source::new(
+        tenant(),
+        "private",
+        &format!("https://{host}:{port}{path}"),
+        vec![address],
+        "source-token",
+    )
+    .unwrap()
+    .with_root_certificate(&std::fs::read(root.join("ca.pem")).unwrap())
+    .unwrap();
+    let certificate = CertificateDer::from_pem_file(root.join("server.pem")).unwrap();
+    let key = PrivateKeyDer::from_pem_file(root.join("server.key")).unwrap();
+    let config = ServerConfig::builder_with_provider(
+        tokio_rustls::rustls::crypto::ring::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![certificate], key)
+    .unwrap();
+    (
+        source,
+        listener,
+        tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config)),
+    )
+}
+
+#[tokio::test]
+#[ignore = "explicit real-provider T2 target"]
+async fn tls_rejects_untrusted_ca_and_wrong_hostname_before_credentials() {
+    for trusted in [false, true] {
+        let (mut source, listener, tls) = fixture(
+            if trusted {
+                "wrong.invalid"
+            } else {
+                "source.invalid"
+            },
+            "/",
+        )
+        .await;
+        if !trusted {
+            let address = listener.local_addr().unwrap();
+            source = Source::new(
+                tenant(),
+                "private",
+                &format!("https://source.invalid:{}/", address.port()),
+                vec![address.ip()],
+                "source-token",
+            )
+            .unwrap();
+        }
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            assert!(tls.accept(socket).await.is_err());
+        });
+        assert_eq!(
+            Client::new(source)
+                .unwrap()
+                .query(&query(), &access())
+                .await,
+            Err(Error::Transport(RequestStage::Information))
+        );
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }

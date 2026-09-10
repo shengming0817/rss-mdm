@@ -160,6 +160,20 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
             return Err(Error::BudgetExceeded);
         }
         for installer in installers {
+            let scope = match installer.get("Scope") {
+                None | Some(Value::Null) => Some("unspecified"),
+                Some(value) => value.as_str(),
+            };
+            if installer["Architecture"].as_str() != Some(query.architecture.as_str())
+                || installer["InstallerType"].as_str() != Some(query.installer.as_str())
+                || scope != Some(query.scope.as_str())
+                || query
+                    .installer_id
+                    .as_deref()
+                    .is_some_and(|id| installer["InstallerIdentifier"].as_str() != Some(id))
+            {
+                continue;
+            }
             keys(
                 installer,
                 &[
@@ -171,39 +185,16 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
                     "InstallerSha256",
                 ],
             )?;
-            let arch = text(installer, "Architecture")?;
-            let ty = text(installer, "InstallerType")?;
-            let scope = match installer.get("Scope") {
-                None | Some(Value::Null) => "unspecified",
-                Some(_) => text(installer, "Scope")?,
-            };
-            let installer_id = installer
-                .get("InstallerIdentifier")
-                .map(|_| text(installer, "InstallerIdentifier"))
-                .transpose()?;
-            if let Some(id) = installer_id {
-                identity(id)?;
+            if installer.get("InstallerIdentifier").is_some() {
+                identity(text(installer, "InstallerIdentifier")?)?;
             }
-            if !["x64", "arm64"].contains(&arch)
-                || !["msi", "exe"].contains(&ty)
-                || !["user", "machine", "unspecified"].contains(&scope)
-                || (scope == "unspecified" && installer.get("Scope").is_some_and(|s| !s.is_null()))
+            if scope == Some("unspecified") && installer.get("Scope").is_some_and(|s| !s.is_null())
             {
                 return Err(Error::Unsupported);
             }
             let url = text(installer, "InstallerUrl")?;
             safe_url(url)?;
             let sha = digest(text(installer, "InstallerSha256")?)?;
-            if arch != query.architecture.as_str()
-                || ty != query.installer.as_str()
-                || scope != query.scope.as_str()
-                || query
-                    .installer_id
-                    .as_deref()
-                    .is_some_and(|id| Some(id) != installer_id)
-            {
-                continue;
-            }
             if found.is_some() {
                 return Err(Error::Ambiguous);
             }

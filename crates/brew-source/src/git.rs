@@ -256,6 +256,15 @@ impl Repository {
     }
     /// CAS against the original parent. Caller retains Prepared for unknown-result recovery.
     pub async fn apply(&self, p: &Prepared) -> Result<PublishResult, Error> {
+        self.apply_with(p, self.update_ref(p)).await
+    }
+    // Narrow command-result seam: the future is first polled after the original-head check.
+    // Production always supplies the real Git CAS; fault injection stays private to tests.
+    async fn apply_with(
+        &self,
+        p: &Prepared,
+        update: impl std::future::Future<Output = Result<Vec<u8>, Error>>,
+    ) -> Result<PublishResult, Error> {
         self.prepared(p)?;
         let current = self.head().await?;
         if current.as_ref() == Some(&p.target) {
@@ -264,25 +273,7 @@ impl Repository {
         if current != p.base {
             return Err(Error::Conflict);
         }
-        let old = p
-            .base
-            .as_ref()
-            .map_or("0000000000000000000000000000000000000000", CommitId::as_str);
-        match self
-            .run(
-                &[
-                    "update-ref",
-                    "--no-deref",
-                    "refs/heads/main",
-                    p.target.as_str(),
-                    old,
-                ],
-                None,
-                None,
-                None,
-            )
-            .await
-        {
+        match update.await {
             Ok(_) => Ok(PublishResult::Applied),
             Err(_) => match self.head().await {
                 Ok(Some(head)) if head == p.target => Ok(PublishResult::AlreadyApplied),
@@ -290,6 +281,25 @@ impl Repository {
                 _ => Err(Error::OutcomeUnknown),
             },
         }
+    }
+    async fn update_ref(&self, p: &Prepared) -> Result<Vec<u8>, Error> {
+        let old = p
+            .base
+            .as_ref()
+            .map_or("0000000000000000000000000000000000000000", CommitId::as_str);
+        self.run(
+            &[
+                "update-ref",
+                "--no-deref",
+                "refs/heads/main",
+                p.target.as_str(),
+                old,
+            ],
+            None,
+            None,
+            None,
+        )
+        .await
     }
     /// Read a fixed commit and prove it contains the expected controlled document.
     pub async fn read(&self, commit: &CommitId, expected: &Document) -> Result<Snapshot, Error> {
@@ -439,4 +449,115 @@ impl Repository {
 }
 fn output_id(out: &[u8]) -> Result<CommitId, Error> {
     CommitId::parse(std::str::from_utf8(out).map_err(|_| Error::Git)?.trim())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "explicit real-provider T2 target"]
+    async fn update_ref_response_loss_reconciles_the_actual_post_failure_head() {
+        use std::cell::Cell;
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("/usr/bin/git")
+                .args(["init", "--bare", "--object-format=sha1"])
+                .arg(dir.path())
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        let tenant = TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap();
+        let r = Repository::open(dir.path(), tenant, "acme/private")
+            .await
+            .unwrap();
+        let document = Cask::new(
+            PackageKey::new(tenant, "acme/private", "app").unwrap(),
+            "1",
+            "App",
+            "App package",
+            "https://acme.example/",
+            vec![(
+                Architecture::Arm64,
+                Artifact::new("https://files.example/app.pkg", [1; 32]).unwrap(),
+            )],
+            CaskArtifact::Pkg {
+                path: "App.pkg".into(),
+                receipts: vec!["com.acme.app".into()],
+            },
+        )
+        .unwrap()
+        .render()
+        .unwrap();
+        let at = Timepoint::try_from_duration(Duration::from_secs(1700000000)).unwrap();
+        let p = r
+            .prepare(None, document.clone(), "first", at)
+            .await
+            .unwrap();
+        let other = r
+            .prepare(None, document.clone(), "concurrent", at)
+            .await
+            .unwrap();
+        let failure = Error::GitFailure {
+            stage: GitStage::UpdateRef,
+            exit_code: None,
+        };
+        let called = Cell::new(0);
+        // No update occurred: the failure branch must report uncertainty, retaining the base.
+        assert_eq!(
+            r.apply_with(&p, async {
+                called.set(called.get() + 1);
+                Err(failure)
+            })
+            .await,
+            Err(Error::OutcomeUnknown)
+        );
+        assert_eq!(called.get(), 1);
+        assert_eq!(r.head().await.unwrap(), None);
+        // The real CAS ran, but its result was lost before the caller observed success.
+        assert_eq!(
+            r.apply_with(&p, async {
+                called.set(called.get() + 1);
+                r.update_ref(&p).await.unwrap();
+                Err(failure)
+            })
+            .await,
+            Ok(PublishResult::AlreadyApplied)
+        );
+        assert_eq!(called.get(), 2);
+        assert_eq!(r.head().await.unwrap().as_ref(), Some(p.target()));
+        assert_eq!(
+            r.read(p.target(), &document).await.unwrap().digest(),
+            document.digest()
+        );
+        // Replaying a completed target must not poll another command.
+        assert_eq!(
+            r.apply_with(&p, async { panic!("replay must not update ref") })
+                .await,
+            Ok(PublishResult::AlreadyApplied)
+        );
+        r.run(
+            &["update-ref", "-d", "refs/heads/main", p.target().as_str()],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        // A competing writer moves the ref only after apply read the original base.
+        assert_eq!(
+            r.apply_with(&p, async {
+                called.set(called.get() + 1);
+                r.update_ref(&other).await.unwrap();
+                Err(failure)
+            })
+            .await,
+            Err(Error::Conflict)
+        );
+        assert_eq!(called.get(), 3);
+        assert_eq!(r.head().await.unwrap().as_ref(), Some(other.target()));
+    }
 }

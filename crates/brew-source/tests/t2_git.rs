@@ -75,13 +75,13 @@ async fn git_commit_cas_replay_and_fixed_snapshot() {
 }
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
-async fn response_loss_reconciles_original_commit_and_repository_binding() {
+async fn externally_applied_commit_replay_and_repository_binding() {
     let (dir, r) = repository().await;
     let p = r
         .prepare(None, document("1"), "first", now())
         .await
         .unwrap();
-    // The update completed externally, but the caller lost its response before recording it.
+    // An external update exercises replay; injected command failure recovery is covered in git.rs.
     let status = Command::new("/usr/bin/git")
         .arg("--git-dir")
         .arg(dir.path())

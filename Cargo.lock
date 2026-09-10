@@ -2327,6 +2327,7 @@ dependencies = [
  "rss-request-context",
  "serde_json",
  "tokio",
+ "tokio-rustls",
  "url",
 ]
 

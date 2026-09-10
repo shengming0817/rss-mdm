@@ -16,5 +16,6 @@ tokio = { workspace = true, features = ["time"] }
 workspace = true
 
 [dev-dependencies]
+tokio-rustls = { workspace = true }
 jsonschema = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }

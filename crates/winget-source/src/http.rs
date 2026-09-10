@@ -6,11 +6,6 @@ use std::{
 };
 use url::Url;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Network {
-    Https,
-    LoopbackHttp,
-}
 /// Trusted composition supplies reviewed addresses; DNS cannot redirect the connection.
 #[derive(Clone)]
 pub struct Source {
@@ -19,7 +14,7 @@ pub struct Source {
     base: Url,
     addresses: Vec<SocketAddr>,
     credential_ref: String,
-    network: Network,
+    root_certificate: Option<reqwest::Certificate>,
 }
 impl fmt::Debug for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -33,7 +28,6 @@ impl Source {
         base: &str,
         addresses: Vec<IpAddr>,
         credential_ref: &str,
-        network: Network,
     ) -> Result<Self, Error> {
         identity(id)?;
         identity(credential_ref)?;
@@ -49,24 +43,17 @@ impl Source {
         {
             return Err(Error::InvalidInput);
         }
-        if (network == Network::Https && base.scheme() != "https")
-            || (network == Network::LoopbackHttp
-                && (base.scheme() != "http" || !addresses.iter().all(IpAddr::is_loopback)))
+        if base.scheme() != "https"
+            || addresses.iter().any(|ip| {
+                ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip.is_loopback()
+                    || match ip {
+                        IpAddr::V4(v) => v.is_link_local(),
+                        IpAddr::V6(v) => v.is_unicast_link_local() || v.to_ipv4_mapped().is_some(),
+                    }
+            })
         {
-            return Err(Error::AddressDenied);
-        }
-        if addresses.iter().any(|ip| {
-            ip.is_unspecified()
-                || ip.is_multicast()
-                || (network == Network::Https
-                    && (ip.is_loopback()
-                        || match ip {
-                            IpAddr::V4(v) => v.is_link_local(),
-                            IpAddr::V6(v) => {
-                                v.is_unicast_link_local() || v.to_ipv4_mapped().is_some()
-                            }
-                        }))
-        }) {
             return Err(Error::AddressDenied);
         }
         if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>()
@@ -84,8 +71,15 @@ impl Source {
                 .map(|ip| SocketAddr::new(ip, port))
                 .collect(),
             credential_ref: credential_ref.into(),
-            network,
+            root_certificate: None,
         })
+    }
+    /// Trust only this PEM root for this source, retaining hostname and certificate validation.
+    /// The product must authorize the private CA; malformed PEM returns InvalidInput.
+    pub fn with_root_certificate(mut self, pem: &[u8]) -> Result<Self, Error> {
+        self.root_certificate =
+            Some(reqwest::Certificate::from_pem(pem).map_err(|_| Error::InvalidInput)?);
+        Ok(self)
     }
 }
 /// A resolved source credential, scoped to a tenant, source and reference by the caller.
@@ -94,28 +88,28 @@ pub struct Access {
     tenant: TenantId,
     source: String,
     reference: String,
-    bearer: Option<HeaderValue>,
+    bearer: HeaderValue,
 }
 impl Access {
     pub fn new(
         tenant: TenantId,
         source: &str,
         reference: &str,
-        bearer: Option<&str>,
+        bearer: &str,
     ) -> Result<Self, Error> {
         identity(source)?;
         identity(reference)?;
-        let bearer = bearer
-            .map(|s| {
-                if s.is_empty() || s.len() > 8192 {
-                    return Err(Error::InvalidInput);
-                }
-                let mut h = HeaderValue::from_str(&format!("Bearer {s}"))
-                    .map_err(|_| Error::InvalidInput)?;
-                h.set_sensitive(true);
-                Ok(h)
-            })
-            .transpose()?;
+        if bearer.is_empty()
+            || bearer.len() > 8192
+            || !bearer
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-._~+/=".contains(&b))
+        {
+            return Err(Error::InvalidInput);
+        }
+        let mut bearer =
+            HeaderValue::from_str(&format!("Bearer {bearer}")).map_err(|_| Error::InvalidInput)?;
+        bearer.set_sensitive(true);
         Ok(Self {
             tenant,
             source: source.into(),
@@ -160,13 +154,18 @@ impl Client {
             return Err(Error::InvalidInput);
         }
         let host = source.base.host_str().ok_or(Error::InvalidInput)?;
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .https_only(source.network == Network::Https)
+            .https_only(true)
             .resolve_to_addrs(host, &source.addresses)
-            .connect_timeout(connect)
-            .timeout(total)
+            .connect_timeout(connect);
+        if let Some(certificate) = &source.root_certificate {
+            builder = builder
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(certificate.clone());
+        }
+        let http = builder
             .build()
             .map_err(|_| Error::Transport(RequestStage::Setup))?;
         Ok(Self {
@@ -232,14 +231,12 @@ impl Client {
         parse_manifest(query, &self.get(url, access, RequestStage::Manifest).await?)
     }
     async fn get(&self, url: Url, access: &Access, stage: RequestStage) -> Result<Vec<u8>, Error> {
-        let mut request = self
+        let request = self
             .http
             .get(url)
             .header("Version", CONTRACT_VERSION)
-            .header("Accept", "application/json");
-        if let Some(token) = &access.bearer {
-            request = request.header(AUTHORIZATION, token.clone())
-        }
+            .header("Accept", "application/json")
+            .header(AUTHORIZATION, access.bearer.clone());
         let mut response = request.send().await.map_err(|e| transport(stage, e))?;
         if !response.status().is_success() {
             if stage == RequestStage::Manifest && response.status().as_u16() == 404 {
@@ -268,7 +265,7 @@ impl Client {
 }
 fn transport(stage: RequestStage, e: reqwest::Error) -> Error {
     if e.is_timeout() {
-        Error::Timeout(stage)
+        Error::Timeout(RequestStage::Query)
     } else {
         Error::Transport(stage)
     }
