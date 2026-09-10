@@ -16,6 +16,9 @@ mod identity;
 pub use identity::{DeviceId, GroupId};
 mod model;
 pub use model::*;
+/// Canonical types required to construct this core's public inputs.
+pub use rss_contract::Timepoint;
+pub use rss_request_context::TenantId;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Resolve atomically: an invalid source never yields a partial member set.
@@ -84,15 +87,22 @@ fn validate_source(
     snapshots: &mut Snapshots,
 ) -> Result<(), ScopeError> {
     if input.source.id().tenant() != tenant {
-        return Err(ScopeError::TenantMismatch);
+        return Err(ScopeError::SourceTenantMismatch {
+            source_ref: input.source.clone(),
+            expected: tenant,
+        });
     }
     let members = match &input.resolution {
         Resolution::Complete(members) => members,
         Resolution::Incomplete => return Err(ScopeError::IncompleteSource(input.source.clone())),
         Resolution::Failed => return Err(ScopeError::SourceFailed(input.source.clone())),
     };
-    if members.iter().any(|m| m.tenant() != tenant) {
-        return Err(ScopeError::TenantMismatch);
+    if let Some(member) = members.iter().find(|m| m.tenant() != tenant) {
+        return Err(ScopeError::MemberTenantMismatch {
+            source_ref: Box::new(input.source.clone()),
+            member: member.clone(),
+            expected: tenant,
+        });
     }
     let members: BTreeSet<_> = members.iter().cloned().collect();
     if let SourceId::Direct(device) = input.source.id()

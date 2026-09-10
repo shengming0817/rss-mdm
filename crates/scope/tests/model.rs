@@ -1,6 +1,4 @@
-use rss_contract::Timepoint;
 use rss_mdm_scope::*;
-use rss_request_context::TenantId;
 
 fn tenant() -> TenantId {
     TenantId::parse("00000000-0000-0000-0000-000000000001").unwrap()
@@ -76,7 +74,10 @@ fn incomplete_failure_and_cross_tenant_are_not_empty_sets() {
     assert!(matches!(resolve(&i), Err(ScopeError::SourceFailed(_))));
     let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
     i.targets[0].resolution = Resolution::Complete(vec![DeviceId::new(other, "d1").unwrap()]);
-    assert!(matches!(resolve(&i), Err(ScopeError::TenantMismatch)));
+    assert!(matches!(
+        resolve(&i),
+        Err(ScopeError::MemberTenantMismatch { .. })
+    ));
 }
 #[test]
 fn direct_group_dedup_empty_targets_and_conflicting_snapshot() {
@@ -141,7 +142,10 @@ fn invalid_sources_rejected_even_when_no_target_can_match() {
         Timepoint::try_from(10).unwrap(),
     )
     .unwrap();
-    assert!(matches!(resolve(&i), Err(ScopeError::TenantMismatch)));
+    assert!(matches!(
+        resolve(&i),
+        Err(ScopeError::SourceTenantMismatch { .. })
+    ));
 }
 #[test]
 fn finite_membership_truth_table_and_key_boundaries() {
@@ -198,4 +202,69 @@ fn explanations_preserve_empty_targets_and_nonmatching_exclusion_sources() {
     assert!(r.explanations.is_empty());
     assert_eq!(r.target_sources, vec![empty.source]);
     assert_eq!(r.exclusion_sources, vec![excluded.source]);
+}
+
+#[test]
+fn tenant_errors_distinguish_source_and_member_locations() {
+    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    for role in 0..3 {
+        let mut errors = Vec::new();
+        for (source_name, member_name) in [("a", "foreign1"), ("b", "foreign1"), ("b", "foreign2")]
+        {
+            let mut bad = source(source_name, &[]);
+            bad.resolution = Resolution::Complete(vec![DeviceId::new(other, member_name).unwrap()]);
+            let mut i = input();
+            let expected = ScopeError::MemberTenantMismatch {
+                source_ref: Box::new(bad.source.clone()),
+                member: DeviceId::new(other, member_name).unwrap(),
+                expected: tenant(),
+            };
+            match role {
+                0 => i.targets.push(bad),
+                1 => i.limitations = Limitations::Restricted(vec![bad]),
+                _ => i.exclusions.push(bad),
+            }
+            let error = resolve(&i).unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(
+                error.to_string(),
+                "source member belongs to a foreign tenant"
+            );
+            errors.push(error);
+        }
+        assert_ne!(errors[0], errors[1], "source identity is required");
+        assert_ne!(errors[1], errors[2], "member identity is required");
+    }
+}
+
+#[test]
+fn foreign_sources_are_located_in_every_scope_role() {
+    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    for role in 0..3 {
+        let source_ref = SourceRef::new(
+            SourceId::Group(GroupId::new(other, "foreign").unwrap()),
+            2,
+            Timepoint::try_from(10).unwrap(),
+        )
+        .unwrap();
+        let bad = ResolvedSource {
+            source: source_ref.clone(),
+            resolution: Resolution::Complete(vec![]),
+        };
+        let mut i = input();
+        match role {
+            0 => i.targets.push(bad),
+            1 => i.limitations = Limitations::Restricted(vec![bad]),
+            _ => i.exclusions.push(bad),
+        }
+        let error = resolve(&i).unwrap_err();
+        assert_eq!(
+            error,
+            ScopeError::SourceTenantMismatch {
+                source_ref,
+                expected: tenant()
+            }
+        );
+        assert_eq!(error.to_string(), "scope contains a foreign tenant");
+    }
 }

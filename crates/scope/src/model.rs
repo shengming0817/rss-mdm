@@ -96,7 +96,16 @@ pub enum ScopeError {
     #[error("version must be nonzero")]
     InvalidVersion,
     #[error("scope contains a foreign tenant")]
-    TenantMismatch,
+    SourceTenantMismatch {
+        source_ref: SourceRef,
+        expected: TenantId,
+    },
+    #[error("source member belongs to a foreign tenant")]
+    MemberTenantMismatch {
+        source_ref: Box<SourceRef>,
+        member: DeviceId,
+        expected: TenantId,
+    },
     #[error("source snapshot is incomplete")]
     IncompleteSource(SourceRef),
     #[error("source resolution failed")]

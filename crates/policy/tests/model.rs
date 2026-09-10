@@ -1,6 +1,4 @@
-use rss_contract::Timepoint;
 use rss_mdm_policy::*;
-use rss_request_context::TenantId;
 fn tenant() -> TenantId {
     TenantId::parse("00000000-0000-0000-0000-000000000001").unwrap()
 }
@@ -141,7 +139,10 @@ fn incomplete_targets_contradictions_and_stale_expectations_fail_closed() {
     ));
     assert!(matches!(
         compute(&p, &t, &[record(2, Progress::Succeeded)]),
-        Err(PolicyError::StaleVersion { .. })
+        Err(PolicyError::InvalidExecution {
+            reason: ExecutionFailure::FutureVersion { .. },
+            ..
+        })
     ));
 }
 
@@ -310,8 +311,11 @@ fn immutable_version_and_payload_conflicts_are_rejected() {
     );
     let bad = ExecutionRecord::new(changed, key("d1"), Progress::Planned, Effect::Unknown).unwrap();
     assert_eq!(
-        compute(&p, &targets(&["d1"]), &[bad]).unwrap_err(),
-        PolicyError::VersionConflict { version: 1 }
+        compute(&p, &targets(&["d1"]), std::slice::from_ref(&bad)).unwrap_err(),
+        PolicyError::InvalidExecution {
+            execution: Box::new(bad.key()),
+            reason: ExecutionFailure::VersionConflict
+        }
     );
     let reused_payload = Version::new(
         PolicyId::new(tenant(), "policy").unwrap(),
@@ -337,9 +341,12 @@ fn immutable_version_and_payload_conflicts_are_rejected() {
     .unwrap();
     assert_eq!(
         compute(&p, &targets(&["d1"]), &[record(1, Progress::Planned)]).unwrap_err(),
-        PolicyError::PayloadConflict {
-            object: PayloadId::new(tenant(), "payload").unwrap(),
-            revision: 1
+        PolicyError::InvalidExecution {
+            execution: Box::new(record(1, Progress::Planned).key()),
+            reason: ExecutionFailure::PayloadConflict {
+                object: PayloadId::new(tenant(), "payload").unwrap(),
+                revision: 1
+            }
         }
     );
 }
@@ -475,10 +482,20 @@ fn tenant_policy_and_value_boundaries() {
         compute(
             &p,
             &t,
-            &[ExecutionRecord::new(wrong, key("d1"), Progress::Planned, Effect::Unknown).unwrap()]
+            &[
+                ExecutionRecord::new(wrong.clone(), key("d1"), Progress::Planned, Effect::Unknown)
+                    .unwrap()
+            ]
         )
         .unwrap_err(),
-        PolicyError::PolicyMismatch
+        PolicyError::InvalidExecution {
+            execution: Box::new(
+                ExecutionRecord::new(wrong, key("d1"), Progress::Planned, Effect::Unknown)
+                    .unwrap()
+                    .key()
+            ),
+            reason: ExecutionFailure::PolicyMismatch
+        }
     );
     assert!(DeviceId::new(tenant(), "bad/url").is_err());
     assert!(DeviceId::new(tenant(), "a".repeat(129)).is_err());
@@ -582,9 +599,9 @@ fn conflict_errors_identify_the_failed_precondition_or_record() {
     );
     assert_eq!(
         compute(&p, &t, &[record(2, Progress::Planned)]).unwrap_err(),
-        PolicyError::StaleVersion {
-            requested: 2,
-            latest: 1
+        PolicyError::InvalidExecution {
+            execution: Box::new(record(2, Progress::Planned).key()),
+            reason: ExecutionFailure::FutureVersion { latest: 1 }
         }
     );
     assert_eq!(
@@ -599,5 +616,350 @@ fn conflict_errors_identify_the_failed_precondition_or_record() {
             status: Status::Draft,
             revision: 7
         }
+    );
+}
+
+#[test]
+fn execution_errors_distinguish_bad_records_and_version_direction() {
+    let p = active(1);
+    let t = targets(&["d1"]);
+    let mut errors = Vec::new();
+    for device in ["bad1", "bad2"] {
+        let wrong = Version::new(
+            PolicyId::new(tenant(), "other-policy").unwrap(),
+            1,
+            version(1).payload().clone(),
+            RemovalRule::CancelOutstandingRetainEffects,
+        )
+        .unwrap();
+        let bad =
+            ExecutionRecord::new(wrong, key(device), Progress::Planned, Effect::Unknown).unwrap();
+        errors.push(compute(&p, &t, &[record(1, Progress::Planned), bad]).unwrap_err());
+    }
+    assert_ne!(errors[0], errors[1], "execution identity is required");
+    let future = compute(&p, &t, &[record(2, Progress::Planned)]).unwrap_err();
+    let stale = p
+        .transition(1, Transition::Activate(version(1)))
+        .unwrap_err();
+    assert_ne!(
+        future.to_string(),
+        stale.to_string(),
+        "future facts are not version rollback"
+    );
+}
+
+#[test]
+fn batch_execution_errors_preserve_identity_and_closed_reason() {
+    let p = active(3);
+    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    let foreign_version = Version::new(
+        PolicyId::new(other, "policy").unwrap(),
+        1,
+        PayloadRef::new(PayloadId::new(other, "payload").unwrap(), 1, [1; 32]).unwrap(),
+        RemovalRule::CancelOutstandingRetainEffects,
+    )
+    .unwrap();
+    let foreign = ExecutionRecord::new(
+        foreign_version,
+        DeviceId::new(other, "foreign").unwrap(),
+        Progress::Running,
+        Effect::Unknown,
+    )
+    .unwrap();
+    let mismatch = Version::new(
+        PolicyId::new(tenant(), "other-policy").unwrap(),
+        1,
+        version(1).payload().clone(),
+        RemovalRule::CancelOutstandingRetainEffects,
+    )
+    .unwrap();
+    let mismatch =
+        ExecutionRecord::new(mismatch, key("bad"), Progress::Running, Effect::Unknown).unwrap();
+    for (bad, reason) in [
+        (foreign, ExecutionFailure::TenantMismatch),
+        (mismatch, ExecutionFailure::PolicyMismatch),
+        (
+            record(4, Progress::Running),
+            ExecutionFailure::FutureVersion { latest: 3 },
+        ),
+    ] {
+        let valid = record(1, Progress::Planned);
+        for records in [vec![valid.clone(), bad.clone()], vec![bad.clone(), valid]] {
+            let error = compute(&p, &targets(&["d1"]), &records).unwrap_err();
+            assert_eq!(error.to_string(), reason.to_string());
+            assert_eq!(
+                error,
+                PolicyError::InvalidExecution {
+                    execution: Box::new(bad.key()),
+                    reason: reason.clone()
+                }
+            );
+        }
+    }
+    let draft = Policy::draft(PolicyId::new(tenant(), "policy").unwrap());
+    assert_eq!(
+        compute(&draft, &targets(&[]), &[record(1, Progress::Planned)]).unwrap_err(),
+        PolicyError::InvalidExecution {
+            execution: Box::new(record(1, Progress::Planned).key()),
+            reason: ExecutionFailure::FutureVersion { latest: 0 }
+        }
+    );
+}
+
+#[test]
+fn plan_v1_fingerprint_covers_each_variable_encoded_field() {
+    let p = Policy::restore(
+        PolicyId::new(tenant(), "policy").unwrap(),
+        7,
+        Status::Active,
+        Some(version(3)),
+    )
+    .unwrap();
+    let t = targets(&["d1"]);
+    let baseline = compute(&p, &t, &[]).unwrap().id();
+    for (request, time) in [("another", 10), ("request", 20)] {
+        let changed = reconcile(PlanInput {
+            policy: &p,
+            targets: &t,
+            executions: &[],
+            request: RequestId::new(tenant(), request).unwrap(),
+            as_of: Timepoint::try_from(time).unwrap(),
+        })
+        .unwrap();
+        assert_eq!(baseline, changed.id(), "request/time are provenance only");
+    }
+    let payload = p.version().unwrap().payload();
+    let changed_versions = [
+        (
+            "version number",
+            Version::new(
+                p.key().clone(),
+                4,
+                payload.clone(),
+                RemovalRule::CancelOutstandingRetainEffects,
+            )
+            .unwrap(),
+        ),
+        (
+            "payload object",
+            Version::new(
+                p.key().clone(),
+                3,
+                PayloadRef::new(
+                    PayloadId::new(tenant(), "other-payload").unwrap(),
+                    3,
+                    [3; 32],
+                )
+                .unwrap(),
+                RemovalRule::CancelOutstandingRetainEffects,
+            )
+            .unwrap(),
+        ),
+        (
+            "payload revision",
+            Version::new(
+                p.key().clone(),
+                3,
+                PayloadRef::new(payload.object().clone(), 4, [3; 32]).unwrap(),
+                RemovalRule::CancelOutstandingRetainEffects,
+            )
+            .unwrap(),
+        ),
+        (
+            "payload digest",
+            Version::new(
+                p.key().clone(),
+                3,
+                PayloadRef::new(payload.object().clone(), 3, [4; 32]).unwrap(),
+                RemovalRule::CancelOutstandingRetainEffects,
+            )
+            .unwrap(),
+        ),
+    ];
+    for (field, v) in changed_versions {
+        let changed = Policy::restore(p.key().clone(), 7, Status::Active, Some(v)).unwrap();
+        assert_ne!(
+            baseline,
+            compute(&changed, &t, &[]).unwrap().id(),
+            "{field}"
+        );
+    }
+    for (field, revision, status) in [
+        ("policy revision", 8, Status::Active),
+        ("paused status", 7, Status::Paused),
+        ("archived status", 7, Status::Archived),
+    ] {
+        let changed =
+            Policy::restore(p.key().clone(), revision, status, p.version().cloned()).unwrap();
+        assert_ne!(
+            baseline,
+            compute(&changed, &t, &[]).unwrap().id(),
+            "{field}"
+        );
+    }
+    let other_policy = PolicyId::new(tenant(), "other-policy").unwrap();
+    let v = Version::new(
+        other_policy.clone(),
+        3,
+        payload.clone(),
+        RemovalRule::CancelOutstandingRetainEffects,
+    )
+    .unwrap();
+    let changed = Policy::restore(other_policy, 7, Status::Active, Some(v)).unwrap();
+    assert_ne!(
+        baseline,
+        compute(&changed, &t, &[]).unwrap().id(),
+        "policy identity"
+    );
+    for (field, name, revision, members) in [
+        ("target identity", "other-targets", 1, vec![key("d1")]),
+        ("target revision", "targets", 2, vec![key("d1")]),
+        ("target member", "targets", 1, vec![key("d2")]),
+        ("target count", "targets", 1, vec![key("d1"), key("d2")]),
+    ] {
+        let changed = TargetSnapshot::new(
+            TargetSnapshotId::new(tenant(), name).unwrap(),
+            revision,
+            SnapshotCompleteness::Complete,
+            members,
+        )
+        .unwrap();
+        assert_ne!(
+            baseline,
+            compute(&p, &changed, &[]).unwrap().id(),
+            "{field}"
+        );
+    }
+    let fact = record(1, Progress::Planned);
+    let fact_id = compute(&p, &t, std::slice::from_ref(&fact)).unwrap().id();
+    assert_ne!(baseline, fact_id, "fact count");
+    let v = fact.version();
+    for (field, number, payload_name, revision, digest, device) in [
+        ("fact version", 2, "payload", 1, [1; 32], "d1"),
+        ("fact payload object", 1, "other", 1, [1; 32], "d1"),
+        ("fact payload revision", 1, "payload", 2, [1; 32], "d1"),
+        ("fact payload digest", 1, "payload", 1, [2; 32], "d1"),
+        ("fact device", 1, "payload", 1, [1; 32], "d2"),
+    ] {
+        let changed = Version::new(
+            v.policy().clone(),
+            number,
+            PayloadRef::new(
+                PayloadId::new(tenant(), payload_name).unwrap(),
+                revision,
+                digest,
+            )
+            .unwrap(),
+            RemovalRule::CancelOutstandingRetainEffects,
+        )
+        .unwrap();
+        let changed =
+            ExecutionRecord::new(changed, key(device), Progress::Planned, Effect::Unverified)
+                .unwrap();
+        assert_ne!(
+            fact_id,
+            compute(&p, &t, &[changed]).unwrap().id(),
+            "{field}"
+        );
+    }
+    let mut progress_ids = Vec::new();
+    for progress in [
+        Progress::Planned,
+        Progress::Running,
+        Progress::Unknown,
+        Progress::Succeeded,
+        Progress::Failed,
+        Progress::Cancelled,
+    ] {
+        let changed =
+            ExecutionRecord::new(v.clone(), key("d1"), progress, Effect::Unverified).unwrap();
+        let id = compute(&p, &t, &[changed]).unwrap().id();
+        assert!(!progress_ids.contains(&id), "progress {progress:?}");
+        progress_ids.push(id);
+    }
+    let mut effect_ids = Vec::new();
+    for effect in [
+        Effect::Unverified,
+        Effect::Unknown,
+        Effect::VerifiedPresent,
+        Effect::VerifiedAbsent,
+    ] {
+        let changed =
+            ExecutionRecord::new(v.clone(), key("d1"), Progress::Planned, effect).unwrap();
+        let id = compute(&p, &t, &[changed]).unwrap().id();
+        assert!(!effect_ids.contains(&id), "effect {effect:?}");
+        effect_ids.push(id);
+    }
+    // Tenant fields must change together to remain a valid public input.
+    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    let policy_id = PolicyId::new(other, "policy").unwrap();
+    let v = Version::new(
+        policy_id.clone(),
+        3,
+        PayloadRef::new(PayloadId::new(other, "payload").unwrap(), 3, [3; 32]).unwrap(),
+        RemovalRule::CancelOutstandingRetainEffects,
+    )
+    .unwrap();
+    let changed_p = Policy::restore(policy_id, 7, Status::Active, Some(v)).unwrap();
+    let changed_t = TargetSnapshot::new(
+        TargetSnapshotId::new(other, "targets").unwrap(),
+        1,
+        SnapshotCompleteness::Complete,
+        vec![DeviceId::new(other, "d1").unwrap()],
+    )
+    .unwrap();
+    let changed = reconcile(PlanInput {
+        policy: &changed_p,
+        targets: &changed_t,
+        executions: &[],
+        request: RequestId::new(other, "request").unwrap(),
+        as_of: Timepoint::try_from(10).unwrap(),
+    })
+    .unwrap();
+    assert_ne!(baseline, changed.id(), "tenant");
+}
+
+#[test]
+fn plan_v1_fixed_sha256_vectors() {
+    // Independently encoded from the documented V1 fields with big-endian u64
+    // lengths/numbers and SHA-256. These constants never derive from plan_id.
+    // The active vector includes current/historical payloads, ordered members,
+    // nonzero progress/effect tags, and the singleton Apply/removal tags.
+    let p = Policy::restore(
+        PolicyId::new(tenant(), "policy").unwrap(),
+        7,
+        Status::Active,
+        Some(version(3)),
+    )
+    .unwrap();
+    let t = TargetSnapshot::new(
+        TargetSnapshotId::new(tenant(), "targets").unwrap(),
+        11,
+        SnapshotCompleteness::Complete,
+        vec![key("d2"), key("d1")],
+    )
+    .unwrap();
+    let fact = ExecutionRecord::new(
+        version(1),
+        key("d1"),
+        Progress::Running,
+        Effect::VerifiedPresent,
+    )
+    .unwrap();
+    let hex = |id: PlanId| {
+        id.bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        hex(compute(&p, &t, &[fact]).unwrap().id()),
+        "05eabf7c7b0d2c0f911bb5b021d70697ff5a7ea7f1a4840c9b21925cb9c163ab"
+    );
+    // Draft locks the absent-version tag, zero revision and empty sets.
+    let draft = Policy::draft(PolicyId::new(tenant(), "policy").unwrap());
+    assert_eq!(
+        hex(compute(&draft, &targets(&[]), &[]).unwrap().id()),
+        "ac19e7eb9c3dcb4c803e41d3fb66dde125deaadbf6761abe57a6e2c44be8e24c"
     );
 }

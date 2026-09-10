@@ -1,6 +1,6 @@
 use crate::{
-    DeviceId, ExecutionKey, ExecutionRecord, PayloadId, PayloadRef, Policy, PolicyError, PolicyId,
-    RequestId, Status, TargetSnapshotId, Version,
+    DeviceId, ExecutionFailure, ExecutionKey, ExecutionRecord, PayloadId, PayloadRef, Policy,
+    PolicyError, PolicyId, RequestId, Status, TargetSnapshotId, Version,
 };
 use rss_contract::Timepoint;
 use std::{
@@ -189,23 +189,22 @@ fn validate(input: &PlanInput<'_>) -> Result<Facts, PolicyError> {
     let mut versions = BTreeMap::new();
     let mut payloads = BTreeMap::new();
     if let Some(current) = input.policy.version() {
-        register_version(current, &mut versions, &mut payloads)?;
+        versions.insert(current.number(), current.clone());
+        let payload = current.payload();
+        payloads.insert(
+            (payload.object().clone(), payload.revision()),
+            payload.clone(),
+        );
     }
     let mut facts = BTreeMap::new();
     for record in input.executions {
-        crate::lifecycle::check_policy(input.policy.key(), record.version())?;
-        if input
-            .policy
-            .version()
-            .is_none_or(|v| record.version().number() > v.number())
-        {
-            return Err(PolicyError::StaleVersion {
-                requested: record.version().number(),
-                latest: input.policy.version().map_or(0, Version::number),
-            });
-        }
-        register_version(record.version(), &mut versions, &mut payloads)?;
         let key = record.key();
+        validate_execution(input.policy, record, &mut versions, &mut payloads).map_err(
+            |reason| PolicyError::InvalidExecution {
+                execution: Box::new(key.clone()),
+                reason,
+            },
+        )?;
         if facts.get(&key).is_some_and(|old| old != record) {
             return Err(PolicyError::ConflictingExecution { execution: key });
         }
@@ -213,20 +212,30 @@ fn validate(input: &PlanInput<'_>) -> Result<Facts, PolicyError> {
     }
     Ok(facts)
 }
-fn register_version(
-    v: &Version,
+fn validate_execution(
+    policy: &Policy,
+    record: &ExecutionRecord,
     versions: &mut BTreeMap<u64, Version>,
     payloads: &mut BTreeMap<(PayloadId, u64), PayloadRef>,
-) -> Result<(), PolicyError> {
+) -> Result<(), ExecutionFailure> {
+    let v = record.version();
+    if v.policy().tenant() != policy.key().tenant() {
+        return Err(ExecutionFailure::TenantMismatch);
+    }
+    if v.policy() != policy.key() {
+        return Err(ExecutionFailure::PolicyMismatch);
+    }
+    let latest = policy.version().map_or(0, Version::number);
+    if v.number() > latest {
+        return Err(ExecutionFailure::FutureVersion { latest });
+    }
     if versions.get(&v.number()).is_some_and(|old| old != v) {
-        return Err(PolicyError::VersionConflict {
-            version: v.number(),
-        });
+        return Err(ExecutionFailure::VersionConflict);
     }
     let p = v.payload();
     let key = (p.object().clone(), p.revision());
     if payloads.get(&key).is_some_and(|old| old != p) {
-        return Err(PolicyError::PayloadConflict {
+        return Err(ExecutionFailure::PayloadConflict {
             object: p.object().clone(),
             revision: p.revision(),
         });

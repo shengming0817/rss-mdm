@@ -31,6 +31,33 @@ def verify_closure(data, core, product_source, pin, locked_registry):
     allowed = SUPPORT | (HASH_SUPPORT if core == "rss-mdm-policy" else frozenset())
     roots = set(data["workspace_members"])
     ci.require(len(roots) == 1, "consumer must have exactly one workspace member")
+    root = next(iter(roots))
+    packages = {p["id"]: p for p in data["packages"]}
+    graph = data.get("resolve")
+    ci.require(isinstance(graph, dict), "consumer dependency graph is missing")
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    ci.require(graph["root"] == root and root in nodes, "consumer graph root differs")
+    ci.require(set(nodes) == set(packages), "package list and graph differ")
+    core_ids = {p["id"] for p in packages.values() if p["name"] == core}
+    ci.require(len(core_ids) == 1, "consumer must resolve exactly one tested core")
+    direct = nodes[root]["deps"]
+    ci.require({d["pkg"] for d in direct} == core_ids, "consumer must directly depend only on the tested core")
+    ci.require(all(d["dep_kinds"] and all(k["kind"] is None and k["target"] is None for k in d["dep_kinds"]) for d in direct), "consumer core edge must be an unconditional normal dependency")
+    # Cargo owns the resolved edges, including renamed and target dependencies.
+    # Traverse normal/build edges: proc-macro/build support belongs to the proof.
+    reached, pending = set(), list(core_ids)
+    while pending:
+        node = pending.pop()
+        if node in reached:
+            continue
+        ci.require(node in nodes, "dependency graph has a missing node")
+        reached.add(node)
+        for dep in nodes[node]["deps"]:
+            kinds = dep["dep_kinds"]
+            ci.require(kinds and all(k["kind"] in (None, "build", "dev") for k in kinds), "unknown dependency kind")
+            if any(k["kind"] != "dev" for k in kinds):
+                pending.append(dep["pkg"])
+    ci.require(root not in reached and reached == set(packages) - roots, "packages must belong to the tested core closure")
     found = set()
     for package in data["packages"]:
         name, source = package["name"], package["source"]
@@ -71,13 +98,12 @@ def run_consumer(source, base, core, defaults, head, pin, out):
     shutil.copyfile(source / "rust-toolchain.toml", root / "rust-toolchain.toml")
     # The same public API behavior assertions run inside and outside the workspace.
     shutil.copyfile(source / "crates" / core / "tests/model.rs", root / "tests/model.rs")
-    url, rev = pin
     product = f"rss-mdm-{core}"
     manifest = '\n'.join([
         '[package]', f'name = "{name}-consumer"', 'version = "0.0.0"', 'edition = "2024"',
         '[workspace]', '[dependencies]',
         f'{product} = {{ git = {json.dumps(source.as_uri())}, rev = "{head}", default-features = {str(defaults).lower()} }}',
-        *[f'{p} = {{ git = {json.dumps(url)}, rev = "{rev}", default-features = false }}' for p in ("rss-contract", "rss-request-context")], '',
+        '',
     ])
     (root / "Cargo.toml").write_text(manifest)
     shutil.copyfile(source / "Cargo.lock", root / "Cargo.lock")

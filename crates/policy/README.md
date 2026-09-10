@@ -21,8 +21,12 @@ Activate 可选择更高版本并进入 Active，Resume 只恢复原版本。
 现阶段键为 1–128 字节 ASCII 字母、数字、`.`、`_`、`-`，不接受 URL。
 已有执行输入是每个执行的当前事实快照，完全重复允许，互相矛盾拒绝；历史事件归并由调用方拥有。
 未来版本事实、其他策略事实及混租户输入整体拒绝，范围退出设备的事实则是合法输入。
-错误携带 revision 的 expected/actual、状态/操作、冲突版本号、载荷身份/revision 或 ExecutionKey，
-调用方可直接定位失败记录；Display 保持稳定分类，不输出任意底层正文。
+顶层输入与生命周期错误携带 revision 的 expected/actual、状态/操作、冲突版本号或载荷身份/revision。
+逐执行事实错误返回 `InvalidExecution { execution, reason }`，必带失败记录的 `ExecutionKey`；
+`ExecutionFailure` 区分混租户、其他策略、未来版本、版本内容冲突和载荷内容冲突。
+未来事实用 `FutureVersion { latest }`（实际版本在 execution key 中），`StaleVersion` 仅用于激活版本回退；
+相互矛盾的重复事实继续返回带执行键的 `ConflictingExecution`。调用方可直接定位失败记录；
+Display 保持稳定分类，不输出身份值或任意底层正文。
 
 ## 差分与事实
 
@@ -59,8 +63,10 @@ Plan 返回策略 revision、目标快照身份/revision 和确定的意图。N1
 ## 验证与来源
 
 `cargo test --locked -p rss-mdm-policy` 覆盖状态转换矩阵、版本/载荷冲突、稳定身份、重算/重入、
-暂停/恢复/退出/归档、旧事实和取消/效果分离。`hack/core_consumer.py` 复用公共 API 测试，在仓外以固定 Git SHA
-分别验证默认与关闭默认 features 的独立 consumer；独立消费结果不是 registry 发布或端侧 T3 证明。
+暂停/恢复/退出/归档、旧事实和取消/效果分离。PlanId 测试逐项改变合法编码字段，并固定 Active/历史事实
+及空 Draft 的 V1 SHA-256 向量；Apply 与移除规则当前各只有一个合法值，由固定向量锁定其标签。`hack/core_consumer.py` 复用公共 API 测试，在仓外以固定 Git SHA
+分别验证默认与关闭默认 features 的独立 consumer；consumer 仅直接依赖本产品包，
+canonical `TenantId` / `Timepoint` 由本包重导出，校验 root 唯一普通依赖边及产品包普通/构建依赖闭包；独立消费结果不是 registry 发布或端侧 T3 证明。
 
 - kube-rs 1.1.0 [`controller::Action`](https://github.com/kube-rs/kube/blob/1.1.0/kube-runtime/src/controller/mod.rs)：参考决策结果与驱动执行分离；不引入 kube controller/runtime。
 - WinMDM 历史 `src/internal/domain/policy/{value_object,entity}.go`：生命周期及事实语义证据；

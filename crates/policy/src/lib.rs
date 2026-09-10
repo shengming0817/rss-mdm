@@ -23,3 +23,7 @@ mod plan;
 pub use lifecycle::*;
 pub use model::*;
 pub use plan::*;
+
+/// Canonical types required to construct this core's public inputs.
+pub use rss_contract::Timepoint;
+pub use rss_request_context::TenantId;

@@ -145,11 +145,36 @@ class CoreConsumerGate(unittest.TestCase):
             {'id':'scope','name':'rss-mdm-scope','source':product},
             {'id':'contract','name':'rss-contract','source':upstream},
             {'id':'context','name':'rss-request-context','source':upstream},
-            {'id':'error','name':'thiserror','version':'2.0.20','source':registry}]}
+            {'id':'error','name':'thiserror','version':'2.0.20','source':registry}], 'resolve': {'root':'consumer', 'nodes': [
+                {'id':node, 'deps':[{'pkg':dep, 'dep_kinds':[{'kind':None,'target':None}]} for dep in deps]}
+                for node,deps in [('consumer',['scope']),('scope',['contract','context','error']),('contract',[]),('context',[]),('error',[])]]}}
         locked={('thiserror','2.0.20',registry)}
         core.verify_closure(data,'rss-mdm-scope',product,pin,locked)
+        for kind in [None, 'dev', 'build']:
+            bad=copy.deepcopy(data)
+            bad['resolve']['nodes'][0]['deps'].append({'pkg':'contract','dep_kinds':[{'kind':kind,'target':None}]})
+            with self.subTest(direct_kind=kind), self.assertRaises(RuntimeError):
+                core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+        for kinds in [[{'kind':'dev','target':None}], [{'kind':'build','target':None}], [{'kind':None,'target':'cfg(windows)'}], []]:
+            bad=copy.deepcopy(data)
+            bad['resolve']['nodes'][0]['deps'][0]['dep_kinds']=kinds
+            with self.subTest(root_kinds=kinds), self.assertRaises(RuntimeError):
+                core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+        for node_id in ['contract','context','error']:
+            bad=copy.deepcopy(data)
+            bad['resolve']['nodes'][1]['deps']=[d for d in bad['resolve']['nodes'][1]['deps'] if d['pkg']!=node_id]
+            with self.subTest(disconnected=node_id), self.assertRaises(RuntimeError):
+                core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+        bad=copy.deepcopy(data);bad['resolve']=None
+        with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+        # Renaming changes the library name, never the package identity of an edge.
+        renamed=copy.deepcopy(data);renamed['resolve']['nodes'][0]['deps'][0]['name']='renamed_core'
+        renamed['resolve']['nodes'][1]['deps'][-1]['dep_kinds']=[{'kind':'build','target':None}]
+        core.verify_closure(renamed,'rss-mdm-scope',product,pin,locked)
         for name,source in [('rss-mdm-policy',product),('sqlx-core',registry),('hyper',registry),('mongodb',registry),('rss-observation',upstream),('helper','path+file:///parent')]:
             bad=copy.deepcopy(data);bad['packages'].append({'id':'bad','name':name,'source':source})
+            bad['resolve']['nodes'].append({'id':'bad','deps':[]})
+            bad['resolve']['nodes'][1]['deps'].append({'pkg':'bad','dep_kinds':[{'kind':None,'target':None}]})
             with self.subTest(name=name),self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
         bad=copy.deepcopy(data);bad['packages'][1]['source']='path+file:///parent'
         with self.assertRaises(RuntimeError):core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)

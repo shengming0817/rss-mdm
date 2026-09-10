@@ -167,6 +167,20 @@ impl ExecutionRecord {
 pub(crate) fn nonzero(n: u64) -> Result<NonZeroU64, PolicyError> {
     NonZeroU64::new(n).ok_or(PolicyError::InvalidRevision)
 }
+/// Closed reasons for rejecting an execution fact; the enclosing error retains its key.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ExecutionFailure {
+    #[error("execution belongs to a foreign tenant")]
+    TenantMismatch,
+    #[error("execution belongs to another policy")]
+    PolicyMismatch,
+    #[error("execution version is newer than the policy")]
+    FutureVersion { latest: u64 },
+    #[error("execution version contents conflict")]
+    VersionConflict,
+    #[error("execution payload contents conflict")]
+    PayloadConflict { object: PayloadId, revision: u64 },
+}
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PolicyError {
     #[error("invalid object key")]
@@ -199,6 +213,11 @@ pub enum PolicyError {
     PayloadConflict { object: PayloadId, revision: u64 },
     #[error("target snapshot is incomplete")]
     IncompleteTargets,
+    #[error("{reason}")]
+    InvalidExecution {
+        execution: Box<ExecutionKey>,
+        reason: ExecutionFailure,
+    },
     #[error("execution snapshots contradict each other")]
     ConflictingExecution { execution: ExecutionKey },
 }
