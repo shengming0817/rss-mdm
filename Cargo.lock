@@ -2018,6 +2018,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-group"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-request-context",
+]
+
+[[package]]
 name = "rss-mdm-inventory"
 version = "0.1.0"
 dependencies = [

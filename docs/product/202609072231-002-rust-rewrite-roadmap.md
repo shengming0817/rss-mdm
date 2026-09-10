@@ -108,7 +108,7 @@ flowchart LR
 | PBI | 硬前置 | 目录 owner | 独立验收 |
 | --- | --- | --- | --- |
 | N01 #2379 | 无 | 当前 ADR、路线、PRD、消费规则 | 冻结名称与契约，不创建空包 |
-| N02 #2380 Group | N01 | `crates/group` | 固定时钟、类型/预算、未知值、历史对照、成员差分 T1 |
+| N02 #2380 Group | N01 | `crates/group`（纯核心已实现；[指南与验证入口](../guides/202609090000-2380-group-core.md)） | 固定时钟、类型/预算、未知值、历史对照、成员差分 T1；逐包 Git 消费结果绑定 local-ci 受测 SHA，不代表 N09/N12 或 T3 |
 | N03 #2381 Scope | N01 | `crates/scope` | 未配置/空限制、来源解释、去重、输入顺序与混租户 T1 |
 | N04 #2382 Policy | N01 | `crates/policy` | 版本竞争、稳定计划身份、重复计算、取消与未知事实 T1 |
 | N05 #2383 Resource | N01 | `crates/resource` | 不可变版本、平台身份、摘要和引用约束 T1 |
