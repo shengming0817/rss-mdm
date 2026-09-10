@@ -704,6 +704,12 @@ async fn matrix() -> Result<()> {
     ensure!(count()? == before + 2, "identity success cached");
     let (status, assets) = browser.call(&authorized, Method::GET, &query, None).await?;
     ensure!(status == StatusCode::OK && assets["fields"][0]["value"] == "Model-A");
+    ensure!(assets["tenant_id"] == TENANT);
+    ensure!(assets["device_id"] == "device-1");
+    ensure!(assets["registration"] == "99999999-9999-4999-8999-999999999991");
+    ensure!(assets["source"] == "mdm.windows");
+    ensure!(assets["epoch"] == "99999999-9999-4999-8999-999999999992");
+    ensure!(assets["coverage"] == serde_json::to_value(rss_mdm_inventory::coverage())?);
     enrollment_matrix(
         &authorized,
         &allowed,
@@ -739,18 +745,24 @@ async fn matrix() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    ensure!(
-        browser
-            .call(
-                &authorized,
-                Method::GET,
-                &format!("{query}&tenant={TENANT}"),
-                None
-            )
-            .await?
-            .0
-            == StatusCode::BAD_REQUEST
-    );
+    for coordinate in [
+        "tenant=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "registration=88888888-8888-4888-8888-888888888881",
+        "epoch=88888888-8888-4888-8888-888888888882",
+    ] {
+        ensure!(
+            browser
+                .call(
+                    &authorized,
+                    Method::GET,
+                    &format!("{query}&{coordinate}"),
+                    None
+                )
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+    }
     let rows = pg("SELECT count(*) FROM mdm.inventory;")?;
     let initial_cookies = browser.cookies.clone();
     let initial_validations = count()?;

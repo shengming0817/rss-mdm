@@ -32,6 +32,16 @@ pub(crate) enum WriteOutcome {
     Unknown,
     Committed,
 }
+impl WriteOutcome {
+    pub fn deadline_error(self) -> crate::Error {
+        match self {
+            Self::Unknown | Self::Committed => crate::Error::CommitUnknown,
+            Self::CommitNotStarted | Self::NotCommitted => {
+                crate::Error::Unavailable(crate::Failure::RequestDeadline)
+            }
+        }
+    }
+}
 #[derive(Clone, Copy, serde::Serialize)]
 pub(crate) enum FailureReason {
     #[serde(rename = "persistent_audit_unavailable")]
@@ -137,7 +147,7 @@ impl Audit {
 }
 impl Context {
     fn failure_event(&self, snapshot: &Snapshot, reason: FailureReason) -> serde_json::Value {
-        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":snapshot.operation_id,"action":snapshot.action,"reason":reason,"write_outcome":snapshot.write_outcome})
+        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":snapshot.operation_id,"registration_id":snapshot.registration_id,"action":snapshot.action,"reason":reason,"write_outcome":snapshot.write_outcome})
     }
 }
 impl Drop for Context {
@@ -181,7 +191,9 @@ mod tests {
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
         let a = Audit::new("tenant".into(), "grant_issue");
         let key = Uuid::new_v4();
+        let registration = Uuid::new_v4();
         a.operation(key, "grant_issue");
+        a.registration(registration);
         a.target("sensitive-target-not-for-logs");
         a.identify_fixture("sensitive-actor", "sensitive-client");
         let event = |reason| a.0.failure_event(&a.snapshot(), reason);
@@ -203,6 +215,7 @@ mod tests {
             let event = event(reason);
             assert_eq!(event["write_outcome"], "committed");
             assert_eq!(event["action"], "grant_issue");
+            assert_eq!(event["registration_id"], registration.to_string());
             assert!(!event.to_string().contains("sensitive-target"));
             assert!(!event.to_string().contains("sensitive-actor"));
             assert!(!event.to_string().contains("sensitive-client"));

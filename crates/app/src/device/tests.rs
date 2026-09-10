@@ -235,6 +235,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     cancel.cancel();
     assert!(host.journal_grant(TenantId::parse(A)?, &cancel).is_err());
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
+    commit_deadlines(&service, &admin_a, &mut root).await?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
         .connect_with(options("mdm_runtime")?)
@@ -315,6 +316,13 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         accepted,
         rss_observation::ReceiveOutcome::Accepted(_)
     ));
+    let first_result: String = sqlx::query_scalar(
+        "SELECT result FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND status=200",
+    )
+    .bind(first.registration.to_string())
+    .fetch_one(&mut root)
+    .await?;
+    assert_eq!(first_result, "success");
     let replay = service
         .ingest(
             &mdm,
@@ -325,6 +333,13 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         )
         .await?;
     assert!(matches!(replay, rss_observation::ReceiveOutcome::Replay(_)));
+    let report_results: Vec<String> = sqlx::query_scalar(
+        "SELECT result FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND result IN ('success','replay') ORDER BY result",
+    )
+    .bind(first.registration.to_string())
+    .fetch_all(&mut root)
+    .await?;
+    assert_eq!(report_results, ["replay", "success"]);
     assert!(matches!(
         service
             .ingest(
@@ -490,6 +505,18 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         .revoke(&admin_a, "same-serial", second.registration, revoke_key)
         .await?;
     assert_eq!(receipt.registration, second.registration);
+    assert!(matches!(
+        no_permission
+            .revoke(&admin_a, "same-serial", second.registration, revoke_key)
+            .await,
+        Err(Error::Forbidden)
+    ));
+    assert_eq!(
+        restart
+            .revoke(&admin_a, "same-serial", second.registration, revoke_key)
+            .await?,
+        receipt
+    );
     assert!(
         restart
             .authorize_report(&newer, ReportSource::MdmWindows)
@@ -848,6 +875,63 @@ async fn credential_race(
     Ok(())
 }
 
+async fn commit_deadlines(
+    service: &DeviceService,
+    admin: &VerifiedIdentity,
+    root: &mut PgConnection,
+) -> anyhow::Result<()> {
+    let mut outcomes = Vec::new();
+    for fault in [3, 4] {
+        let device = format!("commit-deadline-{fault}");
+        let credential = proof(A, Channel::Mdm, 100 + fault);
+        let command = BindRegistration {
+            operation_id: Uuid::new_v4(),
+            request_id: request(&service.access, &service.policy, admin, &device).await?,
+            expected_generation: 0,
+            source: ReportSource::MdmWindows,
+        };
+        service.access.fail_next(fault);
+        let result = service.bind(admin, &credential, command.clone()).await;
+        outcomes.push(matches!(result, Err(Error::CommitUnknown)));
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
+        )
+        .bind(command.operation_id.to_string())
+        .fetch_one(&mut *root)
+        .await?;
+        assert_eq!(stored, i64::from(fault == 4));
+        let receipt = service.bind(admin, &credential, command.clone()).await?;
+        assert_eq!(service.bind(admin, &credential, command).await?, receipt);
+
+        let key = Uuid::new_v4();
+        service.access.fail_next(fault);
+        let result = service
+            .revoke(admin, &device, receipt.registration, key)
+            .await;
+        outcomes.push(matches!(result, Err(Error::CommitUnknown)));
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
+        )
+        .bind(key.to_string())
+        .fetch_one(&mut *root)
+        .await?;
+        assert_eq!(stored, i64::from(fault == 4));
+        let revoked = service
+            .revoke(admin, &device, receipt.registration, key)
+            .await?;
+        assert_eq!(
+            service
+                .revoke(admin, &device, receipt.registration, key)
+                .await?,
+            revoked
+        );
+    }
+    assert_eq!(
+        outcomes, [true; 4],
+        "bind/revoke must preserve unknown for both possible commit results"
+    );
+    Ok(())
+}
 // Reuse F01's existing bounded journal/projection runner. Reports above entered through I01.
 fn project(scope: &Scope) -> anyhow::Result<()> {
     let script = r#"import os,subprocess,sys,tempfile

@@ -192,13 +192,10 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
     };
     let snapshot = audit.snapshot();
     if matches!(
-        snapshot.write_outcome,
-        WriteOutcome::Unknown | WriteOutcome::Committed
-    ) && matches!(
         response.extensions().get::<Error>(),
         Some(Error::Unavailable(Failure::RequestDeadline))
     ) {
-        response = Error::CommitUnknown.into_response();
+        response = snapshot.write_outcome.deadline_error().into_response();
     }
     let mut audit_failure = matches!(
         response.extensions().get::<Error>(),

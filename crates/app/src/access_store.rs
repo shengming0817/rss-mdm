@@ -241,10 +241,22 @@ impl AccessStore {
             return Err(Error::Unavailable(Failure::AccessStore));
         }
         audit.mark_commit_started();
+        #[cfg(test)]
+        if self
+            .fault
+            .compare_exchange(3, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            // Cancel at COMMIT entry; Drop can still roll this transaction back.
+            std::future::pending::<()>().await;
+        }
         tx.commit().await.map_err(|_| Error::CommitUnknown)?;
         #[cfg(test)]
-        if self.fault.swap(0, Ordering::AcqRel) == 2 {
-            return Err(Error::CommitUnknown);
+        match self.fault.swap(0, Ordering::AcqRel) {
+            2 => return Err(Error::CommitUnknown),
+            // Real COMMIT succeeded; its acknowledgement never reaches the caller.
+            4 => std::future::pending::<()>().await,
+            _ => {}
         }
         audit.mark_committed();
         Ok(())

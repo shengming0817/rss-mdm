@@ -235,7 +235,11 @@ impl DeviceService {
         .await;
         // Observation receipts and product audit are separate transactions. Even a known
         // receipt commit needs this audit; registration's atomic-audit shortcut does not apply.
-        self.record_result(&audit, result).await
+        let success = match &result {
+            Ok(rss_observation::ReceiveOutcome::Replay(_)) => "replay",
+            Ok(rss_observation::ReceiveOutcome::Accepted(_)) | Err(_) => "success",
+        };
+        self.record_result(&audit, result, success).await
     }
     async fn audited<T>(
         &self,
@@ -244,23 +248,22 @@ impl DeviceService {
     ) -> Result<T, Error> {
         let result = tokio::time::timeout(Duration::from_secs(8), work)
             .await
-            .unwrap_or(Err(Error::Unavailable(Failure::RequestDeadline)));
+            .unwrap_or_else(|_| Err(audit.snapshot().write_outcome.deadline_error()));
         if audit.snapshot().write_outcome == WriteOutcome::Committed {
             audit.finalize(None);
             return result;
         }
-        self.record_result(audit, result).await
+        // New writes already recorded success atomically. A remaining Ok is a stored receipt.
+        self.record_result(audit, result, "replay").await
     }
-    async fn record_result<T>(&self, audit: &Audit, result: Result<T, Error>) -> Result<T, Error> {
+    async fn record_result<T>(
+        &self,
+        audit: &Audit,
+        result: Result<T, Error>,
+        success: &'static str,
+    ) -> Result<T, Error> {
         let (status, outcome) = match &result {
-            Ok(_) => (
-                200,
-                if audit.snapshot().operation_id.is_some() {
-                    "replay"
-                } else {
-                    "success"
-                },
-            ),
+            Ok(_) => (200, success),
             Err(_) if audit.snapshot().write_outcome == WriteOutcome::Unknown => (503, "unknown"),
             Err(Error::CommitUnknown) => (503, "unknown"),
             Err(Error::Unauthorized) => (401, "denied"),
