@@ -1,3 +1,7 @@
+#![allow(
+    clippy::cognitive_complexity,
+    reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
+)]
 use super::*;
 use crate::{
     access::{Binding, Role},

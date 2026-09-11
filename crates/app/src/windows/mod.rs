@@ -1,8 +1,12 @@
 //! Product Windows enrollment/management assembly. TLS and authority stay outside the codec.
+mod admission;
 pub(crate) mod certificate;
 mod issuance;
 mod management;
 mod protection;
+pub(crate) mod retention;
+#[cfg(test)]
+mod retention_tests;
 #[cfg(test)]
 mod tests;
 pub(crate) mod tls;
@@ -114,6 +118,7 @@ impl Windows {
     }
 }
 pub(crate) struct TlsRouter {
+    admission: Arc<admission::Admission>,
     pub listen: SocketAddr,
     pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
     pub router: Router,
@@ -140,6 +145,7 @@ pub(crate) fn routers(
                 },
                 envelope,
             ))
+            .layer(middleware::from_fn(admission::admit))
     };
     let enrollment = wrap(
         Router::new()
@@ -154,11 +160,17 @@ pub(crate) fn routers(
     );
     (
         TlsRouter {
+            admission: admission::Admission::new(
+                clock.clone(),
+                app.requests.clone(),
+                "mdm-enrollment-tls",
+            ),
             listen: app.windows.config.enrollment.listen,
             tls: app.windows.enrollment_tls.clone(),
             router: enrollment,
         },
         TlsRouter {
+            admission: admission::Admission::new(clock, app.requests.clone(), "mdm-management-tls"),
             listen: app.windows.config.management.listen,
             tls: app.windows.management_tls.clone(),
             router: management,
@@ -237,6 +249,7 @@ fn response(request: Option<&soap::Message>, body: Body, now: i64) -> Result<Res
 pub(crate) fn fault(request: Option<&soap::Message>, error: Error) -> Response {
     let kind = match error {
         Error::Malformed => soap::FaultKind::MessageFormat,
+        Error::CertificateRequest => soap::FaultKind::CertificateRequest,
         Error::Unauthorized => soap::FaultKind::Authentication,
         Error::Forbidden | Error::Conflict => soap::FaultKind::Authorization,
         _ => soap::FaultKind::EnrollmentServer,
@@ -308,11 +321,6 @@ async fn enrollment(
         Err(e) => return fault(None, e),
     };
     let result = async {
-        let _global = app
-            .requests
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Unavailable(Failure::Capacity))?;
         let security = message
             .header
             .security

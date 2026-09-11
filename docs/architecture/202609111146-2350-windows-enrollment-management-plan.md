@@ -1,6 +1,6 @@
 # #2350 + #2351 Windows 注册与管理通道实施计划
 
-状态：已批准并实施；审查与运行证据由交付 PR 绑定。一个 worktree、分支和 PR，同时关联 #2350、#2351。
+状态：产品实现已落地，PR #998 保持未就绪；审查与运行证据由交付 PR 绑定。一个 worktree、分支和 PR，同时关联 #2350、#2351。
 支持目标：Windows 10 1809 及以上、Windows 11；T1/T2 不替代独立 Windows T3。
 
 ## 决策与边界
@@ -17,6 +17,8 @@
 | POST /api/v1/enrollments/{id}/resume | 原管理员在线重新授权，轮换口令与不可登录会话引用 |
 | POST /api/v1/enrollments/{id}/cancel | 取消未完成注册 |
 | POST /api/v1/devices/{device}/registrations/{registration}/revoke | 原子撤销注册、凭据及来源授权 |
+| GET /api/v1/enrollments/{id} | 原管理员及当前注册权限查询状态、授权期限与绑定 ID |
+| GET /api/v1/devices/{device}/registrations | 当前凭据管理权限查询注册与状态，游标分页，不要求注册权限 |
 
 全部管理写复用在线 Identity、当前资源权限、CSRF 和各自独立幂等键。
 只持久化域分离口令摘要，响应不回显口令；提供配套随机口令脚本。
@@ -48,6 +50,17 @@ RSA PKCS#1 v1.5 SHA-256 确定性签名；提交未知按原操作读回，无�
 准确响应同事务保存，重传不推进状态，错误 session/reference/DeviceID/跨设备请求拒绝。
 撤销提交后的新准入立即拒绝，已准入请求最多 8 秒并预留 2 秒审计。
 
+直接暴露的 TLS 入口按真实 TCP peer 限制连接和请求速率、并发与有界 peer 表；
+容量拒绝在业务审计前记录闭合计数。15 分钟管理会话和响应由产品生命周期中的
+独立 maintenance task 每秒最多清理 128 个过期会话，行锁 SKIP LOCKED；
+同事务删除响应与会话，RLS 仅允许同租户过期临时行，保留全部权威事实。
+
+架构阻塞 F4：固定 RSS 版本没有允许产品 TLS IO 进入通用 HTTP connection owner 的
+公共接缝，当前产品仍重复持有连接 futures/取消/排空。已登记
+[RSS #2418](https://dev.azure.com/shengming0923/rss/_workitems/edit/2418)。
+用户明确要求本轮保持一个产品 PR、跨仓缺口 defer 并保持未就绪；
+完成 RSS prerequisite 并消费固定新 SHA、移除产品重复 owner 前不能宣称 F4 已修或可合并。
+
 ## 实施 DAG 与 owner
 
 主 agent 独占所有代码、Cargo、迁移和测试修改；探索与内置 review agent 只读。
@@ -72,3 +85,6 @@ PR 记录固定 HEAD、依赖、实际结果及未覆盖项，不用 T1/T2 宣�
 - [RFC 4055 §5](https://www.rfc-editor.org/rfc/rfc4055.html#section-5)
 - [RustCrypto x509-cert 0.2.5 request.rs](https://github.com/RustCrypto/formats/blob/x509-cert/v0.2.5/x509-cert/src/request.rs)
 - [Microsoft w7 APPLICATION CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/w7-application-csp)
+- [Axum Listener / accepted IO](https://github.com/tokio-rs/axum/blob/main/axum/src/serve/listener.rs)
+- [PostgreSQL 17 行锁与 SKIP LOCKED](https://www.postgresql.org/docs/17/sql-select.html#SQL-FOR-UPDATE-SHARE)
+- [PostgreSQL 限制性 RLS policy](https://www.postgresql.org/docs/17/sql-createpolicy.html)

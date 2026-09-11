@@ -132,6 +132,8 @@ pub(crate) async fn from_compiled(
     });
     let protected = Router::new()
         .route("/enrollments", post(create_enrollment))
+        .route("/enrollments/{id}", get(enrollment_status))
+        .route("/devices/{device}/registrations", get(registrations))
         .route("/enrollments/{id}/resume", post(resume_enrollment))
         .route("/enrollments/{id}/cancel", post(cancel_enrollment))
         .route(
@@ -191,6 +193,8 @@ pub(crate) async fn envelope(
         .unwrap_or("");
     let action = match route {
         "/api/v1/enrollments" => "enrollment_create",
+        "/api/v1/enrollments/{id}" => "enrollment_read",
+        "/api/v1/devices/{device}/registrations" => "registration_read",
         "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
         "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
         "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
@@ -238,27 +242,7 @@ pub(crate) async fn envelope(
     .then_some(FailureReason::Transaction);
     if audited && snapshot.write_outcome != WriteOutcome::Committed {
         let status = response.status().as_u16();
-        let result = if matches!(
-            response.extensions().get::<Error>(),
-            Some(Error::CommitUnknown)
-        ) || snapshot.write_outcome == WriteOutcome::Unknown && status >= 500
-        {
-            "unknown"
-        } else if status == 401
-            || status == 403
-            || matches!(
-                response.extensions().get::<Error>(),
-                Some(Error::Unauthorized | Error::Forbidden)
-            )
-        {
-            "denied"
-        } else if status >= 400 {
-            "failed"
-        } else if snapshot.operation_id.is_some() {
-            "replay"
-        } else {
-            "success"
-        };
+        let result = audit_result(&response, &snapshot);
         {
             let store = &envelope.access;
             if !matches!(
@@ -291,6 +275,9 @@ pub(crate) async fn envelope(
         "{}",
         json!({"event":"mdm_request","request_id":request_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
     );
+    secure_response(response, request_id)
+}
+pub(crate) fn secure_response(mut response: Response, request_id: uuid::Uuid) -> Response {
     response.headers_mut().insert(
         "x-request-id",
         HeaderValue::from_str(&request_id.to_string()).expect("UUID header"),
@@ -307,6 +294,30 @@ pub(crate) async fn envelope(
         HeaderValue::from_static("nosniff"),
     );
     response
+}
+fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'static str {
+    let status = response.status().as_u16();
+    if matches!(
+        response.extensions().get::<Error>(),
+        Some(Error::CommitUnknown)
+    ) || snapshot.write_outcome == WriteOutcome::Unknown && status >= 500
+    {
+        "unknown"
+    } else if status == 401
+        || status == 403
+        || matches!(
+            response.extensions().get::<Error>(),
+            Some(Error::Unauthorized | Error::Forbidden)
+        )
+    {
+        "denied"
+    } else if status >= 400 {
+        "failed"
+    } else if snapshot.operation_id.is_some() {
+        "replay"
+    } else {
+        "success"
+    }
 }
 fn cookie_raw(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
     let mut result = None;
@@ -567,6 +578,33 @@ async fn create_enrollment(
     let reference = app.sessions.reference(&auth.lease)?;
     app.access
         .create_enrollment(permission, &input.password, reference, key, &audit)
+        .await
+        .map(Json)
+}
+async fn enrollment_status(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+) -> Result<Json<crate::enrollment::read::Status>, Error> {
+    let Path(id) = path.map_err(|_| Error::Malformed)?;
+    let device = app.access.enrollment_target(&auth.proof, id).await?;
+    let permission = app.policy.enrollment(&auth.proof, &device)?;
+    audit.target(&device);
+    app.access.enrollment_status(permission, id).await.map(Json)
+}
+async fn registrations(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    query: Result<Query<crate::enrollment::read::Page>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<crate::enrollment::read::Registrations>, Error> {
+    let Path(device) = path.map_err(|_| Error::Malformed)?;
+    let Query(page) = query.map_err(|_| Error::Malformed)?;
+    audit.target(&device);
+    app.access
+        .registration_list(&app.policy, &auth.proof, &device, page)
         .await
         .map(Json)
 }

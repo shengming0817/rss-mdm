@@ -52,6 +52,8 @@ CREATE TABLE mdm_access.management_sessions (
  FOREIGN KEY(tenant_id,credential) REFERENCES mdm_access.credentials(tenant_id,id)
 );
 CREATE UNIQUE INDEX one_advancing_management_session ON mdm_access.management_sessions(tenant_id,registration) WHERE state='challenge';
+CREATE INDEX registration_control_page ON mdm_access.registrations(tenant_id,device,id);
+CREATE INDEX management_retention ON mdm_access.management_sessions(tenant_id,expires_at,registration,session_id);
 CREATE TABLE mdm_access.management_messages (
  tenant_id uuid NOT NULL, registration uuid NOT NULL, session_id text NOT NULL, message_id bigint NOT NULL,
  digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
@@ -67,6 +69,9 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('GRANT SELECT,INSERT ON mdm_access.%I TO mdm_access',t);
  END LOOP;
 END $$;
+CREATE POLICY expired_only ON mdm_access.management_sessions AS RESTRICTIVE FOR DELETE USING(expires_at<clock_timestamp());
+CREATE POLICY expired_only ON mdm_access.management_messages AS RESTRICTIVE FOR DELETE USING(EXISTS(SELECT 1 FROM mdm_access.management_sessions s WHERE s.tenant_id=management_messages.tenant_id AND s.registration=management_messages.registration AND s.session_id=management_messages.session_id AND s.expires_at<clock_timestamp()));
+GRANT DELETE ON mdm_access.management_sessions,mdm_access.management_messages TO mdm_access;
 REVOKE UPDATE(state) ON mdm_access.grants FROM mdm_access;
 GRANT UPDATE(state,password_digest,password_version,session_ref,expires_at) ON mdm_access.requests TO mdm_access;
 GRANT UPDATE(server_nonce) ON mdm_access.enrollment_certificates TO mdm_access;
@@ -76,5 +81,5 @@ ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
 ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
  ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
   'protected_request','registration_bind','credential_revoke','device_report',
-  'enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','windows_discovery','windows_policy','windows_management'));
+  'enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management'));
 COMMIT;

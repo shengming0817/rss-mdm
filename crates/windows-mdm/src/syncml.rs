@@ -512,6 +512,69 @@ fn validate_items(items: &[Item], l: &CodecLimits, get: bool, devinfo: bool) -> 
     }
     Ok(())
 }
+fn validate_status(s: &Status, l: &CodecLimits) -> Result<usize> {
+    if let Some(c) = &s.credential {
+        validate_meta(Some(&c.meta), l, true)?;
+        text(&c.data.0, l.field_bytes, false)?;
+    }
+    if let Some(challenge) = &s.challenge {
+        if s.command != CommandName::SyncHdr
+            || !matches!(
+                challenge.media_type.as_str(),
+                "syncml:auth-basic" | "syncml:auth-md5"
+            )
+        {
+            return Err(E::Unsupported);
+        }
+        if let Some(nonce) = &challenge.nonce {
+            use base64::Engine;
+            text(&nonce.0, l.identifier_bytes, false)?;
+            if !base64::engine::general_purpose::STANDARD
+                .decode(&nonce.0)
+                .is_ok_and(|b| (16..=64).contains(&b.len()))
+            {
+                return Err(E::InvalidValue);
+            }
+        }
+        if (challenge.media_type == "syncml:auth-md5") != challenge.nonce.is_some() {
+            return Err(E::Structure);
+        }
+    }
+    if s.message_ref == 0
+        || !(100..=599).contains(&s.code)
+        || (s.command_ref == 0) != (s.command == CommandName::SyncHdr)
+    {
+        return Err(E::InvalidValue);
+    }
+    for rs in [&s.target_refs, &s.source_refs] {
+        bound(rs.len(), l.items)?;
+        let mut seen = BTreeSet::new();
+        for r in rs {
+            text(r, l.uri_bytes, false)?;
+            if !seen.insert(r) {
+                return Err(E::Duplicate);
+            }
+        }
+    }
+    bound(s.items.len(), l.items)?;
+    for item in &s.items {
+        for uri in [&item.source, &item.target].into_iter().flatten() {
+            text(uri, l.uri_bytes, false)?;
+        }
+        validate_meta(item.meta.as_ref(), l, false)?;
+        if let Some(data) = &item.data {
+            text(&data.0, l.field_bytes, true)?;
+        }
+        if item.data.is_none() && item.source.is_none() && item.target.is_none() {
+            return Err(E::Structure);
+        }
+    }
+    s.items
+        .len()
+        .checked_add(s.target_refs.len())
+        .and_then(|n| n.checked_add(s.source_refs.len()))
+        .ok_or(E::LimitExceeded)
+}
 pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
     if m.header.session_id == 0 || m.header.session_id > u16::MAX.into() || m.header.message_id == 0
     {
@@ -576,66 +639,8 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
                 count = count.checked_add(r.items.len()).ok_or(E::LimitExceeded)?;
             }
             Command::Status(s) => {
-                if let Some(c) = &s.credential {
-                    validate_meta(Some(&c.meta), l, true)?;
-                    text(&c.data.0, l.field_bytes, false)?;
-                }
-                if let Some(challenge) = &s.challenge {
-                    if s.command != CommandName::SyncHdr
-                        || !matches!(
-                            challenge.media_type.as_str(),
-                            "syncml:auth-basic" | "syncml:auth-md5"
-                        )
-                    {
-                        return Err(E::Unsupported);
-                    }
-                    if let Some(nonce) = &challenge.nonce {
-                        use base64::Engine;
-                        text(&nonce.0, l.identifier_bytes, false)?;
-                        if !base64::engine::general_purpose::STANDARD
-                            .decode(&nonce.0)
-                            .is_ok_and(|b| (16..=64).contains(&b.len()))
-                        {
-                            return Err(E::InvalidValue);
-                        }
-                    }
-                    if (challenge.media_type == "syncml:auth-md5") != challenge.nonce.is_some() {
-                        return Err(E::Structure);
-                    }
-                }
-                if s.message_ref == 0
-                    || !(100..=599).contains(&s.code)
-                    || (s.command_ref == 0) != (s.command == CommandName::SyncHdr)
-                {
-                    return Err(E::InvalidValue);
-                }
-                for rs in [&s.target_refs, &s.source_refs] {
-                    bound(rs.len(), l.items)?;
-                    let mut seen = BTreeSet::new();
-                    for r in rs {
-                        text(r, l.uri_bytes, false)?;
-                        if !seen.insert(r) {
-                            return Err(E::Duplicate);
-                        }
-                    }
-                }
-                bound(s.items.len(), l.items)?;
-                for item in &s.items {
-                    for uri in [&item.source, &item.target].into_iter().flatten() {
-                        text(uri, l.uri_bytes, false)?;
-                    }
-                    validate_meta(item.meta.as_ref(), l, false)?;
-                    if let Some(data) = &item.data {
-                        text(&data.0, l.field_bytes, true)?;
-                    }
-                    if item.data.is_none() && item.source.is_none() && item.target.is_none() {
-                        return Err(E::Structure);
-                    }
-                }
-                count = count.checked_add(s.items.len()).ok_or(E::LimitExceeded)?;
                 count = count
-                    .checked_add(s.target_refs.len())
-                    .and_then(|n| n.checked_add(s.source_refs.len()))
+                    .checked_add(validate_status(s, l)?)
                     .ok_or(E::LimitExceeded)?;
             }
         }
@@ -717,6 +722,39 @@ fn write_items(w: &mut Output<'_>, items: &[Item], l: &CodecLimits) -> Result<()
 fn write_num(w: &mut Output<'_>, name: &str, n: u32, l: &CodecLimits) -> Result<()> {
     w.scalar(name, &n.to_string(), l.identifier_bytes, false)
 }
+fn write_status(w: &mut Output<'_>, s: &Status, l: &CodecLimits) -> Result<()> {
+    write_num(w, "MsgRef", s.message_ref, l)?;
+    write_num(w, "CmdRef", s.command_ref, l)?;
+    w.scalar("Cmd", s.command.as_str(), l.identifier_bytes, false)?;
+    let oma = s.challenge.is_some() || s.credential.is_some();
+    if oma {
+        write_refs(w, s, l)?;
+    }
+    write_credential(w, s.credential.as_ref(), l)?;
+    if let Some(challenge) = &s.challenge {
+        w.start("Chal", &[])?;
+        w.start("Meta", &[])?;
+        w.start("Format", &[("xmlns", META)])?;
+        w.content("b64", l.identifier_bytes)?;
+        w.end("Format")?;
+        w.start("Type", &[("xmlns", META)])?;
+        w.content(&challenge.media_type, l.uri_bytes)?;
+        w.end("Type")?;
+        if let Some(nonce) = &challenge.nonce {
+            w.start("NextNonce", &[("xmlns", META)])?;
+            w.content(&nonce.0, l.identifier_bytes)?;
+            w.end("NextNonce")?;
+        }
+        w.end("Meta")?;
+        w.end("Chal")?;
+    }
+    write_num(w, "Data", s.code.into(), l)?;
+    write_items(w, &s.items, l)?;
+    if !oma {
+        write_refs(w, s, l)?;
+    }
+    Ok(())
+}
 pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
     validate(m, l)?;
     let mut w = Output::new(l.syncml_bytes, l);
@@ -781,38 +819,7 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
                     w.end("Item")?;
                 }
             }
-            Command::Status(s) => {
-                write_num(&mut w, "MsgRef", s.message_ref, l)?;
-                write_num(&mut w, "CmdRef", s.command_ref, l)?;
-                w.scalar("Cmd", s.command.as_str(), l.identifier_bytes, false)?;
-                let oma = s.challenge.is_some() || s.credential.is_some();
-                if oma {
-                    write_refs(&mut w, s, l)?;
-                }
-                write_credential(&mut w, s.credential.as_ref(), l)?;
-                if let Some(challenge) = &s.challenge {
-                    w.start("Chal", &[])?;
-                    w.start("Meta", &[])?;
-                    w.start("Format", &[("xmlns", META)])?;
-                    w.content("b64", l.identifier_bytes)?;
-                    w.end("Format")?;
-                    w.start("Type", &[("xmlns", META)])?;
-                    w.content(&challenge.media_type, l.uri_bytes)?;
-                    w.end("Type")?;
-                    if let Some(nonce) = &challenge.nonce {
-                        w.start("NextNonce", &[("xmlns", META)])?;
-                        w.content(&nonce.0, l.identifier_bytes)?;
-                        w.end("NextNonce")?;
-                    }
-                    w.end("Meta")?;
-                    w.end("Chal")?;
-                }
-                write_num(&mut w, "Data", s.code.into(), l)?;
-                write_items(&mut w, &s.items, l)?;
-                if !oma {
-                    write_refs(&mut w, s, l)?;
-                }
-            }
+            Command::Status(s) => write_status(&mut w, s, l)?,
             Command::Results(r) => {
                 if let Some(v) = r.message_ref {
                     write_num(&mut w, "MsgRef", v, l)?;

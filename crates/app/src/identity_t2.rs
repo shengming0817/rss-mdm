@@ -1,3 +1,7 @@
+#![allow(
+    clippy::cognitive_complexity,
+    reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
+)]
 //! The production Router consumes a fixed real Identity candidate; no mock verifier or claims constructor.
 use crate::config::Config;
 use anyhow::{Result, ensure};
@@ -1170,6 +1174,15 @@ async fn enrollment_matrix(
         "issue replay changed result"
     );
     let enrollment = grant["enrollmentId"].as_str().unwrap();
+    let status_path = format!("/api/v1/enrollments/{enrollment}");
+    let current = browser
+        .call(router, Method::GET, &status_path, None)
+        .await?;
+    ensure!(
+        current.0 == StatusCode::OK
+            && current.1["status"] == "pending"
+            && current.1["registrationId"].is_null()
+    );
     let resume = format!("/api/v1/enrollments/{enrollment}/resume");
     browser.operation = Some(uuid::Uuid::new_v4());
     let (_, resumed) = browser
@@ -1218,6 +1231,13 @@ async fn enrollment_matrix(
     let (status, cancelled) = browser
         .call(router, Method::POST, &cancel, Some(json!({})))
         .await?;
+    ensure!(
+        browser
+            .call(router, Method::GET, &status_path, None)
+            .await?
+            .1["status"]
+            == "cancelled"
+    );
     ensure!(status == StatusCode::OK && cancelled["status"] == "cancelled");
     browser.operation = Some(uuid::Uuid::new_v4());
     ensure!(
@@ -1283,12 +1303,14 @@ async fn revoke_http_matrix(
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
         INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
     let path = format!("/api/v1/devices/revoke-device/registrations/{registration}/revoke");
+    let listing = "/api/v1/devices/revoke-device/registrations";
     let mut cfg = config.clone();
     cfg["bindings"][0]["devices"] = json!(["revoke-device"]);
     cfg["bindings"][0]["allow_manage_credentials"] = json!(false);
     let denied = app(&cfg, reader.clone()).await?;
     let mut browser = Browser::default();
     ensure!(browser.login(&denied, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+    ensure!(browser.call(&denied, Method::GET, listing, None).await?.0 == StatusCode::FORBIDDEN);
     browser.operation = Some(uuid::Uuid::new_v4());
     ensure!(
         browser
@@ -1298,9 +1320,58 @@ async fn revoke_http_matrix(
             == StatusCode::FORBIDDEN
     );
     cfg["bindings"][0]["allow_manage_credentials"] = json!(true);
+    cfg["bindings"][0]["allow_enrollment"] = json!(false);
     let allowed = app(&cfg, reader).await?;
     browser = Browser::default();
     ensure!(browser.login(&allowed, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+    let before_read = count()?;
+    let listed = browser.call(&allowed, Method::GET, listing, None).await?;
+    ensure!(
+        count()? == before_read + 1,
+        "registration read must validate Identity online"
+    );
+    ensure!(
+        listed.0 == StatusCode::OK
+            && listed.1["items"][0]["registrationId"] == registration.to_string()
+    );
+    ensure!(listed.1["items"][0]["status"] == "active" && listed.1["nextCursor"].is_null());
+    ensure!(!listed.1.to_string().contains("password") && !listed.1.to_string().contains("secret"));
+    ensure!(
+        browser
+            .call(
+                &allowed,
+                Method::GET,
+                "/api/v1/devices/outside/registrations",
+                None
+            )
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    ensure!(
+        browser
+            .call(
+                &allowed,
+                Method::GET,
+                &format!("{listing}?after={registration}"),
+                None
+            )
+            .await?
+            .1["items"]
+            == json!([])
+    );
+    ensure!(
+        browser
+            .call(
+                &allowed,
+                Method::GET,
+                &format!("{listing}?after=invalid"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
+    );
     browser.operation = Some(uuid::Uuid::new_v4());
     for bad in [
         "/api/v1/enrollments/not-a-uuid/resume",
@@ -1357,6 +1428,10 @@ async fn revoke_http_matrix(
             .call(&allowed, Method::POST, &path, Some(json!({})))
             .await?
             == first
+    );
+    ensure!(
+        browser.call(&allowed, Method::GET, listing, None).await?.1["items"][0]["status"]
+            == "revoked"
     );
     ensure!(
         pg(&format!(

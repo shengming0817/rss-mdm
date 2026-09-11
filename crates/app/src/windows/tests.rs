@@ -16,6 +16,18 @@ use tokio_rustls::rustls::pki_types::CertificateDer;
 use x509_cert::der::{Decode, Encode};
 use zeroize::Zeroizing;
 const TENANT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+#[tokio::test]
+async fn invalid_csr_has_certificate_request_fault() -> anyhow::Result<()> {
+    let error = certificate::Csr::verify(b"invalid-csr").err().unwrap();
+    let response = fault(None, error);
+    let bytes = axum::body::to_bytes(response.into_body(), 8192).await?;
+    let message = soap::decode(&bytes, Operation::Fault, &CodecLimits::default())?;
+    ensure!(matches!(
+        message.body,
+        Body::Fault(soap::FaultKind::CertificateRequest)
+    ));
+    Ok(())
+}
 fn root() -> anyhow::Result<PathBuf> {
     Ok(std::env::var("MDM_WINDOWS_FIXTURES")?.into())
 }
@@ -619,6 +631,89 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
 fn monotonic() -> Arc<dyn rss_observation::Clock> {
     Arc::new(crate::Monotonic(std::time::Instant::now))
 }
+struct IngressClock(std::sync::Mutex<std::time::Instant>);
+impl rss_observation::Clock for IngressClock {
+    fn now(&self) -> std::time::Instant {
+        *self.0.lock().unwrap()
+    }
+}
+impl IngressClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T2 composition root controls only ingress refill time, while TLS/HTTP/PG remain real"
+    )]
+    fn new() -> Arc<Self> {
+        Arc::new(Self(std::sync::Mutex::new(std::time::Instant::now())))
+    }
+    fn advance(&self) {
+        *self.0.lock().unwrap() += Duration::from_secs(60);
+    }
+}
+
+async fn ingress_burst(
+    client: &reqwest::Client,
+    app: &App,
+    clock: &IngressClock,
+) -> anyhow::Result<()> {
+    let url = format!(
+        "{}/EnrollmentServer/Discovery.svc",
+        app.windows.config.enrollment.origin
+    );
+    let mut request = soap::decode(
+        include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
+        Operation::Discover,
+        &CodecLimits::default(),
+    )?;
+    request.header.to = Some(url.clone());
+    let bytes = soap::encode(&request, &CodecLimits::default())?;
+    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    let before:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='windows_discovery'").bind(TENANT).fetch_one(&mut pg).await?;
+    let mut accepted = 0i64;
+    let mut refused = 0;
+    for index in 0..128 {
+        let response = client
+            .post(&url)
+            .header("content-type", "application/soap+xml")
+            .header("x-forwarded-for", format!("198.51.100.{}", index + 1))
+            .body(bytes.clone())
+            .send()
+            .await?;
+        match response.status() {
+            StatusCode::OK => {
+                accepted += 1;
+                let _ = response.bytes().await?;
+            }
+            StatusCode::TOO_MANY_REQUESTS => {
+                refused += 1;
+                ensure!(response.headers()["cache-control"] == "no-store");
+                ensure!(response.json::<serde_json::Value>().await?["code"] == "request_limited");
+            }
+            code => anyhow::bail!("unexpected burst response: {code}"),
+        }
+    }
+    ensure!(
+        refused >= 64 && accepted <= 64,
+        "forwarded headers bypassed peer admission"
+    );
+    let after:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='windows_discovery'").bind(TENANT).fetch_one(&mut pg).await?;
+    ensure!(
+        after - before == accepted,
+        "capacity denials amplified persistent audit"
+    );
+    clock.advance();
+    ensure!(
+        client
+            .post(&url)
+            .header("content-type", "application/soap+xml")
+            .body(bytes)
+            .send()
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    pg.close().await?;
+    Ok(())
+}
 
 struct Running {
     stop: tokio_util::sync::CancellationToken,
@@ -640,6 +735,170 @@ impl Running {
         }
         Ok(())
     }
+}
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "integration matrix keeps actual Discovery/XCEP success and denial assertions together"
+)]
+async fn discover_and_policy(
+    client: &reqwest::Client,
+    app: &App,
+    enrollment: Uuid,
+    password: &str,
+) -> anyhow::Result<()> {
+    let origin = &app.windows.config.enrollment.origin;
+    let mut discovery = soap::decode(
+        include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
+        Operation::Discover,
+        &CodecLimits::default(),
+    )?;
+    let discovery_url = format!("{origin}/EnrollmentServer/Discovery.svc");
+    discovery.header.to = Some(discovery_url.clone());
+    let response = client
+        .post(&discovery_url)
+        .header("content-type", "application/soap+xml")
+        .body(soap::encode(&discovery, &CodecLimits::default())?)
+        .send()
+        .await?;
+    ensure!(response.status() == StatusCode::OK);
+    let discovery_audit = response.headers()["x-request-id"].to_str()?.to_owned();
+    let decoded = soap::decode_response(
+        &discovery,
+        &response.bytes().await?,
+        &CodecLimits::default(),
+    )?;
+    let Body::DiscoverResponse(found) = decoded.body else {
+        anyhow::bail!("not Discovery response")
+    };
+    ensure!(found.enrollment_version == "4.0");
+    ensure!(found.policy_url == format!("{origin}/EnrollmentServer/Policy.svc"));
+    ensure!(found.enrollment_url == format!("{origin}/EnrollmentServer/Enrollment.svc"));
+    let mut policy = soap::decode(
+        include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml"),
+        Operation::GetPolicies,
+        &CodecLimits::default(),
+    )?;
+    policy.header.to = Some(found.policy_url.clone());
+    let token = policy
+        .header
+        .security
+        .as_mut()
+        .unwrap()
+        .username
+        .as_mut()
+        .unwrap();
+    token.username = Secret(enrollment.to_string());
+    token.password = Secret(password.to_owned());
+    let response = client
+        .post(&found.policy_url)
+        .header("content-type", "application/soap+xml")
+        .body(soap::encode(&policy, &CodecLimits::default())?)
+        .send()
+        .await?;
+    ensure!(response.status() == StatusCode::OK);
+    let policy_audit = response.headers()["x-request-id"].to_str()?.to_owned();
+    let decoded =
+        soap::decode_response(&policy, &response.bytes().await?, &CodecLimits::default())?;
+    let Body::GetPoliciesResponse(found_policy) = decoded.body else {
+        anyhow::bail!("not XCEP response")
+    };
+    ensure!(found_policy.minimum_key_length == 2048 && found_policy.validity_seconds == 90 * 86400);
+    for (request, url) in [(&discovery, &discovery_url), (&policy, &found.policy_url)] {
+        let mut bad = request.clone();
+        bad.header.to = Some("https://outside.invalid/EnrollmentServer/Policy.svc".into());
+        for (message, host) in [(&bad, None), (request, Some("outside.invalid"))] {
+            let mut call = client
+                .post(url)
+                .header("content-type", "application/soap+xml")
+                .body(soap::encode(message, &CodecLimits::default())?);
+            if let Some(host) = host {
+                call = call.header("host", host);
+            }
+            let response = call.send().await?;
+            ensure!(response.status() == StatusCode::INTERNAL_SERVER_ERROR);
+            let fault = soap::decode(
+                &response.bytes().await?,
+                Operation::Fault,
+                &CodecLimits::default(),
+            )?;
+            ensure!(matches!(
+                fault.body,
+                Body::Fault(soap::FaultKind::MessageFormat)
+            ));
+        }
+    }
+    policy
+        .header
+        .security
+        .as_mut()
+        .unwrap()
+        .username
+        .as_mut()
+        .unwrap()
+        .password = Secret(crate::sessions::random());
+    let denied = client
+        .post(&found.policy_url)
+        .header("content-type", "application/soap+xml")
+        .body(soap::encode(&policy, &CodecLimits::default())?)
+        .send()
+        .await?;
+    ensure!(denied.status() == StatusCode::INTERNAL_SERVER_ERROR);
+    let fault = soap::decode(
+        &denied.bytes().await?,
+        Operation::Fault,
+        &CodecLimits::default(),
+    )?;
+    ensure!(matches!(
+        fault.body,
+        Body::Fault(soap::FaultKind::Authentication)
+    ));
+    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    for (request, action) in [
+        (discovery_audit, "windows_discovery"),
+        (policy_audit, "windows_policy"),
+    ] {
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND request_id=$2::uuid AND action=$3 AND result='success'").bind(TENANT).bind(request).bind(action).fetch_one(&mut pg).await?;
+        ensure!(count == 1);
+    }
+    pg.close().await?;
+    Ok(())
+}
+async fn rejected_csrs(
+    client: &reqwest::Client,
+    path: &str,
+    issue: &soap::Message,
+) -> anyhow::Result<()> {
+    let Body::Issue(original) = &issue.body else {
+        anyhow::bail!("expected Issue")
+    };
+    let mut trailing = original.csr.0.clone();
+    trailing.push(0);
+    let mut bad_proof = original.csr.0.clone();
+    *bad_proof.last_mut().unwrap() ^= 1;
+    for csr in [trailing, bad_proof] {
+        let mut request = issue.clone();
+        let Body::Issue(body) = &mut request.body else {
+            unreachable!()
+        };
+        body.csr = Secret(csr);
+        let response = client
+            .post(path)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&request, &CodecLimits::default())?)
+            .send()
+            .await?;
+        ensure!(response.status() == StatusCode::INTERNAL_SERVER_ERROR);
+        let fault = soap::decode(
+            &response.bytes().await?,
+            Operation::Fault,
+            &CodecLimits::default(),
+        )?;
+        ensure!(matches!(
+            fault.body,
+            Body::Fault(soap::FaultKind::CertificateRequest)
+        ));
+    }
+    Ok(())
 }
 #[tokio::test]
 #[ignore = "make t2: native HTTPS enrollment and mTLS management with real PG"]
@@ -705,7 +964,8 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
         windows: Windows::load(config.windows, now())?,
     });
-    let (enrollment, management) = routers(app.clone(), monotonic());
+    let ingress_clock = IngressClock::new();
+    let (enrollment, management) = routers(app.clone(), ingress_clock.clone());
     let stop = tokio_util::sync::CancellationToken::new();
     let running = Running {
         stop: stop.clone(),
@@ -746,6 +1006,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         Uuid::new_v4(),
     )
     .await?;
+    discover_and_policy(&client, &app, receipt.enrollment_id, &plain).await?;
     let path = format!(
         "{}/EnrollmentServer/Enrollment.svc",
         app.windows.config.enrollment.origin
@@ -775,6 +1036,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             *value = "tls-device".into();
         }
     }
+    rejected_csrs(&client, &path, &issue).await?;
     let wire = soap::encode(&issue, &CodecLimits::default())?;
     let response = client
         .post(&path)
@@ -1067,6 +1329,8 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         .revoke(&proof, "tls-device", intent.registration, Uuid::new_v4())
         .await?;
     ensure!(post(followup).send().await?.status() == StatusCode::UNAUTHORIZED);
+    retention_tests::verify(&store, TENANT, intent.registration).await?;
+    ingress_burst(&client, &app, &ingress_clock).await?;
     app.sessions
         .remove(&session, &app.sessions.get(&session)?.csrf)?;
     ensure!(app.sessions.by_reference(reference).is_err());

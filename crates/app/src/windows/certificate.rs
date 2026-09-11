@@ -52,6 +52,9 @@ pub(super) struct Csr {
 }
 impl Csr {
     pub(super) fn verify(bytes: &[u8]) -> Result<Self, Error> {
+        Self::verify_der(bytes).map_err(|_| Error::CertificateRequest)
+    }
+    fn verify_der(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > 32768 {
             return Err(Error::Malformed);
         }

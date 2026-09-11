@@ -129,6 +129,10 @@ pub async fn serve(
                         })??;
                     let mut launch = startup.commit();
                     launch.stage_task_with_token(
+                        crate::windows::retention::registration(access.clone(), tenant.clone())
+                            .critical(),
+                    );
+                    launch.stage_task_with_token(
                         rss_axum::serve_http1_registration(
                             listener,
                             app.browser,

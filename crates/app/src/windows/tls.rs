@@ -92,8 +92,9 @@ pub(super) async fn serve(
             ()=token.cancelled()=>break,
             Some(result)=peers.next(),if !peers.is_empty()=>{ report(name,result); },
             accepted=listener.accept(),if peers.len()<128=>{
-                let (stream,_)=accepted.map_err(ShutdownError::new)?;
-                peers.push(guarded_connection(connection(stream,acceptor.clone(),app.router.clone(),token.clone(),access.clone(),tenant.clone(),name)));
+                let (stream,peer)=accepted.map_err(ShutdownError::new)?;
+                let Some(permit)=app.admission.connection(peer.ip()) else { continue; };
+                peers.push(guarded_connection(connection((stream,permit),acceptor.clone(),app.router.clone(),token.clone(),access.clone(),tenant.clone(),name)));
             }
         }
     }
@@ -104,7 +105,7 @@ pub(super) async fn serve(
     Ok(())
 }
 async fn connection(
-    stream: tokio::net::TcpStream,
+    (stream, permit): (tokio::net::TcpStream, super::admission::ConnectionPermit),
     acceptor: TlsAcceptor,
     router: Router,
     token: CancellationToken,
@@ -118,11 +119,16 @@ async fn connection(
         ()=token.cancelled()=>return Ok(()),
         result=handshake=>match result {
             Ok(Ok(stream))=>stream,
-            _=>{
+            failed=>{
+                let kind = match failed {
+                    Err(_) => ConnectionFailure::HandshakeTimeout,
+                    Ok(Err(error)) => classify_tls(&error),
+                    Ok(Ok(_)) => unreachable!("successful handshake handled above"),
+                };
                 let audit=Audit::new(tenant,if name=="mdm-management-tls" { "windows_management" } else { "protected_request" });
                 let failed=!matches!(tokio::time::timeout(Duration::from_secs(2),access.record(&audit,401,"denied")).await,Ok(Ok(())));
                 audit.finalize(failed.then_some(FailureReason::Persistent));
-                return Ok(());
+                return Err(kind);
             }
         }
     };
@@ -136,7 +142,9 @@ async fn connection(
                 .to_vec(),
         ),
     };
-    let router = router.layer(Extension(peer));
+    let router = router
+        .layer(Extension(peer))
+        .layer(Extension(permit.gate()));
     let mut builder = hyper::server::conn::http1::Builder::new();
     builder
         .timer(TokioTimer::new())
@@ -156,10 +164,24 @@ async fn connection(
 #[derive(Debug, Clone, Copy, serde::Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum ConnectionFailure {
+    HandshakeTimeout,
+    HandshakeProtocol,
+    ClientCertificate,
     Timeout,
     Parse,
     Io,
     Panic,
+}
+fn classify_tls(error: &std::io::Error) -> ConnectionFailure {
+    match error
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<rustls::Error>())
+    {
+        Some(rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented) => {
+            ConnectionFailure::ClientCertificate
+        }
+        _ => ConnectionFailure::HandshakeProtocol,
+    }
 }
 fn classify(error: hyper::Error) -> ConnectionFailure {
     if error.is_timeout() {
@@ -192,6 +214,25 @@ fn report(name: &str, result: ConnectionResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn handshake_diagnostics_preserve_closed_failure_classification() {
+        let error = std::io::Error::other(rustls::Error::InvalidCertificate(
+            rustls::CertificateError::UnknownIssuer,
+        ));
+        assert_eq!(classify_tls(&error), ConnectionFailure::ClientCertificate);
+        let error = std::io::Error::other("synthetic-secret");
+        let result = event("mdm-management-tls", Ok(Err(classify_tls(&error)))).unwrap();
+        assert_eq!(result["kind"], "handshake_protocol");
+        assert!(!result.to_string().contains("synthetic-secret"));
+        assert_eq!(
+            event(
+                "mdm-enrollment-tls",
+                Ok(Err(ConnectionFailure::HandshakeTimeout))
+            )
+            .unwrap()["kind"],
+            "handshake_timeout"
+        );
+    }
     #[tokio::test]
     async fn connection_diagnostics_classify_actual_hyper_errors_without_payloads() {
         use tokio::io::AsyncWriteExt;

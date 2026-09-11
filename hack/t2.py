@@ -6,6 +6,7 @@ if sys.version_info < (3, 11):
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -20,6 +21,15 @@ def require(condition,message):
 
 def run(args, **kw):
     return subprocess.run(args, check=True, text=True, **kw)
+
+def verify_windows_result(output):
+    expected={
+        'windows::tests::issuance_recovery_and_enrollment_boundaries',
+        'windows::tests::native_tls_enrollment_management_replay_and_revoke',
+    }
+    passed=set(re.findall(r'^test (\S+) \.\.\. ok$',output,re.MULTILINE))
+    require(passed==expected and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in output,
+            'Windows T2 did not execute both required protocol/recovery tests')
 
 def verify_migrations(container, binary, config, root, env):
     def sql(statement):
@@ -163,7 +173,10 @@ def main():
                 run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
             from device_t2 import identities
             with identities(root) as origin:
-                run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
+                windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(windows.stdout,end='',flush=True)
+                require(windows.returncode == 0, 'Windows T2 failed')
+                verify_windows_result(windows.stdout)
                 if not windows_only: run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
         finally:
             primary = sys.exception()

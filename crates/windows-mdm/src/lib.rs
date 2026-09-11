@@ -1,3 +1,4 @@
+#![deny(clippy::cognitive_complexity)]
 //! Strict, bounded Windows MDM XML codecs. Parsed device identifiers are claims,
 //! never authenticated identities. No I/O, scheduling or persistence is performed.
 //!

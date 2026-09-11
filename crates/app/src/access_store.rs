@@ -210,7 +210,8 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND has_schema_privilege(current_user,'mdm_access','USAGE')
  AND (SELECT count(*)=12 AND bool_and(c.relname IN ('grants','requests','operations','audit','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','management_sessions','management_messages') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
  AND (CASE WHEN c.relname <> 'audit' THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')
- AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
+ AND NOT has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
+ AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
  AND NOT has_column_privilege(current_user,'mdm_access.grants','state','UPDATE')
  AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.requests',col,'UPDATE')) FROM unnest(ARRAY['state','password_digest','password_version','session_ref','expires_at']) col)
  AND has_column_privilege(current_user,'mdm_access.enrollment_certificates','server_nonce','UPDATE')
@@ -229,10 +230,16 @@ SELECT current_user='mdm_access' AND session_user=current_user
     if !valid {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
+    // Canonical catalog rendering must not depend on the role's default "$user" search path.
+    sqlx::query("SELECT set_config('search_path','pg_catalog',true)")
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     // Exact tenant policy; extra permissive policies cannot bypass isolation.
     let policies: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)"#).fetch_one(&mut *tx).await.map_err(db)?;
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access'").fetch_one(&mut *tx).await.map_err(db)?;
-    if policies != 12 || total != 12 {
+    let retention: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND (c.relname='management_sessions' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='expires_at<clock_timestamp' OR c.relname='management_messages' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp')"#).fetch_one(&mut *tx).await.map_err(db)?;
+    if policies != 12 || retention != 2 || total != 14 {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)

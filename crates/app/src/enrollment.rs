@@ -1,4 +1,5 @@
 //! Enrollment is the single lifecycle owner; the grant retains immutable authorization origin.
+pub(crate) mod read;
 pub(crate) mod store;
 use crate::{Error, sessions};
 use serde::{Deserialize, Serialize};
