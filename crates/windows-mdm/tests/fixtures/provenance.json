@@ -116,9 +116,10 @@
     "issue-request.xml": "925624a907c1b3dfee3f2a4fee4665683b4222fdb10f3fd34bd02e45b7980533",
     "issue-response.xml": "cfb02121282166e1b2c357d945d303d457697f077aec45b1a8e85a97eea8a73e",
     "policy-request.xml": "dac721a6460244b751548f2bc9198cdc5f74c009e8d9110b3f5c2cb49a5be4c0",
-    "policy-response.xml": "6c2e7a3ce3b71fdebd1bdc15df353c061439cfd35c68cc5b55f9febf5cf5f0d0",
+    "policy-response.xml": "1d89319fb118a062e77facb4a5dc56ea7b28c6001899faf8ac351d3af7647a9b",
     "results.xml": "ee0a113d248e51bcacef3b4dab050ef11e60657ae46b5df879d8095d56f326b2",
     "status-details.xml": "2e025e65a5d3b988d95b5e359ead470d4c95be4614f3899db21e33dd65e19e19",
     "initialization-login-status.xml": "8464249f4165518c9bb5bb45924b80d243a2a560cd0dbf4df46041d5d886cf15"
-  }
+  },
+  "profile_revision": "2350: SHA-256 hash OID group=1; Status supports Windows and OMA reference order and Chal."
 }

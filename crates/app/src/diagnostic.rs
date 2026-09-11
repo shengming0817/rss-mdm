@@ -39,6 +39,10 @@ pub enum ConfigIssue {
     OidcAlgorithms,
     IdentityClient,
     Budget,
+    WindowsListeners,
+    EnrollmentCa,
+    WindowsTls,
+    ProtocolKey,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -59,6 +63,8 @@ pub enum Failure {
     SessionState,
     Capacity,
     Runtime,
+    Certificate,
+    Protocol,
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ProcessError {

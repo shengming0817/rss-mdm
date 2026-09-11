@@ -13,6 +13,7 @@ mod identity;
 mod lifecycle;
 pub mod migration;
 mod sessions;
+pub mod windows;
 pub use api::application;
 use axum::{
     Json,
@@ -28,7 +29,7 @@ pub enum Error {
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
-    #[error("operation identity or grant state conflict")]
+    #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
     #[error("commit outcome unknown; retry the same operation")]
     CommitUnknown,

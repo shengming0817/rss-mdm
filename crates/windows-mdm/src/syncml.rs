@@ -128,6 +128,13 @@ pub struct Status {
     pub source_refs: Vec<String>,
     pub code: u16,
     pub items: Vec<Item>,
+    pub challenge: Option<Challenge>,
+    pub credential: Option<Credential>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Challenge {
+    pub media_type: String,
+    pub nonce: Option<Secret<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Results {
@@ -282,15 +289,7 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
     let message_id = num(&mut p, "MsgID", false)?;
     let target = location(&mut p, "Target")?;
     let source = location(&mut p, "Source")?;
-    let credential = if p.is(NS, "Cred")? {
-        p.open(NS, "Cred")?;
-        let m = meta(&mut p)?.ok_or(E::Structure)?;
-        let data = Secret(p.scalar(NS, "Data", l.field_bytes, false)?);
-        p.end(NS, "Cred")?;
-        Some(Credential { meta: m, data })
-    } else {
-        None
-    };
+    let credential = read_credential(&mut p)?;
     let header = Header {
         session_id,
         message_id,
@@ -318,6 +317,27 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
             let message_ref = num(&mut p, "MsgRef", false)?;
             let command_ref = num(&mut p, "CmdRef", true)?;
             let command = CommandName::parse(&p.scalar(NS, "Cmd", l.identifier_bytes, false)?)?;
+            let oma = !p.is(NS, "Data")?;
+            let mut target_refs = refs(&mut p, "TargetRef")?;
+            let mut source_refs = refs(&mut p, "SourceRef")?;
+            let credential = read_credential(&mut p)?;
+            let challenge = if p.is(NS, "Chal")? {
+                p.open(NS, "Chal")?;
+                p.open(NS, "Meta")?;
+                let format = p.optional(META, "Format", l.identifier_bytes)?;
+                if format.as_deref().is_some_and(|f| f != "b64") {
+                    return Err(E::Unsupported);
+                }
+                let media_type = p.scalar(META, "Type", l.uri_bytes, false)?;
+                let nonce = p
+                    .optional(META, "NextNonce", l.identifier_bytes)?
+                    .map(Secret);
+                p.end(NS, "Meta")?;
+                p.end(NS, "Chal")?;
+                Some(Challenge { media_type, nonce })
+            } else {
+                None
+            };
             let code = num(&mut p, "Data", false)?
                 .try_into()
                 .map_err(|_| E::InvalidValue)?;
@@ -326,8 +346,11 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
             } else {
                 Vec::new()
             };
-            let target_refs = refs(&mut p, "TargetRef")?;
-            let source_refs = refs(&mut p, "SourceRef")?;
+            // Accept each documented grammar, never a mixture of their reference positions.
+            if !oma {
+                target_refs = refs(&mut p, "TargetRef")?;
+                source_refs = refs(&mut p, "SourceRef")?;
+            }
             p.end(NS, "Status")?;
             Command::Status(Status {
                 id,
@@ -336,6 +359,8 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
                 command,
                 target_refs,
                 source_refs,
+                challenge,
+                credential,
                 code,
                 items,
             })
@@ -551,6 +576,33 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
                 count = count.checked_add(r.items.len()).ok_or(E::LimitExceeded)?;
             }
             Command::Status(s) => {
+                if let Some(c) = &s.credential {
+                    validate_meta(Some(&c.meta), l, true)?;
+                    text(&c.data.0, l.field_bytes, false)?;
+                }
+                if let Some(challenge) = &s.challenge {
+                    if s.command != CommandName::SyncHdr
+                        || !matches!(
+                            challenge.media_type.as_str(),
+                            "syncml:auth-basic" | "syncml:auth-md5"
+                        )
+                    {
+                        return Err(E::Unsupported);
+                    }
+                    if let Some(nonce) = &challenge.nonce {
+                        use base64::Engine;
+                        text(&nonce.0, l.identifier_bytes, false)?;
+                        if !base64::engine::general_purpose::STANDARD
+                            .decode(&nonce.0)
+                            .is_ok_and(|b| (16..=64).contains(&b.len()))
+                        {
+                            return Err(E::InvalidValue);
+                        }
+                    }
+                    if (challenge.media_type == "syncml:auth-md5") != challenge.nonce.is_some() {
+                        return Err(E::Structure);
+                    }
+                }
                 if s.message_ref == 0
                     || !(100..=599).contains(&s.code)
                     || (s.command_ref == 0) != (s.command == CommandName::SyncHdr)
@@ -589,13 +641,26 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
         }
         bound(count, l.items)?;
     }
-    if initialization
-        && (!matches!(
-            m.commands.as_slice(),
+    if initialization {
+        let init = m
+            .commands
+            .iter()
+            .filter(|c| !matches!(c, Command::Status(_)))
+            .collect::<Vec<_>>();
+        if !matches!(
+            init.as_slice(),
             [Command::Alert { .. }, Command::DevInfo { .. }]
-        ) || !m.final_message)
-    {
-        return Err(E::Structure);
+        ) || !m.final_message
+        {
+            return Err(E::Structure);
+        }
+        if m.commands
+            .iter()
+            .skip_while(|c| matches!(c, Command::Status(_)))
+            .any(|c| matches!(c, Command::Status(_)))
+        {
+            return Err(E::Structure);
+        }
     }
     Ok(())
 }
@@ -663,12 +728,7 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
     write_num(&mut w, "MsgID", m.header.message_id, l)?;
     write_location(&mut w, "Target", &m.header.target, l)?;
     write_location(&mut w, "Source", &m.header.source, l)?;
-    if let Some(c) = &m.header.credential {
-        w.start("Cred", &[])?;
-        write_meta(&mut w, Some(&c.meta), l)?;
-        w.scalar("Data", &c.data.0, l.field_bytes, false)?;
-        w.end("Cred")?;
-    }
+    write_credential(&mut w, m.header.credential.as_ref(), l)?;
     write_meta(&mut w, m.header.meta.as_ref(), l)?;
     w.end("SyncHdr")?;
     w.start("SyncBody", &[])?;
@@ -725,13 +785,32 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
                 write_num(&mut w, "MsgRef", s.message_ref, l)?;
                 write_num(&mut w, "CmdRef", s.command_ref, l)?;
                 w.scalar("Cmd", s.command.as_str(), l.identifier_bytes, false)?;
+                let oma = s.challenge.is_some() || s.credential.is_some();
+                if oma {
+                    write_refs(&mut w, s, l)?;
+                }
+                write_credential(&mut w, s.credential.as_ref(), l)?;
+                if let Some(challenge) = &s.challenge {
+                    w.start("Chal", &[])?;
+                    w.start("Meta", &[])?;
+                    w.start("Format", &[("xmlns", META)])?;
+                    w.content("b64", l.identifier_bytes)?;
+                    w.end("Format")?;
+                    w.start("Type", &[("xmlns", META)])?;
+                    w.content(&challenge.media_type, l.uri_bytes)?;
+                    w.end("Type")?;
+                    if let Some(nonce) = &challenge.nonce {
+                        w.start("NextNonce", &[("xmlns", META)])?;
+                        w.content(&nonce.0, l.identifier_bytes)?;
+                        w.end("NextNonce")?;
+                    }
+                    w.end("Meta")?;
+                    w.end("Chal")?;
+                }
                 write_num(&mut w, "Data", s.code.into(), l)?;
                 write_items(&mut w, &s.items, l)?;
-                for (name, rs) in [("TargetRef", &s.target_refs), ("SourceRef", &s.source_refs)] {
-                    for r in rs {
-                        w.item()?;
-                        w.scalar(name, r, l.uri_bytes, false)?;
-                    }
+                if !oma {
+                    write_refs(&mut w, s, l)?;
                 }
             }
             Command::Results(r) => {
@@ -756,4 +835,37 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
     w.end("SyncBody")?;
     w.end("SyncML")?;
     w.finish()
+}
+
+fn read_credential(p: &mut Input<'_>) -> Result<Option<Credential>> {
+    if !p.is(NS, "Cred")? {
+        return Ok(None);
+    }
+    p.open(NS, "Cred")?;
+    let meta = meta(p)?.ok_or(E::Structure)?;
+    let data = Secret(p.scalar(NS, "Data", p.limits.field_bytes, false)?);
+    p.end(NS, "Cred")?;
+    Ok(Some(Credential { meta, data }))
+}
+fn write_credential(
+    w: &mut Output<'_>,
+    credential: Option<&Credential>,
+    l: &CodecLimits,
+) -> Result<()> {
+    if let Some(c) = credential {
+        w.start("Cred", &[])?;
+        write_meta(w, Some(&c.meta), l)?;
+        w.scalar("Data", &c.data.0, l.field_bytes, false)?;
+        w.end("Cred")?;
+    }
+    Ok(())
+}
+fn write_refs(w: &mut Output<'_>, s: &Status, l: &CodecLimits) -> Result<()> {
+    for (name, refs) in [("TargetRef", &s.target_refs), ("SourceRef", &s.source_refs)] {
+        for value in refs {
+            w.item()?;
+            w.scalar(name, value, l.uri_bytes, false)?;
+        }
+    }
+    Ok(())
 }

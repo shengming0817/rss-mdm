@@ -54,7 +54,7 @@
       <oIDs>
         <oID>
           <value>2.16.840.1.101.3.4.2.1</value>
-          <group>4</group>
+          <group>1</group>
           <oIDReferenceID>0</oIDReferenceID>
           <defaultName>szOID_NIST_sha256</defaultName>
         </oID>

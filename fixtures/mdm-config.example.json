@@ -42,5 +42,23 @@
     "user": "mdm_access",
     "password_file": "/private/mdm-access-password",
     "ca_file": "/private/database-ca.pem"
+  },
+  "windows": {
+    "enrollment": {
+      "listen": "0.0.0.0:8443",
+      "origin": "https://enroll.example.test:8443",
+      "certificate_file": "/private/enrollment-tls.pem",
+      "private_key_file": "/private/enrollment-tls.pk8"
+    },
+    "management": {
+      "listen": "0.0.0.0:8444",
+      "origin": "https://manage.example.test:8444",
+      "certificate_file": "/private/management-tls.pem",
+      "private_key_file": "/private/management-tls.pk8"
+    },
+    "ca_certificate_file": "/private/enrollment-ca.pem",
+    "ca_private_key_file": "/private/enrollment-ca.pk8",
+    "protocol_key_file": "/private/protocol.key",
+    "provider_id": "RSS-MDM"
   }
 }

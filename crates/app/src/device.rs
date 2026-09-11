@@ -1,9 +1,9 @@
 //! Product gateway seam. F04 owns cryptographic verification; I01 owns persistent binding.
 //! No network DTO can construct credential evidence or a device principal.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
-mod store;
+pub(crate) mod store;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 use crate::{
     AccessStore, Error, Failure,
     access::{Coordinates, Policy},
@@ -64,6 +64,18 @@ pub struct VerifiedChannelCredential {
     tenant: TenantId,
     channel: Channel,
     locator: [u8; 32],
+}
+impl VerifiedChannelCredential {
+    pub(crate) fn windows(
+        tenant: TenantId,
+        checked: &crate::windows::certificate::CheckedLeaf,
+    ) -> Self {
+        Self {
+            tenant,
+            channel: Channel::Mdm,
+            locator: checked.fingerprint(),
+        }
+    }
 }
 /// Immutable request-scoped identity resolved from the authoritative registration mapping.
 /// ```compile_fail
@@ -144,6 +156,14 @@ impl DeviceService {
             journal_tenant,
             clock,
         }
+    }
+    pub(crate) async fn management_principal(
+        &self,
+        credential: &VerifiedChannelCredential,
+    ) -> Result<DevicePrincipal, Error> {
+        self.authorize_report(credential, ReportSource::MdmWindows)
+            .await
+            .map(|(principal, _)| principal)
     }
     pub async fn bind(
         &self,

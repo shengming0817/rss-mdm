@@ -192,6 +192,8 @@ fn per_item_statuses_may_share_a_command_but_not_overlap() {
     m.commands.truncate(1);
     let status = |id, uri: String| {
         Command::Status(syncml::Status {
+            credential: None,
+            challenge: None,
             id,
             message_ref: 1,
             command_ref: 4,
@@ -264,6 +266,8 @@ fn status_order_is_scoped_to_each_original_message() {
     m.commands.insert(
         1,
         Command::Status(syncml::Status {
+            credential: None,
+            challenge: None,
             id: 3,
             message_ref: 1,
             command_ref: 4,

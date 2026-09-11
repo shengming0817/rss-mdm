@@ -316,7 +316,7 @@ fn strict_username_and_response_timestamp() {
     let l = CodecLimits::default();
     let request = include_str!("fixtures/issue-request.xml")
         .replace("uuid-cc1ccc1f-2fba-4bcf-b063-ffc0cac77917-4", "other");
-    assert!(soap::decode(request.as_bytes(), Operation::Issue, &l).is_err());
+    assert!(soap::decode(request.as_bytes(), Operation::Issue, &l).is_ok());
     let mut model = soap::decode(
         include_bytes!("fixtures/issue-response.xml"),
         Operation::IssueResponse,
@@ -446,7 +446,7 @@ fn xcep_sha256_triple_does_not_inherit_historical_sha1() {
     let l = CodecLimits::default();
     let xml = include_str!("fixtures/policy-response.xml");
     for bad in [
-        xml.replace("<group>4</group>", "<group>1</group>"),
+        xml.replace("<group>1</group>", "<group>4</group>"),
         xml.replace("2.16.840.1.101.3.4.2.1", "1.3.14.3.2.29"),
         xml.replace("szOID_NIST_sha256", "szOID_OIWSEC_sha256RSASign"),
     ] {

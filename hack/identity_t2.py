@@ -178,6 +178,8 @@ def fixture(c):
             migrate=write('mdm-migration.json',{'database':db});run([binary,'migrate','--config',str(migrate)],cwd=ROOT)
             mdm={'listen':'127.0.0.1:0','product_origin':product,'identity':{'origin':f'https://localhost:{private_port}','issuer':origin+'/oidc','client_id':'mdm','tenant_id':TENANT,'audience':'mdm-api','oidc_secret_file':str(root/'oidc-client'),'validation_secret_file':str(root/'validation'),'ca_file':str(root/'ca.crt')},'database':{**db,'user':'mdm_api','password_file':str(root/'mdm-api')},'bindings':[]}
             mdm['access_database']={**db,'user':'mdm_access','password_file':str(root/'mdm-access')}
+            from windows_fixtures import generate
+            mdm['windows']=generate(root, root/'tls.crt', root/'tls.key')
             config_path=write('mdm.json',mdm)
             yield {**os.environ,'MDM_TEST_CONFIG':str(config_path),'MDM_TEST_PUBLIC_ORIGIN':origin,'MDM_TEST_PASSWORD_FILE':str(root/'new-password'),'MDM_TEST_PG_CONTAINER':pg,'MDM_TEST_PRIVATE_CONTAINER':private_container,'MDM_TEST_HYDRA_CONTAINER':hydra_container,'MDM_TEST_IDENTITY_CONTAINER':identity_container,'MDM_TEST_PROVIDER_PLATFORM':native}
         finally:

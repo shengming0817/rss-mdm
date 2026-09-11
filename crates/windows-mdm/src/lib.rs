@@ -15,6 +15,7 @@
 //! assert_eq!(syncml::decode(&wire, &CodecLimits::default())?, message);
 //! # Ok(()) }
 //! ```
+pub mod provisioning;
 pub mod soap;
 pub mod syncml;
 mod xml;

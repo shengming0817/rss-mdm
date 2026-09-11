@@ -13,6 +13,8 @@
 - [Group 类型化规则与成员差分](202609090000-2380-group-core.md)：纯核心 API、未知/完整性语义、历史对照与独立消费证据。
 - [MDM Identity 接入](202609091600-2343-mdm-identity.md)
 
-- [注册许可与审计](202609090001-2347-enrollment-audit.md)（#2347）
+- [Enrollment 与审计](202609090001-2347-enrollment-audit.md)（#2347/#2350）
 
 - [设备身份与报告边界](202609100445-2348-device-principal.md)（#2348）
+
+- [Windows 注册与管理通道](202609111146-2350-windows-enrollment-management.md)（#2350/#2351）：配置、签发恢复、mTLS 与首次 SyncML 认证，T3 独立验收。

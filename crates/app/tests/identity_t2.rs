@@ -678,7 +678,7 @@ async fn matrix() -> Result<()> {
     pg(&format!(
         r#"
         INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','mdm','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-        INSERT INTO mdm_access.requests VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
@@ -997,8 +997,8 @@ async fn matrix() -> Result<()> {
                 .call(
                     &authorized,
                     Method::POST,
-                    "/api/v1/enrollment-grants",
-                    Some(json!({"device_id":"device-1"}))
+                    "/api/v1/enrollments",
+                    Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
                 )
                 .await?
                 .0
@@ -1105,7 +1105,7 @@ async fn enrollment_matrix(
     csrf: &str,
     query: &str,
 ) -> Result<()> {
-    let issue = "/api/v1/enrollment-grants";
+    let issue = "/api/v1/enrollments";
     let mut enrollment_only = config.clone();
     enrollment_only["bindings"][0]["allow_wipe"] = json!(false);
     let enrollment_router = app(&enrollment_only, reader.clone()).await?;
@@ -1136,7 +1136,7 @@ async fn enrollment_matrix(
                 &enrollment_router,
                 Method::POST,
                 issue,
-                Some(json!({"device_id":"device-1"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
             )
             .await?
             .0
@@ -1149,7 +1149,7 @@ async fn enrollment_matrix(
             router,
             Method::POST,
             issue,
-            Some(json!({"device_id":"device-1"})),
+            Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})),
         )
         .await?;
     ensure!(
@@ -1162,70 +1162,39 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"device_id":"device-1"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
             )
             .await?
             .1
             == grant,
         "issue replay changed result"
     );
-    let permit = grant["grant_id"].clone();
+    let enrollment = grant["enrollmentId"].as_str().unwrap();
+    let resume = format!("/api/v1/enrollments/{enrollment}/resume");
     browser.operation = Some(uuid::Uuid::new_v4());
-    let (_, accepted) = browser
+    let (_, resumed) = browser
         .call(
             router,
             Method::POST,
-            "/api/v1/registration-requests",
-            Some(json!({"device_id":"device-1","grant_id":permit})),
+            &resume,
+            Some(json!({"password": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"})),
         )
         .await?;
-    ensure!(accepted["status"] == "accepted");
+    ensure!(resumed["status"] == "pending");
     ensure!(
         browser
             .call(
                 router,
                 Method::POST,
-                "/api/v1/registration-requests",
-                Some(json!({"device_id":"device-1","grant_id":permit}))
+                &resume,
+                Some(json!({"password":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"}))
             )
             .await?
             .1
-            == accepted
+            == resumed
     );
     browser.operation = Some(uuid::Uuid::new_v4());
-    ensure!(
-        browser
-            .call(
-                router,
-                Method::POST,
-                "/api/v1/registration-requests",
-                Some(json!({"device_id":"device-1","grant_id":permit}))
-            )
-            .await?
-            .0
-            == StatusCode::CONFLICT
-    );
-    browser.operation = Some(uuid::Uuid::new_v4());
-    ensure!(
-        browser
-            .call(
-                router,
-                Method::POST,
-                issue,
-                Some(json!({"device_id":"outside"}))
-            )
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    let (_, unused) = browser
-        .call(
-            router,
-            Method::POST,
-            issue,
-            Some(json!({"device_id":"device-1"})),
-        )
-        .await?;
+    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))).await?.0 == StatusCode::FORBIDDEN);
     let mut no_permission = config.clone();
     no_permission["bindings"][0]["allow_enrollment"] = json!(false);
     let restarted = app(&no_permission, reader).await?;
@@ -1237,12 +1206,29 @@ async fn enrollment_matrix(
             .call(
                 &restarted,
                 Method::POST,
-                "/api/v1/registration-requests",
-                Some(json!({"device_id":"device-1","grant_id":unused["grant_id"]}))
+                &resume,
+                Some(json!({"password":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCA"}))
             )
             .await?
             .0
             == StatusCode::FORBIDDEN
+    );
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let cancel = format!("/api/v1/enrollments/{enrollment}/cancel");
+    let (status, cancelled) = browser.call(router, Method::POST, &cancel, None).await?;
+    ensure!(status == StatusCode::OK && cancelled["status"] == "cancelled");
+    browser.operation = Some(uuid::Uuid::new_v4());
+    ensure!(
+        browser
+            .call(
+                router,
+                Method::POST,
+                &resume,
+                Some(json!({"password":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCA"}))
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
     );
     // Audit is mandatory for both reads and denied requests; never disclose assets on failure.
     pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
@@ -1261,13 +1247,13 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"device_id":"device-1"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
             )
             .await?
             .0
             == StatusCode::UNAUTHORIZED
     );
-    ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='grant_issue' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
+    ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='enrollment_create' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
     Ok(())
 }

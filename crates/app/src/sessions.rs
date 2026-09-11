@@ -48,6 +48,7 @@ pub(crate) struct Lease {
 struct Inner {
     pending: HashMap<String, Pending>,
     sessions: HashMap<String, (Session, Arc<tokio::sync::Semaphore>)>,
+    references: HashMap<uuid::Uuid, (String, i64)>,
     last_time: i64,
 }
 pub(crate) struct Sessions {
@@ -62,6 +63,7 @@ impl Sessions {
             inner: Mutex::new(Inner {
                 pending: HashMap::new(),
                 sessions: HashMap::new(),
+                references: HashMap::new(),
                 last_time: 0,
             }),
             clock,
@@ -84,6 +86,7 @@ impl Sessions {
         if now > state.last_time {
             state.pending.retain(|_, p| p.expires > now);
             state.sessions.retain(|_, (s, _)| s.expires > now);
+            state.references.retain(|_, (_, expires)| *expires > now);
             state.last_time = now;
         }
         Ok((state, now))
@@ -153,6 +156,31 @@ impl Sessions {
             identity_session: s.identity_session.clone(),
             csrf: s.csrf.clone(),
         })
+    }
+    /// Non-login references resolve only through the enrollment password + online Identity path.
+    pub fn reference(&self, lease: &Lease) -> Result<uuid::Uuid, Error> {
+        let (mut inner, now) = self.lock()?;
+        if !inner.sessions.contains_key(&lease.id) {
+            return Err(Error::Unauthorized);
+        }
+        if inner.references.len() >= self.session_limit {
+            return Err(Error::Unavailable(Failure::Capacity));
+        }
+        let id = uuid::Uuid::new_v4();
+        inner.references.insert(id, (lease.id.clone(), now + 300));
+        Ok(id)
+    }
+    pub fn by_reference(&self, reference: uuid::Uuid) -> Result<Lease, Error> {
+        let id = {
+            let (inner, _) = self.lock()?;
+            inner
+                .references
+                .get(&reference)
+                .ok_or(Error::Unauthorized)?
+                .0
+                .clone()
+        };
+        self.get(&id)
     }
     pub fn remove(&self, id: &str, csrf: &str) -> Result<(), Error> {
         // Cleanup never depends on remote Identity or the wall clock being available.

@@ -9,7 +9,7 @@
 | initialization.xml、results.xml | 历史 `src/pkg/syncml/parser_test.go` 的 `samplePkg1` / `samplePkg3` 内联合成样本；设备、主机名、厂商、型号和序列号替换为 TEST/Example 值。 |
 | initialization-login-status.xml | MS-MDM §4 Protocol Examples 的完整 package #1；保留官方示例占位值及 1224 LoginStatus，仅 HTML entity 解码、NBSP 转空格和提取首个 SyncML 文档。来源下载摘要与 XML 摘要见 provenance.json。 |
 | discovery-response.xml | 历史 `src/pkg/mde/discovery.go` 响应模板；填入测试关联 ID/URL，移除非 V1 diagnostics ActivityId。 |
-| policy-response.xml | 历史 `src/pkg/xcep/policy.go` 模板；测试关联 ID 和显式策略数值；review 按 MS-MDE2 官方示例改为 SHA-256 的 OID 2.16.840.1.101.3.4.2.1、group 4、szOID_NIST_sha256，删除历史 SHA-1 OID 的错误命名。 |
+| policy-response.xml | 历史 `src/pkg/xcep/policy.go` 模板；测试关联 ID 和显式策略数值；review 按 MS-MDE2 官方示例改为 SHA-256 的 OID 2.16.840.1.101.3.4.2.1、group 1（算法组，修正旧样本的签名组误用）、szOID_NIST_sha256，删除历史 SHA-1 OID 的错误命名。 |
 | issue-response.xml | 历史 `src/pkg/wstep/wstep.go` 外层 RSTRC 模板；固定测试时间，provisioning 为字节 01 02 03，完全不代表有效证书或 provisioning 文档。 |
 | discovery-request.xml | 按 MS-MDE2 Discover 的 xsd:all 独立编写，含必需 OSEdition/AuthPolicies，固定 On-Premise/4.0/CIMClient_Windows 配置。 |
 | get.xml、status-details.xml | 按 MS-MDM Get 与 Status 内容模型独立编写，Status 含 Data 后的 Item 和 TargetRef。 |

@@ -68,6 +68,7 @@ pub struct Config {
     pub database: Database,
     pub access_database: Database,
     pub bindings: Vec<Binding>,
+    pub windows: crate::windows::WindowsConfig,
 }
 pub(crate) struct Compiled {
     pub config: Config,
@@ -109,6 +110,7 @@ impl Config {
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
             return Err(Error::Configuration(ConfigIssue::Tenant));
         }
+        self.windows.validate(self.listen)?;
         let policy = crate::access::Policy::new(
             &self.identity.tenant_id,
             &self.identity.client_id,
