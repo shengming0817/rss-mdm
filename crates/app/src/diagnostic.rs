@@ -2,6 +2,14 @@
 use crate::Error;
 use serde::Serialize;
 use std::path::PathBuf;
+/// Install once in the composition root before starting runtime threads.
+/// ref: Rust std::panic::set_hook: hooks run before catch_unwind can discard payloads.
+pub fn install_panic_diagnostics() {
+    std::panic::set_hook(Box::new(|_| {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr().lock(), "{{\"event\":\"mdm_panic\"}}");
+    }));
+}
 /// The composition root supplies the monotonic source explicitly.
 pub struct Monotonic(pub fn() -> std::time::Instant);
 impl rss_observation::Clock for Monotonic {
@@ -68,6 +76,12 @@ pub enum Failure {
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ProcessError {
+    #[error("lifecycle task={task} reason={reason:?} cleanup_failed={cleanup_failed}")]
+    CriticalTask {
+        task: String,
+        reason: rss_runtime::TaskExit,
+        cleanup_failed: bool,
+    },
     #[error("{stage}: configuration {issue:?} rejected")]
     Configuration {
         stage: &'static str,

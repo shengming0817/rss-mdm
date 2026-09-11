@@ -235,6 +235,16 @@ mod tests {
                 "Tenant",
             ),
             ("/identity/client_id", serde_json::json!("*"), "ClientId"),
+            (
+                "/windows/enrollment/origin",
+                serde_json::json!("http://synthetic-secret.example.test"),
+                "WindowsListeners",
+            ),
+            (
+                "/windows/management/origin",
+                serde_json::json!("http://synthetic-secret.example.test"),
+                "WindowsListeners",
+            ),
         ] {
             let mut value_config: serde_json::Value =
                 serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))

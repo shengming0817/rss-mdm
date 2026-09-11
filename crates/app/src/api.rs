@@ -7,7 +7,6 @@ use crate::{
 use crate::{
     Error,
     access::{Coordinates, InventoryResponse, InventoryService, Policy},
-    config::Config,
     identity::Identity,
     sessions::{self, Lease, Sessions},
 };
@@ -78,8 +77,9 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
     }
 }
 
-pub async fn application(
-    config: Config,
+#[cfg(test)]
+pub(crate) async fn application(
+    config: crate::config::Config,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
@@ -575,9 +575,10 @@ async fn resume_enrollment(
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    Path(id): Path<uuid::Uuid>,
+    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let Path(id) = path.map_err(|_| Error::Malformed)?;
     let key = write_key(&headers, &auth, &audit, "enrollment_resume")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
@@ -595,13 +596,19 @@ async fn resume_enrollment(
         .await
         .map(Json)
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyRequest {}
 async fn cancel_enrollment(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    Path(id): Path<uuid::Uuid>,
+    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+    input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let Path(id) = path.map_err(|_| Error::Malformed)?;
+    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
     let key = write_key(&headers, &auth, &audit, "enrollment_cancel")?;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
     let permission = app.policy.enrollment(&auth.proof, &device)?;
@@ -616,8 +623,11 @@ async fn revoke_registration(
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    Path((device, registration)): Path<(String, uuid::Uuid)>,
+    path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
+    input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
+    let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
+    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
     let key = write_key(&headers, &auth, &audit, "credential_revoke")?;
     audit.target(&device);
     app.devices

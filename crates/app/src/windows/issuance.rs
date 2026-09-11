@@ -14,7 +14,7 @@ use rss_request_context::TenantId;
 use sqlx::Row;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use uuid::Uuid;
-use x509_cert::der::Decode;
+use x509_cert::der::{Decode, Encode};
 
 pub(super) struct Intent {
     pub enrollment_type: EnrollmentType,
@@ -119,6 +119,16 @@ impl crate::AccessStore {
         audit: &Audit,
         now: i64,
     ) -> Result<(), Error> {
+        // The persisted intention is the only authority for the bytes being bound.
+        let issued = x509_cert::Certificate::from_der(certificate).map_err(|_| Error::Conflict)?;
+        if issued
+            .tbs_certificate
+            .to_der()
+            .map_err(|_| Error::Conflict)?
+            != intent.tbs
+        {
+            return Err(Error::Conflict);
+        }
         let checked = windows
             .ca
             .verify(&[CertificateDer::from(certificate)], now)?;

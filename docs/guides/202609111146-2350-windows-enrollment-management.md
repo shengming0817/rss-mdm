@@ -15,7 +15,7 @@
 | enrollment HTTPS | /EnrollmentServer/Enrollment.svc | 同上，加 CSR 持有证明 |
 | management mTLS | /ManagementServer/MDM.svc | 真实叶证书链和每请求 PG 当前映射，再验证 SyncML 凭据 |
 
-两个 origin 必须不同，Host、SOAP To、SyncHdr 目标必须匹配配置；`provider_id` 使用不超过 64 字符的 ASCII 字母、数字、下划线或连字符。TLS 1.2/1.3、HTTP/1.1；禁用 TLS session resumption，管理请求仍逐次核验证书期限、clientAuth/digitalSignature/CA=false 及当前注册状态。叶 DER 的 SHA-256 唯一用于 I01 凭据查找，CSR subject、DeviceID、HTTP header 不能授予身份。
+监听器的异常终止和连接 timeout/parse/io/panic 以闭合类别及可信监听器名称记录；不记录远端请求正文或错误原文。进程在启动运行时前安装固定 panic hook，仅输出 `mdm_panic` 事件，避免默认 hook 提前泄露 payload。两个 origin 必须不同，Host、SOAP To、SyncHdr 目标必须匹配配置；`provider_id` 使用不超过 64 字符的 ASCII 字母、数字、下划线或连字符。TLS 1.2/1.3、HTTP/1.1；禁用 TLS session resumption，管理请求仍逐次核验证书期限、clientAuth/digitalSignature/CA=false 及当前注册状态。叶 DER 的 SHA-256 唯一用于 I01 凭据查找，CSR subject、DeviceID、HTTP header 不能授予身份。
 
 CA 输入为专用、自签 RSA CA 的 PEM 证书和受保护 DER PKCS#8 私钥。启动核验密钥匹配、有效期、CA 和 keyCertSign 用途；不加载通用 CA 服务。叶 RSA/SHA-256，公钥 2048–8192 位，默认 90 天且不越过 issuer 到期。证书库地址使用 Windows 要求的 SHA-1 thumbprint，这不改变管理认证的 SHA-256 指纹。
 
@@ -39,7 +39,7 @@ Full enrollment 将叶证书安装到 My/User，以完整 URI 转义 subject 和
 
 首次请求包含 Alert 和完整 DevInfo；设备 Source/DevId 必须与已认证映射一致。会话固定 tenant、registration、generation、credential；SyncHdr 引用必须关联已保存的精确响应，不能根据客户端输入猜测期望。每条消息的摘要、关联、认证状态、nonce 和准确响应同事务提交，重复消息只返回原响应，同号不同内容、错 session/reference、跨设备请求拒绝。成功 Status 的 NextNonce 保存给下一会话；401/407 的 challenge 用于当前认证重试。nonce 解码后长度限制为 16–64 字节，初始值随机 32 字节。
 
-每个会话最多 8 条消息、有效 15 分钟；每注册同时最多 128 个未完成且未过期的会话。每监听器最多 128 个连接，TLS 握手 5 秒、HTTP 头 10 秒。每次请求处理预算 8 秒，另留 2 秒收尾审计。撤销成功审计与 I01 状态变更同事务；提交后新准入（包括已有 TLS keepalive 连接上的新请求）立即拒绝，已准入请求按上述预算完成。
+每个会话最多 8 条消息、有效 15 分钟；每注册仅一个可推进会话，新会话取代旧未完成会话；旧会话只可重放原响应，不能回写 nonce。每监听器最多 128 个连接，TLS 握手 5 秒、HTTP 头 10 秒。每次请求处理预算 8 秒，另留 2 秒收尾审计。撤销成功审计与 I01 状态变更同事务；提交后新准入（包括已有 TLS keepalive 连接上的新请求）立即拒绝，已准入请求按上述预算完成。
 
 ## 验证与来源
 

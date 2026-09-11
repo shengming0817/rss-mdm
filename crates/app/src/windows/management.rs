@@ -122,13 +122,18 @@ impl crate::AccessStore {
                 audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
                 return old.try_get("response").map_err(db);
             }
-            if row.try_get::<String, _>("state").map_err(db)? == "complete"
+            if row.try_get::<String, _>("state").map_err(db)? != "challenge"
                 || row.try_get::<i64, _>("last_message").map_err(db)? + 1 != message_id
                 || message_id > 8
             {
                 return Err(Error::Conflict);
             }
-        } else if message_id != 1 {
+        } else if message_id != 1
+            || message
+                .commands
+                .iter()
+                .any(|c| matches!(c, Command::Status(_) | Command::Results(_)))
+        {
             return Err(Error::Conflict);
         }
         let registration_data=sqlx::query("SELECT i.request_id::text,i.secrets,c.server_nonce FROM mdm_access.enrollment_intents i JOIN mdm_access.enrollment_certificates c ON (c.tenant_id,c.request_id)=(i.tenant_id,i.request_id) WHERE i.tenant_id=$1::uuid AND i.registration=$2::uuid FOR UPDATE OF c")
@@ -307,19 +312,19 @@ impl crate::AccessStore {
             std::str::from_utf8(&response).map_err(|_| Error::Unavailable(Failure::Protocol))?;
         let state = if complete { "complete" } else { "challenge" };
         if stored.is_none() {
-            let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND expires_at>clock_timestamp() AND state='challenge'")
-                .bind(&tenant).bind(&registration).fetch_one(&mut *tx).await.map_err(db)?;
-            if count >= 128 {
-                return Err(Error::Unavailable(Failure::Capacity));
-            }
+            // A registration has one advancing session. Keep old exact responses replayable.
+            sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='challenge'")
+                .bind(&tenant).bind(&registration).execute(&mut *tx).await.map_err(db)?;
             sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
                 .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&nonce).execute(&mut *tx).await.map_err(db)?;
         } else {
             sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,correlation=$7,nonce=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
                 .bind(&tenant).bind(&registration).bind(&session).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&nonce).execute(&mut *tx).await.map_err(db)?;
         }
-        sqlx::query("UPDATE mdm_access.enrollment_certificates SET server_nonce=$3 WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
+        if server_authenticated {
+            sqlx::query("UPDATE mdm_access.enrollment_certificates SET server_nonce=$3 WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
             .bind(&tenant).bind(request.to_string()).bind(next_nonce).execute(&mut *tx).await.map_err(db)?;
+        }
         sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&response).execute(&mut *tx).await.map_err(db)?;
         self.commit_audited(tx, audit, None).await?;

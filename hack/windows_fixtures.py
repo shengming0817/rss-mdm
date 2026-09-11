@@ -18,6 +18,12 @@ def generate(root, tls_certificate, tls_key):
         openssl("req", "-new", "-newkey", "rsa:"+bits, "-nodes", algorithm, "-subj", "/CN=untrusted-csr-subject",
                 "-keyout", root/(name+".key"), "-outform", "DER", "-out", root/(name+".csr"))
     openssl("pkcs8", "-topk8", "-nocrypt", "-in", root/"device.key", "-outform", "DER", "-out", root/"device.pk8")
+    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "180",
+            "-subj", "/CN=Untrusted T2 CA", "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", root/"rogue-ca.key", "-out", root/"rogue-ca.pem")
+    (root/"rogue-leaf.ext").write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n")
+    openssl("x509", "-req", "-inform", "DER", "-in", root/"device.csr", "-CA", root/"rogue-ca.pem", "-CAkey", root/"rogue-ca.key",
+            "-set_serial", "2", "-days", "90", "-sha256", "-extfile", root/"rogue-leaf.ext", "-out", root/"rogue-client.pem")
     (root/"protocol.key").write_bytes(secrets.token_bytes(32))
     (root/"oidc-windows-secret").write_text(secrets.token_urlsafe(32))
     (root/"validation-windows-secret").write_text("device-t2-validation-secret-00000000")

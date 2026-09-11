@@ -287,6 +287,15 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         service.management_principal(&credential).await.is_err(),
         "unbound signed certificate admitted"
     );
+    let mut unrelated = x509_cert::TbsCertificate::from_der(&intent.tbs)?;
+    unrelated.subject = "CN=another-intent".parse()?;
+    let unrelated = w.ca.sign(&unrelated.to_der()?)?;
+    w.ca.verify(&[CertificateDer::from(unrelated.as_slice())], now())?;
+    ensure!(matches!(
+        complete(&access, &w, &auth, &proof, &intent, &unrelated).await,
+        Err(Error::Conflict)
+    ));
+    ensure!(service.management_principal(&credential).await.is_err());
     // Failed final write leaves only the exact immutable intent.
     access.fail_next(1);
     ensure!(
@@ -824,7 +833,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     )?;
     let mutual = reqwest::Client::builder()
         .no_proxy()
-        .add_root_certificate(root_cert)
+        .add_root_certificate(root_cert.clone())
         .identity(identity)
         .timeout(Duration::from_secs(12))
         .build()?;
@@ -837,6 +846,28 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             .await
             .is_err(),
         "management accepted an anonymous TLS handshake"
+    );
+    let rogue_identity = reqwest::Identity::from_pem(
+        &[
+            std::fs::read(root.join("rogue-client.pem"))?,
+            std::fs::read(root.join("device.key"))?,
+        ]
+        .concat(),
+    )?;
+    let rogue = reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(root_cert)
+        .identity(rogue_identity)
+        .timeout(Duration::from_secs(12))
+        .build()?;
+    ensure!(
+        rogue
+            .post(&url)
+            .body("untrusted chain")
+            .send()
+            .await
+            .is_err(),
+        "management accepted an untrusted client CA"
     );
     let mut message = syncml::decode(
         include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
@@ -968,6 +999,68 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     ensure!(
         next_response.header.credential.unwrap().data.0
             == protection::digest("RSS-MDM", &secrets.server_password, &next_nonce)
+    );
+    // A newer session supersedes the prior unfinished session. Its stored response remains replayable,
+    // but a delayed 212 from that older session cannot overwrite the latest next nonce.
+    let old_initial = syncml::encode(&next_session, &CodecLimits::default())?;
+    let old_response = post(old_initial.clone()).send().await?.bytes().await?;
+    let mut newer_session = next_session.clone();
+    newer_session.header.session_id += 1;
+    ensure!(
+        post(syncml::encode(&newer_session, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    ensure!(post(old_initial).send().await?.bytes().await? == old_response);
+    let mut older_ack = syncml::decode(&followup, &CodecLimits::default())?;
+    older_ack.header.session_id = next_session.header.session_id;
+    ensure!(
+        post(syncml::encode(&older_ack, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            == StatusCode::CONFLICT
+    );
+    older_ack.header.session_id = newer_session.header.session_id;
+    let Command::Status(s) = &mut older_ack.commands[0] else {
+        panic!()
+    };
+    s.challenge.as_mut().unwrap().nonce = Some(Secret(STANDARD.encode([9u8; 32])));
+    ensure!(
+        post(syncml::encode(&older_ack, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    let mut unsent = newer_session.clone();
+    unsent.header.session_id += 1;
+    unsent.commands.insert(0, older_ack.commands[0].clone());
+    for (index, command) in unsent.commands.iter_mut().enumerate() {
+        match command {
+            Command::Status(s) => s.id = index as u32 + 1,
+            Command::Alert { id, .. } | Command::DevInfo { id, .. } => *id = index as u32 + 1,
+            _ => unreachable!(),
+        }
+    }
+    ensure!(
+        post(syncml::encode(&unsent, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            == StatusCode::CONFLICT
+    );
+    newer_session.header.session_id += 2;
+    let current = post(syncml::encode(&newer_session, &CodecLimits::default())?)
+        .send()
+        .await?;
+    ensure!(current.status() == StatusCode::OK);
+    let current = syncml::decode(&current.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        current.header.credential.unwrap().data.0
+            == protection::digest("RSS-MDM", &secrets.server_password, &[9u8; 32])
     );
     // Existing TLS keepalive connections do not cache the active mapping.
     app.devices

@@ -17,7 +17,7 @@ use tokio_rustls::{
     TlsAcceptor,
     rustls::{
         self,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, pem::PemObject},
         server::danger::ClientCertVerifier,
     },
 };
@@ -38,7 +38,7 @@ pub(super) fn configuration(
 ) -> Result<Arc<rustls::ServerConfig>, Error> {
     let build = || {
         let certs = crate::config::read(&endpoint.certificate_file, 128 * 1024, false)?;
-        let certs = rustls_pemfile::certs(&mut certs.as_slice())
+        let certs = CertificateDer::pem_slice_iter(&certs)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| Error::Malformed)?;
         if certs.is_empty() || certs.len() > 4 {
@@ -90,15 +90,17 @@ pub(super) async fn serve(
         tokio::select! {
             biased;
             ()=token.cancelled()=>break,
-            Some(_)=peers.next(),if !peers.is_empty()=>{},
+            Some(result)=peers.next(),if !peers.is_empty()=>{ report(name,result); },
             accepted=listener.accept(),if peers.len()<128=>{
                 let (stream,_)=accepted.map_err(ShutdownError::new)?;
-                peers.push(AssertUnwindSafe(connection(stream,acceptor.clone(),app.router.clone(),token.clone(),access.clone(),tenant.clone(),name)).catch_unwind());
+                peers.push(guarded_connection(connection(stream,acceptor.clone(),app.router.clone(),token.clone(),access.clone(),tenant.clone(),name)));
             }
         }
     }
     drop(listener);
-    while peers.next().await.is_some() {}
+    while let Some(result) = peers.next().await {
+        report(name, result);
+    }
     Ok(())
 }
 async fn connection(
@@ -109,18 +111,18 @@ async fn connection(
     access: Arc<AccessStore>,
     tenant: String,
     name: &'static str,
-) {
+) -> Result<(), ConnectionFailure> {
     let handshake = tokio::time::timeout(Duration::from_secs(5), acceptor.accept(stream));
     let stream = tokio::select! {
         biased;
-        ()=token.cancelled()=>return,
+        ()=token.cancelled()=>return Ok(()),
         result=handshake=>match result {
             Ok(Ok(stream))=>stream,
             _=>{
                 let audit=Audit::new(tenant,if name=="mdm-management-tls" { "windows_management" } else { "protected_request" });
                 let failed=!matches!(tokio::time::timeout(Duration::from_secs(2),access.record(&audit,401,"denied")).await,Ok(Ok(())));
                 audit.finalize(failed.then_some(FailureReason::Persistent));
-                return;
+                return Ok(());
             }
         }
     };
@@ -146,7 +148,106 @@ async fn connection(
     tokio::pin!(connection);
     tokio::select! {
         biased;
-        ()=token.cancelled()=>{ connection.as_mut().graceful_shutdown(); let _=connection.await; },
-        _=&mut connection=>{},
+        ()=token.cancelled()=>{ connection.as_mut().graceful_shutdown(); connection.await.map_err(classify) },
+        result=&mut connection=>result.map_err(classify),
+    }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ConnectionFailure {
+    Timeout,
+    Parse,
+    Io,
+    Panic,
+}
+fn classify(error: hyper::Error) -> ConnectionFailure {
+    if error.is_timeout() {
+        ConnectionFailure::Timeout
+    } else if error.is_parse() {
+        ConnectionFailure::Parse
+    } else {
+        ConnectionFailure::Io
+    }
+}
+type ConnectionResult = std::thread::Result<Result<(), ConnectionFailure>>;
+async fn guarded_connection(
+    future: impl std::future::Future<Output = Result<(), ConnectionFailure>>,
+) -> ConnectionResult {
+    AssertUnwindSafe(future).catch_unwind().await
+}
+fn event(name: &str, result: ConnectionResult) -> Option<serde_json::Value> {
+    let kind = match result {
+        Ok(Ok(())) => return None,
+        Ok(Err(kind)) => kind,
+        Err(_) => ConnectionFailure::Panic,
+    };
+    Some(serde_json::json!({"event":"mdm_tls_connection_failure","listener":name,"kind":kind}))
+}
+fn report(name: &str, result: ConnectionResult) {
+    if let Some(event) = event(name, result) {
+        eprintln!("{event}");
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn connection_diagnostics_classify_actual_hyper_errors_without_payloads() {
+        use tokio::io::AsyncWriteExt;
+        for (bytes, expected) in [
+            (
+                b"malformed-secret\r\n\r\n".as_slice(),
+                ConnectionFailure::Parse,
+            ),
+            (b"".as_slice(), ConnectionFailure::Timeout),
+        ] {
+            let (mut client, server) = tokio::io::duplex(4096);
+            client.write_all(bytes).await.unwrap();
+            let mut builder = hyper::server::conn::http1::Builder::new();
+            builder
+                .timer(TokioTimer::new())
+                .header_read_timeout(Duration::from_millis(5));
+            let error = builder
+                .serve_connection(
+                    TokioIo::new(server),
+                    TowerToHyperService::new(Router::new()),
+                )
+                .await
+                .unwrap_err();
+            let failure = classify(error);
+            assert_eq!(failure, expected);
+            let value = event("mdm-management-tls", Ok(Err(failure))).unwrap();
+            assert_eq!(value["listener"], "mdm-management-tls");
+            assert!(!value.to_string().contains("secret"));
+        }
+    }
+    #[tokio::test]
+    async fn actual_connection_panic_never_logs_payload() {
+        if std::env::var_os("MDM_PANIC_DIAGNOSTIC_CHILD").is_some() {
+            crate::install_panic_diagnostics();
+            let result = guarded_connection(async {
+                std::panic::panic_any("synthetic-secret");
+            })
+            .await;
+            report("mdm-enrollment-tls", result);
+            return;
+        }
+        // A separate test process isolates the global hook from other test threads.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "windows::tls::tests::actual_connection_panic_never_logs_payload",
+                "--nocapture",
+            ])
+            .env("MDM_PANIC_DIAGNOSTIC_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!stderr.contains("synthetic-secret"));
+        assert!(stderr.contains("mdm_panic"));
+        assert!(stderr.contains("\"listener\":\"mdm-enrollment-tls\""));
+        assert!(stderr.contains("\"kind\":\"panic\""));
     }
 }

@@ -1,4 +1,5 @@
 //! The production Router consumes a fixed real Identity candidate; no mock verifier or claims constructor.
+use crate::config::Config;
 use anyhow::{Result, ensure};
 use axum::{
     Router,
@@ -7,7 +8,6 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use reqwest::{Client, Url};
-use rss_mdm_app::config::Config;
 use rss_mdm_inventory_postgres::InventoryReader;
 use serde_json::{Value, json};
 use std::{
@@ -361,15 +361,15 @@ impl Browser {
         Ok(status)
     }
 }
-async fn access_store(value: &Value) -> Result<Arc<rss_mdm_app::AccessStore>> {
+async fn access_store(value: &Value) -> Result<Arc<crate::AccessStore>> {
     let config: Config = serde_json::from_value(value.clone())?;
     Ok(Arc::new(
-        rss_mdm_app::AccessStore::connect(config.access_database.options()?).await?,
+        crate::AccessStore::connect(config.access_database.options()?).await?,
     ))
 }
 async fn app(value: &Value, reader: Arc<InventoryReader>) -> Result<Router> {
     let c: Config = serde_json::from_value(value.clone())?;
-    Ok(rss_mdm_app::application(
+    Ok(crate::api::application(
         c,
         Arc::new(rss_identity_client::SystemClock),
         monotonic(),
@@ -437,7 +437,7 @@ async fn session_races_and_admission(
     query: &str,
 ) -> Result<()> {
     let clock = Arc::new(GateClock::default());
-    let router = rss_mdm_app::application(
+    let router = crate::api::application(
         serde_json::from_value(value.clone())?,
         clock.clone(),
         monotonic(),
@@ -1091,7 +1091,7 @@ async fn matrix() -> Result<()> {
     reason = "test composition root selects the real monotonic provider"
 )]
 fn monotonic() -> Arc<dyn rss_observation::Clock> {
-    Arc::new(rss_mdm_app::Monotonic(std::time::Instant::now))
+    Arc::new(crate::Monotonic(std::time::Instant::now))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1197,7 +1197,7 @@ async fn enrollment_matrix(
     ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))).await?.0 == StatusCode::FORBIDDEN);
     let mut no_permission = config.clone();
     no_permission["bindings"][0]["allow_enrollment"] = json!(false);
-    let restarted = app(&no_permission, reader).await?;
+    let restarted = app(&no_permission, reader.clone()).await?;
     let mut denied = Browser::default();
     ensure!(denied.login(&restarted, web, origin, csrf).await? == StatusCode::SEE_OTHER);
     denied.operation = Some(uuid::Uuid::new_v4());
@@ -1215,7 +1215,9 @@ async fn enrollment_matrix(
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     let cancel = format!("/api/v1/enrollments/{enrollment}/cancel");
-    let (status, cancelled) = browser.call(router, Method::POST, &cancel, None).await?;
+    let (status, cancelled) = browser
+        .call(router, Method::POST, &cancel, Some(json!({})))
+        .await?;
     ensure!(status == StatusCode::OK && cancelled["status"] == "cancelled");
     browser.operation = Some(uuid::Uuid::new_v4());
     ensure!(
@@ -1254,6 +1256,118 @@ async fn enrollment_matrix(
             == StatusCode::UNAUTHORIZED
     );
     ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='enrollment_create' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
+    revoke_http_matrix(config, reader, web, origin, csrf).await?;
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
+    Ok(())
+}
+
+async fn revoke_http_matrix(
+    config: &Value,
+    reader: Arc<InventoryReader>,
+    web: &Client,
+    origin: &str,
+    csrf: &str,
+) -> Result<()> {
+    let (grant, request, registration, credential, epoch) = (
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
+    pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','mdm','revoke-device','enrollment','consumed',clock_timestamp()+interval '200 seconds');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','{request}','{grant}');
+        INSERT INTO mdm_access.devices VALUES('{TENANT}','revoke-device');
+        INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','revoke-device','mdm',1,'{request}','active');
+        INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
+        INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
+    let path = format!("/api/v1/devices/revoke-device/registrations/{registration}/revoke");
+    let mut cfg = config.clone();
+    cfg["bindings"][0]["devices"] = json!(["revoke-device"]);
+    cfg["bindings"][0]["allow_manage_credentials"] = json!(false);
+    let denied = app(&cfg, reader.clone()).await?;
+    let mut browser = Browser::default();
+    ensure!(browser.login(&denied, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+    browser.operation = Some(uuid::Uuid::new_v4());
+    ensure!(
+        browser
+            .call(&denied, Method::POST, &path, Some(json!({})))
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    cfg["bindings"][0]["allow_manage_credentials"] = json!(true);
+    let allowed = app(&cfg, reader).await?;
+    browser = Browser::default();
+    ensure!(browser.login(&allowed, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+    browser.operation = Some(uuid::Uuid::new_v4());
+    for bad in [
+        "/api/v1/enrollments/not-a-uuid/resume",
+        "/api/v1/enrollments/not-a-uuid/cancel",
+        "/api/v1/devices/revoke-device/registrations/not-a-uuid/revoke",
+    ] {
+        let response = browser
+            .call(&allowed, Method::POST, bad, Some(json!({})))
+            .await?;
+        ensure!(response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request");
+    }
+    for body in [None, Some(json!(null)), Some(json!({"unexpected":true}))] {
+        let response = browser.call(&allowed, Method::POST, &path, body).await?;
+        ensure!(response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request");
+    }
+    let cookie = browser
+        .cookies
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let malformed = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-mdm-request", "1")
+        .header("cookie", cookie)
+        .header("x-csrf-token", browser.csrf.as_ref().unwrap())
+        .header("idempotency-key", browser.operation.unwrap().to_string())
+        .header("content-type", "application/json")
+        .body(Body::from("{"))?;
+    let response = allowed.clone().oneshot(malformed).await?;
+    ensure!(response.status() == StatusCode::BAD_REQUEST);
+    let csrf_saved = browser.csrf.take();
+    ensure!(
+        browser
+            .call(&allowed, Method::POST, &path, Some(json!({})))
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    browser.csrf = csrf_saved;
+    let before = count()?;
+    let first = browser
+        .call(&allowed, Method::POST, &path, Some(json!({})))
+        .await?;
+    ensure!(
+        first.0 == StatusCode::OK && count()? == before + 1,
+        "revoke must use online Identity"
+    );
+    ensure!(
+        browser
+            .call(&allowed, Method::POST, &path, Some(json!({})))
+            .await?
+            == first
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.registrations r JOIN mdm_access.credentials c ON c.tenant_id=r.tenant_id AND c.registration=r.id JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.registration=r.id WHERE r.tenant_id='{TENANT}' AND r.id='{registration}' AND r.state='revoked' AND c.state='revoked' AND NOT s.enabled"
+        ))?.trim() == "1"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{TENANT}' AND operation_id='{}' AND action='credential_revoke' AND result='success'",
+            browser.operation.unwrap()
+        ))?.trim() == "1"
+    );
     Ok(())
 }

@@ -63,7 +63,8 @@ impl WindowsConfig {
             return Err(Error::Configuration(ConfigIssue::WindowsListeners));
         }
         for endpoint in [&self.enrollment, &self.management] {
-            let u = crate::config::https_url(&endpoint.origin)?;
+            let u = crate::config::https_url(&endpoint.origin)
+                .map_err(|_| Error::Configuration(ConfigIssue::WindowsListeners))?;
             if u.origin().ascii_serialization() != endpoint.origin || endpoint.listen.port() == 0 {
                 return Err(Error::Configuration(ConfigIssue::WindowsListeners));
             }
@@ -85,8 +86,10 @@ impl Windows {
             &config.ca_certificate_file,
             &config.ca_private_key_file,
             now,
-        )?;
-        let protection = protection::Protection::load(&config.protocol_key_file)?;
+        )
+        .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
+        let protection = protection::Protection::load(&config.protocol_key_file)
+            .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
         let configuration = crate::enrollment::digest(&(
             "mdm.windows.profile.v1",
             &config.enrollment.origin,

@@ -41,7 +41,7 @@ CREATE TABLE mdm_access.enrollment_certificates (
 CREATE TABLE mdm_access.management_sessions (
  tenant_id uuid NOT NULL, registration uuid NOT NULL, session_id text NOT NULL CHECK(length(session_id) BETWEEN 1 AND 128),
  generation bigint NOT NULL, credential uuid NOT NULL,
- state text NOT NULL CHECK(state IN ('challenge','complete')),
+ state text NOT NULL CHECK(state IN ('challenge','complete','superseded')),
  last_message bigint NOT NULL CHECK(last_message>0),
  client_authenticated boolean NOT NULL,
  correlation text NOT NULL CHECK(octet_length(correlation)<=32768),
@@ -51,6 +51,7 @@ CREATE TABLE mdm_access.management_sessions (
  FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id),
  FOREIGN KEY(tenant_id,credential) REFERENCES mdm_access.credentials(tenant_id,id)
 );
+CREATE UNIQUE INDEX one_advancing_management_session ON mdm_access.management_sessions(tenant_id,registration) WHERE state='challenge';
 CREATE TABLE mdm_access.management_messages (
  tenant_id uuid NOT NULL, registration uuid NOT NULL, session_id text NOT NULL, message_id bigint NOT NULL,
  digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),

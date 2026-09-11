@@ -200,7 +200,7 @@ def main():
     verify(c['providers']['nginx'])
     with fixture(c) as env:
         provider_platform=env['MDM_TEST_PROVIDER_PLATFORM']
-        output=run(['cargo','test','--locked','-p','rss-mdm-app','--test','identity_t2','--','--ignored','--nocapture'],cwd=ROOT,env=env,test_output=True,stage='real Identity router matrix')
+        output=run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_t2::real_identity_mdm_authorization_and_revocation','--','--ignored','--nocapture'],cwd=ROOT,env=env,test_output=True,stage='real Identity router matrix')
         if 'MDM_IDENTITY_MATRIX_PASSED' not in output or '1 passed; 0 failed;' not in output:raise RuntimeError('identity test proof incomplete')
     print(json.dumps({'identity_revision':c['revision'],'identity_archives':c['archives'],'provider_digests':c['providers'],'provider_platform':provider_platform,'candidate_platform':c['platform'],'result':'passed','scope':'MDM Router / SDK / immutable Identity binary / real PG and Hydra / TLS; not production T3'}))
 if __name__=='__main__':main()

@@ -6,15 +6,16 @@ pub mod device;
 mod enrollment;
 pub use access_store::AccessStore;
 mod diagnostic;
-pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError};
+pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_panic_diagnostics};
 mod api;
 pub mod config;
 mod identity;
+#[cfg(test)]
+mod identity_t2;
 mod lifecycle;
 pub mod migration;
 mod sessions;
 pub mod windows;
-pub use api::application;
 use axum::{
     Json,
     http::StatusCode,

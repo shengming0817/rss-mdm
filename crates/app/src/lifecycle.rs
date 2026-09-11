@@ -91,7 +91,7 @@ pub async fn serve(
                                 access.clone(),
                             )
                             .await
-                            .map_err(|e| ProcessError::at("startup.identity", e))?;
+                            .map_err(assembly_error)?;
                             let listener =
                                 tokio::net::TcpListener::bind(listen).await.map_err(|e| {
                                     ProcessError::Io {
@@ -165,26 +165,118 @@ pub async fn serve(
         )
         .await
         .map_err(|_| ProcessError::at("lifecycle.drive", Error::Unavailable(Failure::Runtime)))?;
-    if !outcome.shutdown().as_ref().is_ok_and(|r| r.is_clean()) {
-        return Err(ProcessError::Stage {
+    let clean = outcome.shutdown().as_ref().is_ok_and(|r| r.is_clean());
+    if let Ok(receipt) = outcome.shutdown() {
+        for failure in receipt.failures() {
+            use rss_runtime::ShutdownFailureKind as K;
+            let kind = match failure.kind {
+                K::Failed(_) => "failed",
+                K::TimedOut(_) => "timed_out",
+                K::Panicked => "panicked",
+                K::Cancelled => "cancelled",
+                K::TaskUnknown => "task_unknown",
+                K::DeadlineExceeded => "deadline_exceeded",
+                K::BudgetExhausted => "budget_exhausted",
+            };
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"mdm_shutdown_failure","resource":failure.name,"kind":kind})
+            );
+        }
+    }
+    finish(outcome.exit(), clean)
+}
+fn assembly_error(error: Error) -> ProcessError {
+    let stage = match error {
+        Error::Configuration(ConfigIssue::EnrollmentCa) => "startup.windows_ca",
+        Error::Configuration(ConfigIssue::ProtocolKey) => "startup.protocol_key",
+        Error::Configuration(ConfigIssue::WindowsTls) => "startup.windows_tls",
+        Error::Configuration(ConfigIssue::WindowsListeners) => "startup.windows_listeners",
+        _ => "startup.identity",
+    };
+    ProcessError::at(stage, error)
+}
+fn finish(
+    exit: &ScopeExit<(), ProcessError, std::io::Error>,
+    clean: bool,
+) -> Result<(), ProcessError> {
+    match exit {
+        ScopeExit::CriticalTaskExited(exit) => Err(ProcessError::CriticalTask {
+            task: exit.name().into(),
+            reason: exit.reason(),
+            cleanup_failed: !clean,
+        }),
+        ScopeExit::Completed(Err(error)) => Err(error.clone()),
+        _ if !clean => Err(ProcessError::Stage {
             stage: "shutdown",
             kind: "resource drain failed",
-        });
-    }
-    match outcome.exit() {
+        }),
         ScopeExit::StopRequested(Ok(())) => Ok(()),
         ScopeExit::StopRequested(Err(e)) => Err(ProcessError::Io {
             stage: "shutdown.signal",
             kind: e.kind(),
         }),
-        ScopeExit::Completed(Err(error)) => Err(error.clone()),
         _ => Err(ProcessError::Stage {
             stage: "lifecycle",
-            kind: "critical task or scope terminated",
+            kind: "scope terminated",
         }),
     }
 }
 pub async fn signal() -> Result<(), std::io::Error> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {r=tokio::signal::ctrl_c()=>r,_=term.recv()=>Ok(())}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn critical_listener_exit_retains_name_and_cleanup_outcome() {
+        for name in ["mdm-enrollment-tls", "mdm-management-tls"] {
+            let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(
+                TotalDrainBudget::new(Duration::from_secs(2)).unwrap(),
+            )
+            .unwrap();
+            let outcome = scope
+                .drive(
+                    |startup| {
+                        Box::pin(async move {
+                            let mut launch = startup.commit();
+                            let (task, _) =
+                                rss_runtime::ManagedTask::prepare(name, Duration::from_secs(1));
+                            launch.stage_task_with_token(
+                                task.into_registration(|_| async {
+                                    Err(ShutdownError::new(std::io::Error::other(
+                                        "synthetic-secret",
+                                    )))
+                                })
+                                .critical(),
+                            );
+                            launch.finish();
+                            std::future::pending().await
+                        })
+                    },
+                    std::future::pending(),
+                )
+                .await
+                .unwrap();
+            let diagnostic = finish(outcome.exit(), false).unwrap_err().to_string();
+            assert!(diagnostic.contains(name) && diagnostic.contains("cleanup_failed=true"));
+            assert!(!diagnostic.contains("synthetic-secret"));
+        }
+    }
+    #[test]
+    fn assembly_failures_identify_windows_inputs() {
+        for (issue, stage) in [
+            (ConfigIssue::EnrollmentCa, "startup.windows_ca"),
+            (ConfigIssue::ProtocolKey, "startup.protocol_key"),
+            (ConfigIssue::WindowsTls, "startup.windows_tls"),
+        ] {
+            assert!(
+                assembly_error(Error::Configuration(issue))
+                    .to_string()
+                    .starts_with(stage)
+            );
+        }
+    }
 }
