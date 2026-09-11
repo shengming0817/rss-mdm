@@ -1,7 +1,7 @@
 use rss_mdm_inventory as model;
-use rss_observation::{Body, ErrorKind};
+use rss_observation::Body;
 use rss_observation_postgres::PgSource;
-use rss_projection::{DefinitionIdentity, Event, ProjectionScope};
+use rss_projection::{DefinitionIdentity, Event, Phase, Position, ProjectionScope};
 use rss_projection_postgres::{PgEffect, PgEffectOutcome, PgOperationError, PgTransaction};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -40,32 +40,25 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
             .source
             .resolve_in_transaction(tx, event)
             .await
-            .map_err(|e| match e.kind() {
-                ErrorKind::Storage
-                | ErrorKind::Deadline
-                | ErrorKind::Closed
-                | ErrorKind::CommitUnknown
-                | ErrorKind::RollbackFailed => PgOperationError::unavailable(e),
-                _ => PgOperationError::rejected(),
-            })?;
+            .map_err(|error| source_error(error, event.position()))?;
         let record = applicable.record();
         if record.scope().dataset().as_str() != model::DATASET {
             return Ok(PgEffectOutcome::Filtered);
         }
-        model::validate(record.batch()).map_err(|_| PgOperationError::rejected())?;
+        model::validate(record.batch()).map_err(|error| rejected(event.position(), error))?;
         let scope = record
             .scope()
             .encode()
-            .map_err(|_| PgOperationError::rejected())?;
+            .map_err(|error| rejected(event.position(), error))?;
         let coverage = serde_json::to_string(record.batch().coverage())
-            .map_err(|_| PgOperationError::rejected())?;
+            .map_err(|error| rejected(event.position(), error))?;
         let tenant = projection.source().tenant().to_string();
         let journal = projection.source().source().to_owned();
         let generation = projection.generation().to_owned();
         let batch = record.batch().id().as_str().to_owned();
         let observed = record.batch().observed_at_seconds();
-        let received =
-            i64::try_from(record.received_at()).map_err(|_| PgOperationError::rejected())?;
+        let received = i64::try_from(record.received_at())
+            .map_err(|error| rejected(event.position(), error))?;
         let body = record.batch().body().clone();
         tx.with_connection(move |conn| Box::pin(async move {
             if matches!(body, Body::Snapshot(_)) {
@@ -85,5 +78,76 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
             Ok(())
         })).await?;
         Ok(PgEffectOutcome::Applied)
+    }
+}
+
+fn rejected(
+    position: Position,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> PgOperationError {
+    PgOperationError::rejected(Phase::Application, None, Some(position), source)
+}
+
+// ref: rss crates/examples/src/observation/model.rs@e1dddb241c2bb015e7a8a71d0881d790d879fe9c
+fn source_error(error: rss_projection::Error, event_position: Position) -> PgOperationError {
+    use rss_projection::ErrorKind;
+    let diagnostic = error.diagnostic();
+    let phase = diagnostic.map_or(Phase::Application, |d| d.phase());
+    let position = diagnostic
+        .and_then(|d| d.position())
+        .unwrap_or(event_position);
+    let sqlstate = diagnostic.and_then(|d| d.sqlstate()).map(str::to_owned);
+    match error.kind() {
+        ErrorKind::Unavailable
+        | ErrorKind::Deadline
+        | ErrorKind::Cancelled
+        | ErrorKind::CommitUnknown
+        | ErrorKind::RollbackFailed => {
+            PgOperationError::unavailable(phase, sqlstate.as_deref(), Some(position), error)
+        }
+        ErrorKind::InvalidInput
+        | ErrorKind::ScopeMismatch
+        | ErrorKind::OutOfOrder
+        | ErrorKind::SourceContract
+        | ErrorKind::Conflict
+        | ErrorKind::Fenced
+        | ErrorKind::Rejected
+        | ErrorKind::StorageContract => {
+            PgOperationError::rejected(phase, sqlstate.as_deref(), Some(position), error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn source_failures_preserve_recovery_and_safe_context() {
+        use rss_projection::{Error, ErrorKind};
+        let position = Position::new(7).unwrap();
+        for (kind, expected) in [
+            (ErrorKind::Unavailable, ErrorKind::Unavailable),
+            (ErrorKind::Deadline, ErrorKind::Unavailable),
+            (ErrorKind::Cancelled, ErrorKind::Unavailable),
+            (ErrorKind::StorageContract, ErrorKind::Rejected),
+            (ErrorKind::SourceContract, ErrorKind::Rejected),
+        ] {
+            let source = Error::provider(
+                kind,
+                Phase::Restore,
+                Some("08006"),
+                Some(position),
+                std::io::Error::other("synthetic-secret"),
+            );
+            let result = Error::from(source_error(source, Position::new(9).unwrap()));
+            assert_eq!(result.kind(), expected);
+            let diagnostic = result.diagnostic().unwrap();
+            assert_eq!(diagnostic.phase(), Phase::Restore);
+            assert_eq!(diagnostic.sqlstate(), Some("08006"));
+            assert_eq!(diagnostic.position(), Some(position));
+            assert!(!format!("{result:?}").contains("synthetic-secret"));
+        }
+        let result = Error::from(source_error(ErrorKind::Conflict.into(), position));
+        assert_eq!(result.diagnostic().unwrap().position(), Some(position));
     }
 }

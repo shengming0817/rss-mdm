@@ -120,6 +120,7 @@ pub(super) async fn verify(
     // The production ManagedTask performs cleanup and drains within its lifecycle owner.
     let mut scope = rss_runtime::LifecycleScope::<(), Error, std::io::Error>::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(3))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let owner = restarted.clone();
     let scope_tenant = tenant.to_owned();

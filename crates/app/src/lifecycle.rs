@@ -6,6 +6,39 @@ use rss_runtime::{
     DynManagedResource, LifecycleScope, ManagedResource, ScopeExit, ShutdownError, TotalDrainBudget,
 };
 use std::{sync::Arc, time::Duration};
+// Product composition chooses the Tokio timer for the RSS lifecycle's time domain.
+pub(crate) struct RuntimeTimer;
+impl rss_request_context::Clock for RuntimeTimer {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "concrete product runtime clock owns the Tokio time domain"
+    )]
+    fn now(&self) -> std::time::Instant {
+        tokio::time::Instant::now().into_std()
+    }
+}
+impl rss_request_context::ExecutionTimer for RuntimeTimer {
+    async fn sleep_until(&self, deadline: rss_request_context::Deadline) {
+        tokio::task::unconstrained(tokio::time::sleep_until(deadline.instant().into())).await;
+    }
+}
+// Preparation includes five seconds of TLS and two seconds of failure audit.
+// All three listeners use the same RSS owner and finite protocol budgets.
+pub(crate) fn http_policy() -> rss_axum::Http1ServePolicy {
+    rss_axum::Http1ServePolicy::new(
+        rss_axum::ServePolicy::new(
+            128,
+            Duration::from_secs(8),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        )
+        .expect("constant listener budgets are valid"),
+        Duration::from_secs(10),
+        64,
+        32768,
+    )
+    .expect("constant HTTP/1 limits are valid")
+}
 struct AccessResource(std::sync::Arc<crate::AccessStore>);
 impl ManagedResource for AccessResource {
     fn name(&self) -> &str {
@@ -44,6 +77,7 @@ pub async fn serve(
         TotalDrainBudget::new(Duration::from_secs(20)).map_err(|_| {
             ProcessError::at("startup.budget", Error::Configuration(ConfigIssue::Budget))
         })?,
+        Arc::new(RuntimeTimer),
     )
     .map_err(|_| ProcessError::at("startup.scope", Error::Unavailable(Failure::Runtime)))?;
     let outcome = scope
@@ -136,8 +170,9 @@ pub async fn serve(
                         rss_axum::serve_http1_registration(
                             listener,
                             app.browser,
+                            rss_axum::PlainTransport,
                             "mdm-http",
-                            Duration::from_secs(10),
+                            http_policy(),
                         )
                         .critical(),
                     );
@@ -239,6 +274,7 @@ mod tests {
         for name in ["mdm-enrollment-tls", "mdm-management-tls"] {
             let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(
                 TotalDrainBudget::new(Duration::from_secs(2)).unwrap(),
+                Arc::new(RuntimeTimer),
             )
             .unwrap();
             let outcome = scope

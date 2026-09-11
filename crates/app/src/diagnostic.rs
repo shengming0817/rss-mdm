@@ -4,11 +4,31 @@ use serde::Serialize;
 use std::path::PathBuf;
 /// Install once in the composition root before starting runtime threads.
 /// ref: Rust std::panic::set_hook: hooks run before catch_unwind can discard payloads.
-pub fn install_panic_diagnostics() {
+pub fn install_diagnostics() -> Result<(), ProcessError> {
     std::panic::set_hook(Box::new(|_| {
         use std::io::Write;
         let _ = writeln!(std::io::stderr().lock(), "{{\"event\":\"mdm_panic\"}}");
     }));
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    // RSS emits closed lifecycle categories. Do not enable provider/HTTP payload logs,
+    // environment overrides, or inherited span fields in this product sink.
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::filter::filter_fn(|meta| {
+            meta.is_event() && meta.target() == "rss_axum::server"
+        }))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .without_time()
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(std::io::stderr),
+        )
+        .try_init()
+        .map_err(|_| ProcessError::Stage {
+            stage: "startup.diagnostics",
+            kind: "subscriber installation failed",
+        })
 }
 /// The composition root supplies the monotonic source explicitly.
 pub struct Monotonic(pub fn() -> std::time::Instant);

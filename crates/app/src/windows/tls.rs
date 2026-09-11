@@ -1,18 +1,23 @@
-//! TLS termination and peer evidence belong to the product listener.
-//! ref: rustls 0.23.44 server/builder.rs; hyper 1.11.1 server/conn/http1.rs.
-use super::{TlsEndpoint, TlsRouter};
+//! Product TLS preparation; RSS exclusively owns accepted IO and HTTP lifecycle.
+//! ref: rustls/tokio-rustls src/server.rs@4f913c754aa4171440e50ceb6a160ceebb0d326e
+use super::{
+    TlsEndpoint, TlsRouter,
+    admission::{Admission, ConnectionPermit, RequestGate},
+};
 use crate::{
     AccessStore, ConfigIssue, Error,
     audit::{Audit, FailureReason},
 };
-use axum::{Extension, Router};
-use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
-use hyper_util::{
-    rt::{TokioIo, TokioTimer},
-    service::TowerToHyperService,
+use axum::{
+    Extension,
+    extract::Request,
+    middleware::{self, Next},
+    response::Response,
 };
-use rss_runtime::{ManagedTask, ManagedTaskRegistration, ShutdownError};
-use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use rss_axum::{AcceptedConnectionInfo, ConnectionTransport, EstablishedTransport};
+use rss_runtime::ManagedTaskRegistration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{
@@ -20,8 +25,8 @@ use tokio_rustls::{
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, pem::PemObject},
         server::danger::ClientCertVerifier,
     },
+    server::TlsStream,
 };
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub(super) struct Peer {
@@ -67,110 +72,120 @@ pub(super) fn configuration(
     build().map_err(|_| Error::Configuration(ConfigIssue::WindowsTls))
 }
 pub(crate) fn registration(
-    listener: tokio::net::TcpListener,
+    listener: TcpListener,
     app: TlsRouter,
     access: Arc<AccessStore>,
     tenant: String,
     name: &'static str,
 ) -> ManagedTaskRegistration {
-    let (start, _) = ManagedTask::prepare(name, Duration::from_secs(10));
-    start.into_registration(move |token| serve(listener, app, access, tenant, name, token))
+    rss_axum::serve_http1_registration(
+        listener,
+        app.router.layer(middleware::from_fn(evidence)),
+        TlsTransport {
+            acceptor: TlsAcceptor::from(app.tls),
+            admission: app.admission,
+            access,
+            tenant,
+            name,
+        },
+        name,
+        crate::lifecycle::http_policy(),
+    )
 }
-pub(super) async fn serve(
-    listener: tokio::net::TcpListener,
-    app: TlsRouter,
-    access: Arc<AccessStore>,
-    tenant: String,
-    name: &'static str,
-    token: CancellationToken,
-) -> Result<(), ShutdownError> {
-    let acceptor = TlsAcceptor::from(app.tls);
-    let mut peers = FuturesUnordered::new();
-    loop {
-        tokio::select! {
-            biased;
-            ()=token.cancelled()=>break,
-            Some(result)=peers.next(),if !peers.is_empty()=>{ report(name,result); },
-            accepted=listener.accept(),if peers.len()<128=>{
-                let (stream,peer)=accepted.map_err(ShutdownError::new)?;
-                let Some(permit)=app.admission.connection(peer.ip()) else { continue; };
-                peers.push(guarded_connection(connection((stream,permit),acceptor.clone(),app.router.clone(),token.clone(),access.clone(),tenant.clone(),name)));
-            }
-        }
-    }
-    drop(listener);
-    while let Some(result) = peers.next().await {
-        report(name, result);
-    }
-    Ok(())
+
+// Only this product adapter projects RSS-bound preparation metadata into handler inputs.
+async fn evidence(
+    Extension(info): Extension<AcceptedConnectionInfo<(Peer, RequestGate)>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let (peer, gate) = info.metadata();
+    request.extensions_mut().insert(peer.clone());
+    request.extensions_mut().insert(gate.clone());
+    next.run(request).await
 }
-async fn connection(
-    (stream, permit): (tokio::net::TcpStream, super::admission::ConnectionPermit),
+
+struct TlsTransport {
     acceptor: TlsAcceptor,
-    router: Router,
-    token: CancellationToken,
+    admission: Arc<Admission>,
     access: Arc<AccessStore>,
     tenant: String,
     name: &'static str,
-) -> Result<(), ConnectionFailure> {
-    let handshake = tokio::time::timeout(Duration::from_secs(5), acceptor.accept(stream));
-    let stream = tokio::select! {
-        biased;
-        ()=token.cancelled()=>return Ok(()),
-        result=handshake=>match result {
-            Ok(Ok(stream))=>stream,
-            failed=>{
+}
+impl ConnectionTransport for TlsTransport {
+    type Io = TlsStream<TcpStream>;
+    type Metadata = (Peer, RequestGate);
+    type Guard = ConnectionPermit;
+    type Error = ConnectionFailure;
+
+    async fn prepare(
+        &self,
+        stream: TcpStream,
+        socket_peer: SocketAddr,
+    ) -> Result<EstablishedTransport<Self::Io, Self::Metadata, Self::Guard>, Self::Error> {
+        // Capacity refusal is reported by Admission; it performs no TLS or PG work.
+        let permit = self
+            .admission
+            .connection(socket_peer.ip())
+            .ok_or(ConnectionFailure::Capacity)?;
+        let stream = match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.acceptor.accept(stream),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            failed => {
                 let kind = match failed {
                     Err(_) => ConnectionFailure::HandshakeTimeout,
                     Ok(Err(error)) => classify_tls(&error),
                     Ok(Ok(_)) => unreachable!("successful handshake handled above"),
                 };
-                let audit=Audit::new(tenant,if name=="mdm-management-tls" { "windows_management" } else { "protected_request" });
-                let failed=!matches!(tokio::time::timeout(Duration::from_secs(2),access.record(&audit,401,"denied")).await,Ok(Ok(())));
+                // Emit before the bounded audit so cancellation cannot hide the diagnosed failure.
+                eprintln!("{}", event(self.name, kind));
+                let audit = Audit::new(
+                    self.tenant.clone(),
+                    if self.name == "mdm-management-tls" {
+                        "windows_management"
+                    } else {
+                        "protected_request"
+                    },
+                );
+                let failed = !matches!(
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        self.access.record(&audit, 401, "denied")
+                    )
+                    .await,
+                    Ok(Ok(()))
+                );
                 audit.finalize(failed.then_some(FailureReason::Persistent));
                 return Err(kind);
             }
-        }
-    };
-    let peer = Peer {
-        chain: Arc::new(
-            stream
-                .get_ref()
-                .1
-                .peer_certificates()
-                .unwrap_or_default()
-                .to_vec(),
-        ),
-    };
-    let router = router
-        .layer(Extension(peer))
-        .layer(Extension(permit.gate()));
-    let mut builder = hyper::server::conn::http1::Builder::new();
-    builder
-        .timer(TokioTimer::new())
-        .header_read_timeout(Duration::from_secs(10))
-        .max_headers(64)
-        .max_buf_size(32768);
-    let connection =
-        builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(router));
-    tokio::pin!(connection);
-    tokio::select! {
-        biased;
-        ()=token.cancelled()=>{ connection.as_mut().graceful_shutdown(); connection.await.map_err(classify) },
-        result=&mut connection=>result.map_err(classify),
+        };
+        let peer = Peer {
+            chain: Arc::new(
+                stream
+                    .get_ref()
+                    .1
+                    .peer_certificates()
+                    .unwrap_or_default()
+                    .to_vec(),
+            ),
+        };
+        // The move-only permit goes to RSS; cloned request metadata never owns its lifetime.
+        let gate = permit.gate();
+        Ok(EstablishedTransport::new(stream, (peer, gate), permit))
     }
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum ConnectionFailure {
+    Capacity,
     HandshakeTimeout,
     HandshakeProtocol,
     ClientCertificate,
-    Timeout,
-    Parse,
-    Io,
-    Panic,
 }
 fn classify_tls(error: &std::io::Error) -> ConnectionFailure {
     match error
@@ -183,112 +198,13 @@ fn classify_tls(error: &std::io::Error) -> ConnectionFailure {
         _ => ConnectionFailure::HandshakeProtocol,
     }
 }
-fn classify(error: hyper::Error) -> ConnectionFailure {
-    if error.is_timeout() {
-        ConnectionFailure::Timeout
-    } else if error.is_parse() {
-        ConnectionFailure::Parse
-    } else {
-        ConnectionFailure::Io
-    }
+fn event(name: &str, kind: ConnectionFailure) -> serde_json::Value {
+    serde_json::json!({"event":"mdm_tls_connection_failure","listener":name,"kind":kind})
 }
-type ConnectionResult = std::thread::Result<Result<(), ConnectionFailure>>;
-async fn guarded_connection(
-    future: impl std::future::Future<Output = Result<(), ConnectionFailure>>,
-) -> ConnectionResult {
-    AssertUnwindSafe(future).catch_unwind().await
-}
-fn event(name: &str, result: ConnectionResult) -> Option<serde_json::Value> {
-    let kind = match result {
-        Ok(Ok(())) => return None,
-        Ok(Err(kind)) => kind,
-        Err(_) => ConnectionFailure::Panic,
-    };
-    Some(serde_json::json!({"event":"mdm_tls_connection_failure","listener":name,"kind":kind}))
-}
-fn report(name: &str, result: ConnectionResult) {
-    if let Some(event) = event(name, result) {
-        eprintln!("{event}");
-    }
-}
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn handshake_diagnostics_preserve_closed_failure_classification() {
-        let error = std::io::Error::other(rustls::Error::InvalidCertificate(
-            rustls::CertificateError::UnknownIssuer,
-        ));
-        assert_eq!(classify_tls(&error), ConnectionFailure::ClientCertificate);
-        let error = std::io::Error::other("synthetic-secret");
-        let result = event("mdm-management-tls", Ok(Err(classify_tls(&error)))).unwrap();
-        assert_eq!(result["kind"], "handshake_protocol");
-        assert!(!result.to_string().contains("synthetic-secret"));
-        assert_eq!(
-            event(
-                "mdm-enrollment-tls",
-                Ok(Err(ConnectionFailure::HandshakeTimeout))
-            )
-            .unwrap()["kind"],
-            "handshake_timeout"
-        );
-    }
-    #[tokio::test]
-    async fn connection_diagnostics_classify_actual_hyper_errors_without_payloads() {
-        use tokio::io::AsyncWriteExt;
-        for (bytes, expected) in [
-            (
-                b"malformed-secret\r\n\r\n".as_slice(),
-                ConnectionFailure::Parse,
-            ),
-            (b"".as_slice(), ConnectionFailure::Timeout),
-        ] {
-            let (mut client, server) = tokio::io::duplex(4096);
-            client.write_all(bytes).await.unwrap();
-            let mut builder = hyper::server::conn::http1::Builder::new();
-            builder
-                .timer(TokioTimer::new())
-                .header_read_timeout(Duration::from_millis(5));
-            let error = builder
-                .serve_connection(
-                    TokioIo::new(server),
-                    TowerToHyperService::new(Router::new()),
-                )
-                .await
-                .unwrap_err();
-            let failure = classify(error);
-            assert_eq!(failure, expected);
-            let value = event("mdm-management-tls", Ok(Err(failure))).unwrap();
-            assert_eq!(value["listener"], "mdm-management-tls");
-            assert!(!value.to_string().contains("secret"));
-        }
-    }
-    #[tokio::test]
-    async fn actual_connection_panic_never_logs_payload() {
-        if std::env::var_os("MDM_PANIC_DIAGNOSTIC_CHILD").is_some() {
-            crate::install_panic_diagnostics();
-            let result = guarded_connection(async {
-                std::panic::panic_any("synthetic-secret");
-            })
-            .await;
-            report("mdm-enrollment-tls", result);
-            return;
-        }
-        // A separate test process isolates the global hook from other test threads.
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "windows::tls::tests::actual_connection_panic_never_logs_payload",
-                "--nocapture",
-            ])
-            .env("MDM_PANIC_DIAGNOSTIC_CHILD", "1")
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(!stderr.contains("synthetic-secret"));
-        assert!(stderr.contains("mdm_panic"));
-        assert!(stderr.contains("\"listener\":\"mdm-enrollment-tls\""));
-        assert!(stderr.contains("\"kind\":\"panic\""));
-    }
-}
+#[path = "tls_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+pub(super) use tests::verify_tls_lifecycle;

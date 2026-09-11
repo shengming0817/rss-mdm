@@ -628,7 +628,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     Ok(())
 }
 #[allow(clippy::disallowed_methods, reason = "test composition root")]
-fn monotonic() -> Arc<dyn rss_observation::Clock> {
+pub(super) fn monotonic() -> Arc<dyn rss_observation::Clock> {
     Arc::new(crate::Monotonic(std::time::Instant::now))
 }
 struct IngressClock(std::sync::Mutex<std::time::Instant>);
@@ -715,24 +715,11 @@ async fn ingress_burst(
     Ok(())
 }
 
-struct Running {
-    stop: tokio_util::sync::CancellationToken,
-    tasks: Vec<tokio::task::JoinHandle<Result<(), rss_runtime::ShutdownError>>>,
-}
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.stop.cancel();
-        for task in &self.tasks {
-            task.abort();
-        }
-    }
-}
+struct Running(rss_runtime::ShutdownStack);
 impl Running {
-    async fn close(mut self) -> anyhow::Result<()> {
-        self.stop.cancel();
-        for task in self.tasks.drain(..) {
-            tokio::time::timeout(Duration::from_secs(10), task).await???;
-        }
+    async fn close(self) -> anyhow::Result<()> {
+        let receipt = self.0.shutdown().join().await?;
+        ensure!(receipt.is_clean(), "TLS owner failed to drain");
         Ok(())
     }
 }
@@ -964,36 +951,66 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
         windows: Windows::load(config.windows, now())?,
     });
+    tls::verify_tls_lifecycle(store.clone(), app.windows.enrollment_tls.clone(), &root).await?;
     let ingress_clock = IngressClock::new();
-    let (enrollment, management) = routers(app.clone(), ingress_clock.clone());
-    let stop = tokio_util::sync::CancellationToken::new();
-    let running = Running {
-        stop: stop.clone(),
-        tasks: vec![
-            tokio::spawn(tls::serve(
+    let (mut enrollment, management) = routers(app.clone(), ingress_clock.clone());
+    enrollment.router = enrollment.router.route(
+        "/accepted-peer",
+        axum::routing::get(
+            |axum::Extension(info): axum::Extension<
+                rss_axum::AcceptedConnectionInfo<(tls::Peer, admission::RequestGate)>,
+            >| async move { info.socket_peer().ip().to_string() },
+        ),
+    );
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    {
+        let mut launch = owner.startup()?.commit();
+        launch.stage_task_with_token(
+            tls::registration(
                 enroll,
                 enrollment,
                 store.clone(),
                 TENANT.into(),
                 "mdm-enrollment-tls",
-                stop.clone(),
-            )),
-            tokio::spawn(tls::serve(
+            )
+            .critical(),
+        );
+        launch.stage_task_with_token(
+            tls::registration(
                 manage,
                 management,
                 store.clone(),
                 TENANT.into(),
                 "mdm-management-tls",
-                stop,
-            )),
-        ],
-    };
+            )
+            .critical(),
+        );
+        launch.finish();
+    }
+    let running = Running(owner);
     let root_cert = reqwest::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .add_root_certificate(root_cert.clone())
         .timeout(Duration::from_secs(12))
         .build()?;
+    ensure!(
+        client
+            .get(format!(
+                "{}/accepted-peer",
+                app.windows.config.enrollment.origin
+            ))
+            .header("x-forwarded-for", "198.51.100.23")
+            .send()
+            .await?
+            .text()
+            .await?
+            == "127.0.0.1",
+        "TLS requests lost the RSS-owned accepted peer"
+    );
     let proof = admin(TENANT, "admin-a").await?;
     let plain = crate::sessions::random();
     let password = Password::new(plain.clone())?;

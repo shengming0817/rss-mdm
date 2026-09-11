@@ -47,6 +47,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1189,9 +1198,9 @@ dependencies = [
 
 [[package]]
 name = "icu_collections"
-version = "2.3.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa68d21081c4a05d5a901a1c62add574c77048b6a1c67be3b50ce0b60d4ca513"
+checksum = "2984d1cd16c883d7935b9e07e44071dca8d917fd52ecc02c04d5fa0b5a3f191c"
 dependencies = [
  "displaydoc",
  "potential_utf",
@@ -1216,9 +1225,9 @@ dependencies = [
 
 [[package]]
 name = "icu_normalizer"
-version = "2.3.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12f9cf5f235641ed274641dd81c3f28d870e276763d0797aeeab72317b1c646f"
+checksum = "c56e5ee99d6e3d33bd91c5d85458b6005a22140021cc324cea84dd0e72cff3b4"
 dependencies = [
  "icu_collections",
  "icu_normalizer_data",
@@ -1230,17 +1239,16 @@ dependencies = [
 
 [[package]]
 name = "icu_normalizer_data"
-version = "2.3.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1563da1ed3e0b3bf3d74c9b85917ac9c56464d2f57242270c09c9e752f8021a0"
+checksum = "da3be0ae77ea334f4da67c12f149704f19f81d1adf7c51cf482943e84a2bad38"
 
 [[package]]
 name = "icu_properties"
-version = "2.3.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e7ca276ad3145661a65914e6daf131ca5120cd3dcee8f8f3214b8875184a148"
+checksum = "bee3b67d0ea5c2cca5003417989af8996f8604e34fb9ddf96208a033901e70de"
 dependencies = [
- "displaydoc",
  "icu_collections",
  "icu_locale_core",
  "icu_properties_data",
@@ -1251,9 +1259,9 @@ dependencies = [
 
 [[package]]
 name = "icu_properties_data"
-version = "2.3.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e590f038c1464a96894fd6d10127e90a8be4509f56ff7ecef851b15cee0b7caa"
+checksum = "8e2bbb201e0c04f7b4b3e14382af113e17ba4f63e2c9d2ee626b720cbce54a14"
 
 [[package]]
 name = "icu_provider"
@@ -2191,13 +2199,15 @@ dependencies = [
 [[package]]
 name = "rss-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
  "axum",
  "futures",
  "hyper",
  "hyper-util",
+ "libc",
  "rss-contract",
+ "rss-redact",
  "rss-request-context",
  "rss-runtime",
  "serde",
@@ -2205,12 +2215,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "rss-contract"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 
 [[package]]
 name = "rss-identity-client"
@@ -2242,10 +2253,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "futures",
  "http-body-util",
- "hyper",
- "hyper-util",
  "libc",
  "md-5 0.10.6",
  "openidconnect",
@@ -2275,6 +2283,8 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "x509-cert",
@@ -2400,7 +2410,7 @@ dependencies = [
 [[package]]
 name = "rss-observation"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
  "rss-contract",
  "rss-redact",
@@ -2414,7 +2424,7 @@ dependencies = [
 [[package]]
 name = "rss-observation-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
  "futures",
  "rss-observation",
@@ -2430,8 +2440,9 @@ dependencies = [
 [[package]]
 name = "rss-projection"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
+ "arc-swap",
  "rss-redact",
  "rss-request-context",
  "sha2 0.10.9",
@@ -2443,7 +2454,7 @@ dependencies = [
 [[package]]
 name = "rss-projection-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
  "futures",
  "rss-projection",
@@ -2456,9 +2467,10 @@ dependencies = [
 [[package]]
 name = "rss-redact"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
  "hmac 0.12.1",
+ "icu_properties",
  "rss-contract",
  "sha2 0.10.9",
  "thiserror 2.0.20",
@@ -2470,7 +2482,7 @@ dependencies = [
 [[package]]
 name = "rss-request-context"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
  "thiserror 2.0.20",
  "uuid",
@@ -2479,11 +2491,12 @@ dependencies = [
 [[package]]
 name = "rss-runtime"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=bf5dd1350997d01aa834094a3347fce30247814e#bf5dd1350997d01aa834094a3347fce30247814e"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=e1dddb241c2bb015e7a8a71d0881d790d879fe9c#e1dddb241c2bb015e7a8a71d0881d790d879fe9c"
 dependencies = [
  "dynosaur",
  "futures",
  "rss-redact",
+ "rss-request-context",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -2754,6 +2767,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
  "digest 0.11.3",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -3066,6 +3088,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3279,6 +3310,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sharded-slab",
+ "thread_local",
+ "tracing-core",
+ "tracing-serde",
 ]
 
 [[package]]
@@ -3378,6 +3434,12 @@ dependencies = [
  "uuid",
  "vsimd",
 ]
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "version_check"

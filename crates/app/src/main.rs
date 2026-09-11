@@ -1,7 +1,10 @@
 //! ref: tokio-rs/axum axum/src/middleware/from_fn.rs@axum-v0.8.9
 use rss_mdm_app::{ProcessError, config};
 fn main() -> std::process::ExitCode {
-    rss_mdm_app::install_panic_diagnostics();
+    if let Err(error) = rss_mdm_app::install_diagnostics() {
+        eprintln!("{error}");
+        return std::process::ExitCode::FAILURE;
+    }
     run()
 }
 #[tokio::main]

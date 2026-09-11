@@ -7,7 +7,7 @@ pub mod device;
 mod enrollment;
 pub use access_store::AccessStore;
 mod diagnostic;
-pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_panic_diagnostics};
+pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 mod api;
 pub mod config;
 mod identity;

@@ -55,11 +55,22 @@ RSA PKCS#1 v1.5 SHA-256 确定性签名；提交未知按原操作读回，无�
 独立 maintenance task 每秒最多清理 128 个过期会话，行锁 SKIP LOCKED；
 同事务删除响应与会话，RLS 仅允许同租户过期临时行，保留全部权威事实。
 
-架构阻塞 F4：固定 RSS 版本没有允许产品 TLS IO 进入通用 HTTP connection owner 的
-公共接缝，当前产品仍重复持有连接 futures/取消/排空。已登记
-[RSS #2418](https://dev.azure.com/shengming0923/rss/_workitems/edit/2418)。
-用户明确要求本轮保持一个产品 PR、跨仓缺口 defer 并保持未就绪；
-完成 RSS prerequisite 并消费固定新 SHA、移除产品重复 owner 前不能宣称 F4 已修或可合并。
+HTTP 连接生命周期由 RSS 唯一持有。消费 [RSS #2418 / PR #999](https://dev.azure.com/shengming0923/rss/_git/rss/pullrequest/999)
+合并后的固定版本（精确 SHA 见 `Cargo.toml`）；三个 listener 均通过 `serve_http1_registration` 注册，
+浏览器使用 `PlainTransport`，Windows transport 只做握手前容量准入、TLS/证书与产品审计。
+`EstablishedTransport` 将 TLS IO、证书链/请求 gate 和不可复制的连接许可交给 RSS；
+请求从 `AcceptedConnectionInfo` 取回产品证据，socket peer 始终由 RSS 的 TCP accept 绑定。
+产品不保留第二套连接 futures、Hyper builder、panic isolation 或取消/排空实现。
+
+每个 listener 最多 128 个准备中或已建立连接；准备阶段总预算 8 秒，其中 TLS 5 秒、失败审计 2 秒；
+首请求建立 10 秒，HTTP/1 header 10 秒、最多 64 个 header、32 KiB buffer，关闭预算 10 秒。
+RSS lifecycle 显式使用产品 Tokio timer。进程仅接收 `rss_axum::server` 的闭合 JSON 事件，
+禁用 span 数据和环境日志开关；握手错误保留 timeout/protocol/client-certificate 分类，容量拒绝不写 PG。
+RSS 升级同时适配 Inventory 的 projection 错误接口，保留分类、阶段、SQLSTATE、位置与脱敏来源。
+
+产品验证覆盖原生 TLS 上的 accepted peer、防伪造 forwarding header、握手中取消和许可释放、
+HTTP handler 在 RSS 总关闭预算耗尽后终止，以及真实 PG/TLS 的注册与管理流程。
+这是 T1/T2 接缝验证；Windows 原生设备 T3 与独立 PR check 仍按各自验收范围执行。
 
 ## 实施 DAG 与 owner
 

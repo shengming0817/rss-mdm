@@ -93,6 +93,15 @@ pub(super) struct RequestGate {
     peer: IpAddr,
 }
 impl Admission {
+    #[cfg(test)]
+    pub(super) fn active_connections(&self, peer: IpAddr) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .peers
+            .get(&peer)
+            .map_or(0, |peer| 4 - peer.connections.available_permits())
+    }
     pub(super) fn new(
         clock: Arc<dyn rss_observation::Clock>,
         requests: Arc<Semaphore>,
