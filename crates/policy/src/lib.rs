@@ -1,3 +1,10 @@
+//! Canonical tenant/time types belong to their RSS owners.
+//! ```compile_fail
+//! use rss_mdm_policy::TenantId;
+//! ```
+//! ```compile_fail
+//! use rss_mdm_policy::Timepoint;
+//! ```
 //! Policy lifecycle and deterministic intent planning; no storage or dispatch.
 //! Callers supply authenticated identities and complete snapshots. Persisting the
 //! returned preconditions and intents atomically belongs to the product adapter.
@@ -23,7 +30,3 @@ mod plan;
 pub use lifecycle::*;
 pub use model::*;
 pub use plan::*;
-
-/// Canonical types required to construct this core's public inputs.
-pub use rss_contract::Timepoint;
-pub use rss_request_context::TenantId;

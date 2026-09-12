@@ -114,7 +114,7 @@ flowchart LR
 | N05 #2383 Resource | N01 | `crates/resource` | 不可变版本、平台身份、摘要和引用约束 T1 |
 | N06 #2384 WinGet | N01 | `crates/winget-source` | 官方协议 fixtures T1、真实 HTTP T2，不调用 CLI |
 | N07 #2385 Brew | N01 | `crates/brew-source` | Formula/Cask 与模板转义 T1、受控本地 Git T2 |
-| N08 #2386 发布 | N01 | `crates/software-release` | 审批摘要变化、晋级/撤回、非法转换、未知发布恢复 T1 |
+| N08 #2386 发布（纯核心已实现） | N01 | [`crates/software-release`](../../crates/software-release/README.md) | 审批绑定变化、逐环验证/审批、撤回后迟到事实、幂等重放与未知发布恢复 T1；逐包消费和本地 CI 结果绑定 PR 受测 SHA，实际发布 T2 归 N11 |
 | N09 #2387 Group PG | N02 | `crates/group-postgres`（已实现；[调用与验证入口](../guides/202609120000-2387-group-postgres.md)），静态组定义/手工成员与动态规则/成员的专属 migrations/T2 | 静态组 CRUD/批量成员、动态重算与静态成员互不覆盖；状态/事件原子性、并发版本冲突、tenant 隔离、重启/提交未知及借用事务回滚 T2 |
 | N10 #2388 Policy PG | N04 | `crates/policy-postgres`，专属 migrations/T2 | 计划/事件原子性、旧版本隔离、回滚/提交未知 T2，不派发 |
 | N11 #2389 发布后端组装 | N05/N06/N07/N08 | `crates/resource-postgres`、`crates/software-release-postgres`，应用骨架的软件源组装模块及 T2 | 真实 PG + 存储/兼容源/Git；外部成功而本地失败或未知时按原身份对账 |

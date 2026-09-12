@@ -1,3 +1,10 @@
+//! Canonical tenant/time types belong to their RSS owners.
+//! ```compile_fail
+//! use rss_mdm_scope::TenantId;
+//! ```
+//! ```compile_fail
+//! use rss_mdm_scope::Timepoint;
+//! ```
 //! Deterministic scope algebra over caller-resolved, complete tenant snapshots.
 //! Storage, source authorization and group expansion belong to the caller.
 //! Group references cannot become device members through an accidental argument swap:
@@ -16,9 +23,6 @@ mod identity;
 pub use identity::{DeviceId, GroupId};
 mod model;
 pub use model::*;
-/// Canonical types required to construct this core's public inputs.
-pub use rss_contract::Timepoint;
-pub use rss_request_context::TenantId;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Resolve atomically: an invalid source never yields a partial member set.

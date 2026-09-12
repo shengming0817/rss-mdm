@@ -4,6 +4,9 @@ N03 / #2381 的纯集合核心。`resolve(&ScopeInput)` 只接受调用方已经
 
 ## 输入与解释
 
+公共输入直接使用 `rss-request-context::TenantId` 和 `rss-contract::Timepoint`；本包不重导出它们。
+调用方须从各自 owner 导入，compile-fail 文档测试保护该边界。
+
 `DeviceId` 与 `GroupId` 是独立角色类型，不能互传；两者包含 canonical `TenantId` 与 1–128 字节的 ASCII 字母、数字、`.`、`_`、`-` 标识。
 `SourceRef` 包含 `SourceId::Direct(DeviceId)` / `Group(GroupId)`、非零来源版本与显式 `Timepoint`。
 同一对象/来源种类/版本的成员必须一致；解析时间是解释依据，不允许据此改变同版本内容。
@@ -27,8 +30,8 @@ Direct 来源必须恰好包含自己的对象；Group 来源允许完整空集�
 ## 验证与来源
 
 `cargo test --locked -p rss-mdm-scope` 运行集合真值表、解释、排列不变性和失败输入测试。
-`hack/core_consumer.py` 从固定产品 Git SHA 复用 `tests/model.rs`，仅直接消费本产品包，canonical `TenantId` / `Timepoint` 从本包公开重导出取得，
-在仓外分别验证默认与关闭默认 features 的独立 lock、root 唯一普通依赖边、产品包普通/构建依赖闭包和实际行为；结果归本地 CI artifact。
+`hack/core_consumer.py` 从固定产品 Git SHA 复用 `tests/model.rs`，直接消费本产品包及 canonical `TenantId` / `Timepoint` owner，
+在仓外分别验证默认与关闭默认 features 的独立 lock、root 精确普通依赖集合、产品包普通/构建依赖闭包和实际行为；结果归本地 CI artifact。
 
 - Rust 1.90.0 [`BTreeSet`](https://github.com/rust-lang/rust/blob/1.90.0/library/alloc/src/collections/btree/set.rs)：有序集合复用来源。
 - WinMDM 历史 `src/internal/domain/policy/scope_resolver.go`：仅作为公式、直接目标与组展开去重证据；

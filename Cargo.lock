@@ -2444,6 +2444,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-software-release"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-request-context",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "rss-mdm-windows-mdm"
 version = "0.1.0"
 dependencies = [

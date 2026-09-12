@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-software-release": "crates/software-release",
     "rss-mdm-resource": "crates/resource",
     "rss-mdm-winget-source": "crates/winget-source",
     "rss-mdm-brew-source": "crates/brew-source",

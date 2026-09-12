@@ -31,7 +31,11 @@ Git checkout 内上游自身的 workspace/path 关系由 Cargo 解析为同一 G
 以下是各实现 PBI 的验收方法；N01 只冻结方法，不新增 gate，也不声明逐包验证已经通过。
 
 每个待验核心或 adapter 从已提交源码的固定 Git SHA 获取，由 RSS 与 rss-mdm workspace 外的最小 consumer
-仅直接依赖该一个产品 package；使用独立 workspace、Cargo.lock、Cargo 配置及 target，不通过父仓 path/patch、其他成员或隐式 feature 合并补齐依赖。
+只直接依赖一个产品 package；此外可直接依赖该产品公共签名所需的 canonical RSS 值类型 owner。
+当前 Scope、Policy、Software Release consumer 的精确直接依赖集合为该产品包、`rss-contract`、`rss-request-context`，
+两个 canonical owner 的 features 均关闭；由 `hack/core_consumer.py` 校验精确集合、来源、features 及从产品包自身出发的依赖闭包，
+不得通过 consumer 的直接依赖补齐产品包缺失的声明。
+使用独立 workspace、Cargo.lock、Cargo 配置及 target，不通过父仓 path/patch、其他成员或隐式 feature 合并补齐依赖。
 准备独立 lock 后执行 `cargo check --locked`、`cargo test --locked`，consumer 的测试通过公共 API 断言实际结果；
 同时保存 `cargo metadata --locked --format-version 1` 和 `cargo tree --locked -e features`，分别检查默认及实际选择的 feature 组合。
 核验祖先 Cargo 配置、package source identity 与依赖闭包，不能只设置 CARGO_HOME 就宣称隔离。
