@@ -703,7 +703,7 @@ async fn collection_run(
     Extension(audit): Extension<Audit>,
     Path((device, run)): Path<(String, uuid::Uuid)>,
     Query(coordinates): Query<Coordinates>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<crate::access::CollectionResponse>, Error> {
     audit.target(&device);
     audit.operation(run, "collection_read");
     let grant = app.policy.inventory(&auth.proof, &device, coordinates)?;

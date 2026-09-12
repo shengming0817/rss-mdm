@@ -120,7 +120,9 @@ async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownSt
 async fn wait_projected(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if runtime.inspect(run).await?["projection"] == "projected" {
+            if runtime.inspect(run).await?.projection
+                == crate::inventory_runtime::ProjectionStatus::Projected
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -183,7 +185,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let first = report(&service, &access, &credential, [Some("First"), Some("10")]).await?;
     let canonical = first.batch().unwrap().encode().to_vec();
     let runtime = open(access.clone()).await?;
-    ensure!(runtime.inspect(&first).await?["receipt"].is_null());
+    ensure!(runtime.inspect(&first).await?.receipt.is_none());
     let reports = access.pending_reports(A).await?;
     let durable = reports
         .iter()
@@ -229,7 +231,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
                     .await
                     .is_err()
             );
-            ensure!(runtime.inspect(&first).await?["receipt"].is_null());
+            ensure!(runtime.inspect(&first).await?.receipt.is_none());
             ensure!(
                 access
                     .pending_reports(A)
@@ -247,11 +249,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .await
             .unwrap_err();
         ensure!(outcome.kind() == rss_observation::ErrorKind::CommitUnknown);
-        ensure!(!runtime.inspect(&first).await?["receipt"].is_null());
+        ensure!(runtime.inspect(&first).await?.receipt.is_some());
     }
     runtime.deliver(durable, runtime.clock.deadline()).await?;
     let received = runtime.inspect(&first).await?;
-    ensure!(!received["receipt"].is_null() && received["projection"] == "pending");
+    ensure!(
+        received.receipt.is_some()
+            && received.projection == crate::inventory_runtime::ProjectionStatus::Pending
+    );
     ensure!(
         access
             .collection(&first.scope, Some(first.id))
@@ -302,8 +307,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_projected(&runtime, &full).await?;
-    ensure!(runtime.inspect(&partial).await?["projection"] == "not_applicable");
-    ensure!(runtime.inspect(&failed).await?["projection"] == "not_applicable");
+    ensure!(
+        runtime.inspect(&partial).await?.projection
+            == crate::inventory_runtime::ProjectionStatus::NotApplicable
+    );
+    ensure!(
+        runtime.inspect(&failed).await?.projection
+            == crate::inventory_runtime::ProjectionStatus::NotApplicable
+    );
     ensure!(reader.read(&full.scope).await?[0].value == "New");
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
@@ -342,7 +353,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(matches!(stopped, rss_runtime::TaskExit::Failed(_)) && !runtime.readiness.ready());
     ensure!(!owner.shutdown().join().await?.is_clean());
     ensure!(reader.read(&full.scope).await?[0].value == "New");
-    ensure!(runtime.inspect(&broken).await?["projection"] == "pending");
+    ensure!(
+        runtime.inspect(&broken).await?.projection
+            == crate::inventory_runtime::ProjectionStatus::Pending
+    );
     runtime.close_fixture().await?;
     root.execute("DROP TRIGGER reject_inventory_test ON mdm.inventory; DROP FUNCTION mdm.reject_inventory_test()").await?;
     let runtime = open(access.clone()).await?;

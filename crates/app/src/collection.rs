@@ -11,6 +11,47 @@ pub(crate) use store::{
 
 pub(crate) const URIS: [&str; 2] = ["./DevInfo/Mod", "./DevDetail/SwV"];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RunResult {
+    Pending,
+    Snapshot,
+    Partial,
+    Failed,
+}
+impl RunResult {
+    fn parse(value: &str) -> Result<Self, Error> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "snapshot" => Ok(Self::Snapshot),
+            "partial" => Ok(Self::Partial),
+            "failed" => Ok(Self::Failed),
+            _ => Err(corrupt()),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FinishReason {
+    Complete,
+    MessageBudget,
+    Timeout,
+    Superseded,
+    Revoked,
+}
+impl FinishReason {
+    fn parse(value: &str) -> Result<Self, Error> {
+        match value {
+            "complete" => Ok(Self::Complete),
+            "message_budget" => Ok(Self::MessageBudget),
+            "timeout" => Ok(Self::Timeout),
+            "superseded" => Ok(Self::Superseded),
+            "revoked" => Ok(Self::Revoked),
+            _ => Err(corrupt()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Quality {

@@ -41,7 +41,7 @@ pub(crate) struct InventoryRead<'a> {
 pub(crate) struct DangerousAction<'a> {
     _proof: &'a VerifiedIdentity,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Coordinates {
     pub source: ReportSource,
@@ -171,7 +171,81 @@ impl Policy {
         Ok(DangerousAction { _proof: proof })
     }
 }
-pub(crate) type InventoryResponse = serde_json::Value;
+#[derive(Serialize)]
+pub(crate) struct InventoryResponse {
+    tenant_id: String,
+    device_id: String,
+    registration: String,
+    source: ReportSource,
+    epoch: String,
+    coverage: rss_observation::Coverage,
+    availability: Availability,
+    fields: Vec<FieldResponse>,
+    latest_run: Option<RunSummary>,
+    delivery: Option<crate::inventory_runtime::DeliveryStatus>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Availability {
+    Current,
+    LastKnown,
+    Unavailable,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TimeBasis {
+    ServerReceived,
+}
+#[derive(Serialize)]
+struct LastGood {
+    value: String,
+    batch_id: String,
+    reported_at: i64,
+    received_at: i64,
+}
+#[derive(Serialize)]
+struct LatestAttempt {
+    run_id: uuid::Uuid,
+    quality: crate::collection::Quality,
+    status: Option<u16>,
+    time_basis: TimeBasis,
+    received_at: Option<i64>,
+}
+#[derive(Serialize)]
+struct FieldResponse {
+    field: &'static str,
+    last_good: Option<LastGood>,
+    latest_attempt: Option<LatestAttempt>,
+}
+#[derive(Serialize)]
+struct RunSummary {
+    run_id: uuid::Uuid,
+    sequence: u64,
+    result: crate::collection::RunResult,
+    reason: Option<crate::collection::FinishReason>,
+    started_at: i64,
+    finished_at: Option<i64>,
+    time_basis: TimeBasis,
+}
+#[derive(Serialize)]
+struct RunField {
+    field: &'static str,
+    quality: crate::collection::Quality,
+    status: Option<u16>,
+    received_at: Option<i64>,
+    time_basis: TimeBasis,
+}
+#[derive(Serialize)]
+pub(crate) struct CollectionResponse {
+    run: RunSummary,
+    registration: String,
+    source: ReportSource,
+    epoch: String,
+    coverage: rss_observation::Coverage,
+    fields: Vec<RunField>,
+    delivery: crate::inventory_runtime::DeliveryStatus,
+}
+
 pub(crate) struct InventoryService {
     reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
     devices: std::sync::Arc<DeviceService>,
@@ -208,40 +282,61 @@ impl InventoryService {
             .await
             .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
         let current = run.as_ref().is_some_and(|r| {
-            r.result == "snapshot"
+            r.result == crate::collection::RunResult::Snapshot
                 && fields.len() == 2
                 && fields.iter().all(|f| f.batch_id == r.id.to_string())
         }) && delivery
             .as_ref()
-            .is_some_and(|d| d["projection"] == "projected");
+            .is_some_and(|d| d.projection == crate::inventory_runtime::ProjectionStatus::Projected);
         let availability = if current {
-            "current"
+            Availability::Current
         } else if fields.is_empty() {
-            "unavailable"
+            Availability::Unavailable
         } else {
-            "last_known"
+            Availability::LastKnown
         };
-        let fields: Vec<_> = rss_mdm_inventory::FieldKey::ALL.iter().enumerate().map(|(index, key)| {
-            let good = fields.iter().find(|f| f.field == key.as_str());
-            serde_json::json!({"field":key.as_str(),
-                "last_good":good.map(|f| serde_json::json!({"value":f.value,"batch_id":f.batch_id,
-                    "reported_at":f.observed_at,"received_at":f.received_at})),
-                "latest_attempt":run.as_ref().map(|r| serde_json::json!({"run_id":r.id,"quality":r.attempts.fields[index].quality,
-                    "status":r.attempts.fields[index].status,"time_basis":"server_received","received_at":r.attempts.fields[index].received_at}))
+        let fields = rss_mdm_inventory::FieldKey::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                let good = fields.iter().find(|f| f.field == key.as_str());
+                FieldResponse {
+                    field: key.as_str(),
+                    last_good: good.map(|f| LastGood {
+                        value: f.value.clone(),
+                        batch_id: f.batch_id.clone(),
+                        reported_at: f.observed_at,
+                        received_at: f.received_at,
+                    }),
+                    latest_attempt: run.as_ref().map(|r| LatestAttempt {
+                        run_id: r.id,
+                        quality: r.attempts.fields[index].quality,
+                        status: r.attempts.fields[index].status,
+                        time_basis: TimeBasis::ServerReceived,
+                        received_at: r.attempts.fields[index].received_at,
+                    }),
+                }
             })
-        }).collect();
-        Ok(
-            serde_json::json!({"tenant_id":scope.tenant().to_string(),"device_id":grant.device,
-            "registration":scope.registration().as_str(),"source":scope.source().as_str(),"epoch":scope.epoch().as_str(),
-            "coverage":rss_mdm_inventory::coverage(),"availability":availability,"fields":fields,
-            "latest_run":run.as_ref().map(run_summary),"delivery":delivery}),
-        )
+            .collect();
+        Ok(InventoryResponse {
+            tenant_id: scope.tenant().to_string(),
+            device_id: grant.device,
+            registration: scope.registration().as_str().to_owned(),
+            source: grant.coordinates.source,
+            epoch: scope.epoch().as_str().to_owned(),
+            coverage: rss_mdm_inventory::coverage(),
+            availability,
+            fields,
+            latest_run: run.as_ref().map(run_summary),
+            delivery,
+        })
     }
+
     pub(crate) async fn run(
         &self,
         grant: InventoryRead<'_>,
         id: uuid::Uuid,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<CollectionResponse, Error> {
         let scope = self
             .devices
             .current_scope(grant.proof, &grant.device, grant.coordinates)
@@ -251,19 +346,38 @@ impl InventoryService {
             .collection(&scope, Some(id))
             .await?
             .ok_or(Error::NotFound)?;
-        let fields: Vec<_> = rss_mdm_inventory::FieldKey::ALL.iter().zip(&run.attempts.fields).map(|(key, attempt)| {
-            serde_json::json!({"field":key.as_str(),"quality":attempt.quality,"status":attempt.status,"received_at":attempt.received_at,"time_basis":"server_received"})
-        }).collect();
-        Ok(
-            serde_json::json!({"run":run_summary(&run),"registration":scope.registration().as_str(),
-            "source":scope.source().as_str(),"epoch":scope.epoch().as_str(),"coverage":rss_mdm_inventory::coverage(),
-            "fields":fields,"delivery":self.runtime.inspect(&run).await?}),
-        )
+        let fields = rss_mdm_inventory::FieldKey::ALL
+            .iter()
+            .zip(&run.attempts.fields)
+            .map(|(key, attempt)| RunField {
+                field: key.as_str(),
+                quality: attempt.quality,
+                status: attempt.status,
+                received_at: attempt.received_at,
+                time_basis: TimeBasis::ServerReceived,
+            })
+            .collect();
+        Ok(CollectionResponse {
+            run: run_summary(&run),
+            registration: scope.registration().as_str().to_owned(),
+            source: grant.coordinates.source,
+            epoch: scope.epoch().as_str().to_owned(),
+            coverage: rss_mdm_inventory::coverage(),
+            fields,
+            delivery: self.runtime.inspect(&run).await?,
+        })
     }
 }
-fn run_summary(run: &crate::collection::Run) -> serde_json::Value {
-    serde_json::json!({"run_id":run.id,"sequence":run.sequence,"result":run.result,"reason":run.reason,
-        "started_at":run.started_at,"finished_at":run.sealed_at,"time_basis":"server_received"})
+fn run_summary(run: &crate::collection::Run) -> RunSummary {
+    RunSummary {
+        run_id: run.id,
+        sequence: run.sequence,
+        result: run.result,
+        reason: run.reason,
+        started_at: run.started_at,
+        finished_at: run.sealed_at,
+        time_basis: TimeBasis::ServerReceived,
+    }
 }
 
 pub(crate) struct EnrollmentPermission<'a> {

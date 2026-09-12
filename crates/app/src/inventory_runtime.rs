@@ -32,6 +32,26 @@ const BUDGET: Duration = Duration::from_secs(5);
 const JOURNAL: &str = "mdm.observation.v1";
 const GENERATION: &str = "inventory-v1";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProjectionStatus {
+    Projected,
+    Pending,
+    PendingReceipt,
+    NotApplicable,
+}
+#[derive(serde::Serialize)]
+pub(crate) struct ReceiptStatus {
+    batch_id: String,
+    received_at: u64,
+    decision: rss_observation::Decision,
+}
+#[derive(serde::Serialize)]
+pub(crate) struct DeliveryStatus {
+    pub receipt: Option<ReceiptStatus>,
+    pub projection: ProjectionStatus,
+}
+
 #[derive(Clone)]
 pub(crate) struct Clock {
     now: Arc<dyn rss_observation::Clock>,
@@ -381,12 +401,15 @@ impl InventoryRuntime {
         }
     }
     /// Called only after product permission and current scope resolution. Inspect authoritative RSS facts.
-    pub(crate) async fn inspect(&self, run: &Run) -> Result<serde_json::Value, Error> {
+    pub(crate) async fn inspect(&self, run: &Run) -> Result<DeliveryStatus, Error> {
         if run.scope.tenant() != self.tenant {
             return Err(Error::Forbidden);
         }
         let Some(batch) = run.batch() else {
-            return Ok(serde_json::json!({"receipt":null,"projection":"not_applicable"}));
+            return Ok(DeliveryStatus {
+                receipt: None,
+                projection: ProjectionStatus::NotApplicable,
+            });
         };
         let grant = ReadGrant::verify(&ReadAuthority(&run.scope), run.scope.clone())
             .map_err(|_| unavailable())?;
@@ -413,10 +436,22 @@ impl InventoryRuntime {
         let applicable = receipt
             .as_ref()
             .is_some_and(|r| r.decision().outcome().is_applicable());
-        Ok(serde_json::json!({
-            "receipt":receipt.map(|r| serde_json::json!({"batch_id":r.batch().id().as_str(),"received_at":r.received_at(),"decision":r.decision()})),
-            "projection": if projected { "projected" } else if applicable { "pending" } else if matches!(batch.body(), rss_observation::Body::Snapshot(_)) { "pending_receipt" } else { "not_applicable" }
-        }))
+        Ok(DeliveryStatus {
+            receipt: receipt.map(|r| ReceiptStatus {
+                batch_id: r.batch().id().as_str().to_owned(),
+                received_at: r.received_at(),
+                decision: r.decision().clone(),
+            }),
+            projection: if projected {
+                ProjectionStatus::Projected
+            } else if applicable {
+                ProjectionStatus::Pending
+            } else if matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
+                ProjectionStatus::PendingReceipt
+            } else {
+                ProjectionStatus::NotApplicable
+            },
+        })
     }
 }
 

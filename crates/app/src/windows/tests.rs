@@ -1346,7 +1346,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         )
         .await?;
     let pending = store.collection(&scope, None).await?.unwrap();
-    ensure!(pending.result == "pending" && pending.batch().is_none());
+    ensure!(pending.result == crate::collection::RunResult::Pending && pending.batch().is_none());
     ensure!(
         reader.read(&scope).await?.is_empty(),
         "fragment projected before complete collection"
@@ -1373,7 +1373,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             .any(|c| matches!(c, Command::Status(s) if s.command == CommandName::Results))
     );
     let sealed = store.collection(&scope, None).await?.unwrap();
-    ensure!(sealed.id == pending.id && sealed.result == "snapshot");
+    ensure!(sealed.id == pending.id && sealed.result == crate::collection::RunResult::Snapshot);
     let bytes = sealed.batch().unwrap().encode().to_vec();
     ensure!(post(final_fragment).send().await?.status() == StatusCode::OK);
     ensure!(
@@ -1388,7 +1388,9 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     );
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if runtime.inspect(&sealed).await?["projection"] == "projected" {
+            if runtime.inspect(&sealed).await?.projection
+                == crate::inventory_runtime::ProjectionStatus::Projected
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1408,6 +1410,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             },
         )?)
         .await?;
+    let result = serde_json::to_value(result)?;
     ensure!(
         result["availability"] == "current"
             && result["fields"][0]["last_good"]["value"] == "Model-TLS"

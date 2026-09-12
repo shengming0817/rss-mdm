@@ -41,8 +41,8 @@ pub(crate) struct Run {
     pub started_at: i64,
     pub sealed_at: Option<i64>,
     pub attempts: Attempts,
-    pub result: String,
-    pub reason: Option<String>,
+    pub result: RunResult,
+    pub reason: Option<FinishReason>,
     batch: Option<Batch>,
     request: Vec<u8>,
     request_message: u32,
@@ -83,8 +83,13 @@ impl Run {
             sealed_at: row.try_get("sealed_at").map_err(db)?,
             attempts: serde_json::from_str(&row.try_get::<String, _>("attempts").map_err(db)?)
                 .map_err(|_| corrupt())?,
-            result: row.try_get("result").map_err(db)?,
-            reason: row.try_get("reason").map_err(db)?,
+            result: RunResult::parse(&row.try_get::<String, _>("result").map_err(db)?)?,
+            reason: row
+                .try_get::<Option<String>, _>("reason")
+                .map_err(db)?
+                .as_deref()
+                .map(FinishReason::parse)
+                .transpose()?,
             request: row.try_get("request").map_err(db)?,
             request_message: row
                 .try_get::<i64, _>("request_message")
