@@ -74,5 +74,68 @@ async fn static_commands_replay_and_borrowed_rollback() {
         |_| false
     ));
     assert!(!s.get(id, deadline()).await.unwrap().unwrap().deleted);
+    let unchanged = s
+        .execute(
+            op(),
+            at(),
+            &Command::Edit {
+                group: id,
+                expected: applied.group.revision,
+                name: "研发".into(),
+                description: "".into(),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unchanged.group, applied.group);
+    let edited = s
+        .execute(
+            op(),
+            at(),
+            &Command::Edit {
+                group: id,
+                expected: applied.group.revision,
+                name: "研发设备".into(),
+                description: "静态成员".into(),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        edited.group.revision.get(),
+        applied.group.revision.get() + 1
+    );
+    assert_eq!(edited.group.member_version, applied.group.member_version);
+    assert_eq!(edited.group.member_count, 2);
+    let operation = op();
+    let delete = Command::Delete {
+        group: id,
+        expected: edited.group.revision,
+    };
+    let deleted = s
+        .execute(operation, at(), &delete, deadline())
+        .await
+        .unwrap();
+    assert!(deleted.group.deleted);
+    assert_eq!((deleted.removed, deleted.group.member_count), (2, 0));
+    assert_eq!(
+        deleted,
+        s.execute(operation, at(), &delete, deadline())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        s.delta(operation, None, 10, deadline())
+            .await
+            .unwrap()
+            .removed,
+        ["a", "b"]
+    );
+    assert!(matches!(
+        s.execute(op(), at(), &create, deadline()).await,
+        Err(Error::Rejected(Rejection::IdentityConflict))
+    ));
     runtime.close().await;
 }

@@ -9,6 +9,13 @@ import group_postgres_consumer as consumer
 
 
 class GroupPostgresGuards(unittest.TestCase):
+    def test_active_tree_rejects_non_pg_drivers(self):
+        tree = '\n'.join(f'{name} v1.0.0' for name in consumer.PRODUCTS | consumer.RSS | {'sqlx-postgres'})
+        consumer.verify_active_tree(tree)
+        for name in ['sqlx-mysql', 'sqlx-sqlite', 'axum', 'hyper-util']:
+            with self.assertRaises(RuntimeError): consumer.verify_active_tree(tree + f'\n{name} v1.0.0')
+        with self.assertRaises(RuntimeError): consumer.verify_active_tree('')
+
     def test_empty_partial_and_ignored_success_fail(self):
         valid = '\n'.join(f'test {name} ... ok' for name in consumer.pg.EXPECTED)
         valid += f'\ntest result: ok. {len(consumer.pg.EXPECTED)} passed; 0 failed; 0 ignored;'
@@ -36,6 +43,10 @@ class GroupPostgresGuards(unittest.TestCase):
     def test_unrelated_product_source_and_features_are_rejected(self):
         data, source, pin, locked = self.fixture()
         consumer.verify_closure(data, source, pin, locked)
+        consumer.verify_no_feature_supplement(data, data)
+        extra_feature = copy.deepcopy(data)
+        extra_feature['resolve']['nodes'][0]['features'].append('unprovided')
+        with self.assertRaises(RuntimeError): consumer.verify_no_feature_supplement(extra_feature, data)
         for name in ['rss-mdm-group-postgres', 'rss-mdm-group', 'rss-contract']:
             altered = copy.deepcopy(data)
             next(p for p in altered['packages'] if p['name'] == name)['source'] = 'path+file:///parent'

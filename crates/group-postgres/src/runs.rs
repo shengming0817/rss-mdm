@@ -77,6 +77,39 @@ impl GroupStore {
         if r.snapshot.tenant != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
+        let g = db::group(tx, r.group, true).await?;
+        let old = db::operation(tx, r.id, true).await?;
+        if let Some(old) = &old {
+            if old.group != r.group
+                || old.kind != "recalculation"
+                || old.base != r.expected.get()
+                || old.rule_version.as_deref() != Some(&r.rule_version)
+                || old.as_of != r.as_of.unix_seconds()
+            {
+                return Ok(Err(Rejection::IdentityConflict));
+            }
+        } else {
+            let g = input!(g.ok_or(Rejection::NotFound));
+            input!(dynamic(&g, r.expected));
+            if g.rule_version.as_deref() != Some(&r.rule_version) {
+                return Ok(Err(Rejection::VersionConflict));
+            }
+        }
+        let rule = db::rule(tx, r.group, r.rule_version.clone()).await?;
+        // Validate every original object/fact BEFORE cloning or serializing it.
+        // Replays use their immutable original rule even after a current-rule change.
+        input!(
+            rule.recalculate(&r.snapshot, r.as_of, &[])
+                .map_err(core_rejection)
+        );
+        let valid_trigger = match &r.trigger {
+            Trigger::Manual => true,
+            Trigger::Periodic { slot } => trigger_text(slot),
+            Trigger::Change { source, event } => trigger_text(source) && trigger_text(event),
+        };
+        if !valid_trigger {
+            return Ok(Err(Rejection::InvalidInput));
+        }
         let snapshot =
             input!(codec::encode_snapshot(&r.snapshot).map_err(|_| Rejection::InvalidInput));
         let trigger = input!(codec::encode(&r.trigger).map_err(|_| Rejection::InvalidInput));
@@ -92,24 +125,12 @@ impl GroupStore {
             &trigger,
             &snapshot,
         );
-        let g = db::group(tx, r.group, true).await?;
-        if let Some(old) = db::operation(tx, r.id, true).await? {
-            if old.group != r.group || old.kind != "recalculation" || old.digest != hash {
+        if let Some(old) = old {
+            if old.digest != hash {
                 return Ok(Err(Rejection::IdentityConflict));
             }
             return Ok(Ok(run(old)?));
         }
-        let g = input!(g.ok_or(Rejection::NotFound));
-        input!(dynamic(&g, r.expected));
-        if g.rule_version.as_deref() != Some(&r.rule_version) {
-            return Ok(Err(Rejection::VersionConflict));
-        }
-        let rule = db::rule(tx, r.group, r.rule_version.clone()).await?;
-        // Validate the original input before normalization; duplicates still consume core budgets.
-        input!(
-            rule.recalculate(&r.snapshot, r.as_of, &[])
-                .map_err(core_rejection)
-        );
         db::insert_operation(
             tx,
             NewOperation {
@@ -381,4 +402,10 @@ impl GroupStore {
 }
 fn data_time(t: i64) -> Result<Timepoint, Error> {
     Timepoint::try_from(t).map_err(|_| Rejection::InvalidStoredDocument.into())
+}
+
+fn trigger_text(s: &str) -> bool {
+    !s.trim().is_empty()
+        && s.len() <= rss_mdm_group::limits::STRING_BYTES
+        && !s.chars().any(char::is_control)
 }

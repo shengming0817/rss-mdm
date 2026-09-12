@@ -20,7 +20,8 @@ RSS = {'rss-contract', 'rss-request-context', 'rss-diag-context', 'rss-redact',
 DIRECT = {'rss-mdm-group-postgres', 'rss-contract', 'rss-request-context',
           'rss-transactional-messaging', 'rss-transactional-messaging-postgres',
           'tokio', 'sqlx', 'serde_json', 'uuid'}
-FORBIDDEN = {'rss-mdm-app', 'axum', 'reqwest', 'hyper', 'sqlx-mysql', 'sqlx-sqlite'}
+FORBIDDEN = {'rss-mdm-app', 'axum', 'reqwest', 'hyper'}
+INACTIVE_DRIVERS = {'sqlx-mysql', 'sqlx-sqlite'}
 
 
 def verify_closure(data, product_source, pin, locked):
@@ -65,7 +66,30 @@ def verify_closure(data, product_source, pin, locked):
             ci.require(nodes[key]['features'] == [], 'extend matrix when adapter production features change')
         if name == 'rss-transactional-messaging':
             ci.require(nodes[key]['features'] == ['producer'], 'consumer must select only producer')
+        if name in {'sqlx', 'sqlx-macros', 'sqlx-macros-core'}:
+            ci.require(not any(f.startswith(('mysql', 'sqlite', '_sqlite', 'sqlx-mysql', 'sqlx-sqlite')) for f in nodes[key]['features']), 'non-PG driver feature enabled')
+        if name in INACTIVE_DRIVERS:
+            # Cargo metadata 1.96 retains SQLx's weak optional edges (e.g.
+            # sqlx-sqlite?/json) even without its enabling feature. Check the
+            # source of those edges and independently inspect the active tree.
+            parents = {packages[n['id']]['name'] for n in nodes.values() if any(d['pkg'] == key for d in n['deps'])}
+            ci.require(parents <= {'sqlx', 'sqlx-macros-core'}, 'non-PG driver has a real consumer')
     ci.require(found == PRODUCTS | RSS, 'missing required product/RSS closure')
+
+
+def verify_active_tree(tree):
+    names = {line.split()[0] for line in tree.splitlines() if line.strip()}
+    ci.require(PRODUCTS | RSS <= names and 'sqlx-postgres' in names, 'active tree is incomplete')
+    ci.require(not any(name == banned or name.startswith(banned + '-') for name in names for banned in FORBIDDEN | INACTIVE_DRIVERS), 'forbidden active dependency')
+
+
+def verify_no_feature_supplement(consumer, baseline):
+    def features(data):
+        root = data['resolve']['root']
+        return {n['id']: set(n['features']) for n in data['resolve']['nodes'] if n['id'] != root}
+    used, provided = features(consumer), features(baseline)
+    ci.require(set(used) == set(provided), 'public consumer supplements adapter dependency closure')
+    ci.require(all(used[key] <= provided[key] for key in used), 'public consumer supplements adapter features')
 
 
 def run_consumer(source, base, defaults, head, pin, out):
@@ -100,13 +124,13 @@ def run_consumer(source, base, defaults, head, pin, out):
     log.write_text('')
     commands = []
 
-    def run(args, extra=None):
-        result = subprocess.run(args, cwd=root, env={**env, **(extra or {})}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    def run(args, extra=None, cwd=None):
+        result = subprocess.run(args, cwd=cwd or root, env={**env, **(extra or {})}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
         with log.open('a') as stream:
             stream.write(json.dumps(args) + '\n' + result.stderr)
             if args[:2] != ['cargo', 'metadata']:
                 stream.write(result.stdout)
-        commands.append({'argv': args, 'exitCode': result.returncode})
+        commands.append({'argv': args, 'workspace': 'adapter-only' if cwd else 'public-consumer', 'exitCode': result.returncode})
         ci.require(result.returncode == 0, f'{name} failed; see {log}')
         return result.stdout
 
@@ -115,9 +139,28 @@ def run_consumer(source, base, defaults, head, pin, out):
     lock_hash = hashlib.sha256((root / 'Cargo.lock').read_bytes()).hexdigest()
     data = json.loads(run(['cargo', 'metadata', '--locked', '--format-version', '1']))
     locked = {(p['name'], p['version'], p.get('source')) for p in ci.tomllib.loads((source / 'Cargo.lock').read_text())['package'] if p.get('source', '').startswith('registry+')}
+    (out / f'{name}-metadata.json').write_text(json.dumps(data))
     verify_closure(data, f'git+{source.as_uri()}?rev={head}#{head}', pin, locked)
+    # Resolve a second workspace with literally one dependency to prove the
+    # fixture's public RSS/SQLx/Tokio edges cannot supply missing features.
+    baseline = root / 'adapter-only'
+    (baseline / 'src').mkdir(parents=True)
+    (baseline / 'src/lib.rs').write_text('pub use rss_mdm_group_postgres::GroupStore;\n')
+    (baseline / 'Cargo.toml').write_text('[workspace]\n[package]\nname="group-adapter-only"\nversion="0.0.0"\nedition="2024"\n[dependencies]\n' +
+        f'rss-mdm-group-postgres={{git={json.dumps(source.as_uri())},rev="{head}",default-features={str(defaults).lower()}}}\n')
+    shutil.copyfile(root / 'Cargo.lock', baseline / 'Cargo.lock')
+    baseline_env = {'CARGO_TARGET_DIR': str(baseline / 'target')}
+    run(['cargo', 'metadata', '--format-version', '1'], baseline_env, baseline)
+    baseline_data = json.loads(run(['cargo', 'metadata', '--locked', '--format-version', '1'], baseline_env, baseline))
+    (out / f'{name}-adapter-only-metadata.json').write_text(json.dumps(baseline_data))
+    verify_no_feature_supplement(data, baseline_data)
+    run(['cargo', 'check', '--locked'], baseline_env, baseline)
+    shutil.copyfile(baseline / 'Cargo.lock', out / f'{name}-adapter-only-Cargo.lock')
     (out / f'{name}-metadata.json').write_text(json.dumps(data))
     (out / f'{name}-tree.txt').write_text(run(['cargo', 'tree', '--locked', '-e', 'features']))
+    active = run(['cargo', 'tree', '--locked', '--target', 'all', '-e', 'normal,build', '--prefix', 'none'])
+    (out / f'{name}-active-tree.txt').write_text(active)
+    verify_active_tree(active)
     run(['cargo', 'check', '--locked', '--all-targets'])
     run(['cargo', 'test', '--locked', '--no-run'])
     # Schema is installed from this consumer's exact public dependencies as well.
