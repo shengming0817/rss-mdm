@@ -117,11 +117,12 @@ async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownSt
     launch.finish();
     Ok(owner)
 }
-async fn wait_projected(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
+async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if runtime.inspect(run).await?.projection
-                == crate::inventory_runtime::ProjectionStatus::Projected
+            if runtime.readiness.ready()
+                && runtime.inspect(run).await?.projection
+                    == crate::inventory_runtime::ProjectionStatus::Projected
             {
                 break;
             }
@@ -311,7 +312,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     runtime.close_fixture().await?;
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
-    wait_projected(&runtime, &first).await?;
+    wait_ready_projection(&runtime, &first).await?;
     ensure!(runtime.readiness.ready());
     runtime.readiness.stop();
     ensure!(!runtime.readiness.ready());
@@ -333,7 +334,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
-    wait_projected(&runtime, &full).await?;
+    wait_ready_projection(&runtime, &full).await?;
     ensure!(
         runtime.inspect(&partial).await?.projection
             == crate::inventory_runtime::ProjectionStatus::NotApplicable
@@ -360,7 +361,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             let newer_run = report(&service, &access, &newer, [Some("New"), Some("11")])
                 .await
                 .unwrap();
-            wait_projected(&runtime, &newer_run).await.unwrap();
+            wait_ready_projection(&runtime, &newer_run).await.unwrap();
         })
         .await?;
     let latest = latest.unwrap();
@@ -415,7 +416,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     root.execute("DROP TRIGGER reject_inventory_test ON mdm.inventory; DROP FUNCTION mdm.reject_inventory_test()").await?;
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
-    wait_projected(&runtime, &broken).await?;
+    wait_ready_projection(&runtime, &broken).await?;
     ensure!(reader.read(&full.scope).await?[0].value == "After-failure");
     ensure!(owner.shutdown().join().await?.is_clean());
 
