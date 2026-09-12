@@ -89,7 +89,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "8", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "9", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -100,10 +100,11 @@ def verify_migrations(container, binary, config, root, env):
 def verify_startup_deadlines(binary, root, port, env):
     import socket
     config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
-    for name,value in [('api-password','api-fixture'),('access-password','access-fixture'),('oidc-secret','o'*40),('validation-secret','v'*40)]:
+    for name,value in [('api-password','api-fixture'),('access-password','access-fixture'),('runtime-password','runtime-fixture'),('oidc-secret','o'*40),('validation-secret','v'*40)]:
         (root/name).write_text(value);os.chmod(root/name,0o600)
     config['database']={'host':'localhost','port':int(port),'name':'mdm_test','user':'mdm_api','password_file':str(root/'api-password'),'ca_file':str(root/'ca.crt')}
     config['access_database']={**config['database'],'user':'mdm_access','password_file':str(root/'access-password')}
+    config['runtime_database']={**config['database'],'user':'mdm_runtime','password_file':str(root/'runtime-password')}
     config['identity'].update(oidc_secret_file=str(root/'oidc-secret'),validation_secret_file=str(root/'validation-secret'),ca_file=str(root/'ca.crt'))
     config["windows"]=json.loads((root/"windows.json").read_text())
     for stage in ['database','identity']:
@@ -112,6 +113,7 @@ def verify_startup_deadlines(binary, root, port, env):
             stalled_port=stalled.getsockname()[1]
             config['database']['port']=stalled_port if stage=='database' else int(port)
             config['access_database']['port']=config['database']['port']
+            config['runtime_database']['port']=config['database']['port']
             config['identity']['issuer']='https://localhost:'+str(stalled_port)+'/oidc'
             path=root/'stalled.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
             start=time.monotonic()
@@ -177,6 +179,9 @@ def main():
                 print(windows.stdout,end='',flush=True)
                 require(windows.returncode == 0, 'Windows T2 failed')
                 verify_windows_result(windows.stdout)
+                collection=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","inventory_runtime::tests::durable_report_recovery_and_projection","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(collection.stdout,end='',flush=True)
+                require(collection.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in collection.stdout, 'collection recovery T2 did not execute successfully')
                 if not windows_only: run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
         finally:
             primary = sys.exception()

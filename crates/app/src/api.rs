@@ -30,6 +30,7 @@ pub(crate) struct App {
     pub(crate) sessions: Sessions,
     pub(crate) policy: Arc<Policy>,
     pub(crate) inventory: InventoryService,
+    pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) windows: crate::windows::Windows,
     pub(crate) access: Arc<AccessStore>,
@@ -85,8 +86,16 @@ pub(crate) async fn application(
     reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
 ) -> Result<Router, Error> {
+    let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
+        config.runtime_database.options()?,
+        access.clone(),
+        rss_request_context::TenantId::parse(&config.identity.tenant_id)
+            .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?,
+        monotonic.clone(),
+    )
+    .await?;
     Ok(
-        from_compiled(config.compile()?, clock, monotonic, reader, access)
+        from_compiled(config.compile()?, clock, monotonic, reader, access, runtime)
             .await?
             .browser,
     )
@@ -97,14 +106,13 @@ pub(crate) async fn from_compiled(
     monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
+    runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
 ) -> Result<crate::windows::Routers, Error> {
     let crate::config::Compiled { config, policy } = compiled;
     let policy = Arc::new(policy);
     let devices = Arc::new(crate::device::DeviceService::new(
         access.clone(),
         policy.clone(),
-        None,
-        monotonic.clone(),
     ));
     let identity = Identity::connect(&config, clock.clone()).await?;
     let host = config
@@ -125,7 +133,8 @@ pub(crate) async fn from_compiled(
         identity,
         sessions: Sessions::new(clock, 1000, 10000),
         policy,
-        inventory: InventoryService::new(reader, devices.clone()),
+        inventory: InventoryService::new(reader, devices.clone(), access.clone(), runtime.clone()),
+        readiness: runtime.readiness.clone(),
         devices,
         origin: config.product_origin,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -142,6 +151,7 @@ pub(crate) async fn from_compiled(
         )
         .route("/auth/me", get(me))
         .route("/devices/{id}/inventory", get(inventory))
+        .route("/devices/{id}/collection-runs/{run}", get(collection_run))
         .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     let (enrollment, management) = crate::windows::routers(state.clone(), monotonic.clone());
@@ -154,6 +164,7 @@ pub(crate) async fn from_compiled(
         )
         .route("/api/v1/auth/logout", post(logout))
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
+        .route("/readyz", get(ready))
         .with_state(state)
         .layer(DefaultBodyLimit::max(16384))
         .layer(middleware::from_fn_with_state(
@@ -199,6 +210,7 @@ pub(crate) async fn envelope(
         "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
         "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
         "/api/v1/devices/{id}/inventory" => "inventory_read",
+        "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
         "/auth/login" | "/auth/callback" | "/api/v1/auth/logout" | "/api/v1/auth/me" => {
             "authentication"
@@ -212,7 +224,7 @@ pub(crate) async fn envelope(
     let soap = route.starts_with("/EnrollmentServer/");
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
-    let audited = request.uri().path() != "/livez";
+    let audited = !matches!(request.uri().path(), "/livez" | "/readyz");
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -672,6 +684,30 @@ async fn revoke_registration(
         .revoke_inner(&auth.proof, &device, registration, key, &audit)
         .await
         .map(Json)
+}
+
+async fn ready(State(app): State<Arc<App>>) -> Response {
+    if app.readiness.ready() {
+        Json(json!({"ready":true})).into_response()
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ready":false})),
+        )
+            .into_response()
+    }
+}
+async fn collection_run(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((device, run)): Path<(String, uuid::Uuid)>,
+    Query(coordinates): Query<Coordinates>,
+) -> Result<Json<Value>, Error> {
+    audit.target(&device);
+    audit.operation(run, "collection_read");
+    let grant = app.policy.inventory(&auth.proof, &device, coordinates)?;
+    Ok(Json(app.inventory.run(grant, run).await?))
 }
 
 #[cfg(test)]

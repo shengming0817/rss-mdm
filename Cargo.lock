@@ -2269,6 +2269,7 @@ dependencies = [
  "rss-mdm-windows-mdm",
  "rss-observation",
  "rss-observation-postgres",
+ "rss-projection",
  "rss-projection-postgres",
  "rss-request-context",
  "rss-runtime",

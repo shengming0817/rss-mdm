@@ -95,12 +95,16 @@ impl crate::AccessStore {
         let message_id = i64::from(message.header.message_id);
         let digest = format!("{:x}", Sha256::digest(bytes));
         let mut tx = self.begin(&tenant).await?;
+        let scope = crate::collection::revalidate(&mut tx, principal).await?;
         // One registration lock orders nonce changes across sessions and restarts.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2351))")
             .bind(format!("{tenant}:{registration}"))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        // Session rows precede their collection row, including supersession and retention.
+        sqlx::query("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting') FOR UPDATE")
+            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
         let stored = match session_decision(&mut tx, principal, message, &digest, audit).await? {
             SessionDecision::Replay(bytes) => return Ok(bytes),
             SessionDecision::Continue(stored) => stored,
@@ -133,8 +137,8 @@ impl crate::AccessStore {
             .unwrap_or(registration_data.try_get("server_nonce").map_err(db)?);
         let server = authenticate_server(stored.as_ref(), message, nonce)?;
         let initial = initialization(message, authenticated_before)?;
-        let complete = authenticated && server.authenticated;
-        let response = management_response(
+        let authenticated_session = authenticated && server.authenticated;
+        let mut response = management_response(
             windows,
             principal,
             message,
@@ -143,28 +147,109 @@ impl crate::AccessStore {
             &server.nonce,
             initial,
         )?;
+        let (run_id, complete) = collect(
+            &mut tx,
+            &scope,
+            message,
+            stored.as_ref(),
+            &mut response,
+            authenticated_session,
+            audit,
+        )
+        .await?;
+        let response = syncml::encode(&response, &CodecLimits::default())
+            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
         let correlation =
             std::str::from_utf8(&response).map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        let state = if complete { "complete" } else { "challenge" };
+        let state = session_state(complete, run_id);
         if stored.is_none() {
-            // A registration has one advancing session. Keep old exact responses replayable.
-            sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='challenge'")
-                .bind(&tenant).bind(&registration).execute(&mut *tx).await.map_err(db)?;
             sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
                 .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
         } else {
             sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,correlation=$7,nonce=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
                 .bind(&tenant).bind(&registration).bind(&session).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
         }
-        if server.authenticated {
-            sqlx::query("UPDATE mdm_access.enrollment_certificates SET server_nonce=$3 WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
-            .bind(&tenant).bind(request.to_string()).bind(&server.next_nonce).execute(&mut *tx).await.map_err(db)?;
-        }
+        sqlx::query("UPDATE mdm_access.management_sessions SET run_id=$4::uuid WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
+            .bind(&tenant).bind(&registration).bind(&session).bind(run_id.map(|id| id.to_string())).execute(&mut *tx).await.map_err(db)?;
+        server
+            .persist_nonce(&mut tx, &tenant, request, message)
+            .await?;
         sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&response).execute(&mut *tx).await.map_err(db)?;
         self.commit_audited(tx, audit, None).await?;
         Ok(response)
     }
+}
+
+fn session_state(complete: bool, run_id: Option<Uuid>) -> &'static str {
+    match (complete, run_id) {
+        (true, _) => "complete",
+        (false, Some(_)) => "collecting",
+        (false, None) => "challenge",
+    }
+}
+
+async fn collect(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scope: &rss_observation::Scope,
+    message: &syncml::Message,
+    stored: Option<&sqlx::postgres::PgRow>,
+    response: &mut syncml::Message,
+    authenticated_session: bool,
+    audit: &Audit,
+) -> Result<(Option<Uuid>, bool), Error> {
+    let tenant = scope.tenant().to_string();
+    let registration = scope.registration().as_str().to_owned();
+    let run_id = stored
+        .map(|row| row.try_get::<Option<String>, _>("run_id").map_err(db))
+        .transpose()?
+        .flatten()
+        .map(|id| Uuid::parse_str(&id).map_err(|_| Error::Unavailable(Failure::AccessStore)))
+        .transpose()?;
+    if !authenticated_session
+        && message
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Results(_)))
+    {
+        return Err(Error::Unauthorized);
+    }
+    if stored.is_none() {
+        crate::collection::terminate(tx, &tenant, &registration, "superseded").await?;
+        sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
+                .bind(&tenant).bind(&registration).execute(&mut **tx).await.map_err(db)?;
+    }
+    let mut complete = false;
+    if let Some(id) = run_id {
+        if !authenticated_session {
+            return Err(Error::Unauthorized);
+        }
+        let previous: String = stored
+            .as_ref()
+            .ok_or(Error::Conflict)?
+            .try_get("correlation")
+            .map_err(db)?;
+        complete = crate::collection::accept(tx, &tenant, id, message, &previous).await?;
+        audit.operation(id, "windows_management");
+    } else if message
+        .commands
+        .iter()
+        .any(|c| matches!(c, Command::Results(_)))
+    {
+        return Err(Error::Conflict);
+    }
+    let run_id = if authenticated_session && run_id.is_none() {
+        let id = crate::collection::create(tx, scope, response).await?;
+        audit.operation(id, "windows_management");
+        if message.header.message_id == 8 {
+            crate::collection::terminate(tx, &tenant, &registration, "message_budget").await?;
+            complete = true;
+        }
+        Some(id)
+    } else {
+        run_id
+    };
+    Ok((run_id, complete))
 }
 
 fn authenticate_client(
@@ -201,6 +286,25 @@ struct ServerAuthentication {
     next_nonce: Vec<u8>,
     authenticated: bool,
 }
+impl ServerAuthentication {
+    async fn persist_nonce(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant: &str,
+        request: Uuid,
+        message: &syncml::Message,
+    ) -> Result<(), Error> {
+        if let Some(nonce) = self.advertised_nonce(message) {
+            sqlx::query("UPDATE mdm_access.enrollment_certificates SET server_nonce=$3 WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
+                .bind(tenant).bind(request.to_string()).bind(nonce).execute(&mut **tx).await.map_err(db)?;
+        }
+        Ok(())
+    }
+    fn advertised_nonce(&self, message: &syncml::Message) -> Option<&[u8]> {
+        (self.authenticated && message.commands.iter().any(|c| matches!(c, Command::Status(s) if s.command == CommandName::SyncHdr && s.challenge.is_some()))).then_some(self.next_nonce.as_slice())
+    }
+}
+
 fn authenticate_server(
     stored: Option<&sqlx::postgres::PgRow>,
     message: &syncml::Message,
@@ -217,12 +321,13 @@ fn authenticate_server(
         let expected =
             syncml::Expected::new(sent, message.header.message_id, &CodecLimits::default())
                 .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+        let collecting = row.try_get::<String, _>("state").map_err(db)? == "collecting";
         let statuses = syncml::Message {
             header: message.header.clone(),
             commands: message
                 .commands
                 .iter()
-                .filter(|c| matches!(c, Command::Status(_)))
+                .filter(|c| matches!(c, Command::Status(s) if !collecting || s.command == CommandName::SyncHdr))
                 .cloned()
                 .collect(),
             final_message: true,
@@ -239,6 +344,9 @@ fn authenticate_server(
             .ok_or(Error::Conflict)?;
         match header_status.code {
             212 => server_authenticated = true,
+            200 if row.try_get::<String, _>("state").map_err(db)? == "collecting" => {
+                server_authenticated = true
+            }
             401 | 407 => {}
             _ => return Err(Error::Unauthorized),
         }
@@ -256,7 +364,7 @@ fn authenticate_server(
             if !server_authenticated {
                 nonce = next_nonce.clone();
             }
-        } else {
+        } else if row.try_get::<String, _>("state").map_err(db)? != "collecting" {
             return Err(Error::Unauthorized);
         }
     }
@@ -273,7 +381,7 @@ fn initialization(
     let initial: Vec<_> = message
         .commands
         .iter()
-        .filter(|c| !matches!(c, Command::Status(_)))
+        .filter(|c| !matches!(c, Command::Status(_) | Command::Results(_)))
         .collect();
     if !authenticated_before
         && !matches!(
@@ -294,7 +402,7 @@ fn management_response(
     authenticated: bool,
     nonce: &[u8],
     initial: Vec<&Command>,
-) -> Result<Vec<u8>, Error> {
+) -> Result<syncml::Message, Error> {
     let mut commands = vec![Command::Status(Status {
         credential: None,
         id: 1,
@@ -331,6 +439,24 @@ fn management_response(
             }));
         }
     }
+    for result in message
+        .commands
+        .iter()
+        .filter(|c| matches!(c, Command::Results(_)))
+    {
+        commands.push(Command::Status(Status {
+            id: commands.len() as u32 + 1,
+            message_ref: message.header.message_id,
+            command_ref: result.id(),
+            command: CommandName::Results,
+            target_refs: vec![],
+            source_refs: vec![],
+            code: 200,
+            items: vec![],
+            challenge: None,
+            credential: None,
+        }));
+    }
     let response = syncml::Message {
         header: syncml::Header {
             session_id: message.header.session_id,
@@ -354,8 +480,7 @@ fn management_response(
         commands,
         final_message: true,
     };
-    syncml::encode(&response, &CodecLimits::default())
-        .map_err(|_| Error::Unavailable(Failure::Protocol))
+    Ok(response)
 }
 
 fn verify_session_identity(
@@ -386,7 +511,7 @@ async fn session_decision(
     let registration = principal.registration().to_string();
     let session = message.header.session_id.to_string();
     let message_id = i64::from(message.header.message_id);
-    let stored=sqlx::query("SELECT generation,credential::text,state,last_message,client_authenticated,correlation,nonce,expires_at>clock_timestamp() AS live FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 FOR UPDATE")
+    let stored=sqlx::query("SELECT generation,credential::text,run_id::text,state,last_message,client_authenticated,correlation,nonce,expires_at>clock_timestamp() AS live FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 FOR UPDATE")
         .bind(&tenant).bind(&registration).bind(&session).fetch_optional(&mut **tx).await.map_err(db)?;
     if let Some(row) = &stored {
         verify_session_identity(row, principal)?;
@@ -396,8 +521,10 @@ async fn session_decision(
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
             return old.try_get("response").map(SessionDecision::Replay).map_err(db);
         }
-        if row.try_get::<String, _>("state").map_err(db)? != "challenge"
-            || row.try_get::<i64, _>("last_message").map_err(db)? + 1 != message_id
+        if !matches!(
+            row.try_get::<String, _>("state").map_err(db)?.as_str(),
+            "challenge" | "collecting"
+        ) || row.try_get::<i64, _>("last_message").map_err(db)? + 1 != message_id
             || message_id > 8
         {
             return Err(Error::Conflict);

@@ -96,6 +96,7 @@ pub enum CommandName {
     Status,
     Alert,
     Replace,
+    Results,
 }
 impl CommandName {
     pub fn as_str(self) -> &'static str {
@@ -105,6 +106,7 @@ impl CommandName {
             Self::Status => "Status",
             Self::Alert => "Alert",
             Self::Replace => "Replace",
+            Self::Results => "Results",
         }
     }
     fn parse(s: &str) -> Result<Self> {
@@ -114,6 +116,7 @@ impl CommandName {
             "Status" => Ok(Self::Status),
             "Alert" => Ok(Self::Alert),
             "Replace" => Ok(Self::Replace),
+            "Results" => Ok(Self::Results),
             _ => Err(E::Unsupported),
         }
     }

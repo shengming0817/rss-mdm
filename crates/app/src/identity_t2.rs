@@ -213,6 +213,7 @@ async fn authorize(web: &Client, origin: &str, csrf: &str, url: Url) -> Result<U
 }
 #[derive(Default, Clone)]
 struct Browser {
+    network: Option<(Client, String)>,
     cookies: BTreeMap<String, String>,
     csrf: Option<String>,
     operation: Option<uuid::Uuid>,
@@ -282,7 +283,24 @@ impl Browser {
                     .append("x-mdm-request", axum::http::HeaderValue::from_str(marker)?);
             }
         }
-        let response = app.clone().oneshot(request).await?;
+        let response = if let Some((client, origin)) = &self.network {
+            let (parts, body) = request.into_parts();
+            let body = body.collect().await?.to_bytes();
+            let response = client
+                .request(parts.method, format!("{origin}{}", parts.uri))
+                .headers(parts.headers)
+                .body(body)
+                .send()
+                .await?;
+            let status = response.status();
+            let headers = response.headers().clone();
+            let mut output = axum::response::Response::new(Body::from(response.bytes().await?));
+            *output.status_mut() = status;
+            *output.headers_mut() = headers;
+            output
+        } else {
+            app.clone().oneshot(request).await?
+        };
         let status = response.status();
         ensure!(
             response
@@ -641,7 +659,7 @@ async fn matrix() -> Result<()> {
     println!("identity matrix: initial PKCE login and callback protections passed");
     let subject = me["subject"].as_str().unwrap();
     ensure!(me["roles"] == json!([]));
-    let query = format!("{DEVICE}/inventory?channel=mdm&source=mdm.windows");
+    let query = format!("{DEVICE}/inventory?source=mdm.windows");
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
     let mut damaged = Browser::default();
     damaged
@@ -686,7 +704,7 @@ async fn matrix() -> Result<()> {
         INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
-        INSERT INTO mdm_access.report_sources VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);
+        INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);
         INSERT INTO mdm.inventory VALUES('{TENANT}','mdm.observation.v1','inventory-v1','{encoded}','{coverage}','device.model','Model-A','fixture',1,2);
     "#
     ))?;
@@ -707,7 +725,7 @@ async fn matrix() -> Result<()> {
     );
     ensure!(count()? == before + 2, "identity success cached");
     let (status, assets) = browser.call(&authorized, Method::GET, &query, None).await?;
-    ensure!(status == StatusCode::OK && assets["fields"][0]["value"] == "Model-A");
+    ensure!(status == StatusCode::OK && assets["fields"][0]["last_good"]["value"] == "Model-A");
     ensure!(assets["tenant_id"] == TENANT);
     ensure!(assets["device_id"] == "device-1");
     ensure!(assets["registration"] == "99999999-9999-4999-8999-999999999991");
@@ -735,7 +753,7 @@ async fn matrix() -> Result<()> {
             )
             .await?
             .0
-            == StatusCode::NOT_FOUND
+            == StatusCode::BAD_REQUEST
     );
     ensure!(
         browser
@@ -1301,7 +1319,7 @@ async fn revoke_http_matrix(
         INSERT INTO mdm_access.devices VALUES('{TENANT}','revoke-device');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','revoke-device','mdm',1,'{request}','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
-        INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
+        INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
     let path = format!("/api/v1/devices/revoke-device/registrations/{registration}/revoke");
     let listing = "/api/v1/devices/revoke-device/registrations";
     let mut cfg = config.clone();
@@ -1443,6 +1461,82 @@ async fn revoke_http_matrix(
             "SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{TENANT}' AND operation_id='{}' AND action='credential_revoke' AND result='success'",
             browser.operation.unwrap()
         ))?.trim() == "1"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "hack/candidate_smoke.py: actual Linux arm64 OCI and approved Identity candidate"]
+async fn immutable_candidate_inventory_query() -> Result<()> {
+    let config: Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let origin = std::env::var("MDM_TEST_PUBLIC_ORIGIN")?;
+    let password = std::fs::read_to_string(std::env::var("MDM_TEST_PASSWORD_FILE")?)?;
+    let (web, csrf) = login_identity(&config, &origin, "admin", &password).await?;
+    let transport = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(12))
+        .build()?;
+    let mut browser = Browser {
+        network: Some((transport, std::env::var("MDM_CANDIDATE_HTTP_ORIGIN")?)),
+        ..Default::default()
+    };
+    let target = Router::new();
+    ensure!(browser.login(&target, &web, &origin, &csrf).await? == StatusCode::SEE_OTHER);
+    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
+    let scope = crate::device::scope(
+        rss_request_context::TenantId::parse(TENANT)?,
+        uuid::Uuid::parse_str("99999999-9999-4999-8999-999999999991")?,
+        "mdm.windows",
+        uuid::Uuid::parse_str("99999999-9999-4999-8999-999999999992")?,
+    )?;
+    pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','candidate-fixture','mdm','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
+        INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
+        INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
+        INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
+        INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);"))?;
+    let query = "/api/v1/devices/device-1/inventory?source=mdm.windows";
+    let before = count()?;
+    let (status, value) = browser.call(&target, Method::GET, query, None).await?;
+    ensure!(status == StatusCode::OK && value["availability"] == "unavailable");
+    ensure!(
+        count()? == before + 1,
+        "candidate skipped online Identity validation"
+    );
+    pg(&format!(
+        "INSERT INTO mdm.inventory VALUES('{TENANT}','mdm.observation.v1','inventory-v1','{}','{coverage}','device.model','Candidate-Model','read-fixture',1,2)",
+        scope.encode()?.replace('\'', "''")
+    ))?;
+    let (status, value) = browser.call(&target, Method::GET, query, None).await?;
+    ensure!(
+        status == StatusCode::OK
+            && value["availability"] == "last_known"
+            && value["fields"][0]["last_good"]["value"] == "Candidate-Model"
+    );
+    ensure!(
+        browser
+            .call(&target, Method::GET, &format!("{query}&channel=mdm"), None)
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
+    );
+    ensure!(
+        browser
+            .call(
+                &target,
+                Method::GET,
+                &query.replace("device-1", "device-other"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    ensure!(browser.call(&target, Method::GET, "/api/v1/devices/device-1/collection-runs/99999999-9999-4999-8999-999999999999?source=mdm.windows", None).await?.0 == StatusCode::NOT_FOUND);
+    println!(
+        "candidate authenticated inventory query, source contract, permission and run absence passed"
     );
     Ok(())
 }

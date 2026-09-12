@@ -13,8 +13,18 @@ impl AccessStore {
         let mut registrations = Vec::<String>::new();
         let mut sessions = Vec::<String>::new();
         for row in expired {
-            registrations.push(row.try_get("registration").map_err(db)?);
-            sessions.push(row.try_get("session_id").map_err(db)?);
+            let registration: String = row.try_get("registration").map_err(db)?;
+            let session: String = row.try_get("session_id").map_err(db)?;
+            crate::collection::terminate_session(
+                &mut tx,
+                tenant,
+                &registration,
+                Some(&session),
+                "timeout",
+            )
+            .await?;
+            registrations.push(registration);
+            sessions.push(session);
         }
         if registrations.is_empty() {
             return Ok(0);

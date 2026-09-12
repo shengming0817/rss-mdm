@@ -114,7 +114,7 @@ DevicePrincipal 绑定服务端 tenant、DeviceId、RegistrationId、凭据和�
 
 第一条只读闭环也包含最小持久审计：注册授权、凭据绑定/撤销、认证拒绝与授权查询可追溯。关键身份变更和成功审计同事务；审计失败拒绝变更。拒绝/查询审计失败不放宽权限，返回可诊断失败并告警，不允许静默丢失审计后宣布成功。
 
-Observation 的持久 receipt、Projection 的资产提交、设备命令应用、设备合规是独立事实。投影延迟必须可见；原始报告先完成接收事务，再消费已提交 journal，通过 Projection 的借用事务同时更新 Inventory 和 checkpoint。不得把两阶段描述为端到端同一事务，也不再加中间报告队列。
+Observation 的持久 receipt、Projection 的资产提交、设备命令应用、设备合规是独立事实。投影延迟必须可见；产品先以 CollectionRun 原子保存已授权输入并封存原报告，再提交 Observation 接收事务，之后消费已提交 journal，通过 Projection 的借用事务同时更新 Inventory 和 checkpoint。不得把两阶段描述为端到端同一事务，也不再加中间报告队列。CollectionRun 自身持有采集关联、质量、不可变报告和最小交付进度；receipt、journal 与 checkpoint 仍各归 RSS 原 owner。
 
 ## 下行：期望到可核实状态
 

@@ -45,6 +45,38 @@ pub async fn migrate(options: &PgConnectOptions) -> Result<()> {
         )),
     }
 }
+fn units() -> [(&'static str, &'static str); 9] {
+    [
+        ("access-v1", include_str!("../migrations/0001_access.sql")),
+        ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
+        ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
+        ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
+        (
+            "inventory-api-reader-v1",
+            rss_mdm_inventory_postgres::READER_MIGRATION_SQL,
+        ),
+        (
+            "access-audit-request-index-v1",
+            include_str!("../migrations/0002_audit_request_index.sql"),
+        ),
+        (
+            "device-identity-v1",
+            include_str!("../migrations/0003_device_identity.sql"),
+        ),
+        (
+            "windows-enrollment-v1",
+            include_str!("../migrations/0004_windows_enrollment.sql"),
+        ),
+        (
+            "windows-collection-v1",
+            include_str!("../migrations/0005_collection.sql"),
+        ),
+    ]
+}
+/// Exact immutable migration units embedded in this executable, without database access.
+pub fn manifest() -> serde_json::Value {
+    serde_json::json!({"units":units().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))}))})
+}
 async fn migrate_on(conn: &mut PgConnection) -> Result<()> {
     sqlx::raw_sql("SET statement_timeout='30s'; SET lock_timeout='10s';")
         .execute(&mut *conn)
@@ -69,28 +101,7 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
         .map_err(|_| MigrationError::at("installation", "installation lock"))?;
     sqlx::raw_sql("CREATE TABLE IF NOT EXISTS public.mdm_migrations(name text PRIMARY KEY,digest text NOT NULL,complete boolean NOT NULL DEFAULT false)")
         .execute(&mut *conn).await.map_err(|_|MigrationError::at("installation","ledger initialization"))?;
-    for (name, sql) in [
-        ("access-v1", include_str!("../migrations/0001_access.sql")),
-        ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
-        ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
-        ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
-        (
-            "inventory-api-reader-v1",
-            rss_mdm_inventory_postgres::READER_MIGRATION_SQL,
-        ),
-        (
-            "access-audit-request-index-v1",
-            include_str!("../migrations/0002_audit_request_index.sql"),
-        ),
-        (
-            "device-identity-v1",
-            include_str!("../migrations/0003_device_identity.sql"),
-        ),
-        (
-            "windows-enrollment-v1",
-            include_str!("../migrations/0004_windows_enrollment.sql"),
-        ),
-    ] {
+    for (name, sql) in units() {
         let digest = format!("{:x}", Sha256::digest(sql));
         let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
             .bind(name)

@@ -1,6 +1,6 @@
 //! MDM alone owns roles and device permissions. Identity facts never contain them.
 use crate::Error;
-use crate::device::{Channel, DeviceService};
+use crate::device::{DeviceService, ReportSource};
 use crate::{ConfigIssue, Failure};
 use rss_identity_client::VerifiedIdentity;
 use rss_observation::{Id, Scope};
@@ -44,8 +44,7 @@ pub(crate) struct DangerousAction<'a> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Coordinates {
-    pub channel: Channel,
-    pub source: String,
+    pub source: ReportSource,
 }
 impl Policy {
     pub fn new(tenant: &str, client: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
@@ -135,7 +134,7 @@ impl Policy {
         c: Coordinates,
     ) -> Result<InventoryRead<'a>, Error> {
         self.device(proof, device)?;
-        Id::new(&c.source).map_err(|_| Error::Malformed)?;
+        Id::new(device).map_err(|_| Error::Malformed)?;
         Ok(InventoryRead {
             proof,
             device: device.into(),
@@ -172,75 +171,99 @@ impl Policy {
         Ok(DangerousAction { _proof: proof })
     }
 }
-#[derive(Serialize)]
-pub(crate) struct InventoryResponse {
-    tenant_id: String,
-    device_id: String,
-    registration: String,
-    source: String,
-    epoch: String,
-    coverage: rss_observation::Coverage,
-    fields: Vec<FieldResponse>,
-}
-#[derive(Serialize)]
-struct FieldResponse {
-    field: String,
-    value: String,
-    batch_id: String,
-    observed_at: i64,
-    received_at: i64,
-}
+pub(crate) type InventoryResponse = serde_json::Value;
 pub(crate) struct InventoryService {
     reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
     devices: std::sync::Arc<DeviceService>,
+    access: std::sync::Arc<crate::AccessStore>,
+    runtime: std::sync::Arc<crate::inventory_runtime::InventoryRuntime>,
 }
 impl InventoryService {
     pub(super) fn new(
         reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
         devices: std::sync::Arc<DeviceService>,
+        access: std::sync::Arc<crate::AccessStore>,
+        runtime: std::sync::Arc<crate::inventory_runtime::InventoryRuntime>,
     ) -> Self {
-        Self { reader, devices }
+        Self {
+            reader,
+            devices,
+            access,
+            runtime,
+        }
     }
     pub async fn read(&self, grant: InventoryRead<'_>) -> Result<InventoryResponse, Error> {
-        // The request's proof is retained until the read completes; no authority cache.
         let scope: Scope = self
             .devices
             .current_scope(grant.proof, &grant.device, grant.coordinates)
             .await?;
-        let fields = self.reader.read(&scope).await.map_err(|error| {
-            Error::Unavailable(
-                if matches!(
-                    error.downcast_ref::<sqlx::Error>(),
-                    Some(sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed)
-                ) {
-                    Failure::InventoryPool
-                } else {
-                    Failure::InventoryQuery
-                },
-            )
-        })?;
-        if fields.is_empty() {
-            return Err(Error::NotFound);
-        }
-        Ok(InventoryResponse {
-            tenant_id: grant.proof.tenant_id().into(),
-            device_id: grant.device,
-            registration: scope.registration().as_str().into(),
-            source: scope.source().as_str().into(),
-            epoch: scope.epoch().as_str().into(),
-            coverage: rss_mdm_inventory::coverage(),
-            fields: fields
-                .into_iter()
-                .map(|v| FieldResponse {
-                    field: v.field,
-                    value: v.value,
-                    batch_id: v.batch_id,
-                    observed_at: v.observed_at,
-                    received_at: v.received_at,
-                })
-                .collect(),
-        })
+        let run = self.access.collection(&scope, None).await?;
+        let delivery = match &run {
+            Some(run) => Some(self.runtime.inspect(run).await?),
+            None => None,
+        };
+        let fields = self
+            .reader
+            .read(&scope)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+        let current = run.as_ref().is_some_and(|r| {
+            r.result == "snapshot"
+                && fields.len() == 2
+                && fields.iter().all(|f| f.batch_id == r.id.to_string())
+        }) && delivery
+            .as_ref()
+            .is_some_and(|d| d["projection"] == "projected");
+        let availability = if current {
+            "current"
+        } else if fields.is_empty() {
+            "unavailable"
+        } else {
+            "last_known"
+        };
+        let fields: Vec<_> = rss_mdm_inventory::FieldKey::ALL.iter().enumerate().map(|(index, key)| {
+            let good = fields.iter().find(|f| f.field == key.as_str());
+            serde_json::json!({"field":key.as_str(),
+                "last_good":good.map(|f| serde_json::json!({"value":f.value,"batch_id":f.batch_id,
+                    "reported_at":f.observed_at,"received_at":f.received_at})),
+                "latest_attempt":run.as_ref().map(|r| serde_json::json!({"run_id":r.id,"quality":r.attempts.fields[index].quality,
+                    "status":r.attempts.fields[index].status,"time_basis":"server_received","received_at":r.attempts.fields[index].received_at}))
+            })
+        }).collect();
+        Ok(
+            serde_json::json!({"tenant_id":scope.tenant().to_string(),"device_id":grant.device,
+            "registration":scope.registration().as_str(),"source":scope.source().as_str(),"epoch":scope.epoch().as_str(),
+            "coverage":rss_mdm_inventory::coverage(),"availability":availability,"fields":fields,
+            "latest_run":run.as_ref().map(run_summary),"delivery":delivery}),
+        )
     }
+    pub(crate) async fn run(
+        &self,
+        grant: InventoryRead<'_>,
+        id: uuid::Uuid,
+    ) -> Result<serde_json::Value, Error> {
+        let scope = self
+            .devices
+            .current_scope(grant.proof, &grant.device, grant.coordinates)
+            .await?;
+        let run = self
+            .access
+            .collection(&scope, Some(id))
+            .await?
+            .ok_or(Error::NotFound)?;
+        let fields: Vec<_> = rss_mdm_inventory::FieldKey::ALL.iter().zip(&run.attempts.fields).map(|(key, attempt)| {
+            serde_json::json!({"field":key.as_str(),"quality":attempt.quality,"status":attempt.status,"received_at":attempt.received_at,"time_basis":"server_received"})
+        }).collect();
+        Ok(
+            serde_json::json!({"run":run_summary(&run),"registration":scope.registration().as_str(),
+            "source":scope.source().as_str(),"epoch":scope.epoch().as_str(),"coverage":rss_mdm_inventory::coverage(),
+            "fields":fields,"delivery":self.runtime.inspect(&run).await?}),
+        )
+    }
+}
+fn run_summary(run: &crate::collection::Run) -> serde_json::Value {
+    serde_json::json!({"run_id":run.id,"sequence":run.sequence,"result":run.result,"reason":run.reason,
+        "started_at":run.started_at,"finished_at":run.sealed_at,"time_basis":"server_received"})
 }
 
 pub(crate) struct EnrollmentPermission<'a> {
@@ -269,8 +292,10 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<Coordinates>(r#"{"channel":"mdm","source":"mdm.windows"}"#)
-                .is_ok()
+                .is_err()
         );
+        assert!(serde_json::from_str::<Coordinates>(r#"{"source":"mdm.windows"}"#).is_ok());
+        assert!(serde_json::from_str::<Coordinates>(r#"{"source":"invented"}"#).is_err());
     }
     #[test]
     fn credential_permission_is_explicit_and_not_inherited() {

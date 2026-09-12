@@ -178,6 +178,7 @@ def fixture(c):
             migrate=write('mdm-migration.json',{'database':db});run([binary,'migrate','--config',str(migrate)],cwd=ROOT)
             mdm={'listen':'127.0.0.1:0','product_origin':product,'identity':{'origin':f'https://localhost:{private_port}','issuer':origin+'/oidc','client_id':'mdm','tenant_id':TENANT,'audience':'mdm-api','oidc_secret_file':str(root/'oidc-client'),'validation_secret_file':str(root/'validation'),'ca_file':str(root/'ca.crt')},'database':{**db,'user':'mdm_api','password_file':str(root/'mdm-api')},'bindings':[]}
             mdm['access_database']={**db,'user':'mdm_access','password_file':str(root/'mdm-access')}
+            mdm['runtime_database']={**db,'user':'mdm_runtime','password_file':str(root/'mdm-runtime')}
             from windows_fixtures import generate
             mdm['windows']=generate(root, root/'tls.crt', root/'tls.key')
             config_path=write('mdm.json',mdm)

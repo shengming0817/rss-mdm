@@ -1,6 +1,29 @@
 use rss_mdm_windows_mdm::{CodecLimits, syncml};
 
 #[test]
+fn server_acknowledges_results_by_command_name() {
+    let mut message =
+        syncml::decode(include_bytes!("fixtures/get.xml"), &CodecLimits::default()).unwrap();
+    message.commands = vec![syncml::Command::Status(syncml::Status {
+        id: 1,
+        message_ref: 2,
+        command_ref: 3,
+        command: syncml::CommandName::Results,
+        target_refs: vec![],
+        source_refs: vec![],
+        code: 200,
+        items: vec![],
+        challenge: None,
+        credential: None,
+    })];
+    let bytes = syncml::encode(&message, &CodecLimits::default()).unwrap();
+    assert_eq!(
+        syncml::decode(&bytes, &CodecLimits::default()).unwrap(),
+        message
+    );
+}
+
+#[test]
 fn historical_initialization_is_only_untrusted_protocol_data() {
     let message = syncml::decode(
         include_bytes!("fixtures/initialization.xml"),

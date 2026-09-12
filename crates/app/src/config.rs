@@ -67,6 +67,7 @@ pub struct Config {
     pub identity: Identity,
     pub database: Database,
     pub access_database: Database,
+    pub runtime_database: Database,
     pub bindings: Vec<Binding>,
     pub windows: crate::windows::WindowsConfig,
 }
@@ -88,6 +89,13 @@ impl Config {
             || self.access_database.name != self.database.name
         {
             return Err(Error::Configuration(ConfigIssue::AccessDatabase));
+        }
+        if self.runtime_database.user != "mdm_runtime"
+            || self.runtime_database.host != self.database.host
+            || self.runtime_database.port != self.database.port
+            || self.runtime_database.name != self.database.name
+        {
+            return Err(Error::Configuration(ConfigIssue::RuntimeDatabase));
         }
         for (value, field) in [
             (&self.product_origin, ConfigIssue::ProductOrigin),

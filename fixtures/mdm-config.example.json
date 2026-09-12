@@ -60,5 +60,13 @@
     "ca_private_key_file": "/private/enrollment-ca.pk8",
     "protocol_key_file": "/private/protocol.key",
     "provider_id": "RSS-MDM"
+  },
+  "runtime_database": {
+    "host": "postgres.example.test",
+    "port": 5432,
+    "name": "mdm",
+    "user": "mdm_runtime",
+    "password_file": "/run/secrets/mdm-runtime-password",
+    "ca_file": "/private/database-ca.pem"
   }
 }

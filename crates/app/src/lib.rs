@@ -3,8 +3,10 @@
 mod access;
 mod access_store;
 mod audit;
+mod collection;
 pub mod device;
 mod enrollment;
+mod inventory_runtime;
 pub use access_store::AccessStore;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
