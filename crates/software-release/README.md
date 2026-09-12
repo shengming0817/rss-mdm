@@ -69,6 +69,9 @@ N11 必须核对真实 backend 目标、元数据和产物摘要，再构造结�
 
 ## 编码和验证
 
+公共类型、字段与转换契约也在 item rustdoc 中提供；`cargo doc --no-deps -p rss-mdm-software-release` 可生成入口。
+crate 启用 `missing_docs`，本地 CI 的 Clippy `-D warnings` 阻止新增未文档化公共项。
+
 content、approval、publication、request 使用 `rss-mdm-software-release/<kind>/v1` 域。
 变长字节前缀为 big-endian u64 长度，计数/枚举/秒时间为 big-endian u64，tenant 为 canonical 16 字节，
 摘要为原始 32 字节；artifact 按 key 排序。字段与枚举标签唯一由编码源码持有，固定向量和逐字段变化测试验证。

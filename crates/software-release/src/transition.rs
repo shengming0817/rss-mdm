@@ -1,88 +1,158 @@
 use crate::*;
 use rss_contract::Timepoint;
 
+/// One requested lifecycle operation, admitted only by [`Candidate::transition`].
+/// Inputs are caller claims; the adapter owns authentication and evidence verification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
+    /// Replaces content before any publication attempt, preserving software identity.
+    /// Changed content invalidates all validation and approval; identical content retains them.
     Replace(Content),
+    /// Records ring-specific evidence no earlier than current content or predecessor success.
+    /// Failed/Unknown invalidates approval; any existing publication freezes this ring.
     Validate(Validation),
+    /// Approves passed validation, binding the requesting actor as approver.
     Approve {
+        /// Ring with current passed validation; its predecessor must be confirmed published.
         ring: Ring,
+        /// Actor allowed to authorize and retry the resulting publication.
         publisher: ActorId,
+        /// Required separation between publisher and requesting approver.
         policy: ActorPolicy,
     },
+    /// Authorizes an exact approval for its bound publisher.
+    /// Pending/Unknown reconciles; Applied only acknowledges; NotApplied requires [`Self::Retry`].
     Authorize {
+        /// Ring whose approval is being authorized.
         ring: Ring,
+        /// Exact current [`Approval::digest`], preventing stale authority reuse.
         approval: Digest,
     },
+    /// Retries only confirmed NotApplied, preserving identity and incrementing attempt.
+    /// Requires the bound publisher and an active candidate.
     Retry {
+        /// Ring holding the confirmed NotApplied attempt.
         ring: Ring,
+        /// Stable identity of that attempt's original approval.
         publication: PublicationId,
+        /// Current attempt number to replace, not the next attempt number.
         attempt: u64,
     },
+    /// Records caller-verified backend facts for the exact current attempt.
+    /// Allowed after withdrawal; it never reopens publication. Conflicting terminal results fail.
     Record {
+        /// Ring containing the attempt being reported.
         ring: Ring,
+        /// Identity that the backend evidence must match.
         publication: PublicationId,
+        /// Exact current attempt; late reports cannot overwrite a newer attempt.
         attempt: u64,
+        /// Attested outcome; Pending is not a reportable result.
         outcome: PublicationResult,
     },
+    /// Closes all new validations, approvals, authorizations and retries without undoing facts.
+    /// Repeated quarantine is allowed; reopening or conversion from Deprecated is not.
     Quarantine,
+    /// Permanently deprecates an active candidate, retaining late backend facts.
+    /// Repeated deprecation is allowed; conversion from Quarantined is not.
     Deprecate,
 }
+/// Original request envelope, including explicit CAS and UTC time inputs.
+/// For replay, retain every field unchanged and supply the original persisted [`Receipt`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
+    /// Tenant-scoped idempotency key, durably unique across candidates in the adapter.
     pub id: RequestId,
+    /// Authenticated caller identity attested by the adapter, in the candidate's tenant.
     pub actor: ActorId,
+    /// Current candidate revision expected by the caller; the adapter must also enforce CAS.
     pub expected_revision: u64,
+    /// Explicit UTC decision time; new transitions cannot precede the snapshot time.
     pub as_of: Timepoint,
+    /// Complete operation payload included in the request fingerprint.
     pub operation: Operation,
 }
 /// Persisted data, not an executable authorization or an authenticated receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Receipt {
+    /// Candidate identity bound to this receipt.
     pub candidate: CandidateId,
+    /// Original tenant-scoped request key.
     pub request: RequestId,
+    /// V1 digest of candidate identity and every original request input.
     pub fingerprint: Digest,
+    /// Revision checked before the first successful application.
     pub before_revision: u64,
+    /// Resulting revision, exactly one greater than before_revision.
     pub revision: u64,
+    /// Original request time; replay must preserve it.
     pub at: Timepoint,
 }
+/// Adapter action after atomically committing the next snapshot and receipt.
+/// No variant itself performs an external call or proves persistence succeeded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Decision {
+    /// State was acknowledged or changed without authorizing an external publication.
     Updated,
+    /// Failed/Unknown validation cleared approval; no publication is authorized.
     ValidationRejected(Verdict),
+    /// Authorizes exactly this attempt, only after the transaction and required audit commit.
     Publish(Box<Publication>),
+    /// Inspect the original backend identity; do not submit a replacement or blind retry.
     Reconcile {
+        /// Stable identity to reconcile against the approved backend content.
         publication: PublicationId,
+        /// Current attempt whose outcome remains unconfirmed.
         attempt: u64,
     },
 }
+/// Pure transition result; persistence and external execution remain with the adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Transition {
+    /// A new application. Persist next + receipt atomically using the expected revision.
     Applied {
+        /// Validated replacement aggregate, not yet durably committed.
         next: Box<Candidate>,
+        /// Idempotency evidence to persist in the same transaction as next.
         receipt: Receipt,
+        /// Action that may be handled only after durable commit and required success audit.
         decision: Decision,
     },
+    /// Historical acknowledgement only: no replacement state or executable decision.
+    /// A replay cannot rewind state, reauthorize a publication or remove withdrawal.
     Replayed(Receipt),
 }
+/// Reconstructible storage input, with no stable wire format or authenticity guarantee.
+/// Only [`Candidate::restore`] validates the full evidence chain before use.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Snapshot {
+    /// Immutable candidate identity and tenant.
     pub id: CandidateId,
+    /// Monotonic successful-transition count used by the adapter's CAS.
     pub revision: u64,
+    /// UTC time of the most recent accepted transition, or creation at revision zero.
     pub at: Timepoint,
+    /// UTC creation or last actual content replacement time; validation cannot predate it.
     pub content_at: Timepoint,
+    /// Current immutable content, frozen once any publication attempt exists.
     pub content: Content,
+    /// Candidate-wide closure state, independent of recorded backend publication facts.
     pub disposition: Disposition,
+    /// Storage slots in [`Ring::ALL`] order; prefer [`Self::ring_state`] for reads.
     pub rings: [RingState; 3],
 }
 impl Snapshot {
+    /// Reads a ring without exposing its internal array index to the consumer.
     pub fn ring_state(&self, ring: Ring) -> &RingState {
         &self.rings[ring.index()]
     }
 }
+/// Validated aggregate whose only business mutation entry is [`Self::transition`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Candidate(Snapshot);
 impl Candidate {
+    /// Creates an active candidate at revision zero, with Test awaiting validation.
+    /// The adapter owns durable candidate/request uniqueness and same-version byte immutability.
     pub fn new(id: CandidateId, content: Content, as_of: Timepoint) -> Self {
         Self(Snapshot {
             id,
@@ -98,11 +168,16 @@ impl Candidate {
             ],
         })
     }
+    /// Borrows the current snapshot; clone it only for storage or explicit restore validation.
     pub fn snapshot(&self) -> &Snapshot {
         &self.0
     }
     /// Validates storage structure and all linked evidence. The adapter authenticates
     /// the storage source and must preserve history, uniqueness and CAS across requests.
+    ///
+    /// # Errors
+    /// Rejects inconsistent tenant/content identities, ring order, actor constraints,
+    /// validation/approval/outcome evidence and time order. It cannot detect forged storage history.
     pub fn restore(snapshot: Snapshot) -> Result<Self, Error> {
         let candidate = Self(snapshot);
         candidate.check_snapshot()?;
@@ -110,6 +185,14 @@ impl Candidate {
     }
     /// Pure decision. Apply snapshot + receipt using CAS before executing Publish.
     /// Supply the original request unchanged for replay; a replay has no executable output.
+    /// The adapter must query the durable request key first: pass `None` only when it is
+    /// known absent, never when receipt storage is unavailable. Persist next, receipt and
+    /// required success audit atomically before acting on [`Decision::Publish`].
+    ///
+    /// # Errors
+    /// Rejects mixed tenants, conflicting request reuse, stale revisions/evidence,
+    /// invalid lifecycle or time order, unauthorized actors and numeric overflow.
+    /// On error this candidate remains unchanged; no external work has been authorized.
     pub fn transition(
         &self,
         request: Request,

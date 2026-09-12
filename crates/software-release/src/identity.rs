@@ -26,28 +26,44 @@ macro_rules! identities {
         #[derive(Clone, Debug, Eq, PartialEq)]
         pub struct $name { tenant: TenantId, value: String }
         impl $name {
+            /// Creates a tenant-scoped reference, without authenticating its owner.
+            ///
+            /// # Errors
+            /// Returns [`Error::InvalidIdentity`] unless the value is 1–128 ASCII
+            /// letters, digits or `._-/+@`, without empty, `.` or `..` path segments.
             pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, Error> {
                 Ok(Self { tenant, value: checked_name(value.into())? })
             }
+            /// Returns the canonical tenant that scopes this reference.
             pub fn tenant(&self) -> TenantId { self.tenant }
+            /// Returns the exact validated reference; no normalization is performed.
             pub fn value(&self) -> &str { &self.value }
         }
     )+ };
 }
 identities!(CandidateId, ActorId, RequestId);
 
+/// SHA-256 bytes supplied by the caller or computed from canonical inputs.
+/// A digest binds bytes; it does not authenticate their origin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Digest([u8; 32]);
 impl Digest {
+    /// Wraps an existing SHA-256 value without verifying the corresponding content.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
+    /// Returns the raw 32-byte digest used by the canonical encoding.
     pub const fn bytes(self) -> [u8; 32] {
         self.0
     }
+    /// Hashes exactly these bytes, without a domain prefix or normalization.
     pub fn of(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
+    /// Parses exactly 64 ASCII hexadecimal characters, accepting either case.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidDigest`] for any other representation.
     pub fn parse(value: &str) -> Result<Self, Error> {
         if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::InvalidDigest);
@@ -64,9 +80,11 @@ impl Digest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublicationId(pub(crate) Digest);
 impl PublicationId {
+    /// Reconstructs a stored identity; this does not validate an approval or backend fact.
     pub const fn from_digest(digest: Digest) -> Self {
         Self(digest)
     }
+    /// Returns the canonical identity digest for storage or comparison.
     pub const fn digest(self) -> Digest {
         self.0
     }
