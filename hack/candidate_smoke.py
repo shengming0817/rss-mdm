@@ -5,11 +5,32 @@ import http.client
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from urllib.parse import urlsplit
 import uuid
 import identity_t2 as identity
 from release import ROOT, oci_identity, sha
+
+def provision(example, original, fixture):
+    if set(example) != set(original):
+        raise ValueError("candidate example configuration shape differs from fixture")
+    result = {}
+    for key, value in original.items():
+        if isinstance(value, dict):
+            result[key] = provision(example[key], value, fixture)
+        elif key.endswith("_file"):
+            destination = Path(example[key])
+            if destination.parent != Path("/run/mdm"):
+                raise ValueError("candidate input must use the documented mount")
+            local = fixture / destination.name
+            if Path(value).resolve() != local.resolve():
+                shutil.copyfile(value, local)
+            local.chmod(0o600)
+            result[key] = str(destination)
+        else:
+            result[key] = value
+    return result
 
 def health(port, path):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
@@ -44,7 +65,10 @@ def smoke(directory):
         # Production keeps the configured loopback browser boundary and direct protocol TLS.
         ports = {original["database"]["port"], urlsplit(original["identity"]["origin"]).port,
                  urlsplit(original["identity"]["issuer"]).port}
-        settings = json.loads(json.dumps(original).replace(str(fixture), "/run/mdm"))
+        example_file = directory / "mdm-config.example.json"
+        if sha(example_file) != manifest["config_sha256"]:
+            raise ValueError("candidate example configuration digest mismatch")
+        settings = provision(json.loads(example_file.read_text()), original, fixture)
         settings["listen"] = "127.0.0.1:18080"
         settings["windows"]["enrollment"].update(listen="127.0.0.1:18443", origin="https://localhost:18443")
         settings["windows"]["management"].update(listen="127.0.0.1:18444", origin="https://localhost:18444")

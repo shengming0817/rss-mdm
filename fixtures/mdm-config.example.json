@@ -7,17 +7,17 @@
     "client_id": "mdm",
     "tenant_id": "11111111-1111-4111-8111-111111111111",
     "audience": "mdm-api",
-    "oidc_secret_file": "/private/mdm-oidc-secret",
-    "validation_secret_file": "/private/mdm-validation-secret",
-    "ca_file": "/private/identity-ca.pem"
+    "oidc_secret_file": "/run/mdm/mdm-oidc-secret",
+    "validation_secret_file": "/run/mdm/mdm-validation-secret",
+    "ca_file": "/run/mdm/identity-ca.pem"
   },
   "database": {
     "host": "postgres.example.test",
     "port": 5432,
     "name": "mdm",
     "user": "mdm_api",
-    "password_file": "/private/mdm-api-password",
-    "ca_file": "/private/database-ca.pem"
+    "password_file": "/run/mdm/mdm-api-password",
+    "ca_file": "/run/mdm/database-ca.pem"
   },
   "bindings": [
     {
@@ -40,25 +40,25 @@
     "port": 5432,
     "name": "mdm",
     "user": "mdm_access",
-    "password_file": "/private/mdm-access-password",
-    "ca_file": "/private/database-ca.pem"
+    "password_file": "/run/mdm/mdm-access-password",
+    "ca_file": "/run/mdm/database-ca.pem"
   },
   "windows": {
     "enrollment": {
       "listen": "0.0.0.0:8443",
       "origin": "https://enroll.example.test:8443",
-      "certificate_file": "/private/enrollment-tls.pem",
-      "private_key_file": "/private/enrollment-tls.pk8"
+      "certificate_file": "/run/mdm/enrollment-tls.pem",
+      "private_key_file": "/run/mdm/enrollment-tls.pk8"
     },
     "management": {
       "listen": "0.0.0.0:8444",
       "origin": "https://manage.example.test:8444",
-      "certificate_file": "/private/management-tls.pem",
-      "private_key_file": "/private/management-tls.pk8"
+      "certificate_file": "/run/mdm/management-tls.pem",
+      "private_key_file": "/run/mdm/management-tls.pk8"
     },
-    "ca_certificate_file": "/private/enrollment-ca.pem",
-    "ca_private_key_file": "/private/enrollment-ca.pk8",
-    "protocol_key_file": "/private/protocol.key",
+    "ca_certificate_file": "/run/mdm/enrollment-ca.pem",
+    "ca_private_key_file": "/run/mdm/enrollment-ca.pk8",
+    "protocol_key_file": "/run/mdm/protocol.key",
     "provider_id": "RSS-MDM"
   },
   "runtime_database": {
@@ -66,7 +66,7 @@
     "port": 5432,
     "name": "mdm",
     "user": "mdm_runtime",
-    "password_file": "/run/secrets/mdm-runtime-password",
-    "ca_file": "/private/database-ca.pem"
+    "password_file": "/run/mdm/mdm-runtime-password",
+    "ca_file": "/run/mdm/database-ca.pem"
   }
 }

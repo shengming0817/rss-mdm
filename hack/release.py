@@ -97,6 +97,7 @@ def build_staged(out, header):
             "format_version": 1, "repository": "https://dev.azure.com/shengming0923/rss/_git/rss-mdm",
             "revision": revision, "version": version, "platform": "linux/arm64",
             "cargo_lock_sha256": sha(source / "Cargo.lock"), "migrations": migrations,
+            "config_sha256": sha(source / "fixtures/mdm-config.example.json"),
             "image": image + "@" + digest,
             "archive": {"file": output.name, "sha256": sha(output), "manifest_digest": digest},
             "binary_sha256": sha(out / "evidence/rss-mdm"), "dependencies": inputs, "providers": providers,
