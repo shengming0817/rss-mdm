@@ -1,61 +1,10 @@
 //! Real PG and only public Group/RSS interfaces. Selected explicitly by the T2 harness.
 use rss_mdm_group::*;
 use rss_mdm_group_postgres::*;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 mod support;
 use support::*;
-fn inputs() -> (Rule, Snapshot) {
-    let field = Field {
-        key: "model".into(),
-        kind: FieldType::Scalar(ScalarType::String),
-        unit: None,
-        operations: BTreeSet::from([Op::Eq]),
-        nullable: true,
-    };
-    let rule = Rule::new(
-        tenant(),
-        "rule-1",
-        "dictionary-1",
-        vec![field],
-        Criteria::predicate(Predicate {
-            field: "model".into(),
-            op: Op::Eq,
-            operand: Some(Operand {
-                value: Value::Scalar(Scalar::String("laptop".into())),
-                unit: None,
-            }),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let snapshot = Snapshot {
-        tenant: tenant(),
-        id: "inventory".into(),
-        version: "v1".into(),
-        dictionary_version: "dictionary-1".into(),
-        complete: true,
-        coverage: BTreeSet::from(["model".into()]),
-        objects: vec![ObjectSnapshot {
-            key: ObjectKey::new(tenant(), "device-1").unwrap(),
-            facts: BTreeMap::from([(
-                "model".into(),
-                Fact {
-                    state: FactState::Known(Value::Scalar(Scalar::String("laptop".into()))),
-                    source: "fixture".into(),
-                    snapshot_id: "capture".into(),
-                    observed_at: at(),
-                    valid_until: None,
-                },
-            )]),
-        }],
-    };
-    (rule, snapshot)
-}
 
 fn admin(sql: &str) -> String {
     use std::io::Write;
@@ -318,6 +267,29 @@ async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
     assert_eq!(event_count(operation), 1);
     let (id, created, snapshot) = dynamic_group(&s).await;
     let pending = request(id, &created, snapshot.clone());
+    for trigger in [
+        Trigger::Periodic { slot: " ".into() },
+        Trigger::Change {
+            source: "invalid\nsource".into(),
+            event: "e".into(),
+        },
+        Trigger::Periodic {
+            slot: "x".repeat(4097),
+        },
+    ] {
+        let invalid = RecalculationRequest {
+            id: op(),
+            trigger,
+            ..pending.clone()
+        };
+        assert!(matches!(
+            s.start_recalculation(&invalid, deadline()).await,
+            Err(rss_mdm_group_postgres::Error::Rejected(
+                Rejection::InvalidInput
+            ))
+        ));
+        assert!(s.get_run(invalid.id, deadline()).await.unwrap().is_none());
+    }
     let (a, b) = tokio::join!(
         s.start_recalculation(&pending, deadline()),
         s.start_recalculation(&pending, deadline())
@@ -490,6 +462,10 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
     let rejected = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
     admin("DROP FUNCTION mdm_group.role_drift()");
     assert!(rejected.is_err(), "executable schema drift was admitted");
+    admin("CREATE VIEW mdm_group.extra_view AS SELECT 1 AS value");
+    let rejected = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
+    admin("DROP VIEW mdm_group.extra_view");
+    assert!(rejected.is_err(), "extra relation was admitted");
     // Force an error AFTER the event and group update; neither may survive.
     admin(&format!(
         "CREATE FUNCTION public.reject_group_member() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.group_id='{id}'::uuid AND NEW.object_id='fail' THEN RAISE EXCEPTION 'fixture member rejection'; END IF; RETURN NEW; END $$; CREATE TRIGGER t2_fail BEFORE INSERT ON mdm_group.members FOR EACH ROW EXECUTE FUNCTION public.reject_group_member();"
@@ -779,90 +755,5 @@ async fn lost_commit_ack_replays_durable_result_once() {
     assert_eq!(first, s.resume(request.id, deadline()).await.unwrap());
     assert_eq!(s.members(id, deadline()).await.unwrap().len(), 1);
     assert_eq!(event_count(request.id), 1);
-    runtime.close().await;
-}
-#[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
-async fn durable_recalculation_no_change_fences_stale_run() {
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    let id = group_id();
-    let (rule, snapshot) = inputs();
-    let created = s
-        .execute(
-            op(),
-            at(),
-            &Command::Create {
-                group: id,
-                name: "dynamic".into(),
-                description: "".into(),
-                definition: Definition::Dynamic(Box::new(rule)),
-            },
-            deadline(),
-        )
-        .await
-        .unwrap();
-    let request = RecalculationRequest {
-        id: op(),
-        group: id,
-        expected: created.group.revision,
-        rule_version: "rule-1".into(),
-        trigger: Trigger::Manual,
-        snapshot: snapshot.clone(),
-        as_of: at(),
-    };
-    let preview = s
-        .preview(id, created.group.revision, &snapshot, at(), deadline())
-        .await
-        .unwrap();
-    assert!(matches!(
-        s.start_recalculation(&request, deadline())
-            .await
-            .unwrap()
-            .state,
-        RunState::Pending
-    ));
-    let result = s.resume(request.id, deadline()).await.unwrap();
-    let RunState::Completed(receipt) = result.state else {
-        panic!("not completed")
-    };
-    assert_eq!(receipt.group.member_count, 1);
-    assert_eq!(
-        s.result(request.id, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .evaluation,
-        preview
-    );
-    let current = receipt.group.revision;
-    let mut newer = request.clone();
-    newer.id = op();
-    newer.expected = current;
-    let mut stale = newer.clone();
-    stale.id = op();
-    s.start_recalculation(&newer, deadline()).await.unwrap();
-    s.start_recalculation(&stale, deadline()).await.unwrap();
-    let applied = s.resume(newer.id, deadline()).await.unwrap();
-    let RunState::Completed(r) = applied.state else {
-        panic!("not completed")
-    };
-    assert_eq!(r.group.member_version, receipt.group.member_version);
-    assert!(r.group.revision.get() > current.get());
-    assert!(matches!(
-        s.resume(stale.id, deadline()).await.unwrap().state,
-        RunState::Rejected(Rejection::VersionConflict)
-    ));
-    runtime.close().await;
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    assert_eq!(
-        s.get_run(request.id, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .state,
-        RunState::Completed(receipt)
-    );
     runtime.close().await;
 }

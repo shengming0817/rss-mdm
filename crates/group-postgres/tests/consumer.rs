@@ -139,3 +139,154 @@ async fn static_commands_replay_and_borrowed_rollback() {
     ));
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn durable_recalculation_no_change_fences_stale_run() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let id = group_id();
+    let (rule, snapshot) = inputs();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group: id,
+                name: "dynamic".into(),
+                description: "".into(),
+                definition: Definition::Dynamic(Box::new(rule)),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let request = RecalculationRequest {
+        id: op(),
+        group: id,
+        expected: created.group.revision,
+        rule_version: "rule-1".into(),
+        trigger: Trigger::Manual,
+        snapshot: snapshot.clone(),
+        as_of: at(),
+    };
+    let preview = s
+        .preview(id, created.group.revision, &snapshot, at(), deadline())
+        .await
+        .unwrap();
+    assert!(matches!(
+        s.start_recalculation(&request, deadline())
+            .await
+            .unwrap()
+            .state,
+        RunState::Pending
+    ));
+    let result = s.resume(request.id, deadline()).await.unwrap();
+    let RunState::Completed(receipt) = result.state else {
+        panic!("not completed")
+    };
+    assert_eq!(receipt.group.member_count, 1);
+    assert_eq!(
+        s.result(request.id, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .evaluation,
+        preview
+    );
+    let current = receipt.group.revision;
+    let mut newer = request.clone();
+    newer.id = op();
+    newer.expected = current;
+    let mut stale = newer.clone();
+    stale.id = op();
+    s.start_recalculation(&newer, deadline()).await.unwrap();
+    s.start_recalculation(&stale, deadline()).await.unwrap();
+    let applied = s.resume(newer.id, deadline()).await.unwrap();
+    let RunState::Completed(r) = applied.state else {
+        panic!("not completed")
+    };
+    assert_eq!(r.group.member_version, receipt.group.member_version);
+    assert!(r.group.revision.get() > current.get());
+    assert!(matches!(
+        s.resume(stale.id, deadline()).await.unwrap().state,
+        RunState::Rejected(Rejection::VersionConflict)
+    ));
+    runtime.close().await;
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    assert_eq!(
+        s.get_run(request.id, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        RunState::Completed(receipt)
+    );
+    let original = s.rule(id, "rule-1", deadline()).await.unwrap().unwrap();
+    assert_eq!(original.evaluate(&snapshot, at()).unwrap(), preview);
+    let current = s.get(id, deadline()).await.unwrap().unwrap();
+    let v = original.view();
+    let replacement = core::Rule::new(
+        tenant(),
+        "rule-2",
+        v.dictionary_version,
+        v.fields.values().cloned().collect(),
+        v.criteria.clone(),
+    )
+    .unwrap();
+    let changed = s
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group: id,
+                expected: current.revision,
+                rule: replacement,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.group.rule_version.as_deref(), Some("rule-2"));
+    assert_eq!(
+        s.rule(id, "rule-2", deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .view()
+            .version,
+        "rule-2"
+    );
+    assert_eq!(
+        s.rule(id, "rule-1", deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .evaluate(&snapshot, at())
+            .unwrap(),
+        preview
+    );
+    assert!(s.rule(id, "missing", deadline()).await.unwrap().is_none());
+    assert!(
+        store(runtime.clone(), foreign())
+            .await
+            .rule(id, "rule-1", deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    s.execute(
+        op(),
+        at(),
+        &Command::Delete {
+            group: id,
+            expected: changed.group.revision,
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert!(s.rule(id, "rule-1", deadline()).await.unwrap().is_some());
+    runtime.close().await;
+}

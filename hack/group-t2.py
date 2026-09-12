@@ -20,9 +20,9 @@ EXPECTED = {
     "process_death_after_admission_recovers_without_caller_snapshot",
     "concurrent_inputs_rule_changes_and_kind_boundaries",
     "atomic_event_failure_rls_and_large_member_ids",
-    "admitted_input_and_command_commit_unknown_recover_by_original_identity",'durable_recalculation_no_change_fences_stale_run'}
+    "admitted_input_and_command_commit_unknown_recover_by_original_identity"}
 
-CONSUMER_TESTS = {"static_commands_replay_and_borrowed_rollback"}
+CONSUMER_TESTS = {"static_commands_replay_and_borrowed_rollback", "durable_recalculation_no_change_fences_stale_run"}
 
 def verify_tests(output, expected=EXPECTED):
     passed = set(re.findall(r'^test (\S+) \.\.\. ok$', output, re.MULTILINE))

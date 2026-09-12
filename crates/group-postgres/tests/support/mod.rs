@@ -77,3 +77,53 @@ pub async fn connect_runtime_at(port: Option<u16>) -> Arc<PgRuntime> {
 pub async fn store(r: Arc<PgRuntime>, t: TenantId) -> GroupStore {
     GroupStore::new(r, t, deadline()).await.unwrap()
 }
+
+use rss_mdm_group_postgres::core::*;
+use std::collections::{BTreeMap, BTreeSet};
+pub fn inputs() -> (Rule, Snapshot) {
+    let field = Field {
+        key: "model".into(),
+        kind: FieldType::Scalar(ScalarType::String),
+        unit: None,
+        operations: BTreeSet::from([Op::Eq]),
+        nullable: true,
+    };
+    let rule = Rule::new(
+        tenant(),
+        "rule-1",
+        "dictionary-1",
+        vec![field],
+        Criteria::predicate(Predicate {
+            field: "model".into(),
+            op: Op::Eq,
+            operand: Some(Operand {
+                value: Value::Scalar(Scalar::String("laptop".into())),
+                unit: None,
+            }),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let snapshot = Snapshot {
+        tenant: tenant(),
+        id: "inventory".into(),
+        version: "v1".into(),
+        dictionary_version: "dictionary-1".into(),
+        complete: true,
+        coverage: BTreeSet::from(["model".into()]),
+        objects: vec![ObjectSnapshot {
+            key: ObjectKey::new(tenant(), "device-1").unwrap(),
+            facts: BTreeMap::from([(
+                "model".into(),
+                Fact {
+                    state: FactState::Known(Value::Scalar(Scalar::String("laptop".into()))),
+                    source: "fixture".into(),
+                    snapshot_id: "capture".into(),
+                    observed_at: at(),
+                    valid_until: None,
+                },
+            )]),
+        }],
+    };
+    (rule, snapshot)
+}

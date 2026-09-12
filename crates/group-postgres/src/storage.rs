@@ -90,20 +90,30 @@ pub(crate) async fn rule(
     group: GroupId,
     version: String,
 ) -> Result<Rule, PgError> {
+    find_rule(tx, group, version).await?.ok_or_else(invariant)
+}
+pub(crate) async fn find_rule(
+    tx: &mut PgTransaction<'_>,
+    group: GroupId,
+    version: String,
+) -> Result<Option<Rule>, PgError> {
     let tenant = tx.tenant_id();
     let raw = tenant.to_string();
     let v = version.clone();
     let r=tx.with_connection(move |c|Box::pin(async move {
         sqlx::query("SELECT document,digest FROM mdm_group.rules WHERE tenant_id=$1::uuid AND group_id=$2::uuid AND version=$3")
-        .bind(raw).bind(group.to_string()).bind(v).fetch_one(c).await
+        .bind(raw).bind(group.to_string()).bind(v).fetch_optional(c).await
     })).await?;
+    let Some(r) = r else {
+        return Ok(None);
+    };
     let bytes: Vec<u8> = r.try_get("document")?;
     document(&bytes, r.try_get::<&[u8], _>("digest")?)?;
     let result = data(codec::decode_rule(&bytes))?;
     if result.view().tenant != tenant || result.view().version != version {
         return Err(invariant());
     }
-    Ok(result)
+    Ok(Some(result))
 }
 pub(crate) async fn write_rule(
     tx: &mut PgTransaction<'_>,

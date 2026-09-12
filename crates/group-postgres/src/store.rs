@@ -81,6 +81,29 @@ impl GroupStore {
             None,
         )
     }
+    /// Read an immutable rule version, including history after logical deletion.
+    /// Use `get().rule_version` for the rule belonging to an observed group revision.
+    /// Missing or foreign-tenant versions return None; the host authorizes disclosure.
+    pub async fn rule(
+        &self,
+        id: GroupId,
+        version: &str,
+        deadline: OperationDeadline,
+    ) -> Result<Option<Rule>, Error> {
+        text(version, false)?;
+        if version.len() > 256 {
+            return Err(Rejection::InvalidInput.into());
+        }
+        let version = version.to_owned();
+        settle(
+            self.runtime
+                .local_tx(self.tenant, deadline, move |tx| {
+                    Box::pin(async move { Ok(Ok(db::find_rule(tx, id, version).await?)) })
+                })
+                .await,
+            None,
+        )
+    }
     /// Bounded by the core's 10,000-member limit; caller must authorize this read.
     pub async fn members(
         &self,
