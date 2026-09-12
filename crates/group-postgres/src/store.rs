@@ -469,6 +469,18 @@ fn command_document(t: TenantId, c: &Command) -> CommandOutcome<Vec<u8>> {
         }
         Command::SetRule { rule, .. } => json!({"kind":"rule","rule":rule_doc(t,rule)?}),
         Command::Members { add, remove, .. } => {
+            // Original entries consume one shared budget before deduplication or JSON copies.
+            if add.len() > rss_mdm_group::limits::OBJECTS
+                || remove.len() > rss_mdm_group::limits::OBJECTS
+            {
+                return Err(Rejection::InvalidInput);
+            }
+            add.iter().chain(remove).try_fold(0usize, |bytes, id| {
+                bytes
+                    .checked_add(id.len())
+                    .filter(|n| *n <= rss_mdm_group::limits::BATCH_BYTES)
+                    .ok_or(Rejection::InvalidInput)
+            })?;
             let a = member_ids(t, add)?;
             let r = member_ids(t, remove)?;
             if !a.is_disjoint(&r) {
@@ -489,4 +501,23 @@ fn member_ids(t: TenantId, ids: &[String]) -> CommandOutcome<BTreeSet<&str>> {
         ObjectKey::new(t, id).map_err(|_| Rejection::InvalidInput)?;
     }
     Ok(ids.iter().map(String::as_str).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn member_command_counts_original_bytes_across_both_lists() {
+        let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+        let command = Command::Members {
+            group: GroupId::parse("33333333-3333-3333-3333-333333333333").unwrap(),
+            expected: Revision::new(1).unwrap(),
+            add: vec!["a".repeat(4096); 2048],
+            remove: vec!["b".repeat(4096); 2049],
+        };
+        assert!(matches!(
+            command_document(tenant, &command),
+            Err(Rejection::InvalidInput)
+        ));
+    }
 }

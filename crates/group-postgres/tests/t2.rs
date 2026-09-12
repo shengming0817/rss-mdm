@@ -484,6 +484,12 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
     let rejected = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
     admin("ALTER TABLE mdm_group.members FORCE ROW LEVEL SECURITY");
     assert!(rejected.is_err());
+    admin(
+        "CREATE FUNCTION mdm_group.role_drift() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'",
+    );
+    let rejected = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
+    admin("DROP FUNCTION mdm_group.role_drift()");
+    assert!(rejected.is_err(), "executable schema drift was admitted");
     // Force an error AFTER the event and group update; neither may survive.
     admin(&format!(
         "CREATE FUNCTION public.reject_group_member() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.group_id='{id}'::uuid AND NEW.object_id='fail' THEN RAISE EXCEPTION 'fixture member rejection'; END IF; RETURN NEW; END $$; CREATE TRIGGER t2_fail BEFORE INSERT ON mdm_group.members FOR EACH ROW EXECUTE FUNCTION public.reject_group_member();"
