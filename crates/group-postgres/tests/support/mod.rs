@@ -127,3 +127,34 @@ pub fn inputs() -> (Rule, Snapshot) {
     };
     (rule, snapshot)
 }
+
+/// Controlled fixture host; production N12 additionally checks references and writes success audit.
+pub async fn execute_companion(
+    runtime: &PgRuntime,
+    store: &GroupStore,
+    operation: OperationId,
+    command: &Command,
+) -> std::result::Result<Receipt, rss_mdm_group_postgres::Error> {
+    use rss_mdm_group_postgres::Error;
+    runtime
+        .local_tx_with_context(
+            store.tenant(),
+            deadline(),
+            (store, command),
+            move |(s, c), tx| Box::pin(async move { s.execute_in(tx, operation, at(), c).await }),
+        )
+        .await
+        .fold(
+            |v| v.map_err(Error::Rejected),
+            |e| Err(Error::NotStarted(e)),
+            |e| Err(Error::RolledBack(e)),
+            |e| Err(Error::RollbackFailed(e)),
+            |source| {
+                Err(Error::CommitUnknown {
+                    operation: Some(operation),
+                    source,
+                })
+            },
+            |e| Err(Error::Fenced(e)),
+        )
+}

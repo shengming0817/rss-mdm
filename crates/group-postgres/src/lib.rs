@@ -19,7 +19,8 @@
 //! retain its original request for replay. Never assign a replacement operation ID
 //! merely because a transaction acknowledgement was lost.
 //!
-//! The `*_in` methods borrow a trusted RSS transaction and never commit it. Check both
+//! The `*_in` methods validate RSS runtime ownership and tenant before all reads/writes,
+//! and never commit. Standalone execute rejects Delete; deletion uses execute_in. Check both
 //! layers of [`InTransaction`], propagate database errors to the outer owner, and lock
 //! groups in ascending ID order before companion reference/audit work. Authorization
 //! and reference protection are supplied by N12; this crate has no HTTP or Inventory

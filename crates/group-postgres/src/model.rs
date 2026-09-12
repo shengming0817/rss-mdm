@@ -144,7 +144,8 @@ pub enum Command {
         /// Object IDs to remove before additions; absent IDs have no effect.
         remove: Vec<String>,
     },
-    /// Logically delete and clear members, preserving history. N12 must compose reference checks and audit in one transaction.
+    /// Logically delete and clear members, preserving history. Only execute_in accepts this command.
+    /// N12 must compose reference checks and audit in the same transaction.
     Delete {
         /// Target group identity within this store’s tenant.
         group: GroupId,
@@ -253,6 +254,8 @@ pub struct RecalculationRequest {
 pub enum Rejection {
     /// Input violates a shape, text or resource budget.
     InvalidInput,
+    /// Deletion requires the host-owned transaction for reference checks and audit; use execute_in.
+    CompanionTransactionRequired,
     /// Request or borrowed transaction tenant differs from the store.
     TenantMismatch,
     /// No visible target exists in this tenant.

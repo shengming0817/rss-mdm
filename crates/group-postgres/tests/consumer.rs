@@ -114,15 +114,14 @@ async fn static_commands_replay_and_borrowed_rollback() {
         group: id,
         expected: edited.group.revision,
     };
-    let deleted = s
-        .execute(operation, at(), &delete, deadline())
+    let deleted = execute_companion(&runtime, &s, operation, &delete)
         .await
         .unwrap();
     assert!(deleted.group.deleted);
     assert_eq!((deleted.removed, deleted.group.member_count), (2, 0));
     assert_eq!(
         deleted,
-        s.execute(operation, at(), &delete, deadline())
+        execute_companion(&runtime, &s, operation, &delete)
             .await
             .unwrap()
     );
@@ -276,14 +275,14 @@ async fn durable_recalculation_no_change_fences_stale_run() {
             .unwrap()
             .is_none()
     );
-    s.execute(
+    execute_companion(
+        &runtime,
+        &s,
         op(),
-        at(),
         &Command::Delete {
             group: id,
             expected: changed.group.revision,
         },
-        deadline(),
     )
     .await
     .unwrap();

@@ -166,18 +166,17 @@ async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
         .await
         .unwrap();
     assert_event(&edited, "edited");
-    let deleted = s
-        .execute(
-            op(),
-            at(),
-            &Command::Delete {
-                group: id,
-                expected: edited.group.revision,
-            },
-            deadline(),
-        )
-        .await
-        .unwrap();
+    let deleted = execute_companion(
+        &runtime,
+        &s,
+        op(),
+        &Command::Delete {
+            group: id,
+            expected: edited.group.revision,
+        },
+    )
+    .await
+    .unwrap();
     assert_event(&deleted, "deleted");
     runtime.close().await;
 }
@@ -204,7 +203,7 @@ async fn reference_target_lock_serializes_deletion() {
             group: id,
             expected: created.group.revision,
         };
-        let mut deletion = Box::pin(s.execute(op(), at(), &command, deadline()));
+        let mut deletion = Box::pin(execute_companion(&runtime, &s, op(), &command));
         tokio::select! {
             result = &mut deletion => panic!("delete bypassed reference lock: {result:?}"),
             _ = tokio::time::sleep(Duration::from_millis(150)) => {}
@@ -383,14 +382,14 @@ async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
     deleted.expected = current.revision;
     deleted.rule_version = "rule-2".into();
     s.start_recalculation(&deleted, deadline()).await.unwrap();
-    s.execute(
+    execute_companion(
+        &runtime,
+        &s,
         op(),
-        at(),
         &Command::Delete {
             group: id,
             expected: current.revision,
         },
-        deadline(),
     )
     .await
     .unwrap();
@@ -806,5 +805,108 @@ async fn admission_rejects_catalog_and_security_drift() {
         ));
         assert!(result.is_err(), "accepted drift: {mutation}");
     }
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn standalone_delete_requires_companion_transaction() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let id = group_id();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group: id,
+                name: "delete-boundary".into(),
+                description: String::new(),
+                definition: Definition::Static,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let operation = op();
+    let command = Command::Delete {
+        group: id,
+        expected: created.group.revision,
+    };
+    assert!(matches!(
+        s.execute(operation, at(), &command, deadline()).await,
+        Err(rss_mdm_group_postgres::Error::Rejected(
+            Rejection::CompanionTransactionRequired
+        ))
+    ));
+    assert_eq!(s.get(id, deadline()).await.unwrap(), Some(created.group));
+    assert_eq!(event_count(operation), 0);
+    // A host that owns the companion checks/audit can still delete in its transaction.
+    let result = runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &command), move |(s, c), tx| {
+            Box::pin(async move { s.execute_in(tx, operation, at(), c).await })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)
+        .unwrap()
+        .unwrap();
+    assert!(result.group.deleted);
+    assert!(matches!(
+        s.execute(operation, at(), &command, deadline()).await,
+        Err(rss_mdm_group_postgres::Error::Rejected(
+            Rejection::CompanionTransactionRequired
+        ))
+    ));
+    assert_eq!(event_count(operation), 1);
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
+    use rss_transactional_messaging::error::MessagingErrorKind;
+    let runtime = connect_runtime().await;
+    let foreign_runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let (id, created, snapshot) = dynamic_group(&s).await;
+    let request = request(id, &created, snapshot);
+    let edit = Command::Edit {
+        group: id,
+        expected: created.group.revision,
+        name: created.group.name.clone(),
+        description: created.group.description.clone(),
+    };
+    let operation = op();
+    let edit_attempt = foreign_runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &edit), move |(s, c), tx| {
+            Box::pin(async move { s.execute_in(tx, operation, at(), c).await.map(|_| ()) })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err);
+    let run_attempt = foreign_runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &request), |(s, r), tx| {
+            Box::pin(async move { s.start_recalculation_in(tx, r).await.map(|_| ()) })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err);
+    let reference_attempt = foreign_runtime
+        .local_tx_with_context(tenant(), deadline(), &s, move |s, tx| {
+            Box::pin(async move { s.lock_reference_target_in(tx, id).await.map(|_| ()) })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err);
+    for result in [edit_attempt, run_attempt, reference_attempt] {
+        assert_eq!(
+            result
+                .expect_err("foreign runtime must be rejected even when no event is appended")
+                .kind(),
+            MessagingErrorKind::Invariant
+        );
+    }
+    assert!(s.get_run(request.id, deadline()).await.unwrap().is_none());
+    assert_eq!(s.get(id, deadline()).await.unwrap(), Some(created.group));
+    assert_eq!(event_count(operation), 0);
+    assert_eq!(event_count(request.id), 0);
+    foreign_runtime.close().await;
     runtime.close().await;
 }

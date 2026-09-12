@@ -75,7 +75,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         r: &RecalculationRequest,
     ) -> InTransaction<Run> {
-        input!(self.check_tenant(tx));
+        input!(self.check_transaction(tx)?);
         if r.snapshot.tenant != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
@@ -238,7 +238,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: OperationId,
     ) -> InTransaction<Preparation> {
-        input!(self.check_tenant(tx));
+        input!(self.check_transaction(tx)?);
         // Nonlocking discovery only. Every actual lock is group -> operation.
         let discovered = input!(
             db::operation(tx, id, false)

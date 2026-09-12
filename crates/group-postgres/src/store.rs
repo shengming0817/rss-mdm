@@ -27,7 +27,8 @@ macro_rules! input {
 pub(crate) use input;
 
 /// One tenant's Group adapter. The host owns and closes the shared RSS runtime.
-/// Borrowed methods are trusted companion seams: propagate SQL errors to the outer
+/// Borrowed methods validate the runtime owner and tenant before all reads/writes.
+/// Companion callers must propagate SQL errors to the outer
 /// local_tx owner, never issue transaction-control SQL or change tenant settings.
 pub struct GroupStore {
     pub(crate) runtime: Arc<PgRuntime>,
@@ -63,12 +64,13 @@ impl GroupStore {
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    pub(crate) fn check_tenant(&self, tx: &PgTransaction<'_>) -> CommandOutcome<()> {
-        if self.tenant == tx.tenant_id() {
+    pub(crate) fn check_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+        self.writer.validate_transaction(tx)?;
+        Ok(if self.tenant == tx.tenant_id() {
             Ok(())
         } else {
             Err(Rejection::TenantMismatch)
-        }
+        })
     }
     /// Read the current group including a tombstone; missing/foreign groups return None.
     pub async fn get(
@@ -133,14 +135,14 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: GroupId,
     ) -> InTransaction<Group> {
-        input!(self.check_tenant(tx));
+        input!(self.check_transaction(tx)?);
         let g = input!(db::group(tx, id, true).await?.ok_or(Rejection::NotFound));
         input!(active(&g));
         Ok(Ok(g))
     }
     /// Execute and commit one authorized command, or replay its original receipt.
-    /// This standalone seam is for hosts without companion reference/audit writes.
-    /// N12 must use execute_in to compose those writes and deletion checks atomically.
+    /// Delete is rejected with CompanionTransactionRequired, including replays.
+    /// N12 must use execute_in to compose deletion, reference checks and audit atomically.
     pub async fn execute(
         &self,
         operation: OperationId,
@@ -148,6 +150,9 @@ impl GroupStore {
         command: &Command,
         deadline: OperationDeadline,
     ) -> Result<Receipt, Error> {
+        if matches!(command, Command::Delete { .. }) {
+            return Err(Rejection::CompanionTransactionRequired.into());
+        }
         settle(
             self.runtime
                 .local_tx_with_context(self.tenant, deadline, (self, command), move |ctx, tx| {
@@ -167,7 +172,7 @@ impl GroupStore {
         as_of: Timepoint,
         command: &Command,
     ) -> InTransaction<Receipt> {
-        input!(self.check_tenant(tx));
+        input!(self.check_transaction(tx)?);
         let request = input!(command_document(self.tenant, command));
         let hash = fingerprint(&[
             self.tenant.to_string().as_bytes(),
