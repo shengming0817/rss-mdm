@@ -96,6 +96,177 @@ fn admin(sql: &str) -> String {
 fn event_count(id: OperationId) -> i64 {
     admin(&format!("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='group.changed.v1:{id}'")).parse().unwrap()
 }
+fn assert_event(r: &Receipt, kind: &str) {
+    use serde_json::json;
+    use sha2::Digest;
+    let e: serde_json::Value = serde_json::from_str(&admin(&format!(
+        "SELECT envelope FROM rss_transactional_messaging.outbox WHERE message_id='group.changed.v1:{}'", r.operation))).unwrap();
+    assert_eq!(e["tenant"], tenant().to_string());
+    assert_eq!(e["occurred_at"], at().unix_seconds());
+    assert_eq!(e["domain"], "mdm-group");
+    assert_eq!(e["route"], "group.changed");
+    assert_eq!(e["contract"], "mdm.group.changed");
+    assert_eq!(e["version"], "v1");
+    assert_eq!(e["partition"], r.group.id.to_string());
+    assert_eq!(
+        e["schema"],
+        format!("sha256:{:x}", sha2::Sha256::digest(EVENT_SCHEMA.as_bytes()))
+    );
+    let bytes: Vec<u8> = serde_json::from_value(e["payload"].clone()).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        payload,
+        json!({"v":1,"kind":kind,"group_id":r.group.id.to_string(),
+        "operation_id":r.operation.to_string(),"group_revision":r.group.revision.get(),
+        "member_version":r.group.member_version,"member_count":r.group.member_count,
+        "added":r.added,"removed":r.removed,"rule_version":r.group.rule_version})
+    );
+    let schema: serde_json::Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
+    assert_eq!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<BTreeSet<_>>(),
+        payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect()
+    );
+    assert!(
+        schema["properties"]["kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(kind))
+    );
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let (id, created, snapshot) = dynamic_group(&s).await;
+    assert_event(&created, "created");
+    let mut a = request(id, &created, snapshot.clone());
+    a.trigger = Trigger::Periodic {
+        slot: "slot-1".into(),
+    };
+    let mut b = request(id, &created, snapshot);
+    b.snapshot.objects[0].key = ObjectKey::new(tenant(), "device-2").unwrap();
+    b.trigger = Trigger::Change {
+        source: "inventory".into(),
+        event: "event-1".into(),
+    };
+    let (first, second) = tokio::join!(
+        s.start_recalculation(&a, deadline()),
+        s.start_recalculation(&b, deadline())
+    );
+    first.unwrap();
+    second.unwrap();
+    let (first, second) = tokio::join!(s.resume(a.id, deadline()), s.resume(b.id, deadline()));
+    let states = [first.unwrap().state, second.unwrap().state];
+    assert_eq!(
+        states
+            .iter()
+            .filter(|s| matches!(s, RunState::Rejected(Rejection::VersionConflict)))
+            .count(),
+        1
+    );
+    let receipt = states
+        .iter()
+        .find_map(|s| {
+            if let RunState::Completed(r) = s {
+                Some(r)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert_eq!(
+        receipt.group.revision.get(),
+        created.group.revision.get() + 1
+    );
+    assert_eq!(s.members(id, deadline()).await.unwrap().len(), 1);
+    assert_eq!(event_count(a.id) + event_count(b.id), 1);
+    assert_event(receipt, "members_changed");
+    let edited = s
+        .execute(
+            op(),
+            at(),
+            &Command::Edit {
+                group: id,
+                expected: receipt.group.revision,
+                name: "renamed".into(),
+                description: "description".into(),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_event(&edited, "edited");
+    let deleted = s
+        .execute(
+            op(),
+            at(),
+            &Command::Delete {
+                group: id,
+                expected: edited.group.revision,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_event(&deleted, "deleted");
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn reference_target_lock_serializes_deletion() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let (id, created, _) = dynamic_group(&s).await;
+    let (locked, wait_locked) = tokio::sync::oneshot::channel();
+    let (release, wait_release) = tokio::sync::oneshot::channel();
+    let holding = runtime.local_tx_with_context(tenant(), deadline(), &s, move |s, tx| {
+        Box::pin(async move {
+            assert_eq!(s.lock_reference_target_in(tx, id).await?.unwrap().id, id);
+            locked.send(()).unwrap();
+            wait_release.await.unwrap();
+            Ok(())
+        })
+    });
+    let deleting = async {
+        wait_locked.await.unwrap();
+        let command = Command::Delete {
+            group: id,
+            expected: created.group.revision,
+        };
+        let mut deletion = Box::pin(s.execute(op(), at(), &command, deadline()));
+        tokio::select! {
+            result = &mut deletion => panic!("delete bypassed reference lock: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+        }
+        release.send(()).unwrap();
+        deletion.await.unwrap()
+    };
+    let (held, deleted) = tokio::join!(holding, deleting);
+    assert!(held.fold(
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    assert!(deleted.group.deleted);
+    assert_event(&deleted, "deleted");
+    runtime.close().await;
+}
 async fn dynamic_group(s: &GroupStore) -> (GroupId, Receipt, Snapshot) {
     let (rule, snapshot) = inputs();
     let id = group_id();

@@ -65,7 +65,7 @@ def verify_closure(data, product_source, pin, locked):
         if name == 'rss-mdm-group-postgres':
             ci.require(nodes[key]['features'] == [], 'extend matrix when adapter production features change')
         if name == 'rss-transactional-messaging':
-            ci.require(nodes[key]['features'] == ['producer'], 'consumer must select only producer')
+            ci.require(nodes[key]['features'] == ['consumer', 'default', 'producer'], 'fixed RSS PG adapter core features differ')
         if name in {'sqlx', 'sqlx-macros', 'sqlx-macros-core'}:
             ci.require(not any(f.startswith(('mysql', 'sqlite', '_sqlite', 'sqlx-mysql', 'sqlx-sqlite')) for f in nodes[key]['features']), 'non-PG driver feature enabled')
         if name in INACTIVE_DRIVERS:

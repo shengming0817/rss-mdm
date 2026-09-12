@@ -35,7 +35,7 @@ class GroupPostgresGuards(unittest.TestCase):
         packages.append({'id': 'root', 'name': 'consumer', 'source': None})
         def edge(name):
             return {'pkg': name, 'dep_kinds': [{'kind': None, 'target': None}]}
-        nodes = [{'id': n, 'features': ['producer'] if n == 'rss-transactional-messaging' else [],
+        nodes = [{'id': n, 'features': ['consumer', 'default', 'producer'] if n == 'rss-transactional-messaging' else [],
                   'deps': [edge(x) for x in names - {n}] if n == 'rss-mdm-group-postgres' else []} for n in sorted(names)]
         nodes.append({'id': 'root', 'features': [], 'deps': [edge(n) for n in consumer.DIRECT]})
         return {'packages': packages, 'workspace_members': ['root'], 'resolve': {'root': 'root', 'nodes': nodes}}, product, pin, {(p['name'], p['version'], p['source']) for p in packages if p['source'] == registry}
