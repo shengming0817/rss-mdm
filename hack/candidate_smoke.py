@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import tempfile
 from urllib.parse import urlsplit
 import uuid
 import identity_t2 as identity
@@ -44,7 +46,7 @@ def health(port, path):
     finally:
         connection.close()
 
-def smoke(directory):
+def run_smoke(directory):
     manifest = json.loads((directory / "candidate.json").read_text())
     archive = directory / manifest["archive"]["file"]
     if archive.parent != directory or archive.is_symlink() or sha(archive) != manifest["archive"]["sha256"]:
@@ -137,12 +139,46 @@ def smoke(directory):
                                  "inventory_unavailable", "inventory_last_known", "source_contract",
                                  "resource_permission", "collection_query", "graceful_stop"],
                       "limits": ["synthetic stored inventory", "test namespace TCP forwarding", "no Windows device T3"]}
-            (directory / "smoke.json").write_text(json.dumps(result, indent=2) + "\n")
-            (directory / "smoke.log").write_text(output + "\n" + logs + "\n")
         finally:
-            for container in reversed(created):
-                identity.docker("rm", "-f", container)
-            identity.docker("volume", "rm", volume)
+            cleanup(created, volume)
+    return result, output + "\n" + logs + "\n"
+
+def cleanup(created, volume):
+    primary = sys.exception()
+    failures = []
+    commands = [("rm", "-f", container) for container in reversed(created)]
+    commands.append(("volume", "rm", volume))
+    for command in commands:
+        try:
+            identity.docker(*command)
+        except Exception as error:
+            failures.append(error)
+    if failures:
+        message = f"candidate cleanup failed ({len(failures)} resources)"
+        if primary is not None:
+            primary.add_note(message)
+        else:
+            raise RuntimeError(message) from failures[0]
+
+def smoke(directory):
+    marker, log = directory / "smoke.json", directory / "smoke.log"
+    for path in (marker, log):
+        path.unlink(missing_ok=True)
+    try:
+        result, output = run_smoke(directory)
+        # Publish only after both fixture owners have finished cleanup. The marker
+        # is last and binds the log, so readers never accept a partial evidence pair.
+        with tempfile.TemporaryDirectory(prefix=".smoke-", dir=directory) as temporary:
+            staged_log, staged_marker = Path(temporary) / "log", Path(temporary) / "marker"
+            staged_log.write_text(output)
+            result["log_sha256"] = sha(staged_log)
+            staged_marker.write_text(json.dumps(result, indent=2) + "\n")
+            os.replace(staged_log, log)
+            os.replace(staged_marker, marker)
+    except BaseException:
+        marker.unlink(missing_ok=True)
+        log.unlink(missing_ok=True)
+        raise
     print("candidate smoke: " + str(directory / "smoke.json"))
 
 if __name__ == "__main__":

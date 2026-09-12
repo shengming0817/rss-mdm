@@ -143,3 +143,6 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

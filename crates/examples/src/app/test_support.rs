@@ -206,11 +206,11 @@ impl PgEffect for RejectAfterWrite {
 async fn rollback_and_unknown(a: &App) -> Result<()> {
     let cancel = CancellationToken::new();
     let source = a.source()?;
-    let scope = a.projection_scope()?;
+    let scope = a.projection_scope();
     let before = inspect(a, "empty").await?;
     a.ingest(batch("rollback", 6, Body::Snapshot(facts("Recovered"))))
         .await?;
-    let control = Control::new(&a.clock, storage::BUDGET, &cancel);
+    let control = Control::new(&a.clock, a.clock.cutoff(storage::BUDGET), &cancel);
     let claim = a
         .projection
         .takeover(&scope, &definition(), &control)
@@ -225,7 +225,9 @@ async fn rollback_and_unknown(a: &App) -> Result<()> {
         RunLimit::new(BatchLimit::new(10)?, 10)?,
     )
     .await;
-    assert!(report.into_result().is_err());
+    assert!(
+        matches!(report.into_result(), Err(error) if error.kind() == rss_projection::ErrorKind::Rejected)
+    );
     let failed = inspect(a, "rollback").await?;
     assert!(!failed["receipt"].is_null());
     assert_eq!(failed["projection"], "not_projected");
@@ -248,6 +250,7 @@ async fn rollback_and_unknown(a: &App) -> Result<()> {
     assert!(result.is_err());
     assert!(!inspect(a, "receipt-unknown").await?["receipt"].is_null());
     assert!(matches!(a.ingest(b).await?, ReceiveOutcome::Replay(_)));
+    let control = Control::new(&a.clock, a.clock.cutoff(storage::BUDGET), &cancel);
     let claim = a
         .projection
         .takeover(&scope, &definition(), &control)

@@ -707,7 +707,7 @@ async fn collection_run(
     let Path((device, run)) = path.map_err(|_| Error::Malformed)?;
     let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
     audit.target(&device);
-    audit.operation(run, "collection_read");
+    audit.set_action("collection_read");
     let grant = app.policy.inventory(&auth.proof, &device, coordinates)?;
     Ok(Json(app.inventory.run(grant, run).await?))
 }

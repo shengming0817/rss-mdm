@@ -9,7 +9,19 @@ pub(crate) use store::{
     DurableReport, Run, accept, create, revalidate, terminate, terminate_session,
 };
 
-pub(crate) const URIS: [&str; 2] = ["./DevInfo/Mod", "./DevDetail/SwV"];
+const FIELD_COUNT: usize = FieldKey::ALL.len();
+fn uri(key: FieldKey) -> &'static str {
+    match key {
+        FieldKey::Model => "./DevInfo/Mod",
+        FieldKey::OsVersion => "./DevDetail/SwV",
+    }
+}
+fn field_index(command: u32, first: u32) -> Option<usize> {
+    command
+        .checked_sub(first)
+        .map(|offset| offset as usize)
+        .filter(|index| *index < FIELD_COUNT)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,7 +74,7 @@ pub(crate) enum Quality {
     Invalid,
     Missing,
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FieldAttempt {
     pub status: Option<u16>,
@@ -71,10 +83,10 @@ pub(crate) struct FieldAttempt {
     value: Option<String>,
     value_digest: Option<String>,
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Attempts {
-    pub fields: [FieldAttempt; 2],
+    pub fields: [FieldAttempt; FIELD_COUNT],
 }
 impl Attempts {
     fn status(&mut self, index: usize, code: u16) -> Result<(), Error> {
@@ -175,8 +187,9 @@ impl Attempts {
                 continue;
             }
             // Only Get statuses affect collection. Other sent command acknowledgements are harmless.
-            if status.message_id == message && (first..=first + 1).contains(&status.command_id) {
-                let index = (status.command_id - first) as usize;
+            if status.message_id == message
+                && let Some(index) = field_index(status.command_id, first)
+            {
                 self.status(index, status.code)?;
                 self.fields[index].received_at = Some(received_at);
             }
@@ -185,12 +198,11 @@ impl Attempts {
             if !result.explicit_message_ref
                 || !result.explicit_command_ref
                 || result.reference.message_id != message
-                || !(first..=first + 1).contains(&result.reference.command_id)
             {
                 return Err(Error::Conflict);
             }
-            let index = (result.reference.command_id - first) as usize;
-            if result.reference.uri != URIS[index] {
+            let index = field_index(result.reference.command_id, first).ok_or(Error::Conflict)?;
+            if result.reference.uri != uri(FieldKey::ALL[index]) {
                 return Err(Error::Conflict);
             }
             self.value(index, result.value.0.clone())?;

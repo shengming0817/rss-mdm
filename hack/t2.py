@@ -107,6 +107,14 @@ def verify_startup_deadlines(binary, root, port, env):
     config['runtime_database']={**config['database'],'user':'mdm_runtime','password_file':str(root/'runtime-password')}
     config['identity'].update(oidc_secret_file=str(root/'oidc-secret'),validation_secret_file=str(root/'validation-secret'),ca_file=str(root/'ca.crt'))
     config["windows"]=json.loads((root/"windows.json").read_text())
+    runtime_password = config['runtime_database']['password_file']
+    config['runtime_database']['password_file'] = str(root/'missing-runtime-password')
+    invalid_runtime = root/'invalid-runtime.json'
+    invalid_runtime.write_text(json.dumps(config)); invalid_runtime.chmod(0o600)
+    result = subprocess.run([binary, 'serve', '--config', str(invalid_runtime)], cwd=ROOT, env=env, capture_output=True, text=True, timeout=22)
+    require(result.returncode != 0 and 'startup.runtime_database_configuration' in result.stderr,
+            'runtime database input lost its startup stage: ' + result.stderr)
+    config['runtime_database']['password_file'] = runtime_password
     for stage in ['database','identity']:
         with socket.socket() as stalled:
             stalled.bind(('127.0.0.1',0));stalled.listen(8)
@@ -166,6 +174,10 @@ def main():
             from windows_fixtures import generate
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_WINDOWS_FIXTURES']=str(root)
+            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_upgrade"], stdout=subprocess.DEVNULL, timeout=10)
+            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::populated_windows_upgrade", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
+            print(upgrade.stdout, end='', flush=True)
+            require(upgrade.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
             if not device_only and not windows_only:
                 verify_startup_deadlines(migrators[0],root,port,env)
@@ -179,9 +191,11 @@ def main():
                 print(windows.stdout,end='',flush=True)
                 require(windows.returncode == 0, 'Windows T2 failed')
                 verify_windows_result(windows.stdout)
-                collection=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","inventory_runtime::tests::durable_report_recovery_and_projection","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                collection=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","inventory_runtime::tests::durable_report_recovery_and_projection","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(collection.stdout,end='',flush=True)
                 require(collection.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in collection.stdout, 'collection recovery T2 did not execute successfully')
+                require('"event":"mdm_inventory_failure"' in collection.stdout and '"phase":"projection_run"' in collection.stdout,
+                        'worker failure lost its safe phase diagnostic')
                 if not windows_only: run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
         finally:
             primary = sys.exception()

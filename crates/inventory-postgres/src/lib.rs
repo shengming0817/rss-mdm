@@ -2,7 +2,7 @@
 mod admission;
 mod inventory;
 pub use admission::verify as verify_admission;
-pub use inventory::{Inventory, definition};
+pub use inventory::{Inventory, definition, projection_scope};
 pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_inventory.sql");
 
 mod reader;

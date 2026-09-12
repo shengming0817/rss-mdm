@@ -91,7 +91,9 @@ impl Audit {
         self.0.state.lock().expect("audit lock").snapshot.action = action;
     }
     pub fn target(&self, target: &str) {
-        self.0.state.lock().expect("audit lock").snapshot.target = Some(target.into());
+        self.0.state.lock().expect("audit lock").snapshot.target = (target.len() <= 255
+            && rss_observation::Id::new(target).is_ok())
+        .then(|| target.to_owned());
     }
     pub fn operation(&self, id: Uuid, action: &'static str) {
         let mut state = self.0.state.lock().expect("audit lock");
@@ -159,6 +161,17 @@ impl Drop for Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn target_rejects_values_that_cannot_be_persisted() {
+        let audit = Audit::new("tenant".into(), "collection_read");
+        for invalid in ["x".repeat(256), "bad\nvalue".into(), String::new()] {
+            audit.target(&invalid);
+            assert!(audit.snapshot().target.is_none());
+        }
+        audit.target(&"x".repeat(255));
+        assert!(audit.snapshot().target.is_some());
+        audit.finalize(None);
+    }
     #[test]
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
         let a = Audit::new("tenant".into(), "enrollment_create");

@@ -271,19 +271,16 @@ impl InventoryService {
             .devices
             .current_scope(grant.proof, &grant.device, grant.coordinates)
             .await?;
-        let run = self.access.collection(&scope, None).await?;
-        let delivery = match &run {
-            Some(run) => Some(self.runtime.inspect(run).await?),
-            None => None,
-        };
-        let fields = self
-            .reader
-            .read(&scope)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+        let (run, fields, delivery) = self
+            .read_state(
+                &scope,
+                #[cfg(test)]
+                std::future::ready(()),
+            )
+            .await?;
         let current = run.as_ref().is_some_and(|r| {
             r.result == crate::collection::RunResult::Snapshot
-                && fields.len() == 2
+                && fields.len() == rss_mdm_inventory::FieldKey::ALL.len()
                 && fields.iter().all(|f| f.batch_id == r.id.to_string())
         }) && delivery
             .as_ref()
@@ -330,6 +327,51 @@ impl InventoryService {
             latest_run: run.as_ref().map(run_summary),
             delivery,
         })
+    }
+
+    pub(crate) async fn read_state(
+        &self,
+        scope: &Scope,
+        #[cfg(test)] after_run: impl std::future::Future<Output = ()>,
+    ) -> Result<
+        (
+            Option<crate::collection::Run>,
+            Vec<rss_mdm_inventory_postgres::InventoryField>,
+            Option<crate::inventory_runtime::DeliveryStatus>,
+        ),
+        Error,
+    > {
+        #[cfg(test)]
+        let mut after_run = Some(after_run);
+        for _ in 0..3 {
+            let run = self.access.collection(scope, None).await?;
+            #[cfg(test)]
+            if let Some(interleaving) = after_run.take() {
+                interleaving.await;
+            }
+            let fields = self
+                .reader
+                .read(scope)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+            let delivery = match &run {
+                Some(run) => Some(self.runtime.inspect(run).await?),
+                None => None,
+            };
+            // Runs only advance and projected fields retain their immutable batch identity.
+            // Matching reads bracket inspection at one common state across the owned stores.
+            let same_run = run == self.access.collection(scope, None).await?;
+            let same_fields = fields
+                == self
+                    .reader
+                    .read(scope)
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+            if same_run && same_fields {
+                return Ok((run, fields, delivery));
+            }
+        }
+        Err(Error::Unavailable(Failure::InventoryQuery))
     }
 
     pub(crate) async fn run(

@@ -80,3 +80,14 @@ fn persisted_fragments_reject_changed_facts() {
     recovered.status(0, 200).unwrap();
     assert_eq!(recovered.fields[0].quality, Quality::Success);
 }
+
+#[test]
+fn command_range_covers_catalog_and_rejects_outside_without_overflow() {
+    let first = u32::MAX - FIELD_COUNT as u32 + 1;
+    for (index, key) in FieldKey::ALL.iter().enumerate() {
+        assert_eq!(field_index(first + index as u32, first), Some(index));
+        assert!(uri(*key).starts_with("./"));
+    }
+    assert_eq!(field_index(first - 1, first), None);
+    assert_eq!(field_index(1024 + FIELD_COUNT as u32, 1024), None);
+}

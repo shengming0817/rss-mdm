@@ -8,9 +8,7 @@ use rss_observation::{
     VerifiedBatch,
 };
 use rss_observation_postgres::{PgSource, PgStore as Observation};
-use rss_projection::{
-    BatchLimit, Control, GenerationStart, ProjectionScope, ReplayBound, RunLimit, SourceScope,
-};
+use rss_projection::{BatchLimit, Control, GenerationStart, ReplayBound, RunLimit};
 use rss_projection_postgres::{CloseOutcome, PgStore as Projection};
 use rss_request_context::{Deadline, TenantId};
 use rss_runtime::{
@@ -29,8 +27,6 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 const BUDGET: Duration = Duration::from_secs(5);
-const JOURNAL: &str = "mdm.observation.v1";
-const GENERATION: &str = "inventory-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -245,6 +241,22 @@ impl Authority for ReadAuthority<'_> {
         }
     }
 }
+#[derive(Debug, Clone, Copy, serde::Serialize, thiserror::Error)]
+#[serde(rename_all = "snake_case")]
+#[error("inventory worker failed at {self:?}")]
+enum WorkerFailure {
+    JournalAuthority,
+    ReportAuthority,
+    ObservationActivate,
+    ObservationReceive,
+    DeliveryProgress,
+    PendingReports,
+    ProjectionInitialize,
+    ProjectionTakeover,
+    ProjectionCompose,
+    ProjectionRun,
+}
+
 pub(crate) struct InventoryRuntime {
     observation: Arc<Observation<Clock>>,
     projection: Arc<Projection>,
@@ -271,9 +283,6 @@ impl InventoryRuntime {
             readiness,
         }
     }
-    fn source_scope(&self) -> Result<SourceScope, Error> {
-        SourceScope::new(self.tenant, JOURNAL).map_err(|_| unavailable())
-    }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
         let (task, status) = ManagedTask::prepare("mdm-inventory", Duration::from_secs(8));
         self.readiness
@@ -286,19 +295,29 @@ impl InventoryRuntime {
             if token.is_cancelled() {
                 return Ok(());
             }
-            result.map_err(|_| shutdown_error())
+            result.map_err(|phase| {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"event":"mdm_inventory_failure","phase":phase})
+                );
+                ShutdownError::new(phase)
+            })
         })
     }
-    async fn deliver(&self, report: &DurableReport, deadline: Deadline) -> Result<(), Error> {
+    async fn deliver(
+        &self,
+        report: &DurableReport,
+        deadline: Deadline,
+    ) -> Result<(), WorkerFailure> {
         if report.scope().tenant() != self.tenant {
-            return Err(Error::Forbidden);
+            return Err(WorkerFailure::ReportAuthority);
         }
         let authority = ReportAuthority(report);
         let lifecycle = LifecycleGrant::verify(&authority, report.scope().clone())
-            .map_err(|_| unavailable())?;
+            .map_err(|_| WorkerFailure::ReportAuthority)?;
         let verified =
             VerifiedBatch::verify(&authority, report.scope().clone(), report.batch().clone())
-                .map_err(|_| unavailable())?;
+                .map_err(|_| WorkerFailure::ReportAuthority)?;
         self.observation
             .activate(
                 &lifecycle,
@@ -307,18 +326,19 @@ impl InventoryRuntime {
                 deadline,
             )
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(|_| WorkerFailure::ObservationActivate)?;
         self.observation
             .receive(&verified, deadline)
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(|_| WorkerFailure::ObservationReceive)?;
         // A lost acknowledgement leaves this true. Restart repeats the exact batch; lookup None
         // is never interpreted as proof of rollback.
         tokio::time::timeout_at(deadline.instant().into(), self.access.delivered(report))
             .await
-            .map_err(|_| unavailable())?
+            .map_err(|_| WorkerFailure::DeliveryProgress)?
+            .map_err(|_| WorkerFailure::DeliveryProgress)
     }
-    async fn work(&self, token: &CancellationToken) -> Result<(), Error> {
+    async fn work(&self, token: &CancellationToken) -> Result<(), WorkerFailure> {
         let source = Arc::new(
             PgSource::new(
                 self.observation.clone(),
@@ -329,13 +349,14 @@ impl InventoryRuntime {
                     },
                     self.tenant,
                 )
-                .map_err(|_| unavailable())?,
-                self.source_scope()?,
+                .map_err(|_| WorkerFailure::JournalAuthority)?,
+                rss_mdm_inventory_postgres::projection_scope(self.tenant)
+                    .source()
+                    .clone(),
             )
-            .map_err(|_| unavailable())?,
+            .map_err(|_| WorkerFailure::JournalAuthority)?,
         );
-        let scope = ProjectionScope::new(self.source_scope()?, "inventory", GENERATION)
-            .map_err(|_| unavailable())?;
+        let scope = rss_mdm_inventory_postgres::projection_scope(self.tenant);
         let control = Control::new(&self.clock, self.clock.cutoff(), token);
         let definition = rss_mdm_inventory_postgres::definition();
         self.projection
@@ -347,19 +368,19 @@ impl InventoryRuntime {
                 &control,
             )
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(|_| WorkerFailure::ProjectionInitialize)?;
         let claim = self
             .projection
             .takeover(&scope, &definition, &control)
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(|_| WorkerFailure::ProjectionTakeover)?;
         let execution = self
             .projection
             .projection(
                 claim,
                 rss_mdm_inventory_postgres::Inventory::new(source.clone()),
             )
-            .map_err(|_| unavailable())?;
+            .map_err(|_| WorkerFailure::ProjectionCompose)?;
         let mut interval = tokio::time::interval(Duration::from_millis(250));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -370,7 +391,8 @@ impl InventoryRuntime {
                 self.access.pending_reports(&self.tenant.to_string()),
             )
             .await
-            .map_err(|_| unavailable())??;
+            .map_err(|_| WorkerFailure::PendingReports)?
+            .map_err(|_| WorkerFailure::PendingReports)?;
             for report in reports {
                 if deadline.remaining(self.clock.now.now()).is_none() {
                     break;
@@ -390,7 +412,7 @@ impl InventoryRuntime {
             )
             .await
             .into_result()
-            .map_err(|_| unavailable())?;
+            .map_err(|_| WorkerFailure::ProjectionRun)?;
             self.readiness.initialized.store(true, Ordering::Release);
             if report.applied > 0 {
                 eprintln!(
@@ -424,15 +446,20 @@ impl InventoryRuntime {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
-        let tenant = self.tenant.to_string();
         let token = CancellationToken::new();
         let control = Control::new(&self.clock, self.clock.cutoff(), &token);
-        let projected = self.projection.local_tx(&self.source_scope()?, &control, move |tx| Box::pin(async move {
-            tx.with_connection(move |conn| Box::pin(async move {
-                sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM rss_projection.receipts WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id='inventory' AND generation=$3 AND event_id=$4)")
-                    .bind(tenant).bind(JOURNAL).bind(GENERATION).bind(event).fetch_one(conn).await
-            })).await
-        })).await.map_err(|_| unavailable())?;
+        let query = rss_projection::ReceiptQuery::new(
+            rss_mdm_inventory_postgres::projection_scope(self.tenant),
+            rss_mdm_inventory_postgres::definition(),
+            event,
+        )
+        .map_err(|_| unavailable())?;
+        let projected = self
+            .projection
+            .receipt_status(&query, &control)
+            .await
+            .map_err(|_| unavailable())?
+            .is_settled();
         let applicable = receipt
             .as_ref()
             .is_some_and(|r| r.decision().outcome().is_applicable());

@@ -178,11 +178,37 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         "integration feature required"
     );
     let access = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
-    let service = DeviceService::new(access.clone(), policy(A, true, true));
+    let service = Arc::new(DeviceService::new(access.clone(), policy(A, true, true)));
     let admin = admin(A, "admin-a").await?;
     let credential = proof(A, Channel::Mdm, 121);
     let (_, registration) = bind(&service, &admin, &credential, "collection-recovery", 0).await?;
     let first = report(&service, &access, &credential, [Some("First"), Some("10")]).await?;
+    // Simulate a corrupt relational coordinate while retaining a valid sealed blob/digest.
+    let mut corrupt_root = PgConnection::connect_with(&options("postgres")?).await?;
+    corrupt_root
+        .execute("ALTER TABLE mdm_access.collection_runs DISABLE TRIGGER immutable_collection")
+        .await?;
+    let corrupt_epoch = Uuid::new_v4();
+    sqlx::query("UPDATE mdm_access.collection_runs SET epoch=$1::uuid WHERE tenant_id=$2::uuid AND id=$3::uuid")
+        .bind(corrupt_epoch.to_string()).bind(A).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
+    let corrupt_scope = crate::device::scope(
+        TenantId::parse(A)?,
+        registration.registration,
+        "mdm.windows",
+        corrupt_epoch,
+    )?;
+    let read = access.collection(&corrupt_scope, Some(first.id)).await;
+    let pending = access.pending_reports(A).await;
+    sqlx::query("UPDATE mdm_access.collection_runs SET epoch=$1::uuid WHERE tenant_id=$2::uuid AND id=$3::uuid")
+        .bind(first.scope.epoch().as_str()).bind(A).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
+    corrupt_root
+        .execute("ALTER TABLE mdm_access.collection_runs ENABLE TRIGGER immutable_collection")
+        .await?;
+    corrupt_root.close().await?;
+    ensure!(
+        read.is_err() && pending.is_err(),
+        "relational scope corruption was accepted"
+    );
     let canonical = first.batch().unwrap().encode().to_vec();
     let runtime = open(access.clone()).await?;
     ensure!(runtime.inspect(&first).await?.receipt.is_none());
@@ -290,7 +316,8 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     runtime.readiness.stop();
     ensure!(!runtime.readiness.ready());
     ensure!(owner.shutdown().join().await?.is_clean());
-    let reader = rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?;
+    let reader =
+        Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
     ensure!(reader.read(&first.scope).await?[0].value == "First");
     runtime.close_fixture().await?;
 
@@ -316,6 +343,33 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             == crate::inventory_runtime::ProjectionStatus::NotApplicable
     );
     ensure!(reader.read(&full.scope).await?[0].value == "New");
+    ensure!(owner.shutdown().join().await?.is_clean());
+    runtime.close_fixture().await?;
+
+    // Deterministically commit/project a newer run between the constituent reads.
+    let runtime = open(access.clone()).await?;
+    let owner = start(runtime.clone()).await?;
+    let inventory = crate::access::InventoryService::new(
+        reader.clone(),
+        service.clone(),
+        access.clone(),
+        runtime.clone(),
+    );
+    let (latest, fields, _) = inventory
+        .read_state(&full.scope, async {
+            let newer_run = report(&service, &access, &newer, [Some("New"), Some("11")])
+                .await
+                .unwrap();
+            wait_projected(&runtime, &newer_run).await.unwrap();
+        })
+        .await?;
+    let latest = latest.unwrap();
+    ensure!(
+        fields
+            .iter()
+            .all(|field| field.batch_id == latest.id.to_string()),
+        "inventory mixed a new projection with an older run"
+    );
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
 

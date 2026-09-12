@@ -8,7 +8,7 @@ use sqlx::{
 };
 use std::time::Duration;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct InventoryField {
     pub field: String,
     pub value: String,
@@ -34,15 +34,16 @@ impl InventoryReader {
     }
     pub async fn read(&self, scope: &Scope) -> Result<Vec<InventoryField>> {
         ensure!(
-            scope.dataset().as_str() == "inventory",
+            scope.dataset().as_str() == rss_mdm_inventory::DATASET,
             "invalid inventory dataset"
         );
+        let projection = super::projection_scope(scope.tenant());
         let tenant = scope.tenant().to_string();
         let mut tx = self.pool.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true), set_config('statement_timeout','5000',true)")
             .bind(&tenant).execute(&mut *tx).await?;
-        let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal='mdm.observation.v1' AND generation='inventory-v1' AND scope=$2 AND coverage=$3 ORDER BY field")
-            .bind(&tenant).bind(scope.encode()?).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).fetch_all(&mut *tx).await?;
+        let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=$2 AND coverage=$3 ORDER BY field")
+            .bind(&tenant).bind(scope.encode()?).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).fetch_all(&mut *tx).await?;
         let result = rows
             .into_iter()
             .map(|row| {

@@ -6,14 +6,25 @@ use rss_projection_postgres::{PgEffect, PgEffectOutcome, PgOperationError, PgTra
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-pub fn definition() -> DefinitionIdentity {
-    DefinitionIdentity::new(
-        Sha256::digest(concat!(
-            "inventory-v1:device-basics:1:model-os:utf8-v1:exact-scope:observed-received:",
-            include_str!("../migrations/0001_inventory.sql")
-        ))
-        .into(),
+const JOURNAL: &str = "mdm.observation.v1";
+const PROJECTION: &str = "inventory";
+const GENERATION: &str = "inventory-v1";
+
+/// The product's canonical journal and read-model generation, shared by writer and reader.
+pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScope {
+    ProjectionScope::new(
+        rss_projection::SourceScope::new(tenant, JOURNAL).expect("static inventory journal"),
+        PROJECTION,
+        GENERATION,
     )
+    .expect("static inventory projection")
+}
+pub fn definition() -> DefinitionIdentity {
+    let mut digest = Sha256::new();
+    digest.update(GENERATION);
+    digest.update(":device-basics:1:model-os:utf8-v1:exact-scope:observed-received:");
+    digest.update(include_str!("../migrations/0001_inventory.sql"));
+    DefinitionIdentity::new(digest.finalize().into())
 }
 /// Inventory effect consumes a source without exposing its internal handle.
 /// ```compile_fail
@@ -36,6 +47,12 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         projection: &ProjectionScope,
         event: &Event,
     ) -> Result<PgEffectOutcome, PgOperationError> {
+        if projection != &projection_scope(projection.source().tenant()) {
+            return Err(rejected(
+                event.position(),
+                rss_projection::ErrorKind::ScopeMismatch,
+            ));
+        }
         let applicable = self
             .source
             .resolve_in_transaction(tx, event)
@@ -121,6 +138,18 @@ fn source_error(error: rss_projection::Error, event_position: Position) -> PgOpe
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn canonical_scope_retains_the_existing_generation_definition() {
+        let actual: String = definition()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            actual,
+            "a009c5aba8c972b0b6ea1976595fedb249fa13277a23ce16a10ef8fe1e2392cb"
+        );
+    }
     #[test]
     fn source_failures_preserve_recovery_and_safe_context() {
         use rss_projection::{Error, ErrorKind};

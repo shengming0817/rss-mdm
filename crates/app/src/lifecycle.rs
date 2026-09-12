@@ -131,28 +131,19 @@ pub async fn serve(
                             Clock, InventoryRuntime, ObservationResource, ProjectionResource,
                         };
                         let clock = Clock::new(monotonic.clone());
-                        let observation = ObservationResource::open(
-                            compiled
-                                .config
-                                .runtime_database
-                                .options()
-                                .map_err(assembly_error)?,
-                            clock.clone(),
-                        )
-                        .await
-                        .map_err(|e| ProcessError::at("startup.observation", e))?;
+                        let runtime_options =
+                            compiled.config.runtime_database.options().map_err(|e| {
+                                ProcessError::at("startup.runtime_database_configuration", e)
+                            })?;
+                        let observation =
+                            ObservationResource::open(runtime_options.clone(), clock.clone())
+                                .await
+                                .map_err(|e| ProcessError::at("startup.observation", e))?;
                         let observation_store = observation.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(observation));
-                        let projection = ProjectionResource::open(
-                            compiled
-                                .config
-                                .runtime_database
-                                .options()
-                                .map_err(assembly_error)?,
-                            clock.clone(),
-                        )
-                        .await
-                        .map_err(|e| ProcessError::at("startup.projection", e))?;
+                        let projection = ProjectionResource::open(runtime_options, clock.clone())
+                            .await
+                            .map_err(|e| ProcessError::at("startup.projection", e))?;
                         let projection_store = projection.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(projection));
                         let runtime = Arc::new(InventoryRuntime::new(

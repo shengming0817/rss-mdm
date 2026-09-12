@@ -8,6 +8,13 @@ use rss_observation::{Batch, Scope};
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 use uuid::Uuid;
 
+// All restore paths use this shape before minting a Run or recovery capability.
+macro_rules! selection {
+    ($filter:literal) => {
+        concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,request,request_message,first_command FROM mdm_access.collection_runs WHERE ", $filter)
+    };
+}
+
 /// Recheck the principal inside the transaction accepting device input. Lock order matches revoke.
 pub(crate) async fn revalidate(
     tx: &mut Transaction<'_, Postgres>,
@@ -34,6 +41,7 @@ pub(crate) async fn revalidate(
     )
 }
 
+#[derive(PartialEq, Eq)]
 pub(crate) struct Run {
     pub id: Uuid,
     pub scope: Scope,
@@ -52,6 +60,15 @@ impl Run {
     fn from_row(row: PgRow) -> Result<Self, Error> {
         let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
             .map_err(|_| corrupt())?;
+        if scope.tenant().to_string() != row.try_get::<String, _>("tenant_id").map_err(db)?
+            || scope.registration().as_str()
+                != row.try_get::<String, _>("registration").map_err(db)?
+            || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
+            || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
+            || scope.dataset().as_str() != rss_mdm_inventory::DATASET
+        {
+            return Err(corrupt());
+        }
         let id =
             Uuid::parse_str(&row.try_get::<String, _>("id").map_err(db)?).map_err(|_| corrupt())?;
         let sequence =
@@ -121,17 +138,18 @@ pub(crate) async fn create(
     scope: &Scope,
     response: &mut syncml::Message,
 ) -> Result<Uuid, Error> {
-    let row = sqlx::query("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1,next_command=next_command+2 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND epoch=$3::uuid AND enabled AND next_sequence<9223372036854775807 AND next_command<=4294967294 RETURNING next_sequence-1 AS sequence,next_command-2 AS command")
+    let row = sqlx::query("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1,next_command=next_command+$4 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND epoch=$3::uuid AND enabled AND next_sequence<9223372036854775807 AND next_command<=$5 RETURNING next_sequence-1 AS sequence,next_command-$4 AS command")
         .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.epoch().as_str())
+        .bind(FIELD_COUNT as i64).bind(i64::from(u32::MAX) - FIELD_COUNT as i64 + 1)
         .fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Conflict)?;
     let first: i64 = row.try_get("command").map_err(db)?;
-    for (index, uri) in URIS.iter().enumerate() {
+    for (index, key) in FieldKey::ALL.iter().enumerate() {
         response.commands.push(Command::Get {
             id: first as u32 + index as u32,
             meta: None,
             items: vec![Item {
                 source: None,
-                target: Some((*uri).into()),
+                target: Some(uri(*key).into()),
                 meta: None,
                 data: None,
             }],
@@ -153,8 +171,12 @@ pub(crate) async fn accept(
     message: &syncml::Message,
     previous: &str,
 ) -> Result<bool, Error> {
-    let row = sqlx::query("SELECT id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,request,request_message,first_command FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
-        .bind(tenant).bind(id.to_string()).fetch_one(&mut **tx).await.map_err(db)?;
+    let row = sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE"))
+        .bind(tenant)
+        .bind(id.to_string())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db)?;
     let mut run = Run::from_row(row)?;
     if run.sealed_at.is_some() {
         return Err(Error::Conflict);
@@ -269,7 +291,7 @@ pub(crate) async fn terminate_session(
     session: Option<&str>,
     reason: &str,
 ) -> Result<(), Error> {
-    let rows = sqlx::query("SELECT id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,request,request_message,first_command FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL AND ($3::text IS NULL OR session_id=$3) ORDER BY sequence FOR UPDATE")
+    let rows = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL AND ($3::text IS NULL OR session_id=$3) ORDER BY sequence FOR UPDATE"))
         .bind(tenant).bind(registration).bind(session).fetch_all(&mut **tx).await.map_err(db)?;
     for row in rows {
         seal(tx, &mut Run::from_row(row)?, reason).await?;
@@ -293,7 +315,7 @@ impl DurableReport {
 impl AccessStore {
     pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
         let mut tx = self.begin(tenant).await?;
-        let rows = sqlx::query("SELECT id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,request,request_message,first_command FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence LIMIT 32")
+        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence LIMIT 32"))
             .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
         let reports = rows
             .into_iter()
@@ -323,7 +345,7 @@ impl AccessStore {
         id: Option<Uuid>,
     ) -> Result<Option<Run>, Error> {
         let mut tx = self.begin(&scope.tenant().to_string()).await?;
-        let row = sqlx::query("SELECT id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,request,request_message,first_command FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1")
+        let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1"))
             .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.map(|v| v.to_string()))
             .fetch_optional(&mut *tx).await.map_err(db)?;
         let run = row.map(Run::from_row).transpose()?;

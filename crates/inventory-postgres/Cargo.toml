@@ -10,6 +10,7 @@ rss-mdm-inventory.workspace = true
 rss-observation.workspace = true
 rss-observation-postgres.workspace = true
 rss-projection.workspace = true
+rss-request-context.workspace = true
 rss-projection-postgres.workspace = true
 sha2.workspace = true
 serde_json.workspace = true

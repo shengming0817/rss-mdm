@@ -302,6 +302,12 @@ impl Browser {
             app.clone().oneshot(request).await?
         };
         let status = response.status();
+        if method == Method::GET && path.contains("/collection-runs/") {
+            ensure!(
+                !response.headers().contains_key("idempotency-key"),
+                "ordinary collection GET claimed an idempotent operation"
+            );
+        }
         ensure!(
             response
                 .headers()
@@ -696,6 +702,9 @@ async fn matrix() -> Result<()> {
     let scope: rss_observation::Scope = serde_json::from_str(&scope)?;
     let encoded = scope.encode()?.replace('\'', "''");
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
+    let projection = rss_mdm_inventory_postgres::projection_scope(scope.tenant());
+    let journal = projection.source().source();
+    let generation = projection.generation();
     // Read-path fixture only. Device registration/credential proof is exercised by device PG T2.
     pg(&format!(
         r#"
@@ -705,7 +714,7 @@ async fn matrix() -> Result<()> {
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);
-        INSERT INTO mdm.inventory VALUES('{TENANT}','mdm.observation.v1','inventory-v1','{encoded}','{coverage}','device.model','Model-A','fixture',1,2);
+        INSERT INTO mdm.inventory VALUES('{TENANT}','{journal}','{generation}','{encoded}','{coverage}','device.model','Model-A','fixture',1,2);
     "#
     ))?;
     let before = count()?;
@@ -1521,8 +1530,11 @@ async fn immutable_candidate_inventory_query() -> Result<()> {
         count()? == before + 1,
         "candidate skipped online Identity validation"
     );
+    let projection = rss_mdm_inventory_postgres::projection_scope(scope.tenant());
+    let journal = projection.source().source();
+    let generation = projection.generation();
     pg(&format!(
-        "INSERT INTO mdm.inventory VALUES('{TENANT}','mdm.observation.v1','inventory-v1','{}','{coverage}','device.model','Candidate-Model','read-fixture',1,2)",
+        "INSERT INTO mdm.inventory VALUES('{TENANT}','{journal}','{generation}','{}','{coverage}','device.model','Candidate-Model','read-fixture',1,2)",
         scope.encode()?.replace('\'', "''")
     ))?;
     let (status, value) = browser.call(&target, Method::GET, query, None).await?;
@@ -1577,6 +1589,16 @@ async fn immutable_candidate_inventory_query() -> Result<()> {
     let path = format!("/api/v1/devices/device-1/collection-runs/{run_id}?source=mdm.windows");
     let (status, run) = browser.call(&target, Method::GET, &path, None).await?;
     ensure!(status == StatusCode::OK && run["run"]["run_id"] == run_id.to_string());
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{TENANT}' AND action='collection_read' AND result='success' AND status=200 AND operation_id IS NULL"))?.trim() == "1");
+    let invalid_target = path.replace("device-1", &"x".repeat(256));
+    ensure!(
+        browser
+            .call(&target, Method::GET, &invalid_target, None)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{TENANT}' AND action='collection_read' AND result='denied' AND status=403 AND target IS NULL"))?.trim() == "1");
     ensure!(run["run"]["result"] == "failed" && run["run"]["reason"] == "timeout");
     ensure!(run["fields"].as_array().is_some_and(|fields| {
         fields.len() == 2
