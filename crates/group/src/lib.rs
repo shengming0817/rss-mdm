@@ -58,7 +58,7 @@ pub use model::{
     Difference, Fact, FactState, Field, FieldType, ObjectKey, ObjectSnapshot, Op, Operand,
     Predicate, Scalar, ScalarType, Snapshot, Value, diff,
 };
-pub use rule::{Criteria, Rule};
+pub use rule::{Criteria, CriteriaView, Rule, RuleView};
 
 /// Closed diagnostics never contain fact values or caller-supplied strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

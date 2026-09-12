@@ -22,6 +22,57 @@ use rss_contract::Timepoint;
 use rss_mdm_group::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn borrowed_rule_views_preserve_structure_for_independent_persistence() {
+    fn rebuild(c: &Criteria) -> Criteria {
+        match c.view() {
+            CriteriaView::Predicate(p) => Criteria::predicate(p.clone()).unwrap(),
+            CriteriaView::And(children) => {
+                Criteria::and(children.iter().map(rebuild).collect()).unwrap()
+            }
+            CriteriaView::Or(children) => {
+                Criteria::or(children.iter().map(rebuild).collect()).unwrap()
+            }
+        }
+    }
+    let criteria = Criteria::and(vec![
+        leaf(Op::Eq, Some(string("a"))),
+        Criteria::or(vec![
+            leaf(Op::Eq, Some(string("b"))),
+            leaf(Op::Eq, Some(string("c"))),
+        ])
+        .unwrap(),
+    ])
+    .unwrap();
+    let original = Rule::new(
+        tenant(),
+        "r",
+        "d",
+        vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
+        criteria,
+    )
+    .unwrap();
+    let v = original.view();
+    let restored = Rule::new(
+        v.tenant,
+        v.version,
+        v.dictionary_version,
+        v.fields.values().cloned().collect(),
+        rebuild(v.criteria),
+    )
+    .unwrap();
+    let mut s = snapshot(FactState::Known(string("a")));
+    s.dictionary_version = "d".into();
+    assert_eq!(
+        original.evaluate(&s, time(10)),
+        restored.evaluate(&s, time(10))
+    );
+    assert_eq!(
+        original.predicate_at(&[1, 0]),
+        restored.predicate_at(&[1, 0])
+    );
+}
+
 fn tenant() -> TenantId {
     TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
 }
