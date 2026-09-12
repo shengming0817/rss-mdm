@@ -17,8 +17,10 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
 
 [features]

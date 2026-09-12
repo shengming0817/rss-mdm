@@ -16,17 +16,39 @@ pub(crate) fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {
     }
     hash.finalize().to_vec()
 }
-pub(crate) fn invariant() -> PgError {
-    sqlx::Error::Protocol("Group storage invariant".into()).into()
+#[derive(Clone, Copy)]
+pub(crate) enum StorageFault {
+    Contract,
+    DocumentDigest,
+    StoredShape,
+    RowCount,
+    OutboxIdentity,
 }
+impl StorageFault {
+    pub(crate) fn error(self) -> PgError {
+        let reason = match self {
+            Self::Contract => "group.storage_contract",
+            Self::DocumentDigest => "group.document_digest",
+            Self::StoredShape => "group.stored_shape",
+            Self::RowCount => "group.row_count",
+            Self::OutboxIdentity => "group.outbox_identity",
+        };
+        tracing::error!(target: "rss_mdm_group_postgres::storage", reason, "Group storage invariant");
+        sqlx::Error::Protocol("Group storage invariant".into()).into()
+    }
+}
+pub(crate) fn stored_shape() -> PgError {
+    StorageFault::StoredShape.error()
+}
+
 pub(crate) fn data<T>(value: Result<T, impl std::fmt::Debug>) -> Result<T, PgError> {
-    value.map_err(|_| invariant())
+    value.map_err(|_| stored_shape())
 }
 pub(crate) fn document(bytes: &[u8], expected: &[u8]) -> Result<(), PgError> {
     if digest(bytes) == expected {
         Ok(())
     } else {
-        Err(invariant())
+        Err(StorageFault::DocumentDigest.error())
     }
 }
 pub(crate) async fn group(
@@ -48,7 +70,7 @@ pub(crate) async fn group(
         let kind = match r.try_get::<&str, _>("kind")? {
             "static" => GroupKind::Static,
             "dynamic" => GroupKind::Dynamic,
-            _ => return Err(invariant()),
+            _ => return Err(stored_shape()),
         };
         Ok(Group {
             id,
@@ -75,7 +97,7 @@ pub(crate) async fn members(
         .bind(raw).bind(id.to_string()).fetch_all(c).await
     })).await?;
     if rows.len() > rss_mdm_group::limits::OBJECTS {
-        return Err(invariant());
+        return Err(stored_shape());
     }
     rows.into_iter()
         .map(|r| {
@@ -90,7 +112,9 @@ pub(crate) async fn rule(
     group: GroupId,
     version: String,
 ) -> Result<Rule, PgError> {
-    find_rule(tx, group, version).await?.ok_or_else(invariant)
+    find_rule(tx, group, version)
+        .await?
+        .ok_or_else(stored_shape)
 }
 pub(crate) async fn find_rule(
     tx: &mut PgTransaction<'_>,
@@ -111,7 +135,7 @@ pub(crate) async fn find_rule(
     document(&bytes, r.try_get::<&[u8], _>("digest")?)?;
     let result = data(codec::decode_rule(&bytes))?;
     if result.view().tenant != tenant || result.view().version != version {
-        return Err(invariant());
+        return Err(stored_shape());
     }
     Ok(Some(result))
 }
@@ -132,7 +156,7 @@ pub(crate) async fn write_rule(
         Ok((hash,old))
     })).await?;
     if expected != returned {
-        return Err(invariant());
+        return Err(StorageFault::DocumentDigest.error());
     }
     Ok(())
 }
@@ -153,7 +177,7 @@ pub(crate) async fn save_group(
         .bind(g.name).bind(g.description).bind(g.revision.get()).bind(g.member_version).bind(g.member_count as i64).bind(g.rule_version).bind(g.deleted).execute(c).await.map(|r|r.rows_affected())
     })).await?;
     if n != 1 {
-        return Err(invariant());
+        return Err(StorageFault::RowCount.error());
     }
     Ok(())
 }
@@ -199,15 +223,15 @@ pub(crate) async fn operation(
                 tenant_id,
                 op.group,
                 op.base,
-                op.rule_version.as_deref().ok_or_else(invariant)?,
+                op.rule_version.as_deref().ok_or_else(stored_shape)?,
                 op.as_of,
-                op.trigger.as_deref().ok_or_else(invariant)?,
+                op.trigger.as_deref().ok_or_else(stored_shape)?,
                 &op.request,
             ),
-            _ => return Err(invariant()),
+            _ => return Err(stored_shape()),
         };
         if op.digest != hash {
-            return Err(invariant());
+            return Err(StorageFault::DocumentDigest.error());
         }
         if let RunState::Completed(r) = &op.state
             && (r.operation != id
@@ -216,7 +240,7 @@ pub(crate) async fn operation(
                 || r.group.member_version < 0
                 || r.group.member_version > r.group.revision.get())
         {
-            return Err(invariant());
+            return Err(stored_shape());
         }
     }
     Ok(op)
@@ -228,7 +252,7 @@ fn stored_operation(id: OperationId, r: PgRow) -> Result<StoredOperation, PgErro
         "rejected" => RunState::Rejected(data(serde_json::from_str(
             r.try_get::<&str, _>("failure")?,
         ))?),
-        _ => return Err(invariant()),
+        _ => return Err(stored_shape()),
     };
     let result: Option<Vec<u8>> = r.try_get("result")?;
     if let Some(bytes) = &result {
@@ -270,7 +294,7 @@ pub(crate) async fn insert_operation(
         .as_ref()
         .map(codec::encode)
         .transpose()
-        .map_err(|_| invariant())?;
+        .map_err(|_| stored_shape())?;
     tx.with_connection(move |c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_group.operations(tenant_id,id,group_id,kind,digest,request,trigger,state,receipt,base_revision,rule_version,as_of,completed_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $8='completed' THEN clock_timestamp() ELSE NULL END)")
         .bind(tenant).bind(op.id.to_string()).bind(op.group.to_string()).bind(if op.trigger.is_some() {"recalculation"}else{"command"})
@@ -287,7 +311,7 @@ pub(crate) async fn complete(
     let (status, receipt, failure) = match state {
         RunState::Completed(r) => ("completed", Some(data(codec::encode(r))?), None),
         RunState::Rejected(r) => ("rejected", None, Some(data(serde_json::to_string(r))?)),
-        RunState::Pending => return Err(invariant()),
+        RunState::Pending => return Err(stored_shape()),
     };
     let tenant = tx.tenant_id().to_string();
     let hash = result.as_ref().map(|b| digest(b));
@@ -296,7 +320,7 @@ pub(crate) async fn complete(
         .bind(tenant).bind(id.to_string()).bind(status).bind(receipt).bind(failure).bind(result).bind(hash).execute(c).await.map(|r|r.rows_affected())
     })).await?;
     if n != 1 {
-        return Err(invariant());
+        return Err(StorageFault::RowCount.error());
     }
     Ok(())
 }
@@ -324,7 +348,7 @@ pub(crate) async fn apply_delta(
         } Ok(true)
     })).await?;
     if !valid {
-        return Err(invariant());
+        return Err(StorageFault::RowCount.error());
     }
     Ok(())
 }

@@ -31,13 +31,13 @@ pub(crate) fn run_digest(
 }
 fn run(op: StoredOperation) -> Result<Run, PgError> {
     if op.kind != "recalculation" {
-        return Err(invariant());
+        return Err(stored_shape());
     }
     Ok(Run {
         id: op.id,
         group: op.group,
         state: op.state,
-        trigger: data(codec::decode(&op.trigger.ok_or_else(invariant)?))?,
+        trigger: data(codec::decode(&op.trigger.ok_or_else(stored_shape)?))?,
         as_of: data(Timepoint::try_from(op.as_of))?,
         duration_micros: op.duration,
     })
@@ -53,6 +53,8 @@ enum Preparation {
     Terminal(Box<Run>),
 }
 impl GroupStore {
+    /// Validate and commit complete frozen input for later resume; replay requires identical input.
+    /// This admits work but neither schedules nor evaluates it in a background worker.
     pub async fn start_recalculation(
         &self,
         r: &RecalculationRequest,
@@ -148,8 +150,9 @@ impl GroupStore {
         .await?;
         Ok(Ok(run(db::operation(tx, r.id, false)
             .await?
-            .ok_or_else(invariant)?)?))
+            .ok_or_else(stored_shape)?)?))
     }
+    /// Read run state/provenance; missing, command or foreign-tenant identities return None.
     pub async fn get_run(
         &self,
         id: OperationId,
@@ -170,7 +173,9 @@ impl GroupStore {
             Some(id),
         )
     }
-    /// Ordered, bounded work discovery; no claim/lease, automatic retry, or scheduler.
+    /// Ordered work discovery; no claim/lease, automatic retry, or scheduler.
+    /// Limit is 1..=1000; after is an exclusive UUID cursor. Concurrent admissions with
+    /// lower UUIDs require a later scan from None; this is not a stable queue watermark.
     pub async fn recoverable(
         &self,
         after: Option<OperationId>,
@@ -189,6 +194,10 @@ impl GroupStore {
             Ok(Ok(rows.iter().map(|s|data(OperationId::parse(s))).collect::<Result<_,_>>()?))
         })).await,None)
     }
+    /// Resume durable input without caller facts, or return a terminal run unchanged.
+    /// Reads base members under the group lock, evaluates outside SQL, then applies under CAS.
+    /// An intervening revision or deletion persists a terminal rejection; concurrent resumes
+    /// return the one durable result. Transient or unknown outcomes retain the original identity.
     pub async fn resume(&self, id: OperationId, deadline: OperationDeadline) -> Result<Run, Error> {
         let prepared = settle(
             self.runtime
@@ -241,8 +250,10 @@ impl GroupStore {
         }
         let g = db::group(tx, discovered.group, true)
             .await?
-            .ok_or_else(invariant)?;
-        let op = db::operation(tx, id, true).await?.ok_or_else(invariant)?;
+            .ok_or_else(stored_shape)?;
+        let op = db::operation(tx, id, true)
+            .await?
+            .ok_or_else(stored_shape)?;
         if !matches!(op.state, RunState::Pending) {
             return Ok(Ok(Preparation::Terminal(Box::new(run(op)?))));
         }
@@ -252,11 +263,11 @@ impl GroupStore {
                 tx, id, false,
             )
             .await?
-            .ok_or_else(invariant)?)?))));
+            .ok_or_else(stored_shape)?)?))));
         }
-        let version = op.rule_version.as_ref().ok_or_else(invariant)?;
+        let version = op.rule_version.as_ref().ok_or_else(stored_shape)?;
         if g.rule_version.as_ref() != Some(version) {
-            return Err(invariant());
+            return Err(stored_shape());
         }
         let hash = run_digest(
             self.tenant,
@@ -264,20 +275,20 @@ impl GroupStore {
             op.base,
             version,
             op.as_of,
-            op.trigger.as_ref().ok_or_else(invariant)?,
+            op.trigger.as_ref().ok_or_else(stored_shape)?,
             &op.request,
         );
         if hash != op.digest {
-            return Err(invariant());
+            return Err(StorageFault::DocumentDigest.error());
         }
         let snapshot = data(codec::decode_snapshot(&op.request))?;
         if snapshot.tenant != self.tenant {
-            return Err(invariant());
+            return Err(stored_shape());
         }
         let rule = db::rule(tx, op.group, version.clone()).await?;
         let old = db::members(tx, op.group).await?;
         if old.len() != g.member_count {
-            return Err(invariant());
+            return Err(StorageFault::RowCount.error());
         }
         Ok(Ok(Preparation::Ready(Box::new(Prepared {
             op,
@@ -294,10 +305,10 @@ impl GroupStore {
     ) -> InTransaction<Run> {
         let mut g = db::group(tx, p.op.group, true)
             .await?
-            .ok_or_else(invariant)?;
+            .ok_or_else(stored_shape)?;
         let current = db::operation(tx, p.op.id, true)
             .await?
-            .ok_or_else(invariant)?;
+            .ok_or_else(stored_shape)?;
         if !matches!(current.state, RunState::Pending) {
             return Ok(Ok(run(current)?));
         }
@@ -308,9 +319,9 @@ impl GroupStore {
             db::complete(tx, p.op.id, &RunState::Rejected(code), None).await?;
         } else {
             if g.rule_version != p.op.rule_version || current.digest != p.op.digest {
-                return Err(invariant());
+                return Err(stored_shape());
             }
-            let calculated = result.as_ref().map_err(|_| invariant())?;
+            let calculated = result.as_ref().map_err(|_| stored_shape())?;
             let difference = &calculated.difference;
             let changed = !difference.added.is_empty() || !difference.removed.is_empty();
             let revision = match g.revision.next() {
@@ -319,7 +330,7 @@ impl GroupStore {
                     db::complete(tx, p.op.id, &RunState::Rejected(reason), None).await?;
                     return Ok(Ok(run(db::operation(tx, p.op.id, false)
                         .await?
-                        .ok_or_else(invariant)?)?));
+                        .ok_or_else(stored_shape)?)?));
                 }
             };
             g.revision = revision;
@@ -361,7 +372,7 @@ impl GroupStore {
         }
         Ok(Ok(run(db::operation(tx, p.op.id, false)
             .await?
-            .ok_or_else(invariant)?)?))
+            .ok_or_else(stored_shape)?)?))
     }
     /// Load historical decisions and explanations without running the current evaluator.
     pub async fn result(
@@ -385,7 +396,8 @@ impl GroupStore {
                             return Ok(Ok(None));
                         };
                         let rule =
-                            db::rule(tx, op.group, op.rule_version.ok_or_else(invariant)?).await?;
+                            db::rule(tx, op.group, op.rule_version.ok_or_else(stored_shape)?)
+                                .await?;
                         let snapshot = data(codec::decode_snapshot(&op.request))?;
                         Ok(Ok(Some(data(codec::decode_result(
                             &bytes,

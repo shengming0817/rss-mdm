@@ -6,6 +6,7 @@ use rss_transactional_messaging_postgres::PgError;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+/// Exact v1 event JSON schema; its byte digest is carried in RSS message metadata.
 pub const EVENT_SCHEMA: &str = include_str!("../schema/group-changed-v1.json");
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +18,7 @@ pub(crate) enum ChangeKind {
     Deleted,
 }
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Event<'a> {
     v: u8,
     kind: ChangeKind,

@@ -3,17 +3,17 @@
   "title": "mdm.group.changed.v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "kind", "group_id", "operation_id", "group_revision", "member_version", "member_count", "added", "removed", "rule_version"],
+  "required": ["v", "kind", "groupId", "operationId", "groupRevision", "memberVersion", "memberCount", "added", "removed", "ruleVersion"],
   "properties": {
     "v": {"const": 1},
     "kind": {"enum": ["created", "edited", "rule_changed", "members_changed", "deleted"]},
-    "group_id": {"type": "string", "format": "uuid"},
-    "operation_id": {"type": "string", "format": "uuid"},
-    "group_revision": {"type": "integer", "minimum": 1},
-    "member_version": {"type": "integer", "minimum": 0},
-    "member_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "groupId": {"type": "string", "format": "uuid"},
+    "operationId": {"type": "string", "format": "uuid"},
+    "groupRevision": {"type": "integer", "minimum": 1},
+    "memberVersion": {"type": "integer", "minimum": 0},
+    "memberCount": {"type": "integer", "minimum": 0, "maximum": 10000},
     "added": {"type": "integer", "minimum": 0, "maximum": 10000},
     "removed": {"type": "integer", "minimum": 0, "maximum": 10000},
-    "rule_version": {"type": ["string", "null"], "maxLength": 256}
+    "ruleVersion": {"type": ["string", "null"], "maxLength": 256}
   }
 }

@@ -165,3 +165,56 @@ fn nested_typed_rules_and_all_fact_states_keep_their_meaning() {
         }
     }
 }
+
+#[test]
+fn storage_diagnostics_survive_redaction_without_exposing_data() {
+    use crate::storage::{StorageFault, data, document};
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let output = bytes.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || Buffer(output.clone()))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        StorageFault::Contract.error();
+        document(b"private-fact", &[0; 32]).unwrap_err();
+        data::<()>(Err("private-document")).unwrap_err();
+        StorageFault::RowCount.error();
+        let cause = StorageFault::OutboxIdentity.error();
+        assert_eq!(
+            cause.kind(),
+            rss_transactional_messaging::error::MessagingErrorKind::Invariant
+        );
+        let outcome = crate::Error::RolledBack(cause);
+        assert!(matches!(outcome, crate::Error::RolledBack(_)));
+        assert!(!format!("{outcome:?}").contains("private"));
+    });
+    let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    for reason in [
+        "storage_contract",
+        "document_digest",
+        "stored_shape",
+        "row_count",
+        "outbox_identity",
+    ] {
+        assert!(
+            logs.contains(&format!("reason=\"group.{reason}\"")),
+            "{logs}"
+        );
+    }
+    assert_eq!(logs.lines().count(), 5);
+    assert!(!logs.contains("private"));
+}

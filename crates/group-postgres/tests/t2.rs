@@ -65,11 +65,20 @@ fn assert_event(r: &Receipt, kind: &str) {
     let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         payload,
-        json!({"v":1,"kind":kind,"group_id":r.group.id.to_string(),
-        "operation_id":r.operation.to_string(),"group_revision":r.group.revision.get(),
-        "member_version":r.group.member_version,"member_count":r.group.member_count,
-        "added":r.added,"removed":r.removed,"rule_version":r.group.rule_version})
+        json!({"v":1,"kind":kind,"groupId":r.group.id.to_string(),
+        "operationId":r.operation.to_string(),"groupRevision":r.group.revision.get(),
+        "memberVersion":r.group.member_version,"memberCount":r.group.member_count,
+        "added":r.added,"removed":r.removed,"ruleVersion":r.group.rule_version})
     );
+    assert!(
+        payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| !key.contains('_')),
+        "event fields must be camelCase"
+    );
+
     let schema: serde_json::Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
     assert_eq!(
         schema["required"]
@@ -755,5 +764,47 @@ async fn lost_commit_ack_replays_durable_result_once() {
     assert_eq!(first, s.resume(request.id, deadline()).await.unwrap());
     assert_eq!(s.members(id, deadline()).await.unwrap().len(), 1);
     assert_eq!(event_count(request.id), 1);
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn admission_rejects_catalog_and_security_drift() {
+    let runtime = connect_runtime().await;
+    for mutation in [
+        "GRANT CREATE ON SCHEMA mdm_group TO mdm_group_runtime",
+        "GRANT TRUNCATE ON mdm_group.groups TO mdm_group_runtime",
+        "GRANT UPDATE(id) ON mdm_group.groups TO mdm_group_runtime",
+        "GRANT SELECT ON mdm_group.groups TO PUBLIC",
+        "GRANT SELECT ON mdm_group.groups TO mdm_group_runtime WITH GRANT OPTION",
+        "ALTER POLICY tenant ON mdm_group.groups USING (true)",
+        "ALTER POLICY tenant ON mdm_group.groups WITH CHECK (true)",
+        "CREATE POLICY extra ON mdm_group.groups USING (true)",
+        "ALTER ROLE mdm_group_runtime BYPASSRLS",
+        "ALTER TABLE mdm_group.operations DROP COLUMN result_digest CASCADE",
+        "ALTER TABLE mdm_group.groups ALTER COLUMN name TYPE varchar",
+        "ALTER TABLE mdm_group.operations ALTER COLUMN request DROP NOT NULL",
+        "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT true",
+        "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_state_check",
+        "ALTER TABLE mdm_group.members DROP CONSTRAINT members_tenant_id_group_id_fkey",
+        "ALTER TABLE mdm_group.deltas DROP CONSTRAINT deltas_pkey",
+        "DROP INDEX mdm_group.recoverable",
+        "DROP INDEX mdm_group.recoverable; CREATE INDEX recoverable ON mdm_group.operations(tenant_id,id) WHERE state='completed'",
+        "ALTER TABLE mdm_group.operations ADD COLUMN unexpected text",
+        "UPDATE pg_index SET indisvalid=false WHERE indexrelid='mdm_group.recoverable'::regclass",
+        "UPDATE pg_index SET indisready=false WHERE indexrelid='mdm_group.recoverable'::regclass",
+        "UPDATE pg_index SET indislive=false WHERE indexrelid='mdm_group.recoverable'::regclass",
+    ] {
+        GroupStore::new(runtime.clone(), tenant(), deadline())
+            .await
+            .unwrap();
+        admin(mutation);
+        let result = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
+        // Restore before asserting so a failing case cannot contaminate later tests.
+        admin(&format!(
+            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.recoverable'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL}"
+        ));
+        assert!(result.is_err(), "accepted drift: {mutation}");
+    }
     runtime.close().await;
 }

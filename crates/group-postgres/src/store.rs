@@ -35,6 +35,8 @@ pub struct GroupStore {
     writer: PgOutboxWriter,
 }
 impl GroupStore {
+    /// Verify the installed Group catalog/security contract using the host-owned runtime.
+    /// The host must keep this same runtime for every borrowed transaction passed to the store.
     pub async fn new(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -57,6 +59,7 @@ impl GroupStore {
             tenant,
         })
     }
+    /// Return the tenant used for all reads, writes, rules and operation identities.
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
@@ -67,6 +70,7 @@ impl GroupStore {
             Err(Rejection::TenantMismatch)
         }
     }
+    /// Read the current group including a tombstone; missing/foreign groups return None.
     pub async fn get(
         &self,
         id: GroupId,
@@ -134,6 +138,9 @@ impl GroupStore {
         input!(active(&g));
         Ok(Ok(g))
     }
+    /// Execute and commit one authorized command, or replay its original receipt.
+    /// This standalone seam is for hosts without companion reference/audit writes.
+    /// N12 must use execute_in to compose those writes and deletion checks atomically.
     pub async fn execute(
         &self,
         operation: OperationId,
@@ -169,133 +176,24 @@ impl GroupStore {
         ]);
         let existing = db::group(tx, command.group(), true).await?;
         if let Some(old) = db::operation(tx, operation, true).await? {
-            if old.group != command.group() || old.kind != "command" || old.digest != hash {
-                return Ok(Err(Rejection::IdentityConflict));
-            }
-            return match old.state {
-                RunState::Completed(r) => Ok(Ok(r)),
-                _ => Err(invariant()),
-            };
+            return replay_command(old, command.group(), &hash);
         }
-        let (mut group, create) = match (command, existing) {
-            (
-                Command::Create {
-                    group,
-                    name,
-                    description,
-                    definition,
-                },
-                None,
-            ) => {
-                let (kind, version) = match definition {
-                    Definition::Static => (GroupKind::Static, None),
-                    Definition::Dynamic(r) => (GroupKind::Dynamic, Some(r.view().version.into())),
-                };
-                (
-                    Group {
-                        id: *group,
-                        kind,
-                        name: name.clone(),
-                        description: description.clone(),
-                        revision: data(Revision::new(1))?,
-                        member_version: 0,
-                        member_count: 0,
-                        rule_version: version,
-                        deleted: false,
-                    },
-                    true,
-                )
-            }
-            (Command::Create { .. }, Some(_)) => return Ok(Err(Rejection::IdentityConflict)),
-            (_, None) => return Ok(Err(Rejection::NotFound)),
-            (_, Some(g)) => {
-                input!(active(&g));
-                if command.expected() != Some(g.revision) {
-                    return Ok(Err(Rejection::VersionConflict));
-                }
-                (g, false)
-            }
-        };
+        let (mut group, create) = input!(command_group(command, existing));
         let old = if create {
             Vec::new()
         } else {
             db::members(tx, group.id).await?
         };
         if old.len() != group.member_count {
-            return Err(invariant());
+            return Err(StorageFault::RowCount.error());
         }
-        let mut new = old.clone();
-        let mut kind = None;
-        let mut rule_to_write: Option<&Rule> = None;
-        match command {
-            Command::Create { definition, .. } => {
-                kind = Some(ChangeKind::Created);
-                if let Definition::Dynamic(r) = definition {
-                    rule_to_write = Some(r);
-                }
-            }
-            Command::Edit {
-                name, description, ..
-            } => {
-                if group.name != *name || group.description != *description {
-                    group.name = name.clone();
-                    group.description = description.clone();
-                    kind = Some(ChangeKind::Edited);
-                }
-            }
-            Command::SetRule { rule, .. } => {
-                if group.kind != GroupKind::Dynamic {
-                    return Ok(Err(Rejection::KindMismatch));
-                }
-                // All immutable versions are protected, including a previously used version.
-                input!(self.check_rule_identity(tx, group.id, rule).await?);
-                if group.rule_version.as_deref() != Some(rule.view().version) {
-                    group.rule_version = Some(rule.view().version.into());
-                    kind = Some(ChangeKind::RuleChanged);
-                    rule_to_write = Some(rule);
-                }
-            }
-            Command::Members { add, remove, .. } => {
-                if group.kind != GroupKind::Static {
-                    return Ok(Err(Rejection::KindMismatch));
-                }
-                let mut keys: BTreeSet<_> = old.iter().cloned().collect();
-                for id in remove {
-                    keys.remove(&input!(
-                        ObjectKey::new(self.tenant, id).map_err(|_| Rejection::InvalidInput)
-                    ));
-                }
-                for id in add {
-                    keys.insert(input!(
-                        ObjectKey::new(self.tenant, id).map_err(|_| Rejection::InvalidInput)
-                    ));
-                }
-                new = keys.into_iter().collect();
-            }
-            Command::Delete { .. } => {
-                group.deleted = true;
-                new.clear();
-                kind = Some(ChangeKind::Deleted);
-            }
+        if let Command::SetRule { rule, .. } = command {
+            input!(self.check_rule_identity(tx, group.id, rule).await?);
         }
+        let (new, kind, rule_to_write) =
+            input!(apply_command(self.tenant, command, &mut group, &old));
         let delta = input!(diff(self.tenant, &old, &new).map_err(|_| Rejection::InvalidInput));
-        let changed = !delta.added.is_empty() || !delta.removed.is_empty();
-        if changed && kind.is_none() {
-            kind = Some(ChangeKind::MembersChanged);
-        }
-        if kind.is_some() && !create {
-            group.revision = input!(group.revision.next());
-        }
-        if changed {
-            group.member_version = group.revision.get();
-        }
-        group.member_count = new.len();
-        let receipt = Receipt {
-            operation,
-            group,
-            added: delta.added.len(),
-            removed: delta.removed.len(),
-        };
+        let (receipt, kind) = input!(command_receipt(operation, group, kind, create, &delta));
         if let Some(kind) = kind {
             self.append(tx, as_of, kind, &receipt).await?;
         }
@@ -364,9 +262,11 @@ impl GroupStore {
             .await?
         {
             AppendOutcome::Inserted => Ok(()),
-            AppendOutcome::AlreadyPresent => Err(invariant()),
+            AppendOutcome::AlreadyPresent => Err(StorageFault::OutboxIdentity.error()),
         }
     }
+    /// Evaluate an observed dynamic rule without writes or operation admission.
+    /// The expected revision is checked when reading the rule; this does not reserve a future CAS.
     pub async fn preview(
         &self,
         id: GroupId,
@@ -381,9 +281,12 @@ impl GroupStore {
                     Box::pin(async move {
                         let g = input!(db::group(tx, id, true).await?.ok_or(Rejection::NotFound));
                         input!(dynamic(&g, expected));
-                        Ok(Ok(
-                            db::rule(tx, id, g.rule_version.ok_or_else(invariant)?).await?
-                        ))
+                        Ok(Ok(db::rule(
+                            tx,
+                            id,
+                            g.rule_version.ok_or_else(stored_shape)?,
+                        )
+                        .await?))
                     })
                 })
                 .await,
@@ -392,6 +295,9 @@ impl GroupStore {
         rule.evaluate(snapshot, as_of)
             .map_err(|e| Error::Rejected(core_rejection(e)))
     }
+    /// Read a completed operation’s actual changes, ordered by UTF-8 bytes.
+    /// Limit is 1..=1000; pass DeltaPage::next unchanged for the next exclusive page.
+    /// Pending/rejected operations are invalid; missing/foreign operations return NotFound.
     pub async fn delta(
         &self,
         id: OperationId,
@@ -417,7 +323,7 @@ impl GroupStore {
                 .bind(tenant).bind(id.to_string()).bind(after).bind((limit+1) as i64).fetch_all(c).await
             })).await?;
             let more=rows.len()>limit;if more {rows.pop();}
-            let next=if more {Some(rows.last().ok_or_else(invariant)?.try_get("object_id")?)}else{None};
+            let next=if more {Some(rows.last().ok_or_else(stored_shape)?.try_get("object_id")?)}else{None};
             let mut added=Vec::new();let mut removed=Vec::new();
             for row in rows {
                 let id:String=row.try_get("object_id")?;document(id.as_bytes(),row.try_get::<&[u8],_>("object_digest")?)?;
@@ -524,6 +430,143 @@ fn member_ids(t: TenantId, ids: &[String]) -> CommandOutcome<BTreeSet<&str>> {
         ObjectKey::new(t, id).map_err(|_| Rejection::InvalidInput)?;
     }
     Ok(ids.iter().map(String::as_str).collect())
+}
+
+fn replay_command(old: StoredOperation, group: GroupId, hash: &[u8]) -> InTransaction<Receipt> {
+    if old.group != group || old.kind != "command" || old.digest != hash {
+        return Ok(Err(Rejection::IdentityConflict));
+    }
+    match old.state {
+        RunState::Completed(r) => Ok(Ok(r)),
+        _ => Err(stored_shape()),
+    }
+}
+
+fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(Group, bool)> {
+    Ok(match (command, existing) {
+        (
+            Command::Create {
+                group,
+                name,
+                description,
+                definition,
+            },
+            None,
+        ) => {
+            let (kind, version) = match definition {
+                Definition::Static => (GroupKind::Static, None),
+                Definition::Dynamic(r) => (GroupKind::Dynamic, Some(r.view().version.into())),
+            };
+            (
+                Group {
+                    id: *group,
+                    kind,
+                    name: name.clone(),
+                    description: description.clone(),
+                    revision: Revision::new(1)?,
+                    member_version: 0,
+                    member_count: 0,
+                    rule_version: version,
+                    deleted: false,
+                },
+                true,
+            )
+        }
+        (Command::Create { .. }, Some(_)) => return Err(Rejection::IdentityConflict),
+        (_, None) => return Err(Rejection::NotFound),
+        (_, Some(g)) => {
+            active(&g)?;
+            if command.expected() != Some(g.revision) {
+                return Err(Rejection::VersionConflict);
+            }
+            (g, false)
+        }
+    })
+}
+
+type AppliedCommand<'a> = (Vec<ObjectKey>, Option<ChangeKind>, Option<&'a Rule>);
+fn apply_command<'a>(
+    tenant: TenantId,
+    command: &'a Command,
+    group: &mut Group,
+    old: &[ObjectKey],
+) -> CommandOutcome<AppliedCommand<'a>> {
+    let mut new = old.to_vec();
+    let mut kind = None;
+    let mut rule_to_write: Option<&Rule> = None;
+    match command {
+        Command::Create { definition, .. } => {
+            kind = Some(ChangeKind::Created);
+            if let Definition::Dynamic(r) = definition {
+                rule_to_write = Some(r);
+            }
+        }
+        Command::Edit {
+            name, description, ..
+        } => {
+            if group.name != *name || group.description != *description {
+                group.name = name.clone();
+                group.description = description.clone();
+                kind = Some(ChangeKind::Edited);
+            }
+        }
+        Command::SetRule { rule, .. } => {
+            if group.kind != GroupKind::Dynamic {
+                return Err(Rejection::KindMismatch);
+            }
+            if group.rule_version.as_deref() != Some(rule.view().version) {
+                group.rule_version = Some(rule.view().version.into());
+                kind = Some(ChangeKind::RuleChanged);
+                rule_to_write = Some(rule);
+            }
+        }
+        Command::Members { add, remove, .. } => {
+            if group.kind != GroupKind::Static {
+                return Err(Rejection::KindMismatch);
+            }
+            let mut keys: BTreeSet<_> = old.iter().cloned().collect();
+            for id in remove {
+                keys.remove(&ObjectKey::new(tenant, id).map_err(|_| Rejection::InvalidInput)?);
+            }
+            for id in add {
+                keys.insert(ObjectKey::new(tenant, id).map_err(|_| Rejection::InvalidInput)?);
+            }
+            new = keys.into_iter().collect();
+        }
+        Command::Delete { .. } => {
+            group.deleted = true;
+            new.clear();
+            kind = Some(ChangeKind::Deleted);
+        }
+    }
+    Ok((new, kind, rule_to_write))
+}
+
+fn command_receipt(
+    operation: OperationId,
+    mut group: Group,
+    mut kind: Option<ChangeKind>,
+    create: bool,
+    delta: &rss_mdm_group::Difference,
+) -> CommandOutcome<(Receipt, Option<ChangeKind>)> {
+    let changed = !delta.added.is_empty() || !delta.removed.is_empty();
+    if changed && kind.is_none() {
+        kind = Some(ChangeKind::MembersChanged);
+    }
+    if kind.is_some() && !create {
+        group.revision = group.revision.next()?;
+    }
+    if changed {
+        group.member_version = group.revision.get();
+    }
+    group.member_count = delta.added.len() + delta.unchanged.len();
+    let receipt = Receipt {
+        operation,
+        group,
+        added: delta.added.len(),
+        removed: delta.removed.len(),
+    };
+    Ok((receipt, kind))
 }
 
 #[cfg(test)]

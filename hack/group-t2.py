@@ -14,6 +14,7 @@ from t2 import IMAGE, run, require
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED = {
+    "admission_rejects_catalog_and_security_drift",
     "distinct_runs_compete_on_one_revision_and_preserve_event_contract",
     "reference_target_lock_serializes_deletion",
     "lost_commit_ack_replays_durable_result_once",
