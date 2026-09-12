@@ -1550,6 +1550,43 @@ async fn immutable_candidate_inventory_query() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
+    let access = crate::AccessStore::connect(config.access_database.options()?).await?;
+    let mut transaction = access.begin(TENANT).await?;
+    let mut request = rss_mdm_windows_mdm::syncml::Message {
+        header: rss_mdm_windows_mdm::syncml::Header {
+            session_id: 1,
+            message_id: 1,
+            source: "https://mdm.example.test/management".into(),
+            target: "device-1".into(),
+            credential: None,
+            meta: None,
+        },
+        commands: vec![],
+        final_message: true,
+    };
+    let run_id = crate::collection::create(&mut transaction, &scope, &mut request).await?;
+    crate::collection::terminate(
+        &mut transaction,
+        TENANT,
+        scope.registration().as_str(),
+        "timeout",
+    )
+    .await?;
+    transaction.commit().await?;
+    access.close().await;
+    let path = format!("/api/v1/devices/device-1/collection-runs/{run_id}?source=mdm.windows");
+    let (status, run) = browser.call(&target, Method::GET, &path, None).await?;
+    ensure!(status == StatusCode::OK && run["run"]["run_id"] == run_id.to_string());
+    ensure!(run["run"]["result"] == "failed" && run["run"]["reason"] == "timeout");
+    ensure!(run["fields"].as_array().is_some_and(|fields| {
+        fields.len() == 2
+            && fields
+                .iter()
+                .all(|f| f["quality"] == "missing" && f["received_at"].is_null())
+    }));
+    ensure!(
+        run["delivery"]["receipt"].is_null() && run["delivery"]["projection"] == "not_applicable"
+    );
     ensure!(browser.call(&target, Method::GET, "/api/v1/devices/device-1/collection-runs/99999999-9999-4999-8999-999999999999?source=mdm.windows", None).await?.0 == StatusCode::NOT_FOUND);
     println!(
         "candidate authenticated inventory query, source contract, permission and run absence passed"
