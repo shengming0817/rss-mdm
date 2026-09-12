@@ -7,6 +7,9 @@ Scope 到 Policy 的设备身份由 N12 在明确映射点按 canonical tenant �
 
 ## 生命周期和快照
 
+公共输入直接使用 `rss-request-context::TenantId` 和 `rss-contract::Timepoint`；本包不重导出它们。
+调用方须从各自 owner 导入，compile-fail 文档测试保护该边界。
+
 `Policy::draft` 创建 revision 0；`transition(expected_revision, operation)` 返回新快照：
 Draft → Active ↔ Paused；Active/Paused → Archived；归档终态。
 Activate 可选择更高版本并进入 Active，Resume 只恢复原版本。
@@ -65,8 +68,8 @@ Plan 返回策略 revision、目标快照身份/revision 和确定的意图。N1
 `cargo test --locked -p rss-mdm-policy` 覆盖状态转换矩阵、版本/载荷冲突、稳定身份、重算/重入、
 暂停/恢复/退出/归档、旧事实和取消/效果分离。PlanId 测试逐项改变合法编码字段，并固定 Active/历史事实
 及空 Draft 的 V1 SHA-256 向量；Apply 与移除规则当前各只有一个合法值，由固定向量锁定其标签。`hack/core_consumer.py` 复用公共 API 测试，在仓外以固定 Git SHA
-分别验证默认与关闭默认 features 的独立 consumer；consumer 仅直接依赖本产品包，
-canonical `TenantId` / `Timepoint` 由本包重导出，校验 root 唯一普通依赖边及产品包普通/构建依赖闭包；独立消费结果不是 registry 发布或端侧 T3 证明。
+分别验证默认与关闭默认 features 的独立 consumer；consumer 直接依赖本产品包及 canonical `TenantId` / `Timepoint` owner，
+校验 root 精确普通依赖集合及产品包普通/构建依赖闭包；独立消费结果不是 registry 发布或端侧 T3 证明。
 
 - kube-rs 1.1.0 [`controller::Action`](https://github.com/kube-rs/kube/blob/1.1.0/kube-runtime/src/controller/mod.rs)：参考决策结果与驱动执行分离；不引入 kube controller/runtime。
 - WinMDM 历史 `src/internal/domain/policy/{value_object,entity}.go`：生命周期及事实语义证据；
