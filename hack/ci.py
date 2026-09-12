@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-software-release": "crates/software-release",
     "rss-mdm-resource": "crates/resource",
     "rss-mdm-winget-source": "crates/winget-source",
     "rss-mdm-brew-source": "crates/brew-source",
@@ -26,6 +27,7 @@ LOCAL_PACKAGES = {
     "rss-mdm-scope": "crates/scope",
     "rss-mdm-policy": "crates/policy",
     "rss-mdm-group": "crates/group",
+    "rss-mdm-group-postgres": "crates/group-postgres",
     "rss-mdm-app": "crates/app",
     "rss-mdm-windows-mdm": "crates/windows-mdm",
     "rss-mdm-inventory": "crates/inventory",
@@ -307,6 +309,8 @@ def main():
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("core-consumers",[sys.executable,"hack/core_consumer.py"]),
         ("t2",[sys.executable,"hack/t2.py"]),
+        ("group-t2",[sys.executable,"hack/group-t2.py"]),
+        ("group-postgres-consumers",[sys.executable,"hack/group_postgres_consumer.py"]),
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
 

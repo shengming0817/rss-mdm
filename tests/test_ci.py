@@ -274,13 +274,33 @@ class CoreConsumerGate(unittest.TestCase):
             {'id':'context','name':'rss-request-context','source':upstream},
             {'id':'error','name':'thiserror','version':'2.0.20','source':registry}], 'resolve': {'root':'consumer', 'nodes': [
                 {'id':node, 'deps':[{'pkg':dep, 'dep_kinds':[{'kind':None,'target':None}]} for dep in deps]}
-                for node,deps in [('consumer',['scope']),('scope',['contract','context','error']),('contract',[]),('context',[]),('error',[])]]}}
+                for node,deps in [('consumer',['scope','contract','context']),('scope',['contract','context','error']),('contract',[]),('context',[]),('error',[])]]}}
         locked={('thiserror','2.0.20',registry)}
         core.verify_closure(data,'rss-mdm-scope',product,pin,locked)
-        for kind in [None, 'dev', 'build']:
+        for kind in ['dev', 'build']:
             bad=copy.deepcopy(data)
-            bad['resolve']['nodes'][0]['deps'].append({'pkg':'contract','dep_kinds':[{'kind':kind,'target':None}]})
+            bad['resolve']['nodes'][0]['deps'][1]['dep_kinds']=[{'kind':kind,'target':None}]
             with self.subTest(direct_kind=kind), self.assertRaises(RuntimeError):
+                core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+        for core_name in ['rss-mdm-scope', 'rss-mdm-policy', 'rss-mdm-software-release']:
+            selected=copy.deepcopy(data)
+            selected['packages'][1]['name']=core_name
+            core.verify_closure(selected,core_name,product,pin,locked)
+            for target in ['scope', 'contract', 'context']:
+                bad=copy.deepcopy(selected)
+                bad['resolve']['nodes'][0]['deps']=[d for d in bad['resolve']['nodes'][0]['deps'] if d['pkg']!=target]
+                with self.subTest(core=core_name,missing=target),self.assertRaises(RuntimeError):
+                    core.verify_closure(bad,core_name,product,pin,locked)
+        for declared,selected in [({'default':['new']},[]),({},['new'])]:
+            bad=copy.deepcopy(data)
+            bad['packages'][1]['features']=declared
+            bad['resolve']['nodes'][1]['features']=selected
+            with self.assertRaises(RuntimeError):
+                core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+        for owner in ['contract', 'context']:
+            bad=copy.deepcopy(data)
+            next(n for n in bad['resolve']['nodes'] if n['id']==owner)['features']=['default']
+            with self.subTest(canonical_feature_owner=owner),self.assertRaises(RuntimeError):
                 core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
         for kinds in [[{'kind':'dev','target':None}], [{'kind':'build','target':None}], [{'kind':None,'target':'cfg(windows)'}], []]:
             bad=copy.deepcopy(data)

@@ -1,0 +1,34 @@
+[package]
+name = "rss-mdm-group-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-mdm-group.workspace = true
+rss-contract.workspace = true
+rss-request-context.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+
+[features]
+integration = ["rss-transactional-messaging-postgres/integration"]
+
+[[test]]
+name = "t2"
+required-features = ["integration"]
+
+[lints]
+workspace = true

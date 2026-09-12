@@ -14,7 +14,22 @@ pub struct Criteria {
     pub(crate) count: usize,
     depth: usize,
 }
+/// Read-only structural view. Construction still goes through the bounded builders.
+#[derive(Clone, Copy, Debug)]
+pub enum CriteriaView<'a> {
+    Predicate(&'a Predicate),
+    And(&'a [Criteria]),
+    Or(&'a [Criteria]),
+}
 impl Criteria {
+    /// Borrow the validated tree without exposing mutable nodes or cached budgets.
+    pub fn view(&self) -> CriteriaView<'_> {
+        match &self.node {
+            Node::Predicate(p) => CriteriaView::Predicate(p),
+            Node::And(children) => CriteriaView::And(children),
+            Node::Or(children) => CriteriaView::Or(children),
+        }
+    }
     /// Build one bounded leaf; dictionary/operator compatibility is checked by Rule::new.
     /// Rejects invalid identifiers, heterogeneous sets and string/collection budget overflow.
     pub fn predicate(predicate: Predicate) -> Result<Self> {
@@ -72,7 +87,26 @@ pub struct Rule {
     pub(crate) criteria: Criteria,
     pub(crate) required: BTreeSet<String>,
 }
+/// Borrowed canonical inputs for persistence owned by a consumer.
+#[derive(Clone, Copy, Debug)]
+pub struct RuleView<'a> {
+    pub tenant: rss_request_context::TenantId,
+    pub version: &'a str,
+    pub dictionary_version: &'a str,
+    pub fields: &'a BTreeMap<String, Field>,
+    pub criteria: &'a Criteria,
+}
 impl Rule {
+    /// Observe immutable validated inputs; this defines no storage format.
+    pub fn view(&self) -> RuleView<'_> {
+        RuleView {
+            tenant: self.tenant,
+            version: &self.version,
+            dictionary_version: &self.dictionary_version,
+            fields: &self.fields,
+            criteria: &self.criteria,
+        }
+    }
     /// Resolve an explanation path without copying field names or values into every trace entry.
     pub fn predicate_at(&self, path: &[usize]) -> Option<&Predicate> {
         let mut current = &self.criteria;

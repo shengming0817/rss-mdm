@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mdm.group.changed.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "kind", "groupId", "operationId", "groupRevision", "memberVersion", "memberCount", "added", "removed", "ruleVersion"],
+  "properties": {
+    "v": {"const": 1},
+    "kind": {"enum": ["created", "edited", "rule_changed", "members_changed", "deleted"]},
+    "groupId": {"type": "string", "format": "uuid"},
+    "operationId": {"type": "string", "format": "uuid"},
+    "groupRevision": {"type": "integer", "minimum": 1},
+    "memberVersion": {"type": "integer", "minimum": 0},
+    "memberCount": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "added": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "removed": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "ruleVersion": {"type": ["string", "null"], "maxLength": 256}
+  }
+}
