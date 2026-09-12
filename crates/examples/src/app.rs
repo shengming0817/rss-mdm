@@ -1,13 +1,11 @@
-use rss_mdm_inventory as model;
-use rss_mdm_inventory_postgres::{Inventory, definition};
-const JOURNAL: &str = "mdm.observation.v1";
-const GENERATION: &str = "inventory-v1";
 use crate::failure;
 use crate::{
     fixture::FixtureAuthority,
     storage::{self, BUDGET, Clock},
 };
 use anyhow::Result;
+use rss_mdm_inventory as model;
+use rss_mdm_inventory_postgres::{Inventory, definition};
 use rss_observation::{
     Access, Authority, Batch, Id, JournalReadGrant, LifecycleGrant, ObservationStore, Policy,
     ReadGrant, ReceiveOutcome, VerifiedBatch,
@@ -116,21 +114,17 @@ impl App {
             ),
         }
     }
-    fn source_scope(&self) -> Result<SourceScope> {
-        Ok(SourceScope::new(self.authority.scope().tenant(), JOURNAL)?)
+    fn source_scope(&self) -> SourceScope {
+        self.projection_scope().source().clone()
     }
-    fn projection_scope(&self) -> Result<ProjectionScope> {
-        Ok(ProjectionScope::new(
-            self.source_scope()?,
-            "inventory",
-            GENERATION,
-        )?)
+    fn projection_scope(&self) -> ProjectionScope {
+        rss_mdm_inventory_postgres::projection_scope(self.authority.scope().tenant())
     }
     fn source(&self) -> Result<Arc<PgSource<Clock>>> {
         Ok(Arc::new(PgSource::new(
             self.observation.clone(),
             JournalReadGrant::verify(&self.authority, self.authority.scope().tenant())?,
-            self.source_scope()?,
+            self.source_scope(),
         )?))
     }
     pub async fn ingest(&self, batch: Batch) -> Result<ReceiveOutcome> {
@@ -158,7 +152,7 @@ impl App {
     }
     async fn project_inner(&self, cancel: &CancellationToken) -> Result<serde_json::Value> {
         let source = self.source()?;
-        let scope = self.projection_scope()?;
+        let scope = self.projection_scope();
         let capture = Control::new(&self.clock, self.clock.cutoff(BUDGET), cancel);
         let through = capture.run(source.high_water(source.scope())).await?;
         let window = crate::window::Window {
@@ -223,19 +217,40 @@ impl App {
                     .map(|fp| fp.iter().map(|b| format!("{b:02x}")).collect::<String>())
             })
             .transpose()?;
-        let scope = scope.encode()?;
-        let source = self.source_scope()?;
+        let encoded = scope.encode()?;
+        let projection = self.projection_scope();
+        let source = projection.source().clone();
         let tenant = source.tenant().to_string();
         let cancel = CancellationToken::new();
         let control = Control::new(&self.clock, self.clock.cutoff(BUDGET), &cancel);
-        let (position, assets, projected) = self.projection.local_tx(&source, &control, move |tx| Box::pin(async move {
+        let status = match event_id {
+            Some(event_id) => Some(
+                self.projection
+                    .receipt_status(
+                        &rss_projection::ReceiptQuery::new(
+                            projection.clone(),
+                            definition(),
+                            event_id,
+                        )?,
+                        &control,
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
+        let position = status
+            .and_then(|status| status.checkpoint())
+            .and_then(|checkpoint| checkpoint.position)
+            .map(|p| p.get());
+        let projected = status.is_some_and(|status| status.is_settled());
+        let journal = projection.source().source().to_owned();
+        let generation = projection.generation().to_owned();
+        let assets = self.projection.local_tx(&source, &control, move |tx| Box::pin(async move {
             tx.with_connection(move |conn| Box::pin(async move {
-                let position: Option<i64> = sqlx::query_scalar("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id='inventory' AND generation=$3").bind(&tenant).bind(JOURNAL).bind(GENERATION).fetch_optional(&mut *conn).await?.flatten();
-                let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 ORDER BY field").bind(&tenant).bind(JOURNAL).bind(GENERATION).bind(&scope).fetch_all(&mut *conn).await?;
+                let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 ORDER BY field").bind(&tenant).bind(journal).bind(generation).bind(&encoded).fetch_all(&mut *conn).await?;
                 let mut assets = Vec::new();
                 for r in rows { assets.push(serde_json::json!({"field":r.try_get::<String,_>("field")?,"value":r.try_get::<String,_>("value")?,"batchId":r.try_get::<String,_>("batch_id")?,"observedAt":r.try_get::<i64,_>("observed_at")?,"receivedAt":r.try_get::<i64,_>("received_at")?})); }
-                let projected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_projection.receipts WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id='inventory' AND generation=$3 AND event_id=$4)").bind(&tenant).bind(JOURNAL).bind(GENERATION).bind(event_id).fetch_one(&mut *conn).await?;
-                Ok((position, assets, projected))
+                Ok(assets)
             })).await
         })).await?;
         Ok(

@@ -8,14 +8,13 @@ use crate::{
     enrollment::Password,
 };
 use anyhow::Context;
-use rss_observation::{Body, Change, Clock, ObservationStore, ReadGrant};
 use sqlx::{
     Connection, Executor, PgConnection,
     postgres::{PgConnectOptions, PgSslMode},
 };
 const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelCredential {
+pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelCredential {
     VerifiedChannelCredential {
         tenant: TenantId::parse(tenant).unwrap(),
         channel,
@@ -40,61 +39,6 @@ pub(crate) fn policy(tenant: &str, enroll: bool, credentials: bool) -> Arc<Polic
         )
         .unwrap(),
     )
-}
-fn batch(id: &str, seq: u64, value: &str, partial: bool) -> Batch {
-    let changes = vec![Change::upsert(
-        Id::new("device.model").unwrap(),
-        value.as_bytes().to_vec(),
-    )];
-    Batch::new(
-        Id::new(id).unwrap(),
-        seq,
-        rss_contract::Timepoint::try_from(1000).unwrap(),
-        rss_mdm_inventory::coverage(),
-        if partial {
-            Body::Partial(changes)
-        } else {
-            Body::Snapshot(changes)
-        },
-    )
-    .unwrap()
-}
-#[test]
-fn report_and_journal_authorities_are_disjoint() {
-    let tenant = TenantId::parse(A).unwrap();
-    let s = scope(tenant, Uuid::new_v4(), "mdm.windows", Uuid::new_v4()).unwrap();
-    let authority = ReportAuthority { scope: s.clone() };
-    assert!(
-        rss_observation::VerifiedBatch::verify(&authority, s.clone(), batch("one", 1, "A", false))
-            .is_ok()
-    );
-    assert!(rss_observation::JournalReadGrant::verify(&authority, tenant).is_err());
-    let other = scope(
-        TenantId::parse(B).unwrap(),
-        Uuid::new_v4(),
-        "mdm.windows",
-        Uuid::new_v4(),
-    )
-    .unwrap();
-    assert!(
-        rss_observation::VerifiedBatch::verify(&authority, other, batch("one", 1, "A", false))
-            .is_err()
-    );
-    assert!(ReadGrant::verify(&authority, s.clone()).is_err());
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let worker = JournalAuthority {
-        tenant,
-        cancelled: cancel.clone(),
-    };
-    assert!(rss_observation::JournalReadGrant::verify(&worker, tenant).is_ok());
-    assert!(
-        rss_observation::JournalReadGrant::verify(&worker, TenantId::parse(B).unwrap()).is_err()
-    );
-    assert!(
-        rss_observation::VerifiedBatch::verify(&worker, s, batch("one", 1, "A", false)).is_err()
-    );
-    cancel.cancel();
-    assert!(rss_observation::JournalReadGrant::verify(&worker, tenant).is_err());
 }
 pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<VerifiedIdentity> {
     let origin = std::env::var("MDM_TEST_IDENTITY")?;
@@ -155,7 +99,7 @@ async fn request(
     audit.finalize(None);
     Ok(receipt.enrollment_id)
 }
-async fn bind(
+pub(crate) async fn bind(
     service: &DeviceService,
     admin: &VerifiedIdentity,
     proof: &VerifiedChannelCredential,
@@ -177,19 +121,6 @@ async fn bind(
         .context("device bind")?;
     Ok((command, receipt))
 }
-fn deadline() -> rss_request_context::Deadline {
-    rss_request_context::Deadline::at(Now.now() + Duration::from_secs(5))
-}
-struct Now;
-#[allow(
-    clippy::disallowed_methods,
-    reason = "T2 composition root owns the real monotonic clock"
-)]
-impl Clock for Now {
-    fn now(&self) -> std::time::Instant {
-        std::time::Instant::now()
-    }
-}
 #[tokio::test]
 #[ignore = "make t2: real TLS PostgreSQL; SDK response authority and channel evidence are test fixtures"]
 async fn postgres_boundary() -> anyhow::Result<()> {
@@ -206,28 +137,11 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let service = DeviceService::new(access.clone(), policy(A, true, true), None, Arc::new(Now));
-    let service_b = DeviceService::new(access.clone(), policy(B, true, true), None, Arc::new(Now));
-    let no_permission =
-        DeviceService::new(access.clone(), policy(A, false, false), None, Arc::new(Now));
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let host = DeviceService::new(
-        access.clone(),
-        policy(A, false, false),
-        Some(TenantId::parse(A)?),
-        Arc::new(Now),
-    );
-    assert!(host.journal_grant(TenantId::parse(A)?, &cancel).is_ok());
-    assert!(host.journal_grant(TenantId::parse(B)?, &cancel).is_err());
-    cancel.cancel();
-    assert!(host.journal_grant(TenantId::parse(A)?, &cancel).is_err());
+    let service = DeviceService::new(access.clone(), policy(A, true, true));
+    let service_b = DeviceService::new(access.clone(), policy(B, true, true));
+    let no_permission = DeviceService::new(access.clone(), policy(A, false, false));
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     commit_deadlines(&service, &admin_a, &mut root).await?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(4)
-        .connect_with(options("mdm_runtime")?)
-        .await?;
-    let observation = rss_observation_postgres::PgStore::new(pool, Now, deadline()).await?;
     let mdm = proof(A, Channel::Mdm, 1);
     let agent = proof(A, Channel::Agent, 1);
     let (command, first) = bind(&service, &admin_a, &mdm, "same-serial", 0).await?;
@@ -249,27 +163,6 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     );
     assert_ne!(first.registration, other_channel.registration);
     assert_eq!(service.bind(&admin_a, &mdm, command.clone()).await?, first);
-    #[cfg(feature = "integration")]
-    {
-        // The product cap must let RSS settle its own Effects-stage deadline as unknown.
-        // A longer caller deadline used to let the outer product timeout erase that result.
-        observation.inject_next_fault(rss_observation_postgres::Fault::CommitPending);
-        assert!(matches!(
-            service
-                .ingest(
-                    &mdm,
-                    ReportSource::MdmWindows,
-                    batch("deadline", 1, "A", false),
-                    &observation,
-                    rss_request_context::Deadline::at(Now.now() + Duration::from_secs(20))
-                )
-                .await,
-            Err(Error::CommitUnknown)
-        ));
-        let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND result='unknown'")
-        .bind(first.registration.to_string()).fetch_one(&mut root).await?;
-        assert_eq!(unknown, 1);
-    }
     for bad in [
         service.bind(&other, &mdm, command.clone()).await,
         service.bind(&admin_b, &mdm, command.clone()).await,
@@ -290,70 +183,12 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         Err(Error::Conflict)
     ));
     eprintln!("device T2: bindings and permission checks passed");
-    let accepted = service
-        .ingest(
-            &mdm,
-            ReportSource::MdmWindows,
-            batch("first", 1, "A", false),
-            &observation,
-            deadline(),
-        )
-        .await?;
-    assert!(matches!(
-        accepted,
-        rss_observation::ReceiveOutcome::Accepted(_)
-    ));
-    let first_result: String = sqlx::query_scalar(
-        "SELECT result FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND status=200",
-    )
-    .bind(first.registration.to_string())
-    .fetch_one(&mut root)
-    .await?;
-    assert_eq!(first_result, "success");
-    let replay = service
-        .ingest(
-            &mdm,
-            ReportSource::MdmWindows,
-            batch("first", 1, "A", false),
-            &observation,
-            deadline(),
-        )
-        .await?;
-    assert!(matches!(replay, rss_observation::ReceiveOutcome::Replay(_)));
-    let report_results: Vec<String> = sqlx::query_scalar(
-        "SELECT result FROM mdm_access.audit WHERE registration_id=$1::uuid AND action='device_report' AND result IN ('success','replay') ORDER BY result",
-    )
-    .bind(first.registration.to_string())
-    .fetch_all(&mut root)
-    .await?;
-    assert_eq!(report_results, ["replay", "success"]);
-    assert!(matches!(
-        service
-            .ingest(
-                &mdm,
-                ReportSource::MdmWindows,
-                batch("first", 1, "changed", false),
-                &observation,
-                deadline()
-            )
-            .await,
-        Err(Error::Conflict)
-    ));
     assert!(
         service
-            .ingest(
-                &agent,
-                ReportSource::MdmWindows,
-                batch("bad", 1, "A", false),
-                &observation,
-                deadline()
-            )
+            .authorize_report(&agent, ReportSource::MdmWindows)
             .await
             .is_err()
     );
-    let (_, inflight) = service
-        .authorize_report(&mdm, ReportSource::MdmWindows)
-        .await?;
     // Explicit source permission can be removed independently of an active credential.
     root.execute("UPDATE mdm_access.report_sources SET enabled=false WHERE source='mdm.windows'")
         .await?;
@@ -387,8 +222,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             &admin_a,
             "same-serial",
             Coordinates {
-                channel: Channel::Mdm,
-                source: "mdm.windows".into(),
+                source: ReportSource::MdmWindows,
             },
         )
         .await?;
@@ -396,71 +230,6 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         current.registration().as_str(),
         second.registration.to_string()
     );
-    service
-        .ingest(
-            &newer,
-            ReportSource::MdmWindows,
-            batch("first", 1, "B", false),
-            &observation,
-            deadline(),
-        )
-        .await?;
-    // An operation authorized before replacement may finish, exclusively in its old Scope.
-    let late = rss_observation::VerifiedBatch::verify(
-        &inflight,
-        inflight.scope.clone(),
-        batch("late", 2, "late-old", false),
-    )?;
-    observation.receive(&late, deadline()).await?;
-    service
-        .ingest(
-            &agent,
-            ReportSource::AgentBuiltin,
-            batch("agent", 1, "Agent-value", false),
-            &observation,
-            deadline(),
-        )
-        .await?;
-    service
-        .ingest(
-            &newer,
-            ReportSource::MdmWindows,
-            batch("partial", 2, "must-not-apply", true),
-            &observation,
-            deadline(),
-        )
-        .await?;
-    project(&current)?;
-    let reader = rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?;
-    assert_eq!(reader.read(&current).await?[0].value, "B");
-    assert_eq!(reader.read(&inflight.scope).await?[0].value, "late-old");
-    let agent_scope = service
-        .current_scope(
-            &admin_a,
-            "same-serial",
-            Coordinates {
-                channel: Channel::Agent,
-                source: "agent.builtin".into(),
-            },
-        )
-        .await?;
-    assert_eq!(reader.read(&agent_scope).await?[0].value, "Agent-value");
-    reader.close().await;
-    assert!(
-        service
-            .journal_grant(
-                TenantId::parse(A)?,
-                &tokio_util::sync::CancellationToken::new()
-            )
-            .is_err()
-    );
-    // Existing receipts retain their old identity, while new requests must reauthorize.
-    let historical: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_observation.batches WHERE tenant_id=$1::uuid")
-            .bind(A)
-            .fetch_one(&mut root)
-            .await?;
-    assert!(historical >= 2);
     // Independent explicit credential permission, including on replay.
     let revoke_key = Uuid::new_v4();
     assert!(
@@ -482,12 +251,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let restart = DeviceService::new(
-        restart_access.clone(),
-        policy(A, true, true),
-        None,
-        Arc::new(Now),
-    );
+    let restart = DeviceService::new(restart_access.clone(), policy(A, true, true));
     let receipt = restart
         .revoke(&admin_a, "same-serial", second.registration, revoke_key)
         .await?;
@@ -516,8 +280,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
                 &admin_a,
                 "same-serial",
                 Coordinates {
-                    channel: Channel::Mdm,
-                    source: "mdm.windows".into()
+                    source: ReportSource::MdmWindows
                 }
             )
             .await
@@ -557,18 +320,6 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_err()
     );
-    assert!(matches!(
-        service
-            .ingest(
-                &agent,
-                ReportSource::AgentBuiltin,
-                batch("audit-retry", 2, "audit", false),
-                &observation,
-                deadline()
-            )
-            .await,
-        Err(Error::Unavailable(Failure::Audit))
-    ));
     root.execute("GRANT INSERT ON mdm_access.audit TO mdm_access")
         .await?;
     assert!(
@@ -577,18 +328,6 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_ok()
     );
-    assert!(matches!(
-        service
-            .ingest(
-                &agent,
-                ReportSource::AgentBuiltin,
-                batch("audit-retry", 2, "audit", false),
-                &observation,
-                deadline()
-            )
-            .await?,
-        rss_observation::ReceiveOutcome::Replay(_)
-    ));
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid").bind(A).bind(pending.request_id.to_string()).fetch_one(&mut root).await?;
     assert_eq!(count, 0);
     access.fail_next(1);
@@ -760,7 +499,6 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     ] {
         assert!(runtime.execute(statement).await.is_err());
     }
-    observation.close(deadline()).await?;
     runtime.close().await?;
     root.close().await?;
     restart_access.close().await;
@@ -916,29 +654,6 @@ async fn commit_deadlines(
     assert_eq!(
         outcomes, [true; 4],
         "bind/revoke must preserve unknown for both possible commit results"
-    );
-    Ok(())
-}
-// Reuse F01's existing bounded journal/projection runner. Reports above entered through I01.
-fn project(scope: &Scope) -> anyhow::Result<()> {
-    let script = r#"import os,subprocess,sys,tempfile
-with tempfile.TemporaryDirectory(prefix='mdm-i01-') as root:
- path=os.path.join(root,'scope.json')
- with open(path,'w') as f:f.write(sys.argv[2])
- subprocess.run([sys.argv[1],'project'],env={**os.environ,'MDM_SCOPE_FILE':path},check=True,timeout=40)
-"#;
-    let output = std::process::Command::new("python3")
-        .args([
-            "-c",
-            script,
-            &std::env::var("MDM_FIXTURE_BIN")?,
-            &serde_json::to_string(scope)?,
-        ])
-        .output()?;
-    anyhow::ensure!(
-        output.status.success(),
-        "projection fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
     );
     Ok(())
 }

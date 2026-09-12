@@ -19,4 +19,5 @@
 
 - [Windows 注册与管理通道](202609111146-2350-windows-enrollment-management.md)（#2350/#2351）：配置、签发恢复、mTLS 与首次 SyncML 认证，T3 独立验收。
 
+- [Windows 资产采集与查询](202609120000-2352-windows-inventory.md)（#2352/#2353）：CollectionRun、恢复、质量和查询契约。
 - [Group PostgreSQL](202609120000-2387-group-postgres.md)：持久输入、版本 CAS、原子事件、恢复与独立 PG 消费。

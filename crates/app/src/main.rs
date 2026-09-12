@@ -20,7 +20,13 @@ async fn run() -> std::process::ExitCode {
 async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
-        println!("rss-mdm serve|migrate --config /absolute/private-config.json");
+        println!(
+            "rss-mdm serve|migrate --config /absolute/private-config.json\nrss-mdm --version|--describe"
+        );
+        return Ok(());
+    }
+    if args == ["--describe"] {
+        println!("{}", rss_mdm_app::migration::manifest());
         return Ok(());
     }
     if args == ["--version"] {

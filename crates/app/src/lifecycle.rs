@@ -70,11 +70,18 @@ pub async fn serve(
     stop: impl std::future::Future<Output = Result<(), std::io::Error>>,
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> Result<(), ProcessError> {
+    let readiness = Arc::new(crate::inventory_runtime::Readiness::default());
+    let stop_readiness = readiness.clone();
+    let stop = async move {
+        let result = stop.await;
+        stop_readiness.stop();
+        result
+    };
     let compiled = config
         .compile()
         .map_err(|e| ProcessError::at("startup.configuration", e))?;
     let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(20)).map_err(|_| {
+        TotalDrainBudget::new(Duration::from_secs(40)).map_err(|_| {
             ProcessError::at("startup.budget", Error::Configuration(ConfigIssue::Budget))
         })?,
         Arc::new(RuntimeTimer),
@@ -84,84 +91,124 @@ pub async fn serve(
         .drive(
             |mut startup| {
                 Box::pin(async move {
-                    let (listener, app, enrollment_listener, management_listener, access, tenant) =
-                        tokio::time::timeout(Duration::from_secs(15), async {
-                            let reader = Arc::new(
-                                InventoryReader::connect(
-                                    compiled.config.database.options().map_err(|e| {
-                                        ProcessError::at("startup.database_configuration", e)
-                                    })?,
+                    let (
+                        listener,
+                        app,
+                        enrollment_listener,
+                        management_listener,
+                        access,
+                        tenant,
+                        runtime,
+                    ) = tokio::time::timeout(Duration::from_secs(15), async {
+                        let reader = Arc::new(
+                            InventoryReader::connect(compiled.config.database.options().map_err(
+                                |e| ProcessError::at("startup.database_configuration", e),
+                            )?)
+                            .await
+                            .map_err(|_| {
+                                ProcessError::at(
+                                    "startup.reader_connection_or_admission",
+                                    Error::Unavailable(Failure::InventoryPool),
                                 )
-                                .await
-                                .map_err(|_| {
-                                    ProcessError::at(
-                                        "startup.reader_connection_or_admission",
-                                        Error::Unavailable(Failure::InventoryPool),
-                                    )
+                            })?,
+                        );
+                        startup.stage_resource(DynManagedResource::new_box(ReaderResource(
+                            reader.clone(),
+                        )));
+                        let access = Arc::new(
+                            crate::AccessStore::connect(
+                                compiled.config.access_database.options().map_err(|e| {
+                                    ProcessError::at("startup.access_configuration", e)
                                 })?,
-                            );
-                            startup.stage_resource(DynManagedResource::new_box(ReaderResource(
-                                reader.clone(),
-                            )));
-                            let access = Arc::new(
-                                crate::AccessStore::connect(
-                                    compiled.config.access_database.options().map_err(|e| {
-                                        ProcessError::at("startup.access_configuration", e)
-                                    })?,
-                                )
-                                .await
-                                .map_err(|e| ProcessError::at("startup.access_store", e))?,
-                            );
-                            startup.stage_resource(DynManagedResource::new_box(AccessResource(
-                                access.clone(),
-                            )));
-                            let listen = compiled.config.listen;
-                            let tenant = compiled.config.identity.tenant_id.clone();
-                            let app = crate::api::from_compiled(
-                                compiled,
-                                Arc::new(rss_identity_client::SystemClock),
-                                monotonic,
-                                reader,
-                                access.clone(),
                             )
                             .await
-                            .map_err(assembly_error)?;
-                            let listener =
-                                tokio::net::TcpListener::bind(listen).await.map_err(|e| {
-                                    ProcessError::Io {
-                                        stage: "startup.listener_bind",
-                                        kind: e.kind(),
-                                    }
-                                })?;
-                            let enrollment_listener =
-                                tokio::net::TcpListener::bind(app.enrollment.listen)
-                                    .await
-                                    .map_err(|e| ProcessError::Io {
-                                        stage: "startup.enrollment_listener",
-                                        kind: e.kind(),
-                                    })?;
-                            let management_listener =
-                                tokio::net::TcpListener::bind(app.management.listen)
-                                    .await
-                                    .map_err(|e| ProcessError::Io {
-                                        stage: "startup.management_listener",
-                                        kind: e.kind(),
-                                    })?;
-                            Ok::<_, ProcessError>((
-                                listener,
-                                app,
-                                enrollment_listener,
-                                management_listener,
-                                access,
-                                tenant,
-                            ))
-                        })
+                            .map_err(|e| ProcessError::at("startup.access_store", e))?,
+                        );
+                        startup.stage_resource(DynManagedResource::new_box(AccessResource(
+                            access.clone(),
+                        )));
+                        use crate::inventory_runtime::{
+                            Clock, InventoryRuntime, ObservationResource, ProjectionResource,
+                        };
+                        let clock = Clock::new(monotonic.clone());
+                        let runtime_options =
+                            compiled.config.runtime_database.options().map_err(|e| {
+                                ProcessError::at("startup.runtime_database_configuration", e)
+                            })?;
+                        let observation =
+                            ObservationResource::open(runtime_options.clone(), clock.clone())
+                                .await
+                                .map_err(|e| ProcessError::at("startup.observation", e))?;
+                        let observation_store = observation.store.clone();
+                        startup.stage_resource(DynManagedResource::new_box(observation));
+                        let projection = ProjectionResource::open(runtime_options, clock.clone())
+                            .await
+                            .map_err(|e| ProcessError::at("startup.projection", e))?;
+                        let projection_store = projection.store.clone();
+                        startup.stage_resource(DynManagedResource::new_box(projection));
+                        let runtime = Arc::new(InventoryRuntime::new(
+                            observation_store,
+                            projection_store,
+                            access.clone(),
+                            rss_request_context::TenantId::parse(
+                                &compiled.config.identity.tenant_id,
+                            )
+                            .map_err(|_| {
+                                assembly_error(Error::Configuration(ConfigIssue::Tenant))
+                            })?,
+                            clock,
+                            readiness,
+                        ));
+                        let listen = compiled.config.listen;
+                        let tenant = compiled.config.identity.tenant_id.clone();
+                        let app = crate::api::from_compiled(
+                            compiled,
+                            Arc::new(rss_identity_client::SystemClock),
+                            monotonic,
+                            reader,
+                            access.clone(),
+                            runtime.clone(),
+                        )
                         .await
-                        .map_err(|_| ProcessError::Stage {
-                            stage: "startup",
-                            kind: "total deadline exceeded",
-                        })??;
+                        .map_err(assembly_error)?;
+                        let listener =
+                            tokio::net::TcpListener::bind(listen).await.map_err(|e| {
+                                ProcessError::Io {
+                                    stage: "startup.listener_bind",
+                                    kind: e.kind(),
+                                }
+                            })?;
+                        let enrollment_listener =
+                            tokio::net::TcpListener::bind(app.enrollment.listen)
+                                .await
+                                .map_err(|e| ProcessError::Io {
+                                    stage: "startup.enrollment_listener",
+                                    kind: e.kind(),
+                                })?;
+                        let management_listener =
+                            tokio::net::TcpListener::bind(app.management.listen)
+                                .await
+                                .map_err(|e| ProcessError::Io {
+                                    stage: "startup.management_listener",
+                                    kind: e.kind(),
+                                })?;
+                        Ok::<_, ProcessError>((
+                            listener,
+                            app,
+                            enrollment_listener,
+                            management_listener,
+                            access,
+                            tenant,
+                            runtime,
+                        ))
+                    })
+                    .await
+                    .map_err(|_| ProcessError::Stage {
+                        stage: "startup",
+                        kind: "total deadline exceeded",
+                    })??;
                     let mut launch = startup.commit();
+                    launch.stage_deferred_task_with_token(runtime.registration().critical());
                     launch.stage_task_with_token(
                         crate::windows::retention::registration(access.clone(), tenant.clone())
                             .critical(),

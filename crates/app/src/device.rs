@@ -10,7 +10,7 @@ use crate::{
     audit::{Audit, FailureReason, WriteOutcome},
 };
 use rss_identity_client::VerifiedIdentity;
-use rss_observation::{Access, Authority, Batch, Epoch, Id, Registration, Scope};
+use rss_observation::{Epoch, Id, Registration, Scope};
 use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
@@ -23,7 +23,7 @@ pub enum Channel {
     Mdm,
 }
 impl Channel {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Agent => "agent",
             Self::Mdm => "mdm",
@@ -39,13 +39,13 @@ pub enum ReportSource {
     AgentBuiltin,
 }
 impl ReportSource {
-    fn channel(self) -> Channel {
+    pub(crate) fn channel(self) -> Channel {
         match self {
             Self::MdmWindows => Channel::Mdm,
             Self::AgentBuiltin => Channel::Agent,
         }
     }
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::MdmWindows => "mdm.windows",
             Self::AgentBuiltin => "agent.builtin",
@@ -140,22 +140,10 @@ pub struct RevocationReceipt {
 pub struct DeviceService {
     access: Arc<AccessStore>,
     policy: Arc<Policy>,
-    journal_tenant: Option<TenantId>,
-    clock: Arc<dyn rss_observation::Clock>,
 }
 impl DeviceService {
-    pub(crate) fn new(
-        access: Arc<AccessStore>,
-        policy: Arc<Policy>,
-        journal_tenant: Option<TenantId>,
-        clock: Arc<dyn rss_observation::Clock>,
-    ) -> Self {
-        Self {
-            access,
-            policy,
-            journal_tenant,
-            clock,
-        }
+    pub(crate) fn new(access: Arc<AccessStore>, policy: Arc<Policy>) -> Self {
+        Self { access, policy }
     }
     pub(crate) async fn management_principal(
         &self,
@@ -193,73 +181,6 @@ impl DeviceService {
             self.revoke_inner(admin, device, registration, operation_id, &audit),
         )
         .await
-    }
-    /// Rechecks persisted authority on every submission; grants never escape this operation.
-    pub async fn ingest<C: rss_observation::Clock>(
-        &self,
-        credential: &VerifiedChannelCredential,
-        source: ReportSource,
-        batch: Batch,
-        observation: &rss_observation_postgres::PgStore<C>,
-        deadline: rss_request_context::Deadline,
-    ) -> Result<rss_observation::ReceiveOutcome, Error> {
-        let audit = Audit::new(self.policy.tenant().into(), "device_report");
-        // One deadline domain; RSS owns cancellation/settlement of its writes.
-        let deadline = deadline.shortened_to(self.clock.now() + Duration::from_secs(8));
-        let result = async {
-            let budget = deadline
-                .remaining(self.clock.now())
-                .ok_or(Error::Unavailable(Failure::RequestDeadline))?;
-            // This transaction is read-only. It is safe to cancel before admitting effects.
-            let (principal, authority) =
-                tokio::time::timeout(budget, self.authorize_report(credential, source))
-                    .await
-                    .map_err(|_| Error::Unavailable(Failure::RequestDeadline))??;
-            audit.target(principal.device());
-            audit.registration(principal.registration());
-            audit.identify_device(principal.registration());
-            rss_mdm_inventory::validate(&batch).map_err(|_| Error::Malformed)?;
-            let verified =
-                rss_observation::VerifiedBatch::verify(&authority, authority.scope.clone(), batch)
-                    .map_err(|_| Error::Forbidden)?;
-            let lifecycle =
-                rss_observation::LifecycleGrant::verify(&authority, authority.scope.clone())
-                    .map_err(|_| Error::Forbidden)?;
-            use rss_observation::ObservationStore;
-            // Until RSS returns, cancelling the caller cannot prove absence of a receipt.
-            audit.mark_commit_started();
-            let received = async {
-                observation
-                    .activate(
-                        &lifecycle,
-                        None,
-                        &rss_observation::Policy::new(86400, 3600, 3600).expect("fixed policy"),
-                        deadline,
-                    )
-                    .await?;
-                observation.receive(&verified, deadline).await
-            }
-            .await;
-            match &received {
-                Ok(_) => audit.mark_committed(),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        rss_observation::ErrorKind::CommitUnknown
-                            | rss_observation::ErrorKind::RollbackFailed
-                    ) => {}
-                Err(_) => audit.mark_not_committed(),
-            }
-            received.map_err(observation_error)
-        }
-        .await;
-        // Observation receipts and product audit are separate transactions. Even a known
-        // receipt commit needs this audit; registration's atomic-audit shortcut does not apply.
-        let success = match &result {
-            Ok(rss_observation::ReceiveOutcome::Replay(_)) => "replay",
-            Ok(rss_observation::ReceiveOutcome::Accepted(_)) | Err(_) => "success",
-        };
-        self.record_result(&audit, result, success).await
     }
     async fn audited<T>(
         &self,
@@ -307,80 +228,15 @@ impl DeviceService {
         result
     }
 }
-fn observation_error(error: rss_observation::Error) -> Error {
-    #[cfg(test)]
-    eprintln!("test Observation error category: {:?}", error.kind());
-    match error.kind() {
-        rss_observation::ErrorKind::CommitUnknown => Error::CommitUnknown,
-        rss_observation::ErrorKind::Conflict | rss_observation::ErrorKind::LifecycleConflict => {
-            Error::Conflict
-        }
-        rss_observation::ErrorKind::InvalidInput => Error::Malformed,
-        rss_observation::ErrorKind::Unauthorized => Error::Forbidden,
-        _ => Error::Unavailable(Failure::Observation),
-    }
-}
-struct ReportAuthority {
-    scope: Scope,
-}
-impl Authority for ReportAuthority {
-    fn authorize(&self, request: Access<'_>) -> Result<(), rss_observation::Error> {
-        let allowed = match request {
-            Access::Activate { scope } => scope == &self.scope,
-            Access::Submit { scope, coverage } => {
-                scope == &self.scope && coverage == &rss_mdm_inventory::coverage()
-            }
-            Access::Read { .. } | Access::ReadJournal { .. } => false,
-        };
-        if allowed {
-            Ok(())
-        } else {
-            Err(rss_observation::ErrorKind::Unauthorized.into())
-        }
-    }
-}
-/// A local host lease, independent from every device principal. Revocation is cancel+join
-/// of the bounded host invocation; no report can construct or extend this authority.
-struct JournalAuthority {
-    tenant: TenantId,
-    cancelled: tokio_util::sync::CancellationToken,
-}
-impl Authority for JournalAuthority {
-    fn authorize(&self, request: Access<'_>) -> Result<(), rss_observation::Error> {
-        if !self.cancelled.is_cancelled()
-            && matches!(request, Access::ReadJournal { tenant } if tenant == self.tenant)
-        {
-            Ok(())
-        } else {
-            Err(rss_observation::ErrorKind::Unauthorized.into())
-        }
-    }
-}
-impl DeviceService {
-    /// Host-owned bounded worker permission, independent of device/report credentials.
-    /// The management HTTP assembly has no journal permission. F05 owns worker assembly.
-    pub fn journal_grant(
-        &self,
-        tenant: TenantId,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Result<rss_observation::JournalReadGrant, rss_observation::Error> {
-        if self.journal_tenant != Some(tenant) || self.policy.tenant() != tenant.to_string() {
-            return Err(rss_observation::ErrorKind::Unauthorized.into());
-        }
-        rss_observation::JournalReadGrant::verify(
-            &JournalAuthority {
-                tenant,
-                cancelled: cancelled.clone(),
-            },
-            tenant,
-        )
-    }
-}
-
-fn coverage_key() -> String {
+pub(crate) fn coverage_key() -> String {
     serde_json::to_string(&rss_mdm_inventory::coverage()).expect("fixed coverage")
 }
-fn scope(tenant: TenantId, registration: Uuid, source: &str, epoch: Uuid) -> Result<Scope, Error> {
+pub(crate) fn scope(
+    tenant: TenantId,
+    registration: Uuid,
+    source: &str,
+    epoch: Uuid,
+) -> Result<Scope, Error> {
     Ok(Scope::new(
         tenant,
         // RSS's lifecycle fence is object-wide. Each independently registered channel

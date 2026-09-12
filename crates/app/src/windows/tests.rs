@@ -289,12 +289,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         &checked,
     );
     let access = Arc::new(store);
-    let service = crate::device::DeviceService::new(
-        access.clone(),
-        policy(TENANT, true, true),
-        None,
-        monotonic(),
-    );
+    let service = crate::device::DeviceService::new(access.clone(), policy(TENANT, true, true));
     ensure!(
         service.management_principal(&credential).await.is_err(),
         "unbound signed certificate admitted"
@@ -935,16 +930,27 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     let devices = Arc::new(crate::device::DeviceService::new(
         store.clone(),
         policy.clone(),
-        None,
-        monotonic(),
     ));
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
+    let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
+        options("mdm_runtime")?,
+        store.clone(),
+        rss_request_context::TenantId::parse(TENANT)?,
+        monotonic(),
+    )
+    .await?;
     let app = Arc::new(App {
         identity,
         sessions,
         policy,
-        inventory: InventoryService::new(reader.clone(), devices.clone()),
+        inventory: InventoryService::new(
+            reader.clone(),
+            devices.clone(),
+            store.clone(),
+            runtime.clone(),
+        ),
+        readiness: runtime.readiness.clone(),
         devices,
         access: store.clone(),
         origin: config.product_origin,
@@ -988,6 +994,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             )
             .critical(),
         );
+        launch.stage_deferred_task_with_token(runtime.clone().registration().critical());
         launch.finish();
     }
     let running = Running(owner);
@@ -1266,6 +1273,148 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             == protection::digest("RSS-MDM", &secrets.server_password, &secrets.server_nonce)
     );
     ensure!(post(followup.clone()).send().await?.bytes().await? == finished);
+    let get_request = syncml::decode(&finished, &CodecLimits::default())?;
+    let gets: Vec<_> = get_request
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+            _ => None,
+        })
+        .collect();
+    ensure!(gets.len() == 2 && gets[0].1 == "./DevInfo/Mod" && gets[1].1 == "./DevDetail/SwV");
+    let packet = |message_id, previous, index: usize, value: &str| syncml::Message {
+        header: syncml::Header {
+            message_id,
+            credential: None,
+            ..message.header.clone()
+        },
+        commands: vec![
+            Command::Status(syncml::Status {
+                id: 1,
+                message_ref: previous,
+                command_ref: 0,
+                command: CommandName::SyncHdr,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }),
+            Command::Status(syncml::Status {
+                id: 2,
+                message_ref: 2,
+                command_ref: gets[index].0,
+                command: CommandName::Get,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }),
+            Command::Results(syncml::Results {
+                id: 3,
+                message_ref: Some(2),
+                command_ref: Some(gets[index].0),
+                command: Some(CommandName::Get),
+                meta: None,
+                items: vec![syncml::Item {
+                    source: Some(gets[index].1.clone()),
+                    target: None,
+                    meta: None,
+                    data: Some(Secret(value.into())),
+                }],
+            }),
+        ],
+        final_message: true,
+    };
+    let model = syncml::encode(&packet(3, 2, 0, "Model-TLS"), &CodecLimits::default())?;
+    let first_fragment = post(model.clone()).send().await?;
+    ensure!(first_fragment.status() == StatusCode::OK);
+    let first_fragment = first_fragment.bytes().await?;
+    ensure!(post(model.clone()).send().await?.bytes().await? == first_fragment);
+    let scope = app
+        .devices
+        .current_scope(
+            &proof,
+            "tls-device",
+            crate::access::Coordinates {
+                source: crate::device::ReportSource::MdmWindows,
+            },
+        )
+        .await?;
+    let pending = store.collection(&scope, None).await?.unwrap();
+    ensure!(pending.result == crate::collection::RunResult::Pending && pending.batch().is_none());
+    ensure!(
+        reader.read(&scope).await?.is_empty(),
+        "fragment projected before complete collection"
+    );
+    let mut conflicting = packet(4, 3, 0, "changed");
+    ensure!(
+        post(syncml::encode(&conflicting, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            == StatusCode::CONFLICT
+    );
+    conflicting = packet(4, 3, 1, "10.0.26100");
+    let final_fragment = syncml::encode(&conflicting, &CodecLimits::default())?;
+    store.fail_next(2);
+    ensure!(post(final_fragment.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
+    let replay = post(final_fragment.clone()).send().await?;
+    ensure!(replay.status() == StatusCode::OK);
+    let replay = syncml::decode(&replay.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        replay
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Status(s) if s.command == CommandName::Results))
+    );
+    let sealed = store.collection(&scope, None).await?.unwrap();
+    ensure!(sealed.id == pending.id && sealed.result == crate::collection::RunResult::Snapshot);
+    let bytes = sealed.batch().unwrap().encode().to_vec();
+    ensure!(post(final_fragment).send().await?.status() == StatusCode::OK);
+    ensure!(
+        store
+            .collection(&scope, None)
+            .await?
+            .unwrap()
+            .batch()
+            .unwrap()
+            .encode()
+            == bytes
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if runtime.inspect(&sealed).await?.projection
+                == crate::inventory_runtime::ProjectionStatus::Projected
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, Error>(())
+    })
+    .await??;
+    let fields = reader.read(&scope).await?;
+    ensure!(fields.len() == 2 && fields[0].value == "Model-TLS" && fields[1].value == "10.0.26100");
+    let result = app
+        .inventory
+        .read(app.policy.inventory(
+            &proof,
+            "tls-device",
+            crate::access::Coordinates {
+                source: crate::device::ReportSource::MdmWindows,
+            },
+        )?)
+        .await?;
+    let result = serde_json::to_value(result)?;
+    ensure!(
+        result["availability"] == "current"
+            && result["fields"][0]["last_good"]["value"] == "Model-TLS"
+    );
     // The 212 NextNonce is persisted for the next session, while current-session
     // responses and retransmissions continue using the old digest.
     let mut next_session = message.clone();
@@ -1352,6 +1501,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         .remove(&session, &app.sessions.get(&session)?.csrf)?;
     ensure!(app.sessions.by_reference(reference).is_err());
     running.close().await?;
+    runtime.close_fixture().await?;
     reader.close().await;
     store.close().await;
     Ok(())

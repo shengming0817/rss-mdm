@@ -13,6 +13,8 @@ rss-identity-contracts.workspace = true
 rss-observation.workspace = true
 rss-observation-postgres.workspace = true
 rss-projection-postgres.workspace = true
+rss-projection.workspace = true
+rss-contract.workspace = true
 rss-runtime.workspace = true
 rss-axum.workspace = true
 rss-request-context.workspace = true
@@ -52,7 +54,7 @@ tower.workspace = true
 
 [features]
 default = []
-integration = ["rss-observation-postgres/integration"]
+integration = ["rss-observation-postgres/integration", "rss-projection-postgres/integration"]
 
 [lints]
 workspace = true

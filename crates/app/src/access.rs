@@ -1,6 +1,6 @@
 //! MDM alone owns roles and device permissions. Identity facts never contain them.
 use crate::Error;
-use crate::device::{Channel, DeviceService};
+use crate::device::{DeviceService, ReportSource};
 use crate::{ConfigIssue, Failure};
 use rss_identity_client::VerifiedIdentity;
 use rss_observation::{Id, Scope};
@@ -41,11 +41,10 @@ pub(crate) struct InventoryRead<'a> {
 pub(crate) struct DangerousAction<'a> {
     _proof: &'a VerifiedIdentity,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Coordinates {
-    pub channel: Channel,
-    pub source: String,
+    pub source: ReportSource,
 }
 impl Policy {
     pub fn new(tenant: &str, client: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
@@ -135,7 +134,7 @@ impl Policy {
         c: Coordinates,
     ) -> Result<InventoryRead<'a>, Error> {
         self.device(proof, device)?;
-        Id::new(&c.source).map_err(|_| Error::Malformed)?;
+        Id::new(device).map_err(|_| Error::Malformed)?;
         Ok(InventoryRead {
             proof,
             device: device.into(),
@@ -177,69 +176,249 @@ pub(crate) struct InventoryResponse {
     tenant_id: String,
     device_id: String,
     registration: String,
-    source: String,
+    source: ReportSource,
     epoch: String,
     coverage: rss_observation::Coverage,
+    availability: Availability,
     fields: Vec<FieldResponse>,
+    latest_run: Option<RunSummary>,
+    delivery: Option<crate::inventory_runtime::DeliveryStatus>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Availability {
+    Current,
+    LastKnown,
+    Unavailable,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TimeBasis {
+    ServerReceived,
+}
+#[derive(Serialize)]
+struct LastGood {
+    value: String,
+    batch_id: String,
+    reported_at: i64,
+    received_at: i64,
+}
+#[derive(Serialize)]
+struct LatestAttempt {
+    run_id: uuid::Uuid,
+    quality: crate::collection::Quality,
+    status: Option<u16>,
+    time_basis: TimeBasis,
+    received_at: Option<i64>,
 }
 #[derive(Serialize)]
 struct FieldResponse {
-    field: String,
-    value: String,
-    batch_id: String,
-    observed_at: i64,
-    received_at: i64,
+    field: &'static str,
+    last_good: Option<LastGood>,
+    latest_attempt: Option<LatestAttempt>,
 }
+#[derive(Serialize)]
+struct RunSummary {
+    run_id: uuid::Uuid,
+    sequence: u64,
+    result: crate::collection::RunResult,
+    reason: Option<crate::collection::FinishReason>,
+    started_at: i64,
+    finished_at: Option<i64>,
+    time_basis: TimeBasis,
+}
+#[derive(Serialize)]
+struct RunField {
+    field: &'static str,
+    quality: crate::collection::Quality,
+    status: Option<u16>,
+    received_at: Option<i64>,
+    time_basis: TimeBasis,
+}
+#[derive(Serialize)]
+pub(crate) struct CollectionResponse {
+    run: RunSummary,
+    registration: String,
+    source: ReportSource,
+    epoch: String,
+    coverage: rss_observation::Coverage,
+    fields: Vec<RunField>,
+    delivery: crate::inventory_runtime::DeliveryStatus,
+}
+
 pub(crate) struct InventoryService {
     reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
     devices: std::sync::Arc<DeviceService>,
+    access: std::sync::Arc<crate::AccessStore>,
+    runtime: std::sync::Arc<crate::inventory_runtime::InventoryRuntime>,
 }
 impl InventoryService {
     pub(super) fn new(
         reader: std::sync::Arc<rss_mdm_inventory_postgres::InventoryReader>,
         devices: std::sync::Arc<DeviceService>,
+        access: std::sync::Arc<crate::AccessStore>,
+        runtime: std::sync::Arc<crate::inventory_runtime::InventoryRuntime>,
     ) -> Self {
-        Self { reader, devices }
+        Self {
+            reader,
+            devices,
+            access,
+            runtime,
+        }
     }
     pub async fn read(&self, grant: InventoryRead<'_>) -> Result<InventoryResponse, Error> {
-        // The request's proof is retained until the read completes; no authority cache.
         let scope: Scope = self
             .devices
             .current_scope(grant.proof, &grant.device, grant.coordinates)
             .await?;
-        let fields = self.reader.read(&scope).await.map_err(|error| {
-            Error::Unavailable(
-                if matches!(
-                    error.downcast_ref::<sqlx::Error>(),
-                    Some(sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed)
-                ) {
-                    Failure::InventoryPool
-                } else {
-                    Failure::InventoryQuery
-                },
+        let (run, fields, delivery) = self
+            .read_state(
+                &scope,
+                #[cfg(test)]
+                std::future::ready(()),
             )
-        })?;
-        if fields.is_empty() {
-            return Err(Error::NotFound);
-        }
+            .await?;
+        let current = run.as_ref().is_some_and(|r| {
+            r.result == crate::collection::RunResult::Snapshot
+                && fields.len() == rss_mdm_inventory::FieldKey::ALL.len()
+                && fields.iter().all(|f| f.batch_id == r.id.to_string())
+        }) && delivery
+            .as_ref()
+            .is_some_and(|d| d.projection == crate::inventory_runtime::ProjectionStatus::Projected);
+        let availability = if current {
+            Availability::Current
+        } else if fields.is_empty() {
+            Availability::Unavailable
+        } else {
+            Availability::LastKnown
+        };
+        let fields = rss_mdm_inventory::FieldKey::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                let good = fields.iter().find(|f| f.field == key.as_str());
+                FieldResponse {
+                    field: key.as_str(),
+                    last_good: good.map(|f| LastGood {
+                        value: f.value.clone(),
+                        batch_id: f.batch_id.clone(),
+                        reported_at: f.observed_at,
+                        received_at: f.received_at,
+                    }),
+                    latest_attempt: run.as_ref().map(|r| LatestAttempt {
+                        run_id: r.id,
+                        quality: r.attempts.fields[index].quality,
+                        status: r.attempts.fields[index].status,
+                        time_basis: TimeBasis::ServerReceived,
+                        received_at: r.attempts.fields[index].received_at,
+                    }),
+                }
+            })
+            .collect();
         Ok(InventoryResponse {
-            tenant_id: grant.proof.tenant_id().into(),
+            tenant_id: scope.tenant().to_string(),
             device_id: grant.device,
-            registration: scope.registration().as_str().into(),
-            source: scope.source().as_str().into(),
-            epoch: scope.epoch().as_str().into(),
+            registration: scope.registration().as_str().to_owned(),
+            source: grant.coordinates.source,
+            epoch: scope.epoch().as_str().to_owned(),
             coverage: rss_mdm_inventory::coverage(),
-            fields: fields
-                .into_iter()
-                .map(|v| FieldResponse {
-                    field: v.field,
-                    value: v.value,
-                    batch_id: v.batch_id,
-                    observed_at: v.observed_at,
-                    received_at: v.received_at,
-                })
-                .collect(),
+            availability,
+            fields,
+            latest_run: run.as_ref().map(run_summary),
+            delivery,
         })
+    }
+
+    pub(crate) async fn read_state(
+        &self,
+        scope: &Scope,
+        #[cfg(test)] after_run: impl std::future::Future<Output = ()>,
+    ) -> Result<
+        (
+            Option<crate::collection::Run>,
+            Vec<rss_mdm_inventory_postgres::InventoryField>,
+            Option<crate::inventory_runtime::DeliveryStatus>,
+        ),
+        Error,
+    > {
+        #[cfg(test)]
+        let mut after_run = Some(after_run);
+        for _ in 0..3 {
+            let run = self.access.collection(scope, None).await?;
+            #[cfg(test)]
+            if let Some(interleaving) = after_run.take() {
+                interleaving.await;
+            }
+            let fields = self
+                .reader
+                .read(scope)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+            let delivery = match &run {
+                Some(run) => Some(self.runtime.inspect(run).await?),
+                None => None,
+            };
+            // Runs only advance and projected fields retain their immutable batch identity.
+            // Matching reads bracket inspection at one common state across the owned stores.
+            let same_run = run == self.access.collection(scope, None).await?;
+            let same_fields = fields
+                == self
+                    .reader
+                    .read(scope)
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+            if same_run && same_fields {
+                return Ok((run, fields, delivery));
+            }
+        }
+        Err(Error::Unavailable(Failure::InventoryQuery))
+    }
+
+    pub(crate) async fn run(
+        &self,
+        grant: InventoryRead<'_>,
+        id: uuid::Uuid,
+    ) -> Result<CollectionResponse, Error> {
+        let scope = self
+            .devices
+            .current_scope(grant.proof, &grant.device, grant.coordinates)
+            .await?;
+        let run = self
+            .access
+            .collection(&scope, Some(id))
+            .await?
+            .ok_or(Error::NotFound)?;
+        let fields = rss_mdm_inventory::FieldKey::ALL
+            .iter()
+            .zip(&run.attempts.fields)
+            .map(|(key, attempt)| RunField {
+                field: key.as_str(),
+                quality: attempt.quality,
+                status: attempt.status,
+                received_at: attempt.received_at,
+                time_basis: TimeBasis::ServerReceived,
+            })
+            .collect();
+        Ok(CollectionResponse {
+            run: run_summary(&run),
+            registration: scope.registration().as_str().to_owned(),
+            source: grant.coordinates.source,
+            epoch: scope.epoch().as_str().to_owned(),
+            coverage: rss_mdm_inventory::coverage(),
+            fields,
+            delivery: self.runtime.inspect(&run).await?,
+        })
+    }
+}
+fn run_summary(run: &crate::collection::Run) -> RunSummary {
+    RunSummary {
+        run_id: run.id,
+        sequence: run.sequence,
+        result: run.result,
+        reason: run.reason,
+        started_at: run.started_at,
+        finished_at: run.sealed_at,
+        time_basis: TimeBasis::ServerReceived,
     }
 }
 
@@ -269,8 +448,10 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<Coordinates>(r#"{"channel":"mdm","source":"mdm.windows"}"#)
-                .is_ok()
+                .is_err()
         );
+        assert!(serde_json::from_str::<Coordinates>(r#"{"source":"mdm.windows"}"#).is_ok());
+        assert!(serde_json::from_str::<Coordinates>(r#"{"source":"invented"}"#).is_err());
     }
     #[test]
     fn credential_permission_is_explicit_and_not_inherited() {

@@ -157,7 +157,7 @@ impl DeviceService {
         &self,
         credential: &VerifiedChannelCredential,
         source: ReportSource,
-    ) -> Result<(DevicePrincipal, ReportAuthority), Error> {
+    ) -> Result<(DevicePrincipal, Scope), Error> {
         if source.channel() != credential.channel
             || self.policy.tenant() != credential.tenant.to_string()
         {
@@ -189,7 +189,7 @@ impl DeviceService {
             uuid(&child, "epoch")?,
         )?;
         tx.commit().await.map_err(db)?;
-        Ok((principal, ReportAuthority { scope }))
+        Ok((principal, scope))
     }
     pub(crate) async fn current_scope(
         &self,
@@ -202,17 +202,16 @@ impl DeviceService {
             proof,
             device,
             Coordinates {
-                channel: coordinates.channel,
-                source: coordinates.source.clone(),
+                source: coordinates.source,
             },
         )?;
         let mut tx = self.access.begin(proof.tenant_id()).await?;
         let row=sqlx::query("SELECT r.id::text AS id,s.epoch::text AS epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.state='active' AND c.state='active' AND s.source=$4 AND s.coverage=$5 AND s.enabled")
-            .bind(proof.tenant_id()).bind(device).bind(coordinates.channel.as_str()).bind(&coordinates.source).bind(coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
+            .bind(proof.tenant_id()).bind(device).bind(coordinates.source.channel().as_str()).bind(coordinates.source.as_str()).bind(coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
         let scope = scope(
             TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
             uuid(&row, "id")?,
-            &coordinates.source,
+            coordinates.source.as_str(),
             uuid(&row, "epoch")?,
         )?;
         tx.commit().await.map_err(db)?;
@@ -253,6 +252,7 @@ async fn retire(
     .map_err(db)?;
     sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut **tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
+    crate::collection::terminate(tx, tenant, &registration.to_string(), state).await?;
     Ok(())
 }
 

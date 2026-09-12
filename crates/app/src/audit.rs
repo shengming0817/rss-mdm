@@ -28,7 +28,6 @@ pub(crate) struct Snapshot {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WriteOutcome {
     CommitNotStarted,
-    NotCommitted,
     Unknown,
     Committed,
 }
@@ -36,9 +35,7 @@ impl WriteOutcome {
     pub fn deadline_error(self) -> crate::Error {
         match self {
             Self::Unknown | Self::Committed => crate::Error::CommitUnknown,
-            Self::CommitNotStarted | Self::NotCommitted => {
-                crate::Error::Unavailable(crate::Failure::RequestDeadline)
-            }
+            Self::CommitNotStarted => crate::Error::Unavailable(crate::Failure::RequestDeadline),
         }
     }
 }
@@ -94,7 +91,9 @@ impl Audit {
         self.0.state.lock().expect("audit lock").snapshot.action = action;
     }
     pub fn target(&self, target: &str) {
-        self.0.state.lock().expect("audit lock").snapshot.target = Some(target.into());
+        self.0.state.lock().expect("audit lock").snapshot.target = (target.len() <= 255
+            && rss_observation::Id::new(target).is_ok())
+        .then(|| target.to_owned());
     }
     pub fn operation(&self, id: Uuid, action: &'static str) {
         let mut state = self.0.state.lock().expect("audit lock");
@@ -119,12 +118,6 @@ impl Audit {
         if state.snapshot.write_outcome == WriteOutcome::CommitNotStarted {
             state.snapshot.write_outcome = WriteOutcome::Unknown;
         }
-    }
-    // A provider settled a report attempt and proved that its receipt did not commit.
-    pub fn mark_not_committed(&self) {
-        let mut state = self.0.state.lock().expect("audit lock");
-        assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
-        state.snapshot.write_outcome = WriteOutcome::NotCommitted;
     }
     pub fn mark_committed(&self) {
         let mut state = self.0.state.lock().expect("audit lock");
@@ -169,22 +162,14 @@ impl Drop for Context {
 mod tests {
     use super::*;
     #[test]
-    fn settled_report_failure_is_distinct_from_cancellation() {
-        let audit = Audit::new("tenant".into(), "device_report");
-        audit.mark_commit_started();
-        assert_eq!(
-            audit
-                .0
-                .failure_event(&audit.snapshot(), FailureReason::Cancelled)["write_outcome"],
-            "unknown"
-        );
-        audit.mark_not_committed();
-        assert_eq!(
-            audit
-                .0
-                .failure_event(&audit.snapshot(), FailureReason::Persistent)["write_outcome"],
-            "not_committed"
-        );
+    fn target_rejects_values_that_cannot_be_persisted() {
+        let audit = Audit::new("tenant".into(), "collection_read");
+        for invalid in ["x".repeat(256), "bad\nvalue".into(), String::new()] {
+            audit.target(&invalid);
+            assert!(audit.snapshot().target.is_none());
+        }
+        audit.target(&"x".repeat(255));
+        assert!(audit.snapshot().target.is_some());
         audit.finalize(None);
     }
     #[test]
