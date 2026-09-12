@@ -18,6 +18,16 @@ def identities(root):
     secret = 'device-t2-validation-secret-00000000'
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_): pass
+        def do_GET(self):
+            if self.path == '/.well-known/openid-configuration':
+                body = dict(issuer=origin, authorization_endpoint=origin+'/authorize', token_endpoint=origin+'/token', jwks_uri=origin+'/jwks', response_types_supported=['code'], subject_types_supported=['public'], id_token_signing_alg_values_supported=['RS256'])
+            elif self.path == '/jwks':
+                body = dict(keys=[])
+            else:
+                self.send_error(404); return
+            payload=json.dumps(body).encode()
+            self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(payload)))
+            self.end_headers(); self.wfile.write(payload)
         def do_POST(self):
             value = json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))))
             expected = 'Basic '+base64.b64encode(('mdm:'+secret).encode()).decode()

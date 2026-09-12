@@ -195,7 +195,12 @@ impl PgEffect for RejectAfterWrite {
         event: &rss_projection::Event,
     ) -> Result<PgEffectOutcome, PgOperationError> {
         self.0.apply(tx, scope, event).await?;
-        Err(PgOperationError::rejected())
+        Err(PgOperationError::rejected(
+            rss_projection::Phase::Application,
+            None,
+            Some(event.position()),
+            std::io::Error::other("fixture rejects after write to verify rollback"),
+        ))
     }
 }
 async fn rollback_and_unknown(a: &App) -> Result<()> {

@@ -87,9 +87,6 @@ pub(super) fn validate(s: &Security, l: &CodecLimits) -> Result<()> {
     }
     if let Some(t) = &s.username {
         text(&t.id, l.identifier_bytes, false)?;
-        if t.id != "uuid-cc1ccc1f-2fba-4bcf-b063-ffc0cac77917-4" {
-            return Err(E::InvalidValue);
-        }
         text(&t.username.0, l.field_bytes, false)?;
         text(&t.password.0, l.field_bytes, false)?;
     }

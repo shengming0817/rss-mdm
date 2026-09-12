@@ -106,7 +106,7 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Policy> {
     p.open(XCEP, "oIDs")?;
     p.open(XCEP, "oID")?;
     constant(p, "value", "2.16.840.1.101.3.4.2.1")?;
-    constant(p, "group", "4")?;
+    constant(p, "group", "1")?;
     constant(p, "oIDReferenceID", "0")?;
     constant(p, "defaultName", "szOID_NIST_sha256")?;
     p.end(XCEP, "oID")?;
@@ -194,7 +194,7 @@ pub(super) fn write(w: &mut Output<'_>, p: &Policy, l: &CodecLimits) -> Result<(
     w.start("p:oIDs", &[])?;
     w.start("p:oID", &[])?;
     scalar(w, "value", "2.16.840.1.101.3.4.2.1", l)?;
-    scalar(w, "group", "4", l)?;
+    scalar(w, "group", "1", l)?;
     scalar(w, "oIDReferenceID", "0", l)?;
     scalar(w, "defaultName", "szOID_NIST_sha256", l)?;
     w.end("p:oID")?;

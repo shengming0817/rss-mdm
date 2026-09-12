@@ -1,7 +1,11 @@
+#![allow(
+    clippy::cognitive_complexity,
+    reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
+)]
 use super::*;
 use crate::{
     access::{Binding, Role},
-    enrollment::Command,
+    enrollment::Password,
 };
 use anyhow::Context;
 use rss_observation::{Body, Change, Clock, ObservationStore, ReadGrant};
@@ -18,7 +22,7 @@ fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelCredential {
         locator: [key; 32],
     }
 }
-fn policy(tenant: &str, enroll: bool, credentials: bool) -> Arc<Policy> {
+pub(crate) fn policy(tenant: &str, enroll: bool, credentials: bool) -> Arc<Policy> {
     Arc::new(
         Policy::new(
             tenant,
@@ -92,7 +96,7 @@ fn report_and_journal_authorities_are_disjoint() {
     cancel.cancel();
     assert!(rss_observation::JournalReadGrant::verify(&worker, tenant).is_err());
 }
-async fn admin(tenant: &str, token: &str) -> anyhow::Result<VerifiedIdentity> {
+pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<VerifiedIdentity> {
     let origin = std::env::var("MDM_TEST_IDENTITY")?;
     let client = rss_identity_client::IdentityClient::new(
         rss_identity_client::ClientConfig {
@@ -111,7 +115,7 @@ async fn admin(tenant: &str, token: &str) -> anyhow::Result<VerifiedIdentity> {
     )?;
     Ok(client.validate(token).await?)
 }
-fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
+pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
     Ok(std::env::var(if user == "postgres" {
         "MDM_ADMIN_URL"
     } else {
@@ -134,39 +138,22 @@ async fn request(
     admin: &VerifiedIdentity,
     device: &str,
 ) -> anyhow::Result<Uuid> {
-    let mut grant = None;
-    for command in [
-        Command::Issue {
-            device_id: device.into(),
-        },
-        Command::Issue {
-            device_id: device.into(),
-        },
-    ] {
-        let command = if let Some(grant_id) = grant {
-            Command::Consume {
-                device_id: device.into(),
-                grant_id,
-            }
-        } else {
-            command
-        };
-        let audit = Audit::new(admin.tenant_id().into(), command.action());
-        audit.identify(admin);
-        audit.target(device);
-        let key = Uuid::new_v4();
-        audit.operation(key, command.action());
-        let receipt = store
-            .execute(policy.enrollment(admin, device)?, key, command, &audit)
-            .await
-            .context("F02 request")?;
-        audit.finalize(None);
-        if let Some(id) = receipt.request_id {
-            return Ok(id);
-        }
-        grant = Some(receipt.grant_id);
-    }
-    unreachable!()
+    let audit = Audit::new(admin.tenant_id().into(), "enrollment_create");
+    audit.identify(admin);
+    audit.target(device);
+    let key = Uuid::new_v4();
+    audit.operation(key, "enrollment_create");
+    let receipt = store
+        .create_enrollment(
+            policy.enrollment(admin, device)?,
+            &Password::new(crate::sessions::random())?,
+            Uuid::new_v4(),
+            key,
+            &audit,
+        )
+        .await?;
+    audit.finalize(None);
+    Ok(receipt.enrollment_id)
 }
 async fn bind(
     service: &DeviceService,

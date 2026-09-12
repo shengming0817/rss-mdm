@@ -178,6 +178,8 @@ def fixture(c):
             migrate=write('mdm-migration.json',{'database':db});run([binary,'migrate','--config',str(migrate)],cwd=ROOT)
             mdm={'listen':'127.0.0.1:0','product_origin':product,'identity':{'origin':f'https://localhost:{private_port}','issuer':origin+'/oidc','client_id':'mdm','tenant_id':TENANT,'audience':'mdm-api','oidc_secret_file':str(root/'oidc-client'),'validation_secret_file':str(root/'validation'),'ca_file':str(root/'ca.crt')},'database':{**db,'user':'mdm_api','password_file':str(root/'mdm-api')},'bindings':[]}
             mdm['access_database']={**db,'user':'mdm_access','password_file':str(root/'mdm-access')}
+            from windows_fixtures import generate
+            mdm['windows']=generate(root, root/'tls.crt', root/'tls.key')
             config_path=write('mdm.json',mdm)
             yield {**os.environ,'MDM_TEST_CONFIG':str(config_path),'MDM_TEST_PUBLIC_ORIGIN':origin,'MDM_TEST_PASSWORD_FILE':str(root/'new-password'),'MDM_TEST_PG_CONTAINER':pg,'MDM_TEST_PRIVATE_CONTAINER':private_container,'MDM_TEST_HYDRA_CONTAINER':hydra_container,'MDM_TEST_IDENTITY_CONTAINER':identity_container,'MDM_TEST_PROVIDER_PLATFORM':native}
         finally:
@@ -198,7 +200,7 @@ def main():
     verify(c['providers']['nginx'])
     with fixture(c) as env:
         provider_platform=env['MDM_TEST_PROVIDER_PLATFORM']
-        output=run(['cargo','test','--locked','-p','rss-mdm-app','--test','identity_t2','--','--ignored','--nocapture'],cwd=ROOT,env=env,test_output=True,stage='real Identity router matrix')
+        output=run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_t2::real_identity_mdm_authorization_and_revocation','--','--ignored','--nocapture'],cwd=ROOT,env=env,test_output=True,stage='real Identity router matrix')
         if 'MDM_IDENTITY_MATRIX_PASSED' not in output or '1 passed; 0 failed;' not in output:raise RuntimeError('identity test proof incomplete')
     print(json.dumps({'identity_revision':c['revision'],'identity_archives':c['archives'],'provider_digests':c['providers'],'provider_platform':provider_platform,'candidate_platform':c['platform'],'result':'passed','scope':'MDM Router / SDK / immutable Identity binary / real PG and Hydra / TLS; not production T3'}))
 if __name__=='__main__':main()

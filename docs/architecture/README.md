@@ -5,3 +5,5 @@
 设计须关联 [PRD](../product/rss-mdm-prd.md) 的需求编号，说明约束、依赖、兼容与迁移、失败恢复及验证方式；不得将历史 Go 类型和表结构直接视为新契约。
 
 影响长期边界的取舍记录在 [adr/](adr/README.md)。产品与基础库职责遵循 [范围规则](../rules/project-scope.md)。
+
+- [#2350 + #2351 Windows 注册与管理通道实施计划](202609111146-2350-windows-enrollment-management-plan.md)

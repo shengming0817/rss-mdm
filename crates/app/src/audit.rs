@@ -189,10 +189,10 @@ mod tests {
     }
     #[test]
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
-        let a = Audit::new("tenant".into(), "grant_issue");
+        let a = Audit::new("tenant".into(), "enrollment_create");
         let key = Uuid::new_v4();
         let registration = Uuid::new_v4();
-        a.operation(key, "grant_issue");
+        a.operation(key, "enrollment_create");
         a.registration(registration);
         a.target("sensitive-target-not-for-logs");
         a.identify_fixture("sensitive-actor", "sensitive-client");
@@ -214,7 +214,7 @@ mod tests {
         ] {
             let event = event(reason);
             assert_eq!(event["write_outcome"], "committed");
-            assert_eq!(event["action"], "grant_issue");
+            assert_eq!(event["action"], "enrollment_create");
             assert_eq!(event["registration_id"], registration.to_string());
             assert!(!event.to_string().contains("sensitive-target"));
             assert!(!event.to_string().contains("sensitive-actor"));

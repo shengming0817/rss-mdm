@@ -68,6 +68,7 @@ pub struct Config {
     pub database: Database,
     pub access_database: Database,
     pub bindings: Vec<Binding>,
+    pub windows: crate::windows::WindowsConfig,
 }
 pub(crate) struct Compiled {
     pub config: Config,
@@ -109,6 +110,7 @@ impl Config {
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
             return Err(Error::Configuration(ConfigIssue::Tenant));
         }
+        self.windows.validate(self.listen)?;
         let policy = crate::access::Policy::new(
             &self.identity.tenant_id,
             &self.identity.client_id,
@@ -233,6 +235,16 @@ mod tests {
                 "Tenant",
             ),
             ("/identity/client_id", serde_json::json!("*"), "ClientId"),
+            (
+                "/windows/enrollment/origin",
+                serde_json::json!("http://synthetic-secret.example.test"),
+                "WindowsListeners",
+            ),
+            (
+                "/windows/management/origin",
+                serde_json::json!("http://synthetic-secret.example.test"),
+                "WindowsListeners",
+            ),
         ] {
             let mut value_config: serde_json::Value =
                 serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))

@@ -1,4 +1,9 @@
+#![allow(
+    clippy::cognitive_complexity,
+    reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
+)]
 //! The production Router consumes a fixed real Identity candidate; no mock verifier or claims constructor.
+use crate::config::Config;
 use anyhow::{Result, ensure};
 use axum::{
     Router,
@@ -7,7 +12,6 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use reqwest::{Client, Url};
-use rss_mdm_app::config::Config;
 use rss_mdm_inventory_postgres::InventoryReader;
 use serde_json::{Value, json};
 use std::{
@@ -361,15 +365,15 @@ impl Browser {
         Ok(status)
     }
 }
-async fn access_store(value: &Value) -> Result<Arc<rss_mdm_app::AccessStore>> {
+async fn access_store(value: &Value) -> Result<Arc<crate::AccessStore>> {
     let config: Config = serde_json::from_value(value.clone())?;
     Ok(Arc::new(
-        rss_mdm_app::AccessStore::connect(config.access_database.options()?).await?,
+        crate::AccessStore::connect(config.access_database.options()?).await?,
     ))
 }
 async fn app(value: &Value, reader: Arc<InventoryReader>) -> Result<Router> {
     let c: Config = serde_json::from_value(value.clone())?;
-    Ok(rss_mdm_app::application(
+    Ok(crate::api::application(
         c,
         Arc::new(rss_identity_client::SystemClock),
         monotonic(),
@@ -437,7 +441,7 @@ async fn session_races_and_admission(
     query: &str,
 ) -> Result<()> {
     let clock = Arc::new(GateClock::default());
-    let router = rss_mdm_app::application(
+    let router = crate::api::application(
         serde_json::from_value(value.clone())?,
         clock.clone(),
         monotonic(),
@@ -678,7 +682,7 @@ async fn matrix() -> Result<()> {
     pg(&format!(
         r#"
         INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','mdm','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-        INSERT INTO mdm_access.requests VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
@@ -997,8 +1001,8 @@ async fn matrix() -> Result<()> {
                 .call(
                     &authorized,
                     Method::POST,
-                    "/api/v1/enrollment-grants",
-                    Some(json!({"device_id":"device-1"}))
+                    "/api/v1/enrollments",
+                    Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
                 )
                 .await?
                 .0
@@ -1091,7 +1095,7 @@ async fn matrix() -> Result<()> {
     reason = "test composition root selects the real monotonic provider"
 )]
 fn monotonic() -> Arc<dyn rss_observation::Clock> {
-    Arc::new(rss_mdm_app::Monotonic(std::time::Instant::now))
+    Arc::new(crate::Monotonic(std::time::Instant::now))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1105,7 +1109,7 @@ async fn enrollment_matrix(
     csrf: &str,
     query: &str,
 ) -> Result<()> {
-    let issue = "/api/v1/enrollment-grants";
+    let issue = "/api/v1/enrollments";
     let mut enrollment_only = config.clone();
     enrollment_only["bindings"][0]["allow_wipe"] = json!(false);
     let enrollment_router = app(&enrollment_only, reader.clone()).await?;
@@ -1136,7 +1140,7 @@ async fn enrollment_matrix(
                 &enrollment_router,
                 Method::POST,
                 issue,
-                Some(json!({"device_id":"device-1"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
             )
             .await?
             .0
@@ -1149,7 +1153,7 @@ async fn enrollment_matrix(
             router,
             Method::POST,
             issue,
-            Some(json!({"device_id":"device-1"})),
+            Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})),
         )
         .await?;
     ensure!(
@@ -1162,73 +1166,51 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"device_id":"device-1"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
             )
             .await?
             .1
             == grant,
         "issue replay changed result"
     );
-    let permit = grant["grant_id"].clone();
+    let enrollment = grant["enrollmentId"].as_str().unwrap();
+    let status_path = format!("/api/v1/enrollments/{enrollment}");
+    let current = browser
+        .call(router, Method::GET, &status_path, None)
+        .await?;
+    ensure!(
+        current.0 == StatusCode::OK
+            && current.1["status"] == "pending"
+            && current.1["registrationId"].is_null()
+    );
+    let resume = format!("/api/v1/enrollments/{enrollment}/resume");
     browser.operation = Some(uuid::Uuid::new_v4());
-    let (_, accepted) = browser
+    let (_, resumed) = browser
         .call(
             router,
             Method::POST,
-            "/api/v1/registration-requests",
-            Some(json!({"device_id":"device-1","grant_id":permit})),
+            &resume,
+            Some(json!({"password": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"})),
         )
         .await?;
-    ensure!(accepted["status"] == "accepted");
+    ensure!(resumed["status"] == "pending");
     ensure!(
         browser
             .call(
                 router,
                 Method::POST,
-                "/api/v1/registration-requests",
-                Some(json!({"device_id":"device-1","grant_id":permit}))
+                &resume,
+                Some(json!({"password":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"}))
             )
             .await?
             .1
-            == accepted
+            == resumed
     );
     browser.operation = Some(uuid::Uuid::new_v4());
-    ensure!(
-        browser
-            .call(
-                router,
-                Method::POST,
-                "/api/v1/registration-requests",
-                Some(json!({"device_id":"device-1","grant_id":permit}))
-            )
-            .await?
-            .0
-            == StatusCode::CONFLICT
-    );
-    browser.operation = Some(uuid::Uuid::new_v4());
-    ensure!(
-        browser
-            .call(
-                router,
-                Method::POST,
-                issue,
-                Some(json!({"device_id":"outside"}))
-            )
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    let (_, unused) = browser
-        .call(
-            router,
-            Method::POST,
-            issue,
-            Some(json!({"device_id":"device-1"})),
-        )
-        .await?;
+    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))).await?.0 == StatusCode::FORBIDDEN);
     let mut no_permission = config.clone();
     no_permission["bindings"][0]["allow_enrollment"] = json!(false);
-    let restarted = app(&no_permission, reader).await?;
+    let restarted = app(&no_permission, reader.clone()).await?;
     let mut denied = Browser::default();
     ensure!(denied.login(&restarted, web, origin, csrf).await? == StatusCode::SEE_OTHER);
     denied.operation = Some(uuid::Uuid::new_v4());
@@ -1237,12 +1219,38 @@ async fn enrollment_matrix(
             .call(
                 &restarted,
                 Method::POST,
-                "/api/v1/registration-requests",
-                Some(json!({"device_id":"device-1","grant_id":unused["grant_id"]}))
+                &resume,
+                Some(json!({"password":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCA"}))
             )
             .await?
             .0
             == StatusCode::FORBIDDEN
+    );
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let cancel = format!("/api/v1/enrollments/{enrollment}/cancel");
+    let (status, cancelled) = browser
+        .call(router, Method::POST, &cancel, Some(json!({})))
+        .await?;
+    ensure!(
+        browser
+            .call(router, Method::GET, &status_path, None)
+            .await?
+            .1["status"]
+            == "cancelled"
+    );
+    ensure!(status == StatusCode::OK && cancelled["status"] == "cancelled");
+    browser.operation = Some(uuid::Uuid::new_v4());
+    ensure!(
+        browser
+            .call(
+                router,
+                Method::POST,
+                &resume,
+                Some(json!({"password":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCA"}))
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
     );
     // Audit is mandatory for both reads and denied requests; never disclose assets on failure.
     pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
@@ -1261,13 +1269,180 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"device_id":"device-1"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
             )
             .await?
             .0
             == StatusCode::UNAUTHORIZED
     );
-    ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='grant_issue' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
+    ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='enrollment_create' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
+    revoke_http_matrix(config, reader, web, origin, csrf).await?;
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
+    Ok(())
+}
+
+async fn revoke_http_matrix(
+    config: &Value,
+    reader: Arc<InventoryReader>,
+    web: &Client,
+    origin: &str,
+    csrf: &str,
+) -> Result<()> {
+    let (grant, request, registration, credential, epoch) = (
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
+    pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','mdm','revoke-device','enrollment','consumed',clock_timestamp()+interval '200 seconds');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','{request}','{grant}');
+        INSERT INTO mdm_access.devices VALUES('{TENANT}','revoke-device');
+        INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','revoke-device','mdm',1,'{request}','active');
+        INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
+        INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
+    let path = format!("/api/v1/devices/revoke-device/registrations/{registration}/revoke");
+    let listing = "/api/v1/devices/revoke-device/registrations";
+    let mut cfg = config.clone();
+    cfg["bindings"][0]["devices"] = json!(["revoke-device"]);
+    cfg["bindings"][0]["allow_manage_credentials"] = json!(false);
+    let denied = app(&cfg, reader.clone()).await?;
+    let mut browser = Browser::default();
+    ensure!(browser.login(&denied, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+    ensure!(browser.call(&denied, Method::GET, listing, None).await?.0 == StatusCode::FORBIDDEN);
+    browser.operation = Some(uuid::Uuid::new_v4());
+    ensure!(
+        browser
+            .call(&denied, Method::POST, &path, Some(json!({})))
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    cfg["bindings"][0]["allow_manage_credentials"] = json!(true);
+    cfg["bindings"][0]["allow_enrollment"] = json!(false);
+    let allowed = app(&cfg, reader).await?;
+    browser = Browser::default();
+    ensure!(browser.login(&allowed, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+    let before_read = count()?;
+    let listed = browser.call(&allowed, Method::GET, listing, None).await?;
+    ensure!(
+        count()? == before_read + 1,
+        "registration read must validate Identity online"
+    );
+    ensure!(
+        listed.0 == StatusCode::OK
+            && listed.1["items"][0]["registrationId"] == registration.to_string()
+    );
+    ensure!(listed.1["items"][0]["status"] == "active" && listed.1["nextCursor"].is_null());
+    ensure!(!listed.1.to_string().contains("password") && !listed.1.to_string().contains("secret"));
+    ensure!(
+        browser
+            .call(
+                &allowed,
+                Method::GET,
+                "/api/v1/devices/outside/registrations",
+                None
+            )
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    ensure!(
+        browser
+            .call(
+                &allowed,
+                Method::GET,
+                &format!("{listing}?after={registration}"),
+                None
+            )
+            .await?
+            .1["items"]
+            == json!([])
+    );
+    ensure!(
+        browser
+            .call(
+                &allowed,
+                Method::GET,
+                &format!("{listing}?after=invalid"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
+    );
+    browser.operation = Some(uuid::Uuid::new_v4());
+    for bad in [
+        "/api/v1/enrollments/not-a-uuid/resume",
+        "/api/v1/enrollments/not-a-uuid/cancel",
+        "/api/v1/devices/revoke-device/registrations/not-a-uuid/revoke",
+    ] {
+        let response = browser
+            .call(&allowed, Method::POST, bad, Some(json!({})))
+            .await?;
+        ensure!(response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request");
+    }
+    for body in [None, Some(json!(null)), Some(json!({"unexpected":true}))] {
+        let response = browser.call(&allowed, Method::POST, &path, body).await?;
+        ensure!(response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request");
+    }
+    let cookie = browser
+        .cookies
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let malformed = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-mdm-request", "1")
+        .header("cookie", cookie)
+        .header("x-csrf-token", browser.csrf.as_ref().unwrap())
+        .header("idempotency-key", browser.operation.unwrap().to_string())
+        .header("content-type", "application/json")
+        .body(Body::from("{"))?;
+    let response = allowed.clone().oneshot(malformed).await?;
+    ensure!(response.status() == StatusCode::BAD_REQUEST);
+    let csrf_saved = browser.csrf.take();
+    ensure!(
+        browser
+            .call(&allowed, Method::POST, &path, Some(json!({})))
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    browser.csrf = csrf_saved;
+    let before = count()?;
+    let first = browser
+        .call(&allowed, Method::POST, &path, Some(json!({})))
+        .await?;
+    ensure!(
+        first.0 == StatusCode::OK && count()? == before + 1,
+        "revoke must use online Identity"
+    );
+    ensure!(
+        browser
+            .call(&allowed, Method::POST, &path, Some(json!({})))
+            .await?
+            == first
+    );
+    ensure!(
+        browser.call(&allowed, Method::GET, listing, None).await?.1["items"][0]["status"]
+            == "revoked"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.registrations r JOIN mdm_access.credentials c ON c.tenant_id=r.tenant_id AND c.registration=r.id JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.registration=r.id WHERE r.tenant_id='{TENANT}' AND r.id='{registration}' AND r.state='revoked' AND c.state='revoked' AND NOT s.enabled"
+        ))?.trim() == "1"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{TENANT}' AND operation_id='{}' AND action='credential_revoke' AND result='success'",
+            browser.operation.unwrap()
+        ))?.trim() == "1"
+    );
     Ok(())
 }

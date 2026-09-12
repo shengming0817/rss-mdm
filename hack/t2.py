@@ -6,6 +6,7 @@ if sys.version_info < (3, 11):
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -21,6 +22,15 @@ def require(condition,message):
 def run(args, **kw):
     return subprocess.run(args, check=True, text=True, **kw)
 
+def verify_windows_result(output):
+    expected={
+        'windows::tests::issuance_recovery_and_enrollment_boundaries',
+        'windows::tests::native_tls_enrollment_management_replay_and_revoke',
+    }
+    passed=set(re.findall(r'^test (\S+) \.\.\. ok$',output,re.MULTILINE))
+    require(passed==expected and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in output,
+            'Windows T2 did not execute both required protocol/recovery tests')
+
 def verify_migrations(container, binary, config, root, env):
     def sql(statement):
         return run(["docker", "exec", "-i", container, "psql", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=statement, capture_output=True, timeout=10).stdout.strip()
@@ -34,7 +44,24 @@ def verify_migrations(container, binary, config, root, env):
     admin_config=root/"admin-migrate.json";admin_config.write_text(json.dumps(admin));os.chmod(admin_config,0o600)
     migrate(admin_config,accepted=False)
     require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
+    # Install the unchanged F02/I01 schema and history before applying the new unit.
+    import hashlib
+    sql("SET ROLE mdm_owner; CREATE TABLE public.mdm_migrations(name text PRIMARY KEY,digest text NOT NULL,complete boolean NOT NULL DEFAULT false)")
+    for unit, filename in [('access-v1','0001_access.sql'),('access-audit-request-index-v1','0002_audit_request_index.sql'),('device-identity-v1','0003_device_identity.sql')]:
+        content=(ROOT/'crates/app/migrations'/filename).read_text()
+        sql('SET ROLE mdm_owner; '+content)
+        digest=hashlib.sha256(content.encode()).hexdigest()
+        sql("INSERT INTO public.mdm_migrations VALUES('"+unit+"','"+digest+"',true)")
+    legacy='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    sql(f"INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{legacy}','00000000-0000-4000-8000-000000000001','legacy','mdm','legacy-device','enrollment','available',clock_timestamp()+interval '200 seconds'),('{legacy}','00000000-0000-4000-8000-000000000002','legacy','mdm','legacy-device','enrollment','consumed',clock_timestamp()+interval '200 seconds'); INSERT INTO mdm_access.requests VALUES('{legacy}','00000000-0000-4000-8000-000000000003','00000000-0000-4000-8000-000000000002'); INSERT INTO mdm_access.devices VALUES('{legacy}','legacy-device'); INSERT INTO mdm_access.registrations VALUES('{legacy}','00000000-0000-4000-8000-000000000004','legacy-device','mdm',1,'00000000-0000-4000-8000-000000000003','active'); INSERT INTO mdm_access.credentials VALUES('{legacy}','00000000-0000-4000-8000-000000000005','00000000-0000-4000-8000-000000000004','mdm',repeat('e',64),'active'); INSERT INTO mdm_access.audit(tenant_id,id,request_id,action,result,status) VALUES('{legacy}','00000000-0000-4000-8000-000000000006','00000000-0000-4000-8000-000000000007','registration_accept','success',200); INSERT INTO mdm_access.operations VALUES('{legacy}','legacy','mdm','00000000-0000-4000-8000-000000000008',repeat('e',64),'history');")
+    before=sql(f"SELECT row_to_json(a) FROM mdm_access.audit a WHERE tenant_id='{legacy}'")
     migrate(); migrate()
+    require(sql(f"SELECT count(*) FROM mdm_access.grants WHERE tenant_id='{legacy}' AND state='available'")=='0','legacy grant remains usable')
+    require(sql(f"SELECT state='cancelled' AND issuance_operation IS NULL AND password_digest IS NULL FROM mdm_access.requests WHERE tenant_id='{legacy}'")=='t','legacy request gained enrollment authority')
+    require(sql(f"SELECT state FROM mdm_access.registrations WHERE tenant_id='{legacy}'")=='active','historical registration changed')
+    require(sql(f"SELECT state FROM mdm_access.credentials WHERE tenant_id='{legacy}'")=='active','historical credential changed')
+    require(before==sql(f"SELECT row_to_json(a) FROM mdm_access.audit a WHERE tenant_id='{legacy}'"),'historical audit changed')
+    require(sql(f"SELECT result FROM mdm_access.operations WHERE tenant_id='{legacy}'")=='history','historical operation changed')
     # Force index eligibility on the tiny fixture; this is not a throughput claim.
     plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
     require('request_id' in json.dumps(plan[0]['Plan'].get('Index Cond', '')), 'request-id lookup lacks an index condition')
@@ -62,7 +89,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "7", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "8", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -78,6 +105,7 @@ def verify_startup_deadlines(binary, root, port, env):
     config['database']={'host':'localhost','port':int(port),'name':'mdm_test','user':'mdm_api','password_file':str(root/'api-password'),'ca_file':str(root/'ca.crt')}
     config['access_database']={**config['database'],'user':'mdm_access','password_file':str(root/'access-password')}
     config['identity'].update(oidc_secret_file=str(root/'oidc-secret'),validation_secret_file=str(root/'validation-secret'),ca_file=str(root/'ca.crt'))
+    config["windows"]=json.loads((root/"windows.json").read_text())
     for stage in ['database','identity']:
         with socket.socket() as stalled:
             stalled.bind(('127.0.0.1',0));stalled.listen(8)
@@ -96,6 +124,7 @@ def verify_startup_deadlines(binary, root, port, env):
 
 def main():
     device_only = sys.argv[1:] == ["--device"]
+    windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
     executables = [item["executable"] for line in build.stdout.splitlines() if (item := json.loads(line)).get("reason") == "compiler-artifact" and item.get("executable") and item["target"]["name"] == "rss-mdm-fixture"]
     if len(executables) != 1: raise RuntimeError("cannot locate the tested fixture executable")
@@ -132,17 +161,23 @@ def main():
             migration_config = root / "migrate.json"
             migration_config.write_text(json.dumps({"database":{"host":"localhost","port":int(port),"name":"mdm_test","user":"mdm_owner","password_file":str(root/"owner-password"),"ca_file":str(root/"ca.crt")}}))
             os.chmod(migration_config, 0o600)
+            from windows_fixtures import generate
+            generate(root, root/'server.crt', root/'server.key')
+            env['MDM_WINDOWS_FIXTURES']=str(root)
             verify_migrations(name, migrators[0], migration_config, root, env)
-            if not device_only:
+            if not device_only and not windows_only:
                 verify_startup_deadlines(migrators[0],root,port,env)
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)
-            if not device_only:
+            if not device_only and not windows_only:
                 run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
                 run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
-                run(["cargo","test","--locked","-p","rss-mdm-app","--lib","access_store::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env=env)
             from device_t2 import identities
             with identities(root) as origin:
-                run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
+                windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(windows.stdout,end='',flush=True)
+                require(windows.returncode == 0, 'Windows T2 failed')
+                verify_windows_result(windows.stdout)
+                if not windows_only: run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
         finally:
             primary = sys.exception()
             try:

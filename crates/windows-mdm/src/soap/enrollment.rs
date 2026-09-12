@@ -157,7 +157,11 @@ pub(super) fn validate_discover(d: &Discover, l: &CodecLimits) -> Result<()> {
     for v in [&d.request_version, &d.device_type, &d.application_version] {
         text(v, l.identifier_bytes, false)?;
     }
-    if d.request_version != "4.0" || d.device_type != "CIMClient_Windows" {
+    if !matches!(
+        d.request_version.as_str(),
+        "1.0" | "2.0" | "3.0" | "4.0" | "5.0" | "6.0" | "7.0"
+    ) || d.device_type != "CIMClient_Windows"
+    {
         return Err(E::Unsupported);
     }
     bound(d.auth_policies.len(), 3)?;
@@ -441,14 +445,43 @@ pub(super) fn validate_issue(i: &Issue, l: &CodecLimits) -> Result<()> {
                 return Err(E::Unsupported);
             }
             "DeviceName" | "DeviceID" => text(v, l.identifier_bytes, false)?,
+            "UXInitiated" | "NotInOobe" | "TargetedUserLoggedIn" => {
+                if !matches!(v.as_str(), "true" | "false" | "0" | "1") {
+                    return Err(E::InvalidValue);
+                }
+            }
+            "ZeroTouchProvisioning" => {
+                // A context claim only; never a tenant or enrollment authorization.
+                if v.len() != 36
+                    || !v.bytes().enumerate().all(|(i, b)| {
+                        if [8, 13, 18, 23].contains(&i) {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_hexdigit()
+                        }
+                    })
+                {
+                    return Err(E::InvalidValue);
+                }
+            }
+            "OfflineAutoPilotEnrollmentCorrelator" => {
+                if v.is_empty()
+                    || v.len() > 100
+                    || v.starts_with('-')
+                    || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return Err(E::InvalidValue);
+                }
+            }
             "DeviceType"
             | "EnrollmentType"
             | "EnrollmentData"
             | "MAC"
             | "IMEI"
-            | "TargetedUserLoggedIn"
             | "Locale"
-            | "HWDevID" => {}
+            | "HWDevID"
+            | "DomainName"
+            | "ExternalMgmtAgentHint" => {}
             _ => return Err(E::Unsupported),
         }
     }

@@ -23,7 +23,7 @@
 | `crates/policy` | [不可变版本、生命周期与计划差分](crates/policy/README.md)，独立纯核心 |
 | `crates/inventory` | `rss-mdm-inventory`：资产字段、coverage 和报告校验；不依赖 PostgreSQL 或示例授权 |
 | `crates/inventory-postgres` | `rss-mdm-inventory-postgres`：资产投影、SQL schema 与运行角色/RLS 检查；消费 Inventory 核心和 RSS 公共适配 |
-| `crates/app` | `rss-mdm-app`：唯一生产 binary、OIDC/Identity消费、静态资源授权、HTTP与迁移装配 |
+| `crates/app` | `rss-mdm-app`：唯一生产 binary、OIDC/Identity消费、静态资源授权、Enrollment/签发、HTTPS/mTLS 管理与迁移装配 |
 | `crates/examples` | `rss-mdm-examples`：fixture CLI、受信操作员 scope、组件装配、配置、时钟及关闭；不是生产 MDM 服务 |
 | `tests/inventory-postgres-integration` | 独立真实 PostgreSQL T2 入口；启用 examples 的故障场景支撑 |
 | `tests/test_ci.py`、`hack/` | CI 脚本测试与本地验证入口 |
@@ -42,3 +42,5 @@ app → inventory-postgres/inventory/Identity client；examples → inventory-po
 `rss-mdm-resource`、`rss-mdm-winget-source`、`rss-mdm-brew-source` 分别提供不可变资源、WinGet 元数据和受控 Tap 能力，三个 package 无相互业务依赖。使用与验证见 [指南](docs/guides/202609090000-2383-resource-sources.md)。
 
 管理员接入与生产命令见 [MDM Identity 接入](docs/guides/202609091600-2343-mdm-identity.md)。
+
+Windows 注册与首次管理会话的当前范围、配置和 T3 边界见 [使用指南](docs/guides/202609111146-2350-windows-enrollment-management.md)。

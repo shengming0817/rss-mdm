@@ -1,11 +1,6 @@
 //! One owner for enrollment transactions, operation recovery and persistent audit.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
-use crate::{
-    Error, Failure,
-    access::EnrollmentPermission,
-    audit::Audit,
-    enrollment::{Command, Receipt},
-};
+use crate::{Error, Failure, audit::Audit};
 use sqlx::{
     PgPool, Postgres, Row, Transaction,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -67,113 +62,6 @@ impl AccessStore {
             .await
             .map_err(|_| Error::Unavailable(Failure::Audit))
     }
-    pub(crate) async fn execute(
-        &self,
-        permission: EnrollmentPermission<'_>,
-        key: Uuid,
-        command: Command,
-        audit: &Audit,
-    ) -> Result<Receipt, Error> {
-        command.validate()?;
-        if key.is_nil() || command.device() != permission.device() {
-            return Err(Error::Malformed);
-        }
-        let proof = permission.proof();
-        self.execute_as(
-            Actor {
-                tenant: proof.tenant_id(),
-                subject: proof.subject(),
-                client: proof.client_id(),
-            },
-            key,
-            command,
-            audit,
-        )
-        .await
-    }
-    async fn execute_as(
-        &self,
-        proof: Actor<'_>,
-        key: Uuid,
-        command: Command,
-        audit: &Audit,
-    ) -> Result<Receipt, Error> {
-        let mut tx = self.begin(proof.tenant).await?;
-        let digest = command.digest();
-        let operation = Operation {
-            actor: proof,
-            key,
-            digest: &digest,
-        };
-        if let Some(old) = Self::replay(&mut tx, &operation).await? {
-            let receipt =
-                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
-            tx.rollback().await.map_err(db)?;
-            return Ok(receipt);
-        }
-        let proof = operation.actor;
-        let revoke = matches!(command, Command::Revoke { .. });
-        let receipt = match command {
-            Command::Issue { device_id } => {
-                let id = Uuid::new_v4();
-                let expiry: i64 = sqlx::query_scalar("INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2::uuid,$3,$4,$5,'enrollment','available',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t RETURNING floor(extract(epoch FROM expires_at))::bigint")
-                    .bind(proof.tenant).bind(id.to_string()).bind(proof.subject).bind(proof.client).bind(device_id).fetch_one(&mut *tx).await.map_err(db)?;
-                Receipt {
-                    operation_id: key,
-                    grant_id: id,
-                    request_id: None,
-                    status: "issued".into(),
-                    expires_at: expiry,
-                }
-            }
-            Command::Consume {
-                device_id,
-                grant_id,
-            }
-            | Command::Revoke {
-                device_id,
-                grant_id,
-            } => {
-                let row = sqlx::query("SELECT state,floor(extract(epoch FROM expires_at))::bigint AS expiry FROM mdm_access.grants WHERE tenant_id=$1::uuid AND id=$2::uuid AND actor=$3 AND client=$4 AND device=$5 AND purpose='enrollment' FOR UPDATE")
-                    .bind(proof.tenant).bind(grant_id.to_string()).bind(proof.subject).bind(proof.client).bind(device_id).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
-                let state: String = row.try_get("state").map_err(db)?;
-                if state != "available" {
-                    return Err(Error::Conflict);
-                }
-                let state = if revoke { "revoked" } else { "consumed" };
-                // Evaluate expiration after lock acquisition, never with transaction-start time.
-                let changed = sqlx::query("UPDATE mdm_access.grants SET state=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND ($4 OR expires_at > clock_timestamp())")
-                    .bind(proof.tenant).bind(grant_id.to_string()).bind(state).bind(revoke).execute(&mut *tx).await.map_err(db)?;
-                if changed.rows_affected() != 1 {
-                    return Err(Error::Forbidden);
-                }
-                let request = if revoke {
-                    None
-                } else {
-                    let id = Uuid::new_v4();
-                    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES($1::uuid,$2::uuid,$3::uuid)")
-                        .bind(proof.tenant).bind(id.to_string()).bind(grant_id.to_string()).execute(&mut *tx).await.map_err(db)?;
-                    Some(id)
-                };
-                Receipt {
-                    operation_id: key,
-                    grant_id,
-                    request_id: request,
-                    status: if revoke { "revoked" } else { "accepted" }.into(),
-                    expires_at: row.try_get("expiry").map_err(db)?,
-                }
-            }
-        };
-        self.finish(
-            tx,
-            &operation,
-            &serde_json::to_string(&receipt).expect("closed receipt"),
-            audit,
-            receipt.request_id,
-        )
-        .await?;
-        Ok(receipt)
-    }
     pub(crate) async fn replay(
         tx: &mut Transaction<'_, Postgres>,
         operation: &Operation<'_>,
@@ -230,6 +118,14 @@ impl AccessStore {
         }
         sqlx::query("INSERT INTO mdm_access.operations(tenant_id,actor,operation_id,digest,result,client) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)")
             .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.client).execute(&mut *tx).await.map_err(db)?;
+        self.commit_audited(tx, audit, request).await
+    }
+    pub(crate) async fn commit_audited(
+        &self,
+        mut tx: Transaction<'_, Postgres>,
+        audit: &Audit,
+        request: Option<Uuid>,
+    ) -> Result<(), Error> {
         append(&mut tx, audit, 200, "success", request).await?;
         #[cfg(test)]
         if self
@@ -312,14 +208,18 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND has_schema_privilege(current_user,'mdm_access','USAGE')
- AND (SELECT count(*)=8 AND bool_and(c.relname IN ('grants','requests','operations','audit','devices','registrations','credentials','report_sources') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+ AND (SELECT count(*)=12 AND bool_and(c.relname IN ('grants','requests','operations','audit','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','management_sessions','management_messages') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
  AND (CASE WHEN c.relname <> 'audit' THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')
- AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
- AND has_column_privilege(current_user,'mdm_access.grants','state','UPDATE')
+ AND NOT has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
+ AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
+ AND NOT has_column_privilege(current_user,'mdm_access.grants','state','UPDATE')
+ AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.requests',col,'UPDATE')) FROM unnest(ARRAY['state','password_digest','password_version','session_ref','expires_at']) col)
+ AND has_column_privilege(current_user,'mdm_access.enrollment_certificates','server_nonce','UPDATE')
+ AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.management_sessions',col,'UPDATE')) FROM unnest(ARRAY['state','last_message','correlation','nonce','client_authenticated']) col)
  AND has_column_privilege(current_user,'mdm_access.registrations','state','UPDATE')
  AND has_column_privilege(current_user,'mdm_access.credentials','state','UPDATE')
  AND has_column_privilege(current_user,'mdm_access.report_sources','enabled','UPDATE')
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('grants','registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname='enabled') AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname='enabled' OR c.relname='requests' AND a.attname IN ('state','password_digest','password_version','session_ref','expires_at') OR c.relname='management_sessions' AND a.attname IN ('state','last_message','correlation','nonce','client_authenticated') OR c.relname='enrollment_certificates' AND a.attname='server_nonce') AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute col JOIN pg_class c ON c.oid=col.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(col.attacl) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND (a.is_grantable OR a.privilege_type='REFERENCES'))))
@@ -330,275 +230,17 @@ SELECT current_user='mdm_access' AND session_user=current_user
     if !valid {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
+    // Canonical catalog rendering must not depend on the role's default "$user" search path.
+    sqlx::query("SELECT set_config('search_path','pg_catalog',true)")
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     // Exact tenant policy; extra permissive policies cannot bypass isolation.
     let policies: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)"#).fetch_one(&mut *tx).await.map_err(db)?;
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access'").fetch_one(&mut *tx).await.map_err(db)?;
-    if policies != 8 || total != 8 {
+    let retention: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND (c.relname='management_sessions' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='expires_at<clock_timestamp' OR c.relname='management_messages' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp')"#).fetch_one(&mut *tx).await.map_err(db)?;
+    if policies != 12 || retention != 2 || total != 14 {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::{Connection, Executor, PgConnection, postgres::PgSslMode};
-    const TENANT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    fn actor() -> Actor<'static> {
-        Actor {
-            tenant: TENANT,
-            subject: "administrator",
-            client: "mdm",
-        }
-    }
-    fn audit(key: Uuid, command: &Command) -> Audit {
-        let a = Audit::new(TENANT.into(), command.action());
-        a.operation(key, command.action());
-        a.target(command.device());
-        a.identify_fixture("administrator", "mdm");
-        a
-    }
-    async fn execute(store: &AccessStore, command: Command, key: Uuid) -> Result<Receipt, Error> {
-        let a = audit(key, &command);
-        let result = store.execute_as(actor(), key, command, &a).await;
-        a.finalize(None);
-        result
-    }
-    fn issue() -> Command {
-        Command::Issue {
-            device_id: "device".into(),
-        }
-    }
-    fn consume(id: Uuid) -> Command {
-        Command::Consume {
-            device_id: "device".into(),
-            grant_id: id,
-        }
-    }
-    #[tokio::test]
-    #[ignore = "make t2: real TLS PostgreSQL, production migrations and minimum role"]
-    async fn enrollment_transactions_and_recovery() -> anyhow::Result<()> {
-        let options = std::env::var("DATABASE_URL")?
-            .parse::<PgConnectOptions>()?
-            .username("mdm_access")
-            .password("access-fixture")
-            .ssl_mode(PgSslMode::VerifyFull)
-            .ssl_root_cert(std::env::var("PG_CA_FILE")?);
-        let store = std::sync::Arc::new(AccessStore::connect(options.clone()).await?);
-        let admin_options = std::env::var("MDM_ADMIN_URL")?
-            .parse::<PgConnectOptions>()?
-            .ssl_mode(PgSslMode::VerifyFull)
-            .ssl_root_cert(std::env::var("PG_CA_FILE")?);
-        let mut admin = PgConnection::connect_with(&admin_options).await?;
-        let key = Uuid::new_v4();
-        let issued = execute(&store, issue(), key).await?;
-        assert_eq!(execute(&store, issue(), key).await?, issued);
-        assert!(matches!(
-            execute(
-                &store,
-                Command::Issue {
-                    device_id: "different".into()
-                },
-                key
-            )
-            .await,
-            Err(Error::Conflict)
-        ));
-        let mut tasks = Vec::new();
-        for _ in 0..8 {
-            let store = store.clone();
-            let id = issued.grant_id;
-            tasks.push(tokio::spawn(async move {
-                execute(&store, consume(id), Uuid::new_v4()).await
-            }));
-        }
-        let mut successes = 0;
-        for task in tasks {
-            if task.await?.is_ok() {
-                successes += 1;
-            }
-        }
-        assert_eq!(successes, 1);
-        let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.requests WHERE tenant_id=$1::uuid AND grant_id=$2::uuid").bind(TENANT).bind(issued.grant_id.to_string()).fetch_one(&mut admin).await?;
-        assert_eq!(count, 1);
-        let consumed_audits:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='registration_accept' AND result='success'").bind(TENANT).fetch_one(&mut admin).await?;
-        assert_eq!(consumed_audits, 1);
-        // Real COMMIT succeeds; the caller loses its acknowledgement and restarts.
-        let key = Uuid::new_v4();
-        store.fault.store(2, Ordering::Release);
-        assert!(matches!(
-            execute(&store, issue(), key).await,
-            Err(Error::CommitUnknown)
-        ));
-        let restarted = AccessStore::connect(options.clone()).await?;
-        let recovered = execute(&restarted, issue(), key).await?;
-        assert_eq!(recovered, execute(&restarted, issue(), key).await?);
-        let use_key = Uuid::new_v4();
-        restarted.fault.store(2, Ordering::Release);
-        assert!(matches!(
-            execute(&restarted, consume(recovered.grant_id), use_key).await,
-            Err(Error::CommitUnknown)
-        ));
-        let accepted = execute(&store, consume(recovered.grant_id), use_key).await?;
-        assert_eq!(accepted.status, "accepted");
-        let before_key = Uuid::new_v4();
-        store.fault.store(1, Ordering::Release);
-        assert!(execute(&store, issue(), before_key).await.is_err());
-        assert!(execute(&store, issue(), before_key).await.is_ok());
-        let revoked = execute(&store, issue(), Uuid::new_v4()).await?;
-        let revoke = Command::Revoke {
-            device_id: "device".into(),
-            grant_id: revoked.grant_id,
-        };
-        let revoke_key = Uuid::new_v4();
-        assert_eq!(
-            execute(&store, revoke.clone(), revoke_key).await?.status,
-            "revoked"
-        );
-        assert_eq!(execute(&store, revoke, revoke_key).await?.status, "revoked");
-        assert!(
-            execute(&store, consume(revoked.grant_id), Uuid::new_v4())
-                .await
-                .is_err()
-        );
-        let expired = execute(&store, issue(), Uuid::new_v4()).await?;
-        sqlx::query("UPDATE mdm_access.grants SET created_at=statement_timestamp()-interval '600 seconds',expires_at=statement_timestamp()-interval '300 seconds' WHERE id=$1::uuid").bind(expired.grant_id.to_string()).execute(&mut admin).await?;
-        assert!(
-            execute(&store, consume(expired.grant_id), Uuid::new_v4())
-                .await
-                .is_err()
-        );
-        let live = execute(&store, issue(), Uuid::new_v4()).await?;
-        let command = consume(live.grant_id);
-        let key = Uuid::new_v4();
-        let a = audit(key, &command);
-        for identity in [
-            Actor {
-                tenant: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                ..actor()
-            },
-            Actor {
-                subject: "other",
-                ..actor()
-            },
-            Actor {
-                client: "other",
-                ..actor()
-            },
-        ] {
-            assert!(
-                store
-                    .execute_as(identity, key, command.clone(), &a)
-                    .await
-                    .is_err()
-            );
-        }
-        assert!(
-            execute(
-                &store,
-                Command::Consume {
-                    device_id: "other".into(),
-                    grant_id: live.grant_id
-                },
-                Uuid::new_v4()
-            )
-            .await
-            .is_err()
-        );
-        // Loss of audit INSERT rolls back grants, requests, state and receipts.
-        admin
-            .execute("REVOKE INSERT ON mdm_access.audit FROM mdm_access")
-            .await?;
-        let failed_issue = Uuid::new_v4();
-        let failed_use = Uuid::new_v4();
-        assert!(matches!(
-            execute(&store, issue(), failed_issue).await,
-            Err(Error::Unavailable(Failure::Audit))
-        ));
-        assert!(matches!(
-            execute(&store, consume(live.grant_id), failed_use).await,
-            Err(Error::Unavailable(Failure::Audit))
-        ));
-        assert!(store.record(&a, 403, "denied").await.is_err());
-        assert!(AccessStore::connect(options.clone()).await.is_err());
-        admin
-            .execute("GRANT INSERT ON mdm_access.audit TO mdm_access")
-            .await?;
-        assert_eq!(
-            execute(&store, consume(live.grant_id), failed_use)
-                .await?
-                .status,
-            "accepted"
-        );
-        assert_eq!(
-            execute(&store, issue(), failed_issue).await?.status,
-            "issued"
-        );
-        let cancelled_key = Uuid::new_v4();
-        let lock = format!(
-            "{}:{}:{}:{}",
-            TENANT,
-            "administrator".len(),
-            "administrator",
-            cancelled_key
-        );
-        let mut holding = admin.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2347))")
-            .bind(lock)
-            .execute(&mut *holding)
-            .await?;
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(100),
-                execute(&store, issue(), cancelled_key)
-            )
-            .await
-            .is_err()
-        );
-        holding.rollback().await?;
-        assert!(execute(&store, issue(), cancelled_key).await.is_ok());
-        // Runtime cannot cross tenant or modify audit/history.
-        let mut connection = PgConnection::connect_with(&options).await?;
-        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.grants")
-            .fetch_one(&mut connection)
-            .await?;
-        assert_eq!(visible, 0);
-        for sql in [
-            "SELECT * FROM mdm_access.audit",
-            "DELETE FROM mdm_access.audit",
-            "UPDATE mdm_access.audit SET result='success'",
-            "SELECT * FROM mdm.inventory",
-            "SELECT * FROM public.mdm_migrations",
-        ] {
-            assert!(connection.execute(sql).await.is_err());
-        }
-        for (grant, revoke) in [
-            (
-                "GRANT SELECT ON mdm_access.audit TO mdm_access WITH GRANT OPTION",
-                "REVOKE SELECT ON mdm_access.audit FROM mdm_access",
-            ),
-            (
-                "GRANT UPDATE ON mdm_access.audit TO mdm_access",
-                "REVOKE UPDATE ON mdm_access.audit FROM mdm_access",
-            ),
-            (
-                "GRANT SELECT ON mdm.inventory TO mdm_access",
-                "REVOKE SELECT ON mdm.inventory FROM mdm_access",
-            ),
-            (
-                "ALTER TABLE mdm_access.grants NO FORCE ROW LEVEL SECURITY",
-                "ALTER TABLE mdm_access.grants FORCE ROW LEVEL SECURITY",
-            ),
-        ] {
-            admin.execute(grant).await?;
-            let rejected = AccessStore::connect(options.clone()).await.is_err();
-            admin.execute(revoke).await?;
-            assert!(rejected);
-        }
-        connection.close().await?;
-        admin.close().await?;
-        restarted.close().await;
-        store.close().await;
-        Ok(())
-    }
 }

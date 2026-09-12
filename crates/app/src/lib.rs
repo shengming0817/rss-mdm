@@ -1,3 +1,4 @@
+#![deny(clippy::cognitive_complexity)]
 //! Product-owned OIDC relying party, local session and resource authorization.
 mod access;
 mod access_store;
@@ -6,14 +7,16 @@ pub mod device;
 mod enrollment;
 pub use access_store::AccessStore;
 mod diagnostic;
-pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError};
+pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 mod api;
 pub mod config;
 mod identity;
+#[cfg(test)]
+mod identity_t2;
 mod lifecycle;
 pub mod migration;
 mod sessions;
-pub use api::application;
+pub mod windows;
 use axum::{
     Json,
     http::StatusCode,
@@ -28,7 +31,9 @@ pub enum Error {
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
-    #[error("operation identity or grant state conflict")]
+    #[error("certificate request rejected")]
+    CertificateRequest,
+    #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
     #[error("commit outcome unknown; retry the same operation")]
     CommitUnknown,
@@ -54,6 +59,7 @@ impl IntoResponse for Error {
             Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
             Self::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
+            Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),

@@ -2,12 +2,11 @@
 use crate::{
     AccessStore, ConfigIssue, Failure,
     audit::{Audit, FailureReason, WriteOutcome},
-    enrollment::Command,
+    enrollment::{Create, Resume},
 };
 use crate::{
     Error,
     access::{Coordinates, InventoryResponse, InventoryService, Policy},
-    config::Config,
     identity::Identity,
     sessions::{self, Lease, Sessions},
 };
@@ -26,14 +25,16 @@ use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 const COOKIE: &str = "__Host-mdm-session";
 const BROWSER: &str = "__Host-mdm-login";
-struct App {
-    identity: Identity,
-    sessions: Sessions,
-    policy: Arc<Policy>,
-    inventory: InventoryService,
-    access: Arc<AccessStore>,
-    origin: String,
-    requests: Arc<tokio::sync::Semaphore>,
+pub(crate) struct App {
+    pub(crate) identity: Identity,
+    pub(crate) sessions: Sessions,
+    pub(crate) policy: Arc<Policy>,
+    pub(crate) inventory: InventoryService,
+    pub(crate) devices: Arc<crate::device::DeviceService>,
+    pub(crate) windows: crate::windows::Windows,
+    pub(crate) access: Arc<AccessStore>,
+    pub(crate) origin: String,
+    pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
@@ -76,14 +77,19 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
     }
 }
 
-pub async fn application(
-    config: Config,
+#[cfg(test)]
+pub(crate) async fn application(
+    config: crate::config::Config,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
 ) -> Result<Router, Error> {
-    from_compiled(config.compile()?, clock, monotonic, reader, access).await
+    Ok(
+        from_compiled(config.compile()?, clock, monotonic, reader, access)
+            .await?
+            .browser,
+    )
 }
 pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
@@ -91,7 +97,7 @@ pub(crate) async fn from_compiled(
     monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
-) -> Result<Router, Error> {
+) -> Result<crate::windows::Routers, Error> {
     let crate::config::Compiled { config, policy } = compiled;
     let policy = Arc::new(policy);
     let devices = Arc::new(crate::device::DeviceService::new(
@@ -107,24 +113,39 @@ pub(crate) async fn from_compiled(
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
     let audit_tenant = config.identity.tenant_id.clone();
+    let windows = crate::windows::Windows::load(
+        config.windows,
+        clock
+            .unix_seconds()
+            .map_err(|_| Error::Unavailable(Failure::Clock))?,
+    )?;
     let state = Arc::new(App {
+        windows,
         access: access.clone(),
         identity,
         sessions: Sessions::new(clock, 1000, 10000),
         policy,
-        inventory: InventoryService::new(reader, devices),
+        inventory: InventoryService::new(reader, devices.clone()),
+        devices,
         origin: config.product_origin,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     let protected = Router::new()
-        .route("/enrollment-grants", post(issue_grant))
-        .route("/enrollment-grants/{id}/revoke", post(revoke_grant))
-        .route("/registration-requests", post(register))
+        .route("/enrollments", post(create_enrollment))
+        .route("/enrollments/{id}", get(enrollment_status))
+        .route("/devices/{device}/registrations", get(registrations))
+        .route("/enrollments/{id}/resume", post(resume_enrollment))
+        .route("/enrollments/{id}/cancel", post(cancel_enrollment))
+        .route(
+            "/devices/{device}/registrations/{registration}/revoke",
+            post(revoke_registration),
+        )
         .route("/auth/me", get(me))
         .route("/devices/{id}/inventory", get(inventory))
         .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
-    Ok(Router::new()
+    let (enrollment, management) = crate::windows::routers(state.clone(), monotonic.clone());
+    let browser = Router::new()
         .nest("/api/v1", protected)
         .route("/auth/login", post(login))
         .route(
@@ -143,17 +164,26 @@ pub(crate) async fn from_compiled(
                 tenant: audit_tenant,
             },
             envelope,
-        )))
+        ));
+    Ok(crate::windows::Routers {
+        browser,
+        enrollment,
+        management,
+    })
 }
 
 #[derive(Clone)]
-struct Envelope {
-    host: String,
-    clock: Arc<dyn rss_observation::Clock>,
-    access: Arc<AccessStore>,
-    tenant: String,
+pub(crate) struct Envelope {
+    pub(crate) host: String,
+    pub(crate) clock: Arc<dyn rss_observation::Clock>,
+    pub(crate) access: Arc<AccessStore>,
+    pub(crate) tenant: String,
 }
-async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: Next) -> Response {
+pub(crate) async fn envelope(
+    State(envelope): State<Envelope>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let started = envelope.clock.now();
     let host = &envelope.host;
     let route = request
@@ -162,16 +192,24 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
         .map(|p| p.as_str())
         .unwrap_or("");
     let action = match route {
-        "/api/v1/enrollment-grants" => "grant_issue",
-        "/api/v1/enrollment-grants/{id}/revoke" => "grant_revoke",
-        "/api/v1/registration-requests" => "registration_accept",
+        "/api/v1/enrollments" => "enrollment_create",
+        "/api/v1/enrollments/{id}" => "enrollment_read",
+        "/api/v1/devices/{device}/registrations" => "registration_read",
+        "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
+        "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
+        "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
         "/api/v1/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/actions" => "device_action",
         "/auth/login" | "/auth/callback" | "/api/v1/auth/logout" | "/api/v1/auth/me" => {
             "authentication"
         }
+        "/EnrollmentServer/Discovery.svc" => "windows_discovery",
+        "/EnrollmentServer/Policy.svc" => "windows_policy",
+        "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
+        "/ManagementServer/MDM.svc" => "windows_management",
         _ => "protected_request",
     };
+    let soap = route.starts_with("/EnrollmentServer/");
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
     let audited = request.uri().path() != "/livez";
@@ -204,17 +242,7 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
     .then_some(FailureReason::Transaction);
     if audited && snapshot.write_outcome != WriteOutcome::Committed {
         let status = response.status().as_u16();
-        let result = if snapshot.write_outcome == WriteOutcome::Unknown && status >= 500 {
-            "unknown"
-        } else if status == 401 || status == 403 {
-            "denied"
-        } else if status >= 400 {
-            "failed"
-        } else if snapshot.operation_id.is_some() {
-            "replay"
-        } else {
-            "success"
-        };
+        let result = audit_result(&response, &snapshot);
         {
             let store = &envelope.access;
             if !matches!(
@@ -227,6 +255,15 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
             }
         }
     }
+    if soap
+        && !response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .is_some_and(|v| v.as_bytes().starts_with(b"application/soap+xml"))
+        && let Some(error) = response.extensions().get::<Error>().copied()
+    {
+        response = crate::windows::fault(None, error);
+    }
     if let Some(key) = snapshot.operation_id {
         response.headers_mut().insert(
             "idempotency-key",
@@ -238,6 +275,9 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
         "{}",
         json!({"event":"mdm_request","request_id":request_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
     );
+    secure_response(response, request_id)
+}
+pub(crate) fn secure_response(mut response: Response, request_id: uuid::Uuid) -> Response {
     response.headers_mut().insert(
         "x-request-id",
         HeaderValue::from_str(&request_id.to_string()).expect("UUID header"),
@@ -254,6 +294,30 @@ async fn envelope(State(envelope): State<Envelope>, mut request: Request, next: 
         HeaderValue::from_static("nosniff"),
     );
     response
+}
+fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'static str {
+    let status = response.status().as_u16();
+    if matches!(
+        response.extensions().get::<Error>(),
+        Some(Error::CommitUnknown)
+    ) || snapshot.write_outcome == WriteOutcome::Unknown && status >= 500
+    {
+        "unknown"
+    } else if status == 401
+        || status == 403
+        || matches!(
+            response.extensions().get::<Error>(),
+            Some(Error::Unauthorized | Error::Forbidden)
+        )
+    {
+        "denied"
+    } else if status >= 400 {
+        "failed"
+    } else if snapshot.operation_id.is_some() {
+        "replay"
+    } else {
+        "success"
+    }
 }
 fn cookie_raw(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
     let mut result = None;
@@ -305,7 +369,10 @@ fn local(app: &App, h: &HeaderMap) -> Result<Lease, Error> {
     app.sessions
         .get(&cookie(h, COOKIE)?.ok_or(Error::Unauthorized)?)
 }
-async fn authenticate(app: &App, lease: Lease) -> Result<(VerifiedIdentity, Lease), Error> {
+pub(crate) async fn authenticate(
+    app: &App,
+    lease: Lease,
+) -> Result<(VerifiedIdentity, Lease), Error> {
     let proof = app.identity.validate(&lease).await?;
     app.sessions.get(&lease.id)?; // Reject local logout/replacement during remote verification.
     Ok((proof, lease))
@@ -468,17 +535,6 @@ async fn action(
     Err(Error::Unsupported)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GrantInput {
-    device_id: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RegistrationInput {
-    device_id: String,
-    grant_id: uuid::Uuid,
-}
 fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
     if headers.get_all("idempotency-key").iter().count() != 1 {
         return Err(Error::Malformed);
@@ -495,83 +551,127 @@ fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
     }
     Ok(id)
 }
-async fn enrollment(
-    app: &App,
-    headers: HeaderMap,
-    auth: RequestAuth,
-    audit: Audit,
-    command: Command,
-) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let key = operation_key(&headers)?;
-    audit.operation(key, command.action());
-    command.validate()?;
-    audit.target(command.device());
-    if !sessions::equal(&auth.lease.csrf, csrf(&headers)?) {
+fn write_key(
+    headers: &HeaderMap,
+    auth: &RequestAuth,
+    audit: &Audit,
+    action: &'static str,
+) -> Result<uuid::Uuid, Error> {
+    let key = operation_key(headers)?;
+    audit.operation(key, action);
+    if !sessions::equal(&auth.lease.csrf, csrf(headers)?) {
         return Err(Error::Forbidden);
     }
-    let permit = app.policy.enrollment(&auth.proof, command.device())?;
+    Ok(key)
+}
+async fn create_enrollment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let key = write_key(&headers, &auth, &audit, "enrollment_create")?;
+    let input = input.map_err(|_| Error::Malformed)?.0;
+    let permission = app.policy.enrollment(&auth.proof, &input.device_id)?;
+    audit.target(&input.device_id);
+    let reference = app.sessions.reference(&auth.lease)?;
     app.access
-        .execute(permit, key, command, &audit)
+        .create_enrollment(permission, &input.password, reference, key, &audit)
         .await
         .map(Json)
 }
-async fn issue_grant(
+async fn enrollment_status(
     State(app): State<Arc<App>>,
-    headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    input: Result<Json<GrantInput>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    enrollment(
-        &app,
-        headers,
-        auth,
-        audit,
-        Command::Issue {
-            device_id: input.map_err(|_| Error::Malformed)?.0.device_id,
-        },
-    )
-    .await
+    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+) -> Result<Json<crate::enrollment::read::Status>, Error> {
+    let Path(id) = path.map_err(|_| Error::Malformed)?;
+    let device = app.access.enrollment_target(&auth.proof, id).await?;
+    let permission = app.policy.enrollment(&auth.proof, &device)?;
+    audit.target(&device);
+    app.access.enrollment_status(permission, id).await.map(Json)
 }
-async fn revoke_grant(
+async fn registrations(
     State(app): State<Arc<App>>,
-    headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    Path(id): Path<uuid::Uuid>,
-    input: Result<Json<GrantInput>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    enrollment(
-        &app,
-        headers,
-        auth,
-        audit,
-        Command::Revoke {
-            device_id: input.map_err(|_| Error::Malformed)?.0.device_id,
-            grant_id: id,
-        },
-    )
-    .await
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    query: Result<Query<crate::enrollment::read::Page>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<crate::enrollment::read::Registrations>, Error> {
+    let Path(device) = path.map_err(|_| Error::Malformed)?;
+    let Query(page) = query.map_err(|_| Error::Malformed)?;
+    audit.target(&device);
+    app.access
+        .registration_list(&app.policy, &auth.proof, &device, page)
+        .await
+        .map(Json)
 }
-async fn register(
+async fn resume_enrollment(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    input: Result<Json<RegistrationInput>, axum::extract::rejection::JsonRejection>,
+    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+    input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let Path(id) = path.map_err(|_| Error::Malformed)?;
+    let key = write_key(&headers, &auth, &audit, "enrollment_resume")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
-    enrollment(
-        &app,
-        headers,
-        auth,
-        audit,
-        Command::Consume {
-            device_id: input.device_id,
-            grant_id: input.grant_id,
-        },
-    )
-    .await
+    let device = app.access.enrollment_target(&auth.proof, id).await?;
+    let permission = app.policy.enrollment(&auth.proof, &device)?;
+    audit.target(&device);
+    let reference = app.sessions.reference(&auth.lease)?;
+    app.access
+        .change_enrollment(
+            permission,
+            id,
+            Some((&input.password, reference)),
+            key,
+            &audit,
+        )
+        .await
+        .map(Json)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyRequest {}
+async fn cancel_enrollment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+    input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let Path(id) = path.map_err(|_| Error::Malformed)?;
+    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
+    let key = write_key(&headers, &auth, &audit, "enrollment_cancel")?;
+    let device = app.access.enrollment_target(&auth.proof, id).await?;
+    let permission = app.policy.enrollment(&auth.proof, &device)?;
+    audit.target(&device);
+    app.access
+        .change_enrollment(permission, id, None, key, &audit)
+        .await
+        .map(Json)
+}
+async fn revoke_registration(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
+    input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<crate::device::RevocationReceipt>, Error> {
+    let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
+    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
+    let key = write_key(&headers, &auth, &audit, "credential_revoke")?;
+    audit.target(&device);
+    app.devices
+        .revoke_inner(&auth.proof, &device, registration, key, &audit)
+        .await
+        .map(Json)
 }
 
 #[cfg(test)]
