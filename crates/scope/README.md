@@ -27,8 +27,8 @@ Direct 来源必须恰好包含自己的对象；Group 来源允许完整空集�
 ## 验证与来源
 
 `cargo test --locked -p rss-mdm-scope` 运行集合真值表、解释、排列不变性和失败输入测试。
-`hack/core_consumer.py` 从固定产品 Git SHA 复用 `tests/model.rs`，仅直接消费本产品包，canonical `TenantId` / `Timepoint` 从本包公开重导出取得，
-在仓外分别验证默认与关闭默认 features 的独立 lock、root 唯一普通依赖边、产品包普通/构建依赖闭包和实际行为；结果归本地 CI artifact。
+`hack/core_consumer.py` 从固定产品 Git SHA 复用 `tests/model.rs`，直接消费本产品包及 canonical `TenantId` / `Timepoint` owner，
+在仓外分别验证默认与关闭默认 features 的独立 lock、root 精确普通依赖集合、产品包普通/构建依赖闭包和实际行为；结果归本地 CI artifact。
 
 - Rust 1.90.0 [`BTreeSet`](https://github.com/rust-lang/rust/blob/1.90.0/library/alloc/src/collections/btree/set.rs)：有序集合复用来源。
 - WinMDM 历史 `src/internal/domain/policy/scope_resolver.go`：仅作为公式、直接目标与组展开去重证据；

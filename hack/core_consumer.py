@@ -10,7 +10,7 @@ import tempfile
 
 import ci
 
-CORES = ("scope", "policy")
+CORES = ("scope", "policy", "software-release")
 # Closed capability admission: names are reviewed here; exact versions/sources
 # remain owned by the product Cargo.lock, not a second version inventory.
 SUPPORT = frozenset({
@@ -28,7 +28,8 @@ HASH_SUPPORT = frozenset({
 def verify_closure(data, core, product_source, pin, locked_registry):
     url, rev = pin
     upstream = f"git+{url}?rev={rev}#{rev}"
-    allowed = SUPPORT | (HASH_SUPPORT if core == "rss-mdm-policy" else frozenset())
+    ci.require(core in {f"rss-mdm-{name}" for name in CORES}, "unknown pure core")
+    allowed = SUPPORT | (HASH_SUPPORT if core in ("rss-mdm-policy", "rss-mdm-software-release") else frozenset())
     roots = set(data["workspace_members"])
     ci.require(len(roots) == 1, "consumer must have exactly one workspace member")
     root = next(iter(roots))
@@ -41,8 +42,14 @@ def verify_closure(data, core, product_source, pin, locked_registry):
     core_ids = {p["id"] for p in packages.values() if p["name"] == core}
     ci.require(len(core_ids) == 1, "consumer must resolve exactly one tested core")
     direct = nodes[root]["deps"]
-    ci.require({d["pkg"] for d in direct} == core_ids, "consumer must directly depend only on the tested core")
+    canonical_ids = {p["id"] for p in packages.values() if p["name"] in ("rss-contract", "rss-request-context")}
+    ci.require(len(canonical_ids) == 2, "consumer requires the canonical value owners")
+    ci.require(len(direct) == 3 and {d["pkg"] for d in direct} == core_ids | canonical_ids,
+               "consumer must directly depend on one core and the canonical value owners")
     ci.require(all(d["dep_kinds"] and all(k["kind"] is None and k["target"] is None for k in d["dep_kinds"]) for d in direct), "consumer core edge must be an unconditional normal dependency")
+    core_id = next(iter(core_ids))
+    ci.require(not packages[core_id].get("features", {}) and not nodes[core_id].get("features", []),
+               "pure core features changed: update consumption combinations explicitly")
     # Cargo owns the resolved edges, including renamed and target dependencies.
     # Traverse normal/build edges: proc-macro/build support belongs to the proof.
     reached, pending = set(), list(core_ids)
@@ -103,6 +110,8 @@ def run_consumer(source, base, core, defaults, head, pin, out):
         '[package]', f'name = "{name}-consumer"', 'version = "0.0.0"', 'edition = "2024"',
         '[workspace]', '[dependencies]',
         f'{product} = {{ git = {json.dumps(source.as_uri())}, rev = "{head}", default-features = {str(defaults).lower()} }}',
+        *[f'{owner} = {{ git = {json.dumps(pin[0])}, rev = "{pin[1]}", default-features = false }}'
+          for owner in ("rss-contract", "rss-request-context")],
         '',
     ])
     (root / "Cargo.toml").write_text(manifest)
