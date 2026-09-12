@@ -115,7 +115,7 @@ flowchart LR
 | N06 #2384 WinGet | N01 | `crates/winget-source` | 官方协议 fixtures T1、真实 HTTP T2，不调用 CLI |
 | N07 #2385 Brew | N01 | `crates/brew-source` | Formula/Cask 与模板转义 T1、受控本地 Git T2 |
 | N08 #2386 发布 | N01 | `crates/software-release` | 审批摘要变化、晋级/撤回、非法转换、未知发布恢复 T1 |
-| N09 #2387 Group PG | N02 | `crates/group-postgres`，静态组定义/手工成员与动态规则/成员的专属 migrations/T2 | 静态组 CRUD/批量成员、动态重算与静态成员互不覆盖；状态/事件原子性、并发版本冲突、tenant 隔离、重启/提交未知及借用事务回滚 T2 |
+| N09 #2387 Group PG | N02 | `crates/group-postgres`（已实现；[调用与验证入口](../guides/202609120000-2387-group-postgres.md)），静态组定义/手工成员与动态规则/成员的专属 migrations/T2 | 静态组 CRUD/批量成员、动态重算与静态成员互不覆盖；状态/事件原子性、并发版本冲突、tenant 隔离、重启/提交未知及借用事务回滚 T2 |
 | N10 #2388 Policy PG | N04 | `crates/policy-postgres`，专属 migrations/T2 | 计划/事件原子性、旧版本隔离、回滚/提交未知 T2，不派发 |
 | N11 #2389 发布后端组装 | N05/N06/N07/N08 | `crates/resource-postgres`、`crates/software-release-postgres`，应用骨架的软件源组装模块及 T2 | 真实 PG + 存储/兼容源/Git；外部成功而本地失败或未知时按原身份对账 |
 | N12 #2390 管理 API | N03/N09/N10/N11、#2347/#2348 | 复用 #2343 实际应用骨架（`crates/app` 以实际路径为准）、设备资产映射、Scope 定义/版本/引用历史的应用 repository/迁移、路由/权限/审计/T2 | 真实 PG + HTTP：静态组管理、资产→组→范围→持久计划、资源→审批→源发布；Scope 重启恢复/并发版本更新/tenant 隔离、引用新增与删除竞争、被引用对象删除拒绝、审计失败整体回滚；无端侧派发 |
