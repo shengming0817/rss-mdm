@@ -297,6 +297,11 @@ class CoreConsumerGate(unittest.TestCase):
             bad['resolve']['nodes'][1]['features']=selected
             with self.assertRaises(RuntimeError):
                 core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
+        for owner in ['contract', 'context']:
+            bad=copy.deepcopy(data)
+            next(n for n in bad['resolve']['nodes'] if n['id']==owner)['features']=['default']
+            with self.subTest(canonical_feature_owner=owner),self.assertRaises(RuntimeError):
+                core.verify_closure(bad,'rss-mdm-scope',product,pin,locked)
         for kinds in [[{'kind':'dev','target':None}], [{'kind':'build','target':None}], [{'kind':None,'target':'cfg(windows)'}], []]:
             bad=copy.deepcopy(data)
             bad['resolve']['nodes'][0]['deps'][0]['dep_kinds']=kinds

@@ -50,6 +50,8 @@ def verify_closure(data, core, product_source, pin, locked_registry):
     core_id = next(iter(core_ids))
     ci.require(not packages[core_id].get("features", {}) and not nodes[core_id].get("features", []),
                "pure core features changed: update consumption combinations explicitly")
+    ci.require(all(not nodes[key].get("features", []) for key in canonical_ids),
+               "canonical value owner features must remain disabled")
     # Cargo owns the resolved edges, including renamed and target dependencies.
     # Traverse normal/build edges: proc-macro/build support belongs to the proof.
     reached, pending = set(), list(core_ids)

@@ -13,6 +13,14 @@
 //! use rss_mdm_software_release::{Candidate, Snapshot};
 //! fn bypass(snapshot: Snapshot) -> Candidate { Candidate(snapshot) }
 //! ```
+//! A pending attempt is state, not a report from the backend:
+//! ```compile_fail
+//! use rss_mdm_software_release::{Operation, PublicationId, PublicationOutcome, Ring};
+//! fn pending(id: PublicationId) -> Operation {
+//!     Operation::Record { ring: Ring::Test, publication: id, attempt: 1,
+//!                         outcome: PublicationOutcome::Pending }
+//! }
+//! ```
 #![forbid(unsafe_code)]
 #![warn(clippy::cognitive_complexity)]
 mod fingerprint;

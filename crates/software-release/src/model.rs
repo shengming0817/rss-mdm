@@ -1,25 +1,42 @@
 use crate::{
     ActorId, CandidateId, Digest, Error, PublicationId,
-    identity::{Encoding, checked_name},
+    identity::{Encoding, checked_name, validate_name},
 };
 use rss_contract::Timepoint;
 
-/// Exact source/package/version/platform/architecture/variant, mapped by composition.
+/// Named composition/storage input. SoftwareIdentity::new validates all fields.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SoftwareIdentity([String; 6]);
-impl SoftwareIdentity {
-    pub fn new(parts: [String; 6]) -> Result<Self, Error> {
-        let [source, package, version, platform, architecture, variant] = parts;
-        Ok(Self([
-            checked_name(source)?,
-            checked_name(package)?,
-            checked_name(version)?,
-            checked_name(platform)?,
-            checked_name(architecture)?,
-            checked_name(variant)?,
-        ]))
+pub struct SoftwareIdentityFields {
+    pub source: String,
+    pub package: String,
+    pub version: String,
+    pub platform: String,
+    pub architecture: String,
+    pub variant: String,
+}
+impl SoftwareIdentityFields {
+    fn values(&self) -> [&str; 6] {
+        [
+            &self.source,
+            &self.package,
+            &self.version,
+            &self.platform,
+            &self.architecture,
+            &self.variant,
+        ]
     }
-    pub fn parts(&self) -> &[String; 6] {
+}
+/// Validated exact software identity, immutable after construction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SoftwareIdentity(SoftwareIdentityFields);
+impl SoftwareIdentity {
+    pub fn new(fields: SoftwareIdentityFields) -> Result<Self, Error> {
+        for value in fields.values() {
+            validate_name(value)?;
+        }
+        Ok(Self(fields))
+    }
+    pub fn fields(&self) -> &SoftwareIdentityFields {
         &self.0
     }
 }
@@ -91,7 +108,7 @@ impl Content {
     }
     pub fn digest(&self) -> Digest {
         let mut e = Encoding::new(b"rss-mdm-software-release/content/v1");
-        for part in self.software.parts() {
+        for part in self.software.fields().values() {
             e.bytes(part.as_bytes());
         }
         e.digest(self.description);
@@ -194,9 +211,21 @@ impl Approval {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublicationOutcome {
     Pending,
+    Reported(PublicationResult),
+}
+/// An observation of an external attempt; Pending is not a reportable result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PublicationResult {
     Unknown(Evidence),
     NotApplied(Evidence),
     Applied(Evidence),
+}
+impl PublicationResult {
+    pub fn evidence(&self) -> &Evidence {
+        match self {
+            Self::Unknown(e) | Self::NotApplied(e) | Self::Applied(e) => e,
+        }
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Publication {
@@ -224,7 +253,7 @@ impl RingState {
         matches!(
             self,
             Self::Publication(Publication {
-                outcome: PublicationOutcome::Applied(_),
+                outcome: PublicationOutcome::Reported(PublicationResult::Applied(_)),
                 ..
             })
         )

@@ -3,6 +3,10 @@ use rss_request_context::TenantId;
 use sha2::{Digest as _, Sha256};
 
 pub(crate) fn checked_name(value: String) -> Result<String, Error> {
+    validate_name(&value)?;
+    Ok(value)
+}
+pub(crate) fn validate_name(value: &str) -> Result<(), Error> {
     if value.is_empty()
         || value.len() > 128
         || !value
@@ -14,7 +18,7 @@ pub(crate) fn checked_name(value: String) -> Result<String, Error> {
     {
         return Err(Error::InvalidIdentity);
     }
-    Ok(value)
+    Ok(())
 }
 macro_rules! identities {
     ($($name:ident),+) => { $(

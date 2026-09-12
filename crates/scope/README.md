@@ -4,6 +4,9 @@ N03 / #2381 的纯集合核心。`resolve(&ScopeInput)` 只接受调用方已经
 
 ## 输入与解释
 
+公共输入直接使用 `rss-request-context::TenantId` 和 `rss-contract::Timepoint`；本包不重导出它们。
+调用方须从各自 owner 导入，compile-fail 文档测试保护该边界。
+
 `DeviceId` 与 `GroupId` 是独立角色类型，不能互传；两者包含 canonical `TenantId` 与 1–128 字节的 ASCII 字母、数字、`.`、`_`、`-` 标识。
 `SourceRef` 包含 `SourceId::Direct(DeviceId)` / `Group(GroupId)`、非零来源版本与显式 `Timepoint`。
 同一对象/来源种类/版本的成员必须一致；解析时间是解释依据，不允许据此改变同版本内容。

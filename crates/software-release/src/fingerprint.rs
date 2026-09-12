@@ -57,16 +57,15 @@ pub(crate) fn request(candidate: &CandidateId, request: &Request) -> Digest {
             e.digest(publication.digest());
             e.number(*attempt);
             match outcome {
-                PublicationOutcome::Pending => e.number(0),
-                PublicationOutcome::Unknown(v) => {
+                PublicationResult::Unknown(v) => {
                     e.number(1);
                     encode_evidence(&mut e, v);
                 }
-                PublicationOutcome::NotApplied(v) => {
+                PublicationResult::NotApplied(v) => {
                     e.number(2);
                     encode_evidence(&mut e, v);
                 }
-                PublicationOutcome::Applied(v) => {
+                PublicationResult::Applied(v) => {
                     e.number(3);
                     encode_evidence(&mut e, v);
                 }

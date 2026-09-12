@@ -13,19 +13,21 @@ N11 / #2389 负责 Resource、WinGet/Brew 映射、持久化、外部提交与�
 直接使用 `rss-request-context::TenantId`、`rss-contract::Timepoint`，本包不 re-export。
 `CandidateId`、`RequestId`、`ActorId` 分角色且包含 tenant。身份值、软件身份各项和 artifact key 为 1–128 字节，
 只允许 ASCII 字母、数字及 `._-/+@`，拒绝空路径段与 `.` / `..` 段；它们是内部引用，不接受 URL、凭据或任意正文。
-`SoftwareIdentity::new` 六项依次为 source、package、version、platform、architecture、variant，由组装映射精确身份。
+`SoftwareIdentity::new` 接收具名 `SoftwareIdentityFields`：source、package、version、platform、architecture、variant，
+由组装映射精确身份；验证后的值通过 `fields()` 只读访问。
 `Content` 接收描述、源快照、manifest 和 1–256 个具名产物的 SHA-256；产物按 key 排序，重复 key 拒绝。
 多架构/依赖闭包由调用方完整声明，不由核心发现、下载或执行。
 
 ## 审批与状态
 
-候选只保存一份内容、CAS revision、整体 Disposition 和三个固定环记录。
-RingState 将必要证据放进对应枚举分支；`PublicationOutcome::Applied` 是后端 Published 事实。
+候选只保存一份内容及其生效时间 `content_at`、CAS revision、整体 Disposition 和三个固定环记录。
+调用方通过 `Snapshot::ring_state(Ring)` 读取环记录，无需维护数组索引映射。
+RingState 将必要证据放进对应枚举分支；`is_published()` 仅在后端报告 Applied 时成立。
 整体隔离/弃用与外部发布事实分别保留，不能用一个 status 字段相互覆盖。
 
 | 操作 | 前置与结果 |
 | --- | --- |
-| Validate | 后环要求前环已确认发布，验证时间不能早于前环成功。Passed 进入 Validated；Failed/Unknown 清除有效审批并回到 Candidate。完全相同的验证保留批准。 |
+| Validate | 验证时间不能早于当前内容生效；后环还要求前环已确认发布，且验证时间不能早于前环成功。Passed 进入 Validated；Failed/Unknown 清除有效审批并回到 Candidate。完全相同的验证保留批准。 |
 | Approve | 当前环验证通过；绑定发布者、审批者、分离策略和前环发布身份。默认 Separate；只有显式 AllowSameActor 才允许自审。 |
 | Authorize | 请求主体等于批准的发布者，审批指纹精确匹配。首次返回 Publish；已有 Pending/Unknown 返回 Reconcile；已有 Applied 返回 Updated。 |
 | Replace | 软件身份不能变化。首次授权前内容变化清空验证/审批；任一环已有发布尝试后冻结，包括确认失败的尝试。完全相同内容只确认原内容。 |
@@ -34,7 +36,8 @@ RingState 将必要证据放进对应枚举分支；`PublicationOutcome::Applied
 Test → Pilot → Production 严格顺序，每环重新验证和审批，内容不变。
 审批绑定候选身份、内容指纹、环、验证者、证据摘要/时间、发布者、审批者、分离策略、审批时间及前环发布身份。
 核心不规定证据 TTL、审批人数或认证权威；Passed 是可信调用方声明，不能直接从未验证用户输入映射。
-请求和证据时间使用显式 UTC 秒 Timepoint；新转换时间不倒退，证据不得来自未来或早于其证明的授权/前环事实。
+请求和证据时间使用显式 UTC 秒 Timepoint；新转换时间不倒退，证据不得来自未来或早于其证明的内容/授权/前环事实。
+创建和实际替换内容设置 `content_at`，相同内容不更新时间；restore 同样核对该时间与全部验证链。
 
 ## 幂等和外部恢复
 
@@ -47,7 +50,8 @@ N11 必须查询持久唯一记录，只在确定不存在时传 None；读取�
 `Replayed` 只返回历史 receipt，不带 next 或 Publish，不回滚状态、不重发指令、不解除撤回。
 核心不保存无界请求日志；跨候选的请求唯一性和同软件版本内容唯一性由 N11 持久保护。
 
-PublicationId 从审批指纹规范派生，不依赖请求、重试次数或重试时钟。尝试保留原审批、attempt、authorized_at 和结果：
+PublicationId 从审批指纹规范派生，不依赖请求、重试次数或重试时钟。尝试保留原审批、attempt、authorized_at 和结果。
+`PublicationOutcome` 区分 Pending 与 Reported；`Record` 只接收 `PublicationResult`，不能报告 Pending：
 
 - Pending：已决定发布，不证明外部调用是否开始；恢复或换请求后只对账。
 - Unknown：保留原身份并返回 Reconcile，不转为失败或成功。
@@ -81,7 +85,8 @@ MDM_IDENTITY_CANDIDATE=/absolute/approved-candidate make ci
 
 同一 tests/model.rs 在仓内和仓外 consumer 运行。每个 consumer 显式声明唯一产品包及 canonical 两个值类型 owner，
 使用独立 workspace/配置/lock/target，验证默认/关闭默认 features、精确 Git 身份和普通/构建依赖闭包。
-从产品核心自身遍历闭包，防止 consumer 补齐缺失声明。本地 CI 记录受测 SHA、RSS revision、lock 摘要、features、命令和结果。
+从产品核心自身遍历闭包，防止 consumer 补齐缺失声明；canonical 值类型 owner 的 features 必须为空。
+本地 CI 记录受测 SHA、RSS revision、lock 摘要、features、命令和结果。
 本项新增 T1；N11 实际发布 T2、终端 T3 和 registry 发布不在该证明范围。
 
 ## 来源

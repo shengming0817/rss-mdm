@@ -15,9 +15,14 @@ fn digest(n: u8) -> Digest {
 }
 fn content(n: u8) -> Content {
     Content::new(
-        SoftwareIdentity::new(
-            ["private", "Acme.App", "1.0", "windows", "x64", "msi"].map(str::to_owned),
-        )
+        SoftwareIdentity::new(SoftwareIdentityFields {
+            source: "private".into(),
+            package: "Acme.App".into(),
+            version: "1.0".into(),
+            platform: "windows".into(),
+            architecture: "x64".into(),
+            variant: "msi".into(),
+        })
         .unwrap(),
         digest(1),
         digest(2),
@@ -85,13 +90,10 @@ fn approve(c: &mut Candidate, ring: Ring) -> Digest {
             policy: ActorPolicy::default(),
         },
     );
-    match &c.snapshot().rings[ring_index(ring)] {
+    match c.snapshot().ring_state(ring) {
         RingState::Approved(a) => a.digest(),
         _ => panic!("approval"),
     }
-}
-fn ring_index(ring: Ring) -> usize {
-    Ring::ALL.iter().position(|r| *r == ring).unwrap()
 }
 fn authorized(c: &mut Candidate, ring: Ring) -> Publication {
     validate(c, ring);
@@ -108,7 +110,7 @@ fn authorized(c: &mut Candidate, ring: Ring) -> Publication {
         _ => panic!("publication"),
     }
 }
-fn record(c: &mut Candidate, p: &Publication, outcome: PublicationOutcome) -> Decision {
+fn record(c: &mut Candidate, p: &Publication, outcome: PublicationResult) -> Decision {
     apply(
         c,
         &format!("record-{}", c.snapshot().revision),
@@ -140,7 +142,7 @@ fn approval_changes_and_ring_order() {
         "publisher",
         Operation::Replace(content(5)),
     );
-    assert_eq!(c.snapshot().rings[0], RingState::Candidate);
+    assert_eq!(c.snapshot().ring_state(Ring::Test), &RingState::Candidate);
     assert!(
         c.transition(
             request(
@@ -173,7 +175,7 @@ fn approval_changes_and_ring_order() {
         )
         .is_err()
     );
-    record(&mut c, &p, PublicationOutcome::Applied(evidence()));
+    record(&mut c, &p, PublicationResult::Applied(evidence()));
     let _ = authorized(&mut c, Ring::Pilot);
 }
 #[test]
@@ -181,7 +183,7 @@ fn unknown_requires_reconciliation_and_withdrawal_never_reopens() {
     let mut c = candidate();
     let p = authorized(&mut c, Ring::Test);
     assert!(matches!(
-        record(&mut c, &p, PublicationOutcome::Unknown(evidence())),
+        record(&mut c, &p, PublicationResult::Unknown(evidence())),
         Decision::Reconcile { .. }
     ));
     assert!(
@@ -201,9 +203,9 @@ fn unknown_requires_reconciliation_and_withdrawal_never_reopens() {
         .is_err()
     );
     apply(&mut c, "withdraw", "publisher", Operation::Quarantine);
-    record(&mut c, &p, PublicationOutcome::Applied(evidence()));
+    record(&mut c, &p, PublicationResult::Applied(evidence()));
     assert_eq!(c.snapshot().disposition, Disposition::Quarantined);
-    assert!(c.snapshot().rings[0].is_published());
+    assert!(c.snapshot().ring_state(Ring::Test).is_published());
     assert!(
         c.transition(
             request(
@@ -265,7 +267,7 @@ fn all_rings_require_their_own_evidence_and_approval() {
             assert_eq!(p.approval.predecessor, None);
         }
         ids.push(p.id());
-        record(&mut c, &p, PublicationOutcome::Applied(evidence()));
+        record(&mut c, &p, PublicationResult::Applied(evidence()));
         assert_eq!(Candidate::restore(c.snapshot().clone()).unwrap(), c);
     }
     assert!(c.snapshot().rings.iter().all(RingState::is_published));
@@ -302,7 +304,7 @@ fn actor_policy_is_explicit_and_authorization_requires_the_bound_publisher() {
             policy: ActorPolicy::AllowSameActor,
         },
     );
-    let RingState::Approved(approval) = &c.snapshot().rings[0] else {
+    let RingState::Approved(approval) = c.snapshot().ring_state(Ring::Test) else {
         panic!("approval")
     };
     assert_eq!(
@@ -328,7 +330,7 @@ fn changed_failed_and_unknown_validation_invalidate_approval() {
         let mut c = candidate();
         validate(&mut c, Ring::Test);
         let old = approve(&mut c, Ring::Test);
-        let RingState::Approved(a) = &c.snapshot().rings[0] else {
+        let RingState::Approved(a) = c.snapshot().ring_state(Ring::Test) else {
             panic!()
         };
         let mut changed = a.validation.clone();
@@ -340,7 +342,10 @@ fn changed_failed_and_unknown_validation_invalidate_approval() {
             "validator",
             Operation::Validate(changed),
         );
-        assert!(!matches!(c.snapshot().rings[0], RingState::Approved(_)));
+        assert!(!matches!(
+            *c.snapshot().ring_state(Ring::Test),
+            RingState::Approved(_)
+        ));
         assert!(
             c.transition(
                 request(
@@ -416,8 +421,15 @@ fn every_content_component_is_bound_and_replacement_discards_approval() {
         .unwrap(),
     ];
     for i in 0..6 {
-        let mut parts = base.software().parts().clone();
-        parts[i] = "changed".into();
+        let mut parts = base.software().fields().clone();
+        match i {
+            0 => parts.source = "changed".into(),
+            1 => parts.package = "changed".into(),
+            2 => parts.version = "changed".into(),
+            3 => parts.platform = "changed".into(),
+            4 => parts.architecture = "changed".into(),
+            _ => parts.variant = "changed".into(),
+        }
         alternatives.push(
             Content::new(
                 SoftwareIdentity::new(parts).unwrap(),
@@ -604,7 +616,7 @@ fn new_request_does_not_duplicate_an_outstanding_publication() {
 fn only_confirmed_not_applied_allows_same_identity_retry() {
     let mut c = candidate();
     let p = authorized(&mut c, Ring::Test);
-    record(&mut c, &p, PublicationOutcome::NotApplied(evidence()));
+    record(&mut c, &p, PublicationResult::NotApplied(evidence()));
     let Decision::Publish(retry) = apply(
         &mut c,
         "retry",
@@ -631,14 +643,14 @@ fn only_confirmed_not_applied_allows_same_identity_retry() {
                     ring: Ring::Test,
                     publication: p.id(),
                     attempt: 1,
-                    outcome: PublicationOutcome::Applied(evidence())
+                    outcome: PublicationResult::Applied(evidence())
                 }
             ),
             None
         ),
         Err(Error::IdentityMismatch)
     );
-    record(&mut c, &retry, PublicationOutcome::Applied(evidence()));
+    record(&mut c, &retry, PublicationResult::Applied(evidence()));
     assert_eq!(
         c.transition(
             request(
@@ -649,7 +661,7 @@ fn only_confirmed_not_applied_allows_same_identity_retry() {
                     ring: Ring::Test,
                     publication: p.id(),
                     attempt: 2,
-                    outcome: PublicationOutcome::NotApplied(evidence())
+                    outcome: PublicationResult::NotApplied(evidence())
                 }
             ),
             None
@@ -663,7 +675,7 @@ fn withdrawal_and_deprecation_close_all_write_authorizations() {
     for op in [Operation::Quarantine, Operation::Deprecate] {
         let mut c = candidate();
         let p = authorized(&mut c, Ring::Test);
-        record(&mut c, &p, PublicationOutcome::NotApplied(evidence()));
+        record(&mut c, &p, PublicationResult::NotApplied(evidence()));
         apply(&mut c, "close", "operator", op);
         for denied in [
             Operation::Authorize {
@@ -696,6 +708,10 @@ fn receipt_replay_checks_all_original_inputs_and_cannot_rewind() {
     let mut c = candidate();
     let req = request(&c, "withdraw", "operator", Operation::Quarantine);
     let (receipt, _) = apply(&mut c, "withdraw", "operator", Operation::Quarantine);
+    assert_eq!(
+        receipt.fingerprint,
+        Digest::parse("471b7aab510f8b9c9b5f7ce33fb24c24358d7534687330d725d379a208816498").unwrap()
+    );
     for changed in [
         Request {
             actor: actor("other"),
@@ -778,7 +794,7 @@ fn tenant_identity_and_time_are_checked_at_each_boundary() {
                     ring: Ring::Test,
                     publication: p.id(),
                     attempt: 1,
-                    outcome: PublicationOutcome::Applied(e)
+                    outcome: PublicationResult::Applied(e)
                 }
             ),
             None
@@ -790,13 +806,13 @@ fn tenant_identity_and_time_are_checked_at_each_boundary() {
             ring: Ring::Pilot,
             publication: p.id(),
             attempt: 1,
-            outcome: PublicationOutcome::Applied(evidence()),
+            outcome: PublicationResult::Applied(evidence()),
         },
         Operation::Record {
             ring: Ring::Test,
             publication: PublicationId::from_digest(digest(99)),
             attempt: 1,
-            outcome: PublicationOutcome::Applied(evidence()),
+            outcome: PublicationResult::Applied(evidence()),
         },
     ] {
         assert_eq!(
@@ -816,7 +832,7 @@ fn tenant_identity_and_time_are_checked_at_each_boundary() {
                     ring: Ring::Test,
                     publication: p.id(),
                     attempt: 1,
-                    outcome: PublicationOutcome::Applied(e)
+                    outcome: PublicationResult::Applied(e)
                 }
             ),
             None
@@ -829,7 +845,7 @@ fn tenant_identity_and_time_are_checked_at_each_boundary() {
 fn restored_snapshots_reject_inconsistent_content_stages_and_evidence() {
     let mut c = candidate();
     let p = authorized(&mut c, Ring::Test);
-    record(&mut c, &p, PublicationOutcome::Applied(evidence()));
+    record(&mut c, &p, PublicationResult::Applied(evidence()));
     let _ = authorized(&mut c, Ring::Pilot);
     let base = c.snapshot().clone();
     let mut invalid = Vec::new();
@@ -841,6 +857,13 @@ fn restored_snapshots_reject_inconsistent_content_stages_and_evidence() {
     invalid.push(s);
     let mut s = base.clone();
     s.at = at(1);
+    invalid.push(s);
+    let mut s = base.clone();
+    s.content_at = at(101);
+    invalid.push(s);
+    let mut s = base.clone();
+    s.at = at(101);
+    s.content_at = at(101);
     invalid.push(s);
     let mut s = base.clone();
     s.rings[0] = RingState::Candidate;
@@ -872,7 +895,7 @@ fn restored_snapshots_reject_inconsistent_content_stages_and_evidence() {
         assert!(Candidate::restore(s).is_err());
     }
     let restored = Candidate::restore(base).unwrap();
-    let RingState::Publication(p) = &restored.snapshot().rings[1] else {
+    let RingState::Publication(p) = restored.snapshot().ring_state(Ring::Pilot) else {
         panic!()
     };
     let req = request(
@@ -908,7 +931,7 @@ fn checked_revision_and_attempt_overflow_leave_original_unchanged() {
     assert_eq!(c.snapshot().disposition, Disposition::Active);
     let mut c = candidate();
     let p = authorized(&mut c, Ring::Test);
-    record(&mut c, &p, PublicationOutcome::NotApplied(evidence()));
+    record(&mut c, &p, PublicationResult::NotApplied(evidence()));
     let mut snapshot = c.snapshot().clone();
     if let RingState::Publication(p) = &mut snapshot.rings[0] {
         p.attempt = u64::MAX;
@@ -948,5 +971,236 @@ fn canonical_v1_identity_vectors() {
     assert_eq!(
         p.id().digest(),
         Digest::parse("76877263034156d12bf8f4107d0d9d2fa70d418a7509b7a6529c8c5fadcde772").unwrap()
+    );
+}
+
+#[test]
+fn validation_cannot_predate_candidate_or_current_content() {
+    let mut c = candidate();
+    let validation = |c: &Candidate, when| Validation {
+        candidate: c.snapshot().id.clone(),
+        content: c.snapshot().content.digest(),
+        ring: Ring::Test,
+        evidence: Evidence {
+            actor: actor("validator"),
+            digest: digest(8),
+            at: at(when),
+        },
+        verdict: Verdict::Passed,
+    };
+    assert_eq!(
+        c.transition(
+            request(
+                &c,
+                "too-early",
+                "operator",
+                Operation::Validate(validation(&c, 0))
+            ),
+            None
+        ),
+        Err(Error::InvalidTime)
+    );
+    let mut replace = request(&c, "replace", "publisher", Operation::Replace(content(55)));
+    replace.as_of = at(200);
+    let Transition::Applied { next, .. } = c.transition(replace, None).unwrap() else {
+        panic!()
+    };
+    c = *next;
+    let mut validate = request(
+        &c,
+        "old-verification",
+        "operator",
+        Operation::Validate(validation(&c, 100)),
+    );
+    validate.as_of = at(201);
+    assert_eq!(c.transition(validate, None), Err(Error::InvalidTime));
+    assert_eq!(c.snapshot().content_at, at(200));
+    let mut exact = request(
+        &c,
+        "current-verification",
+        "operator",
+        Operation::Validate(validation(&c, 200)),
+    );
+    exact.as_of = at(201);
+    let Transition::Applied { next, .. } = c.transition(exact, None).unwrap() else {
+        panic!()
+    };
+    assert_eq!(Candidate::restore(next.snapshot().clone()).unwrap(), *next);
+}
+
+fn rejects_changed_operation(c: &Candidate, op: Operation, changes: Vec<Operation>, who: &str) {
+    let req = request(c, "fingerprint", who, op);
+    let Transition::Applied { next, receipt, .. } = c.transition(req.clone(), None).unwrap() else {
+        panic!("first execution")
+    };
+    assert!(matches!(
+        next.transition(req.clone(), Some(&receipt)).unwrap(),
+        Transition::Replayed(_)
+    ));
+    for operation in changes {
+        assert_eq!(
+            next.transition(
+                Request {
+                    operation,
+                    ..req.clone()
+                },
+                Some(&receipt)
+            ),
+            Err(Error::RequestConflict)
+        );
+    }
+}
+
+macro_rules! changed_fields {
+    ($base:expr; $($($field:ident).+ = $value:expr),+ $(,)?) => {
+        vec![$({ let mut changed = $base.clone(); changed.$($field).+ = $value; changed }),+]
+    };
+}
+
+#[test]
+fn request_replay_binds_validation_and_content_fields() {
+    let c = candidate();
+    rejects_changed_operation(
+        &c,
+        Operation::Replace(content(5)),
+        vec![Operation::Replace(content(6))],
+        "publisher",
+    );
+    let v = Validation {
+        candidate: c.snapshot().id.clone(),
+        content: c.snapshot().content.digest(),
+        ring: Ring::Test,
+        evidence: evidence(),
+        verdict: Verdict::Passed,
+    };
+    let foreign = TenantId::parse("20000000-0000-0000-0000-000000000001").unwrap();
+    let changes = changed_fields!(v;
+        candidate = CandidateId::new(tenant(), "other").unwrap(),
+        candidate = CandidateId::new(foreign, "candidate").unwrap(),
+        content = digest(99), ring = Ring::Pilot,
+        evidence.actor = actor("other"),
+        evidence.actor = ActorId::new(foreign, "backend").unwrap(),
+        evidence.digest = digest(99), evidence.at = at(99),
+        verdict = Verdict::Failed, verdict = Verdict::Unknown,
+    );
+    rejects_changed_operation(
+        &c,
+        Operation::Validate(v),
+        changes.into_iter().map(Operation::Validate).collect(),
+        "publisher",
+    );
+}
+
+#[test]
+fn request_replay_binds_approval_and_authorization_fields() {
+    let mut c = candidate();
+    validate(&mut c, Ring::Test);
+    let approve_op = |ring, publisher, policy| Operation::Approve {
+        ring,
+        publisher,
+        policy,
+    };
+    let foreign = TenantId::parse("20000000-0000-0000-0000-000000000001").unwrap();
+    rejects_changed_operation(
+        &c,
+        approve_op(Ring::Test, actor("publisher"), ActorPolicy::Separate),
+        vec![
+            approve_op(Ring::Pilot, actor("publisher"), ActorPolicy::Separate),
+            approve_op(Ring::Test, actor("other"), ActorPolicy::Separate),
+            approve_op(
+                Ring::Test,
+                ActorId::new(foreign, "publisher").unwrap(),
+                ActorPolicy::Separate,
+            ),
+            approve_op(Ring::Test, actor("publisher"), ActorPolicy::AllowSameActor),
+        ],
+        "approver",
+    );
+    let approval = approve(&mut c, Ring::Test);
+    rejects_changed_operation(
+        &c,
+        Operation::Authorize {
+            ring: Ring::Test,
+            approval,
+        },
+        vec![
+            Operation::Authorize {
+                ring: Ring::Pilot,
+                approval,
+            },
+            Operation::Authorize {
+                ring: Ring::Test,
+                approval: digest(99),
+            },
+        ],
+        "publisher",
+    );
+}
+
+#[test]
+fn request_replay_binds_retry_and_each_external_result_field() {
+    let mut c = candidate();
+    let p = authorized(&mut c, Ring::Test);
+    let record_op = |ring, publication, attempt, outcome| Operation::Record {
+        ring,
+        publication,
+        attempt,
+        outcome,
+    };
+    let foreign = TenantId::parse("20000000-0000-0000-0000-000000000001").unwrap();
+    for result in [
+        PublicationResult::Unknown,
+        PublicationResult::NotApplied,
+        PublicationResult::Applied,
+    ] {
+        let e = evidence();
+        let mut changes = changed_fields!(e;
+            actor = actor("other"), actor = ActorId::new(foreign, "backend").unwrap(),
+            digest = digest(99), at = at(99),
+        )
+        .into_iter()
+        .map(|e| record_op(Ring::Test, p.id(), 1, result(e)))
+        .collect::<Vec<_>>();
+        changes.extend([
+            record_op(Ring::Pilot, p.id(), 1, result(e.clone())),
+            record_op(
+                Ring::Test,
+                PublicationId::from_digest(digest(99)),
+                1,
+                result(e.clone()),
+            ),
+            record_op(Ring::Test, p.id(), 2, result(e.clone())),
+        ]);
+        for other in [
+            PublicationResult::Unknown(e.clone()),
+            PublicationResult::NotApplied(e.clone()),
+            PublicationResult::Applied(e.clone()),
+        ] {
+            if other != result(e.clone()) {
+                changes.push(record_op(Ring::Test, p.id(), 1, other));
+            }
+        }
+        rejects_changed_operation(
+            &c,
+            record_op(Ring::Test, p.id(), 1, result(e)),
+            changes,
+            "service",
+        );
+    }
+    record(&mut c, &p, PublicationResult::NotApplied(evidence()));
+    let retry = |ring, publication, attempt| Operation::Retry {
+        ring,
+        publication,
+        attempt,
+    };
+    rejects_changed_operation(
+        &c,
+        retry(Ring::Test, p.id(), 1),
+        vec![
+            retry(Ring::Pilot, p.id(), 1),
+            retry(Ring::Test, PublicationId::from_digest(digest(99)), 1),
+            retry(Ring::Test, p.id(), 2),
+        ],
+        "publisher",
     );
 }

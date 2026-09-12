@@ -7,6 +7,9 @@ Scope 到 Policy 的设备身份由 N12 在明确映射点按 canonical tenant �
 
 ## 生命周期和快照
 
+公共输入直接使用 `rss-request-context::TenantId` 和 `rss-contract::Timepoint`；本包不重导出它们。
+调用方须从各自 owner 导入，compile-fail 文档测试保护该边界。
+
 `Policy::draft` 创建 revision 0；`transition(expected_revision, operation)` 返回新快照：
 Draft → Active ↔ Paused；Active/Paused → Archived；归档终态。
 Activate 可选择更高版本并进入 Active，Resume 只恢复原版本。

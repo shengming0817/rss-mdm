@@ -23,7 +23,7 @@ pub enum Operation {
         ring: Ring,
         publication: PublicationId,
         attempt: u64,
-        outcome: PublicationOutcome,
+        outcome: PublicationResult,
     },
     Quarantine,
     Deprecate,
@@ -70,9 +70,15 @@ pub struct Snapshot {
     pub id: CandidateId,
     pub revision: u64,
     pub at: Timepoint,
+    pub content_at: Timepoint,
     pub content: Content,
     pub disposition: Disposition,
     pub rings: [RingState; 3],
+}
+impl Snapshot {
+    pub fn ring_state(&self, ring: Ring) -> &RingState {
+        &self.rings[ring.index()]
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Candidate(Snapshot);
@@ -83,6 +89,7 @@ impl Candidate {
             content,
             revision: 0,
             at: as_of,
+            content_at: as_of,
             disposition: Disposition::Active,
             rings: [
                 RingState::Candidate,
@@ -188,7 +195,12 @@ impl Candidate {
             return Ok(None);
         }
         match &self.0.rings[ring.index() - 1] {
-            RingState::Publication(p) if matches!(p.outcome, PublicationOutcome::Applied(_)) => {
+            RingState::Publication(p)
+                if matches!(
+                    p.outcome,
+                    PublicationOutcome::Reported(PublicationResult::Applied(_))
+                ) =>
+            {
                 Ok(Some(p))
             }
             _ => Err(Error::PromotionBlocked),
@@ -201,10 +213,14 @@ impl Candidate {
         }
         let predecessor = self.predecessor(ring)?;
         let earliest = predecessor.and_then(|p| match &p.outcome {
-            PublicationOutcome::Applied(e) => Some(e.at),
+            PublicationOutcome::Reported(PublicationResult::Applied(e)) => Some(e.at),
             _ => None,
         });
-        self.evidence(&v.evidence, earliest, at)
+        self.evidence(
+            &v.evidence,
+            Some(earliest.map_or(self.0.content_at, |t| t.max(self.0.content_at))),
+            at,
+        )
     }
     fn approval(&self, approval: &Approval, ring: Ring, at: Timepoint) -> Result<(), Error> {
         self.validation(&approval.validation, ring, approval.at)?;
@@ -225,6 +241,10 @@ impl Candidate {
         Ok(())
     }
     fn check_snapshot(&self) -> Result<(), Error> {
+        if self.0.content_at > self.0.at || (self.0.revision == 0 && self.0.content_at != self.0.at)
+        {
+            return Err(Error::InvalidTime);
+        }
         if self.0.revision == 0
             && (self.0.disposition != Disposition::Active
                 || self.0.rings
@@ -290,6 +310,7 @@ impl Candidate {
                         return Err(Error::ContentFrozen);
                     }
                     self.0.content = content.clone();
+                    self.0.content_at = request.as_of;
                     self.0.rings = [
                         RingState::Candidate,
                         RingState::NotStarted,
@@ -392,14 +413,19 @@ impl Candidate {
         }
         if let RingState::Publication(p) = &self.0.rings[ring.index()] {
             return match p.outcome {
-                PublicationOutcome::Pending | PublicationOutcome::Unknown(_) => {
+                PublicationOutcome::Pending
+                | PublicationOutcome::Reported(PublicationResult::Unknown(_)) => {
                     Ok(Decision::Reconcile {
                         publication: p.id(),
                         attempt: p.attempt,
                     })
                 }
-                PublicationOutcome::Applied(_) => Ok(Decision::Updated),
-                PublicationOutcome::NotApplied(_) => Err(Error::ReconciliationRequired),
+                PublicationOutcome::Reported(PublicationResult::Applied(_)) => {
+                    Ok(Decision::Updated)
+                }
+                PublicationOutcome::Reported(PublicationResult::NotApplied(_)) => {
+                    Err(Error::ReconciliationRequired)
+                }
             };
         }
         let publication = Publication {
@@ -422,7 +448,10 @@ impl Candidate {
         if publication.approval.publisher != request.actor {
             return Err(Error::ActorConstraint);
         }
-        if !matches!(publication.outcome, PublicationOutcome::NotApplied(_)) {
+        if !matches!(
+            publication.outcome,
+            PublicationOutcome::Reported(PublicationResult::NotApplied(_))
+        ) {
             return Err(Error::ReconciliationRequired);
         }
         publication.attempt = publication.attempt.checked_add(1).ok_or(Error::Overflow)?;
@@ -446,10 +475,10 @@ impl Candidate {
         ring: Ring,
         id: PublicationId,
         attempt: u64,
-        outcome: &PublicationOutcome,
+        outcome: &PublicationResult,
         at: Timepoint,
     ) -> Result<Decision, Error> {
-        let evidence = outcome_evidence(outcome).ok_or(Error::InvalidTransition)?;
+        let evidence = outcome.evidence();
         self.evidence(evidence, None, at)?;
         let publication = self.publication_mut(ring, id, attempt)?;
         if evidence.at < publication.authorized_at
@@ -458,13 +487,14 @@ impl Candidate {
             return Err(Error::InvalidTime);
         }
         match &publication.outcome {
-            PublicationOutcome::Pending | PublicationOutcome::Unknown(_) => {
-                publication.outcome = outcome.clone()
+            PublicationOutcome::Pending
+            | PublicationOutcome::Reported(PublicationResult::Unknown(_)) => {
+                publication.outcome = PublicationOutcome::Reported(outcome.clone())
             }
-            terminal if terminal == outcome => (),
+            PublicationOutcome::Reported(terminal) if terminal == outcome => (),
             _ => return Err(Error::ResultConflict),
         }
-        if matches!(outcome, PublicationOutcome::Unknown(_)) {
+        if matches!(outcome, PublicationResult::Unknown(_)) {
             Ok(Decision::Reconcile {
                 publication: id,
                 attempt,
@@ -477,8 +507,6 @@ impl Candidate {
 fn outcome_evidence(outcome: &PublicationOutcome) -> Option<&Evidence> {
     match outcome {
         PublicationOutcome::Pending => None,
-        PublicationOutcome::Unknown(e)
-        | PublicationOutcome::NotApplied(e)
-        | PublicationOutcome::Applied(e) => Some(e),
+        PublicationOutcome::Reported(result) => Some(result.evidence()),
     }
 }
