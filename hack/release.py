@@ -43,6 +43,16 @@ def oci_identity(path):
 def build(out, header):
     if out.exists():
         raise ValueError("candidate output must be new")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".mdm-candidate-", dir=out.parent) as temporary:
+        staged = Path(temporary) / "candidate"
+        build_staged(staged, header)
+        staged.rename(out)
+    print("candidate: " + str(out / "candidate.json"))
+
+def build_staged(out, header):
+    if out.exists():
+        raise ValueError("candidate output must be new")
     if header.is_symlink() or not header.is_file() or header.stat().st_mode & 0o077:
         raise ValueError("Git authorization header must be a private regular file")
     if run(["/usr/bin/git", "status", "--porcelain"], cwd=ROOT):
@@ -99,8 +109,6 @@ def build(out, header):
             raise ValueError("source changed during candidate build")
         (out / "candidate.json").write_text(json.dumps(manifest, indent=2) + "\n")
         shutil.copy(source / "fixtures/mdm-config.example.json", out / "mdm-config.example.json")
-    print("candidate: " + str(out / "candidate.json"))
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)

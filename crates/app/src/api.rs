@@ -701,9 +701,11 @@ async fn collection_run(
     State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    Path((device, run)): Path<(String, uuid::Uuid)>,
-    Query(coordinates): Query<Coordinates>,
+    path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
+    query: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<crate::access::CollectionResponse>, Error> {
+    let Path((device, run)) = path.map_err(|_| Error::Malformed)?;
+    let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
     audit.target(&device);
     audit.operation(run, "collection_read");
     let grant = app.policy.inventory(&auth.proof, &device, coordinates)?;

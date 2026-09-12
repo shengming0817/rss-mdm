@@ -1587,6 +1587,14 @@ async fn immutable_candidate_inventory_query() -> Result<()> {
     ensure!(
         run["delivery"]["receipt"].is_null() && run["delivery"]["projection"] == "not_applicable"
     );
+    for malformed in [
+        path.replace(&run_id.to_string(), "invalid-uuid"),
+        path.replace("mdm.windows", "unknown"),
+        format!("{path}&channel=mdm"),
+    ] {
+        let (status, body) = browser.call(&target, Method::GET, &malformed, None).await?;
+        ensure!(status == StatusCode::BAD_REQUEST && body["code"] == "malformed_request");
+    }
     ensure!(browser.call(&target, Method::GET, "/api/v1/devices/device-1/collection-runs/99999999-9999-4999-8999-999999999999?source=mdm.windows", None).await?.0 == StatusCode::NOT_FOUND);
     println!(
         "candidate authenticated inventory query, source contract, permission and run absence passed"
