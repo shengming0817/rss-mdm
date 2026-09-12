@@ -48,9 +48,7 @@ def smoke(directory):
         settings["listen"] = "127.0.0.1:18080"
         settings["windows"]["enrollment"].update(listen="127.0.0.1:18443", origin="https://localhost:18443")
         settings["windows"]["management"].update(listen="127.0.0.1:18444", origin="https://localhost:18444")
-        settings["bindings"] = [{"tenant_id": identity.TENANT, "client_id": "mdm", "subject": identity.ADMIN,
-                                 "roles": ["mdm_admin"], "devices": ["device-1"], "allow_wipe": False,
-                                 "allow_enrollment": False, "allow_manage_credentials": False}]
+        settings["bindings"] = []
         migration = {"database": {**settings["database"], "user": "mdm_owner", "password_file": "/run/mdm/mdm-owner"}}
         for name, value in [("candidate-config.json", settings), ("candidate-migrate.json", migration)]:
             path = fixture / name
@@ -83,9 +81,24 @@ def smoke(directory):
             identity.docker("run", "-d", "--name", server, *common, image, "serve", "--config", "/run/mdm/candidate-config.json")
             identity.wait(lambda: health(port, "/livez") == {"alive": True}, "candidate liveness", seconds=30)
             identity.wait(lambda: health(port, "/readyz") == {"ready": True}, "candidate readiness", seconds=30)
-            output = identity.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib",
-                                   "identity_t2::immutable_candidate_inventory_query", "--", "--ignored", "--nocapture"],
-                                  cwd=ROOT, env={**environment, "MDM_CANDIDATE_HTTP_ORIGIN": "http://127.0.0.1:" + str(port)},
+            command = ["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib",
+                       "identity_t2::immutable_candidate_inventory_query", "--", "--ignored", "--nocapture"]
+            query_environment = {**environment, "MDM_CANDIDATE_HTTP_ORIGIN": "http://127.0.0.1:" + str(port)}
+            subject_file = fixture / "candidate-subject"
+            identity.run(command, cwd=ROOT, env={**query_environment, "MDM_CANDIDATE_SUBJECT_OUTPUT": str(subject_file)},
+                         test_output=True, stage="candidate product subject")
+            settings["bindings"] = [{"tenant_id": identity.TENANT, "client_id": "mdm", "subject": subject_file.read_text(),
+                                     "roles": ["mdm_admin"], "devices": ["device-1"], "allow_wipe": False,
+                                     "allow_enrollment": False, "allow_manage_credentials": False}]
+            # Bind the public product subject returned by the actual authenticated candidate.
+            identity.docker("stop", "--time", "45", server, timeout=55)
+            (fixture / "candidate-config.json").write_text(json.dumps(settings))
+            identity.docker("run", "--rm", "--user", "0:0", "--network", "none", "-v", str(fixture) + ":/fixture:ro",
+                            "-v", volume + ":/run/mdm", "--entrypoint", "sh", manifest["providers"]["runtime"], "-ec",
+                            "cp /fixture/candidate-config.json /run/mdm/; chown 10001:10001 /run/mdm/candidate-config.json; chmod 600 /run/mdm/candidate-config.json")
+            identity.docker("start", server)
+            identity.wait(lambda: health(port, "/readyz") == {"ready": True}, "candidate configured readiness", seconds=30)
+            output = identity.run(command, cwd=ROOT, env=query_environment,
                                   test_output=True, stage="candidate authenticated query")
             if "test result: ok. 1 passed; 0 failed; 0 ignored;" not in output:
                 raise RuntimeError("candidate query test did not execute")

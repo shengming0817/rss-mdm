@@ -1484,6 +1484,19 @@ async fn immutable_candidate_inventory_query() -> Result<()> {
     };
     let target = Router::new();
     ensure!(browser.login(&target, &web, &origin, &csrf).await? == StatusCode::SEE_OTHER);
+    if let Ok(output) = std::env::var("MDM_CANDIDATE_SUBJECT_OUTPUT") {
+        let (status, me) = browser
+            .call(&target, Method::GET, "/api/v1/auth/me", None)
+            .await?;
+        ensure!(status == StatusCode::OK && me["roles"] == json!([]));
+        std::fs::write(
+            output,
+            me["subject"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing product subject"))?,
+        )?;
+        return Ok(());
+    }
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
     let scope = crate::device::scope(
         rss_request_context::TenantId::parse(TENANT)?,
@@ -1500,7 +1513,10 @@ async fn immutable_candidate_inventory_query() -> Result<()> {
     let query = "/api/v1/devices/device-1/inventory?source=mdm.windows";
     let before = count()?;
     let (status, value) = browser.call(&target, Method::GET, query, None).await?;
-    ensure!(status == StatusCode::OK && value["availability"] == "unavailable");
+    ensure!(
+        status == StatusCode::OK && value["availability"] == "unavailable",
+        "candidate inventory status: {status}"
+    );
     ensure!(
         count()? == before + 1,
         "candidate skipped online Identity validation"
