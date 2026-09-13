@@ -12,6 +12,8 @@ test:
 t2:
 	python3 hack/t2.py
 	python3 hack/group-t2.py
+	python3 hack/backend-t2.py
+	python3 hack/publication-t2.py
 
 .PHONY: source-t2 source-consumers
 source-t2:
@@ -27,3 +29,11 @@ t2-identity:
 .PHONY: t2-group
 t2-group:
 	python3 hack/group-t2.py
+
+.PHONY: t2-backend t2-publication backend-consumers
+t2-backend:
+	python3 hack/backend-t2.py
+t2-publication:
+	python3 hack/publication-t2.py
+backend-consumers:
+	python3 hack/backend_postgres_consumer.py

@@ -21,3 +21,5 @@
 
 - [Windows 资产采集与查询](202609120000-2352-windows-inventory.md)（#2352/#2353）：CollectionRun、恢复、质量和查询契约。
 - [Group PostgreSQL](202609120000-2387-group-postgres.md)：持久输入、版本 CAS、原子事件、恢复与独立 PG 消费。
+
+- [Policy / Resource / 发布持久化](202609132008-2388-2389-backend-persistence.md)：三个独立 PG adapter、公开产物、源发布/撤回与原身份恢复。

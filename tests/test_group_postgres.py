@@ -61,3 +61,28 @@ class GroupPostgresGuards(unittest.TestCase):
         altered['packages'].append({'id': 'other', 'name': 'rss-mdm-inventory', 'version': '1.0.0', 'source': source})
         altered['resolve']['nodes'].append({'id': 'other', 'features': [], 'deps': []})
         with self.assertRaises(RuntimeError): consumer.verify_closure(altered, source, pin, locked)
+
+    def test_backend_capabilities_enforce_their_own_core_and_source(self):
+        import json
+        for capability in ('policy', 'resource', 'software-release'):
+            with self.subTest(capability=capability):
+                data, source, pin, locked = self.fixture()
+                data = json.loads(json.dumps(data).replace('rss-mdm-group', 'rss-mdm-' + capability))
+                consumer.verify_closure(data, source, pin, locked, capability)
+                products = {f'rss-mdm-{capability}', f'rss-mdm-{capability}-postgres'}
+                tree = '\n'.join(f'{name} v1.0.0' for name in products | consumer.RSS | {'sqlx-postgres'})
+                consumer.verify_active_tree(tree, capability)
+                altered = copy.deepcopy(data)
+                next(p for p in altered['packages'] if p['name'] == f'rss-mdm-{capability}')['source'] = 'path+file:///parent'
+                with self.assertRaises(RuntimeError): consumer.verify_closure(altered, source, pin, locked, capability)
+                altered = json.loads(json.dumps(data).replace(f'rss-mdm-{capability}\"', 'rss-mdm-inventory\"'))
+                with self.assertRaises(RuntimeError): consumer.verify_closure(altered, source, pin, locked, capability)
+
+    def test_backend_proofs_require_every_named_behavior(self):
+        import backend_postgres_consumer as backend
+        for names in backend.pg.CONSUMERS.values():
+            valid = '\n'.join(f'test {name} ... ok' for name in names)
+            valid += f'\ntest result: ok. {len(names)} passed; 0 failed; 0 ignored;'
+            backend.pg.verify_tests(valid, names)
+            for invalid in ('', valid.replace(' ... ok', ' ... ignored', 1), valid.replace('0 ignored;', '1 ignored;')):
+                with self.assertRaises(RuntimeError): backend.pg.verify_tests(invalid, names)

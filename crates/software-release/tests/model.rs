@@ -20,14 +20,19 @@ fn content(n: u8) -> Content {
             package: "Acme.App".into(),
             version: "1.0".into(),
             platform: "windows".into(),
-            architecture: "x64".into(),
-            variant: "msi".into(),
         })
         .unwrap(),
         digest(1),
         digest(2),
         digest(3),
-        vec![Artifact::new("installer", digest(n)).unwrap()],
+        vec![
+            VariantContent::new(
+                "x64",
+                "msi",
+                vec![Artifact::new("installer", digest(n)).unwrap()],
+            )
+            .unwrap(),
+        ],
     )
     .unwrap()
 }
@@ -391,7 +396,7 @@ fn every_content_component_is_bound_and_replacement_discards_approval() {
             digest(99),
             base.source_snapshot(),
             base.manifest(),
-            base.artifacts().to_vec(),
+            base.variants().to_vec(),
         )
         .unwrap(),
         Content::new(
@@ -399,7 +404,7 @@ fn every_content_component_is_bound_and_replacement_discards_approval() {
             base.description(),
             digest(99),
             base.manifest(),
-            base.artifacts().to_vec(),
+            base.variants().to_vec(),
         )
         .unwrap(),
         Content::new(
@@ -407,7 +412,7 @@ fn every_content_component_is_bound_and_replacement_discards_approval() {
             base.description(),
             base.source_snapshot(),
             digest(99),
-            base.artifacts().to_vec(),
+            base.variants().to_vec(),
         )
         .unwrap(),
         content(99),
@@ -416,19 +421,24 @@ fn every_content_component_is_bound_and_replacement_discards_approval() {
             base.description(),
             base.source_snapshot(),
             base.manifest(),
-            vec![Artifact::new("other-key", digest(4)).unwrap()],
+            vec![
+                VariantContent::new(
+                    "x64",
+                    "msi",
+                    vec![Artifact::new("other-key", digest(4)).unwrap()],
+                )
+                .unwrap(),
+            ],
         )
         .unwrap(),
     ];
-    for i in 0..6 {
+    for i in 0..4 {
         let mut parts = base.software().fields().clone();
         match i {
             0 => parts.source = "changed".into(),
             1 => parts.package = "changed".into(),
             2 => parts.version = "changed".into(),
-            3 => parts.platform = "changed".into(),
-            4 => parts.architecture = "changed".into(),
-            _ => parts.variant = "changed".into(),
+            _ => parts.platform = "changed".into(),
         }
         alternatives.push(
             Content::new(
@@ -436,7 +446,7 @@ fn every_content_component_is_bound_and_replacement_discards_approval() {
                 base.description(),
                 base.source_snapshot(),
                 base.manifest(),
-                base.artifacts().to_vec(),
+                base.variants().to_vec(),
             )
             .unwrap(),
         );
@@ -481,13 +491,15 @@ fn canonical_order_and_input_budgets() {
     let a = Artifact::new("a", digest(1)).unwrap();
     let z = Artifact::new("z", digest(2)).unwrap();
     let create = |items| {
-        Content::new(
-            b.software().clone(),
-            b.description(),
-            b.source_snapshot(),
-            b.manifest(),
-            items,
-        )
+        VariantContent::new("x64", "msi", items).and_then(|v| {
+            Content::new(
+                b.software().clone(),
+                b.description(),
+                b.source_snapshot(),
+                b.manifest(),
+                vec![v],
+            )
+        })
     };
     assert_eq!(
         create(vec![a.clone(), z.clone()]),
@@ -710,7 +722,7 @@ fn receipt_replay_checks_all_original_inputs_and_cannot_rewind() {
     let (receipt, _) = apply(&mut c, "withdraw", "operator", Operation::Quarantine);
     assert_eq!(
         receipt.fingerprint,
-        Digest::parse("471b7aab510f8b9c9b5f7ce33fb24c24358d7534687330d725d379a208816498").unwrap()
+        Digest::parse("f28ecb659b9a8bcac43417e67f1962acb7181d7210c98e034dc39923650846c1").unwrap()
     );
     for changed in [
         Request {
@@ -956,21 +968,21 @@ fn checked_revision_and_attempt_overflow_leave_original_unchanged() {
 }
 
 #[test]
-fn canonical_v1_identity_vectors() {
+fn canonical_v2_identity_vectors() {
     // Independently encoded using length-prefixed bytes and big-endian u64 values.
     let mut c = candidate();
     assert_eq!(
         c.snapshot().content.digest(),
-        Digest::parse("7775bcf4d8e000ffbb627b6caa86ef22c13f7a14cf2178ff0eee8b073b8ce5a0").unwrap()
+        Digest::parse("d58d9d63d368186d4d07674b38a2572c01fff4b533edd8a8b444ee198977d7f2").unwrap()
     );
     let p = authorized(&mut c, Ring::Test);
     assert_eq!(
         p.approval.digest(),
-        Digest::parse("bb476bd762cd2f310438641ff9aa6df2b1df8724a899d9a725ecccf6e8762ae3").unwrap()
+        Digest::parse("9e377daa0858b621ef7e889900ddcde3a9b6a2c91597b0255b58cdf1eec792b3").unwrap()
     );
     assert_eq!(
         p.id().digest(),
-        Digest::parse("76877263034156d12bf8f4107d0d9d2fa70d418a7509b7a6529c8c5fadcde772").unwrap()
+        Digest::parse("801de6ffefe70cec7d2f55ec658767a3f5cf132438fce1de6266474b0eba7812").unwrap()
     );
 }
 

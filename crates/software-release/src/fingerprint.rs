@@ -3,7 +3,7 @@ use crate::identity::Encoding;
 use crate::model::{encode_evidence, encode_time, encode_validation};
 use crate::*;
 pub(crate) fn request(candidate: &CandidateId, request: &Request) -> Digest {
-    let mut e = Encoding::new(b"rss-mdm-software-release/request/v1");
+    let mut e = Encoding::new(b"rss-mdm-software-release/request/v2");
     e.object(candidate.tenant(), candidate.value());
     e.object(request.id.tenant(), request.id.value());
     e.object(request.actor.tenant(), request.actor.value());

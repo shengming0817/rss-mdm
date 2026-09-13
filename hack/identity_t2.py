@@ -151,6 +151,7 @@ def fixture(c):
             sql="CREATE DATABASE identity; CREATE USER hydra PASSWORD '"+values['hydra-db']+"'; CREATE DATABASE hydra OWNER hydra; CREATE DATABASE mdm;"
             for role,key in [('mdm_owner','mdm-owner'),('mdm_runtime','mdm-runtime'),('mdm_api','mdm-api'),('mdm_access','mdm-access')]:sql+="CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+values[key]+"';"
             sql+='GRANT CREATE ON DATABASE mdm TO mdm_owner;'
+            sql+=(ROOT/'crates/app/schema/software-publication-roles.sql').read_text()
             docker('exec','-i',pg,'psql','-X','-U','postgres','-v','ON_ERROR_STOP=1',input=sql)
             docker('exec','-i',pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input='GRANT CREATE ON SCHEMA public TO mdm_owner; CREATE SCHEMA test_probe; CREATE EXTENSION pg_stat_statements WITH SCHEMA test_probe; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA test_probe FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA test_probe FROM PUBLIC;')
             app_run(c['images']['operator'],['identity-migrate','--config',PREFIX+'migration.json'])

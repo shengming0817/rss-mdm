@@ -87,6 +87,11 @@ impl Audit {
         state.snapshot.actor = Some(actor.into());
         state.snapshot.client = Some(client.into());
     }
+    pub(crate) fn identify_service(&self, actor: &str) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(actor.into());
+        state.snapshot.client = Some("mdm-software-publication".into());
+    }
     pub fn set_action(&self, action: &'static str) {
         self.0.state.lock().expect("audit lock").snapshot.action = action;
     }

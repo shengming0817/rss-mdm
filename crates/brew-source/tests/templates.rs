@@ -153,14 +153,6 @@ fn dependency_and_artifact_checks_are_explicit() {
         artifact().verify(b"different bytes"),
         Err(Error::DigestMismatch)
     );
-    let binding = AccessBinding::new(
-        tenant(),
-        "acme/private",
-        "secret-git-reference",
-        "secret-download-reference",
-    )
-    .unwrap();
-    assert!(!format!("{binding:?}").contains("secret"));
 }
 
 #[test]

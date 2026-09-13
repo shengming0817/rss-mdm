@@ -107,6 +107,8 @@ def run_consumer(source, base, core, defaults, head, pin, out):
     shutil.copyfile(source / "rust-toolchain.toml", root / "rust-toolchain.toml")
     # The same public API behavior assertions run inside and outside the workspace.
     shutil.copyfile(source / "crates" / core / "tests/model.rs", root / "tests/model.rs")
+    if core == "software-release":
+        shutil.copyfile(source / "crates" / core / "tests/version.rs", root / "tests/version.rs")
     product = f"rss-mdm-{core}"
     manifest = '\n'.join([
         '[package]', f'name = "{name}-consumer"', 'version = "0.0.0"', 'edition = "2024"',

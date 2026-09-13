@@ -1,8 +1,8 @@
 # 与 RSS 一致的扁平 workspace；产品实现按职责放在 crates/ 下。
 [workspace]
 resolver = "3"
-members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release"]
-default-members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release"]
+members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
+default-members = ["crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
 
 [workspace.package]
 version = "0.1.0"
@@ -68,6 +68,10 @@ rss-contract = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev =
 rss-mdm-group-postgres = { path = "crates/group-postgres" }
 rss-transactional-messaging = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e1198ce5f6b1a7772987d9a1c0922d347146d649", default-features = false, features = ["producer"] }
 rss-transactional-messaging-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e1198ce5f6b1a7772987d9a1c0922d347146d649", default-features = false }
+
+rss-mdm-policy-postgres = { path = "crates/policy-postgres" }
+rss-mdm-resource-postgres = { path = "crates/resource-postgres" }
+rss-mdm-software-release-postgres = { path = "crates/software-release-postgres" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

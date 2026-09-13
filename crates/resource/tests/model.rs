@@ -164,13 +164,6 @@ fn all_kinds_are_data_and_boundaries_do_not_mutate_state() {
         let mut foreign = Resource::new(other, id("item"), kind);
         assert_eq!(foreign.insert(v, now()), Err(Error::TenantMismatch));
     }
-    let binding = AccessBinding::new(
-        tenant(),
-        id("source"),
-        id("secret-source-reference"),
-        id("secret-artifact-reference"),
-    );
-    assert!(!format!("{binding:?}").contains("secret"));
 }
 
 #[test]

@@ -40,7 +40,7 @@ impl Manifest {
         }
     }
     /// POST /packageManifests request body (not the GET response envelope). No write.
-    pub fn publication_metadata(&self) -> Result<Vec<u8>, Error> {
+    pub(crate) fn checked_publication_metadata(&self) -> Result<Vec<u8>, Error> {
         let mut request = self.document["Data"].clone();
         let version = &mut request["Versions"][0];
         // Empty Channel is common in GET responses, but violates POST minLength=1.

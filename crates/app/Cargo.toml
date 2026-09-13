@@ -46,7 +46,18 @@ sqlx.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 tokio-util.workspace = true
 
+rss-mdm-policy-postgres.workspace = true
+rss-mdm-resource.workspace = true
+rss-mdm-resource-postgres.workspace = true
+rss-mdm-software-release.workspace = true
+rss-mdm-software-release-postgres.workspace = true
+rss-mdm-winget-source.workspace = true
+rss-mdm-brew-source.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+
 [dev-dependencies]
+tempfile.workspace = true
 rss-contract.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 http-body-util.workspace = true

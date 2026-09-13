@@ -18,6 +18,7 @@ mod identity_t2;
 mod lifecycle;
 pub mod migration;
 mod sessions;
+pub mod software_publication;
 pub mod windows;
 use axum::{
     Json,

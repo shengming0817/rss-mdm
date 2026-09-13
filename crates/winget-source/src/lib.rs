@@ -1,4 +1,8 @@
-//! Bounded REST Source 1.0 metadata consumption; no CLI, installation or publishing.
+//! Bounded REST Source 1.0 metadata and complete-version publication; no CLI or installation.
+mod publisher;
+mod version;
+pub use publisher::{Inspection, Publisher, WriteAccess, WriteResponse};
+pub use version::VersionManifest;
 mod http;
 mod manifest;
 pub use http::{Access, Client, Source};
@@ -26,6 +30,9 @@ pub enum Error {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestStage {
+    Publish,
+    Withdraw,
+    Reconcile,
     Setup,
     Information,
     Manifest,

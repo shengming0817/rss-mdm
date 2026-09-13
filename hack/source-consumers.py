@@ -83,6 +83,8 @@ def run_consumer(name, test, checkout, base, env, sha, source_url, pin):
             deps.append('serde_json = "1"')
         (consumer / "Cargo.toml").write_text('[workspace]\n[package]\nname = "isolated-consumer"\nversion = "0.0.0"\nedition = "2024"\n[dependencies]\n' + "\n".join(deps) + "\n")
         shutil.copy2(checkout / "crates" / name / "tests" / test, consumer / "tests" / test)
+        for extra in {"resource": ["restore.rs"], "winget-source": ["version.rs"]}.get(name, []):
+            shutil.copy2(checkout / "crates" / name / "tests" / extra, consumer / "tests" / extra)
         fixtures = checkout / "crates" / name / "tests/fixtures"
         if fixtures.exists():
             shutil.copytree(fixtures, consumer / "tests/fixtures")

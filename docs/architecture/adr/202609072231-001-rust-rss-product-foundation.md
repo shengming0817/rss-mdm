@@ -88,6 +88,18 @@ Test/Pilot/Production 每环重新验证审批；验证不得早于当前内容�
 纯核心不证明身份/证据可信、跨请求唯一性或 CAS；N11 持久化时原子核对这些前置条件与成功审计，
 并负责验证真实外部结果和同版本字节不可变性。该边界不扩展 N08 到数据库、下载或端侧执行。
 
+### N10/N11 持久化与完整版本发布（#2388 / #2389）
+
+Policy adapter 的 `storage_revision` 是持久化唯一 CAS；核心 revision 只表达生命周期。目标/事实/状态变化使计划过时，显式重算安装新鲜计划；ABA 不恢复旧计划。事实为执行 owner 已归并的当前权威快照，N10 不处理端侧 wire 排序或派发。
+
+一个发布 Candidate 改为 source/package/version/platform 的完整版本；architecture/variant 和完整产物集合属于 Content，使用 V2 规范摘要。一次审批对应一次完整 WinGet manifest 或 Brew document；删除旧单 variant 发布输入，无兼容包装。Resource/Brew 未参与 I/O 的凭据占位已删除。
+
+Resource/Release PG adapter 各自持有核心快照、请求和不可变历史；app 唯一持有资源关联、源配置、调用目标、互斥槽和撤回进度，发布结果唯一由 Release 核心及其 PG owner 持有。所有跨 owner 成功变更和既有审计通过同一 PgRuntime 事务完成。外部写前持久化调用事实，未确定操作阻止同目标新写，不设置过期接管租约。
+
+Test/Pilot/Production 使用独立源命名空间或 bare Tap。Brew 当前 head 是外部 CAS 前置条件，在调用前与目标 commit 固定，不参与审批身份循环；旧版本撤回不得删除新版本或回退分支。撤回请求与已准备的调用目标分开持久化，后者只可 INSERT。
+
+本期产物只接已上传的公开 CDN/S3 HTTPS 对象，匿名读取并验证长度/摘要；私有授权、签名 URL、上传、生产源部署和端侧执行独立后续验收。软件源写入仍使用受控服务身份，凭据不进入产物请求或业务内容。WinGet 1.0 缺少操作查询，DELETE 回包未知后单次 404 不能证明完成，保留阻塞而不重发。
+
 ### 基础值、身份与确定性
 
 - tenant/time 复用既有公共值类型（`rss-request-context::TenantId`、`rss-contract::Timepoint`），不在各核心重复定义或 re-export。业务对象键由对应能力拥有；首期接线为设备键，不引入端侧用户/通道展开。完整键包含 tenant，比较、去重、请求幂等与持久唯一性均不得丢失租户边界。

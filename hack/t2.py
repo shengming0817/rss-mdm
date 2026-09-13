@@ -89,7 +89,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "9", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "14", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -163,6 +163,7 @@ def main():
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
+            sql += (ROOT/'crates/app/schema/software-publication-roles.sql').read_text()
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")

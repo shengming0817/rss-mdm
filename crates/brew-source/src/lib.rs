@@ -1,7 +1,7 @@
 //! Controlled Tap metadata and local Git commits. Never runs Ruby or Homebrew.
 mod git;
 mod template;
-pub use git::{CommitId, Prepared, PublishResult, Repository, Snapshot};
+pub use git::{CommitId, DocumentPresence, Prepared, PublishResult, Repository, Snapshot};
 use rss_request_context::TenantId;
 use std::fmt;
 pub use template::{Artifact, Bottle, BottleTag, Cask, CaskArtifact, Document, Formula};
@@ -100,48 +100,5 @@ impl PackageKey {
     }
     pub fn name(&self) -> &str {
         &self.name
-    }
-}
-/// References only; not resolved or written into Tap content.
-#[derive(Clone)]
-pub struct AccessBinding {
-    tenant: TenantId,
-    tap: String,
-    git_credential: String,
-    artifact_credential: String,
-}
-impl AccessBinding {
-    pub fn new(
-        tenant: TenantId,
-        tap_name: &str,
-        git_credential: &str,
-        artifact_credential: &str,
-    ) -> Result<Self, Error> {
-        tap(tap_name)?;
-        token(git_credential)?;
-        token(artifact_credential)?;
-        Ok(Self {
-            tenant,
-            tap: tap_name.into(),
-            git_credential: git_credential.into(),
-            artifact_credential: artifact_credential.into(),
-        })
-    }
-    pub const fn tenant(&self) -> TenantId {
-        self.tenant
-    }
-    pub fn tap(&self) -> &str {
-        &self.tap
-    }
-    pub fn git_credential(&self) -> &str {
-        &self.git_credential
-    }
-    pub fn artifact_credential(&self) -> &str {
-        &self.artifact_credential
-    }
-}
-impl fmt::Debug for AccessBinding {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("AccessBinding([redacted])")
     }
 }

@@ -9,11 +9,11 @@ use url::Url;
 /// Trusted composition supplies reviewed addresses; DNS cannot redirect the connection.
 #[derive(Clone)]
 pub struct Source {
-    tenant: TenantId,
-    id: String,
-    base: Url,
+    pub(crate) tenant: TenantId,
+    pub(crate) id: String,
+    pub(crate) base: Url,
     addresses: Vec<SocketAddr>,
-    credential_ref: String,
+    pub(crate) credential_ref: String,
     root_certificate: Option<reqwest::Certificate>,
 }
 impl fmt::Debug for Source {
@@ -85,7 +85,7 @@ impl Source {
 /// A resolved source credential, scoped to a tenant, source and reference by the caller.
 /// This is not proof that the caller was authenticated by a product API.
 pub struct Access {
-    tenant: TenantId,
+    pub(crate) tenant: TenantId,
     source: String,
     reference: String,
     bearer: HeaderValue,
@@ -124,9 +124,9 @@ impl fmt::Debug for Access {
     }
 }
 pub struct Client {
-    source: Source,
-    http: reqwest::Client,
-    total: Duration,
+    pub(crate) source: Source,
+    pub(crate) http: reqwest::Client,
+    pub(crate) total: Duration,
     limit: usize,
 }
 impl Client {
