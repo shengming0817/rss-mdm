@@ -46,8 +46,13 @@ pub(crate) async fn append(
             BTreeMap::new(),
         ),
     );
+    // Core request identities allow characters outside the transport alphabet.
+    // Keep the original in the payload/receipt; encode only the transport identity.
     let message = PendingMessage::new(MessageEnvelope::new(
-        data(MessageId::parse(&format!("software-release.v1:{request}")))?,
+        data(MessageId::parse(&format!(
+            "software-release.v1:{:x}",
+            Sha256::digest(request.as_bytes())
+        )))?,
         metadata,
         payload,
     ));

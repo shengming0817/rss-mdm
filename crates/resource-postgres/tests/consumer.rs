@@ -28,7 +28,7 @@ fn version(resource: &r::Id, label: &str, byte: u8) -> r::Version {
 }
 fn req(resource: &r::Id, revision: u64, command: Command) -> Request {
     Request {
-        id: id(&unique()),
+        id: id(&format!("requests/{}", unique())),
         resource: resource.clone(),
         expected_storage_revision: revision,
         as_of: at(10),

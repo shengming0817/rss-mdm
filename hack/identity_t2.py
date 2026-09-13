@@ -99,7 +99,7 @@ def fixture(c):
             for net in json.loads(docker('network','inspect',*ids)):
                 used.extend(ipaddress.ip_network(v['Subnet']) for v in (net.get('IPAM',{}).get('Config') or []) if v.get('Subnet'))
         subnet=next(ipaddress.ip_network(f'10.234.{n}.0/24') for n in range(10,250) if not any(ipaddress.ip_network(f'10.234.{n}.0/24').overlaps(u) for u in used if u.version==4))
-        ips={n:str(subnet.network_address+i) for n,i in [('public',2),('private',3),('identity',4),('hydra',5),('pg',6)]}
+        ips={n:str(subnet.network_address+i) for n,i in [('public',2),('private',3),('identity',4),('hydra',5),('pg',6),('mdm-pg',7)]}
         try:
             docker('network','create','--subnet',str(subnet),network)
             # Docker owns the published ports for the entire test; no close-and-rebind window.
@@ -143,17 +143,25 @@ def fixture(c):
                 args+=list(extra)+[image,'-ec',bootstrap,'--',*command]
                 docker(*args,stage='candidate '+(suffix or command[0]))
                 return name+'-'+suffix if suffix else None
-            pg=name+'-pg';created.append(pg)
             pg_stage='cp /fixture/tls.key /tmp/server.key; cp /fixture/tls.crt /tmp/server.crt; cp /fixture/owner /tmp/owner; chown postgres:postgres /tmp/server.key /tmp/server.crt /tmp/owner; chmod 600 /tmp/server.key /tmp/owner; export POSTGRES_PASSWORD_FILE=/tmp/owner; exec docker-entrypoint.sh postgres -c shared_preload_libraries=pg_stat_statements -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'
-            docker('run','-d','--name',pg,'--label','rss.test=2343','--network',network,'--ip',ips['pg'],'--network-alias','pg','-p','127.0.0.1::5432','-v',str(root)+':/fixture:ro',c['providers']['postgres'],'sh','-ec',pg_stage)
-            pg_port=int(docker('port',pg,'5432/tcp').rsplit(':',1)[1])
-            wait(lambda:docker('exec',pg,'pg_isready','-h','127.0.0.1','-U','postgres',timeout=5) is not None,'PostgreSQL')
-            sql="CREATE DATABASE identity; CREATE USER hydra PASSWORD '"+values['hydra-db']+"'; CREATE DATABASE hydra OWNER hydra; CREATE DATABASE mdm;"
+            def postgres(suffix):
+                container=name+'-'+suffix;created.append(container)
+                docker('run','-d','--name',container,'--label','rss.test=2343','--network',network,'--ip',ips[suffix],'--network-alias',suffix,'-p','127.0.0.1::5432','-v',str(root)+':/fixture:ro',c['providers']['postgres'],'sh','-ec',pg_stage)
+                port=int(docker('port',container,'5432/tcp').rsplit(':',1)[1])
+                wait(lambda:docker('exec',container,'pg_isready','-h','127.0.0.1','-U','postgres',timeout=5) is not None,suffix+' PostgreSQL')
+                return container,port
+            # Roles are cluster-wide: each product owns a separate relay authority and PG instance.
+            # ref: rss-identity fdd0aa2 app/identity/src/migration.rs rejects relay memberships.
+            pg,_=postgres('pg')
+            mdm_pg,pg_port=postgres('mdm-pg')
+            identity_sql="CREATE DATABASE identity; CREATE USER hydra PASSWORD '"+values['hydra-db']+"'; CREATE DATABASE hydra OWNER hydra;"
+            docker('exec','-i',pg,'psql','-X','-U','postgres','-v','ON_ERROR_STOP=1',input=identity_sql)
+            sql='CREATE DATABASE mdm;'
             for role,key in [('mdm_owner','mdm-owner'),('mdm_runtime','mdm-runtime'),('mdm_api','mdm-api'),('mdm_access','mdm-access')]:sql+="CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+values[key]+"';"
             sql+='GRANT CREATE ON DATABASE mdm TO mdm_owner;'
             sql+=(ROOT/'crates/app/schema/software-publication-roles.sql').read_text()
-            docker('exec','-i',pg,'psql','-X','-U','postgres','-v','ON_ERROR_STOP=1',input=sql)
-            docker('exec','-i',pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input='GRANT CREATE ON SCHEMA public TO mdm_owner; CREATE SCHEMA test_probe; CREATE EXTENSION pg_stat_statements WITH SCHEMA test_probe; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA test_probe FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA test_probe FROM PUBLIC;')
+            docker('exec','-i',mdm_pg,'psql','-X','-U','postgres','-v','ON_ERROR_STOP=1',input=sql)
+            docker('exec','-i',mdm_pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input='GRANT CREATE ON SCHEMA public TO mdm_owner; CREATE SCHEMA test_probe; CREATE EXTENSION pg_stat_statements WITH SCHEMA test_probe; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA test_probe FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA test_probe FROM PUBLIC;')
             app_run(c['images']['operator'],['identity-migrate','--config',PREFIX+'migration.json'])
             app_run(c['providers']['hydra'],['hydra','migrate','sql','-e','--yes','--config',PREFIX+'hydra.json'])
             hydra_container=app_run(c['providers']['hydra'],['hydra','serve','all','--config',PREFIX+'hydra.json'],suffix='hydra',ip=ips['hydra'],extra=['--network-alias','hydra-admin'])
@@ -183,7 +191,7 @@ def fixture(c):
             from windows_fixtures import generate
             mdm['windows']=generate(root, root/'tls.crt', root/'tls.key')
             config_path=write('mdm.json',mdm)
-            yield {**os.environ,'MDM_TEST_CONFIG':str(config_path),'MDM_TEST_PUBLIC_ORIGIN':origin,'MDM_TEST_PASSWORD_FILE':str(root/'new-password'),'MDM_TEST_PG_CONTAINER':pg,'MDM_TEST_PRIVATE_CONTAINER':private_container,'MDM_TEST_HYDRA_CONTAINER':hydra_container,'MDM_TEST_IDENTITY_CONTAINER':identity_container,'MDM_TEST_PROVIDER_PLATFORM':native}
+            yield {**os.environ,'MDM_TEST_CONFIG':str(config_path),'MDM_TEST_PUBLIC_ORIGIN':origin,'MDM_TEST_PASSWORD_FILE':str(root/'new-password'),'MDM_TEST_PG_CONTAINER':mdm_pg,'MDM_TEST_PRIVATE_CONTAINER':private_container,'MDM_TEST_HYDRA_CONTAINER':hydra_container,'MDM_TEST_IDENTITY_CONTAINER':identity_container,'MDM_TEST_PROVIDER_PLATFORM':native}
         finally:
             primary=sys.exception()
             failures=[]

@@ -168,6 +168,50 @@ async fn persistence_replay_aba_and_old_facts() {
         Some(&r.id)
     );
     assert_eq!(plan.id(), old_id);
+    for progress in [Progress::Running, Progress::Planned] {
+        let fact = ExecutionRecord::new(
+            version(&p, 1),
+            DeviceId::new(tenant(), "a").unwrap(),
+            progress,
+            Effect::Unverified,
+        )
+        .unwrap();
+        rev = s
+            .execute(
+                &req(
+                    &p,
+                    rev,
+                    Command::ReplaceFacts {
+                        policy: p.clone(),
+                        facts: vec![fact],
+                    },
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap()
+            .storage_revision;
+        assert!(
+            !s.get(&p, deadline())
+                .await
+                .unwrap()
+                .unwrap()
+                .plan_is_fresh()
+        );
+    }
+    let before_refresh = rev;
+    rev = s
+        .execute(
+            &req(&p, rev, Command::Replan { policy: p.clone() }),
+            deadline(),
+        )
+        .await
+        .unwrap()
+        .storage_revision;
+    let refreshed = s.get(&p, deadline()).await.unwrap().unwrap();
+    assert_eq!(refreshed.current_plan_id(), Some(old_id));
+    assert!(refreshed.plan_is_fresh());
+    assert_eq!(rev, before_refresh + 1);
     rev = s
         .execute(
             &req(

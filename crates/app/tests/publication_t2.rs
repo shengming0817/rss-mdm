@@ -641,3 +641,44 @@ async fn publication_result_commit_unknown_recovers_one_external_call_and_audit(
     );
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PG reference/archival concurrency + HTTPS: publication-t2"]
+async fn archive_and_candidate_reference_race_is_atomic() {
+    let server = Server::new().await;
+    let runtime = runtime().await;
+    let service = server.service(runtime.clone(), server.winget()).await;
+    let input = seed(runtime.clone(), &server, server.winget_submission()).await;
+    let archive = rss_mdm_resource_postgres::Request {
+        id: id(&unique()),
+        resource: input.resource.clone(),
+        expected_storage_revision: input.expected_resource_revision,
+        as_of: input.as_of,
+        command: rss_mdm_resource_postgres::Command::Archive {
+            version: input.version.clone(),
+            references: 0,
+        },
+    };
+    let (created, archived) = tokio::join!(
+        service.create_candidate(&input, cutoff()),
+        service.archive_resource(&archive, cutoff())
+    );
+    match (created, archived) {
+        (Ok(_), Err(Error::Blocked)) => assert!(
+            service
+                .candidate(&input.candidate, cutoff())
+                .await
+                .unwrap()
+                .is_some()
+        ),
+        (Err(Error::Conflict), Ok(_)) => assert!(
+            service
+                .candidate(&input.candidate, cutoff())
+                .await
+                .unwrap()
+                .is_none()
+        ),
+        result => panic!("reference and archival must serialize: {result:?}"),
+    }
+    runtime.close().await;
+}

@@ -77,7 +77,7 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
         assert_eq!(first, s.create(&id, &request, deadline()).await.unwrap());
         assert_eq!(
             sql(&format!(
-                "SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='software-release.v1:{}'",
+                "SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='software-release.v1:'||encode(sha256(convert_to('{}','UTF8')),'hex')",
                 id.value()
             )),
             "1"

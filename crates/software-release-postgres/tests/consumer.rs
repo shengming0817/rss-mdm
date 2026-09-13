@@ -5,7 +5,7 @@ fn actor(s: &str) -> r::ActorId {
     r::ActorId::new(tenant(), s).unwrap()
 }
 fn request_id() -> r::RequestId {
-    r::RequestId::new(tenant(), unique()).unwrap()
+    r::RequestId::new(tenant(), format!("requests/{}+@", unique())).unwrap()
 }
 fn content(package: &str, byte: u8) -> r::Content {
     r::Content::new(
