@@ -13,40 +13,67 @@ use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, P
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::{collections::BTreeMap, sync::Arc};
+/// Closed set of persistent aggregate mutations.
 #[derive(Clone, Debug)]
 pub enum Command {
+    /// Create an initially empty aggregate.
     Create(Kind),
+    /// Insert a new immutable resource version.
     Insert(Version),
+    /// Make a frozen version active according to the core lifecycle.
     Activate(Id),
+    /// Deprecate the specified version without deleting its content or history.
     Deprecate(Id),
-    Archive { version: Id, references: u64 },
+    /// Archive only after the companion has counted references under the same resource lock.
+    Archive {
+        /// Exact immutable version to archive.
+        version: Id,
+        /// Reference count attested by the companion while holding the resource lock; must be zero.
+        references: u64,
+    },
 }
+/// Complete, immutable caller request. Preserve identity, time, expected revision and command during recovery.
 #[derive(Clone, Debug)]
 pub struct Request {
+    /// Stable identity; changing a request body under an existing request identity is rejected.
     pub id: Id,
+    /// Resource identity or restored resource value in this store tenant.
     pub resource: Id,
+    /// The sole expected aggregate CAS token; zero is required for creation.
     pub expected_storage_revision: u64,
+    /// Caller-fixed observation time; preserve it on request replay.
     pub as_of: Timepoint,
+    /// The complete requested mutation, included in the request fingerprint.
     pub command: Command,
 }
+/// Validated core Resource and its adapter concurrency token.
 #[derive(Clone, Debug)]
 pub struct StoredResource {
+    /// Resource identity or restored resource value in this store tenant.
     pub resource: Resource,
+    /// Aggregate storage revision observed after the operation.
     pub storage_revision: u64,
 }
+/// Immutable response to the original request; replay does not rewrite this snapshot.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
+    /// Resource identity or restored resource value in this store tenant.
     pub resource: String,
+    /// Original request identity associated with this receipt.
     pub request: String,
+    /// Aggregate storage revision observed after the operation.
     pub storage_revision: u64,
 }
+/// Tenant-bound immutable Resource versions and lifecycle persistence.
 pub struct ResourceStore {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     writer: PgOutboxWriter,
 }
 impl ResourceStore {
+    /// Admit the exact schema and effective runtime privileges, then borrow the host runtime.
+    /// Returns a settlement error on admission failure; never migrates or closes the runtime.
     pub async fn new(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -68,6 +95,7 @@ impl ResourceStore {
             tenant,
         })
     }
+    /// Return the tenant permanently bound to this store.
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
@@ -79,6 +107,7 @@ impl ResourceStore {
             Err(Rejection::TenantMismatch)
         })
     }
+    /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
     pub async fn get(
         &self,
         id: &Id,
@@ -92,6 +121,8 @@ impl ResourceStore {
                 .await,
         )
     }
+    /// Read through a borrowed transaction after runtime-owner and tenant validation.
+    /// Never commits; propagate outer errors to the transaction owner.
     pub async fn get_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -134,6 +165,8 @@ impl ResourceStore {
             storage_revision: revision,
         })))
     }
+    /// Lock the resource aggregate and return its immutable version, state and storage revision.
+    /// Hold this borrowed transaction while adding references or checking archive eligibility.
     pub async fn lock_version_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -147,6 +180,8 @@ impl ResourceStore {
         let state = data(s.resource.state(version))?;
         Ok(Ok((v.clone(), state, s.storage_revision)))
     }
+    /// Execute one fixed request atomically with its receipt and necessary RSS Outbox event.
+    /// An identical request replays before CAS; on `CommitUnknown`, retain the original request and query its receipt.
     pub async fn execute(&self, r: &Request, d: OperationDeadline) -> Result<Receipt, Error> {
         if matches!(r.command, Command::Archive { .. }) {
             return Err(Rejection::CompanionRequired.into());
@@ -293,6 +328,8 @@ impl ResourceStore {
         .await?;
         Ok(Ok(receipt))
     }
+    /// Read the original durable request receipt without changing current aggregate state.
+    /// Use this after an unconfirmed commit; absence alone is not permission to invent another request identity.
     pub async fn operation(&self, id: &Id, d: OperationDeadline) -> Result<Option<Receipt>, Error> {
         settle(
             self.runtime
@@ -307,6 +344,7 @@ impl ResourceStore {
                 .await,
         )
     }
+    /// Read one validated immutable version, including historical versions.
     pub async fn version(
         &self,
         id: &Id,

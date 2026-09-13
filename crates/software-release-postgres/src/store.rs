@@ -12,24 +12,35 @@ use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, P
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::sync::Arc;
+/// Immutable candidate request receipt; distinct from mutable current candidate state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationReceipt {
+    /// Tenant-scoped candidate identity.
     pub candidate: CandidateId,
+    /// Original request identity associated with this receipt.
     pub request: RequestId,
+    /// Version or lifecycle revision recorded in this value.
     pub revision: u64,
+    /// Core lifecycle mutation or original receipt; creation has no transition receipt.
     pub transition: Option<Receipt>,
 }
+/// An immutable publication attempt together with its pagination identity.
 #[derive(Clone, Debug)]
 pub struct HistoricalAttempt {
+    /// Opaque continuation identity; pass unchanged to the next history query.
     pub cursor: String,
+    /// Immutable publication attempt, including its original approval and result.
     pub publication: Publication,
 }
+/// Tenant-bound sole persistence owner of candidates, approvals, attempts and publication results.
 pub struct ReleaseStore {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     writer: PgOutboxWriter,
 }
 impl ReleaseStore {
+    /// Admit the exact schema and effective runtime privileges, then borrow the host runtime.
+    /// Returns a settlement error on admission failure; never migrates or closes the runtime.
     pub async fn new(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -51,6 +62,7 @@ impl ReleaseStore {
             tenant,
         })
     }
+    /// Return the tenant permanently bound to this store.
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
@@ -62,6 +74,7 @@ impl ReleaseStore {
             Err(Rejection::TenantMismatch)
         })
     }
+    /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
     pub async fn get(
         &self,
         id: &CandidateId,
@@ -75,6 +88,8 @@ impl ReleaseStore {
                 .await,
         )
     }
+    /// Read through a borrowed transaction after runtime-owner and tenant validation.
+    /// Never commits; propagate outer errors to the transaction owner.
     pub async fn get_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -96,6 +111,7 @@ impl ReleaseStore {
             .transpose()?;
         Ok(Ok(c))
     }
+    /// Lock and restore a candidate for companion app decisions. The caller retains the transaction lock.
     pub async fn lock_candidate_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -108,6 +124,8 @@ impl ReleaseStore {
         lock(tx, "candidate", id.value()).await?;
         Ok(input!(self.get_in(tx, id).await?).ok_or(Rejection::NotFound))
     }
+    /// Persist a new immutable candidate and its original creation receipt in one transaction.
+    /// Reuse the identical request after an unconfirmed commit; changed content under an existing identity is rejected.
     pub async fn create(
         &self,
         id: &RequestId,
@@ -122,6 +140,8 @@ impl ReleaseStore {
                 .await,
         )
     }
+    /// Create within the caller transaction, including immutable-version checks and the request receipt.
+    /// The caller owns commit/rollback and must propagate outer storage errors.
     pub async fn create_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -198,6 +218,8 @@ impl ReleaseStore {
         .await?;
         Ok(Ok(result))
     }
+    /// Apply a core request with immutable attempt history, its receipt and RSS Outbox atomically.
+    /// Replays return the original receipt rather than a new external Publish decision.
     pub async fn transition(
         &self,
         id: &CandidateId,
@@ -212,6 +234,8 @@ impl ReleaseStore {
                 .await,
         )
     }
+    /// Apply a core request in the borrowed transaction; never performs external source I/O.
+    /// Propagate outer PG errors and let the host settle commit/rollback.
     pub async fn transition_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -298,6 +322,7 @@ impl ReleaseStore {
         .await?;
         Ok(Ok(result))
     }
+    /// Recover the complete original core request by identity for exact service-level replay.
     pub async fn original_request(
         &self,
         id: &RequestId,
@@ -309,6 +334,7 @@ impl ReleaseStore {
         let key = id.value().to_owned();
         settle(self.runtime.local_tx(self.tenant,d,move|tx|Box::pin(async move{let t=tx.tenant_id().to_string();let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT request,fingerprint FROM mdm_software_release.requests WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(key).fetch_optional(c).await})).await?;let result=row.map(|r|codec::read_request(&checked(r.try_get("request")?,r.try_get("fingerprint")?)?)).transpose()?.flatten();Ok(Ok(result))})).await)
     }
+    /// Read the original request receipt in the caller transaction after owner and tenant checks.
     pub async fn operation_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -323,6 +349,8 @@ impl ReleaseStore {
             .map(|(_, _, b)| operation_receipt(&b))
             .transpose()?))
     }
+    /// Read the original durable request receipt without changing current aggregate state.
+    /// Use this after an unconfirmed commit; absence alone is not permission to invent another request identity.
     pub async fn operation(
         &self,
         id: &RequestId,
@@ -344,6 +372,7 @@ impl ReleaseStore {
                 .await,
         )
     }
+    /// Read immutable publication attempts in bounded cursor order. Pass the last item cursor as `after`.
     pub async fn attempt_history(
         &self,
         id: &CandidateId,

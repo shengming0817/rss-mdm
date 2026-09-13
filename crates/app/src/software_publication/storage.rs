@@ -17,6 +17,7 @@ pub(super) struct Subject {
     pub resource: String,
     pub version: String,
     pub resource_digest: [u8; 32],
+    pub expected_resource_revision: u64,
     pub coordinate: String,
     pub submission: Submission,
 }

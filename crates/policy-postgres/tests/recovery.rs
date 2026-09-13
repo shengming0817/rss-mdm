@@ -13,12 +13,68 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
             .await
             .unwrap();
         let key = core::PolicyId::new(tenant(), unique()).unwrap();
+        for (revision, command) in [
+            (
+                0,
+                Command::Create {
+                    policy: key.clone(),
+                },
+            ),
+            (
+                1,
+                Command::Transition {
+                    policy: key.clone(),
+                    transition: core::Transition::Activate(
+                        core::Version::new(
+                            key.clone(),
+                            1,
+                            core::PayloadRef::new(
+                                core::PayloadId::new(tenant(), unique()).unwrap(),
+                                1,
+                                [1; 32],
+                            )
+                            .unwrap(),
+                            core::RemovalRule::CancelOutstandingRetainEffects,
+                        )
+                        .unwrap(),
+                    ),
+                },
+            ),
+            (
+                2,
+                Command::SelectTargets {
+                    policy: key.clone(),
+                    snapshot: core::TargetSnapshot::new(
+                        core::TargetSnapshotId::new(tenant(), unique()).unwrap(),
+                        1,
+                        core::SnapshotCompleteness::Complete,
+                        vec![core::DeviceId::new(tenant(), "device").unwrap()],
+                    )
+                    .unwrap(),
+                    references: vec![],
+                },
+            ),
+        ] {
+            s.execute(
+                &Request {
+                    id: core::RequestId::new(tenant(), unique()).unwrap(),
+                    expected_storage_revision: revision,
+                    as_of: at(10),
+                    command,
+                },
+                deadline(),
+            )
+            .await
+            .unwrap();
+        }
         let id = core::RequestId::new(tenant(), unique()).unwrap();
         let request = Request {
             id: id.clone(),
-            expected_storage_revision: 0,
+            expected_storage_revision: 3,
             as_of: at(10),
-            command: Command::Create { policy: key },
+            command: Command::Replan {
+                policy: key.clone(),
+            },
         };
         let gate = if protocol {
             Some(ack::CommitGate::start("mdm_policy", id.value()).await)
@@ -52,6 +108,13 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
             .unwrap();
         let first = s.execute(&request, deadline()).await.unwrap();
         assert_eq!(first, s.execute(&request, deadline()).await.unwrap());
+        assert_eq!(first.storage_revision, 4);
+        let current = s.get(&key, deadline()).await.unwrap().unwrap();
+        assert!(current.plan_is_fresh());
+        assert_eq!(current.current_plan_request(), Some(&id));
+        let plan = s.plan(&key, &id, deadline()).await.unwrap().unwrap();
+        assert_eq!(Some(plan.id()), current.current_plan_id());
+        assert_eq!(plan.request(), &id);
         assert_eq!(
             sql(&format!(
                 "SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='policy.v1:{}'",

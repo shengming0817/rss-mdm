@@ -156,7 +156,17 @@ async fn persistence_replay_aba_and_old_facts() {
         .storage_revision,
         rev
     );
-    let plan = s.plan(&p, old_id, deadline()).await.unwrap().unwrap();
+    let plan = s.plan(&p, &r.id, deadline()).await.unwrap().unwrap();
+    assert_eq!(plan.request(), &r.id);
+    assert_eq!(plan.as_of(), r.as_of);
+    assert_eq!(
+        s.get(&p, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .current_plan_request(),
+        Some(&r.id)
+    );
     assert_eq!(plan.id(), old_id);
     rev = s
         .execute(
@@ -210,7 +220,19 @@ async fn persistence_replay_aba_and_old_facts() {
     let after = s.get(&p, deadline()).await.unwrap().unwrap();
     assert_eq!(after.current_plan_id(), current);
     assert!(!after.plan_is_fresh());
-    let facts = s.execution_facts(&p, None, 100, deadline()).await.unwrap();
+    let page = s.execution_facts(&p, None, 1, deadline()).await.unwrap();
+    assert_eq!(page.records.len(), 1);
+    let next = s
+        .execution_facts(&p, page.next.clone(), 1, deadline())
+        .await
+        .unwrap();
+    assert_eq!(next.records.len(), 1);
+    assert_ne!(page.records[0].key(), next.records[0].key());
+    let facts = s
+        .execution_facts(&p, None, 100, deadline())
+        .await
+        .unwrap()
+        .records;
     assert_eq!(
         facts
             .iter()
@@ -219,6 +241,16 @@ async fn persistence_replay_aba_and_old_facts() {
             .progress(),
         Progress::Planned
     );
+    let mut refresh = req(
+        &p,
+        after.storage_revision(),
+        Command::Replan { policy: p.clone() },
+    );
+    refresh.as_of = at(100);
+    s.execute(&refresh, deadline()).await.unwrap();
+    let installed = s.plan(&p, &refresh.id, deadline()).await.unwrap().unwrap();
+    assert_eq!(installed.request(), &refresh.id);
+    assert_eq!(installed.as_of(), at(100));
     let restarted = PolicyStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();

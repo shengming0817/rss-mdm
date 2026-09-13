@@ -1,3 +1,4 @@
+pub mod ack;
 pub mod pg;
 use pg::*;
 use rss_mdm_app::software_publication::*;
@@ -104,8 +105,8 @@ impl Server {
         )
         .unwrap()
     }
-    pub fn winget(&self) -> [SourceConfig; 3] {
-        ["test", "pilot", "production"].map(|ring| {
+    pub fn winget(&self) -> RingSources {
+        let [test, pilot, production] = ["test", "pilot", "production"].map(|ring| {
             SourceConfig::Winget(WingetConfig {
                 base: format!("{}{ring}/", self.base),
                 addresses: vec![self.address],
@@ -113,12 +114,17 @@ impl Server {
                 credential_reference: "source-key".into(),
                 credential_file: self.secret.clone(),
             })
-        })
+        });
+        RingSources {
+            test,
+            pilot,
+            production,
+        }
     }
     pub async fn service(
         &self,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        config: [SourceConfig; 3],
+        config: RingSources,
     ) -> PublicationService {
         PublicationService::connect(
             runtime,
@@ -386,7 +392,7 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|v| format!("{v:02x}")).collect()
 }
 
-pub fn brew_config() -> (tempfile::TempDir, [SourceConfig; 3]) {
+pub fn brew_config() -> (tempfile::TempDir, RingSources) {
     let root = tempfile::tempdir().unwrap();
     let config = ["test", "pilot", "production"].map(|ring| {
         let repository = root.path().join(format!("{ring}.git"));
@@ -403,7 +409,15 @@ pub fn brew_config() -> (tempfile::TempDir, [SourceConfig; 3]) {
             repository,
         })
     });
-    (root, config)
+    let [test, pilot, production] = config;
+    (
+        root,
+        RingSources {
+            test,
+            pilot,
+            production,
+        },
+    )
 }
 pub fn cask(server: &Server, package: &str, version: &str) -> Submission {
     Submission::Brew {
@@ -470,8 +484,8 @@ pub fn formula(server: &Server) -> Submission {
         .into(),
     }
 }
-pub fn git(config: &[SourceConfig; 3], args: &[&str]) -> String {
-    let SourceConfig::Brew(c) = &config[0] else {
+pub fn git(config: &RingSources, args: &[&str]) -> String {
+    let SourceConfig::Brew(c) = &config.test else {
         panic!()
     };
     let out = std::process::Command::new("/usr/bin/git")
@@ -482,4 +496,8 @@ pub fn git(config: &[SourceConfig; 3], args: &[&str]) -> String {
         .unwrap();
     assert!(out.status.success());
     String::from_utf8(out.stdout).unwrap()
+}
+
+pub async fn request_for(service: &PublicationService, id: &rel::CandidateId) -> ServiceRequest {
+    request(&service.candidate(id, cutoff()).await.unwrap().unwrap())
 }

@@ -12,12 +12,15 @@ use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, P
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::{collections::BTreeMap, sync::Arc};
+/// Tenant-bound Policy persistence using the host-owned RSS PostgreSQL runtime.
 pub struct PolicyStore {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     writer: PgOutboxWriter,
 }
 impl PolicyStore {
+    /// Admit the exact schema and effective runtime privileges, then borrow the host runtime.
+    /// Returns a settlement error on admission failure; never migrates or closes the runtime.
     pub async fn new(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -39,6 +42,7 @@ impl PolicyStore {
             tenant,
         })
     }
+    /// Return the tenant permanently bound to this store.
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
@@ -50,6 +54,7 @@ impl PolicyStore {
             Err(Rejection::TenantMismatch)
         })
     }
+    /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
     pub async fn get(
         &self,
         id: &PolicyId,
@@ -63,6 +68,8 @@ impl PolicyStore {
                 .await,
         )
     }
+    /// Read through a borrowed transaction after runtime-owner and tenant validation.
+    /// Never commits; propagate outer errors to the transaction owner.
     pub async fn get_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -101,6 +108,8 @@ impl PolicyStore {
         }
         Ok(Ok(result))
     }
+    /// Execute one fixed request atomically with its receipt and necessary RSS Outbox event.
+    /// An identical request replays before CAS; on `CommitUnknown`, retain the original request and query its receipt.
     pub async fn execute(
         &self,
         r: &Request,
@@ -114,6 +123,8 @@ impl PolicyStore {
                 .await,
         )
     }
+    /// Execute using the caller transaction, validating runtime ownership and tenant before any path.
+    /// Propagate the outer PG error to roll back; inspect the inner business rejection. This method never commits.
     pub async fn execute_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -209,9 +220,7 @@ impl PolicyStore {
                     1,
                     codec::policy(&aggregate.policy),
                     codec::targets(targets),
-                    records.iter().map(codec::fact).collect::<Vec<_>>(),
-                    r.id.value(),
-                    r.as_of.unix_seconds()
+                    records.iter().map(codec::fact).collect::<Vec<_>>()
                 ]))?;
                 for intent in plan.intents() {
                     let desired = match intent {
@@ -241,8 +250,9 @@ impl PolicyStore {
             input!(aggregate.advance());
             aggregate.at = Some(r.as_of);
         }
-        if matches!(r.command, Command::Replan { .. }) {
+        if changed && matches!(r.command, Command::Replan { .. }) {
             aggregate.installed = Some(aggregate.revision);
+            aggregate.installed_request = Some(r.id.clone());
         }
         // Immutable checks precede all business writes. Concurrent cross-policy payload conflicts
         // become an outer storage error in freeze(), rolling back the entire transaction.
@@ -316,6 +326,8 @@ impl PolicyStore {
         .await?;
         Ok(Ok(response))
     }
+    /// Read the original durable request receipt without changing current aggregate state.
+    /// Use this after an unconfirmed commit; absence alone is not permission to invent another request identity.
     pub async fn operation(
         &self,
         id: &RequestId,
@@ -337,27 +349,60 @@ impl PolicyStore {
                 .await,
         )
     }
+    /// Restore an explicit replan using its immutable decision and original request provenance.
+    /// Use Aggregate::current_plan_request to select the current installation.
     pub async fn plan(
         &self,
         policy: &PolicyId,
-        id: PlanId,
+        request: &RequestId,
         deadline: OperationDeadline,
     ) -> Result<Option<Plan>, Error> {
-        if policy.tenant() != self.tenant {
+        if policy.tenant() != self.tenant || request.tenant() != self.tenant {
             return Err(Rejection::TenantMismatch.into());
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, deadline, policy, move |policy, tx| {
-                    Box::pin(async move {
-                        let bytes =
-                            db::immutable(tx, policy.value(), "plan", &codec::hex(id.bytes()))
-                                .await?;
-                        Ok(Ok(bytes
-                            .map(|b| restore_plan(&b, policy, id))
-                            .transpose()?))
-                    })
-                })
+                .local_tx_with_context(
+                    self.tenant,
+                    deadline,
+                    (policy, request),
+                    |(policy, request), tx| {
+                        Box::pin(async move {
+                            let Some((_, _, receipt)) = db::receipt(tx, request.value()).await?
+                            else {
+                                return Ok(Ok(None));
+                            };
+                            let receipt: Receipt = decode(&receipt)?;
+                            let raw: Value = decode(
+                                &db::original_request(tx, request.value())
+                                    .await?
+                                    .ok_or_else(fault)?,
+                            )?;
+                            let fields = codec::array(&raw, 7)?;
+                            if receipt.policy != policy.value()
+                                || receipt.request != request.value()
+                                || codec::text(&fields[1])? != policy.tenant().to_string()
+                                || codec::text(&fields[2])? != request.value()
+                                || codec::text(&fields[3])? != policy.value()
+                                || fields[6] != json!([7])
+                            {
+                                return Ok(Err(Rejection::InvalidInput));
+                            }
+                            let id = codec::plan_id(receipt.plan_id.as_deref().ok_or_else(fault)?)?;
+                            let bytes =
+                                db::immutable(tx, policy.value(), "plan", &codec::hex(id.bytes()))
+                                    .await?
+                                    .ok_or_else(fault)?;
+                            Ok(Ok(Some(restore_plan(
+                                &bytes,
+                                policy,
+                                id,
+                                request.clone(),
+                                codec::time(&fields[5])?,
+                            )?)))
+                        })
+                    },
+                )
                 .await,
         )
     }
@@ -425,13 +470,15 @@ impl PolicyStore {
                 .await,
         )
     }
+    /// Read at most `limit` authoritative facts (1–1000) and an opaque continuation cursor.
+    /// The adapter does not order device events; use caller-confirmed snapshots with complete execution keys.
     pub async fn execution_facts(
         &self,
         policy: &PolicyId,
         after: Option<String>,
         limit: usize,
         deadline: OperationDeadline,
-    ) -> Result<Vec<ExecutionRecord>, Error> {
+    ) -> Result<FactPage, Error> {
         if policy.tenant() != self.tenant
             || limit == 0
             || limit > 1000
@@ -440,7 +487,7 @@ impl PolicyStore {
             return Err(Rejection::InvalidInput.into());
         }
         let owner = policy.value().to_owned();
-        settle(self.runtime.local_tx(self.tenant,deadline,move|tx|Box::pin(async move{let t=tx.tenant_id();let raw=t.to_string();let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4").bind(raw).bind(&owner).bind(after).bind(limit as i64).fetch_all(c).await})).await?;let result=rows.into_iter().map(read_fact_row).collect::<Result<Vec<_>,_>>()?;if result.iter().any(|f|f.version().policy().tenant()!=t){return Err(fault());}Ok(Ok(result))})).await)
+        settle(self.runtime.local_tx(self.tenant,deadline,move|tx|Box::pin(async move{let t=tx.tenant_id();let raw=t.to_string();let expected_owner=owner.clone();let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4").bind(raw).bind(&owner).bind(after).bind((limit+1) as i64).fetch_all(c).await})).await?;let mut result=rows.into_iter().map(read_fact_row).collect::<Result<Vec<_>,_>>()?;if result.iter().any(|f|f.version().policy().tenant()!=t || f.version().policy().value()!=expected_owner){return Err(fault());}let more=result.len()>limit;result.truncate(limit);let next=if more {result.last().map(codec::key)} else {None};Ok(Ok(FactPage{records:result,next}))})).await)
     }
 }
 fn validate_request(r: &Request) -> Result<(), Rejection> {
@@ -569,9 +616,15 @@ async fn save_facts(
         .collect::<Result<Vec<_>, PgError>>()?;
     tx.with_connection(move|c|Box::pin(async move{for(k,h,b)in docs{sqlx::query("INSERT INTO mdm_policy.facts(tenant_id,owner,key,document,digest) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,owner,key) DO UPDATE SET document=EXCLUDED.document,digest=EXCLUDED.digest WHERE mdm_policy.facts.document<>EXCLUDED.document").bind(&t).bind(&owner).bind(k).bind(b).bind(h).execute(&mut *c).await?;}Ok(())})).await
 }
-fn restore_plan(b: &[u8], policy: &PolicyId, id: PlanId) -> Result<Plan, PgError> {
+fn restore_plan(
+    b: &[u8],
+    policy: &PolicyId,
+    id: PlanId,
+    request: RequestId,
+    as_of: rss_contract::Timepoint,
+) -> Result<Plan, PgError> {
     let v: Value = decode(b)?;
-    let a = codec::array(&v, 6)?;
+    let a = codec::array(&v, 4)?;
     if codec::number(&a[0])? != 1 {
         return Err(fault());
     }
@@ -587,8 +640,8 @@ fn restore_plan(b: &[u8], policy: &PolicyId, id: PlanId) -> Result<Plan, PgError
         policy: &p,
         targets: &t,
         executions: &facts,
-        request: data(RequestId::new(policy.tenant(), codec::text(&a[4])?))?,
-        as_of: codec::time(&a[5])?,
+        request,
+        as_of,
     }))?;
     if plan.policy() != policy || plan.id() != id {
         return Err(fault());

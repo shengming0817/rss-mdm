@@ -3,13 +3,21 @@ use rss_transactional_messaging_postgres::PgError;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("request rejected: {self:?}")]
 pub enum Rejection {
+    /// Input violates the current closed contract or a core invariant.
     InvalidInput,
+    /// An identity belongs to another tenant.
     TenantMismatch,
+    /// The required aggregate or immutable input does not exist.
     NotFound,
+    /// Expected revision or lifecycle precondition no longer matches.
     Conflict,
+    /// An existing immutable identity or request was reused with different bytes.
     IdentityConflict,
+    /// A bounded document, fact or target limit would be exceeded.
     BudgetExceeded,
+    /// Archival requires a caller-owned transaction that checks external references under the same lock.
     CompanionRequired,
+    /// The version is still referenced and cannot be archived.
     Referenced,
 }
 /// Propagate the outer error to the transaction owner; the inner value is a business result.
@@ -17,16 +25,22 @@ pub type InTransaction<T> = Result<Result<T, Rejection>, PgError>;
 /// Database settlement retains the RSS commit/rollback certainty.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The adapter rejected the input before staging its mutation.
     #[error(transparent)]
     Rejected(#[from] Rejection),
+    /// The transaction did not start; no transaction effects were submitted.
     #[error("transaction not started: {0}")]
     NotStarted(PgError),
+    /// The transaction was confirmed rolled back.
     #[error("transaction rolled back: {0}")]
     RolledBack(PgError),
+    /// Rollback could not be confirmed; retain request identity for recovery.
     #[error("rollback unconfirmed: {0}")]
     RollbackFailed(PgError),
+    /// Commit may have succeeded; query or replay the identical original request.
     #[error("commit unconfirmed; resolve original request: {0}")]
     CommitUnknown(PgError),
+    /// Runtime execution was fenced by RSS; do not bypass the fence.
     #[error("transaction fenced: {0}")]
     Fenced(PgError),
 }

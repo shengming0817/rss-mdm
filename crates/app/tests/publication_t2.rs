@@ -46,9 +46,15 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
             .len(),
         2
     );
+    let withdrawal_request = request_for(&service, &input.candidate).await;
     assert_eq!(
         service
-            .withdraw(&input.candidate, rel::Ring::Test, at(10), cutoff())
+            .withdraw(
+                &input.candidate,
+                rel::Ring::Test,
+                &withdrawal_request,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Complete
@@ -57,6 +63,19 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     assert_eq!(
         service
             .reconcile_withdrawal(p.id(), p.attempt, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
+    );
+    assert_eq!(server.state.lock().unwrap().deletes, 1);
+    assert_eq!(
+        service
+            .withdraw(
+                &input.candidate,
+                rel::Ring::Test,
+                &withdrawal_request,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Complete
@@ -138,7 +157,12 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
     ));
     assert_eq!(
         service
-            .withdraw(&input.candidate, rel::Ring::Test, at(10), cutoff())
+            .withdraw(
+                &input.candidate,
+                rel::Ring::Test,
+                &request_for(&service, &input.candidate).await,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Pending
@@ -162,7 +186,12 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
     assert_eq!(server.state.lock().unwrap().deletes, 0);
     assert_eq!(
         service
-            .withdraw(&input.candidate, rel::Ring::Test, at(10), cutoff())
+            .withdraw(
+                &input.candidate,
+                rel::Ring::Test,
+                &request_for(&service, &input.candidate).await,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Complete
@@ -179,8 +208,21 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
     let first = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
     service.create_candidate(&first, cutoff()).await.unwrap();
     let p1 = authorize(&service, &first.candidate, rel::Ring::Test).await;
+    sql(
+        "CREATE FUNCTION public.reject_brew_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_brew_result();",
+    );
+    let failed = service.publish(p1.id(), 1, at(10), cutoff()).await;
+    sql(
+        "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_brew_result();",
+    );
+    assert!(failed.is_err());
+    drop(service);
+    let service = server.service(runtime.clone(), config.clone()).await;
     assert!(matches!(
-        service.publish(p1.id(), 1, at(10), cutoff()).await.unwrap(),
+        service
+            .reconcile(p1.id(), 1, at(10), cutoff())
+            .await
+            .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
     let old = git(&config, &["rev-parse", "refs/heads/main"]);
@@ -195,7 +237,12 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
     let current = git(&config, &["rev-parse", "refs/heads/main"]);
     assert_eq!(
         service
-            .withdraw(&first.candidate, rel::Ring::Test, at(10), cutoff())
+            .withdraw(
+                &first.candidate,
+                rel::Ring::Test,
+                &request_for(&service, &first.candidate).await,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Complete
@@ -204,7 +251,12 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
     assert!(git(&config, &["show", "refs/heads/main:Casks/app.rb"]).contains("version \"2\""));
     assert_eq!(
         service
-            .withdraw(&second.candidate, rel::Ring::Test, at(10), cutoff())
+            .withdraw(
+                &second.candidate,
+                rel::Ring::Test,
+                &request_for(&service, &second.candidate).await,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Complete
@@ -236,7 +288,12 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
     let production = authorize(&service, &input.candidate, rel::Ring::Production).await;
     assert_eq!(
         service
-            .withdraw(&input.candidate, rel::Ring::Production, at(10), cutoff())
+            .withdraw(
+                &input.candidate,
+                rel::Ring::Production,
+                &request_for(&service, &input.candidate).await,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Complete
@@ -249,10 +306,37 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
             .is_ok()
     );
     assert_eq!(server.state.lock().unwrap().posts, 2);
+    server.state.lock().unwrap().reject_information_once = true;
+    assert_eq!(
+        service
+            .withdraw(
+                &input.candidate,
+                rel::Ring::Test,
+                &request_for(&service, &input.candidate).await,
+                cutoff()
+            )
+            .await
+            .unwrap(),
+        Withdrawal::Pending
+    );
+    assert_eq!(server.state.lock().unwrap().deletes, 0);
+    assert_eq!(
+        service
+            .reconcile_withdrawal(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Pending
+    );
+    assert_eq!(server.state.lock().unwrap().deletes, 0);
     server.state.lock().unwrap().drop_delete_response = true;
     assert_eq!(
         service
-            .withdraw(&input.candidate, rel::Ring::Test, at(10), cutoff())
+            .withdraw(
+                &input.candidate,
+                rel::Ring::Test,
+                &request_for(&service, &input.candidate).await,
+                cutoff()
+            )
             .await
             .unwrap(),
         Withdrawal::Pending
@@ -287,7 +371,17 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         Err(Error::Content)
     ));
     input.submission = original;
-    service.create_candidate(&input, cutoff()).await.unwrap();
+    let receipt = service.create_candidate(&input, cutoff()).await.unwrap();
+    assert_eq!(
+        service.create_candidate(&input, cutoff()).await.unwrap(),
+        receipt
+    );
+    input.expected_resource_revision += 1;
+    assert!(matches!(
+        service.create_candidate(&input, cutoff()).await,
+        Err(Error::Conflict)
+    ));
+    input.expected_resource_revision -= 1;
     let r = rss_mdm_resource_postgres::Request {
         id: id(&unique()),
         resource: input.resource.clone(),
@@ -303,13 +397,67 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         Err(Error::Blocked)
     ));
     let mut same = server.winget();
-    same[1] = same[0].clone();
+    same.pilot = same.test.clone();
     assert!(
         PublicationService::connect(
             runtime.clone(),
             tenant(),
             server.logical.clone(),
             same,
+            server.artifacts(),
+            actors(),
+            cutoff()
+        )
+        .await
+        .is_err()
+    );
+    let connect = || {
+        PublicationService::connect(
+            runtime.clone(),
+            tenant(),
+            server.logical.clone(),
+            server.winget(),
+            server.artifacts(),
+            actors(),
+            cutoff(),
+        )
+    };
+    sql("GRANT SELECT ON mdm_access.credentials TO mdm_software_driver");
+    let extra = connect().await;
+    sql("REVOKE SELECT ON mdm_access.credentials FROM mdm_software_driver");
+    assert!(extra.is_err());
+    sql("GRANT INSERT ON mdm_access.audit TO mdm_software_driver WITH GRANT OPTION");
+    let delegation = connect().await;
+    sql("REVOKE GRANT OPTION FOR INSERT ON mdm_access.audit FROM mdm_software_driver");
+    assert!(delegation.is_err());
+    sql("ALTER POLICY tenant ON mdm_access.audit USING(true) WITH CHECK(true)");
+    let broad = connect().await;
+    sql(
+        "ALTER POLICY tenant ON mdm_access.audit USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+    );
+    assert!(broad.is_err());
+    assert!(connect().await.is_ok());
+    assert!(
+        PublicationService::connect(
+            runtime.clone(),
+            tenant(),
+            format!("{}-alias", server.logical),
+            server.winget(),
+            server.artifacts(),
+            actors(),
+            cutoff()
+        )
+        .await
+        .is_err()
+    );
+    let mut swapped = server.winget();
+    std::mem::swap(&mut swapped.test, &mut swapped.pilot);
+    assert!(
+        PublicationService::connect(
+            runtime.clone(),
+            tenant(),
+            server.logical.clone(),
+            swapped,
             server.artifacts(),
             actors(),
             cutoff()
@@ -427,4 +575,69 @@ async fn public_artifact_digest_length_tls_redirect_and_timeout_fail_closed() {
         Err(Error::ArtifactTimeout)
     ));
     assert!(!server.state.lock().unwrap().artifact_auth_leaked);
+}
+
+#[tokio::test]
+#[ignore = "real PG COMMIT ACK loss + HTTPS: publication-t2"]
+async fn publication_result_commit_unknown_recovers_one_external_call_and_audit() {
+    let server = Server::new().await;
+    let proxy = ack::AckProxy::start().await;
+    let runtime = runtime_at(Some(proxy.port)).await;
+    let service = server.service(runtime.clone(), server.winget()).await;
+    let input = seed(runtime.clone(), &server, server.winget_submission()).await;
+    service.create_candidate(&input, cutoff()).await.unwrap();
+    let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    let gate = ack::CommitGate::start(input.candidate.value()).await;
+    let cutoff =
+        rss_request_context::Deadline::from_timeout(&Timer, std::time::Duration::from_secs(7))
+            .unwrap();
+    let mut operation = Box::pin(service.publish(p.id(), 1, at(10), cutoff));
+    tokio::select! {_=gate.entered()=>{}, result=&mut operation=>panic!("publication returned before result COMMIT: {result:?}")}
+    proxy
+        .discard
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    gate.release();
+    let result = operation.await;
+    assert!(matches!(result, Err(Error::CommitUnknown(_))), "{result:?}");
+    drop(gate);
+    drop(service);
+    runtime.close().await;
+    drop(proxy);
+    let runtime = publication_support::pg::runtime().await;
+    let service = server.service(runtime.clone(), server.winget()).await;
+    assert!(matches!(
+        service
+            .reconcile(p.id(), 1, at(10), publication_support::pg::cutoff())
+            .await
+            .unwrap(),
+        rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
+    ));
+    assert_eq!(server.state.lock().unwrap().posts, 1);
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_access.audit WHERE action='software_result' AND target='{}'",
+            input.candidate.value()
+        )),
+        "1"
+    );
+    let target:serde_json::Value=serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE candidate='{}' AND left(id,2)='p:'",input.candidate.value()))).unwrap();
+    let binding = target["binding"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| format!("{:02x}", b.as_u64().unwrap()))
+        .collect::<String>();
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_software_composition.slots WHERE binding=decode('{binding}','hex') AND operation IS NOT NULL"
+        )),
+        "0"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_software_composition.projections WHERE binding=decode('{binding}','hex')"
+        )),
+        "1"
+    );
+    runtime.close().await;
 }

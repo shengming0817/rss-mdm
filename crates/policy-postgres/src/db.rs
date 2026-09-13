@@ -98,6 +98,15 @@ pub(crate) async fn receipt(
     })
     .transpose()
 }
+pub(crate) async fn original_request(
+    tx: &mut PgTransaction<'_>,
+    id: &str,
+) -> Result<Option<Vec<u8>>, PgError> {
+    let (tenant, id) = (tx.tenant_id().to_string(), id.to_owned());
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT request,fingerprint FROM mdm_policy.requests WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    row.map(|r| checked(r.try_get("request")?, r.try_get("fingerprint")?))
+        .transpose()
+}
 pub(crate) async fn save_receipt(
     tx: &mut PgTransaction<'_>,
     id: &str,

@@ -176,9 +176,9 @@ def main():
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_WINDOWS_FIXTURES']=str(root)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_upgrade"], stdout=subprocess.DEVNULL, timeout=10)
-            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::populated_windows_upgrade", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
+            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::populated_windows_and_backend_upgrade", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
+            require(upgrade.returncode == 0 and 'test migration::tests::populated_windows_and_backend_upgrade ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
             if not device_only and not windows_only:
                 verify_startup_deadlines(migrators[0],root,port,env)

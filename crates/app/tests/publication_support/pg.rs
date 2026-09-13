@@ -38,10 +38,13 @@ pub fn config() -> serde_json::Value {
         .unwrap()
 }
 pub async fn runtime() -> Arc<PgRuntime> {
+    runtime_at(None).await
+}
+pub async fn runtime_at(port: Option<u16>) -> Arc<PgRuntime> {
     let c = config();
     let config = PgConfig::new(
         "localhost",
-        c["port"].as_u64().unwrap() as u16,
+        port.unwrap_or(c["port"].as_u64().unwrap() as u16),
         "backend",
         "mdm_software_driver",
         PgPassword::new("backend-fixture"),

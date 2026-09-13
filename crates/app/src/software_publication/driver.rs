@@ -116,14 +116,23 @@ impl PublicationService {
         {
             return Ok(p.outcome);
         }
-        let matched = matches!(
-            tokio::time::timeout_at(
-                cutoff.instant().into(),
-                self.inspect_source(&call.target, &subject, false)
-            )
-            .await,
-            Ok(Ok(true))
-        );
+        let inspection = tokio::time::timeout_at(
+            cutoff.instant().into(),
+            self.inspect_source(&call.target, &subject, false),
+        )
+        .await;
+        let matched = match inspection {
+            Ok(Ok(value)) => value,
+            Ok(Err(_)) => false,
+            Err(_) => {
+                tracing::warn!(
+                    stage = "reconcile",
+                    reason = "deadline",
+                    "software source inspection failed"
+                );
+                false
+            }
+        };
         self.record_result(
             &call.target,
             if matched {
@@ -252,68 +261,108 @@ impl PublicationService {
     ) -> Result<WriteObservation> {
         match &self.sources.binding(t.ring()?).driver {
             Driver::Winget { publisher, access } => {
-                let Submission::Winget { manifest } = &s.submission else {
-                    return Err(Error::Content);
-                };
-                let m = winget::VersionManifest::parse(
-                    self.tenant(),
-                    &self.sources.logical,
-                    &serde_json::to_vec(manifest).map_err(|_| Error::Content)?,
-                )
-                .map_err(|_| Error::Content)?;
-                let result = if remove {
-                    publisher.withdraw(&m, access).await
-                } else {
-                    publisher.submit(&m, access).await
-                };
-                Ok(match result {
-                    Ok(winget::WriteResponse::Accepted) => WriteObservation::Acknowledged,
-                    // The information request precedes POST/DELETE. Failure here proves no write was sent.
-                    Err(
-                        winget::Error::HttpStatus {
-                            stage: winget::RequestStage::Information,
-                            ..
-                        }
-                        | winget::Error::Transport(winget::RequestStage::Information)
-                        | winget::Error::Timeout(winget::RequestStage::Information),
-                    ) => WriteObservation::NotSubmitted,
-                    _ => WriteObservation::Uncertain,
-                })
+                self.write_winget(publisher, access, s, remove).await
             }
-            Driver::Brew { repo, tap } => {
-                let Submission::Brew { recipe } = &s.submission else {
-                    return Err(Error::Content);
-                };
-                let base = t
-                    .base
-                    .as_deref()
-                    .map(brew::CommitId::parse)
-                    .transpose()
-                    .map_err(|_| Error::Content)?;
-                let at = Timepoint::try_from(t.commit_at).map_err(|_| Error::Content)?;
-                let document = recipe.render(self.tenant(), tap)?;
-                let prepared = if remove {
-                    repo.prepare_remove(
-                        base.ok_or(Error::Content)?,
-                        document,
-                        &withdraw_operation(t),
-                        at,
-                    )
-                    .await
-                } else {
-                    repo.prepare(base, document, &operation(t), at).await
-                }
-                .map_err(|_| Error::Source)?;
-                if Some(prepared.target().as_str()) != t.commit.as_deref() {
-                    return Err(Error::Content);
-                }
-                Ok(if repo.apply(&prepared).await.is_ok() {
-                    WriteObservation::Acknowledged
-                } else {
-                    WriteObservation::Uncertain
-                })
-            }
+            Driver::Brew { repo, tap } => self.write_brew(repo, tap, t, s, remove).await,
         }
+    }
+    async fn write_winget(
+        &self,
+        publisher: &winget::Publisher,
+        access: &winget::WriteAccess,
+        s: &db::Subject,
+        remove: bool,
+    ) -> Result<WriteObservation> {
+        let Submission::Winget { manifest } = &s.submission else {
+            return Err(Error::Content);
+        };
+        let m = winget::VersionManifest::parse(
+            self.tenant(),
+            &self.sources.logical,
+            &serde_json::to_vec(manifest).map_err(|_| Error::Content)?,
+        )
+        .map_err(|_| Error::Content)?;
+        let result = if remove {
+            publisher.withdraw(&m, access).await
+        } else {
+            publisher.submit(&m, access).await
+        };
+        if !matches!(result, Ok(winget::WriteResponse::Accepted)) {
+            tracing::warn!(
+                backend = "winget",
+                stage = if remove { "withdraw" } else { "publish" },
+                ?result,
+                "software source write observation"
+            );
+        }
+        Ok(match result {
+            Ok(winget::WriteResponse::Accepted) => WriteObservation::Acknowledged,
+            // The information request precedes POST/DELETE. Failure here proves no write was sent.
+            Err(
+                winget::Error::HttpStatus {
+                    stage: winget::RequestStage::Information,
+                    ..
+                }
+                | winget::Error::Transport(winget::RequestStage::Information)
+                | winget::Error::Timeout(winget::RequestStage::Information),
+            ) => WriteObservation::NotSubmitted,
+            _ => WriteObservation::Uncertain,
+        })
+    }
+    async fn write_brew(
+        &self,
+        repo: &brew::Repository,
+        tap: &str,
+        t: &Target,
+        s: &db::Subject,
+        remove: bool,
+    ) -> Result<WriteObservation> {
+        let Submission::Brew { recipe } = &s.submission else {
+            return Err(Error::Content);
+        };
+        let base = t
+            .base
+            .as_deref()
+            .map(brew::CommitId::parse)
+            .transpose()
+            .map_err(|_| Error::Content)?;
+        let at = Timepoint::try_from(t.commit_at).map_err(|_| Error::Content)?;
+        let document = recipe.render(self.tenant(), tap)?;
+        let prepared = if remove {
+            repo.prepare_remove(
+                base.ok_or(Error::Content)?,
+                document,
+                &withdraw_operation(t),
+                at,
+            )
+            .await
+        } else {
+            repo.prepare(base, document, &operation(t), at).await
+        }
+        .map_err(|reason| {
+            tracing::warn!(
+                ?reason,
+                stage = "source",
+                "software source operation failed"
+            );
+            Error::Source
+        })?;
+        if Some(prepared.target().as_str()) != t.commit.as_deref() {
+            return Err(Error::Content);
+        }
+        let result = repo.apply(&prepared).await;
+        if let Err(reason) = &result {
+            tracing::warn!(
+                backend = "brew",
+                ?reason,
+                "software source write observation"
+            );
+        }
+        Ok(if result.is_ok() {
+            WriteObservation::Acknowledged
+        } else {
+            WriteObservation::Uncertain
+        })
     }
     async fn inspect_source(&self, t: &Target, s: &db::Subject, remove: bool) -> Result<bool> {
         match &self.sources.binding(t.ring()?).driver {
@@ -327,10 +376,20 @@ impl PublicationService {
                     &serde_json::to_vec(manifest).map_err(|_| Error::Content)?,
                 )
                 .map_err(|_| Error::Content)?;
-                let result = publisher
-                    .inspect(&m, access)
-                    .await
-                    .map_err(|_| Error::Source)?;
+                let result = publisher.inspect(&m, access).await.map_err(|reason| {
+                    tracing::warn!(
+                        ?reason,
+                        stage = "source",
+                        "software source operation failed"
+                    );
+                    Error::Source
+                })?;
+                tracing::debug!(
+                    backend = "winget",
+                    stage = "reconcile",
+                    ?result,
+                    "software source inspection"
+                );
                 Ok(result
                     == if remove {
                         winget::Inspection::Absent
@@ -344,17 +403,27 @@ impl PublicationService {
                 };
                 let target = brew::CommitId::parse(t.commit.as_deref().ok_or(Error::Content)?)
                     .map_err(|_| Error::Content)?;
-                if !repo
-                    .contains_commit(&target)
-                    .await
-                    .map_err(|_| Error::Source)?
-                {
+                if !repo.contains_commit(&target).await.map_err(|reason| {
+                    tracing::warn!(
+                        ?reason,
+                        stage = "source",
+                        "software source operation failed"
+                    );
+                    Error::Source
+                })? {
                     return Ok(false);
                 }
                 let result = repo
                     .presence(&target, &recipe.render(self.tenant(), tap)?)
                     .await
-                    .map_err(|_| Error::Source)?;
+                    .map_err(|reason| {
+                        tracing::warn!(
+                            ?reason,
+                            stage = "source",
+                            "software source operation failed"
+                        );
+                        Error::Source
+                    })?;
                 Ok(result
                     == if remove {
                         brew::DocumentPresence::Absent
@@ -439,12 +508,12 @@ impl PublicationService {
         &self,
         id: &rel::CandidateId,
         ring: rel::Ring,
-        at: Timepoint,
+        request: &ServiceRequest,
         cutoff: Deadline,
     ) -> Result<Withdrawal> {
-        let (c, _, _) = self.context(id, cutoff).await?;
-        if c.snapshot().disposition == rel::Disposition::Active {
-            let r = self.request(&c, &self.actors.publisher, at, rel::Operation::Quarantine)?;
+        let at = request.as_of;
+        let r = request.core(&self.actors.publisher, rel::Operation::Quarantine);
+        {
             settle(
                 self.runtime
                     .local_tx_with_context(
@@ -619,7 +688,7 @@ impl PublicationService {
         }
         if !call.prepared {
             if !self
-                .prepare_withdrawal(&call.target, &subject, cutoff)
+                .prepare_withdrawal_bounded(&call.target, &subject, cutoff)
                 .await?
             {
                 return Ok(Withdrawal::Complete);
@@ -665,19 +734,38 @@ impl PublicationService {
         subject: &db::Subject,
         cutoff: Deadline,
     ) -> Result<()> {
-        if self.start_call(Table::Withdraw, target, cutoff).await?
-            && matches!(
-                tokio::time::timeout_at(
-                    cutoff.instant().into(),
-                    self.write_source(target, subject, true)
-                )
-                .await,
-                Ok(Ok(WriteObservation::Acknowledged))
-            )
+        if !self.start_call(Table::Withdraw, target, cutoff).await? {
+            return Ok(());
+        }
+        match tokio::time::timeout_at(
+            cutoff.instant().into(),
+            self.write_source(target, subject, true),
+        )
+        .await
         {
-            self.acknowledge(Table::Withdraw, target, cutoff).await?;
+            Ok(Ok(WriteObservation::Acknowledged)) => {
+                self.acknowledge(Table::Withdraw, target, cutoff).await?
+            }
+            Ok(Ok(WriteObservation::NotSubmitted)) => {
+                self.reset_withdrawal_preflight(target, cutoff).await?
+            }
+            _ => tracing::warn!(
+                stage = "withdraw",
+                reason = "unknown",
+                "software source write needs reconciliation"
+            ),
         }
         Ok(())
+    }
+    async fn reset_withdrawal_preflight(&self, t: &Target, cutoff: Deadline) -> Result<()> {
+        settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(self,t),|(s,t),tx|Box::pin(async move {
+            db::lock(tx,"source",&format!("{}:{}",hex(&t.binding),t.slot)).await?;
+            let (tenant,key)=(tx.tenant_id().to_string(),t.withdrawal_key());
+            let changed=tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_software_composition.targets SET attempted=false WHERE tenant_id=$1::uuid AND id=$2 AND attempted AND NOT acknowledged").bind(tenant).bind(key).execute(c).await.map(|r|r.rows_affected())})).await?;
+            if changed!=1 {return Err(db::fault());}
+            db::audit(tx,&s.actors.backend,&t.candidate,"software_preflight").await?;
+            Ok(Ok(()))
+        })).await)
     }
     async fn settle_withdrawal(
         &self,
@@ -710,6 +798,26 @@ impl PublicationService {
         } else {
             Ok(Withdrawal::Pending)
         }
+    }
+    async fn prepare_withdrawal_bounded(
+        &self,
+        t: &Target,
+        subject: &db::Subject,
+        cutoff: Deadline,
+    ) -> Result<bool> {
+        tokio::time::timeout_at(
+            cutoff.instant().into(),
+            self.prepare_withdrawal(t, subject, cutoff),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                stage = "withdraw_prepare",
+                reason = "deadline",
+                "software source preparation failed"
+            );
+            Error::Source
+        })?
     }
     async fn prepare_withdrawal(
         &self,
@@ -766,7 +874,14 @@ impl PublicationService {
             if repo
                 .head()
                 .await
-                .map_err(|_| Error::Source)?
+                .map_err(|reason| {
+                    tracing::warn!(
+                        ?reason,
+                        stage = "source",
+                        "software source operation failed"
+                    );
+                    Error::Source
+                })?
                 .as_ref()
                 .map(|c| c.as_str())
                 != prepared.base.as_deref()
@@ -783,7 +898,14 @@ impl PublicationService {
                     Timepoint::try_from(t.commit_at).map_err(|_| Error::Content)?,
                 )
                 .await
-                .map_err(|_| Error::Source)?;
+                .map_err(|reason| {
+                    tracing::warn!(
+                        ?reason,
+                        stage = "source",
+                        "software source operation failed"
+                    );
+                    Error::Source
+                })?;
             prepared.commit = Some(p.target().as_str().into());
         }
         settle(

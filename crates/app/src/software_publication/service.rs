@@ -30,7 +30,7 @@ pub struct ServiceRequest {
     pub as_of: Timepoint,
 }
 impl ServiceRequest {
-    fn core(&self, actor: &rel::ActorId, operation: rel::Operation) -> rel::Request {
+    pub(super) fn core(&self, actor: &rel::ActorId, operation: rel::Operation) -> rel::Request {
         rel::Request {
             id: self.id.clone(),
             actor: actor.clone(),
@@ -53,21 +53,26 @@ impl PublicationService {
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         logical_source: String,
-        config: [SourceConfig; 3],
+        config: RingSources,
         artifacts: ArtifactReader,
         actors: ServiceActors,
         cutoff: Deadline,
     ) -> Result<Self> {
         actors.check(tenant)?;
-        let sources = Sources::new(tenant, logical_source, config).await?;
+        let sources = tokio::time::timeout_at(
+            cutoff.instant().into(),
+            Sources::new(tenant, logical_source, config),
+        )
+        .await
+        .map_err(|_| Error::Source)??;
         let resources = ResourceStore::new(runtime.clone(), tenant, budget(cutoff)).await?;
         let releases = ReleaseStore::new(runtime.clone(), tenant, budget(cutoff)).await?;
         let mut heads = [None, None, None];
         for (i, b) in sources.bindings.iter().enumerate() {
             if let Driver::Brew { repo, .. } = &b.driver {
-                heads[i] = repo
-                    .head()
+                heads[i] = tokio::time::timeout_at(cutoff.instant().into(), repo.head())
                     .await
+                    .map_err(|_| Error::Source)?
                     .map_err(|_| Error::Source)?
                     .map(|c| c.as_str().into());
             }
@@ -133,6 +138,7 @@ impl PublicationService {
             resource: input.resource.as_str().into(),
             version: input.version.as_str().into(),
             resource_digest: version.digest().bytes(),
+            expected_resource_revision: input.expected_resource_revision,
             coordinate: prepared.coordinate,
             submission: prepared.submission,
         };
@@ -401,7 +407,12 @@ impl PublicationService {
                 .transition_audited(c, subject, r, "software_authorize", cutoff)
                 .await;
         };
-        let target = self.prepare_target(subject, p, cutoff).await?;
+        let target = tokio::time::timeout_at(
+            cutoff.instant().into(),
+            self.prepare_target(subject, p, cutoff),
+        )
+        .await
+        .map_err(|_| Error::Source)??;
         settle(
             self.runtime
                 .local_tx_with_context(
@@ -628,22 +639,6 @@ impl PublicationService {
         })
         .await
         .map_err(|_| Error::ArtifactTimeout)?
-    }
-    pub(super) fn request(
-        &self,
-        c: &rel::Candidate,
-        actor: &rel::ActorId,
-        at: Timepoint,
-        operation: rel::Operation,
-    ) -> Result<rel::Request> {
-        Ok(rel::Request {
-            id: rel::RequestId::new(self.tenant(), uuid::Uuid::new_v4().simple().to_string())
-                .map_err(|_| Error::Identity)?,
-            actor: actor.clone(),
-            expected_revision: c.snapshot().revision,
-            as_of: at,
-            operation,
-        })
     }
     pub(super) async fn resource_usable(
         &self,

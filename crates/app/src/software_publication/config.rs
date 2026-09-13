@@ -23,6 +23,18 @@ pub enum SourceConfig {
     Winget(WingetConfig),
     Brew(BrewConfig),
 }
+/// Fixed, named publication environments; each must own a distinct physical source.
+#[derive(Clone)]
+pub struct RingSources {
+    pub test: SourceConfig,
+    pub pilot: SourceConfig,
+    pub production: SourceConfig,
+}
+impl RingSources {
+    fn ordered(self) -> [SourceConfig; 3] {
+        [self.test, self.pilot, self.production]
+    }
+}
 /// Identities are attested by this controlled process, never by an HTTP request body.
 pub struct ServiceActors {
     pub validator: rel::ActorId,
@@ -70,7 +82,7 @@ pub(super) struct Sources {
     pub digest: [u8; 32],
 }
 impl Sources {
-    pub async fn new(tenant: TenantId, logical: String, config: [SourceConfig; 3]) -> Result<Self> {
+    pub async fn new(tenant: TenantId, logical: String, config: RingSources) -> Result<Self> {
         rel::SoftwareIdentity::new(rel::SoftwareIdentityFields {
             source: logical.clone(),
             package: "validation".into(),
@@ -79,8 +91,16 @@ impl Sources {
         })
         .map_err(|_| Error::Input)?;
         let mut values = Vec::new();
-        for config in config {
-            values.push(compile(tenant, &logical, config).await?);
+        for (ring, config) in config.ordered().into_iter().enumerate() {
+            let mut binding = compile(tenant, &logical, config).await?;
+            binding.configuration = serde_json::to_vec(&serde_json::json!([
+                1,
+                logical,
+                ring,
+                binding.configuration
+            ]))
+            .map_err(|_| Error::Input)?;
+            values.push(binding);
         }
         if values
             .iter()
@@ -96,7 +116,10 @@ impl Sources {
             1,
             tenant.to_string(),
             logical,
-            values.iter().map(|b| &b.identity).collect::<Vec<_>>()
+            values
+                .iter()
+                .map(|b| (&b.identity, &b.configuration))
+                .collect::<Vec<_>>()
         ]))
         .map_err(|_| Error::Input)?;
         let digest = Sha256::digest(envelope).into();

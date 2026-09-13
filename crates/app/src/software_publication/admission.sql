@@ -39,3 +39,27 @@ SELECT
  AND has_table_privilege(current_user,'mdm_access.audit','INSERT')
  AND NOT has_table_privilege(current_user,'mdm_access.audit','SELECT,UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES')
  AND (SELECT relrowsecurity AND relforcerowsecurity AND relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) FROM pg_class WHERE oid='mdm_access.audit'::regclass)
+ -- Final composition admission closes permissions outside the three owned surfaces.
+ AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+ AND c.relkind IN ('r','v','m','f')
+ AND n.nspname NOT IN ('mdm_resource','mdm_software_release','mdm_software_composition')
+ AND (n.nspname,c.relname) NOT IN (('mdm_access','audit'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
+ AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
+ AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
+ AND (n.nspname,c.relname)<>('rss_transactional_messaging','outbox_seq_seq')
+ AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+ AND p.oid<>'rss_transactional_messaging.check_execution()'::regprocedure
+ AND has_function_privilege(current_user,p.oid,'EXECUTE'))
+ AND (SELECT count(*)=1 FROM pg_policy WHERE polrelid='mdm_access.audit'::regclass)
+ AND EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='mdm_access.audit'::regclass AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
+ AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
+ AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid')
+ AND NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND has_schema_privilege(current_user,n.oid,'CREATE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_class c,LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+ WHERE c.oid='mdm_access.audit'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a
+ WHERE c.attrelid='mdm_access.audit'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
