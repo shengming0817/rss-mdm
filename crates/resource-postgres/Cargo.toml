@@ -17,7 +17,6 @@ sha2.workspace = true
 thiserror.workspace = true
 [dev-dependencies]
 tokio = {workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync"]}
-uuid.workspace = true
 [features]
 integration = ["rss-transactional-messaging-postgres/integration"]
 [lints]

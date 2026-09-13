@@ -43,7 +43,7 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
                 run(['cargo','run','--locked','--quiet','-p','rss-mdm-app','--bin','rss-mdm','--','migrate','--config',str(config)],cwd=source)
             else:
                 if migrations is None:
-                    migrations=run(['cargo','run','--locked','--quiet','-p','rss-mdm-policy-postgres','--example','migrations'],cwd=source,capture_output=True).stdout
+                    migrations=run(['cargo','run','--locked','--quiet','-p','rss-mdm-policy-postgres','--example','policy_migrations'],cwd=source,capture_output=True).stdout
                     migrations+='\n'+(source/'crates/resource-postgres/migrations/0001.sql').read_text()+'\n'+(source/'crates/software-release-postgres/migrations/0001.sql').read_text()
                 try:sql('BEGIN; SET ROLE mdm_owner; '+migrations+' COMMIT;')
                 except subprocess.CalledProcessError as e:print(e.stderr,file=sys.stderr);raise

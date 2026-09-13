@@ -68,6 +68,7 @@ class GroupPostgresGuards(unittest.TestCase):
             with self.subTest(capability=capability):
                 data, source, pin, locked = self.fixture()
                 data = json.loads(json.dumps(data).replace('rss-mdm-group', 'rss-mdm-' + capability))
+                next(n for n in data['resolve']['nodes'] if n['id'] == 'root')['deps'] = [d for d in next(n for n in data['resolve']['nodes'] if n['id'] == 'root')['deps'] if d['pkg'] != 'uuid']
                 consumer.verify_closure(data, source, pin, locked, capability)
                 products = {f'rss-mdm-{capability}', f'rss-mdm-{capability}-postgres'}
                 tree = '\n'.join(f'{name} v1.0.0' for name in products | consumer.RSS | {'sqlx-postgres'})

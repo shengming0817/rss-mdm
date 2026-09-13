@@ -104,5 +104,10 @@ pub fn sql(statement: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
 pub fn unique() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "p{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }

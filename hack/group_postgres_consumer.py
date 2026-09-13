@@ -21,6 +21,11 @@ DIRECT = {'rss-mdm-group-postgres', 'rss-contract', 'rss-request-context',
           'rss-transactional-messaging', 'rss-transactional-messaging-postgres',
           'tokio', 'sqlx', 'serde_json', 'uuid'}
 FORBIDDEN = {'rss-mdm-app', 'axum', 'reqwest', 'hyper'}
+def direct_dependencies(capability):
+    direct = (DIRECT - {'rss-mdm-group-postgres'}) | {f'rss-mdm-{capability}-postgres'}
+    return direct if capability == 'group' else direct - {'uuid'}
+
+
 INACTIVE_DRIVERS = {'sqlx-mysql', 'sqlx-sqlite'}
 
 
@@ -28,7 +33,7 @@ def verify_closure(data, product_source, pin, locked, capability="group"):
     ci.require(capability in {"group", "policy", "resource", "software-release"}, "unknown PG capability")
     product = f"rss-mdm-{capability}-postgres"
     products = {product, f"rss-mdm-{capability}"}
-    direct_expected = (DIRECT - {"rss-mdm-group-postgres"}) | {product}
+    direct_expected = direct_dependencies(capability)
     packages = {p['id']: p for p in data['packages']}
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     root = data['resolve']['root']
@@ -101,7 +106,7 @@ def verify_no_feature_supplement(consumer, baseline):
 def run_consumer(source, base, defaults, head, pin, out, capability="group", fixture=None, config_key="GROUP_PG_CONFIG", expected_tests=None):
     ci.require(capability in {"group", "policy", "resource", "software-release"}, "unknown PG capability")
     product = f"rss-mdm-{capability}-postgres"
-    direct = (DIRECT - {"rss-mdm-group-postgres"}) | {product}
+    direct = direct_dependencies(capability)
     store = {"group":"GroupStore", "policy":"PolicyStore", "resource":"ResourceStore", "software-release":"ReleaseStore"}[capability]
     fixture = fixture or pg.fixture
     expected_tests = pg.CONSUMER_TESTS if expected_tests is None else expected_tests
@@ -177,7 +182,8 @@ def run_consumer(source, base, defaults, head, pin, out, capability="group", fix
     run(['cargo', 'test', '--locked', '--no-run'])
     # Schema is installed from this consumer's exact public dependencies as well.
     (root / 'examples').mkdir()
-    shutil.copyfile(source / f'crates/{capability}-postgres/examples/migrations.rs', root / 'examples/migrations.rs')
+    example = 'migrations' if capability == 'group' else capability.replace('-', '_') + '_migrations'
+    shutil.copyfile(source / f'crates/{capability}-postgres/examples/{example}.rs', root / 'examples/migrations.rs')
     migration = run(['cargo', 'run', '--locked', '--quiet', '--example', 'migrations'])
     with fixture(migrations=migration) as (fixture_env, _):
         result = run(['cargo', 'test', '--locked', '--test', 'consumer', '--', '--ignored', '--test-threads=1'],
