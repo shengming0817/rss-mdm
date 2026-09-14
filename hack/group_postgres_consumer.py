@@ -23,7 +23,8 @@ DIRECT = {'rss-mdm-group-postgres', 'rss-contract', 'rss-request-context',
 FORBIDDEN = {'rss-mdm-app', 'axum', 'reqwest', 'hyper'}
 def direct_dependencies(capability):
     direct = (DIRECT - {'rss-mdm-group-postgres'}) | {f'rss-mdm-{capability}-postgres'}
-    return direct if capability == 'group' else direct - {'uuid'}
+    # Backend contract assertions hash schema bytes; this dependency is already in each adapter closure.
+    return direct if capability == 'group' else (direct - {'uuid'}) | {'sha2'}
 
 
 INACTIVE_DRIVERS = {'sqlx-mysql', 'sqlx-sqlite'}

@@ -69,6 +69,14 @@ class GroupPostgresGuards(unittest.TestCase):
                 data, source, pin, locked = self.fixture()
                 data = json.loads(json.dumps(data).replace('rss-mdm-group', 'rss-mdm-' + capability))
                 next(n for n in data['resolve']['nodes'] if n['id'] == 'root')['deps'] = [d for d in next(n for n in data['resolve']['nodes'] if n['id'] == 'root')['deps'] if d['pkg'] != 'uuid']
+                registry = 'registry+https://github.com/rust-lang/crates.io-index'
+                data['packages'].append({'id':'sha2','name':'sha2','version':'1.0.0','source':registry})
+                data['resolve']['nodes'].append({'id':'sha2','features':[],'deps':[]})
+                edge = {'pkg':'sha2','dep_kinds':[{'kind':None,'target':None}]}
+                for node in data['resolve']['nodes']:
+                    if node['id'] in {'root', f'rss-mdm-{capability}-postgres'}:
+                        node['deps'].append(copy.deepcopy(edge))
+                locked.add(('sha2','1.0.0',registry))
                 consumer.verify_closure(data, source, pin, locked, capability)
                 products = {f'rss-mdm-{capability}', f'rss-mdm-{capability}-postgres'}
                 tree = '\n'.join(f'{name} v1.0.0' for name in products | consumer.RSS | {'sqlx-postgres'})

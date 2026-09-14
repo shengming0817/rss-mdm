@@ -81,7 +81,15 @@ INSERT INTO mdm_access.management_messages SELECT tenant_id,registration,session
         let mut records = Vec::new();
         // Identifiers come exclusively from server quote_ident over its catalog, never user input.
         for table in tables {
-            records.push(sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]')::text FROM {table} t"))).fetch_one(&mut *conn).await?);
+            // Compare every pre-existing field; the new audit projection is checked separately.
+            let row = if table == "mdm_access.audit" {
+                "to_jsonb(t) - 'software'"
+            } else {
+                "to_jsonb(t)"
+            };
+            records.push(sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT coalesce(jsonb_agg({row} ORDER BY ({row})::text),'[]')::text FROM {table} t"
+            ))).fetch_one(&mut *conn).await?);
         }
         Ok(records)
     }
@@ -97,6 +105,14 @@ INSERT INTO mdm_access.management_messages SELECT tenant_id,registration,session
     ensure!(
         current == rows(&mut admin, &tables).await?,
         "9→14 upgrade changed existing durable/protocol data"
+    );
+    ensure!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT count(*)=1 AND bool_and(software IS NULL) FROM mdm_access.audit"
+        )
+        .fetch_one(&mut admin)
+        .await?,
+        "upgrade invented software facts for legacy audit"
     );
     ensure!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_migrations WHERE complete")

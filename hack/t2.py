@@ -54,13 +54,14 @@ def verify_migrations(container, binary, config, root, env):
         sql("INSERT INTO public.mdm_migrations VALUES('"+unit+"','"+digest+"',true)")
     legacy='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
     sql(f"INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{legacy}','00000000-0000-4000-8000-000000000001','legacy','mdm','legacy-device','enrollment','available',clock_timestamp()+interval '200 seconds'),('{legacy}','00000000-0000-4000-8000-000000000002','legacy','mdm','legacy-device','enrollment','consumed',clock_timestamp()+interval '200 seconds'); INSERT INTO mdm_access.requests VALUES('{legacy}','00000000-0000-4000-8000-000000000003','00000000-0000-4000-8000-000000000002'); INSERT INTO mdm_access.devices VALUES('{legacy}','legacy-device'); INSERT INTO mdm_access.registrations VALUES('{legacy}','00000000-0000-4000-8000-000000000004','legacy-device','mdm',1,'00000000-0000-4000-8000-000000000003','active'); INSERT INTO mdm_access.credentials VALUES('{legacy}','00000000-0000-4000-8000-000000000005','00000000-0000-4000-8000-000000000004','mdm',repeat('e',64),'active'); INSERT INTO mdm_access.audit(tenant_id,id,request_id,action,result,status) VALUES('{legacy}','00000000-0000-4000-8000-000000000006','00000000-0000-4000-8000-000000000007','registration_accept','success',200); INSERT INTO mdm_access.operations VALUES('{legacy}','legacy','mdm','00000000-0000-4000-8000-000000000008',repeat('e',64),'history');")
-    before=sql(f"SELECT row_to_json(a) FROM mdm_access.audit a WHERE tenant_id='{legacy}'")
+    before=sql(f"SELECT to_jsonb(a) - 'software' FROM mdm_access.audit a WHERE tenant_id='{legacy}'")
     migrate(); migrate()
     require(sql(f"SELECT count(*) FROM mdm_access.grants WHERE tenant_id='{legacy}' AND state='available'")=='0','legacy grant remains usable')
     require(sql(f"SELECT state='cancelled' AND issuance_operation IS NULL AND password_digest IS NULL FROM mdm_access.requests WHERE tenant_id='{legacy}'")=='t','legacy request gained enrollment authority')
     require(sql(f"SELECT state FROM mdm_access.registrations WHERE tenant_id='{legacy}'")=='active','historical registration changed')
     require(sql(f"SELECT state FROM mdm_access.credentials WHERE tenant_id='{legacy}'")=='active','historical credential changed')
-    require(before==sql(f"SELECT row_to_json(a) FROM mdm_access.audit a WHERE tenant_id='{legacy}'"),'historical audit changed')
+    require(before==sql(f"SELECT to_jsonb(a) - 'software' FROM mdm_access.audit a WHERE tenant_id='{legacy}'"),'historical audit changed')
+    require(sql(f"SELECT count(*)=1 AND bool_and(software IS NULL) FROM mdm_access.audit WHERE tenant_id='{legacy}'")=='t','legacy audit gained software facts')
     require(sql(f"SELECT result FROM mdm_access.operations WHERE tenant_id='{legacy}'")=='history','historical operation changed')
     # Force index eligibility on the tiny fixture; this is not a throughput claim.
     plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
