@@ -317,6 +317,7 @@ def main():
         ("publication-t2",[sys.executable,"hack/publication-t2.py"]),
         ("backend-consumers",[sys.executable,"hack/backend_postgres_consumer.py"]),
         ("group-postgres-consumers",[sys.executable,"hack/group_postgres_consumer.py"]),
+        ("source-t2-oracle",[sys.executable,"hack/test_source_t2.py"]),
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
 

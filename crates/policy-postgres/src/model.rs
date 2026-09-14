@@ -180,7 +180,7 @@ impl Aggregate {
         let v: Value = decode(bytes)?;
         let a = codec::array(&v, 9)?;
         if codec::number(&a[0])? != 1 {
-            return Err(fault());
+            return Err(fault("model::restore"));
         }
         let policy = codec::read_policy(&a[1])?;
         let revision = codec::number(&a[2])?;
@@ -189,13 +189,17 @@ impl Aggregate {
         } else {
             Some(codec::read_targets(&a[3])?)
         };
-        let references: Vec<AssignmentReference> = data(serde_json::from_value(a[4].clone()))?;
+        let references: Vec<AssignmentReference> =
+            data("model::restore", serde_json::from_value(a[4].clone()))?;
         let plan = if a[5].is_null() {
             None
         } else {
             Some(codec::plan_id(codec::text(&a[5])?)?)
         };
-        let installed = data(serde_json::from_value::<Option<u64>>(a[6].clone()))?;
+        let installed = data(
+            "model::restore",
+            serde_json::from_value::<Option<u64>>(a[6].clone()),
+        )?;
         let at = if a[7].is_null() {
             None
         } else {
@@ -204,10 +208,10 @@ impl Aggregate {
         let installed_request = if a[8].is_null() {
             None
         } else {
-            Some(data(RequestId::new(
-                policy.key().tenant(),
-                codec::text(&a[8])?,
-            ))?)
+            Some(data(
+                "model::restore",
+                RequestId::new(policy.key().tenant(), codec::text(&a[8])?),
+            )?)
         };
         if targets
             .as_ref()
@@ -217,7 +221,7 @@ impl Aggregate {
             || installed.is_some_and(|n| n > revision)
             || revision > i64::MAX as u64
         {
-            return Err(fault());
+            return Err(fault("model::restore"));
         }
         let mut reference_ids = std::collections::BTreeSet::new();
         if policy.revision() > revision
@@ -228,7 +232,7 @@ impl Aggregate {
                     || !reference_ids.insert(&r.id)
             })
         {
-            return Err(fault());
+            return Err(fault("model::restore"));
         }
         Ok(Self {
             policy,

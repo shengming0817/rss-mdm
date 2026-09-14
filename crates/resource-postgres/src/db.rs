@@ -3,24 +3,63 @@ use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 pub(crate) const MAX_DOCUMENT: usize = 64 * 1024 * 1024;
-pub(crate) fn fault() -> PgError {
+pub(crate) fn fault(stage: &'static str) -> PgError {
+    tracing::error!(stage, reason = "storage-invariant", "adapter data rejected");
     sqlx::Error::Protocol("mdm_resource storage invariant".into()).into()
 }
-pub(crate) fn data<T>(r: Result<T, impl std::fmt::Debug>) -> Result<T, PgError> {
-    r.map_err(|_| fault())
+#[derive(Debug, thiserror::Error)]
+#[error("resource {stage}: {cause}")]
+struct Diagnostic {
+    stage: &'static str,
+    #[source]
+    cause: SafeCause,
+}
+#[derive(Debug, thiserror::Error)]
+#[error("{kind}: {reason}")]
+struct SafeCause {
+    kind: &'static str,
+    reason: String,
+}
+pub(crate) fn data<T, E: 'static>(stage: &'static str, r: Result<T, E>) -> Result<T, PgError> {
+    classify(stage, r).map_err(|diagnostic| {
+        tracing::error!(stage = diagnostic.stage, kind = diagnostic.cause.kind,
+            reason = %diagnostic.cause.reason, "adapter data rejected");
+        sqlx::Error::Decode(Box::new(diagnostic)).into()
+    })
+}
+fn classify<T, E: 'static>(stage: &'static str, r: Result<T, E>) -> Result<T, Diagnostic> {
+    r.map_err(|e| {
+        let value = &e as &dyn std::any::Any;
+        let reason = if let Some(e) = value.downcast_ref::<serde_json::Error>() {
+            format!("{:?} at {}:{}", e.classify(), e.line(), e.column())
+        } else if let Some(e) = value.downcast_ref::<crate::core::Error>() {
+            format!("{e:?}")
+        } else if value.is::<std::num::TryFromIntError>() {
+            "integer-out-of-range".into()
+        } else {
+            "invalid-value".into()
+        };
+        Diagnostic {
+            stage,
+            cause: SafeCause {
+                kind: std::any::type_name::<E>(),
+                reason,
+            },
+        }
+    })
 }
 pub(crate) fn encode(v: &impl Serialize) -> Result<Vec<u8>, PgError> {
-    let b = data(serde_json::to_vec(v))?;
+    let b = data("db::encode", serde_json::to_vec(v))?;
     if b.len() > MAX_DOCUMENT {
-        return Err(fault());
+        return Err(fault("db::encode"));
     }
     Ok(b)
 }
 pub(crate) fn decode<T: DeserializeOwned>(b: &[u8]) -> Result<T, PgError> {
     if b.len() > MAX_DOCUMENT {
-        return Err(fault());
+        return Err(fault("db::decode"));
     }
-    data(serde_json::from_slice(b))
+    data("db::decode", serde_json::from_slice(b))
 }
 pub(crate) fn digest(b: &[u8]) -> Vec<u8> {
     Sha256::digest(b).to_vec()
@@ -29,7 +68,7 @@ pub(crate) fn checked(b: Vec<u8>, hash: Vec<u8>) -> Result<Vec<u8>, PgError> {
     if digest(&b) == hash {
         Ok(b)
     } else {
-        Err(fault())
+        Err(fault("db::checked"))
     }
 }
 pub(crate) async fn lock(tx: &mut PgTransaction<'_>, kind: &str, key: &str) -> Result<(), PgError> {
@@ -54,7 +93,7 @@ pub(crate) async fn read(
     let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT revision,document,digest FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
     row.map(|r| {
         Ok((
-            data(u64::try_from(r.try_get::<i64, _>("revision")?))?,
+            data("db::read", u64::try_from(r.try_get::<i64, _>("revision")?))?,
             checked(r.try_get("document")?, r.try_get("digest")?)?,
         ))
     })
@@ -70,13 +109,13 @@ pub(crate) async fn write(
     let id = id.to_owned();
     let tenant = tx.tenant_id().to_string();
     let hash = digest(&document);
-    let revision = data(i64::try_from(revision))?;
-    let old = old.map(i64::try_from).transpose().map_err(|_| fault())?;
+    let revision = data("db::write", i64::try_from(revision))?;
+    let old = data("db::write-old-revision", old.map(i64::try_from).transpose())?;
     let rows=tx.with_connection(move|c|Box::pin(async move{
  let q=if old.is_some(){"UPDATE mdm_resource.aggregates SET revision=$3,document=$4,digest=$5 WHERE tenant_id=$1::uuid AND id=$2 AND revision=$6"}else{"INSERT INTO mdm_resource.aggregates(tenant_id,id,revision,document,digest) SELECT $1::uuid,$2,$3,$4,$5 WHERE $6::bigint IS NULL"};
  sqlx::query(q).bind(tenant).bind(id).bind(revision).bind(document).bind(hash).bind(old).execute(c).await.map(|r|r.rows_affected())})).await?;
     if rows != 1 {
-        return Err(fault());
+        return Err(fault("db::write"));
     }
     Ok(())
 }
@@ -164,11 +203,33 @@ pub(crate) async fn verify(tx: &mut PgTransaction<'_>) -> Result<(), PgError> {
             })
         })
         .await?;
-    let actual: serde_json::Value = data(serde_json::from_str(&catalog))?;
-    let expected: serde_json::Value = data(serde_json::from_str(include_str!("catalog.json")))?;
+    let actual: serde_json::Value = data("db::verify", serde_json::from_str(&catalog))?;
+    let expected: serde_json::Value = data(
+        "db::verify",
+        serde_json::from_str(include_str!("catalog.json")),
+    )?;
     if ok && actual == expected {
         Ok(())
     } else {
-        Err(fault())
+        Err(fault("db::verify"))
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    #[test]
+    fn json_failures_preserve_stage_and_category_without_input() {
+        let error = classify(
+            "receipt-decode",
+            serde_json::from_str::<u64>("\"secret-token\""),
+        )
+        .unwrap_err();
+        let message = format!("{error:?} {error}");
+        assert!(message.contains("receipt-decode"));
+        assert!(message.contains("Data"));
+        assert!(!message.contains("secret-token"));
+        let other = classify("revision", u64::try_from(-1_i64)).unwrap_err();
+        assert!(format!("{other}").contains("integer-out-of-range"));
     }
 }

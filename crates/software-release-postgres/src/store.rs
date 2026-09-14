@@ -104,7 +104,7 @@ impl ReleaseStore {
             .map(|(rev, b)| {
                 let c = codec::read_snapshot(&b)?;
                 if c.snapshot().id != *id || rev != c.snapshot().revision {
-                    return Err(fault());
+                    return Err(fault("store::get_in"));
                 }
                 Ok(c)
             })
@@ -257,7 +257,11 @@ impl ReleaseStore {
             if owner != id.value() || hash != old {
                 return Ok(Err(Rejection::IdentityConflict));
             }
-            Some(operation_receipt(&b)?.transition.ok_or_else(fault)?)
+            Some(
+                operation_receipt(&b)?
+                    .transition
+                    .ok_or_else(|| fault("store::transition_in"))?,
+            )
         } else {
             None
         };
@@ -389,7 +393,7 @@ impl ReleaseStore {
         }
         let owner = id.value().to_owned();
         settle(self.runtime.local_tx(self.tenant,d,move|tx|Box::pin(async move{let t=tx.tenant_id();let tenant=t.to_string();let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_software_release.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind='attempt' AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4").bind(tenant).bind(&owner).bind(after).bind(limit as i64).fetch_all(c).await.map(|rows|(owner,rows))})).await?;
- let mut result=Vec::new();for row in rows.1{let b=checked(row.try_get("document")?,row.try_get("digest")?)?;let p=codec::read_publication(&decode::<Value>(&b)?)?;if p.approval.validation.candidate.tenant()!=t||p.approval.validation.candidate.value()!=rows.0||p.attempt==0{return Err(fault());}result.push(HistoricalAttempt{cursor:row.try_get("key")?,publication:p});}Ok(Ok(result))})).await)
+ let mut result=Vec::new();for row in rows.1{let b=checked(row.try_get("document")?,row.try_get("digest")?)?;let p=codec::read_publication(&decode::<Value>(&b)?)?;if p.approval.validation.candidate.tenant()!=t||p.approval.validation.candidate.value()!=rows.0||p.attempt==0{return Err(fault("store::attempt_history"));}result.push(HistoricalAttempt{cursor:row.try_get("key")?,publication:p});}Ok(Ok(result))})).await)
     }
 }
 async fn material_compatible(tx: &mut PgTransaction<'_>, c: &Content) -> InTransaction<()> {
@@ -409,8 +413,10 @@ async fn freeze_material(tx: &mut PgTransaction<'_>, c: &Content) -> Result<(), 
 }
 fn operation_receipt(bytes: &[u8]) -> Result<OperationReceipt, PgError> {
     let v: Value = decode(bytes)?;
-    let a = v.as_array().ok_or_else(fault)?;
-    match codec::n(a.first().ok_or_else(fault)?)? {
+    let a = v
+        .as_array()
+        .ok_or_else(|| fault("store::operation_receipt"))?;
+    match codec::n(a.first().ok_or_else(|| fault("store::operation_receipt"))?)? {
         0 => {
             let a = codec::array(&v, 3)?;
             Ok(OperationReceipt {
@@ -430,6 +436,6 @@ fn operation_receipt(bytes: &[u8]) -> Result<OperationReceipt, PgError> {
                 transition: Some(r),
             })
         }
-        _ => Err(fault()),
+        _ => Err(fault("store::operation_receipt")),
     }
 }

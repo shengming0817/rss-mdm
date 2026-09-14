@@ -77,12 +77,17 @@ pub(super) fn fault() -> PgError {
     sqlx::Error::Protocol("software composition invariant".into()).into()
 }
 pub(super) fn required<T>(
-    r: std::result::Result<T, impl std::fmt::Debug>,
+    stage: &'static str,
+    r: std::result::Result<T, impl std::fmt::Debug + 'static>,
 ) -> std::result::Result<T, PgError> {
-    r.map_err(|_| fault())
+    r.map_err(|error| {
+        let cause = super::SafeCause::of(error);
+        tracing::error!(stage, kind = cause.kind, reason = %cause.reason, "publication data rejected");
+        sqlx::Error::Decode(Box::new(cause)).into()
+    })
 }
 pub(super) fn encode(v: &impl Serialize) -> std::result::Result<Vec<u8>, PgError> {
-    let bytes = required(serde_json::to_vec(v))?;
+    let bytes = required("storage::encode", serde_json::to_vec(v))?;
     if bytes.len() > 8 * 1024 * 1024 {
         return Err(fault());
     }
@@ -92,7 +97,7 @@ fn decode<T: DeserializeOwned>(b: &[u8], digest: &[u8]) -> std::result::Result<T
     if b.len() > 8 * 1024 * 1024 || Sha256::digest(b).as_slice() != digest {
         return Err(fault());
     }
-    required(serde_json::from_slice(b))
+    required("storage::decode", serde_json::from_slice(b))
 }
 pub(super) async fn lock(
     tx: &mut PgTransaction<'_>,
@@ -116,6 +121,7 @@ pub(super) async fn audit(
     actor: &rel::ActorId,
     target: &str,
     action: &'static str,
+    fact: crate::audit::SoftwareFact,
 ) -> std::result::Result<(), PgError> {
     if actor.tenant() != tx.tenant_id() {
         return Err(fault());
@@ -123,10 +129,16 @@ pub(super) async fn audit(
     let audit = crate::audit::Audit::new(tx.tenant_id().to_string(), action);
     audit.identify_service(actor.value());
     audit.target(target);
+    let (status, result) = match fact.outcome {
+        "unknown" | "attempted" => (202, "unknown"),
+        "not-applied" => (200, "failed"),
+        _ => (200, "success"),
+    };
+    audit.software(fact);
     tx.with_connection(move |c| {
         Box::pin(async move {
             let result =
-                crate::access_store::append_on_connection(c, &audit, 200, "success", None).await;
+                crate::access_store::append_on_connection(c, &audit, status, result, None).await;
             audit.finalize(None);
             result.map_err(|_| sqlx::Error::Protocol("software audit unavailable".into()))
         })
@@ -154,7 +166,14 @@ pub(super) async fn register(
             tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,cursor) VALUES($1::uuid,$2,'tap',$3) ON CONFLICT DO NOTHING").bind(t).bind(binding).bind(head).execute(c).await?;Ok(())})).await?;
         }
         if created {
-            audit(tx, actor, &sources.logical, "software_binding").await?;
+            audit(
+                tx,
+                actor,
+                &sources.logical,
+                "software_binding",
+                binding_fact(&b.identity, i as u8),
+            )
+            .await?;
         }
     }
     Ok(Ok(()))
@@ -468,8 +487,11 @@ async fn verify(tx: &mut PgTransaction<'_>) -> std::result::Result<(), PgError> 
             })
         })
         .await?;
-    let expected: serde_json::Value = required(serde_json::from_str(include_str!("catalog.json")))?;
-    let actual: serde_json::Value = required(serde_json::from_str(&catalog))?;
+    let expected: serde_json::Value = required(
+        "storage::verify",
+        serde_json::from_str(include_str!("catalog.json")),
+    )?;
+    let actual: serde_json::Value = required("storage::verify", serde_json::from_str(&catalog))?;
     if !ok || actual != expected {
         return Err(fault());
     }
@@ -506,4 +528,64 @@ pub(super) async fn complete_noop(
         return Err(fault());
     }
     Ok(())
+}
+
+pub(super) fn request_fact(
+    id: &str,
+    ring: Option<rel::Ring>,
+    stage: &'static str,
+) -> crate::audit::SoftwareFact {
+    crate::audit::SoftwareFact {
+        operation: super::hex(&Sha256::digest(id.as_bytes())),
+        publication: None,
+        attempt: None,
+        ring: ring.map(|r| match r {
+            rel::Ring::Test => 0,
+            rel::Ring::Pilot => 1,
+            rel::Ring::Production => 2,
+        }),
+        binding: None,
+        stage,
+        outcome: "applied",
+    }
+}
+fn binding_fact(binding: &[u8], ring: u8) -> crate::audit::SoftwareFact {
+    crate::audit::SoftwareFact {
+        operation: super::hex(binding),
+        publication: None,
+        attempt: None,
+        ring: Some(ring),
+        binding: Some(super::hex(binding)),
+        stage: "binding-register",
+        outcome: "applied",
+    }
+}
+pub(super) fn target_fact(
+    t: &Target,
+    table: Table,
+    stage: &'static str,
+    outcome: &'static str,
+) -> crate::audit::SoftwareFact {
+    crate::audit::SoftwareFact {
+        operation: match table {
+            Table::Publish => t.key(),
+            Table::Withdraw => t.withdrawal_key(),
+        },
+        publication: Some(super::hex(&t.publication)),
+        attempt: Some(t.attempt),
+        ring: Some(t.ring),
+        binding: Some(super::hex(&t.binding)),
+        stage,
+        outcome,
+    }
+}
+pub(super) fn transition_fact(r: &rel::Request, stage: &'static str) -> crate::audit::SoftwareFact {
+    let ring = match &r.operation {
+        rel::Operation::Validate(v) => Some(v.ring),
+        rel::Operation::Approve { ring, .. } | rel::Operation::Authorize { ring, .. } => {
+            Some(*ring)
+        }
+        _ => None,
+    };
+    request_fact(r.id.value(), ring, stage)
 }

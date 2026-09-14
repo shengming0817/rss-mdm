@@ -2,6 +2,7 @@
 use crate::*;
 use serde_json::{Value, json};
 #[derive(Clone, Eq, PartialEq)]
+/// Validated canonical publication unit containing exactly one version and its complete installer set. Equality compares tenant/source and complete normalized content.
 pub struct VersionManifest {
     tenant: TenantId,
     source: String,
@@ -11,6 +12,7 @@ pub struct VersionManifest {
     bytes: Vec<u8>,
 }
 impl VersionManifest {
+    /// Parse a POST document containing exactly one version and 1–64 unique installers within `MAX_RESPONSE`. Reject unknown behavior and normalize the entire installer set.
     pub fn parse(tenant: TenantId, source: &str, bytes: &[u8]) -> Result<Self, Error> {
         identity(source)?;
         if bytes.len() > MAX_RESPONSE {
@@ -106,6 +108,7 @@ impl VersionManifest {
             bytes,
         })
     }
+    /// Parse a bounded GET response containing only the Data envelope and one complete version.
     pub fn from_response(tenant: TenantId, source: &str, bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > MAX_RESPONSE {
             return Err(Error::BudgetExceeded);
@@ -122,21 +125,27 @@ impl VersionManifest {
             &serde_json::to_vec(&v["Data"]).map_err(|_| Error::InvalidResponse)?,
         )
     }
+    /// Tenant owning this value.
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
+    /// Logical source identifier bound to this tenant.
     pub fn source(&self) -> &str {
         &self.source
     }
+    /// Validated package identifier.
     pub fn package(&self) -> &str {
         &self.package
     }
+    /// Exact version identifier.
     pub fn version(&self) -> &str {
         &self.version
     }
+    /// All validated installers in deterministic selection order.
     pub fn installers(&self) -> &[Manifest] {
         &self.installers
     }
+    /// Canonical complete-version POST bytes, without the GET Data envelope.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }

@@ -29,30 +29,33 @@ pub(crate) async fn append(
             tenant,
             at,
             domain(),
-            data(MessageRoute::parse("policy.changed"))?,
+            data("event::append", MessageRoute::parse("policy.changed"))?,
             ContractIdentity::new(
-                data(ContractId::parse("mdm.policy.changed"))?,
+                data("event::append", ContractId::parse("mdm.policy.changed"))?,
                 ContractVersion::from_static_major(1),
-                data(SchemaDigest::parse(&format!(
-                    "sha256:{:x}",
-                    Sha256::digest(EVENT_SCHEMA)
-                )))?,
+                data(
+                    "event::append",
+                    SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(EVENT_SCHEMA))),
+                )?,
             ),
         ),
         MessageMetadataExtensions::new(
             None,
-            Some(data(PartitionKey::parse(id))?),
+            Some(data("event::append", PartitionKey::parse(id))?),
             None,
             BTreeMap::new(),
         ),
     );
     let message = PendingMessage::new(MessageEnvelope::new(
-        data(MessageId::parse(&format!("policy.v1:{request}")))?,
+        data(
+            "event::append",
+            MessageId::parse(&format!("policy.v1:{request}")),
+        )?,
         metadata,
         payload,
     ));
     match writer.append(tx, message).await? {
         AppendOutcome::Inserted => Ok(()),
-        AppendOutcome::AlreadyPresent => Err(fault()),
+        AppendOutcome::AlreadyPresent => Err(fault("event::append")),
     }
 }

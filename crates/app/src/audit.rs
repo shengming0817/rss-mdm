@@ -23,6 +23,18 @@ pub(crate) struct Snapshot {
     pub operation_id: Option<Uuid>,
     pub registration_id: Option<Uuid>,
     pub write_outcome: WriteOutcome,
+    pub software: Option<SoftwareFact>,
+}
+/// Product operation projection containing identifiers/digests only, never source content.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct SoftwareFact {
+    pub operation: String,
+    pub publication: Option<String>,
+    pub attempt: Option<u64>,
+    pub ring: Option<u8>,
+    pub binding: Option<String>,
+    pub stage: &'static str,
+    pub outcome: &'static str,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +74,7 @@ impl Audit {
                     operation_id: None,
                     registration_id: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
+                    software: None,
                 },
                 finalized: false,
             }),
@@ -91,6 +104,9 @@ impl Audit {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
         state.snapshot.client = Some("mdm-software-publication".into());
+    }
+    pub(crate) fn software(&self, fact: SoftwareFact) {
+        self.0.state.lock().expect("audit lock").snapshot.software = Some(fact);
     }
     pub fn set_action(&self, action: &'static str) {
         self.0.state.lock().expect("audit lock").snapshot.action = action;

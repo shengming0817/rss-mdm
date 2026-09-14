@@ -89,7 +89,7 @@ impl Sources {
             version: "1".into(),
             platform: "validation".into(),
         })
-        .map_err(|_| Error::Input)?;
+        .map_err(|cause| Error::Input.context("config::new", cause))?;
         let mut values = Vec::new();
         for (ring, config) in config.ordered().into_iter().enumerate() {
             let mut binding = compile(tenant, &logical, config).await?;
@@ -99,7 +99,7 @@ impl Sources {
                 ring,
                 binding.configuration
             ]))
-            .map_err(|_| Error::Input)?;
+            .map_err(|cause| Error::Input.context("config::new", cause))?;
             values.push(binding);
         }
         if values
@@ -121,9 +121,11 @@ impl Sources {
                 .map(|b| (&b.identity, &b.configuration))
                 .collect::<Vec<_>>()
         ]))
-        .map_err(|_| Error::Input)?;
+        .map_err(|cause| Error::Input.context("config::new", cause))?;
         let digest = Sha256::digest(envelope).into();
-        let bindings = values.try_into().map_err(|_| Error::Input)?;
+        let bindings = values
+            .try_into()
+            .map_err(|cause| Error::Input.context("config::new", cause))?;
         Ok(Self {
             tenant,
             logical,
@@ -153,13 +155,16 @@ async fn compile(tenant: TenantId, logical: &str, config: SourceConfig) -> Resul
                 c.addresses.clone(),
                 &c.credential_reference,
             )
-            .map_err(|_| Error::Input)?;
+            .map_err(|cause| Error::Input.context("config::compile", cause))?;
             if let Some(ca) = &c.private_ca {
-                source = source.with_root_certificate(ca).map_err(|_| Error::Input)?;
+                source = source
+                    .with_root_certificate(ca)
+                    .map_err(|cause| Error::Input.context("config::compile", cause))?;
             }
-            let token = crate::config::secret(&c.credential_file).map_err(|_| Error::Identity)?;
+            let token = crate::config::secret(&c.credential_file)
+                .map_err(|cause| Error::Identity.context("config::compile", cause))?;
             let access = winget::WriteAccess::new(tenant, logical, &c.credential_reference, &token)
-                .map_err(|_| Error::Identity)?;
+                .map_err(|cause| Error::Identity.context("config::compile", cause))?;
             let configuration = serde_json::to_vec(&serde_json::json!([
                 1,
                 "winget",
@@ -171,10 +176,13 @@ async fn compile(tenant: TenantId, logical: &str, config: SourceConfig) -> Resul
                 c.private_ca.as_ref().map(|b| Sha256::digest(b).to_vec()),
                 c.credential_reference
             ]))
-            .map_err(|_| Error::Input)?;
+            .map_err(|cause| Error::Input.context("config::compile", cause))?;
             (
                 Driver::Winget {
-                    publisher: Box::new(winget::Publisher::new(source).map_err(|_| Error::Input)?),
+                    publisher: Box::new(
+                        winget::Publisher::new(source)
+                            .map_err(|cause| Error::Input.context("config::compile", cause))?,
+                    ),
                     access,
                 },
                 physical,
@@ -182,14 +190,17 @@ async fn compile(tenant: TenantId, logical: &str, config: SourceConfig) -> Resul
             )
         }
         SourceConfig::Brew(c) => {
-            let path = c.repository.canonicalize().map_err(|_| Error::Input)?;
+            let path = c
+                .repository
+                .canonicalize()
+                .map_err(|cause| Error::Input.context("config::compile", cause))?;
             let physical = path.to_str().ok_or(Error::Input)?.to_owned();
             let repo = brew::Repository::open(&path, tenant, &c.tap)
                 .await
-                .map_err(|_| Error::Source)?;
+                .map_err(|cause| Error::Source.context("config::compile", cause))?;
             let configuration =
                 serde_json::to_vec(&serde_json::json!([1, "brew", physical, c.tap]))
-                    .map_err(|_| Error::Input)?;
+                    .map_err(|cause| Error::Input.context("config::compile", cause))?;
             (Driver::Brew { repo, tap: c.tap }, physical, configuration)
         }
     };

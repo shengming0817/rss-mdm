@@ -9,6 +9,7 @@ pub struct WriteAccess {
     key: HeaderValue,
 }
 impl WriteAccess {
+    /// Bind a service key to tenant, logical source and credential reference before I/O. The key is redacted and sent only in the management header.
     pub fn new(tenant: TenantId, source: &str, reference: &str, key: &str) -> Result<Self, Error> {
         identity(source)?;
         identity(reference)?;
@@ -36,21 +37,31 @@ impl fmt::Debug for WriteAccess {
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Read-back comparison of the entire canonical version, including all installers.
 pub enum Inspection {
+    /// All validated complete-version content matches.
     Matching,
+    /// The exact version was not found; absence alone cannot settle a lost DELETE.
     Absent,
+    /// The exact version exists with different complete content.
     Different,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// HTTP acknowledgement only; persist operation identity and reconcile before declaring publication complete.
 pub enum WriteResponse {
+    /// POST returned 201 or DELETE returned 204; subsequent inspection is still required.
     Accepted,
+    /// POST returned 409; inspect existing content instead of overwriting it.
     Conflict,
+    /// The exact version was not found; absence alone cannot settle a lost DELETE.
     Absent,
 }
+/// Bounded complete-version REST writer with reviewed-address TLS and credential binding. Never overwrites a conflicting version.
 pub struct Publisher {
     client: Client,
 }
 impl Publisher {
+    /// Construct a writer using the source client defaults: 5s connect and 30s total per operation; no I/O occurs here.
     pub fn new(source: Source) -> Result<Self, Error> {
         Ok(Self {
             client: Client::new(source)?,
@@ -66,6 +77,7 @@ impl Publisher {
         }
         Ok(())
     }
+    /// POST the entire version after source negotiation. 409 never triggers overwrite. Timeout/transport errors are uncertain and require `inspect`; the 30s total budget includes negotiation.
     pub async fn submit(
         &self,
         m: &VersionManifest,
@@ -96,6 +108,7 @@ impl Publisher {
         .await
         .map_err(|_| Error::Timeout(RequestStage::Publish))?
     }
+    /// Read the exact version and compare complete normalized content. The 30s total budget includes negotiation. Checks tenant, source and credential reference before I/O.
     pub async fn inspect(&self, m: &VersionManifest, a: &WriteAccess) -> Result<Inspection, Error> {
         self.check(m, a)?;
         tokio::time::timeout(self.client.total, async {

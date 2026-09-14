@@ -29,19 +29,25 @@ pub(crate) async fn append(
             tenant,
             at,
             domain(),
-            data(MessageRoute::parse("software-release.changed"))?,
+            data(
+                "event::append",
+                MessageRoute::parse("software-release.changed"),
+            )?,
             ContractIdentity::new(
-                data(ContractId::parse("mdm.software-release.changed"))?,
+                data(
+                    "event::append",
+                    ContractId::parse("mdm.software-release.changed"),
+                )?,
                 ContractVersion::from_static_major(1),
-                data(SchemaDigest::parse(&format!(
-                    "sha256:{:x}",
-                    Sha256::digest(EVENT_SCHEMA)
-                )))?,
+                data(
+                    "event::append",
+                    SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(EVENT_SCHEMA))),
+                )?,
             ),
         ),
         MessageMetadataExtensions::new(
             None,
-            Some(data(PartitionKey::parse(id))?),
+            Some(data("event::append", PartitionKey::parse(id))?),
             None,
             BTreeMap::new(),
         ),
@@ -49,15 +55,18 @@ pub(crate) async fn append(
     // Core request identities allow characters outside the transport alphabet.
     // Keep the original in the payload/receipt; encode only the transport identity.
     let message = PendingMessage::new(MessageEnvelope::new(
-        data(MessageId::parse(&format!(
-            "software-release.v1:{:x}",
-            Sha256::digest(request.as_bytes())
-        )))?,
+        data(
+            "event::append",
+            MessageId::parse(&format!(
+                "software-release.v1:{:x}",
+                Sha256::digest(request.as_bytes())
+            )),
+        )?,
         metadata,
         payload,
     ));
     match writer.append(tx, message).await? {
         AppendOutcome::Inserted => Ok(()),
-        AppendOutcome::AlreadyPresent => Err(fault()),
+        AppendOutcome::AlreadyPresent => Err(fault("event::append")),
     }
 }

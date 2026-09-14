@@ -156,9 +156,10 @@ pub(super) fn prepare(
                 let m = winget::VersionManifest::parse(
                     sources.tenant,
                     &sources.logical,
-                    &serde_json::to_vec(manifest).map_err(|_| Error::Input)?,
+                    &serde_json::to_vec(manifest)
+                        .map_err(|cause| Error::Input.context("spec::prepare", cause))?,
                 )
-                .map_err(|_| Error::Content)?;
+                .map_err(|cause| Error::Content.context("spec::prepare", cause))?;
                 let mut variants = Vec::new();
                 let mut artifacts = Vec::new();
                 for item in m.installers() {
@@ -188,12 +189,13 @@ pub(super) fn prepare(
                     };
                     variants.push(
                         rel::VariantContent::new(arch, key, vec![release_artifact(&file)?])
-                            .map_err(|_| Error::Content)?,
+                            .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
                     );
                     artifacts.push(file);
                 }
                 let canonical = Submission::Winget {
-                    manifest: serde_json::from_slice(m.bytes()).map_err(|_| Error::Content)?,
+                    manifest: serde_json::from_slice(m.bytes())
+                        .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
                 };
                 (
                     resource::Platform::Windows,
@@ -242,7 +244,7 @@ pub(super) fn prepare(
                     }
                     variants.push(
                         rel::VariantContent::new(arch, kind, artifacts)
-                            .map_err(|_| Error::Content)?,
+                            .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
                     );
                     files.push(file);
                 }
@@ -280,10 +282,11 @@ pub(super) fn prepare(
             return Err(Error::Content);
         }
     }
-    let input = serde_json::to_vec(&submission).map_err(|_| Error::Content)?;
+    let input = serde_json::to_vec(&submission)
+        .map_err(|cause| Error::Content.context("spec::prepare", cause))?;
     let description = rel::Digest::of(
         &serde_json::to_vec(&serde_json::json!([version.digest().bytes(), input]))
-            .map_err(|_| Error::Content)?,
+            .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
     );
     let content = rel::Content::new(
         rel::SoftwareIdentity::new(rel::SoftwareIdentityFields {
@@ -297,13 +300,13 @@ pub(super) fn prepare(
             }
             .into(),
         })
-        .map_err(|_| Error::Content)?,
+        .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
         description,
         rel::Digest::from_bytes(sources.digest),
         manifest,
         variants,
     )
-    .map_err(|_| Error::Content)?;
+    .map_err(|cause| Error::Content.context("spec::prepare", cause))?;
     Ok(PreparedContent {
         content,
         artifacts: unique.into_values().collect(),
@@ -312,7 +315,8 @@ pub(super) fn prepare(
     })
 }
 fn release_artifact(a: &PublicArtifact) -> Result<rel::Artifact> {
-    rel::Artifact::new(&a.key, rel::Digest::from_bytes(a.sha256)).map_err(|_| Error::Content)
+    rel::Artifact::new(&a.key, rel::Digest::from_bytes(a.sha256))
+        .map_err(|cause| Error::Content.context("spec::release_artifact", cause))
 }
 type PrimaryArtifact = (String, String, PublicArtifact);
 type ArtifactSet = (Vec<PrimaryArtifact>, Vec<PublicArtifact>);
@@ -322,7 +326,8 @@ impl BrewRecipe {
         tenant: rss_request_context::TenantId,
         tap: &str,
     ) -> Result<brew::Document> {
-        let key = brew::PackageKey::new(tenant, tap, &self.package).map_err(|_| Error::Content)?;
+        let key = brew::PackageKey::new(tenant, tap, &self.package)
+            .map_err(|cause| Error::Content.context("spec::render", cause))?;
         let document = match &self.payload {
             BrewPayload::Cask { artifacts, install } => {
                 let files = artifacts
@@ -331,7 +336,7 @@ impl BrewRecipe {
                         Ok((
                             brew_architecture(&a.architecture)?,
                             brew::Artifact::new(&a.artifact.url, a.artifact.sha256)
-                                .map_err(|_| Error::Content)?,
+                                .map_err(|cause| Error::Content.context("spec::render", cause))?,
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -351,7 +356,7 @@ impl BrewRecipe {
                     files,
                     install,
                 )
-                .map_err(|_| Error::Content)?
+                .map_err(|cause| Error::Content.context("spec::render", cause))?
                 .render()
             }
             BrewPayload::Formula {
@@ -375,13 +380,14 @@ impl BrewRecipe {
                             return Err(Error::Content);
                         }
                         brew::Bottle::new(tag, &b.root_url, b.artifact.sha256)
-                            .map_err(|_| Error::Content)
+                            .map_err(|cause| Error::Content.context("spec::render", cause))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let deps = dependencies
                     .iter()
                     .map(|d| {
-                        brew::PackageKey::new(tenant, &d.tap, &d.name).map_err(|_| Error::Content)
+                        brew::PackageKey::new(tenant, &d.tap, &d.name)
+                            .map_err(|cause| Error::Content.context("spec::render", cause))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 brew::Formula::new(
@@ -389,16 +395,17 @@ impl BrewRecipe {
                     &self.version,
                     &self.description,
                     &self.homepage,
-                    brew::Artifact::new(&source.url, source.sha256).map_err(|_| Error::Content)?,
+                    brew::Artifact::new(&source.url, source.sha256)
+                        .map_err(|cause| Error::Content.context("spec::render", cause))?,
                     executable,
                     bottles,
                     deps,
                 )
-                .map_err(|_| Error::Content)?
+                .map_err(|cause| Error::Content.context("spec::render", cause))?
                 .render()
             }
         };
-        document.map_err(|_| Error::Content)
+        document.map_err(|cause| Error::Content.context("spec::render", cause))
     }
     fn artifacts(&self) -> Result<ArtifactSet> {
         match &self.payload {

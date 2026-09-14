@@ -8,47 +8,56 @@ pub(crate) fn array(v: &Value, n: usize) -> Result<&[Value], PgError> {
     v.as_array()
         .filter(|a| a.len() == n)
         .map(Vec::as_slice)
-        .ok_or_else(fault)
+        .ok_or_else(|| fault("codec::array"))
 }
 pub(crate) fn s(v: &Value) -> Result<&str, PgError> {
-    v.as_str().ok_or_else(fault)
+    v.as_str().ok_or_else(|| fault("codec::s"))
 }
 pub(crate) fn n(v: &Value) -> Result<u64, PgError> {
-    v.as_u64().ok_or_else(fault)
+    v.as_u64().ok_or_else(|| fault("codec::n"))
 }
 fn time(v: &Value) -> Result<Timepoint, PgError> {
-    data(Timepoint::try_from(v.as_i64().ok_or_else(fault)?))
+    data(
+        "codec::time",
+        Timepoint::try_from(v.as_i64().ok_or_else(|| fault("codec::time"))?),
+    )
 }
 fn hash(v: &Value) -> Result<Digest, PgError> {
-    Ok(Digest::from_bytes(data(serde_json::from_value(v.clone()))?))
+    Ok(Digest::from_bytes(data(
+        "codec::hash",
+        serde_json::from_value(v.clone()),
+    )?))
 }
 fn object(t: TenantId, v: &str) -> Value {
     json!([t.to_string(), v])
 }
 fn fields(v: &Value) -> Result<(TenantId, &str), PgError> {
     let a = array(v, 2)?;
-    Ok((data(TenantId::parse(s(&a[0])?))?, s(&a[1])?))
+    Ok((
+        data("codec::fields", TenantId::parse(s(&a[0])?))?,
+        s(&a[1])?,
+    ))
 }
 fn actor(v: &ActorId) -> Value {
     object(v.tenant(), v.value())
 }
 fn read_actor(v: &Value) -> Result<ActorId, PgError> {
     let (t, v) = fields(v)?;
-    data(ActorId::new(t, v))
+    data("codec::read_actor", ActorId::new(t, v))
 }
 fn candidate(v: &CandidateId) -> Value {
     object(v.tenant(), v.value())
 }
 pub(crate) fn read_candidate(v: &Value) -> Result<CandidateId, PgError> {
     let (t, v) = fields(v)?;
-    data(CandidateId::new(t, v))
+    data("codec::read_candidate", CandidateId::new(t, v))
 }
 fn request_id(v: &RequestId) -> Value {
     object(v.tenant(), v.value())
 }
 pub(crate) fn read_request_id(v: &Value) -> Result<RequestId, PgError> {
     let (t, v) = fields(v)?;
-    data(RequestId::new(t, v))
+    data("codec::read_request_id", RequestId::new(t, v))
 }
 pub(crate) fn ring(r: Ring) -> u8 {
     match r {
@@ -62,7 +71,7 @@ fn read_ring(v: &Value) -> Result<Ring, PgError> {
         0 => Ok(Ring::Test),
         1 => Ok(Ring::Pilot),
         2 => Ok(Ring::Production),
-        _ => Err(fault()),
+        _ => Err(fault("codec::read_ring")),
     }
 }
 fn policy(p: ActorPolicy) -> u8 {
@@ -75,7 +84,7 @@ fn read_policy(v: &Value) -> Result<ActorPolicy, PgError> {
     match n(v)? {
         0 => Ok(ActorPolicy::Separate),
         1 => Ok(ActorPolicy::AllowSameActor),
-        _ => Err(fault()),
+        _ => Err(fault("codec::read_policy")),
     }
 }
 pub(crate) fn content(c: &Content) -> Value {
@@ -101,41 +110,51 @@ pub(crate) fn content(c: &Content) -> Value {
 fn read_content(v: &Value) -> Result<Content, PgError> {
     let a = array(v, 5)?;
     let identity = array(&a[0], 4)?;
-    let software = data(SoftwareIdentity::new(SoftwareIdentityFields {
-        source: s(&identity[0])?.into(),
-        package: s(&identity[1])?.into(),
-        version: s(&identity[2])?.into(),
-        platform: s(&identity[3])?.into(),
-    }))?;
-    let raw = a[4].as_array().ok_or_else(fault)?;
+    let software = data(
+        "codec::read_content",
+        SoftwareIdentity::new(SoftwareIdentityFields {
+            source: s(&identity[0])?.into(),
+            package: s(&identity[1])?.into(),
+            version: s(&identity[2])?.into(),
+            platform: s(&identity[3])?.into(),
+        }),
+    )?;
+    let raw = a[4]
+        .as_array()
+        .ok_or_else(|| fault("codec::read_content"))?;
     if raw.len() > 64 {
-        return Err(fault());
+        return Err(fault("codec::read_content"));
     }
     let variants = raw
         .iter()
         .map(|v| {
             let a = array(v, 3)?;
-            let raw = a[2].as_array().ok_or_else(fault)?;
+            let raw = a[2]
+                .as_array()
+                .ok_or_else(|| fault("codec::read_content"))?;
             if raw.len() > 256 {
-                return Err(fault());
+                return Err(fault("codec::read_content"));
             }
             let artifacts = raw
                 .iter()
                 .map(|v| {
                     let a = array(v, 2)?;
-                    data(Artifact::new(s(&a[0])?, hash(&a[1])?))
+                    data(
+                        "codec::read_content",
+                        Artifact::new(s(&a[0])?, hash(&a[1])?),
+                    )
                 })
                 .collect::<Result<Vec<_>, PgError>>()?;
-            data(VariantContent::new(s(&a[0])?, s(&a[1])?, artifacts))
+            data(
+                "codec::read_content",
+                VariantContent::new(s(&a[0])?, s(&a[1])?, artifacts),
+            )
         })
         .collect::<Result<Vec<_>, PgError>>()?;
-    data(Content::new(
-        software,
-        hash(&a[1])?,
-        hash(&a[2])?,
-        hash(&a[3])?,
-        variants,
-    ))
+    data(
+        "codec::read_content",
+        Content::new(software, hash(&a[1])?, hash(&a[2])?, hash(&a[3])?, variants),
+    )
 }
 fn evidence(e: &Evidence) -> Value {
     json!([actor(&e.actor), e.digest.bytes(), e.at.unix_seconds()])
@@ -172,7 +191,7 @@ fn read_validation(v: &Value) -> Result<Validation, PgError> {
             0 => Verdict::Passed,
             1 => Verdict::Failed,
             2 => Verdict::Unknown,
-            _ => return Err(fault()),
+            _ => return Err(fault("codec::read_validation")),
         },
     })
 }
@@ -215,7 +234,7 @@ fn read_outcome(v: &Value) -> Result<PublicationResult, PgError> {
         0 => Ok(PublicationResult::Unknown(e)),
         1 => Ok(PublicationResult::NotApplied(e)),
         2 => Ok(PublicationResult::Applied(e)),
-        _ => Err(fault()),
+        _ => Err(fault("codec::read_outcome")),
     }
 }
 pub(crate) fn publication(p: &Publication) -> Value {
@@ -252,8 +271,10 @@ fn ring_state(r: &RingState) -> Value {
     }
 }
 fn read_ring_state(v: &Value) -> Result<RingState, PgError> {
-    let a = v.as_array().ok_or_else(fault)?;
-    let tag = n(a.first().ok_or_else(fault)?)?;
+    let a = v
+        .as_array()
+        .ok_or_else(|| fault("codec::read_ring_state"))?;
+    let tag = n(a.first().ok_or_else(|| fault("codec::read_ring_state"))?)?;
     if tag < 2 {
         array(v, 1)?;
         return Ok(if tag == 0 {
@@ -267,7 +288,7 @@ fn read_ring_state(v: &Value) -> Result<RingState, PgError> {
         2 => Ok(RingState::Validated(read_validation(&a[1])?)),
         3 => Ok(RingState::Approved(read_approval(&a[1])?)),
         4 => Ok(RingState::Publication(read_publication(&a[1])?)),
-        _ => Err(fault()),
+        _ => Err(fault("codec::read_ring_state")),
     }
 }
 pub(crate) fn snapshot(c: &Candidate) -> Result<Vec<u8>, PgError> {
@@ -291,27 +312,30 @@ pub(crate) fn read_snapshot(bytes: &[u8]) -> Result<Candidate, PgError> {
     let v: Value = decode(bytes)?;
     let a = array(&v, 8)?;
     if n(&a[0])? != 2 {
-        return Err(fault());
+        return Err(fault("codec::read_snapshot"));
     }
     let rings = array(&a[7], 3)?;
-    data(Candidate::restore(Snapshot {
-        id: read_candidate(&a[1])?,
-        revision: n(&a[2])?,
-        at: time(&a[3])?,
-        content_at: time(&a[4])?,
-        content: read_content(&a[5])?,
-        disposition: match n(&a[6])? {
-            0 => Disposition::Active,
-            1 => Disposition::Quarantined,
-            2 => Disposition::Deprecated,
-            _ => return Err(fault()),
-        },
-        rings: [
-            read_ring_state(&rings[0])?,
-            read_ring_state(&rings[1])?,
-            read_ring_state(&rings[2])?,
-        ],
-    }))
+    data(
+        "codec::read_snapshot",
+        Candidate::restore(Snapshot {
+            id: read_candidate(&a[1])?,
+            revision: n(&a[2])?,
+            at: time(&a[3])?,
+            content_at: time(&a[4])?,
+            content: read_content(&a[5])?,
+            disposition: match n(&a[6])? {
+                0 => Disposition::Active,
+                1 => Disposition::Quarantined,
+                2 => Disposition::Deprecated,
+                _ => return Err(fault("codec::read_snapshot")),
+            },
+            rings: [
+                read_ring_state(&rings[0])?,
+                read_ring_state(&rings[1])?,
+                read_ring_state(&rings[2])?,
+            ],
+        }),
+    )
 }
 pub(crate) fn request(c: &CandidateId, r: &Request) -> Result<Vec<u8>, PgError> {
     let operation = match &r.operation {
@@ -367,7 +391,7 @@ pub(crate) fn receipt(r: &Receipt) -> Value {
 pub(crate) fn read_receipt(v: &Value) -> Result<Receipt, PgError> {
     let a = array(v, 7)?;
     if n(&a[0])? != 2 {
-        return Err(fault());
+        return Err(fault("codec::read_receipt"));
     }
     Ok(Receipt {
         candidate: read_candidate(&a[1])?,
@@ -391,10 +415,12 @@ pub(crate) fn read_request(bytes: &[u8]) -> Result<Option<(CandidateId, Request)
     }
     let a = array(&v, 7)?;
     if n(&a[0])? != 2 {
-        return Err(fault());
+        return Err(fault("codec::read_request"));
     }
-    let o = a[6].as_array().ok_or_else(fault)?;
-    let tag = n(o.first().ok_or_else(fault)?)?;
+    let o = a[6]
+        .as_array()
+        .ok_or_else(|| fault("codec::read_request"))?;
+    let tag = n(o.first().ok_or_else(|| fault("codec::read_request"))?)?;
     let operation = match tag {
         0 => {
             array(&a[6], 2)?;
@@ -444,7 +470,7 @@ pub(crate) fn read_request(bytes: &[u8]) -> Result<Option<(CandidateId, Request)
             array(&a[6], 1)?;
             Operation::Deprecate
         }
-        _ => return Err(fault()),
+        _ => return Err(fault("codec::read_request")),
     };
     Ok(Some((
         read_candidate(&a[1])?,

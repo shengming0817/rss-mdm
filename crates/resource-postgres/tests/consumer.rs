@@ -52,6 +52,7 @@ async fn resource_immutable_versions_restart_and_reference_rollback() {
     let insert = req(&key, 1, Command::Insert(version(&key, "one", 1)));
     let receipt = s.execute(&insert, deadline()).await.unwrap();
     assert_eq!(receipt, s.execute(&insert, deadline()).await.unwrap());
+    assert_event(key.as_str(), insert.id.as_str(), 2, 10);
     assert!(
         s.execute(
             &req(&key, 2, Command::Insert(version(&key, "one", 2))),
@@ -197,4 +198,46 @@ async fn resource_cas_events_and_owner_admission() {
     let bad = ResourceStore::new(runtime, tenant(), deadline()).await;
     sql("REVOKE UPDATE(document) ON mdm_resource.immutable FROM mdm_resource_runtime");
     assert!(bad.is_err());
+}
+
+fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
+    use sha2::{Digest, Sha256};
+    let message_id = format!("resource.v1:{:x}", Sha256::digest(request.as_bytes()));
+    let envelope: serde_json::Value = serde_json::from_str(&sql(&format!(
+        "SELECT envelope FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='{}'",
+        tenant(), message_id
+    ))).unwrap();
+    assert_eq!(envelope["tenant"], tenant().to_string());
+    assert_eq!(envelope["occurred_at"], occurred_at);
+    assert_eq!(envelope["domain"], "mdm-resource");
+    assert_eq!(envelope["route"], "resource.changed");
+    assert_eq!(envelope["contract"], "mdm.resource.changed");
+    assert_eq!(envelope["version"], "v1");
+    assert_eq!(envelope["partition"], id);
+    assert_eq!(
+        envelope["schema"],
+        format!("sha256:{:x}", Sha256::digest(EVENT_SCHEMA))
+    );
+    let bytes: Vec<u8> = serde_json::from_value(envelope["payload"].clone()).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        payload,
+        serde_json::json!({"v":1,"id":id,"request":request,"revision":revision})
+    );
+    let schema: serde_json::Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
+    let required: std::collections::BTreeSet<_> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        required,
+        payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect()
+    );
 }

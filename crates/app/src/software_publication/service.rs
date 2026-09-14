@@ -64,7 +64,7 @@ impl PublicationService {
             Sources::new(tenant, logical_source, config),
         )
         .await
-        .map_err(|_| Error::Source)??;
+        .map_err(|cause| Error::Source.context("service::connect", cause))??;
         let resources = ResourceStore::new(runtime.clone(), tenant, budget(cutoff)).await?;
         let releases = ReleaseStore::new(runtime.clone(), tenant, budget(cutoff)).await?;
         let mut heads = [None, None, None];
@@ -72,8 +72,8 @@ impl PublicationService {
             if let Driver::Brew { repo, .. } = &b.driver {
                 heads[i] = tokio::time::timeout_at(cutoff.instant().into(), repo.head())
                     .await
-                    .map_err(|_| Error::Source)?
-                    .map_err(|_| Error::Source)?
+                    .map_err(|cause| Error::Source.context("service::connect", cause))?
+                    .map_err(|cause| Error::Source.context("service::connect", cause))?
                     .map(|c| c.as_str().into());
             }
         }
@@ -169,6 +169,7 @@ impl PublicationService {
                 return Ok(Err(Error::Conflict));
             }
             return Ok(Ok(db::required(
+                "service::create_in",
                 self.releases.create_in(tx, &i.request, c).await?,
             )?));
         }
@@ -176,7 +177,7 @@ impl PublicationService {
             self.resources
                 .lock_version_in(tx, &i.resource, &i.version)
                 .await?
-                .map_err(|_| Error::Content)
+                .map_err(|cause| Error::Content.context("service::create_in", cause))
         );
         if v.digest().bytes() != subject.resource_digest
             || revision != i.expected_resource_revision
@@ -195,7 +196,10 @@ impl PublicationService {
             }
             input!(self.retired_owner(tx, &owner).await?);
         }
-        let receipt = db::required(self.releases.create_in(tx, &i.request, c).await?)?;
+        let receipt = db::required(
+            "service::create_in",
+            self.releases.create_in(tx, &i.request, c).await?,
+        )?;
         db::insert_subject(tx, i.candidate.value(), subject).await?;
         db::set_authority(tx, key, material, i.candidate.value()).await?;
         db::audit(
@@ -203,17 +207,21 @@ impl PublicationService {
             &self.actors.publisher,
             i.candidate.value(),
             "software_candidate",
+            db::request_fact(i.request.value(), None, "candidate-create"),
         )
         .await?;
         Ok(Ok(receipt))
     }
     async fn retired_owner(&self, tx: &mut PgTransaction<'_>, owner: &str) -> InTransaction<()> {
-        let id = db::required(rel::CandidateId::new(self.tenant(), owner))?;
+        let id = db::required(
+            "service::retired_owner",
+            rel::CandidateId::new(self.tenant(), owner),
+        )?;
         let c = input!(
             self.releases
                 .get_in(tx, &id)
                 .await?
-                .map_err(|_| Error::Conflict)
+                .map_err(|cause| Error::Conflict.context("service::retired_owner", cause))
         )
         .ok_or_else(db::fault)?;
         if c.snapshot().disposition == rel::Disposition::Active {
@@ -397,7 +405,7 @@ impl PublicationService {
         let old = self.releases.operation(&r.id, budget(cutoff)).await?;
         let preview = c
             .transition(r.clone(), old.as_ref().and_then(|r| r.transition.as_ref()))
-            .map_err(|_| Error::Conflict)?;
+            .map_err(|cause| Error::Conflict.context("service::authorize_request", cause))?;
         let rel::Transition::Applied {
             decision: rel::Decision::Publish(p),
             ..
@@ -412,7 +420,7 @@ impl PublicationService {
             self.prepare_target(subject, p, cutoff),
         )
         .await
-        .map_err(|_| Error::Source)??;
+        .map_err(|cause| Error::Source.context("service::authorize_request", cause))??;
         settle(
             self.runtime
                 .local_tx_with_context(
@@ -436,13 +444,12 @@ impl PublicationService {
                                 s.releases
                                     .lock_candidate_in(tx, &c.snapshot().id)
                                     .await?
-                                    .map_err(|_| Error::Conflict)
+                                    .map_err(|cause| Error::Conflict
+                                        .context("service::authorize_request", cause))
                             );
-                            input!(
-                                current
-                                    .transition((*r).clone(), None)
-                                    .map_err(|_| Error::Conflict)
-                            );
+                            input!(current.transition((*r).clone(), None).map_err(|cause| {
+                                Error::Conflict.context("service::authorize_request", cause)
+                            }));
                             let key = db::software_key(&c.snapshot().content)?;
                             if db::authority(tx, &key)
                                 .await?
@@ -451,6 +458,7 @@ impl PublicationService {
                                 return Ok(Err(Error::Conflict));
                             }
                             let result = db::required(
+                                "service::authorize_request",
                                 s.releases.transition_in(tx, &c.snapshot().id, r).await?,
                             )?;
                             db::reserve(tx, target, &target.key()).await?;
@@ -460,6 +468,12 @@ impl PublicationService {
                                 &s.actors.publisher,
                                 &target.candidate,
                                 "software_authorize",
+                                db::target_fact(
+                                    target,
+                                    db::Table::Publish,
+                                    "authorize_request",
+                                    "applied",
+                                ),
                             )
                             .await?;
                             Ok(Ok(result))
@@ -515,7 +529,7 @@ impl PublicationService {
             if repo
                 .head()
                 .await
-                .map_err(|_| Error::Source)?
+                .map_err(|cause| Error::Source.context("service::prepare_target", cause))?
                 .as_ref()
                 .map(|c| c.as_str())
                 != target.base.as_deref()
@@ -527,7 +541,7 @@ impl PublicationService {
                 .as_deref()
                 .map(brew::CommitId::parse)
                 .transpose()
-                .map_err(|_| Error::Content)?;
+                .map_err(|cause| Error::Content.context("service::prepare_target", cause))?;
             let prepared = repo
                 .prepare(
                     base,
@@ -536,7 +550,7 @@ impl PublicationService {
                     p.authorized_at,
                 )
                 .await
-                .map_err(|_| Error::Source)?;
+                .map_err(|cause| Error::Source.context("service::prepare_target", cause))?;
             target.commit = Some(prepared.target().as_str().into());
         }
         Ok(target)
@@ -600,21 +614,20 @@ impl PublicationService {
             self.runtime
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, id), |(s, id), tx| {
                     Box::pin(async move {
-                        let c = input!(
-                            s.releases
-                                .get_in(tx, id)
-                                .await?
-                                .map_err(|_| Error::Conflict)
-                        )
+                        let c = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
+                            Error::Conflict.context("service::context", cause)
+                        }))
                         .ok_or_else(db::fault)?;
                         let subject = db::subject(tx, id.value()).await?.ok_or_else(db::fault)?;
-                        let resource = db::required(resource::Id::new(&subject.resource))?;
-                        let version = db::required(resource::Id::new(&subject.version))?;
+                        let resource =
+                            db::required("service::context", resource::Id::new(&subject.resource))?;
+                        let version =
+                            db::required("service::context", resource::Id::new(&subject.version))?;
                         let (v, _, _) = input!(
                             s.resources
                                 .lock_version_in(tx, &resource, &version)
                                 .await?
-                                .map_err(|_| Error::Content)
+                                .map_err(|cause| Error::Content.context("service::context", cause))
                         );
                         if v.digest().bytes() != subject.resource_digest {
                             return Err(db::fault());
@@ -638,20 +651,26 @@ impl PublicationService {
             Ok(())
         })
         .await
-        .map_err(|_| Error::ArtifactTimeout)?
+        .map_err(|cause| Error::ArtifactTimeout.context("service::verify", cause))?
     }
     pub(super) async fn resource_usable(
         &self,
         tx: &mut PgTransaction<'_>,
         subject: &Subject,
     ) -> InTransaction<()> {
-        let id = db::required(resource::Id::new(&subject.resource))?;
-        let version = db::required(resource::Id::new(&subject.version))?;
+        let id = db::required(
+            "service::resource_usable",
+            resource::Id::new(&subject.resource),
+        )?;
+        let version = db::required(
+            "service::resource_usable",
+            resource::Id::new(&subject.version),
+        )?;
         let (v, state, _) = input!(
             self.resources
                 .lock_version_in(tx, &id, &version)
                 .await?
-                .map_err(|_| Error::Content)
+                .map_err(|cause| Error::Content.context("service::resource_usable", cause))
         );
         if v.digest().bytes() != subject.resource_digest
             || !matches!(state, resource::State::Frozen | resource::State::Active)
@@ -676,8 +695,11 @@ impl PublicationService {
                     (self, c, subject, r),
                     move |(s, c, subject, r), tx| {
                         Box::pin(async move {
-                            let replay =
-                                db::required(s.releases.operation_in(tx, &r.id).await?)?.is_some();
+                            let replay = db::required(
+                                "service::transition_audited",
+                                s.releases.operation_in(tx, &r.id).await?,
+                            )?
+                            .is_some();
                             if !replay {
                                 input!(s.resource_usable(tx, subject).await?);
                             }
@@ -685,10 +707,18 @@ impl PublicationService {
                                 s.releases
                                     .transition_in(tx, &c.snapshot().id, r)
                                     .await?
-                                    .map_err(|_| Error::Conflict)
+                                    .map_err(|cause| Error::Conflict
+                                        .context("service::transition_audited", cause))
                             );
                             if matches!(result, rel::Transition::Applied { .. }) {
-                                db::audit(tx, &r.actor, c.snapshot().id.value(), action).await?;
+                                db::audit(
+                                    tx,
+                                    &r.actor,
+                                    c.snapshot().id.value(),
+                                    action,
+                                    db::transition_fact(r, action),
+                                )
+                                .await?;
                             }
                             Ok(Ok(result))
                         })
@@ -706,7 +736,7 @@ impl PublicationService {
         let rss_mdm_resource_postgres::Command::Archive { version, .. } = &r.command else {
             return Err(Error::Input);
         };
-        settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(self,r,version),|(s,r,v),tx|Box::pin(async move{input!(s.resources.lock_version_in(tx,&r.resource,v).await?.map_err(|_|Error::Content));let(t,id,v)=(s.tenant().to_string(),r.resource.as_str().to_owned(),v.as_str().to_owned());let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(t).bind(id).bind(v).fetch_one(c).await})).await?;if count!=0{return Ok(Err(Error::Blocked));}let receipt=input!(s.resources.execute_in(tx,r).await?.map_err(|_|Error::Conflict));db::audit(tx,&s.actors.publisher,r.resource.as_str(),"software_archive").await?;Ok(Ok(receipt))})).await)
+        settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(self,r,version),|(s,r,v),tx|Box::pin(async move{input!(s.resources.lock_version_in(tx,&r.resource,v).await?.map_err(|cause| Error::Content.context("service::archive_resource", cause)));let(t,id,v)=(s.tenant().to_string(),r.resource.as_str().to_owned(),v.as_str().to_owned());let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(t).bind(id).bind(v).fetch_one(c).await})).await?;if count!=0{return Ok(Err(Error::Blocked));}let receipt=input!(s.resources.execute_in(tx,r).await?.map_err(|cause| Error::Conflict.context("service::archive_resource", cause)));db::audit(tx,&s.actors.publisher,r.resource.as_str(),"software_archive", db::request_fact(r.id.as_str(), None, "resource-archive")).await?;Ok(Ok(receipt))})).await)
     }
 }
 pub(super) fn operation(t: &Target) -> String {

@@ -22,6 +22,7 @@ impl fmt::Debug for Source {
     }
 }
 impl Source {
+    /// Validate configuration before I/O; credentials and source identities remain bound to the supplied tenant.
     pub fn new(
         tenant: TenantId,
         id: &str,
@@ -91,6 +92,7 @@ pub struct Access {
     bearer: HeaderValue,
 }
 impl Access {
+    /// Validate configuration before I/O; credentials and source identities remain bound to the supplied tenant.
     pub fn new(
         tenant: TenantId,
         source: &str,
@@ -123,6 +125,7 @@ impl fmt::Debug for Access {
         f.write_str("Access([redacted])")
     }
 }
+/// Bounded REST metadata reader using reviewed addresses, TLS and scoped credentials.
 pub struct Client {
     pub(crate) source: Source,
     pub(crate) http: reqwest::Client,
@@ -130,6 +133,7 @@ pub struct Client {
     limit: usize,
 }
 impl Client {
+    /// Validate configuration before I/O; credentials and source identities remain bound to the supplied tenant.
     pub fn new(source: Source) -> Result<Self, Error> {
         Self::with_limits(
             source,
@@ -138,6 +142,7 @@ impl Client {
             MAX_RESPONSE,
         )
     }
+    /// Construct a metadata client with positive connect ≤ total ≤ 30s and a bounded response size. Reject invalid limits before I/O.
     pub fn with_limits(
         source: Source,
         connect: Duration,
@@ -175,6 +180,7 @@ impl Client {
             limit,
         })
     }
+    /// Resolve bounded metadata after checking tenant, source and credential reference; performs no installation or publication.
     pub async fn query(&self, query: &Query, access: &Access) -> Result<Manifest, Error> {
         if query.tenant != self.source.tenant || access.tenant != self.source.tenant {
             return Err(Error::TenantMismatch);

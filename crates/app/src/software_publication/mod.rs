@@ -16,6 +16,14 @@ pub use spec::{
 };
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Sanitized lower-level failure with its owning operation stage.
+    #[error("{stage}: {category}: {source}")]
+    Diagnostic {
+        stage: &'static str,
+        category: Box<Error>,
+        #[source]
+        source: SafeCause,
+    },
     #[error("invalid publication input")]
     Input,
     #[error("service identity or source binding rejected")]
@@ -94,4 +102,74 @@ fn budget(
     cutoff: rss_request_context::Deadline,
 ) -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &PublicationClock)
+}
+
+/// Credential-free cause projection. Raw messages and source values are never retained.
+#[derive(Debug, thiserror::Error)]
+#[error("{kind}: {reason}")]
+pub struct SafeCause {
+    kind: &'static str,
+    reason: String,
+}
+impl SafeCause {
+    fn of<E: 'static>(error: E) -> Self {
+        let value = &error as &dyn std::any::Any;
+        let reason = if let Some(e) = value.downcast_ref::<serde_json::Error>() {
+            format!("{:?} at {}:{}", e.classify(), e.line(), e.column())
+        } else if let Some(e) = value.downcast_ref::<reqwest::Error>() {
+            if e.is_timeout() {
+                "timeout".into()
+            } else if e.is_connect() {
+                "connect".into()
+            } else if e.is_body() {
+                "body".into()
+            } else {
+                "transport".into()
+            }
+        } else if let Some(e) = value.downcast_ref::<std::io::Error>() {
+            format!("{:?}", e.kind())
+        } else if let Some(e) = value.downcast_ref::<rss_mdm_winget_source::Error>() {
+            format!("{e:?}")
+        } else if let Some(e) = value.downcast_ref::<rss_mdm_brew_source::Error>() {
+            format!("{e:?}")
+        } else if let Some(e) = value.downcast_ref::<rss_mdm_software_release::Error>() {
+            format!("{e:?}")
+        } else if let Some(e) = value.downcast_ref::<rss_mdm_resource::Error>() {
+            format!("{e:?}")
+        } else if let Some(e) = value.downcast_ref::<rss_mdm_resource_postgres::Rejection>() {
+            format!("{e:?}")
+        } else if let Some(e) = value.downcast_ref::<rss_mdm_software_release_postgres::Rejection>()
+        {
+            format!("{e:?}")
+        } else {
+            "rejected".into()
+        };
+        Self {
+            kind: std::any::type_name::<E>(),
+            reason,
+        }
+    }
+}
+impl Error {
+    fn context<E: 'static>(self, stage: &'static str, source: E) -> Self {
+        Self::Diagnostic {
+            stage,
+            category: Box::new(self),
+            source: SafeCause::of(source),
+        }
+    }
+}
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+    #[test]
+    fn source_kind_and_stage_survive_without_secret() {
+        let error = serde_json::from_str::<u64>("\"credential-secret\"").unwrap_err();
+        let error = Error::Content.context("complete-version-decode", error);
+        let rendered = format!("{error:?} {error}");
+        assert!(rendered.contains("complete-version-decode"));
+        assert!(rendered.contains("Data"));
+        assert!(!rendered.contains("credential-secret"));
+        assert!(std::error::Error::source(&error).is_some());
+    }
 }

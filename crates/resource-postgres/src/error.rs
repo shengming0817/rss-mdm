@@ -30,19 +30,19 @@ pub enum Error {
     Rejected(#[from] Rejection),
     /// The transaction did not start; no transaction effects were submitted.
     #[error("transaction not started: {0}")]
-    NotStarted(PgError),
+    NotStarted(#[source] PgError),
     /// The transaction was confirmed rolled back.
     #[error("transaction rolled back: {0}")]
-    RolledBack(PgError),
+    RolledBack(#[source] PgError),
     /// Rollback could not be confirmed; retain request identity for recovery.
     #[error("rollback unconfirmed: {0}")]
-    RollbackFailed(PgError),
+    RollbackFailed(#[source] PgError),
     /// Commit may have succeeded; query or replay the identical original request.
     #[error("commit unconfirmed; resolve original request: {0}")]
-    CommitUnknown(PgError),
+    CommitUnknown(#[source] PgError),
     /// Runtime execution was fenced by RSS; do not bypass the fence.
     #[error("transaction fenced: {0}")]
-    Fenced(PgError),
+    Fenced(#[source] PgError),
 }
 pub(crate) fn settle<T>(
     a: rss_transactional_messaging::transaction::LocalTxAttempt<Result<T, Rejection>, PgError>,

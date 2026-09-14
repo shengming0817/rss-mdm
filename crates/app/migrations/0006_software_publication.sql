@@ -68,4 +68,6 @@ ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
   'protected_request','registration_bind','credential_revoke','device_report',
   'enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read',
   'windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive'));
+ALTER TABLE mdm_access.audit ADD COLUMN software jsonb
+ CHECK(software IS NULL OR (jsonb_typeof(software)='object' AND octet_length(software::text)<=2048));
 COMMIT;

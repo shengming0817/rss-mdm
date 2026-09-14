@@ -43,6 +43,7 @@ fn targets(p: &PolicyId, revision: u64, members: &[&str]) -> TargetSnapshot {
 async fn setup(s: &PolicyStore, p: &PolicyId) -> u64 {
     let c = req(p, 0, Command::Create { policy: p.clone() });
     s.execute(&c, deadline()).await.unwrap();
+    assert_event(p.value(), c.id.value(), 1, 10);
     let a = req(
         p,
         1,
@@ -433,5 +434,47 @@ async fn outbox_failure_and_immutable_inputs() {
             "SELECT count(*) FROM mdm_policy.aggregates WHERE tenant_id='22222222-2222-2222-2222-222222222222'"
         ),
         "0"
+    );
+}
+
+fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
+    use sha2::{Digest, Sha256};
+    let message_id = format!("policy.v1:{request}");
+    let envelope: serde_json::Value = serde_json::from_str(&sql(&format!(
+        "SELECT envelope FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='{}'",
+        tenant(), message_id
+    ))).unwrap();
+    assert_eq!(envelope["tenant"], tenant().to_string());
+    assert_eq!(envelope["occurred_at"], occurred_at);
+    assert_eq!(envelope["domain"], "mdm-policy");
+    assert_eq!(envelope["route"], "policy.changed");
+    assert_eq!(envelope["contract"], "mdm.policy.changed");
+    assert_eq!(envelope["version"], "v1");
+    assert_eq!(envelope["partition"], id);
+    assert_eq!(
+        envelope["schema"],
+        format!("sha256:{:x}", Sha256::digest(EVENT_SCHEMA))
+    );
+    let bytes: Vec<u8> = serde_json::from_value(envelope["payload"].clone()).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        payload,
+        serde_json::json!({"v":1,"id":id,"request":request,"revision":revision})
+    );
+    let schema: serde_json::Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
+    let required: std::collections::BTreeSet<_> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        required,
+        payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect()
     );
 }

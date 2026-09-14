@@ -1,5 +1,6 @@
 use rss_mdm_app::software_publication::*;
 use rss_mdm_software_release as rel;
+use tracing::instrument::WithSubscriber;
 mod publication_support;
 use publication_support::pg::*;
 use publication_support::*;
@@ -31,6 +32,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
     assert_eq!(server.state.lock().unwrap().posts, 1);
+    assert_publication_audit(&p, "applied");
     assert!(!server.state.lock().unwrap().artifact_auth_leaked);
     assert_eq!(
         server
@@ -165,7 +167,15 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
             )
             .await
             .unwrap(),
-        Withdrawal::Pending
+        Withdrawal::WaitingPublication
+    );
+    assert_publication_audit(&p, "unknown");
+    assert_eq!(
+        service
+            .withdrawal_status(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Some(Withdrawal::WaitingPublication)
     );
     assert_eq!(server.state.lock().unwrap().deletes, 0);
     assert!(matches!(
@@ -181,7 +191,7 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
             .reconcile_withdrawal(p.id(), 1, cutoff())
             .await
             .unwrap(),
-        Withdrawal::Pending
+        Withdrawal::PreflightRetryable
     );
     assert_eq!(server.state.lock().unwrap().deletes, 0);
     assert_eq!(
@@ -317,7 +327,7 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
             )
             .await
             .unwrap(),
-        Withdrawal::Pending
+        Withdrawal::PreflightRetryable
     );
     assert_eq!(server.state.lock().unwrap().deletes, 0);
     assert_eq!(
@@ -325,10 +335,34 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
             .reconcile_withdrawal(p.id(), 1, cutoff())
             .await
             .unwrap(),
-        Withdrawal::Pending
+        Withdrawal::PreflightRetryable
     );
     assert_eq!(server.state.lock().unwrap().deletes, 0);
+    drop(service);
+    let service = server.service(runtime.clone(), server.winget()).await;
+    assert_eq!(
+        service
+            .withdrawal_status(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Some(Withdrawal::PreflightRetryable)
+    );
+    assert_eq!(server.state.lock().unwrap().deletes, 0);
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(DISTINCT software->>'binding') FROM mdm_access.audit WHERE target='{}' AND software->>'stage'='record_result'",
+            input.candidate.value()
+        )),
+        "2"
+    );
     server.state.lock().unwrap().drop_delete_response = true;
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || AuditLog(writer.clone()))
+        .finish();
     assert_eq!(
         service
             .withdraw(
@@ -337,16 +371,40 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
                 &request_for(&service, &input.candidate).await,
                 cutoff()
             )
+            .with_subscriber(subscriber)
             .await
             .unwrap(),
-        Withdrawal::Pending
+        Withdrawal::SourceOutcomeUnknown
     );
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("software source write needs reconciliation"));
+    for field in [
+        "tenant=",
+        "publication=",
+        "attempt=1",
+        "ring=0",
+        "source_binding=",
+    ] {
+        assert!(logs.contains(field), "missing {field}: {logs}");
+    }
+    assert!(!logs.contains(&server.base));
+    assert!(!logs.contains("x-functions-key"));
     assert_eq!(
         service
             .reconcile_withdrawal(p.id(), 1, cutoff())
             .await
             .unwrap(),
-        Withdrawal::Pending
+        Withdrawal::SourceOutcomeUnknown
+    );
+    assert_eq!(server.state.lock().unwrap().deletes, 1);
+    drop(service);
+    let restarted = server.service(runtime.clone(), server.winget()).await;
+    assert_eq!(
+        restarted
+            .withdrawal_status(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Some(Withdrawal::SourceOutcomeUnknown)
     );
     assert_eq!(server.state.lock().unwrap().deletes, 1);
     runtime.close().await;
@@ -556,7 +614,7 @@ async fn public_artifact_digest_length_tls_redirect_and_timeout_fail_closed() {
     .unwrap();
     assert!(matches!(
         untrusted.verify(&url, 3, digest).await,
-        Err(Error::ArtifactTransport)
+        Err(Error::Diagnostic { stage: "artifact::verify", category, .. }) if matches!(*category, Error::ArtifactTransport)
     ));
     let bounded = ArtifactReader::new(
         vec![ArtifactOrigin {
@@ -572,7 +630,7 @@ async fn public_artifact_digest_length_tls_redirect_and_timeout_fail_closed() {
         bounded
             .verify(&format!("{}artifacts/timeout", server.base), 3, digest)
             .await,
-        Err(Error::ArtifactTimeout)
+        Err(Error::Diagnostic { stage: "artifact::verify", category, .. }) if matches!(*category, Error::ArtifactTimeout)
     ));
     assert!(!server.state.lock().unwrap().artifact_auth_leaked);
 }
@@ -681,4 +739,51 @@ async fn archive_and_candidate_reference_race_is_atomic() {
         result => panic!("reference and archival must serialize: {result:?}"),
     }
     runtime.close().await;
+}
+
+fn assert_publication_audit(p: &rel::Publication, outcome: &str) {
+    let digest: String = p
+        .id()
+        .digest()
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let rows: serde_json::Value = serde_json::from_str(&sql(&format!(
+        "SELECT json_agg(json_build_object('fact',software,'result',result,'status',status)) FROM mdm_access.audit WHERE software->>'publication'='{digest}' AND software->>'stage'='record_result' AND software->>'outcome'='{outcome}'"
+    ))).unwrap();
+    let rows = rows.as_array().expect("durable publication audit");
+    assert_eq!(rows.len(), 1);
+    let fact = &rows[0]["fact"];
+    assert_eq!(fact["operation"], format!("p:{digest}:{}", p.attempt));
+    assert_eq!(fact["publication"], digest);
+    assert_eq!(fact["attempt"], p.attempt);
+    assert_eq!(fact["ring"], 0);
+    assert_eq!(fact["binding"].as_str().unwrap().len(), 64);
+    assert_eq!(fact["outcome"], outcome);
+    assert_eq!(
+        rows[0]["result"],
+        if outcome == "unknown" {
+            "unknown"
+        } else {
+            "success"
+        }
+    );
+    assert_eq!(
+        rows[0]["status"],
+        if outcome == "unknown" { 202 } else { 200 }
+    );
+    assert_eq!(fact.as_object().unwrap().len(), 7);
+}
+
+#[derive(Clone)]
+struct AuditLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for AuditLog {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

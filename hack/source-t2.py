@@ -11,6 +11,43 @@ import tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
+EXPECTED = {
+    "winget": {
+        "actual_https_exact_protocol_and_credentials",
+        "real_https_failures_do_not_look_successful",
+        "total_timeout_and_cross_tenant_before_io",
+        "chunked_body_is_bounded_without_content_length",
+        "manifest_404_is_not_an_information_endpoint_failure",
+        "total_budget_spans_information_and_manifest",
+        "tls_rejects_untrusted_ca_and_wrong_hostname_before_credentials",
+    },
+    "brew-git": {
+        "git_commit_cas_replay_and_fixed_snapshot",
+        "externally_applied_commit_replay_and_repository_binding",
+        "symlink_tree_and_symbolic_ref_are_rejected",
+        "git_tree_modes_cannot_replace_a_directory_or_document",
+        "git_failure_reports_safe_stage_without_raw_diagnostics",
+        "conditional_removal_preserves_other_paths_and_old_commits",
+    },
+    "brew-recovery": {"git::recovery_tests::update_ref_response_loss_reconciles_the_actual_post_failure_head"},
+}
+
+def verify_tests(output, expected):
+    actual = re.findall(r"^test (\S+) \.\.\. ok$", output, re.MULTILINE)
+    if (set(actual) != expected or len(actual) != len(expected)
+            or f"test result: ok. {len(expected)} passed; 0 failed; 0 ignored;" not in output):
+        raise RuntimeError("source T2 did not execute the exact required behaviors")
+
+def run_tests(package, target, expected, env=None):
+    result = subprocess.run(
+        ["cargo", "test", "--locked", "-p", package, *target, "--", "--ignored", "--color=never"],
+        cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    print(result.stdout, flush=True)
+    if result.returncode:
+        raise RuntimeError("source T2 cargo test failed")
+    verify_tests(result.stdout, expected)
+
 def local_address():
     if os.environ.get("SOURCE_T2_ADDRESS"):
         candidates = [os.environ["SOURCE_T2_ADDRESS"]]
@@ -54,16 +91,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix="mdm-source-tls-") as directory:
         try:
             env = tls_environment(Path(directory))
-            result = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-winget-source", "--test", "t2_http", "--", "--ignored"], cwd=ROOT, env=env)
-            if result.returncode:
-                failed.append("t2_http")
+            run_tests("rss-mdm-winget-source", ["--test", "t2_http"], EXPECTED["winget"], env)
         except Exception as error:
             print(f"HTTPS fixture setup failed: {error}", file=sys.stderr)
             failed.append("t2_http")
-        for target in [["--test", "t2_git"], ["--lib"]]:
-            result = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-brew-source", *target, "--", "--ignored"], cwd=ROOT)
-            if result.returncode:
-                failed.append("brew " + " ".join(target))
+        for name, target in [("brew-git", ["--test", "t2_git"]), ("brew-recovery", ["--lib"])]:
+            try:
+                run_tests("rss-mdm-brew-source", target, EXPECTED[name])
+            except Exception as error:
+                print(f"{name} failed: {error}", file=sys.stderr)
+                failed.append(name)
     if failed:
         print("Failed source T2 targets: " + ", ".join(failed), file=sys.stderr)
     return int(bool(failed))

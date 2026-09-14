@@ -7,16 +7,16 @@ fn array(v: &Value, n: usize) -> Result<&[Value], PgError> {
     v.as_array()
         .filter(|a| a.len() == n)
         .map(Vec::as_slice)
-        .ok_or_else(fault)
+        .ok_or_else(|| fault("codec::array"))
 }
 fn s(v: &Value) -> Result<&str, PgError> {
-    v.as_str().ok_or_else(fault)
+    v.as_str().ok_or_else(|| fault("codec::s"))
 }
 fn n(v: &Value) -> Result<u64, PgError> {
-    v.as_u64().ok_or_else(fault)
+    v.as_u64().ok_or_else(|| fault("codec::n"))
 }
 fn id(v: &Value) -> Result<Id, PgError> {
-    data(Id::new(s(v)?))
+    data("codec::id", Id::new(s(v)?))
 }
 fn optional(v: &Value) -> Result<Option<Id>, PgError> {
     if v.is_null() {
@@ -37,7 +37,7 @@ fn read_kind(v: &Value) -> Result<Kind, PgError> {
         0 => Ok(Kind::Software),
         1 => Ok(Kind::Script),
         2 => Ok(Kind::Configuration),
-        _ => Err(fault()),
+        _ => Err(fault("codec::read_kind")),
     }
 }
 fn artifact(a: &Artifact) -> Value {
@@ -45,11 +45,17 @@ fn artifact(a: &Artifact) -> Value {
 }
 fn read_artifact(v: &Value) -> Result<Artifact, PgError> {
     let a = array(v, 3)?;
-    data(Artifact::new(
-        id(&a[0])?,
-        n(&a[1])?,
-        Digest::from_bytes(data(serde_json::from_value(a[2].clone()))?),
-    ))
+    data(
+        "codec::read_artifact",
+        Artifact::new(
+            id(&a[0])?,
+            n(&a[1])?,
+            Digest::from_bytes(data(
+                "codec::read_artifact",
+                serde_json::from_value(a[2].clone()),
+            )?),
+        ),
+    )
 }
 fn declaration(d: &Declaration) -> Value {
     match d {
@@ -91,8 +97,10 @@ fn declaration(d: &Declaration) -> Value {
     }
 }
 fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
-    let a = v.as_array().ok_or_else(fault)?;
-    match n(a.first().ok_or_else(fault)?)? {
+    let a = v
+        .as_array()
+        .ok_or_else(|| fault("codec::read_declaration"))?;
+    match n(a.first().ok_or_else(|| fault("codec::read_declaration"))?)? {
         0 => {
             let a = array(v, 8)?;
             Ok(Declaration::Software {
@@ -121,7 +129,7 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
                 remove: optional(&a[5])?,
             })
         }
-        _ => Err(fault()),
+        _ => Err(fault("codec::read_declaration")),
     }
 }
 pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
@@ -153,12 +161,14 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
     let v: Value = decode(bytes)?;
     let a = array(&v, 7)?;
     if n(&a[0])? != 1 {
-        return Err(fault());
+        return Err(fault("codec::read_version"));
     }
-    let t = data(TenantId::parse(s(&a[1])?))?;
-    let items = a[5].as_array().ok_or_else(fault)?;
+    let t = data("codec::read_version", TenantId::parse(s(&a[1])?))?;
+    let items = a[5]
+        .as_array()
+        .ok_or_else(|| fault("codec::read_version"))?;
     if items.len() > 64 {
-        return Err(fault());
+        return Err(fault("codec::read_version"));
     }
     let variants = items
         .iter()
@@ -167,12 +177,12 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
             let platform = match n(&a[0])? {
                 0 => Platform::Windows,
                 1 => Platform::MacOS,
-                _ => return Err(fault()),
+                _ => return Err(fault("codec::read_version")),
             };
             let architecture = match n(&a[1])? {
                 0 => Architecture::X86_64,
                 1 => Architecture::Aarch64,
-                _ => return Err(fault()),
+                _ => return Err(fault("codec::read_version")),
             };
             Ok(Variant::new(
                 platform,
@@ -182,16 +192,13 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
             ))
         })
         .collect::<Result<Vec<_>, PgError>>()?;
-    let value = data(Version::new(
-        t,
-        id(&a[2])?,
-        id(&a[3])?,
-        read_kind(&a[4])?,
-        variants,
-    ))?;
-    let expected: [u8; 32] = data(serde_json::from_value(a[6].clone()))?;
+    let value = data(
+        "codec::read_version",
+        Version::new(t, id(&a[2])?, id(&a[3])?, read_kind(&a[4])?, variants),
+    )?;
+    let expected: [u8; 32] = data("codec::read_version", serde_json::from_value(a[6].clone()))?;
     if value.digest().bytes() != expected {
-        return Err(fault());
+        return Err(fault("codec::read_version"));
     }
     Ok(value)
 }
@@ -209,7 +216,7 @@ fn read_state(v: &Value) -> Result<State, PgError> {
         1 => Ok(State::Active),
         2 => Ok(State::Deprecated),
         3 => Ok(State::Archived),
-        _ => Err(fault()),
+        _ => Err(fault("codec::read_state")),
     }
 }
 pub(crate) fn header(r: &Resource) -> Result<Vec<u8>, PgError> {
@@ -233,18 +240,20 @@ pub(crate) fn restore(
     let v: Value = decode(bytes)?;
     let a = array(&v, 6)?;
     if n(&a[0])? != 1 {
-        return Err(fault());
+        return Err(fault("codec::restore"));
     }
-    let states = a[5].as_array().ok_or_else(fault)?;
+    let states = a[5].as_array().ok_or_else(|| fault("codec::restore"))?;
     if states.len() > 10_000 || states.len() != versions.len() {
-        return Err(fault());
+        return Err(fault("codec::restore"));
     }
     let entries = states
         .iter()
         .map(|v| {
             let a = array(v, 2)?;
             Ok(StoredVersion {
-                version: versions.remove(s(&a[0])?).ok_or_else(fault)?,
+                version: versions
+                    .remove(s(&a[0])?)
+                    .ok_or_else(|| fault("codec::restore"))?,
                 state: read_state(&a[1])?,
             })
         })
@@ -252,13 +261,19 @@ pub(crate) fn restore(
     let changed_at = if a[4].is_null() {
         None
     } else {
-        Some(data(Timepoint::try_from(a[4].as_i64().ok_or_else(fault)?))?)
+        Some(data(
+            "codec::restore",
+            Timepoint::try_from(a[4].as_i64().ok_or_else(|| fault("codec::restore"))?),
+        )?)
     };
-    data(Resource::restore(ResourceSnapshot {
-        tenant: data(TenantId::parse(s(&a[1])?))?,
-        key: id(&a[2])?,
-        kind: read_kind(&a[3])?,
-        changed_at,
-        versions: entries,
-    }))
+    data(
+        "codec::restore",
+        Resource::restore(ResourceSnapshot {
+            tenant: data("codec::restore", TenantId::parse(s(&a[1])?))?,
+            key: id(&a[2])?,
+            kind: read_kind(&a[3])?,
+            changed_at,
+            versions: entries,
+        }),
+    )
 }

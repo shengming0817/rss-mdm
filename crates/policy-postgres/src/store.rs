@@ -84,7 +84,7 @@ impl PolicyStore {
             .map(|(rev, b)| {
                 let a = Aggregate::restore(&b)?;
                 if a.policy.key() != id || a.revision != rev {
-                    return Err(fault());
+                    return Err(fault("store::get_in"));
                 }
                 Ok(a)
             })
@@ -93,7 +93,7 @@ impl PolicyStore {
             if let Some(v) = aggregate.policy.version() {
                 for (owner, kind, key, expected) in version_documents(v)? {
                     if db::immutable(tx, &owner, kind, &key).await?.as_ref() != Some(&expected) {
-                        return Err(fault());
+                        return Err(fault("store::get_in"));
                     }
                 }
             }
@@ -102,7 +102,7 @@ impl PolicyStore {
                 if db::immutable(tx, "", "targets", &key).await?.as_ref()
                     != Some(&encode(&codec::targets(t))?)
                 {
-                    return Err(fault());
+                    return Err(fault("store::get_in"));
                 }
             }
         }
@@ -144,7 +144,7 @@ impl PolicyStore {
             }
             let receipt: Receipt = decode(&bytes)?;
             if receipt.policy != owner || receipt.request != r.id.value() {
-                return Err(fault());
+                return Err(fault("store::execute_in"));
             }
             return Ok(Ok(receipt));
         }
@@ -228,13 +228,19 @@ impl PolicyStore {
                         _ => None,
                     };
                     if let Some(d) = desired {
-                        let v = aggregate.policy.version().ok_or_else(fault)?;
-                        let f = data(ExecutionRecord::new(
-                            v.clone(),
-                            d.key().device().clone(),
-                            Progress::Planned,
-                            Effect::Unverified,
-                        ))?;
+                        let v = aggregate
+                            .policy
+                            .version()
+                            .ok_or_else(|| fault("store::execute_in"))?;
+                        let f = data(
+                            "store::execute_in",
+                            ExecutionRecord::new(
+                                v.clone(),
+                                d.key().device().clone(),
+                                Progress::Planned,
+                                Effect::Unverified,
+                            ),
+                        )?;
                         facts.entry(codec::key(&f)).or_insert(f);
                     }
                 }
@@ -376,7 +382,7 @@ impl PolicyStore {
                             let raw: Value = decode(
                                 &db::original_request(tx, request.value())
                                     .await?
-                                    .ok_or_else(fault)?,
+                                    .ok_or_else(|| fault("store::plan"))?,
                             )?;
                             let fields = codec::array(&raw, 7)?;
                             if receipt.policy != policy.value()
@@ -388,11 +394,16 @@ impl PolicyStore {
                             {
                                 return Ok(Err(Rejection::InvalidInput));
                             }
-                            let id = codec::plan_id(receipt.plan_id.as_deref().ok_or_else(fault)?)?;
+                            let id = codec::plan_id(
+                                receipt
+                                    .plan_id
+                                    .as_deref()
+                                    .ok_or_else(|| fault("store::plan"))?,
+                            )?;
                             let bytes =
                                 db::immutable(tx, policy.value(), "plan", &codec::hex(id.bytes()))
                                     .await?
-                                    .ok_or_else(fault)?;
+                                    .ok_or_else(|| fault("store::plan"))?;
                             Ok(Ok(Some(restore_plan(
                                 &bytes,
                                 policy,
@@ -430,7 +441,7 @@ impl PolicyStore {
                             .as_ref()
                             .is_some_and(|v| v.policy() != *policy || v.number() != number)
                         {
-                            return Err(fault());
+                            return Err(fault("store::version"));
                         }
                         Ok(Ok(value))
                     })
@@ -462,7 +473,7 @@ impl PolicyStore {
                             .as_ref()
                             .is_some_and(|v| v.key() != *id || v.revision() != revision)
                         {
-                            return Err(fault());
+                            return Err(fault("store::target_snapshot"));
                         }
                         Ok(Ok(value))
                     })
@@ -487,7 +498,7 @@ impl PolicyStore {
             return Err(Rejection::InvalidInput.into());
         }
         let owner = policy.value().to_owned();
-        settle(self.runtime.local_tx(self.tenant,deadline,move|tx|Box::pin(async move{let t=tx.tenant_id();let raw=t.to_string();let expected_owner=owner.clone();let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4").bind(raw).bind(&owner).bind(after).bind((limit+1) as i64).fetch_all(c).await})).await?;let mut result=rows.into_iter().map(read_fact_row).collect::<Result<Vec<_>,_>>()?;if result.iter().any(|f|f.version().policy().tenant()!=t || f.version().policy().value()!=expected_owner){return Err(fault());}let more=result.len()>limit;result.truncate(limit);let next=if more {result.last().map(codec::key)} else {None};Ok(Ok(FactPage{records:result,next}))})).await)
+        settle(self.runtime.local_tx(self.tenant,deadline,move|tx|Box::pin(async move{let t=tx.tenant_id();let raw=t.to_string();let expected_owner=owner.clone();let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4").bind(raw).bind(&owner).bind(after).bind((limit+1) as i64).fetch_all(c).await})).await?;let mut result=rows.into_iter().map(read_fact_row).collect::<Result<Vec<_>,_>>()?;if result.iter().any(|f|f.version().policy().tenant()!=t || f.version().policy().value()!=expected_owner){return Err(fault("store::execution_facts"));}let more=result.len()>limit;result.truncate(limit);let next=if more {result.last().map(codec::key)} else {None};Ok(Ok(FactPage{records:result,next}))})).await)
     }
 }
 fn validate_request(r: &Request) -> Result<(), Rejection> {
@@ -572,7 +583,7 @@ fn read_fact_row(row: sqlx::postgres::PgRow) -> Result<ExecutionRecord, PgError>
     let b = checked(row.try_get("document")?, row.try_get("digest")?)?;
     let f = codec::read_fact(&decode::<Value>(&b)?)?;
     if row.try_get::<String, _>("key")? != codec::key(&f) {
-        return Err(fault());
+        return Err(fault("store::read_fact_row"));
     }
     Ok(f)
 }
@@ -583,18 +594,18 @@ async fn load_facts(
     let (t, p) = (tx.tenant_id().to_string(), policy.value().to_owned());
     let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 ORDER BY key COLLATE \"C\" LIMIT 10001").bind(t).bind(p).fetch_all(c).await})).await?;
     if rows.len() > MAX_FACTS {
-        return Err(fault());
+        return Err(fault("store::load_facts"));
     }
     let mut facts = BTreeMap::new();
     let mut size = 0;
     for row in rows {
         size += row.try_get::<Vec<u8>, _>("document")?.len();
         if size > MAX_DOCUMENT {
-            return Err(fault());
+            return Err(fault("store::load_facts"));
         }
         let f = read_fact_row(row)?;
         if f.version().policy() != policy {
-            return Err(fault());
+            return Err(fault("store::load_facts"));
         }
         facts.insert(codec::key(&f), f);
     }
@@ -626,25 +637,28 @@ fn restore_plan(
     let v: Value = decode(b)?;
     let a = codec::array(&v, 4)?;
     if codec::number(&a[0])? != 1 {
-        return Err(fault());
+        return Err(fault("store::restore_plan"));
     }
     let p = codec::read_policy(&a[1])?;
     let t = codec::read_targets(&a[2])?;
     let facts = a[3]
         .as_array()
-        .ok_or_else(fault)?
+        .ok_or_else(|| fault("store::restore_plan"))?
         .iter()
         .map(codec::read_fact)
         .collect::<Result<Vec<_>, _>>()?;
-    let plan = data(reconcile(PlanInput {
-        policy: &p,
-        targets: &t,
-        executions: &facts,
-        request,
-        as_of,
-    }))?;
+    let plan = data(
+        "store::restore_plan",
+        reconcile(PlanInput {
+            policy: &p,
+            targets: &t,
+            executions: &facts,
+            request,
+            as_of,
+        }),
+    )?;
     if plan.policy() != policy || plan.id() != id {
-        return Err(fault());
+        return Err(fault("store::restore_plan"));
     }
     Ok(plan)
 }

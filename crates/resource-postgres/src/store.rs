@@ -136,7 +136,7 @@ impl ResourceStore {
         let owner = id.as_str().to_owned();
         let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_resource.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind='version' ORDER BY key COLLATE \"C\" LIMIT 10001").bind(t).bind(owner).fetch_all(c).await})).await?;
         if rows.len() > 10_000 {
-            return Err(fault());
+            return Err(fault("store::get_in"));
         }
         let mut versions = BTreeMap::new();
         let mut size = 0;
@@ -144,21 +144,21 @@ impl ResourceStore {
             let bytes = checked(row.try_get("document")?, row.try_get("digest")?)?;
             size += bytes.len();
             if size > MAX_DOCUMENT {
-                return Err(fault());
+                return Err(fault("store::get_in"));
             }
             let v = codec::read_version(&bytes)?;
             if v.tenant() != self.tenant
                 || v.resource() != id
                 || v.label().as_str() != row.try_get::<String, _>("key")?
             {
-                return Err(fault());
+                return Err(fault("store::get_in"));
             }
             versions.insert(v.label().as_str().into(), v);
         }
         let resource = codec::restore(&document, versions)?;
         let s = resource.snapshot();
         if s.tenant != self.tenant || &s.key != id {
-            return Err(fault());
+            return Err(fault("store::get_in"));
         }
         Ok(Ok(Some(StoredResource {
             resource,
@@ -177,7 +177,7 @@ impl ResourceStore {
         lock(tx, "resource", id.as_str()).await?;
         let s = input!(input!(self.get_in(tx, id).await?).ok_or(Rejection::NotFound));
         let v = input!(s.resource.version(version).map_err(|_| Rejection::NotFound));
-        let state = data(s.resource.state(version))?;
+        let state = data("store::lock_version_in", s.resource.state(version))?;
         Ok(Ok((v.clone(), state, s.storage_revision)))
     }
     /// Execute one fixed request atomically with its receipt and necessary RSS Outbox event.
@@ -364,7 +364,7 @@ impl ResourceStore {
                                 || v.resource() != *id
                                 || v.label() != *label
                         }) {
-                            return Err(fault());
+                            return Err(fault("store::version"));
                         }
                         Ok(Ok(value))
                     })

@@ -55,10 +55,16 @@ impl ArtifactReader {
                 .connect_timeout(Duration::from_secs(5).min(deadline));
             if let Some(ca) = origin.private_ca {
                 builder = builder.tls_built_in_root_certs(false).add_root_certificate(
-                    reqwest::Certificate::from_pem(&ca).map_err(|_| Error::Input)?,
+                    reqwest::Certificate::from_pem(&ca)
+                        .map_err(|cause| Error::Input.context("artifact::new", cause))?,
                 );
             }
-            clients.push((url, builder.build().map_err(|_| Error::Input)?));
+            clients.push((
+                url,
+                builder
+                    .build()
+                    .map_err(|cause| Error::Input.context("artifact::new", cause))?,
+            ));
         }
         Ok(Self {
             origins: clients,
@@ -83,7 +89,7 @@ impl ArtifactReader {
                 .header("Accept-Encoding", "identity")
                 .send()
                 .await
-                .map_err(|_| Error::ArtifactTransport)?;
+                .map_err(|cause| Error::ArtifactTransport.context("artifact::verify", cause))?;
             if response.status() != reqwest::StatusCode::OK {
                 return Err(Error::ArtifactTransport);
             }
@@ -100,7 +106,7 @@ impl ArtifactReader {
             while let Some(chunk) = response
                 .chunk()
                 .await
-                .map_err(|_| Error::ArtifactTransport)?
+                .map_err(|cause| Error::ArtifactTransport.context("artifact::verify", cause))?
             {
                 seen = seen
                     .checked_add(chunk.len() as u64)
@@ -116,7 +122,7 @@ impl ArtifactReader {
             Ok(())
         })
         .await
-        .map_err(|_| Error::ArtifactTimeout)?
+        .map_err(|cause| Error::ArtifactTimeout.context("artifact::verify", cause))?
     }
 }
 fn denied_ip(ip: &IpAddr) -> bool {
@@ -132,7 +138,8 @@ pub(super) fn checked_url(raw: &str) -> Result<url::Url> {
     if raw.len() > 2048 || raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(Error::Input);
     }
-    let u = url::Url::parse(raw).map_err(|_| Error::Input)?;
+    let u = url::Url::parse(raw)
+        .map_err(|cause| Error::Input.context("artifact::checked_url", cause))?;
     if u.scheme() != "https"
         || u.host_str().is_none()
         || !u.username().is_empty()
