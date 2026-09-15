@@ -211,16 +211,13 @@ impl ReleaseStore {
             .save_receipt(
                 tx,
                 id.value(),
-                RequestRecord {
-                    owner: (c.snapshot().id.value()).to_owned(),
-                    fingerprint: hash,
-                    request,
-                    receipt: STORAGE.encode(&json!([
-                        0,
-                        [self.tenant.to_string(), c.snapshot().id.value()],
-                        [self.tenant.to_string(), id.value()]
-                    ]))?,
-                },
+                c.snapshot().id.value(),
+                request,
+                STORAGE.encode(&json!([
+                    0,
+                    [self.tenant.to_string(), c.snapshot().id.value()],
+                    [self.tenant.to_string(), id.value()]
+                ]))?,
             )
             .await?;
         event::append(
@@ -334,12 +331,9 @@ impl ReleaseStore {
             .save_receipt(
                 tx,
                 r.id.value(),
-                RequestRecord {
-                    owner: (id.value()).to_owned(),
-                    fingerprint: hash,
-                    request,
-                    receipt: STORAGE.encode(&json!([1, codec::receipt(receipt)]))?,
-                },
+                id.value(),
+                request,
+                STORAGE.encode(&json!([1, codec::receipt(receipt)]))?,
             )
             .await?;
         event::append(

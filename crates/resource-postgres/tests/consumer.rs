@@ -286,3 +286,52 @@ async fn resource_admission_rejects_schema_and_privilege_drift() {
             .unwrap_or_else(|e| panic!("failed to restore {change}: {e:?}"));
     }
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn admission_rejects_noninherited_switchable_privileges() {
+    let runtime = runtime().await;
+    let role = format!("acl_{}", unique().replace('-', "_"));
+    let bridge = format!("{role}_bridge");
+    sql(&format!(
+        "CREATE ROLE {role} NOLOGIN; CREATE ROLE {bridge} NOLOGIN; GRANT {role} TO {bridge} WITH INHERIT FALSE, SET TRUE; GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET TRUE; GRANT USAGE ON SCHEMA mdm_resource TO {role};"
+    ));
+    for membership in ["INHERIT FALSE, SET TRUE", "INHERIT TRUE, SET FALSE"] {
+        sql(&format!("GRANT {role} TO {bridge} WITH {membership}"));
+        for privilege in [
+            "TRUNCATE ON mdm_resource.requests",
+            "DELETE ON mdm_resource.immutable",
+            "UPDATE(document) ON mdm_resource.immutable",
+            "UPDATE ON mdm_resource.aggregates",
+            "REFERENCES ON mdm_resource.aggregates",
+            "TRIGGER ON mdm_resource.aggregates",
+        ] {
+            sql(&format!("GRANT {privilege} TO {role}"));
+            let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
+            sql(&format!("REVOKE {privilege} FROM {role}"));
+            assert!(
+                result.is_err(),
+                "admitted switchable privilege: {privilege}"
+            );
+        }
+    }
+    // Permitted column privileges in a switchable role remain admissible.
+    sql(&format!(
+        "GRANT UPDATE(document) ON mdm_resource.aggregates TO {role}"
+    ));
+    ResourceStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    sql(&format!(
+        "REVOKE UPDATE(document) ON mdm_resource.aggregates FROM {role}"
+    ));
+    // A role with neither inheritance nor SET permission is not executable.
+    sql(&format!(
+        "GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET FALSE; GRANT TRUNCATE ON mdm_resource.requests TO {role}"
+    ));
+    let dormant = ResourceStore::new(runtime, tenant(), deadline()).await;
+    sql(&format!(
+        "REVOKE {bridge} FROM mdm_resource_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
+    ));
+    dormant.unwrap();
+}

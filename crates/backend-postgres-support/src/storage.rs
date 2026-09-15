@@ -24,6 +24,16 @@ pub struct RequestRecord {
     /// Original result bytes for idempotent replay.
     pub receipt: Vec<u8>,
 }
+impl RequestRecord {
+    fn for_write(owner: &str, request: Vec<u8>, receipt: Vec<u8>) -> Self {
+        Self {
+            owner: owner.to_owned(),
+            fingerprint: digest(&request),
+            request,
+            receipt,
+        }
+    }
+}
 impl BackendStorage {
     // Only the closed enum supplies an SQL identifier; all other values are bound.
     fn query(self, template: &'static str) -> sqlx::SqlStr {
@@ -153,8 +163,11 @@ impl BackendStorage {
         self,
         tx: &mut PgTransaction<'_>,
         id: &str,
-        record: RequestRecord,
+        owner: &str,
+        request: Vec<u8>,
+        receipt: Vec<u8>,
     ) -> Result<(), PgError> {
+        let record = RequestRecord::for_write(owner, request, receipt);
         let (tenant, id, hash) = (
             tx.tenant_id().to_string(),
             id.to_owned(),
@@ -301,5 +314,22 @@ impl BackendStorage {
             AppendOutcome::Inserted => Ok(()),
             AppendOutcome::AlreadyPresent => Err(self.fault("event::append")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn receipt_write_derives_its_request_fingerprint() {
+        let record =
+            RequestRecord::for_write("owner", b"original request".to_vec(), b"receipt".to_vec());
+        assert_eq!(record.owner, "owner");
+        assert_eq!(record.request, b"original request");
+        assert_eq!(record.receipt, b"receipt");
+        assert_eq!(record.fingerprint, digest(&record.request));
+        let other =
+            RequestRecord::for_write("owner", b"changed request".to_vec(), b"receipt".to_vec());
+        assert_ne!(record.fingerprint, other.fingerprint);
     }
 }

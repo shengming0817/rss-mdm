@@ -640,3 +640,52 @@ async fn fact_pages_preserve_boundaries_and_reject_foreign_documents() {
     sql("GRANT UPDATE(document) ON mdm_policy.facts TO mdm_policy_runtime");
     assert!(bad.is_err());
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn admission_rejects_noninherited_switchable_privileges() {
+    let runtime = runtime().await;
+    let role = format!("acl_{}", unique().replace('-', "_"));
+    let bridge = format!("{role}_bridge");
+    sql(&format!(
+        "CREATE ROLE {role} NOLOGIN; CREATE ROLE {bridge} NOLOGIN; GRANT {role} TO {bridge} WITH INHERIT FALSE, SET TRUE; GRANT {bridge} TO mdm_policy_runtime WITH INHERIT FALSE, SET TRUE; GRANT USAGE ON SCHEMA mdm_policy TO {role};"
+    ));
+    for membership in ["INHERIT FALSE, SET TRUE", "INHERIT TRUE, SET FALSE"] {
+        sql(&format!("GRANT {role} TO {bridge} WITH {membership}"));
+        for privilege in [
+            "TRUNCATE ON mdm_policy.requests",
+            "DELETE ON mdm_policy.immutable",
+            "UPDATE(document) ON mdm_policy.immutable",
+            "UPDATE ON mdm_policy.aggregates",
+            "REFERENCES ON mdm_policy.aggregates",
+            "TRIGGER ON mdm_policy.aggregates",
+        ] {
+            sql(&format!("GRANT {privilege} TO {role}"));
+            let result = PolicyStore::new(runtime.clone(), tenant(), deadline()).await;
+            sql(&format!("REVOKE {privilege} FROM {role}"));
+            assert!(
+                result.is_err(),
+                "admitted switchable privilege: {privilege}"
+            );
+        }
+    }
+    // Permitted column privileges in a switchable role remain admissible.
+    sql(&format!(
+        "GRANT UPDATE(document) ON mdm_policy.aggregates TO {role}"
+    ));
+    PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    sql(&format!(
+        "REVOKE UPDATE(document) ON mdm_policy.aggregates FROM {role}"
+    ));
+    // A role with neither inheritance nor SET permission is not executable.
+    sql(&format!(
+        "GRANT {bridge} TO mdm_policy_runtime WITH INHERIT FALSE, SET FALSE; GRANT TRUNCATE ON mdm_policy.requests TO {role}"
+    ));
+    let dormant = PolicyStore::new(runtime, tenant(), deadline()).await;
+    sql(&format!(
+        "REVOKE {bridge} FROM mdm_policy_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
+    ));
+    dormant.unwrap();
+}

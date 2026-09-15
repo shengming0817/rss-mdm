@@ -339,12 +339,9 @@ impl PolicyStore {
             .save_receipt(
                 tx,
                 r.id.value(),
-                RequestRecord {
-                    owner: (r.policy().value()).to_owned(),
-                    fingerprint,
-                    request: request_document,
-                    receipt: STORAGE.encode(&response)?,
-                },
+                r.policy().value(),
+                request_document,
+                STORAGE.encode(&response)?,
             )
             .await?;
         Ok(Ok(response))

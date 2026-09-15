@@ -188,3 +188,8 @@ Windows 只读先证明身份与资产；macOS 原生与 Agent-only 沿同一模
 共同执行单源维护。Policy 的原始请求从已校验 RequestRecord 读取，不增加重复查询。
 删除旧 db/admission/catalog 实现，不保留 wrapper。Policy 分页与 Release 历史查询分别拆成
 查询、解码校验和结果构造；app 的直接 SQL 归 storage，业务编排保持原事务内锁/检查/写入/审计顺序。
+
+准入权限取当前有效角色、session_user 可 SET 的角色及它们各自可继承权限的并集；逐一拒绝
+危险表权限、非声明 UPDATE 列和 grant option，不以 MEMBER 代替实际 SET/USAGE 语义。
+没有 SET 和 INHERIT 路径的休眠角色不参与权限并集。请求写入接口只接收原始请求和回执字节，
+共享 owner 自行计算摘要；读取的 RequestRecord 保留校验后的 fingerprint 供领域判断重放。

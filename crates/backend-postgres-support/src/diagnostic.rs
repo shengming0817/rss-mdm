@@ -184,7 +184,7 @@ mod logging_tests {
     use super::*;
     use crate::BackendKind;
     use std::sync::{Arc, Mutex};
-    struct Capture(Arc<Mutex<Vec<String>>>);
+    struct Capture(Arc<Mutex<Vec<String>>>, std::thread::ThreadId);
     struct Domains<'a>(&'a mut Vec<String>);
     impl tracing::field::Visit for Domains<'_> {
         fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
@@ -204,7 +204,9 @@ mod logging_tests {
         fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
         fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
         fn event(&self, event: &tracing::Event<'_>) {
-            event.record(&mut Domains(&mut self.0.lock().unwrap()));
+            if std::thread::current().id() == self.1 {
+                event.record(&mut Domains(&mut self.0.lock().unwrap()));
+            }
         }
         fn enter(&self, _: &tracing::span::Id) {}
         fn exit(&self, _: &tracing::span::Id) {}
@@ -212,7 +214,15 @@ mod logging_tests {
     #[test]
     fn both_error_paths_identify_the_backend_in_logs() {
         let domains = Arc::new(Mutex::new(Vec::new()));
-        tracing::subscriber::with_default(Capture(domains.clone()), || {
+        // One global subscriber for this test binary avoids callsite-interest races
+        // with other parallel tests using the same diagnostic callsites. Record only
+        // this test thread, while keeping every callsite enabled on all threads.
+        tracing::subscriber::set_global_default(Capture(
+            domains.clone(),
+            std::thread::current().id(),
+        ))
+        .unwrap();
+        {
             for kind in [
                 BackendKind::Policy,
                 BackendKind::Resource,
@@ -222,7 +232,7 @@ mod logging_tests {
                 let _ = storage.fault("db::checked");
                 let _ = storage.decode::<serde_json::Value>(b"{");
             }
-        });
+        }
         assert_eq!(
             *domains.lock().unwrap(),
             [

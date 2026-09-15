@@ -340,12 +340,9 @@ impl ResourceStore {
             .save_receipt(
                 tx,
                 r.id.as_str(),
-                RequestRecord {
-                    owner: (r.resource.as_str()).to_owned(),
-                    fingerprint: hash,
-                    request: request_document,
-                    receipt: STORAGE.encode(&receipt)?,
-                },
+                r.resource.as_str(),
+                request_document,
+                STORAGE.encode(&receipt)?,
             )
             .await?;
         Ok(Ok(receipt))
