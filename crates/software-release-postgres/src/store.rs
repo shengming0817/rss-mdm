@@ -1,11 +1,7 @@
 use crate::error::Error;
-use crate::{
-    codec,
-    core::*,
-    db::{self, *},
-    error::*,
-    event,
-};
+use crate::{STORAGE, codec, core::*, error::*, event};
+use rss_mdm_backend_postgres_support::digest;
+use rss_mdm_backend_postgres_support::{AggregateRecord, RequestRecord};
 use rss_request_context::TenantId;
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
@@ -50,7 +46,7 @@ impl ReleaseStore {
             runtime
                 .local_tx(tenant, d, |tx| {
                     Box::pin(async move {
-                        verify(tx).await?;
+                        STORAGE.verify(tx, crate::ADMISSION).await?;
                         Ok(Ok(()))
                     })
                 })
@@ -99,15 +95,21 @@ impl ReleaseStore {
         if id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        let c = db::read(tx, id.value())
+        let c = STORAGE
+            .read(tx, id.value())
             .await?
-            .map(|(rev, b)| {
-                let c = codec::read_snapshot(&b)?;
-                if c.snapshot().id != *id || rev != c.snapshot().revision {
-                    return Err(fault("store::get_in"));
-                }
-                Ok(c)
-            })
+            .map(
+                |AggregateRecord {
+                     revision: rev,
+                     document: b,
+                 }| {
+                    let c = codec::read_snapshot(&b)?;
+                    if c.snapshot().id != *id || rev != c.snapshot().revision {
+                        return Err(STORAGE.fault("store::get_in"));
+                    }
+                    Ok(c)
+                },
+            )
             .transpose()?;
         Ok(Ok(c))
     }
@@ -121,7 +123,7 @@ impl ReleaseStore {
         if id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        lock(tx, "candidate", id.value()).await?;
+        STORAGE.lock(tx, "candidate", id.value()).await?;
         Ok(input!(self.get_in(tx, id).await?).ok_or(Rejection::NotFound))
     }
     /// Persist a new immutable candidate and its original creation receipt in one transaction.
@@ -165,22 +167,32 @@ impl ReleaseStore {
             return Ok(Err(Rejection::InvalidInput));
         }
         let document = codec::snapshot(c)?;
-        let request = encode(&json!([
+        let request = STORAGE.encode(&json!([
             "create-v2",
             id.tenant().to_string(),
             id.value(),
-            decode::<Value>(&document)?
+            STORAGE.decode::<Value>(&document)?
         ]))?;
         let hash = digest(&request);
-        lock(tx, "candidate", c.snapshot().id.value()).await?;
-        lock(tx, "request", id.value()).await?;
-        if let Some((owner, old, b)) = db::receipt(tx, id.value()).await? {
+        STORAGE
+            .lock(tx, "candidate", c.snapshot().id.value())
+            .await?;
+        STORAGE.lock(tx, "request", id.value()).await?;
+        if let Some(RequestRecord {
+            owner,
+            fingerprint: old,
+            receipt: b,
+            ..
+        }) = STORAGE.receipt(tx, id.value()).await?
+        {
             if owner != c.snapshot().id.value() || hash != old {
                 return Ok(Err(Rejection::IdentityConflict));
             }
             return Ok(Ok(operation_receipt(&b)?));
         }
-        lock(tx, "candidate", c.snapshot().id.value()).await?;
+        STORAGE
+            .lock(tx, "candidate", c.snapshot().id.value())
+            .await?;
         if input!(self.get_in(tx, &c.snapshot().id).await?).is_some() {
             return Ok(Err(Rejection::Conflict));
         }
@@ -191,21 +203,23 @@ impl ReleaseStore {
             revision: 0,
             transition: None,
         };
-        db::write(tx, c.snapshot().id.value(), None, 0, document).await?;
+        STORAGE
+            .write(tx, c.snapshot().id.value(), None, 0, document)
+            .await?;
         freeze_material(tx, &c.snapshot().content).await?;
-        db::save_receipt(
-            tx,
-            id.value(),
-            c.snapshot().id.value(),
-            hash,
-            request,
-            encode(&json!([
-                0,
-                [self.tenant.to_string(), c.snapshot().id.value()],
-                [self.tenant.to_string(), id.value()]
-            ]))?,
-        )
-        .await?;
+        STORAGE
+            .save_receipt(
+                tx,
+                id.value(),
+                c.snapshot().id.value(),
+                request,
+                STORAGE.encode(&json!([
+                    0,
+                    [self.tenant.to_string(), c.snapshot().id.value()],
+                    [self.tenant.to_string(), id.value()]
+                ]))?,
+            )
+            .await?;
         event::append(
             &self.writer,
             tx,
@@ -251,16 +265,22 @@ impl ReleaseStore {
         }
         let request = codec::request(id, r)?;
         let hash = digest(&request);
-        lock(tx, "candidate", id.value()).await?;
-        lock(tx, "request", r.id.value()).await?;
-        let previous = if let Some((owner, old, b)) = db::receipt(tx, r.id.value()).await? {
+        STORAGE.lock(tx, "candidate", id.value()).await?;
+        STORAGE.lock(tx, "request", r.id.value()).await?;
+        let previous = if let Some(RequestRecord {
+            owner,
+            fingerprint: old,
+            receipt: b,
+            ..
+        }) = STORAGE.receipt(tx, r.id.value()).await?
+        {
             if owner != id.value() || hash != old {
                 return Ok(Err(Rejection::IdentityConflict));
             }
             Some(
                 operation_receipt(&b)?
                     .transition
-                    .ok_or_else(|| fault("store::transition_in"))?,
+                    .ok_or_else(|| STORAGE.fault("store::transition_in"))?,
             )
         } else {
             None
@@ -278,14 +298,15 @@ impl ReleaseStore {
             return Ok(Ok(result));
         };
         input!(material_compatible(tx, &next.snapshot().content).await?);
-        db::write(
-            tx,
-            id.value(),
-            Some(c.snapshot().revision),
-            next.snapshot().revision,
-            codec::snapshot(next)?,
-        )
-        .await?;
+        STORAGE
+            .write(
+                tx,
+                id.value(),
+                Some(c.snapshot().revision),
+                next.snapshot().revision,
+                codec::snapshot(next)?,
+            )
+            .await?;
         freeze_material(tx, &next.snapshot().content).await?;
         for ring in &next.snapshot().rings {
             if let RingState::Publication(p) = ring {
@@ -295,25 +316,26 @@ impl ReleaseStore {
                     p.attempt,
                     next.snapshot().revision
                 );
-                freeze(
-                    tx,
-                    id.value(),
-                    "attempt",
-                    &key,
-                    encode(&codec::publication(p))?,
-                )
-                .await?;
+                STORAGE
+                    .freeze(
+                        tx,
+                        id.value(),
+                        "attempt",
+                        &key,
+                        STORAGE.encode(&codec::publication(p))?,
+                    )
+                    .await?;
             }
         }
-        db::save_receipt(
-            tx,
-            r.id.value(),
-            id.value(),
-            hash,
-            request,
-            encode(&json!([1, codec::receipt(receipt)]))?,
-        )
-        .await?;
+        STORAGE
+            .save_receipt(
+                tx,
+                r.id.value(),
+                id.value(),
+                request,
+                STORAGE.encode(&json!([1, codec::receipt(receipt)]))?,
+            )
+            .await?;
         event::append(
             &self.writer,
             tx,
@@ -336,7 +358,38 @@ impl ReleaseStore {
             return Err(Rejection::TenantMismatch.into());
         }
         let key = id.value().to_owned();
-        settle(self.runtime.local_tx(self.tenant,d,move|tx|Box::pin(async move{let t=tx.tenant_id().to_string();let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT request,fingerprint FROM mdm_software_release.requests WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(key).fetch_optional(c).await})).await?;let result=row.map(|r|codec::read_request(&checked(r.try_get("request")?,r.try_get("fingerprint")?)?)).transpose()?.flatten();Ok(Ok(result))})).await)
+        settle(
+            self.runtime
+                .local_tx(self.tenant, d, move |tx| {
+                    Box::pin(async move {
+                        let t = tx.tenant_id().to_string();
+                        let row = tx
+                            .with_connection(move |c| {
+                                Box::pin(async move {
+                                    sqlx::query(ORIGINAL_REQUEST_SQL)
+                                        .bind(t)
+                                        .bind(key)
+                                        .fetch_optional(c)
+                                        .await
+                                })
+                            })
+                            .await?;
+                        let result = row
+                            .map(|r| {
+                                codec::read_request(
+                                    &STORAGE.checked(
+                                        r.try_get("request")?,
+                                        r.try_get("fingerprint")?,
+                                    )?,
+                                )
+                            })
+                            .transpose()?
+                            .flatten();
+                        Ok(Ok(result))
+                    })
+                })
+                .await,
+        )
     }
     /// Read the original request receipt in the caller transaction after owner and tenant checks.
     pub async fn operation_in(
@@ -348,9 +401,10 @@ impl ReleaseStore {
         if id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        Ok(Ok(db::receipt(tx, id.value())
+        Ok(Ok(STORAGE
+            .receipt(tx, id.value())
             .await?
-            .map(|(_, _, b)| operation_receipt(&b))
+            .map(|RequestRecord { receipt: b, .. }| operation_receipt(&b))
             .transpose()?))
     }
     /// Read the original durable request receipt without changing current aggregate state.
@@ -367,9 +421,10 @@ impl ReleaseStore {
             self.runtime
                 .local_tx_with_context(self.tenant, d, id, |id, tx| {
                     Box::pin(async move {
-                        Ok(Ok(db::receipt(tx, id.value())
+                        Ok(Ok(STORAGE
+                            .receipt(tx, id.value())
                             .await?
-                            .map(|(_, _, b)| operation_receipt(&b))
+                            .map(|record| operation_receipt(&record.receipt))
                             .transpose()?))
                     })
                 })
@@ -392,13 +447,26 @@ impl ReleaseStore {
             return Err(Rejection::InvalidInput.into());
         }
         let owner = id.value().to_owned();
-        settle(self.runtime.local_tx(self.tenant,d,move|tx|Box::pin(async move{let t=tx.tenant_id();let tenant=t.to_string();let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_software_release.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind='attempt' AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4").bind(tenant).bind(&owner).bind(after).bind(limit as i64).fetch_all(c).await.map(|rows|(owner,rows))})).await?;
- let mut result=Vec::new();for row in rows.1{let b=checked(row.try_get("document")?,row.try_get("digest")?)?;let p=codec::read_publication(&decode::<Value>(&b)?)?;if p.approval.validation.candidate.tenant()!=t||p.approval.validation.candidate.value()!=rows.0||p.attempt==0{return Err(fault("store::attempt_history"));}result.push(HistoricalAttempt{cursor:row.try_get("key")?,publication:p});}Ok(Ok(result))})).await)
+        settle(
+            self.runtime
+                .local_tx(self.tenant, d, move |tx| {
+                    Box::pin(async move {
+                        let rows = query_attempts(tx, &owner, after, limit).await?;
+                        let attempts = rows
+                            .into_iter()
+                            .map(|row| decode_attempt(row, tx.tenant_id(), &owner))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(Ok(attempts))
+                    })
+                })
+                .await,
+        )
     }
 }
 async fn material_compatible(tx: &mut PgTransaction<'_>, c: &Content) -> InTransaction<()> {
     let (key, bytes) = codec::material(c)?;
-    if db::immutable(tx, "", "version", &key)
+    if STORAGE
+        .immutable(tx, "", "version", &key)
         .await?
         .is_some_and(|b| b != bytes)
     {
@@ -409,14 +477,17 @@ async fn material_compatible(tx: &mut PgTransaction<'_>, c: &Content) -> InTrans
 }
 async fn freeze_material(tx: &mut PgTransaction<'_>, c: &Content) -> Result<(), PgError> {
     let (k, b) = codec::material(c)?;
-    freeze(tx, "", "version", &k, b).await
+    STORAGE.freeze(tx, "", "version", &k, b).await
 }
 fn operation_receipt(bytes: &[u8]) -> Result<OperationReceipt, PgError> {
-    let v: Value = decode(bytes)?;
+    let v: Value = STORAGE.decode(bytes)?;
     let a = v
         .as_array()
-        .ok_or_else(|| fault("store::operation_receipt"))?;
-    match codec::n(a.first().ok_or_else(|| fault("store::operation_receipt"))?)? {
+        .ok_or_else(|| STORAGE.fault("store::operation_receipt"))?;
+    match codec::n(
+        a.first()
+            .ok_or_else(|| STORAGE.fault("store::operation_receipt"))?,
+    )? {
         0 => {
             let a = codec::array(&v, 3)?;
             Ok(OperationReceipt {
@@ -436,6 +507,46 @@ fn operation_receipt(bytes: &[u8]) -> Result<OperationReceipt, PgError> {
                 transition: Some(r),
             })
         }
-        _ => Err(fault("store::operation_receipt")),
+        _ => Err(STORAGE.fault("store::operation_receipt")),
     }
+}
+
+const ORIGINAL_REQUEST_SQL: &str = "SELECT request,fingerprint FROM mdm_software_release.requests WHERE tenant_id=$1::uuid AND id=$2";
+const ATTEMPT_HISTORY_SQL: &str = "SELECT key,document,digest FROM mdm_software_release.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind='attempt' AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4";
+
+async fn query_attempts(
+    tx: &mut PgTransaction<'_>,
+    owner: &str,
+    after: Option<String>,
+    limit: usize,
+) -> Result<Vec<sqlx::postgres::PgRow>, PgError> {
+    let (tenant, owner) = (tx.tenant_id().to_string(), owner.to_owned());
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(ATTEMPT_HISTORY_SQL)
+                .bind(tenant)
+                .bind(owner)
+                .bind(after)
+                .bind(limit as i64)
+                .fetch_all(c)
+                .await
+        })
+    })
+    .await
+}
+fn decode_attempt(
+    row: sqlx::postgres::PgRow,
+    tenant: TenantId,
+    owner: &str,
+) -> Result<HistoricalAttempt, PgError> {
+    let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
+    let publication = codec::read_publication(&STORAGE.decode::<Value>(&bytes)?)?;
+    let candidate = &publication.approval.validation.candidate;
+    if candidate.tenant() != tenant || candidate.value() != owner || publication.attempt == 0 {
+        return Err(STORAGE.fault("store::attempt_history"));
+    }
+    Ok(HistoricalAttempt {
+        cursor: row.try_get("key")?,
+        publication,
+    })
 }

@@ -59,3 +59,34 @@ macro_rules! input {
     };
 }
 pub(crate) use input;
+
+pub(crate) fn decode_domain<T>(
+    stage: &'static str,
+    result: Result<T, crate::core::Error>,
+) -> Result<T, PgError> {
+    result.map_err(|error| {
+        let category = match error {
+            crate::core::Error::InvalidIdentity => "InvalidIdentity",
+            crate::core::Error::InvalidDigest => "InvalidDigest",
+            crate::core::Error::InvalidArtifacts => "InvalidArtifacts",
+            crate::core::Error::TenantMismatch => "TenantMismatch",
+            crate::core::Error::IdentityMismatch => "IdentityMismatch",
+            crate::core::Error::RevisionConflict { .. } => "RevisionConflict",
+            crate::core::Error::Overflow => "Overflow",
+            crate::core::Error::RequestConflict => "RequestConflict",
+            crate::core::Error::InvalidSnapshot => "InvalidSnapshot",
+            crate::core::Error::InvalidTime => "InvalidTime",
+            crate::core::Error::InvalidTransition => "InvalidTransition",
+            crate::core::Error::PromotionBlocked => "PromotionBlocked",
+            crate::core::Error::ContentFrozen => "ContentFrozen",
+            crate::core::Error::ContentConflict => "ContentConflict",
+            crate::core::Error::StaleEvidence => "StaleEvidence",
+            crate::core::Error::ValidationRequired => "ValidationRequired",
+            crate::core::Error::ActorConstraint => "ActorConstraint",
+            crate::core::Error::PublicationClosed => "PublicationClosed",
+            crate::core::Error::ReconciliationRequired => "ReconciliationRequired",
+            crate::core::Error::ResultConflict => "ResultConflict",
+        };
+        crate::STORAGE.domain_error(stage, std::any::type_name::<crate::core::Error>(), category)
+    })
+}

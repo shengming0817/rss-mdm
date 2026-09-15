@@ -2,7 +2,7 @@
 #![warn(missing_docs)]
 //! Sole durable owner of software publication decisions and attempt history.
 mod codec;
-mod db;
+
 mod error;
 mod event;
 mod store;
@@ -15,3 +15,15 @@ pub const MIGRATION_SQL: &str = include_str!("../migrations/0001.sql");
 pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|v| format!("{v:02x}")).collect()
 }
+
+use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
+pub(crate) const STORAGE: BackendStorage = BackendStorage::new(BackendKind::SoftwareRelease);
+pub(crate) const ADMISSION: Admission = Admission {
+    tables: &["aggregates", "immutable", "requests"],
+    update_columns: &[
+        "aggregates.revision",
+        "aggregates.document",
+        "aggregates.digest",
+    ],
+    catalog: include_str!("catalog.json"),
+};

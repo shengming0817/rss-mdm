@@ -922,14 +922,30 @@ impl PublicationService {
         Ok(())
     }
     async fn reset_withdrawal_preflight(&self, t: &Target, cutoff: Deadline) -> Result<()> {
-        settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(self,t),|(s,t),tx|Box::pin(async move {
-            db::lock(tx,"source",&format!("{}:{}",hex(&t.binding),t.slot)).await?;
-            let (tenant,key)=(tx.tenant_id().to_string(),t.withdrawal_key());
-            let changed=tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_software_composition.targets SET attempted=false WHERE tenant_id=$1::uuid AND id=$2 AND attempted AND NOT acknowledged").bind(tenant).bind(key).execute(c).await.map(|r|r.rows_affected())})).await?;
-            if changed!=1 {return Err(db::fault());}
-            db::audit(tx,&s.actors.backend,&t.candidate,"software_preflight", db::target_fact(t, Table::Withdraw, "reset_withdrawal_preflight", "not-applied")).await?;
-            Ok(Ok(()))
-        })).await)
+        settle(
+            self.runtime
+                .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
+                    Box::pin(async move {
+                        db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot)).await?;
+                        db::reset_withdrawal_preflight(tx, &t.withdrawal_key()).await?;
+                        db::audit(
+                            tx,
+                            &s.actors.backend,
+                            &t.candidate,
+                            "software_preflight",
+                            db::target_fact(
+                                t,
+                                Table::Withdraw,
+                                "reset_withdrawal_preflight",
+                                "not-applied",
+                            ),
+                        )
+                        .await?;
+                        Ok(Ok(()))
+                    })
+                })
+                .await,
+        )
     }
     async fn settle_withdrawal(
         &self,

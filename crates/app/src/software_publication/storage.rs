@@ -156,14 +156,46 @@ pub(super) async fn register(
         let tenant = tx.tenant_id().to_string();
         let identity = b.identity.clone();
         let configuration = b.configuration.clone();
-        let created=tx.with_connection(move|c|Box::pin(async move{
- let created=sqlx::query("INSERT INTO mdm_software_composition.bindings(tenant_id,identity,configuration) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(&tenant).bind(&identity).bind(&configuration).execute(&mut *c).await?.rows_affected();
- let old:Vec<u8>=sqlx::query_scalar("SELECT configuration FROM mdm_software_composition.bindings WHERE tenant_id=$1::uuid AND identity=$2").bind(tenant).bind(identity).fetch_one(c).await?;if old!=configuration{return Err(sqlx::Error::Protocol("source binding conflict".into()));}Ok(created==1)})).await?;
+        let created = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    let created = sqlx::query(INSERT_BINDING_SQL)
+                        .bind(&tenant)
+                        .bind(&identity)
+                        .bind(&configuration)
+                        .execute(&mut *c)
+                        .await?
+                        .rows_affected();
+
+                    let old: Vec<u8> = sqlx::query_scalar(READ_BINDING_SQL)
+                        .bind(tenant)
+                        .bind(identity)
+                        .fetch_one(c)
+                        .await?;
+                    if old != configuration {
+                        return Err(sqlx::Error::Protocol("source binding conflict".into()));
+                    }
+                    Ok(created == 1)
+                })
+            })
+            .await?;
+
         if matches!(b.driver, Driver::Brew { .. }) {
             let t = tx.tenant_id().to_string();
             let binding = b.identity.clone();
             let head = heads[i].clone();
-            tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,cursor) VALUES($1::uuid,$2,'tap',$3) ON CONFLICT DO NOTHING").bind(t).bind(binding).bind(head).execute(c).await?;Ok(())})).await?;
+            tx.with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query(INSERT_TAP_SLOT_SQL)
+                        .bind(t)
+                        .bind(binding)
+                        .bind(head)
+                        .execute(c)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await?;
         }
         if created {
             audit(
@@ -183,7 +215,18 @@ pub(super) async fn subject(
     candidate: &str,
 ) -> std::result::Result<Option<Subject>, PgError> {
     let (t, id) = (tx.tenant_id().to_string(), candidate.to_owned());
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT resource,version,document,digest FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND candidate=$2").bind(t).bind(id).fetch_optional(c).await})).await?;
+    let row = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(SUBJECT_SQL)
+                    .bind(t)
+                    .bind(id)
+                    .fetch_optional(c)
+                    .await
+            })
+        })
+        .await?;
+
     row.map(|r| {
         let s: Subject = decode(
             r.try_get::<&[u8], _>("document")?,
@@ -212,7 +255,21 @@ pub(super) async fn insert_subject(
         encode(s)?,
     );
     let hash = Sha256::digest(&bytes).to_vec();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_composition.subjects(tenant_id,candidate,resource,version,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6)").bind(t).bind(id).bind(resource).bind(version).bind(bytes).bind(hash).execute(c).await?;Ok(())})).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(INSERT_SUBJECT_SQL)
+                .bind(t)
+                .bind(id)
+                .bind(resource)
+                .bind(version)
+                .bind(bytes)
+                .bind(hash)
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
 }
 pub(super) fn software_key(c: &rel::Content) -> std::result::Result<Vec<u8>, PgError> {
     let s = c.software().fields();
@@ -226,7 +283,18 @@ pub(super) async fn authority(
     key: &[u8],
 ) -> std::result::Result<Option<(String, Vec<u8>)>, PgError> {
     let (t, k) = (tx.tenant_id().to_string(), key.to_vec());
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT candidate,material FROM mdm_software_composition.authorities WHERE tenant_id=$1::uuid AND software=$2 FOR UPDATE").bind(t).bind(k).fetch_optional(c).await})).await?;
+    let row = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(AUTHORITY_SQL)
+                    .bind(t)
+                    .bind(k)
+                    .fetch_optional(c)
+                    .await
+            })
+        })
+        .await?;
+
     row.map(|r| Ok((r.try_get("candidate")?, r.try_get("material")?)))
         .transpose()
 }
@@ -237,7 +305,21 @@ pub(super) async fn set_authority(
     candidate: &str,
 ) -> std::result::Result<(), PgError> {
     let (t, id) = (tx.tenant_id().to_string(), candidate.to_owned());
-    let n=tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_composition.authorities(tenant_id,software,material,candidate) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,software) DO UPDATE SET candidate=EXCLUDED.candidate WHERE mdm_software_composition.authorities.material=EXCLUDED.material").bind(t).bind(key).bind(material).bind(id).execute(c).await.map(|r|r.rows_affected())})).await?;
+    let n = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(SET_AUTHORITY_SQL)
+                    .bind(t)
+                    .bind(key)
+                    .bind(material)
+                    .bind(id)
+                    .execute(c)
+                    .await
+                    .map(|r| r.rows_affected())
+            })
+        })
+        .await?;
+
     if n != 1 {
         return Err(fault());
     }
@@ -253,7 +335,19 @@ pub(super) async fn slot(
         binding.to_vec(),
         coordinate.to_owned(),
     );
-    let row=tx.with_connection(move|conn|Box::pin(async move{sqlx::query("SELECT operation,cursor FROM mdm_software_composition.slots WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3").bind(t).bind(b).bind(c).fetch_optional(conn).await})).await?;
+    let row = tx
+        .with_connection(move |conn| {
+            Box::pin(async move {
+                sqlx::query(SLOT_SQL)
+                    .bind(t)
+                    .bind(b)
+                    .bind(c)
+                    .fetch_optional(conn)
+                    .await
+            })
+        })
+        .await?;
+
     row.map(|r| {
         Ok(Slot {
             operation: r.try_get("operation")?,
@@ -277,7 +371,22 @@ pub(super) async fn reserve(
         t.base.clone(),
         operation.to_owned(),
     );
-    let n=tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,operation,cursor) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding,coordinate) DO UPDATE SET operation=EXCLUDED.operation WHERE mdm_software_composition.slots.operation IS NULL AND mdm_software_composition.slots.cursor IS NOT DISTINCT FROM EXCLUDED.cursor").bind(tenant).bind(b).bind(coord).bind(op).bind(base).execute(c).await.map(|r|r.rows_affected())})).await?;
+    let n = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(RESERVE_SQL)
+                    .bind(tenant)
+                    .bind(b)
+                    .bind(coord)
+                    .bind(op)
+                    .bind(base)
+                    .execute(c)
+                    .await
+                    .map(|r| r.rows_affected())
+            })
+        })
+        .await?;
+
     if n != 1 {
         return Err(fault());
     }
@@ -295,7 +404,22 @@ pub(super) async fn release_slot(
         t.slot.clone(),
         op.to_owned(),
     );
-    let n=tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_software_composition.slots SET operation=NULL,cursor=coalesce($5,cursor) WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3 AND operation=$4").bind(tenant).bind(b).bind(coord).bind(op).bind(cursor).execute(c).await.map(|r|r.rows_affected())})).await?;
+    let n = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(RELEASE_SLOT_SQL)
+                    .bind(tenant)
+                    .bind(b)
+                    .bind(coord)
+                    .bind(op)
+                    .bind(cursor)
+                    .execute(c)
+                    .await
+                    .map(|r| r.rows_affected())
+            })
+        })
+        .await?;
+
     if n != 1 {
         return Err(fault());
     }
@@ -389,11 +513,29 @@ pub(super) async fn mark(
     complete: bool,
 ) -> std::result::Result<(), PgError> {
     let (tenant, id) = (tx.tenant_id().to_string(), id.to_owned());
-    let rows=tx.with_connection(move|c|Box::pin(async move {
-  let rows=sqlx::query("UPDATE mdm_software_composition.targets SET attempted=true,acknowledged=acknowledged OR $3 WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(&id).bind(ack).execute(&mut *c).await?.rows_affected();
-  if complete && matches!(table,Table::Withdraw) { sqlx::query("UPDATE mdm_software_composition.withdrawals SET complete=true WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).execute(c).await?; }
-  Ok(rows)
- })).await?;
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                let rows = sqlx::query(MARK_ATTEMPT_SQL)
+                    .bind(&tenant)
+                    .bind(&id)
+                    .bind(ack)
+                    .execute(&mut *c)
+                    .await?
+                    .rows_affected();
+
+                if complete && matches!(table, Table::Withdraw) {
+                    sqlx::query(COMPLETE_WITHDRAWAL_SQL)
+                        .bind(tenant)
+                        .bind(id)
+                        .execute(c)
+                        .await?;
+                }
+
+                Ok(rows)
+            })
+        })
+        .await?;
     if rows != 1 {
         return Err(fault());
     }
@@ -408,7 +550,17 @@ pub(super) async fn projection(
         t.binding.clone(),
         t.coordinate.clone(),
     );
-    tx.with_connection(move|conn|Box::pin(async move{sqlx::query_scalar("SELECT publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3").bind(tenant).bind(b).bind(c).fetch_optional(conn).await})).await
+    tx.with_connection(move |conn| {
+        Box::pin(async move {
+            sqlx::query_scalar(PROJECTION_SQL)
+                .bind(tenant)
+                .bind(b)
+                .bind(c)
+                .fetch_optional(conn)
+                .await
+        })
+    })
+    .await
 }
 pub(super) async fn project(
     tx: &mut PgTransaction<'_>,
@@ -508,9 +660,21 @@ pub(super) async fn prepare_withdrawal(
         encode(target)?,
     );
     let digest = Sha256::digest(&bytes).to_vec();
-    let rows=tx.with_connection(move|c|Box::pin(async move {
- sqlx::query("INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)").bind(tenant).bind(id).bind(candidate).bind(bytes).bind(digest).execute(c).await.map(|r|r.rows_affected())
- })).await?;
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(PREPARE_WITHDRAWAL_SQL)
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(candidate)
+                    .bind(bytes)
+                    .bind(digest)
+                    .execute(c)
+                    .await
+                    .map(|r| r.rows_affected())
+            })
+        })
+        .await?;
     if rows != 1 {
         return Err(fault());
     }
@@ -521,9 +685,18 @@ pub(super) async fn complete_noop(
     id: &str,
 ) -> std::result::Result<(), PgError> {
     let (tenant, id) = (tx.tenant_id().to_string(), id.to_owned());
-    let rows=tx.with_connection(move|c|Box::pin(async move {
- sqlx::query("UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)").bind(tenant).bind(id).execute(c).await.map(|r|r.rows_affected())
- })).await?;
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(COMPLETE_NOOP_SQL)
+                    .bind(tenant)
+                    .bind(id)
+                    .execute(c)
+                    .await
+                    .map(|r| r.rows_affected())
+            })
+        })
+        .await?;
     if rows != 1 {
         return Err(fault());
     }
@@ -588,4 +761,68 @@ pub(super) fn transition_fact(r: &rel::Request, stage: &'static str) -> crate::a
         _ => None,
     };
     request_fact(r.id.value(), ring, stage)
+}
+
+const INSERT_BINDING_SQL: &str = "INSERT INTO mdm_software_composition.bindings(tenant_id,identity,configuration) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING";
+const READ_BINDING_SQL: &str = "SELECT configuration FROM mdm_software_composition.bindings WHERE tenant_id=$1::uuid AND identity=$2";
+const INSERT_TAP_SLOT_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,cursor) VALUES($1::uuid,$2,'tap',$3) ON CONFLICT DO NOTHING";
+const SUBJECT_SQL: &str = "SELECT resource,version,document,digest FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND candidate=$2";
+const INSERT_SUBJECT_SQL: &str = "INSERT INTO mdm_software_composition.subjects(tenant_id,candidate,resource,version,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6)";
+const AUTHORITY_SQL: &str = "SELECT candidate,material FROM mdm_software_composition.authorities WHERE tenant_id=$1::uuid AND software=$2 FOR UPDATE";
+const SET_AUTHORITY_SQL: &str = "INSERT INTO mdm_software_composition.authorities(tenant_id,software,material,candidate) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,software) DO UPDATE SET candidate=EXCLUDED.candidate WHERE mdm_software_composition.authorities.material=EXCLUDED.material";
+const SLOT_SQL: &str = "SELECT operation,cursor FROM mdm_software_composition.slots WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
+const RESERVE_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,operation,cursor) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding,coordinate) DO UPDATE SET operation=EXCLUDED.operation WHERE mdm_software_composition.slots.operation IS NULL AND mdm_software_composition.slots.cursor IS NOT DISTINCT FROM EXCLUDED.cursor";
+const RELEASE_SLOT_SQL: &str = "UPDATE mdm_software_composition.slots SET operation=NULL,cursor=coalesce($5,cursor) WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3 AND operation=$4";
+const MARK_ATTEMPT_SQL: &str = "UPDATE mdm_software_composition.targets SET attempted=true,acknowledged=acknowledged OR $3 WHERE tenant_id=$1::uuid AND id=$2";
+const COMPLETE_WITHDRAWAL_SQL: &str = "UPDATE mdm_software_composition.withdrawals SET complete=true WHERE tenant_id=$1::uuid AND id=$2";
+const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
+const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
+const COMPLETE_NOOP_SQL: &str = "UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)";
+
+const RESOURCE_REFERENCE_COUNT_SQL: &str = "SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3";
+pub(super) async fn resource_reference_count(
+    tx: &mut PgTransaction<'_>,
+    resource: &str,
+    version: &str,
+) -> std::result::Result<i64, PgError> {
+    let (tenant, resource, version) = (
+        tx.tenant_id().to_string(),
+        resource.to_owned(),
+        version.to_owned(),
+    );
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_scalar(RESOURCE_REFERENCE_COUNT_SQL)
+                .bind(tenant)
+                .bind(resource)
+                .bind(version)
+                .fetch_one(c)
+                .await
+        })
+    })
+    .await
+}
+
+const RESET_WITHDRAWAL_PREFLIGHT_SQL: &str = "UPDATE mdm_software_composition.targets SET attempted=false WHERE tenant_id=$1::uuid AND id=$2 AND attempted AND NOT acknowledged";
+pub(super) async fn reset_withdrawal_preflight(
+    tx: &mut PgTransaction<'_>,
+    key: &str,
+) -> std::result::Result<(), PgError> {
+    let (tenant, key) = (tx.tenant_id().to_string(), key.to_owned());
+    let changed = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(RESET_WITHDRAWAL_PREFLIGHT_SQL)
+                    .bind(tenant)
+                    .bind(key)
+                    .execute(c)
+                    .await
+                    .map(|r| r.rows_affected())
+            })
+        })
+        .await?;
+    if changed != 1 {
+        return Err(fault());
+    }
+    Ok(())
 }

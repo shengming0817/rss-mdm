@@ -179,3 +179,17 @@ Agent 先做只读上报与持久回执，再做可信脚本/单一 MSI。安装
 ## 取舍与待冻结项
 
 Windows 只读先证明身份与资产；macOS 原生与 Agent-only 沿同一模型推进，R1/R2 双平台目标保持。具体 OS/edition、证书签发方式、客户端版本、前端 revision、artifact 分发源、生产容量和兼容期限须在对应交付冻结。取舍改变时更新本 ADR 与受影响验收，不另建并行真源。
+
+## 三个 PG adapter 的内部收敛（#2430 / #2431）
+
+[范围决定](../../rules/project-scope.md#mdm-专属后端存储共享2430--2431)允许新增产品内部支持包。
+`BackendStorage` 通过封闭 `BackendKind` 选择现有 schema 和锁命名空间，借用 `PgTransaction`；
+具名 aggregate/request 记录替代 tuple。准入表集合、允许更新列、catalog 基准及事件身份由 adapter 声明，
+共同执行单源维护。Policy 的原始请求从已校验 RequestRecord 读取，不增加重复查询。
+删除旧 db/admission/catalog 实现，不保留 wrapper。Policy 分页与 Release 历史查询分别拆成
+查询、解码校验和结果构造；app 的直接 SQL 归 storage，业务编排保持原事务内锁/检查/写入/审计顺序。
+
+准入权限取当前有效角色、session_user 可 SET 的角色及它们各自可继承权限的并集；逐一拒绝
+危险表权限、非声明 UPDATE 列和 grant option，不以 MEMBER 代替实际 SET/USAGE 语义。
+没有 SET 和 INHERIT 路径的休眠角色不参与权限并集。请求写入接口只接收原始请求和回执字节，
+共享 owner 自行计算摘要；读取的 RequestRecord 保留校验后的 fingerprint 供领域判断重放。

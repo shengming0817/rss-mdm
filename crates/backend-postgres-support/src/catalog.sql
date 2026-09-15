@@ -2,7 +2,7 @@
 WITH tables AS (
  SELECT c.oid,c.relname FROM pg_catalog.pg_class c
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname='mdm_resource' AND c.relkind='r'
+ WHERE n.nspname=$1::text AND c.relkind='r'
 )
 SELECT jsonb_build_object(
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,

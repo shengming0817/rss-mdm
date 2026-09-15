@@ -1,10 +1,7 @@
-use crate::db::*;
+use crate::STORAGE;
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_request_context::TenantId;
-use rss_transactional_messaging::{
-    message::*,
-    outbox::{AppendOutcome, OutboxWriter, PendingMessage},
-};
+use rss_transactional_messaging::message::*;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgTransaction};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -22,18 +19,18 @@ pub(crate) async fn append(
     request: &str,
     revision: u64,
 ) -> Result<(), PgError> {
-    let payload =
-        encode(&serde_json::json!({"v":1,"id":id,"request":request,"revision":revision}))?;
+    let payload = STORAGE
+        .encode(&serde_json::json!({"v":1,"id":id,"request":request,"revision":revision}))?;
     let metadata = MessageMetadata::new(
         AuthoredMessageMetadata::new(
             tenant,
             at,
             domain(),
-            data("event::append", MessageRoute::parse("resource.changed"))?,
+            STORAGE.invalid("event::append", MessageRoute::parse("resource.changed"))?,
             ContractIdentity::new(
-                data("event::append", ContractId::parse("mdm.resource.changed"))?,
+                STORAGE.invalid("event::append", ContractId::parse("mdm.resource.changed"))?,
                 ContractVersion::from_static_major(1),
-                data(
+                STORAGE.invalid(
                     "event::append",
                     SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(EVENT_SCHEMA))),
                 )?,
@@ -41,26 +38,21 @@ pub(crate) async fn append(
         ),
         MessageMetadataExtensions::new(
             None,
-            Some(data("event::append", PartitionKey::parse(id))?),
+            Some(STORAGE.invalid("event::append", PartitionKey::parse(id))?),
             None,
             BTreeMap::new(),
         ),
     );
     // Core request identities allow characters outside the transport alphabet.
     // Keep the original in the payload/receipt; encode only the transport identity.
-    let message = PendingMessage::new(MessageEnvelope::new(
-        data(
-            "event::append",
-            MessageId::parse(&format!(
-                "resource.v1:{:x}",
-                Sha256::digest(request.as_bytes())
-            )),
-        )?,
-        metadata,
-        payload,
-    ));
-    match writer.append(tx, message).await? {
-        AppendOutcome::Inserted => Ok(()),
-        AppendOutcome::AlreadyPresent => Err(fault("event::append")),
-    }
+    let message_id = STORAGE.invalid(
+        "event::append",
+        MessageId::parse(&format!(
+            "resource.v1:{:x}",
+            Sha256::digest(request.as_bytes())
+        )),
+    )?;
+    STORAGE
+        .append(writer, tx, message_id, metadata, payload)
+        .await
 }

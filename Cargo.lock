@@ -2341,6 +2341,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-backend-postgres-support"
+version = "0.1.0"
+dependencies = [
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "rss-mdm-brew-source"
 version = "0.1.0"
 dependencies = [
@@ -2442,6 +2456,7 @@ name = "rss-mdm-policy-postgres"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
+ "rss-mdm-backend-postgres-support",
  "rss-mdm-policy",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -2452,7 +2467,6 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2469,6 +2483,7 @@ name = "rss-mdm-resource-postgres"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
+ "rss-mdm-backend-postgres-support",
  "rss-mdm-resource",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -2479,7 +2494,6 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2506,6 +2520,7 @@ name = "rss-mdm-software-release-postgres"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
+ "rss-mdm-backend-postgres-support",
  "rss-mdm-software-release",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -2516,7 +2531,6 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
- "tracing",
 ]
 
 [[package]]

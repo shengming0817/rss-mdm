@@ -7,9 +7,9 @@ ROOT=Path(__file__).resolve().parents[1]
 NAMES=('policy','resource','software-release')
 SCHEMAS=('mdm_policy','mdm_resource','mdm_software_release')
 CONSUMERS={
- 'policy':{'persistence_replay_aba_and_old_facts','concurrent_cas_borrowed_rollback_and_runtime_owner','outbox_failure_and_immutable_inputs'},
- 'resource':{'resource_immutable_versions_restart_and_reference_rollback','resource_cas_events_and_owner_admission'},
- 'software-release':{'release_approval_unknown_retry_history_and_late_results','release_immutable_version_request_uniqueness_and_rollback','release_event_failure_and_runtime_admission'},
+ 'policy':{'admission_rejects_noninherited_switchable_privileges','fact_pages_preserve_boundaries_and_reject_foreign_documents','persistence_replay_aba_and_old_facts','concurrent_cas_borrowed_rollback_and_runtime_owner','outbox_failure_and_immutable_inputs'},
+ 'resource':{'admission_rejects_noninherited_switchable_privileges','resource_admission_rejects_schema_and_privilege_drift','resource_immutable_versions_restart_and_reference_rollback','resource_cas_events_and_owner_admission'},
+ 'software-release':{'admission_rejects_noninherited_switchable_privileges','release_approval_unknown_retry_history_and_late_results','release_immutable_version_request_uniqueness_and_rollback','release_event_failure_and_runtime_admission'},
 }
 def verify_tests(output,expected):
     actual=set(re.findall(r'^test (\S+) \.\.\. ok$',output,re.MULTILINE))
@@ -50,7 +50,11 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
             sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-1111-1111-111111111111',1),('22222222-2222-2222-2222-222222222222',1);")
             if write_catalogs:
                 for n in NAMES:
-                    d=source/'crates'/f'{n}-postgres/src';v=json.loads(sql((d/'catalog.sql').read_text()));(d/'catalog.json').write_text(json.dumps(v,indent=2)+'\n')
+                    d=source/'crates'/f'{n}-postgres/src'
+                    query=(source/'crates/backend-postgres-support/src/catalog.sql').read_text()
+                    schema=SCHEMAS[NAMES.index(n)]
+                    v=json.loads(sql(query.replace('$1::text', "'"+schema+"'")))
+                    (d/'catalog.json').write_text(json.dumps(v,indent=2)+'\n')
             if write_catalogs and app:
                 d=source/'crates/app/src/software_publication';(d/'catalog.json').write_text(json.dumps(json.loads(sql((d/'catalog.sql').read_text())),indent=2)+'\n')
             config=root/'config.json';config.write_text(json.dumps({'port':port,'ca':str(root/'ca.crt'),'container':name}));config.chmod(0o600)
