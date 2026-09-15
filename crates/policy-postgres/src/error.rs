@@ -61,3 +61,32 @@ macro_rules! input {
     };
 }
 pub(crate) use input;
+
+pub(crate) fn decode_domain<T>(
+    stage: &'static str,
+    result: Result<T, crate::core::PolicyError>,
+) -> Result<T, PgError> {
+    result.map_err(|error| {
+        let category = match error {
+            crate::core::PolicyError::InvalidKey => "InvalidKey",
+            crate::core::PolicyError::InvalidRevision => "InvalidRevision",
+            crate::core::PolicyError::TenantMismatch => "TenantMismatch",
+            crate::core::PolicyError::PolicyMismatch => "PolicyMismatch",
+            crate::core::PolicyError::RevisionConflict { .. } => "RevisionConflict",
+            crate::core::PolicyError::RevisionOverflow => "RevisionOverflow",
+            crate::core::PolicyError::InvalidTransition { .. } => "InvalidTransition",
+            crate::core::PolicyError::InvalidSnapshot { .. } => "InvalidSnapshot",
+            crate::core::PolicyError::StaleVersion { .. } => "StaleVersion",
+            crate::core::PolicyError::VersionConflict { .. } => "VersionConflict",
+            crate::core::PolicyError::PayloadConflict { .. } => "PayloadConflict",
+            crate::core::PolicyError::IncompleteTargets => "IncompleteTargets",
+            crate::core::PolicyError::InvalidExecution { .. } => "InvalidExecution",
+            crate::core::PolicyError::ConflictingExecution { .. } => "ConflictingExecution",
+        };
+        crate::STORAGE.domain_error(
+            stage,
+            std::any::type_name::<crate::core::PolicyError>(),
+            category,
+        )
+    })
+}

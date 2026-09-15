@@ -1,5 +1,5 @@
 //! V1 owner encoding; core constructors validate every restored value.
-use crate::{core::*, db::*};
+use crate::{STORAGE, core::*};
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgError;
@@ -8,22 +8,22 @@ pub(crate) fn array(v: &Value, n: usize) -> Result<&[Value], PgError> {
     v.as_array()
         .filter(|v| v.len() == n)
         .map(Vec::as_slice)
-        .ok_or_else(|| fault("codec::array"))
+        .ok_or_else(|| STORAGE.fault("codec::array"))
 }
 pub(crate) fn text(v: &Value) -> Result<&str, PgError> {
-    v.as_str().ok_or_else(|| fault("codec::text"))
+    v.as_str().ok_or_else(|| STORAGE.fault("codec::text"))
 }
 pub(crate) fn number(v: &Value) -> Result<u64, PgError> {
-    v.as_u64().ok_or_else(|| fault("codec::number"))
+    v.as_u64().ok_or_else(|| STORAGE.fault("codec::number"))
 }
 pub(crate) fn time(v: &Value) -> Result<Timepoint, PgError> {
-    data(
+    STORAGE.invalid(
         "codec::time",
-        Timepoint::try_from(v.as_i64().ok_or_else(|| fault("codec::time"))?),
+        Timepoint::try_from(v.as_i64().ok_or_else(|| STORAGE.fault("codec::time"))?),
     )
 }
 fn tenant(v: &Value) -> Result<TenantId, PgError> {
-    data("codec::tenant", TenantId::parse(text(v)?))
+    STORAGE.invalid("codec::tenant", TenantId::parse(text(v)?))
 }
 pub(crate) fn version(v: &Version) -> Value {
     json!([
@@ -39,20 +39,23 @@ pub(crate) fn version(v: &Version) -> Value {
 pub(crate) fn read_version(v: &Value) -> Result<Version, PgError> {
     let v = array(v, 7)?;
     if number(&v[6])? != 0 {
-        return Err(fault("codec::read_version"));
+        return Err(STORAGE.fault("codec::read_version"));
     }
     let t = tenant(&v[0])?;
-    data(
+    crate::error::decode_domain(
         "codec::read_version",
         Version::new(
-            data("codec::read_version", PolicyId::new(t, text(&v[1])?))?,
+            crate::error::decode_domain("codec::read_version", PolicyId::new(t, text(&v[1])?))?,
             number(&v[2])?,
-            data(
+            crate::error::decode_domain(
                 "codec::read_version",
                 PayloadRef::new(
-                    data("codec::read_version", PayloadId::new(t, text(&v[3])?))?,
+                    crate::error::decode_domain(
+                        "codec::read_version",
+                        PayloadId::new(t, text(&v[3])?),
+                    )?,
                     number(&v[4])?,
-                    data("codec::read_version", serde_json::from_value(v[5].clone()))?,
+                    STORAGE.json("codec::read_version", serde_json::from_value(v[5].clone()))?,
                 ),
             )?,
             RemovalRule::CancelOutstandingRetainEffects,
@@ -80,12 +83,12 @@ pub(crate) fn read_policy(v: &Value) -> Result<Policy, PgError> {
         1 => Status::Active,
         2 => Status::Paused,
         3 => Status::Archived,
-        _ => return Err(fault("codec::read_policy")),
+        _ => return Err(STORAGE.fault("codec::read_policy")),
     };
-    data(
+    crate::error::decode_domain(
         "codec::read_policy",
         Policy::restore(
-            data(
+            crate::error::decode_domain(
                 "codec::read_policy",
                 PolicyId::new(tenant(&v[0])?, text(&v[1])?),
             )?,
@@ -112,18 +115,18 @@ pub(crate) fn read_targets(v: &Value) -> Result<TargetSnapshot, PgError> {
     let t = tenant(&v[0])?;
     let members = v[3]
         .as_array()
-        .ok_or_else(|| fault("codec::read_targets"))?;
+        .ok_or_else(|| STORAGE.fault("codec::read_targets"))?;
     if members.len() > crate::MAX_FACTS {
-        return Err(fault("codec::read_targets"));
+        return Err(STORAGE.fault("codec::read_targets"));
     }
     let values = members
         .iter()
-        .map(|m| data("codec::read_targets", DeviceId::new(t, text(m)?)))
+        .map(|m| crate::error::decode_domain("codec::read_targets", DeviceId::new(t, text(m)?)))
         .collect::<Result<Vec<_>, _>>()?;
-    let result = data(
+    let result = crate::error::decode_domain(
         "codec::read_targets",
         TargetSnapshot::new(
-            data(
+            crate::error::decode_domain(
                 "codec::read_targets",
                 TargetSnapshotId::new(t, text(&v[1])?),
             )?,
@@ -133,7 +136,7 @@ pub(crate) fn read_targets(v: &Value) -> Result<TargetSnapshot, PgError> {
         ),
     )?;
     if result.members().len() != members.len() {
-        return Err(fault("codec::read_targets"));
+        return Err(STORAGE.fault("codec::read_targets"));
     }
     Ok(result)
 }
@@ -160,7 +163,7 @@ pub(crate) fn fact(f: &ExecutionRecord) -> Value {
 pub(crate) fn read_fact(v: &Value) -> Result<ExecutionRecord, PgError> {
     let v = array(v, 4)?;
     let version = read_version(&v[0])?;
-    let device = data(
+    let device = crate::error::decode_domain(
         "codec::read_fact",
         DeviceId::new(version.policy().tenant(), text(&v[1])?),
     )?;
@@ -171,16 +174,16 @@ pub(crate) fn read_fact(v: &Value) -> Result<ExecutionRecord, PgError> {
         3 => Progress::Succeeded,
         4 => Progress::Failed,
         5 => Progress::Cancelled,
-        _ => return Err(fault("codec::read_fact")),
+        _ => return Err(STORAGE.fault("codec::read_fact")),
     };
     let effect = match number(&v[3])? {
         0 => Effect::Unverified,
         1 => Effect::Unknown,
         2 => Effect::VerifiedPresent,
         3 => Effect::VerifiedAbsent,
-        _ => return Err(fault("codec::read_fact")),
+        _ => return Err(STORAGE.fault("codec::read_fact")),
     };
-    data(
+    crate::error::decode_domain(
         "codec::read_fact",
         ExecutionRecord::new(version, device, progress, effect),
     )
@@ -193,11 +196,11 @@ pub(crate) fn hex(b: &[u8]) -> String {
 }
 pub(crate) fn plan_id(s: &str) -> Result<PlanId, PgError> {
     if s.len() != 64 || !s.is_ascii() {
-        return Err(fault("codec::plan_id"));
+        return Err(STORAGE.fault("codec::plan_id"));
     }
     let mut b = [0; 32];
     for (i, v) in b.iter_mut().enumerate() {
-        *v = data(
+        *v = STORAGE.invalid(
             "codec::plan_id",
             u8::from_str_radix(&s[i * 2..i * 2 + 2], 16),
         )?;

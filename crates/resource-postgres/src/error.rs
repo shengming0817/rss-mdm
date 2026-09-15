@@ -65,3 +65,26 @@ macro_rules! input {
     };
 }
 pub(crate) use input;
+
+pub(crate) fn decode_domain<T>(
+    stage: &'static str,
+    result: Result<T, crate::core::Error>,
+) -> Result<T, PgError> {
+    result.map_err(|error| {
+        let category = match error {
+            crate::core::Error::InvalidInput => "InvalidInput",
+            crate::core::Error::InvalidDigest => "InvalidDigest",
+            crate::core::Error::IdentityConflict => "IdentityConflict",
+            crate::core::Error::TenantMismatch => "TenantMismatch",
+            crate::core::Error::KindMismatch => "KindMismatch",
+            crate::core::Error::DuplicateVariant => "DuplicateVariant",
+            crate::core::Error::MissingVariant => "MissingVariant",
+            crate::core::Error::MissingVersion => "MissingVersion",
+            crate::core::Error::InvalidTransition => "InvalidTransition",
+            crate::core::Error::IncompleteReferences => "IncompleteReferences",
+            crate::core::Error::Referenced => "Referenced",
+            crate::core::Error::StaleTime => "StaleTime",
+        };
+        crate::STORAGE.domain_error(stage, std::any::type_name::<crate::core::Error>(), category)
+    })
+}

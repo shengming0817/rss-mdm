@@ -1,12 +1,9 @@
 use crate::error::Error;
-use crate::{
-    codec,
-    core::*,
-    db::{self, *},
-    error::*,
-    event,
-};
+use crate::{STORAGE, codec, core::*, error::*, event};
 use rss_contract::Timepoint;
+use rss_mdm_backend_postgres_support::MAX_DOCUMENT;
+use rss_mdm_backend_postgres_support::digest;
+use rss_mdm_backend_postgres_support::{AggregateRecord, RequestRecord};
 use rss_request_context::TenantId;
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
@@ -83,7 +80,7 @@ impl ResourceStore {
             runtime
                 .local_tx(tenant, d, |tx| {
                     Box::pin(async move {
-                        verify(tx).await?;
+                        STORAGE.verify(tx, crate::ADMISSION).await?;
                         Ok(Ok(()))
                     })
                 })
@@ -129,36 +126,48 @@ impl ResourceStore {
         id: &Id,
     ) -> InTransaction<Option<StoredResource>> {
         input!(self.check(tx)?);
-        let Some((revision, document)) = db::read(tx, id.as_str()).await? else {
+        let Some(AggregateRecord { revision, document }) = STORAGE.read(tx, id.as_str()).await?
+        else {
             return Ok(Ok(None));
         };
         let t = self.tenant.to_string();
         let owner = id.as_str().to_owned();
-        let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_resource.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind='version' ORDER BY key COLLATE \"C\" LIMIT 10001").bind(t).bind(owner).fetch_all(c).await})).await?;
+        let rows = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query(GET_IN_SQL)
+                        .bind(t)
+                        .bind(owner)
+                        .fetch_all(c)
+                        .await
+                })
+            })
+            .await?;
+
         if rows.len() > 10_000 {
-            return Err(fault("store::get_in"));
+            return Err(STORAGE.fault("store::get_in"));
         }
         let mut versions = BTreeMap::new();
         let mut size = 0;
         for row in rows {
-            let bytes = checked(row.try_get("document")?, row.try_get("digest")?)?;
+            let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
             size += bytes.len();
             if size > MAX_DOCUMENT {
-                return Err(fault("store::get_in"));
+                return Err(STORAGE.fault("store::get_in"));
             }
             let v = codec::read_version(&bytes)?;
             if v.tenant() != self.tenant
                 || v.resource() != id
                 || v.label().as_str() != row.try_get::<String, _>("key")?
             {
-                return Err(fault("store::get_in"));
+                return Err(STORAGE.fault("store::get_in"));
             }
             versions.insert(v.label().as_str().into(), v);
         }
         let resource = codec::restore(&document, versions)?;
         let s = resource.snapshot();
         if s.tenant != self.tenant || &s.key != id {
-            return Err(fault("store::get_in"));
+            return Err(STORAGE.fault("store::get_in"));
         }
         Ok(Ok(Some(StoredResource {
             resource,
@@ -174,10 +183,11 @@ impl ResourceStore {
         version: &Id,
     ) -> InTransaction<(Version, State, u64)> {
         input!(self.check(tx)?);
-        lock(tx, "resource", id.as_str()).await?;
+        STORAGE.lock(tx, "resource", id.as_str()).await?;
         let s = input!(input!(self.get_in(tx, id).await?).ok_or(Rejection::NotFound));
         let v = input!(s.resource.version(version).map_err(|_| Rejection::NotFound));
-        let state = data("store::lock_version_in", s.resource.state(version))?;
+        let state =
+            crate::error::decode_domain("store::lock_version_in", s.resource.state(version))?;
         Ok(Ok((v.clone(), state, s.storage_revision)))
     }
     /// Execute one fixed request atomically with its receipt and necessary RSS Outbox event.
@@ -203,13 +213,19 @@ impl ResourceStore {
         input!(self.check(tx)?);
         let request_document = request_document(self.tenant, r)?;
         let hash = digest(&request_document);
-        lock(tx, "resource", r.resource.as_str()).await?;
-        lock(tx, "request", r.id.as_str()).await?;
-        if let Some((owner, old, b)) = db::receipt(tx, r.id.as_str()).await? {
+        STORAGE.lock(tx, "resource", r.resource.as_str()).await?;
+        STORAGE.lock(tx, "request", r.id.as_str()).await?;
+        if let Some(RequestRecord {
+            owner,
+            fingerprint: old,
+            receipt: b,
+            ..
+        }) = STORAGE.receipt(tx, r.id.as_str()).await?
+        {
             if owner != r.resource.as_str() || old != hash {
                 return Ok(Err(Rejection::IdentityConflict));
             }
-            return Ok(Ok(decode(&b)?));
+            return Ok(Ok(STORAGE.decode(&b)?));
         }
         let old = input!(self.get_in(tx, &r.resource).await?);
         let create = matches!(r.command, Command::Create(_));
@@ -276,30 +292,33 @@ impl ResourceStore {
             revision
         };
         if let Command::Insert(v) = &r.command
-            && let Some(old) =
-                db::immutable(tx, r.resource.as_str(), "version", v.label().as_str()).await?
+            && let Some(old) = STORAGE
+                .immutable(tx, r.resource.as_str(), "version", v.label().as_str())
+                .await?
             && old != codec::version(v)?
         {
             return Ok(Err(Rejection::IdentityConflict));
         }
         if changed {
-            db::write(
-                tx,
-                r.resource.as_str(),
-                if create { None } else { Some(revision) },
-                next,
-                document,
-            )
-            .await?;
-            if let Command::Insert(v) = &r.command {
-                freeze(
+            STORAGE
+                .write(
                     tx,
                     r.resource.as_str(),
-                    "version",
-                    v.label().as_str(),
-                    codec::version(v)?,
+                    if create { None } else { Some(revision) },
+                    next,
+                    document,
                 )
                 .await?;
+            if let Command::Insert(v) = &r.command {
+                STORAGE
+                    .freeze(
+                        tx,
+                        r.resource.as_str(),
+                        "version",
+                        v.label().as_str(),
+                        codec::version(v)?,
+                    )
+                    .await?;
             }
             event::append(
                 &self.writer,
@@ -317,15 +336,18 @@ impl ResourceStore {
             request: r.id.as_str().into(),
             storage_revision: next,
         };
-        db::save_receipt(
-            tx,
-            r.id.as_str(),
-            r.resource.as_str(),
-            hash,
-            request_document,
-            encode(&receipt)?,
-        )
-        .await?;
+        STORAGE
+            .save_receipt(
+                tx,
+                r.id.as_str(),
+                RequestRecord {
+                    owner: (r.resource.as_str()).to_owned(),
+                    fingerprint: hash,
+                    request: request_document,
+                    receipt: STORAGE.encode(&receipt)?,
+                },
+            )
+            .await?;
         Ok(Ok(receipt))
     }
     /// Read the original durable request receipt without changing current aggregate state.
@@ -335,9 +357,10 @@ impl ResourceStore {
             self.runtime
                 .local_tx_with_context(self.tenant, d, id, |id, tx| {
                     Box::pin(async move {
-                        Ok(Ok(db::receipt(tx, id.as_str())
+                        Ok(Ok(STORAGE
+                            .receipt(tx, id.as_str())
                             .await?
-                            .map(|(_, _, b)| decode(&b))
+                            .map(|record| STORAGE.decode(&record.receipt))
                             .transpose()?))
                     })
                 })
@@ -355,7 +378,8 @@ impl ResourceStore {
             self.runtime
                 .local_tx_with_context(self.tenant, d, (id, label), |(id, label), tx| {
                     Box::pin(async move {
-                        let value = db::immutable(tx, id.as_str(), "version", label.as_str())
+                        let value = STORAGE
+                            .immutable(tx, id.as_str(), "version", label.as_str())
                             .await?
                             .map(|b| codec::read_version(&b))
                             .transpose()?;
@@ -364,7 +388,7 @@ impl ResourceStore {
                                 || v.resource() != *id
                                 || v.label() != *label
                         }) {
-                            return Err(fault("store::version"));
+                            return Err(STORAGE.fault("store::version"));
                         }
                         Ok(Ok(value))
                     })
@@ -376,7 +400,7 @@ impl ResourceStore {
 fn request_document(t: TenantId, r: &Request) -> Result<Vec<u8>, PgError> {
     let command = match &r.command {
         Command::Create(k) => json!([0, codec::kind(*k)]),
-        Command::Insert(v) => json!([1, decode::<Value>(&codec::version(v)?)?]),
+        Command::Insert(v) => json!([1, STORAGE.decode::<Value>(&codec::version(v)?)?]),
         Command::Activate(v) => json!([2, v.as_str()]),
         Command::Deprecate(v) => json!([3, v.as_str()]),
         Command::Archive {
@@ -384,7 +408,7 @@ fn request_document(t: TenantId, r: &Request) -> Result<Vec<u8>, PgError> {
             references,
         } => json!([4, version.as_str(), references]),
     };
-    encode(&json!([
+    STORAGE.encode(&json!([
         1,
         t.to_string(),
         r.id.as_str(),
@@ -394,3 +418,5 @@ fn request_document(t: TenantId, r: &Request) -> Result<Vec<u8>, PgError> {
         command
     ]))
 }
+
+const GET_IN_SQL: &str = "SELECT key,document,digest FROM mdm_resource.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind='version' ORDER BY key COLLATE \"C\" LIMIT 10001";

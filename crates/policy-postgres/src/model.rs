@@ -1,4 +1,4 @@
-use crate::{Rejection, codec, core::*, db::*};
+use crate::{Rejection, STORAGE, codec, core::*};
 use rss_contract::Timepoint;
 use rss_transactional_messaging_postgres::PgError;
 use serde_json::{Value, json};
@@ -90,7 +90,7 @@ impl Request {
             }
             Command::Replan { .. } => json!([7]),
         };
-        encode(&json!([
+        STORAGE.encode(&json!([
             1,
             self.id.tenant().to_string(),
             self.id.value(),
@@ -164,7 +164,7 @@ impl Aggregate {
         Ok(())
     }
     pub(crate) fn document(&self) -> Result<Vec<u8>, PgError> {
-        encode(&json!([
+        STORAGE.encode(&json!([
             1,
             codec::policy(&self.policy),
             self.revision,
@@ -177,10 +177,10 @@ impl Aggregate {
         ]))
     }
     pub(crate) fn restore(bytes: &[u8]) -> Result<Self, PgError> {
-        let v: Value = decode(bytes)?;
+        let v: Value = STORAGE.decode(bytes)?;
         let a = codec::array(&v, 9)?;
         if codec::number(&a[0])? != 1 {
-            return Err(fault("model::restore"));
+            return Err(STORAGE.fault("model::restore"));
         }
         let policy = codec::read_policy(&a[1])?;
         let revision = codec::number(&a[2])?;
@@ -190,13 +190,13 @@ impl Aggregate {
             Some(codec::read_targets(&a[3])?)
         };
         let references: Vec<AssignmentReference> =
-            data("model::restore", serde_json::from_value(a[4].clone()))?;
+            STORAGE.json("model::restore", serde_json::from_value(a[4].clone()))?;
         let plan = if a[5].is_null() {
             None
         } else {
             Some(codec::plan_id(codec::text(&a[5])?)?)
         };
-        let installed = data(
+        let installed = STORAGE.json(
             "model::restore",
             serde_json::from_value::<Option<u64>>(a[6].clone()),
         )?;
@@ -208,7 +208,7 @@ impl Aggregate {
         let installed_request = if a[8].is_null() {
             None
         } else {
-            Some(data(
+            Some(crate::error::decode_domain(
                 "model::restore",
                 RequestId::new(policy.key().tenant(), codec::text(&a[8])?),
             )?)
@@ -221,7 +221,7 @@ impl Aggregate {
             || installed.is_some_and(|n| n > revision)
             || revision > i64::MAX as u64
         {
-            return Err(fault("model::restore"));
+            return Err(STORAGE.fault("model::restore"));
         }
         let mut reference_ids = std::collections::BTreeSet::new();
         if policy.revision() > revision
@@ -232,7 +232,7 @@ impl Aggregate {
                     || !reference_ids.insert(&r.id)
             })
         {
-            return Err(fault("model::restore"));
+            return Err(STORAGE.fault("model::restore"));
         }
         Ok(Self {
             policy,

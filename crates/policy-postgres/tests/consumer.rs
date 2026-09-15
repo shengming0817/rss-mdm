@@ -478,3 +478,165 @@ fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
             .collect()
     );
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn fact_pages_preserve_boundaries_and_reject_foreign_documents() {
+    use sha2::{Digest, Sha256};
+    let runtime = runtime().await;
+    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let p = pid();
+    s.execute(
+        &req(&p, 0, Command::Create { policy: p.clone() }),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let empty = s.execution_facts(&p, None, 2, deadline()).await.unwrap();
+    assert!(empty.records.is_empty() && empty.next.is_none());
+    s.execute(
+        &req(
+            &p,
+            1,
+            Command::Transition {
+                policy: p.clone(),
+                transition: Transition::Activate(version(&p, 1)),
+            },
+        ),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let mut rev = 2;
+    for count in 1..=3 {
+        let devices = (0..count).map(|n| format!("d{n}")).collect::<Vec<_>>();
+        let members = devices.iter().map(String::as_str).collect::<Vec<_>>();
+        rev = s
+            .execute(
+                &req(
+                    &p,
+                    rev,
+                    Command::SelectTargets {
+                        policy: p.clone(),
+                        snapshot: targets(&p, count as u64, &members),
+                        references: vec![],
+                    },
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap()
+            .storage_revision;
+        rev = s
+            .execute(
+                &req(&p, rev, Command::Replan { policy: p.clone() }),
+                deadline(),
+            )
+            .await
+            .unwrap()
+            .storage_revision;
+        let page = s.execution_facts(&p, None, 2, deadline()).await.unwrap();
+        assert_eq!(page.records.len(), count.min(2));
+        assert_eq!(page.next.is_some(), count > 2);
+    }
+    let all = s.execution_facts(&p, None, 1000, deadline()).await.unwrap();
+    let mut next = None;
+    let mut keys = Vec::new();
+    loop {
+        let page = s.execution_facts(&p, next, 1, deadline()).await.unwrap();
+        keys.extend(page.records.iter().map(|r| r.key().clone()));
+        next = page.next;
+        if next.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        keys,
+        all.records
+            .iter()
+            .map(|r| r.key().clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        s.execution_facts(&p, Some("zzzz".into()), 2, deadline())
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+    for limit in [0, 1001] {
+        assert!(matches!(
+            s.execution_facts(&p, None, limit, deadline()).await,
+            Err(Error::Rejected(Rejection::InvalidInput))
+        ));
+    }
+    assert!(
+        s.execution_facts(&p, Some("x".repeat(513)), 2, deadline())
+            .await
+            .is_err()
+    );
+    assert!(
+        s.execution_facts(
+            &PolicyId::new(foreign(), p.value()).unwrap(),
+            None,
+            2,
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    let foreign_store = PolicyStore::new(runtime, foreign(), deadline())
+        .await
+        .unwrap();
+    assert!(
+        foreign_store
+            .execution_facts(
+                &PolicyId::new(foreign(), p.value()).unwrap(),
+                None,
+                2,
+                deadline()
+            )
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+    // Corrupt the lookahead record with valid JSON/core data and a matching digest.
+    // It must be checked before truncation, even though it is not returned on this page.
+    let original = sql(&format!(
+        "SELECT convert_from(document,'UTF8') FROM mdm_policy.facts WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
+        tenant(),
+        p.value()
+    ));
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    for (field, value) in [(0, foreign().to_string()), (1, "other-policy".into())] {
+        let mut document: serde_json::Value = serde_json::from_str(&original).unwrap();
+        document[0][field] = serde_json::Value::String(value);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        sql(&format!(
+            "UPDATE mdm_policy.facts SET document=decode('{}','hex'),digest=decode('{}','hex') WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
+            hex(&bytes),
+            hex(&Sha256::digest(&bytes)),
+            tenant(),
+            p.value()
+        ));
+        let result = s.execution_facts(&p, None, 2, deadline()).await;
+        sql(&format!(
+            "UPDATE mdm_policy.facts SET document=decode('{}','hex'),digest=decode('{}','hex') WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
+            hex(original.as_bytes()),
+            hex(&Sha256::digest(original.as_bytes())),
+            tenant(),
+            p.value()
+        ));
+        assert!(result.is_err());
+    }
+    // Policy-specific column grants must remain exact after sharing admission.
+    sql("REVOKE UPDATE(document) ON mdm_policy.facts FROM mdm_policy_runtime");
+    let bad = PolicyStore::new(support::runtime().await, tenant(), deadline()).await;
+    sql("GRANT UPDATE(document) ON mdm_policy.facts TO mdm_policy_runtime");
+    assert!(bad.is_err());
+}

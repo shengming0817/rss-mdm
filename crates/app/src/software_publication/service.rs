@@ -736,7 +736,45 @@ impl PublicationService {
         let rss_mdm_resource_postgres::Command::Archive { version, .. } = &r.command else {
             return Err(Error::Input);
         };
-        settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(self,r,version),|(s,r,v),tx|Box::pin(async move{input!(s.resources.lock_version_in(tx,&r.resource,v).await?.map_err(|cause| Error::Content.context("service::archive_resource", cause)));let(t,id,v)=(s.tenant().to_string(),r.resource.as_str().to_owned(),v.as_str().to_owned());let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(t).bind(id).bind(v).fetch_one(c).await})).await?;if count!=0{return Ok(Err(Error::Blocked));}let receipt=input!(s.resources.execute_in(tx,r).await?.map_err(|cause| Error::Conflict.context("service::archive_resource", cause)));db::audit(tx,&s.actors.publisher,r.resource.as_str(),"software_archive", db::request_fact(r.id.as_str(), None, "resource-archive")).await?;Ok(Ok(receipt))})).await)
+        settle(
+            self.runtime
+                .local_tx_with_context(
+                    self.tenant(),
+                    budget(cutoff),
+                    (self, r, version),
+                    |(s, r, v), tx| {
+                        Box::pin(async move {
+                            input!(
+                                s.resources
+                                    .lock_version_in(tx, &r.resource, v)
+                                    .await?
+                                    .map_err(|cause| Error::Content
+                                        .context("service::archive_resource", cause))
+                            );
+                            let count =
+                                db::resource_reference_count(tx, r.resource.as_str(), v.as_str())
+                                    .await?;
+                            if count != 0 {
+                                return Ok(Err(Error::Blocked));
+                            }
+                            let receipt =
+                                input!(s.resources.execute_in(tx, r).await?.map_err(|cause| {
+                                    Error::Conflict.context("service::archive_resource", cause)
+                                }));
+                            db::audit(
+                                tx,
+                                &s.actors.publisher,
+                                r.resource.as_str(),
+                                "software_archive",
+                                db::request_fact(r.id.as_str(), None, "resource-archive"),
+                            )
+                            .await?;
+                            Ok(Ok(receipt))
+                        })
+                    },
+                )
+                .await,
+        )
     }
 }
 pub(super) fn operation(t: &Target) -> String {

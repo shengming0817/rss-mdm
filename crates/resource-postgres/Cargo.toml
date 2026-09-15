@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
-tracing.workspace = true
+rss-mdm-backend-postgres-support.workspace = true
 rss-mdm-resource.workspace = true
 rss-contract.workspace = true
 rss-request-context.workspace = true

@@ -241,3 +241,48 @@ fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
             .collect()
     );
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn resource_admission_rejects_schema_and_privilege_drift() {
+    let runtime = runtime().await;
+    let cases = [
+        (
+            "CREATE TABLE mdm_resource.unexpected(id integer)",
+            "DROP TABLE mdm_resource.unexpected",
+        ),
+        (
+            "GRANT UPDATE(document) ON mdm_resource.immutable TO mdm_resource_runtime",
+            "REVOKE UPDATE(document) ON mdm_resource.immutable FROM mdm_resource_runtime",
+        ),
+        (
+            "ALTER TABLE mdm_resource.aggregates DISABLE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_resource.aggregates ENABLE ROW LEVEL SECURITY",
+        ),
+        (
+            "ALTER TABLE mdm_resource.aggregates NO FORCE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_resource.aggregates FORCE ROW LEVEL SECURITY",
+        ),
+        (
+            "GRANT mdm_owner TO mdm_resource_runtime",
+            "REVOKE mdm_owner FROM mdm_resource_runtime",
+        ),
+        (
+            "ALTER ROLE mdm_resource_runtime SUPERUSER",
+            "ALTER ROLE mdm_resource_runtime NOSUPERUSER",
+        ),
+        (
+            "GRANT UPDATE ON mdm_resource.aggregates TO mdm_resource_runtime",
+            "REVOKE UPDATE ON mdm_resource.aggregates FROM mdm_resource_runtime; GRANT UPDATE(revision,document,digest) ON mdm_resource.aggregates TO mdm_resource_runtime",
+        ),
+    ];
+    for (change, restore) in cases {
+        sql(change);
+        let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
+        sql(restore);
+        assert!(result.is_err(), "admitted drift: {change}");
+        ResourceStore::new(runtime.clone(), tenant(), deadline())
+            .await
+            .unwrap_or_else(|e| panic!("failed to restore {change}: {e:?}"));
+    }
+}

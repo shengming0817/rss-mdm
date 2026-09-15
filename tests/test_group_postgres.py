@@ -77,8 +77,18 @@ class GroupPostgresGuards(unittest.TestCase):
                     if node['id'] in {'root', f'rss-mdm-{capability}-postgres'}:
                         node['deps'].append(copy.deepcopy(edge))
                 locked.add(('sha2','1.0.0',registry))
+                support = 'rss-mdm-backend-postgres-support'
+                data['packages'].append({'id': support, 'name': support, 'version': '1.0.0', 'source': source})
+                data['resolve']['nodes'].append({'id': support, 'features': [], 'deps': []})
+                next(n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{capability}-postgres')['deps'].append({'pkg': support, 'dep_kinds': [{'kind': None, 'target': None}]})
                 consumer.verify_closure(data, source, pin, locked, capability)
-                products = {f'rss-mdm-{capability}', f'rss-mdm-{capability}-postgres'}
+                for change in ('source', 'feature', 'direct'):
+                    invalid = copy.deepcopy(data)
+                    if change == 'source': next(p for p in invalid['packages'] if p['id'] == support)['source'] = 'path+file:///parent'
+                    if change == 'feature': next(n for n in invalid['resolve']['nodes'] if n['id'] == support)['features'] = ['compat']
+                    if change == 'direct': next(n for n in invalid['resolve']['nodes'] if n['id'] == 'root')['deps'].append({'pkg': support, 'dep_kinds': [{'kind': None, 'target': None}]})
+                    with self.subTest(change=change), self.assertRaises(RuntimeError): consumer.verify_closure(invalid, source, pin, locked, capability)
+                products = {f'rss-mdm-{capability}', f'rss-mdm-{capability}-postgres', support}
                 tree = '\n'.join(f'{name} v1.0.0' for name in products | consumer.RSS | {'sqlx-postgres'})
                 consumer.verify_active_tree(tree, capability)
                 altered = copy.deepcopy(data)

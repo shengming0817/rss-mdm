@@ -1,11 +1,7 @@
-use crate::{
-    MAX_FACTS, codec,
-    core::*,
-    db::{self, *},
-    error::*,
-    event,
-    model::*,
-};
+use crate::{MAX_FACTS, STORAGE, codec, core::*, error::*, event, model::*};
+use rss_mdm_backend_postgres_support::MAX_DOCUMENT;
+use rss_mdm_backend_postgres_support::digest;
+use rss_mdm_backend_postgres_support::{AggregateRecord, RequestRecord};
 use rss_request_context::TenantId;
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
@@ -30,7 +26,7 @@ impl PolicyStore {
             runtime
                 .local_tx(tenant, deadline, |tx| {
                     Box::pin(async move {
-                        verify(tx).await?;
+                        STORAGE.verify(tx, crate::ADMISSION).await?;
                         Ok(Ok(()))
                     })
                 })
@@ -79,30 +75,36 @@ impl PolicyStore {
         if id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        let row = db::read(tx, id.value()).await?;
+        let row = STORAGE.read(tx, id.value()).await?;
         let result = row
-            .map(|(rev, b)| {
-                let a = Aggregate::restore(&b)?;
-                if a.policy.key() != id || a.revision != rev {
-                    return Err(fault("store::get_in"));
-                }
-                Ok(a)
-            })
+            .map(
+                |AggregateRecord {
+                     revision: rev,
+                     document: b,
+                 }| {
+                    let a = Aggregate::restore(&b)?;
+                    if a.policy.key() != id || a.revision != rev {
+                        return Err(STORAGE.fault("store::get_in"));
+                    }
+                    Ok(a)
+                },
+            )
             .transpose()?;
         if let Some(aggregate) = &result {
             if let Some(v) = aggregate.policy.version() {
                 for (owner, kind, key, expected) in version_documents(v)? {
-                    if db::immutable(tx, &owner, kind, &key).await?.as_ref() != Some(&expected) {
-                        return Err(fault("store::get_in"));
+                    if STORAGE.immutable(tx, &owner, kind, &key).await?.as_ref() != Some(&expected)
+                    {
+                        return Err(STORAGE.fault("store::get_in"));
                     }
                 }
             }
             if let Some(t) = &aggregate.targets {
                 let key = format!("{}@{}", t.key().value(), t.revision());
-                if db::immutable(tx, "", "targets", &key).await?.as_ref()
-                    != Some(&encode(&codec::targets(t))?)
+                if STORAGE.immutable(tx, "", "targets", &key).await?.as_ref()
+                    != Some(&STORAGE.encode(&codec::targets(t))?)
                 {
-                    return Err(fault("store::get_in"));
+                    return Err(STORAGE.fault("store::get_in"));
                 }
             }
         }
@@ -137,18 +139,24 @@ impl PolicyStore {
         input!(validate_request(r));
         let request_document = r.document()?;
         let fingerprint = digest(&request_document);
-        lock(tx, "request", r.id.value()).await?;
-        if let Some((owner, hash, bytes)) = db::receipt(tx, r.id.value()).await? {
+        STORAGE.lock(tx, "request", r.id.value()).await?;
+        if let Some(RequestRecord {
+            owner,
+            fingerprint: hash,
+            receipt: bytes,
+            ..
+        }) = STORAGE.receipt(tx, r.id.value()).await?
+        {
             if owner != r.policy().value() || hash != fingerprint {
                 return Ok(Err(Rejection::IdentityConflict));
             }
-            let receipt: Receipt = decode(&bytes)?;
+            let receipt: Receipt = STORAGE.decode(&bytes)?;
             if receipt.policy != owner || receipt.request != r.id.value() {
-                return Err(fault("store::execute_in"));
+                return Err(STORAGE.fault("store::execute_in"));
             }
             return Ok(Ok(receipt));
         }
-        lock(tx, "policy", r.policy().value()).await?;
+        STORAGE.lock(tx, "policy", r.policy().value()).await?;
         let old = input!(self.get_in(tx, r.policy()).await?);
         let create = matches!(r.command, Command::Create { .. });
         if create && old.is_some() {
@@ -216,7 +224,7 @@ impl PolicyStore {
                     .map_err(|_| Rejection::InvalidInput)
                 );
                 let changed = !aggregate.plan_is_fresh() || aggregate.plan != Some(plan.id());
-                let document = encode(&json!([
+                let document = STORAGE.encode(&json!([
                     1,
                     codec::policy(&aggregate.policy),
                     codec::targets(targets),
@@ -231,8 +239,8 @@ impl PolicyStore {
                         let v = aggregate
                             .policy
                             .version()
-                            .ok_or_else(|| fault("store::execute_in"))?;
-                        let f = data(
+                            .ok_or_else(|| STORAGE.fault("store::execute_in"))?;
+                        let f = crate::error::decode_domain(
                             "store::execute_in",
                             ExecutionRecord::new(
                                 v.clone(),
@@ -261,14 +269,15 @@ impl PolicyStore {
             aggregate.installed_request = Some(r.id.clone());
         }
         // Immutable checks precede all business writes. Concurrent cross-policy payload conflicts
-        // become an outer storage error in freeze(), rolling back the entire transaction.
+        // become an outer storage error in STORAGE.freeze(), rolling back the entire transaction.
         if let Some(v) = aggregate.policy.version() {
             input!(compatible_version(tx, v).await?);
         }
         if let Some(t) = &aggregate.targets {
             let key = format!("{}@{}", t.key().value(), t.revision());
-            let document = encode(&codec::targets(t))?;
-            if db::immutable(tx, "", "targets", &key)
+            let document = STORAGE.encode(&codec::targets(t))?;
+            if STORAGE
+                .immutable(tx, "", "targets", &key)
                 .await?
                 .is_some_and(|b| b != document)
             {
@@ -277,35 +286,40 @@ impl PolicyStore {
         }
         let response = Receipt::new(&aggregate, r);
         if create || changed {
-            db::write(
-                tx,
-                r.policy().value(),
-                if create { None } else { Some(previous) },
-                aggregate.revision,
-                aggregate.document()?,
-            )
-            .await?;
+            STORAGE
+                .write(
+                    tx,
+                    r.policy().value(),
+                    if create { None } else { Some(previous) },
+                    aggregate.revision,
+                    aggregate.document()?,
+                )
+                .await?;
         }
         if let Some(v) = aggregate.policy.version() {
             freeze_version(tx, v).await?;
         }
         if let Some(t) = &aggregate.targets {
-            freeze(
-                tx,
-                "",
-                "targets",
-                &format!("{}@{}", t.key().value(), t.revision()),
-                encode(&codec::targets(t))?,
-            )
-            .await?;
+            STORAGE
+                .freeze(
+                    tx,
+                    "",
+                    "targets",
+                    &format!("{}@{}", t.key().value(), t.revision()),
+                    STORAGE.encode(&codec::targets(t))?,
+                )
+                .await?;
         }
         if let Some((key, document)) = plan_document {
             // PlanId excludes provenance; retain the first canonical input.
-            if db::immutable(tx, r.policy().value(), "plan", &key)
+            if STORAGE
+                .immutable(tx, r.policy().value(), "plan", &key)
                 .await?
                 .is_none()
             {
-                freeze(tx, r.policy().value(), "plan", &key, document).await?;
+                STORAGE
+                    .freeze(tx, r.policy().value(), "plan", &key, document)
+                    .await?;
             }
         }
         if changed {
@@ -321,15 +335,18 @@ impl PolicyStore {
             )
             .await?;
         }
-        db::save_receipt(
-            tx,
-            r.id.value(),
-            r.policy().value(),
-            fingerprint,
-            request_document,
-            encode(&response)?,
-        )
-        .await?;
+        STORAGE
+            .save_receipt(
+                tx,
+                r.id.value(),
+                RequestRecord {
+                    owner: (r.policy().value()).to_owned(),
+                    fingerprint,
+                    request: request_document,
+                    receipt: STORAGE.encode(&response)?,
+                },
+            )
+            .await?;
         Ok(Ok(response))
     }
     /// Read the original durable request receipt without changing current aggregate state.
@@ -346,9 +363,10 @@ impl PolicyStore {
             self.runtime
                 .local_tx_with_context(self.tenant, deadline, id, |id, tx| {
                     Box::pin(async move {
-                        Ok(Ok(db::receipt(tx, id.value())
+                        Ok(Ok(STORAGE
+                            .receipt(tx, id.value())
                             .await?
-                            .map(|(_, _, b)| decode(&b))
+                            .map(|record| STORAGE.decode(&record.receipt))
                             .transpose()?))
                     })
                 })
@@ -374,16 +392,16 @@ impl PolicyStore {
                     (policy, request),
                     |(policy, request), tx| {
                         Box::pin(async move {
-                            let Some((_, _, receipt)) = db::receipt(tx, request.value()).await?
+                            let Some(RequestRecord {
+                                request: original_request,
+                                receipt,
+                                ..
+                            }) = STORAGE.receipt(tx, request.value()).await?
                             else {
                                 return Ok(Ok(None));
                             };
-                            let receipt: Receipt = decode(&receipt)?;
-                            let raw: Value = decode(
-                                &db::original_request(tx, request.value())
-                                    .await?
-                                    .ok_or_else(|| fault("store::plan"))?,
-                            )?;
+                            let receipt: Receipt = STORAGE.decode(&receipt)?;
+                            let raw: Value = STORAGE.decode(&original_request)?;
                             let fields = codec::array(&raw, 7)?;
                             if receipt.policy != policy.value()
                                 || receipt.request != request.value()
@@ -398,12 +416,12 @@ impl PolicyStore {
                                 receipt
                                     .plan_id
                                     .as_deref()
-                                    .ok_or_else(|| fault("store::plan"))?,
+                                    .ok_or_else(|| STORAGE.fault("store::plan"))?,
                             )?;
-                            let bytes =
-                                db::immutable(tx, policy.value(), "plan", &codec::hex(id.bytes()))
-                                    .await?
-                                    .ok_or_else(|| fault("store::plan"))?;
+                            let bytes = STORAGE
+                                .immutable(tx, policy.value(), "plan", &codec::hex(id.bytes()))
+                                .await?
+                                .ok_or_else(|| STORAGE.fault("store::plan"))?;
                             Ok(Ok(Some(restore_plan(
                                 &bytes,
                                 policy,
@@ -431,17 +449,17 @@ impl PolicyStore {
             self.runtime
                 .local_tx_with_context(self.tenant, deadline, policy, move |policy, tx| {
                     Box::pin(async move {
-                        let bytes =
-                            db::immutable(tx, policy.value(), "version", &number.to_string())
-                                .await?;
+                        let bytes = STORAGE
+                            .immutable(tx, policy.value(), "version", &number.to_string())
+                            .await?;
                         let value = bytes
-                            .map(|b| codec::read_version(&decode::<Value>(&b)?))
+                            .map(|b| codec::read_version(&STORAGE.decode::<Value>(&b)?))
                             .transpose()?;
                         if value
                             .as_ref()
                             .is_some_and(|v| v.policy() != *policy || v.number() != number)
                         {
-                            return Err(fault("store::version"));
+                            return Err(STORAGE.fault("store::version"));
                         }
                         Ok(Ok(value))
                     })
@@ -463,17 +481,17 @@ impl PolicyStore {
             self.runtime
                 .local_tx_with_context(self.tenant, deadline, id, move |id, tx| {
                     Box::pin(async move {
-                        let bytes =
-                            db::immutable(tx, "", "targets", &format!("{}@{revision}", id.value()))
-                                .await?;
+                        let bytes = STORAGE
+                            .immutable(tx, "", "targets", &format!("{}@{revision}", id.value()))
+                            .await?;
                         let value = bytes
-                            .map(|b| codec::read_targets(&decode::<Value>(&b)?))
+                            .map(|b| codec::read_targets(&STORAGE.decode::<Value>(&b)?))
                             .transpose()?;
                         if value
                             .as_ref()
                             .is_some_and(|v| v.key() != *id || v.revision() != revision)
                         {
-                            return Err(fault("store::target_snapshot"));
+                            return Err(STORAGE.fault("store::target_snapshot"));
                         }
                         Ok(Ok(value))
                     })
@@ -498,7 +516,17 @@ impl PolicyStore {
             return Err(Rejection::InvalidInput.into());
         }
         let owner = policy.value().to_owned();
-        settle(self.runtime.local_tx(self.tenant,deadline,move|tx|Box::pin(async move{let t=tx.tenant_id();let raw=t.to_string();let expected_owner=owner.clone();let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4").bind(raw).bind(&owner).bind(after).bind((limit+1) as i64).fetch_all(c).await})).await?;let mut result=rows.into_iter().map(read_fact_row).collect::<Result<Vec<_>,_>>()?;if result.iter().any(|f|f.version().policy().tenant()!=t || f.version().policy().value()!=expected_owner){return Err(fault("store::execution_facts"));}let more=result.len()>limit;result.truncate(limit);let next=if more {result.last().map(codec::key)} else {None};Ok(Ok(FactPage{records:result,next}))})).await)
+        settle(
+            self.runtime
+                .local_tx(self.tenant, deadline, move |tx| {
+                    Box::pin(async move {
+                        let rows = query_fact_page(tx, &owner, after, limit).await?;
+                        let records = decode_fact_page(rows, tx.tenant_id(), &owner)?;
+                        Ok(Ok(fact_page(records, limit)))
+                    })
+                })
+                .await,
+        )
     }
 }
 fn validate_request(r: &Request) -> Result<(), Rejection> {
@@ -541,7 +569,8 @@ fn validate_request(r: &Request) -> Result<(), Rejection> {
 }
 async fn compatible_version(tx: &mut PgTransaction<'_>, v: &Version) -> InTransaction<()> {
     for (owner, kind, key, doc) in version_documents(v)? {
-        if db::immutable(tx, &owner, kind, &key)
+        if STORAGE
+            .immutable(tx, &owner, kind, &key)
             .await?
             .is_some_and(|b| b != doc)
         {
@@ -558,13 +587,13 @@ fn version_documents(v: &Version) -> Result<Vec<VersionDocument>, PgError> {
             v.policy().value().into(),
             "version",
             v.number().to_string(),
-            encode(&codec::version(v))?,
+            STORAGE.encode(&codec::version(v))?,
         ),
         (
             "".into(),
             "payload",
             format!("{}@{}", p.object().value(), p.revision()),
-            encode(&json!([
+            STORAGE.encode(&json!([
                 p.object().tenant().to_string(),
                 p.object().value(),
                 p.revision(),
@@ -575,15 +604,15 @@ fn version_documents(v: &Version) -> Result<Vec<VersionDocument>, PgError> {
 }
 async fn freeze_version(tx: &mut PgTransaction<'_>, v: &Version) -> Result<(), PgError> {
     for (o, k, i, d) in version_documents(v)? {
-        freeze(tx, &o, k, &i, d).await?;
+        STORAGE.freeze(tx, &o, k, &i, d).await?;
     }
     Ok(())
 }
 fn read_fact_row(row: sqlx::postgres::PgRow) -> Result<ExecutionRecord, PgError> {
-    let b = checked(row.try_get("document")?, row.try_get("digest")?)?;
-    let f = codec::read_fact(&decode::<Value>(&b)?)?;
+    let b = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
+    let f = codec::read_fact(&STORAGE.decode::<Value>(&b)?)?;
     if row.try_get::<String, _>("key")? != codec::key(&f) {
-        return Err(fault("store::read_fact_row"));
+        return Err(STORAGE.fault("store::read_fact_row"));
     }
     Ok(f)
 }
@@ -592,20 +621,31 @@ async fn load_facts(
     policy: &PolicyId,
 ) -> Result<BTreeMap<String, ExecutionRecord>, PgError> {
     let (t, p) = (tx.tenant_id().to_string(), policy.value().to_owned());
-    let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 ORDER BY key COLLATE \"C\" LIMIT 10001").bind(t).bind(p).fetch_all(c).await})).await?;
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(LOAD_FACTS_SQL)
+                    .bind(t)
+                    .bind(p)
+                    .fetch_all(c)
+                    .await
+            })
+        })
+        .await?;
+
     if rows.len() > MAX_FACTS {
-        return Err(fault("store::load_facts"));
+        return Err(STORAGE.fault("store::load_facts"));
     }
     let mut facts = BTreeMap::new();
     let mut size = 0;
     for row in rows {
         size += row.try_get::<Vec<u8>, _>("document")?.len();
         if size > MAX_DOCUMENT {
-            return Err(fault("store::load_facts"));
+            return Err(STORAGE.fault("store::load_facts"));
         }
         let f = read_fact_row(row)?;
         if f.version().policy() != policy {
-            return Err(fault("store::load_facts"));
+            return Err(STORAGE.fault("store::load_facts"));
         }
         facts.insert(codec::key(&f), f);
     }
@@ -621,11 +661,26 @@ async fn save_facts(
     let docs = facts
         .iter()
         .map(|(k, f)| {
-            let b = encode(&codec::fact(f))?;
+            let b = STORAGE.encode(&codec::fact(f))?;
             Ok((k.clone(), digest(&b), b))
         })
         .collect::<Result<Vec<_>, PgError>>()?;
-    tx.with_connection(move|c|Box::pin(async move{for(k,h,b)in docs{sqlx::query("INSERT INTO mdm_policy.facts(tenant_id,owner,key,document,digest) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,owner,key) DO UPDATE SET document=EXCLUDED.document,digest=EXCLUDED.digest WHERE mdm_policy.facts.document<>EXCLUDED.document").bind(&t).bind(&owner).bind(k).bind(b).bind(h).execute(&mut *c).await?;}Ok(())})).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            for (k, h, b) in docs {
+                sqlx::query(SAVE_FACTS_SQL)
+                    .bind(&t)
+                    .bind(&owner)
+                    .bind(k)
+                    .bind(b)
+                    .bind(h)
+                    .execute(&mut *c)
+                    .await?;
+            }
+            Ok(())
+        })
+    })
+    .await
 }
 fn restore_plan(
     b: &[u8],
@@ -634,20 +689,20 @@ fn restore_plan(
     request: RequestId,
     as_of: rss_contract::Timepoint,
 ) -> Result<Plan, PgError> {
-    let v: Value = decode(b)?;
+    let v: Value = STORAGE.decode(b)?;
     let a = codec::array(&v, 4)?;
     if codec::number(&a[0])? != 1 {
-        return Err(fault("store::restore_plan"));
+        return Err(STORAGE.fault("store::restore_plan"));
     }
     let p = codec::read_policy(&a[1])?;
     let t = codec::read_targets(&a[2])?;
     let facts = a[3]
         .as_array()
-        .ok_or_else(|| fault("store::restore_plan"))?
+        .ok_or_else(|| STORAGE.fault("store::restore_plan"))?
         .iter()
         .map(codec::read_fact)
         .collect::<Result<Vec<_>, _>>()?;
-    let plan = data(
+    let plan = crate::error::decode_domain(
         "store::restore_plan",
         reconcile(PlanInput {
             policy: &p,
@@ -658,7 +713,59 @@ fn restore_plan(
         }),
     )?;
     if plan.policy() != policy || plan.id() != id {
-        return Err(fault("store::restore_plan"));
+        return Err(STORAGE.fault("store::restore_plan"));
     }
     Ok(plan)
+}
+
+const EXECUTION_FACTS_SQL: &str = "SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4";
+const LOAD_FACTS_SQL: &str = "SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 ORDER BY key COLLATE \"C\" LIMIT 10001";
+const SAVE_FACTS_SQL: &str = "INSERT INTO mdm_policy.facts(tenant_id,owner,key,document,digest) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,owner,key) DO UPDATE SET document=EXCLUDED.document,digest=EXCLUDED.digest WHERE mdm_policy.facts.document<>EXCLUDED.document";
+
+async fn query_fact_page(
+    tx: &mut PgTransaction<'_>,
+    owner: &str,
+    after: Option<String>,
+    limit: usize,
+) -> Result<Vec<sqlx::postgres::PgRow>, PgError> {
+    let (tenant, owner) = (tx.tenant_id().to_string(), owner.to_owned());
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(EXECUTION_FACTS_SQL)
+                .bind(tenant)
+                .bind(owner)
+                .bind(after)
+                .bind((limit + 1) as i64)
+                .fetch_all(c)
+                .await
+        })
+    })
+    .await
+}
+fn decode_fact_page(
+    rows: Vec<sqlx::postgres::PgRow>,
+    tenant: TenantId,
+    owner: &str,
+) -> Result<Vec<ExecutionRecord>, PgError> {
+    rows.into_iter()
+        .map(|row| {
+            let fact = read_fact_row(row)?;
+            if fact.version().policy().tenant() != tenant
+                || fact.version().policy().value() != owner
+            {
+                return Err(STORAGE.fault("store::execution_facts"));
+            }
+            Ok(fact)
+        })
+        .collect()
+}
+fn fact_page(mut records: Vec<ExecutionRecord>, limit: usize) -> FactPage {
+    let more = records.len() > limit;
+    records.truncate(limit);
+    let next = if more {
+        records.last().map(codec::key)
+    } else {
+        None
+    };
+    FactPage { records, next }
 }

@@ -34,6 +34,7 @@ def verify_closure(data, product_source, pin, locked, capability="group"):
     ci.require(capability in {"group", "policy", "resource", "software-release"}, "unknown PG capability")
     product = f"rss-mdm-{capability}-postgres"
     products = {product, f"rss-mdm-{capability}"}
+    if capability != "group": products.add("rss-mdm-backend-postgres-support")
     direct_expected = direct_dependencies(capability)
     packages = {p['id']: p for p in data['packages']}
     nodes = {n['id']: n for n in data['resolve']['nodes']}
@@ -72,7 +73,7 @@ def verify_closure(data, product_source, pin, locked, capability="group"):
             ci.require(not name.startswith('rss-'), f'unrelated product/RSS dependency: {name}')
             ci.require((name, p['version'], source) in locked and source == 'registry+https://github.com/rust-lang/crates.io-index', f'dependency differs from product lock: {name}')
         ci.require('integration' not in nodes[key]['features'], 'test feature leaked into production consumer')
-        if name == product:
+        if name in {product, "rss-mdm-backend-postgres-support"}:
             ci.require(nodes[key]['features'] == [], 'extend matrix when adapter production features change')
         if name == 'rss-transactional-messaging':
             ci.require(nodes[key]['features'] == ['consumer', 'default', 'producer'], 'fixed RSS PG adapter core features differ')
@@ -90,6 +91,7 @@ def verify_closure(data, product_source, pin, locked, capability="group"):
 def verify_active_tree(tree, capability="group"):
     ci.require(capability in {"group", "policy", "resource", "software-release"}, "unknown PG capability")
     products = {f"rss-mdm-{capability}-postgres", f"rss-mdm-{capability}"}
+    if capability != "group": products.add("rss-mdm-backend-postgres-support")
     names = {line.split()[0] for line in tree.splitlines() if line.strip()}
     ci.require(products | RSS <= names and 'sqlx-postgres' in names, 'active tree is incomplete')
     ci.require(not any(name == banned or name.startswith(banned + '-') for name in names for banned in FORBIDDEN | INACTIVE_DRIVERS), 'forbidden active dependency')
