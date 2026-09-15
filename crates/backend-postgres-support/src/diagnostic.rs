@@ -16,7 +16,12 @@ struct Diagnostic {
 impl BackendStorage {
     /// Reject a storage invariant without disclosing stored values.
     pub fn fault(self, stage: &'static str) -> PgError {
-        tracing::error!(stage, reason = "storage-invariant", "adapter data rejected");
+        tracing::error!(
+            domain = self.kind.domain(),
+            stage,
+            reason = "storage-invariant",
+            "adapter data rejected"
+        );
         sqlx::Error::Protocol(format!("{} storage invariant", self.kind.schema())).into()
     }
     fn diagnostic(self, stage: &'static str, kind: &'static str, reason: String) -> PgError {
@@ -34,12 +39,13 @@ impl BackendStorage {
 impl Diagnostic {
     fn into_error(self) -> PgError {
         let Self {
+            domain,
             stage,
             kind,
             ref reason,
             ..
         } = self;
-        tracing::error!(stage, kind, %reason, "adapter data rejected");
+        tracing::error!(domain, stage, kind, %reason, "adapter data rejected");
         sqlx::Error::Decode(Box::new(self)).into()
     }
 }
@@ -170,5 +176,63 @@ mod tests {
         assert!(STORAGE.encode(&(text + "x")).is_err());
         let oversized = vec![b' '; MAX_DOCUMENT + 1];
         assert!(STORAGE.decode::<serde_json::Value>(&oversized).is_err());
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use crate::BackendKind;
+    use std::sync::{Arc, Mutex};
+    struct Capture(Arc<Mutex<Vec<String>>>);
+    struct Domains<'a>(&'a mut Vec<String>);
+    impl tracing::field::Visit for Domains<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "domain" {
+                self.0.push(value.to_owned());
+            }
+        }
+        fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+    }
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            event.record(&mut Domains(&mut self.0.lock().unwrap()));
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+    #[test]
+    fn both_error_paths_identify_the_backend_in_logs() {
+        let domains = Arc::new(Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(Capture(domains.clone()), || {
+            for kind in [
+                BackendKind::Policy,
+                BackendKind::Resource,
+                BackendKind::SoftwareRelease,
+            ] {
+                let storage = BackendStorage::new(kind);
+                let _ = storage.fault("db::checked");
+                let _ = storage.decode::<serde_json::Value>(b"{");
+            }
+        });
+        assert_eq!(
+            *domains.lock().unwrap(),
+            [
+                "policy",
+                "policy",
+                "resource",
+                "resource",
+                "software-release",
+                "software-release"
+            ]
+        );
     }
 }
