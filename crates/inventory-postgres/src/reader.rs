@@ -10,10 +10,12 @@ use std::time::Duration;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 /// One exact-scope projected field with source-batch and timing provenance.
+/// The projection writer validates Inventory content; readers only decode stored
+/// rows and do not repeat domain validation or authenticate their contents.
 pub struct InventoryField {
-    /// Canonical Inventory field key.
+    /// Persisted Inventory field key, without read-time domain validation.
     pub field: String,
-    /// Validated text value, potentially sensitive product data.
+    /// Persisted text value, potentially sensitive and subject to the consumer's trust boundary.
     pub value: String,
     /// Observation batch identity that last wrote this field.
     pub batch_id: String,
