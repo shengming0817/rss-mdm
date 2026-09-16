@@ -41,7 +41,31 @@ macro_rules! identities {
         }
     )+ };
 }
-identities!(CandidateId, ActorId, RequestId);
+identities!(CandidateId, RequestId);
+/// Opaque tenant-scoped principal identity, including product-attested structured subjects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActorId {
+    tenant: TenantId,
+    value: String,
+}
+impl ActorId {
+    /// Accept 1–2048 UTF-8 bytes without controls; this is not authentication.
+    pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, Error> {
+        let value = value.into();
+        if value.is_empty() || value.len() > 2048 || value.chars().any(char::is_control) {
+            return Err(Error::InvalidIdentity);
+        }
+        Ok(Self { tenant, value })
+    }
+    /// Owning tenant.
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
+    }
+    /// Exact opaque identity.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
 
 /// SHA-256 bytes supplied by the caller or computed from canonical inputs.
 /// A digest binds bytes; it does not authenticate their origin.

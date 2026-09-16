@@ -27,6 +27,7 @@ pub(crate) fn policy(tenant: &str, enroll: bool, credentials: bool) -> Arc<Polic
             tenant,
             "mdm",
             vec![Binding {
+                management: Default::default(),
                 tenant_id: tenant.into(),
                 client_id: "mdm".into(),
                 subject: "administrator".into(),

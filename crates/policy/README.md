@@ -21,7 +21,7 @@ Activate 可选择更高版本并进入 Active，Resume 只恢复原版本。
 
 `TargetSnapshot::new` 要求具名 `SnapshotCompleteness` 声明；Incomplete 在构造边界立即拒绝，
 成功构造的快照均为完整输入；同 tenant 的设备键排序去重。
-现阶段键为 1–128 字节 ASCII 字母、数字、`.`、`_`、`-`，不接受 URL。
+DeviceId 保留 1–256 UTF-8 字节、不含控制字符的原始产品设备标识；其它角色键保持 1–128 字节 ASCII 字母、数字、`.`、`_`、`-`。
 已有执行输入是每个执行的当前事实快照，完全重复允许，互相矛盾拒绝；历史事件归并由调用方拥有。
 未来版本事实、其他策略事实及混租户输入整体拒绝，范围退出设备的事实则是合法输入。
 顶层输入与生命周期错误携带 revision 的 expected/actual、状态/操作、冲突版本号或载荷身份/revision。

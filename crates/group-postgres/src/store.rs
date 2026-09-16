@@ -140,6 +140,17 @@ impl GroupStore {
         input!(active(&g));
         Ok(Ok(g))
     }
+    /// Read members while holding the reference lock in the host transaction.
+    /// The host composes Scope references and success audit in this transaction.
+    pub async fn members_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: GroupId,
+    ) -> InTransaction<Vec<ObjectKey>> {
+        input!(self.lock_reference_target_in(tx, id).await?);
+        Ok(Ok(db::members(tx, id).await?))
+    }
+
     /// Execute and commit one authorized command, or replay its original receipt.
     /// Delete is rejected with CompanionTransactionRequired, including replays.
     /// N12 must use execute_in to compose deletion, reference checks and audit atomically.

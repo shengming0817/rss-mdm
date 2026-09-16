@@ -1,5 +1,7 @@
 #![deny(clippy::cognitive_complexity)]
 //! Product-owned OIDC relying party, local session and resource authorization.
+#[cfg(test)]
+extern crate self as rss_mdm_app;
 mod access;
 mod access_store;
 mod audit;
@@ -7,7 +9,9 @@ mod collection;
 pub mod device;
 mod enrollment;
 mod inventory_runtime;
+mod management;
 pub use access_store::AccessStore;
+pub use management::Missing as ManagementObject;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 mod api;
@@ -51,6 +55,8 @@ pub enum Error {
         code: rss_identity_contracts::ValidationFailureCode,
         correlation_id: uuid::Uuid,
     },
+    #[error("management object not found")]
+    ManagementNotFound(ManagementObject),
     #[error("inventory not found")]
     NotFound,
     #[error("action not supported")]
@@ -65,6 +71,7 @@ impl IntoResponse for Error {
             Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
+            Self::ManagementNotFound(object) => (StatusCode::NOT_FOUND, object.code()),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
             Self::IdentityServer {

@@ -906,6 +906,12 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     value["identity"]["validation_secret_file"] =
         serde_json::json!(root.join("validation-windows-secret"));
     value["identity"]["ca_file"] = serde_json::json!(root.join("ca.crt"));
+    let db: sqlx::postgres::PgConnectOptions = std::env::var("DATABASE_URL")?.parse()?;
+    let management_password = root.join("management-password");
+    std::fs::write(&management_password, "runtime-fixture")?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&management_password, std::fs::Permissions::from_mode(0o600))?;
+    value["management"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_management_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
     let config: crate::config::Config = serde_json::from_value(value)?;
     let clock = Arc::new(rss_identity_client::SystemClock);
     let identity = crate::identity::Identity::connect(&config, clock.clone()).await?;
@@ -940,7 +946,16 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         monotonic(),
     )
     .await?;
+    let management = config
+        .management
+        .open(
+            rss_request_context::TenantId::parse(TENANT)?,
+            Arc::new(rss_identity_client::SystemClock),
+            |_| {},
+        )
+        .await?;
     let app = Arc::new(App {
+        management,
         identity,
         sessions,
         policy,

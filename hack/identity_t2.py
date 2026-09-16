@@ -159,7 +159,8 @@ def fixture(c):
             sql='CREATE DATABASE mdm;'
             for role,key in [('mdm_owner','mdm-owner'),('mdm_runtime','mdm-runtime'),('mdm_api','mdm-api'),('mdm_access','mdm-access')]:sql+="CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+values[key]+"';"
             sql+='GRANT CREATE ON DATABASE mdm TO mdm_owner;'
-            sql+=(ROOT/'crates/app/schema/software-publication-roles.sql').read_text()
+            sql+=((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text())
+            sql+="ALTER ROLE mdm_management_runtime LOGIN PASSWORD '"+values['mdm-runtime']+"'; ALTER ROLE mdm_software_driver LOGIN PASSWORD '"+values['mdm-runtime']+"';"
             docker('exec','-i',mdm_pg,'psql','-X','-U','postgres','-v','ON_ERROR_STOP=1',input=sql)
             docker('exec','-i',mdm_pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input='GRANT CREATE ON SCHEMA public TO mdm_owner; CREATE SCHEMA test_probe; CREATE EXTENSION pg_stat_statements WITH SCHEMA test_probe; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA test_probe FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA test_probe FROM PUBLIC;')
             app_run(c['images']['operator'],['identity-migrate','--config',PREFIX+'migration.json'])
@@ -185,9 +186,11 @@ def fixture(c):
             binary=build_binary()
             db={'host':'localhost','port':pg_port,'name':'mdm','user':'mdm_owner','password_file':str(root/'mdm-owner'),'ca_file':str(root/'ca.crt')}
             migrate=write('mdm-migration.json',{'database':db});run([binary,'migrate','--config',str(migrate)],cwd=ROOT)
+            docker('exec','-i',mdm_pg,'psql','-X','-U','postgres','-d','mdm','-v','ON_ERROR_STOP=1',input="INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('"+TENANT+"',1),('22222222-2222-4222-8222-222222222222',1);")
             mdm={'listen':'127.0.0.1:0','product_origin':product,'identity':{'origin':f'https://localhost:{private_port}','issuer':origin+'/oidc','client_id':'mdm','tenant_id':TENANT,'audience':'mdm-api','oidc_secret_file':str(root/'oidc-client'),'validation_secret_file':str(root/'validation'),'ca_file':str(root/'ca.crt')},'database':{**db,'user':'mdm_api','password_file':str(root/'mdm-api')},'bindings':[]}
             mdm['access_database']={**db,'user':'mdm_access','password_file':str(root/'mdm-access')}
             mdm['runtime_database']={**db,'user':'mdm_runtime','password_file':str(root/'mdm-runtime')}
+            mdm['management']={'database':{**mdm['runtime_database'],'user':'mdm_management_runtime'},'publication_database':{**mdm['runtime_database'],'user':'mdm_software_driver'},'sources':[],'target':[1]*16,'lineage':[2]*16,'epoch':1}
             from windows_fixtures import generate
             mdm['windows']=generate(root, root/'tls.crt', root/'tls.key')
             config_path=write('mdm.json',mdm)
@@ -208,9 +211,13 @@ def main():
     c=candidate()
     from login_gateway_t2 import verify
     verify(c['providers']['nginx'])
-    with fixture(c) as env:
+    import importlib.util
+    source_spec=importlib.util.spec_from_file_location('source_t2',ROOT/'hack/source-t2.py')
+    source=importlib.util.module_from_spec(source_spec);source_spec.loader.exec_module(source)
+    with fixture(c) as env, tempfile.TemporaryDirectory(prefix='mdm-management-source-') as tls:
+        env.update(source.tls_environment(Path(tls)))
         provider_platform=env['MDM_TEST_PROVIDER_PLATFORM']
         output=run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_t2::real_identity_mdm_authorization_and_revocation','--','--ignored','--nocapture'],cwd=ROOT,env=env,test_output=True,stage='real Identity router matrix')
-        if 'MDM_IDENTITY_MATRIX_PASSED' not in output or '1 passed; 0 failed;' not in output:raise RuntimeError('identity test proof incomplete')
+        if 'MDM_SOFTWARE_MANAGEMENT_HTTP_MATRIX_PASSED' not in output or 'MDM_MANAGEMENT_HTTP_MATRIX_PASSED' not in output or 'MDM_IDENTITY_MATRIX_PASSED' not in output or '1 passed; 0 failed;' not in output:raise RuntimeError('identity test proof incomplete')
     print(json.dumps({'identity_revision':c['revision'],'identity_archives':c['archives'],'provider_digests':c['providers'],'provider_platform':provider_platform,'candidate_platform':c['platform'],'result':'passed','scope':'MDM Router / SDK / immutable Identity binary / real PG and Hydra / TLS; not production T3'}))
 if __name__=='__main__':main()

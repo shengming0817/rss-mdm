@@ -233,6 +233,31 @@ impl GroupStore {
             Some(id),
         )
     }
+    /// Complete a bounded recalculation in the caller transaction, retaining the
+    /// runtime/tenant check and group-before-operation lock order. This enables
+    /// product input validation and success audit to commit with member changes.
+    pub async fn resume_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: OperationId,
+    ) -> InTransaction<Run> {
+        let prepared = input!(self.prepare_in(tx, id).await?);
+        match prepared {
+            Preparation::Terminal(run) => Ok(Ok(*run)),
+            Preparation::Ready(prepared) => {
+                let calculated = prepared
+                    .rule
+                    .recalculate(
+                        &prepared.snapshot,
+                        data(Timepoint::try_from(prepared.op.as_of))?,
+                        &prepared.old,
+                    )
+                    .map_err(core_rejection);
+                self.finish_in(tx, &prepared, &calculated).await
+            }
+        }
+    }
+
     async fn prepare_in(
         &self,
         tx: &mut PgTransaction<'_>,

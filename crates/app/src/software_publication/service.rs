@@ -15,6 +15,7 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 pub struct CandidateInput {
+    pub actor: rel::ActorId,
     pub candidate: rel::CandidateId,
     pub request: rel::RequestId,
     pub resource: resource::Id,
@@ -25,6 +26,7 @@ pub struct CandidateInput {
 }
 #[derive(Clone)]
 pub struct ServiceRequest {
+    pub actor: rel::ActorId,
     pub id: rel::RequestId,
     pub expected_revision: u64,
     pub as_of: Timepoint,
@@ -46,7 +48,7 @@ pub struct PublicationService {
     pub(super) releases: ReleaseStore,
     pub(super) sources: Sources,
     pub(super) artifacts: ArtifactReader,
-    pub(super) actors: ServiceActors,
+    pub(super) actors: ServiceIdentity,
 }
 impl PublicationService {
     pub async fn connect(
@@ -55,7 +57,7 @@ impl PublicationService {
         logical_source: String,
         config: RingSources,
         artifacts: ArtifactReader,
-        actors: ServiceActors,
+        actors: ServiceIdentity,
         cutoff: Deadline,
     ) -> Result<Self> {
         actors.check(tenant)?;
@@ -106,12 +108,22 @@ impl PublicationService {
     ) -> Result<Option<rel::Candidate>> {
         Ok(self.releases.get(id, budget(cutoff)).await?)
     }
+    /// Public, credential-free submission retained with the immutable candidate.
+    /// The product caller authorizes disclosure before invoking this reader.
+    pub async fn submission(&self, id: &rel::CandidateId, cutoff: Deadline) -> Result<Submission> {
+        let (_, subject, _) = self.context(id, cutoff).await?;
+        Ok(subject.submission)
+    }
+    /// Returns the durable receipt and whether creation was already committed.
     pub async fn create_candidate(
         &self,
         input: &CandidateInput,
         cutoff: Deadline,
-    ) -> Result<rss_mdm_software_release_postgres::OperationReceipt> {
-        if input.candidate.tenant() != self.tenant() || input.request.tenant() != self.tenant() {
+    ) -> Result<(rss_mdm_software_release_postgres::OperationReceipt, bool)> {
+        if input.actor.tenant() != self.tenant()
+            || input.candidate.tenant() != self.tenant()
+            || input.request.tenant() != self.tenant()
+        {
             return Err(Error::Identity);
         }
         let version = self
@@ -161,17 +173,20 @@ impl PublicationService {
         i: &CandidateInput,
         c: &rel::Candidate,
         subject: &Subject,
-    ) -> InTransaction<rss_mdm_software_release_postgres::OperationReceipt> {
+    ) -> InTransaction<(rss_mdm_software_release_postgres::OperationReceipt, bool)> {
         let key = db::software_key(&c.snapshot().content)?;
         db::lock(tx, "authority", &hex(&key)).await?;
         if let Some(old) = db::subject(tx, i.candidate.value()).await? {
             if db::encode(&old)? != db::encode(subject)? {
                 return Ok(Err(Error::Conflict));
             }
-            return Ok(Ok(db::required(
-                "service::create_in",
-                self.releases.create_in(tx, &i.request, c).await?,
-            )?));
+            return Ok(Ok((
+                db::required(
+                    "service::create_in",
+                    self.releases.create_in(tx, &i.request, c).await?,
+                )?,
+                true,
+            )));
         }
         let (v, state, revision) = input!(
             self.resources
@@ -204,13 +219,13 @@ impl PublicationService {
         db::set_authority(tx, key, material, i.candidate.value()).await?;
         db::audit(
             tx,
-            &self.actors.publisher,
+            &i.actor,
             i.candidate.value(),
             "software_candidate",
             db::request_fact(i.request.value(), None, "candidate-create"),
         )
         .await?;
-        Ok(Ok(receipt))
+        Ok(Ok((receipt, false)))
     }
     async fn retired_owner(&self, tx: &mut PgTransaction<'_>, owner: &str) -> InTransaction<()> {
         let id = db::required(
@@ -273,7 +288,7 @@ impl PublicationService {
         }
         let at = request.as_of;
         let evidence = rel::Evidence {
-            actor: self.actors.validator.clone(),
+            actor: request.actor.clone(),
             digest: rel::Digest::of(
                 &db::encode(&serde_json::json!([
                     c.snapshot().content.digest().bytes(),
@@ -288,7 +303,7 @@ impl PublicationService {
             at,
         };
         let r = request.core(
-            &self.actors.validator,
+            &request.actor,
             rel::Operation::Validate(rel::Validation {
                 candidate: id.clone(),
                 content: c.snapshot().content.digest(),
@@ -304,9 +319,19 @@ impl PublicationService {
         &self,
         id: &rel::CandidateId,
         ring: rel::Ring,
+        publisher: &rel::ActorId,
         request: &ServiceRequest,
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
+        if let Some((owner, original)) = self
+            .releases
+            .original_request(&request.id, budget(cutoff))
+            .await?
+            && (owner != *id
+                || !matches!(&original.operation,rel::Operation::Approve {publisher:prior,..} if prior==publisher))
+        {
+            return Err(Error::Conflict);
+        }
         if let Some(replay) = self
             .replay_service(id, ring, request, "approve", None, cutoff)
             .await?
@@ -315,10 +340,10 @@ impl PublicationService {
         }
         let (c, subject, _) = self.context(id, cutoff).await?;
         let r = request.core(
-            &self.actors.approver,
+            &request.actor,
             rel::Operation::Approve {
                 ring,
-                publisher: self.actors.publisher.clone(),
+                publisher: publisher.clone(),
                 policy: rel::ActorPolicy::Separate,
             },
         );
@@ -353,10 +378,7 @@ impl PublicationService {
             rel::RingState::Publication(p) => p.approval.digest(),
             _ => return Err(Error::Conflict),
         };
-        let r = request.core(
-            &self.actors.publisher,
-            rel::Operation::Authorize { ring, approval },
-        );
+        let r = request.core(&request.actor, rel::Operation::Authorize { ring, approval });
         self.authorize_request(&c, &subject, &r, cutoff).await
     }
     pub async fn retry(
@@ -386,7 +408,7 @@ impl PublicationService {
             return Err(Error::Conflict);
         };
         let r = request.core(
-            &self.actors.publisher,
+            &request.actor,
             rel::Operation::Retry {
                 ring,
                 publication: p.id(),
@@ -465,7 +487,7 @@ impl PublicationService {
                             db::insert_call(tx, db::Table::Publish, target).await?;
                             db::audit(
                                 tx,
-                                &s.actors.publisher,
+                                &r.actor,
                                 &target.candidate,
                                 "software_authorize",
                                 db::target_fact(
@@ -578,12 +600,12 @@ impl PublicationService {
             .await?
             .ok_or(Error::Conflict)?;
         let (actual, actual_ring, actor) = match &original.operation {
-            rel::Operation::Validate(v) => ("validate", v.ring, &self.actors.validator),
-            rel::Operation::Approve { ring, .. } => ("approve", *ring, &self.actors.approver),
-            rel::Operation::Authorize { ring, .. } => ("authorize", *ring, &self.actors.publisher),
+            rel::Operation::Validate(v) => ("validate", v.ring, &r.actor),
+            rel::Operation::Approve { ring, .. } => ("approve", *ring, &r.actor),
+            rel::Operation::Authorize { ring, .. } => ("authorize", *ring, &r.actor),
             rel::Operation::Retry {
                 ring, attempt: a, ..
-            } if Some(*a) == attempt => ("retry", *ring, &self.actors.publisher),
+            } if Some(*a) == attempt => ("retry", *ring, &r.actor),
             _ => return Err(Error::Conflict),
         };
         if owner != *id
@@ -614,10 +636,11 @@ impl PublicationService {
             self.runtime
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, id), |(s, id), tx| {
                     Box::pin(async move {
-                        let c = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
+                        let Some(c) = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
                             Error::Conflict.context("service::context", cause)
-                        }))
-                        .ok_or_else(db::fault)?;
+                        })) else {
+                            return Ok(Err(Error::CandidateNotFound));
+                        };
                         let subject = db::subject(tx, id.value()).await?.ok_or_else(db::fault)?;
                         let resource =
                             db::required("service::context", resource::Id::new(&subject.resource))?;
@@ -731,6 +754,7 @@ impl PublicationService {
     pub async fn archive_resource(
         &self,
         r: &rss_mdm_resource_postgres::Request,
+        actor: &rel::ActorId,
         cutoff: Deadline,
     ) -> Result<rss_mdm_resource_postgres::Receipt> {
         let rss_mdm_resource_postgres::Command::Archive { version, .. } = &r.command else {
@@ -741,8 +765,8 @@ impl PublicationService {
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, r, version),
-                    |(s, r, v), tx| {
+                    (self, r, version, actor),
+                    |(s, r, v, actor), tx| {
                         Box::pin(async move {
                             input!(
                                 s.resources
@@ -763,7 +787,7 @@ impl PublicationService {
                                 }));
                             db::audit(
                                 tx,
-                                &s.actors.publisher,
+                                actor,
                                 r.resource.as_str(),
                                 "software_archive",
                                 db::request_fact(r.id.as_str(), None, "resource-archive"),

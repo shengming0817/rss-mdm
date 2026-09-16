@@ -11,8 +11,10 @@ N11 / #2389 负责 Resource、WinGet/Brew 映射、持久化、外部提交与�
 这些输入不定义持久 wire 格式，也不证明存储真实性；schema 与生产迁移归 N11。
 
 直接使用 `rss-request-context::TenantId`、`rss-contract::Timepoint`，本包不 re-export。
-`CandidateId`、`RequestId`、`ActorId` 分角色且包含 tenant。身份值、软件身份各项和 artifact key 为 1–128 字节，
+`CandidateId`、`RequestId`、`ActorId` 分角色且包含 tenant。CandidateId、RequestId、软件身份各项和 artifact key 为 1–128 字节，
 只允许 ASCII 字母、数字及 `._-/+@`，拒绝空路径段与 `.` / `..` 段；它们是内部引用，不接受 URL、凭据或任意正文。
+ActorId 保留 1–2048 UTF-8 字节、不含控制字符的主体身份，允许产品明确编码的 `(client, subject)`；不做归一化。
+构造 ActorId 不证明认证，实际主体校验和权限由产品入口负责；后台执行身份与管理员身份分开。
 `SoftwareIdentity::new` 接收具名 `SoftwareIdentityFields`：source、package、version、platform，
 由组装映射精确身份；验证后的值通过 `fields()` 只读访问。
 一个 Candidate 是完整平台包版本。`Content` 接收描述、源配置快照、完整 manifest 和 1–64 个 `VariantContent`；每项包含 architecture、variant 和具名产物。总计最多 256 个产物引用，排序后编码；同一产物 key 跨 variant 共享时摘要必须一致。

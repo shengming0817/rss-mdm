@@ -90,7 +90,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "14", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "16", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -108,6 +108,8 @@ def verify_startup_deadlines(binary, root, port, env):
     config['runtime_database']={**config['database'],'user':'mdm_runtime','password_file':str(root/'runtime-password')}
     config['identity'].update(oidc_secret_file=str(root/'oidc-secret'),validation_secret_file=str(root/'validation-secret'),ca_file=str(root/'ca.crt'))
     config["windows"]=json.loads((root/"windows.json").read_text())
+    config['management']['database']={**config['runtime_database'],'user':'mdm_management_runtime'}
+    config['management']['publication_database']={**config['runtime_database'],'user':'mdm_software_driver'}
     runtime_password = config['runtime_database']['password_file']
     config['runtime_database']['password_file'] = str(root/'missing-runtime-password')
     invalid_runtime = root/'invalid-runtime.json'
@@ -123,6 +125,8 @@ def verify_startup_deadlines(binary, root, port, env):
             config['database']['port']=stalled_port if stage=='database' else int(port)
             config['access_database']['port']=config['database']['port']
             config['runtime_database']['port']=config['database']['port']
+            config['management']['database']['port']=config['database']['port']
+            config['management']['publication_database']['port']=config['database']['port']
             config['identity']['issuer']='https://localhost:'+str(stalled_port)+'/oidc'
             path=root/'stalled.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
             start=time.monotonic()
@@ -164,7 +168,8 @@ def main():
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            sql += (ROOT/'crates/app/schema/software-publication-roles.sql').read_text()
+            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text())
+            sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture';"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")
@@ -181,6 +186,7 @@ def main():
             print(upgrade.stdout, end='', flush=True)
             require(upgrade.returncode == 0 and 'test migration::tests::populated_windows_and_backend_upgrade ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
+            run(["docker","exec","-i",name,"psql","-U","postgres","-d","mdm_test","-v","ON_ERROR_STOP=1"],input="INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-4111-8111-111111111111',1),('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1);",stdout=subprocess.DEVNULL)
             if not device_only and not windows_only:
                 verify_startup_deadlines(migrators[0],root,port,env)
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)

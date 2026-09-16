@@ -26,6 +26,7 @@ use std::{sync::Arc, time::Duration};
 const COOKIE: &str = "__Host-mdm-session";
 const BROWSER: &str = "__Host-mdm-login";
 pub(crate) struct App {
+    pub(crate) management: Arc<crate::management::Management>,
     pub(crate) identity: Identity,
     pub(crate) sessions: Sessions,
     pub(crate) policy: Arc<Policy>,
@@ -39,16 +40,15 @@ pub(crate) struct App {
 }
 
 #[derive(Clone)]
-struct RequestAuth {
-    proof: Arc<VerifiedIdentity>,
+pub(crate) struct RequestAuth {
+    pub(crate) proof: Arc<VerifiedIdentity>,
     lease: Arc<Lease>,
 }
 async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
-    if parts.method != axum::http::Method::GET
-        && parts.method != axum::http::Method::HEAD
-        && let Err(error) = same_origin(&app, &parts.headers)
-    {
+    let writes =
+        parts.method != axum::http::Method::GET && parts.method != axum::http::Method::HEAD;
+    if writes && let Err(error) = same_origin(&app, &parts.headers) {
         return error.into_response();
     }
     let lease = match local(&app, &parts.headers) {
@@ -67,6 +67,11 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
         Ok((proof, lease)) => {
             if let Some(audit) = parts.extensions.get::<Audit>() {
                 audit.identify(&proof);
+            }
+            if writes
+                && !csrf(&parts.headers).is_ok_and(|token| sessions::equal(&lease.csrf, token))
+            {
+                return Error::Forbidden.into_response();
             }
             parts.extensions.insert(RequestAuth {
                 proof: Arc::new(proof),
@@ -94,11 +99,26 @@ pub(crate) async fn application(
         monotonic.clone(),
     )
     .await?;
-    Ok(
-        from_compiled(config.compile()?, clock, monotonic, reader, access, runtime)
-            .await?
-            .browser,
+    let management = config
+        .management
+        .open(
+            rss_request_context::TenantId::parse(&config.identity.tenant_id)
+                .map_err(|_| Error::Malformed)?,
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+    Ok(from_compiled(
+        config.compile()?,
+        clock,
+        monotonic,
+        reader,
+        access,
+        runtime,
+        management,
     )
+    .await?
+    .browser)
 }
 pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
@@ -107,6 +127,7 @@ pub(crate) async fn from_compiled(
     reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
     runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
+    management: Arc<crate::management::Management>,
 ) -> Result<crate::windows::Routers, Error> {
     let crate::config::Compiled { config, policy } = compiled;
     let policy = Arc::new(policy);
@@ -128,6 +149,7 @@ pub(crate) async fn from_compiled(
             .map_err(|_| Error::Unavailable(Failure::Clock))?,
     )?;
     let state = Arc::new(App {
+        management,
         windows,
         access: access.clone(),
         identity,
@@ -140,6 +162,7 @@ pub(crate) async fn from_compiled(
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     let protected = Router::new()
+        .merge(crate::management::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))
@@ -325,6 +348,8 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
         "denied"
     } else if status >= 400 {
         "failed"
+    } else if let Some(result) = snapshot.management_result {
+        result.audit_tag()
     } else if snapshot.operation_id.is_some() {
         "replay"
     } else {
@@ -527,15 +552,11 @@ struct Action {
 }
 async fn action(
     State(app): State<Arc<App>>,
-    headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
     Extension(audit): Extension<Audit>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
-    if !sessions::equal(&auth.lease.csrf, csrf(&headers)?) {
-        return Err(Error::Forbidden);
-    }
     if rss_observation::Id::new(&id).is_ok() {
         audit.target(&id);
     }
@@ -565,15 +586,11 @@ fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
 }
 fn write_key(
     headers: &HeaderMap,
-    auth: &RequestAuth,
     audit: &Audit,
     action: &'static str,
 ) -> Result<uuid::Uuid, Error> {
     let key = operation_key(headers)?;
     audit.operation(key, action);
-    if !sessions::equal(&auth.lease.csrf, csrf(headers)?) {
-        return Err(Error::Forbidden);
-    }
     Ok(key)
 }
 async fn create_enrollment(
@@ -583,7 +600,7 @@ async fn create_enrollment(
     Extension(audit): Extension<Audit>,
     input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let key = write_key(&headers, &auth, &audit, "enrollment_create")?;
+    let key = write_key(&headers, &audit, "enrollment_create")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
     let permission = app.policy.enrollment(&auth.proof, &input.device_id)?;
     audit.target(&input.device_id);
@@ -629,7 +646,7 @@ async fn resume_enrollment(
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &auth, &audit, "enrollment_resume")?;
+    let key = write_key(&headers, &audit, "enrollment_resume")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
     let permission = app.policy.enrollment(&auth.proof, &device)?;
@@ -659,7 +676,7 @@ async fn cancel_enrollment(
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &auth, &audit, "enrollment_cancel")?;
+    let key = write_key(&headers, &audit, "enrollment_cancel")?;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
     let permission = app.policy.enrollment(&auth.proof, &device)?;
     audit.target(&device);
@@ -678,7 +695,7 @@ async fn revoke_registration(
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
     let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &auth, &audit, "credential_revoke")?;
+    let key = write_key(&headers, &audit, "credential_revoke")?;
     audit.target(&device);
     app.devices
         .revoke_inner(&auth.proof, &device, registration, key, &audit)

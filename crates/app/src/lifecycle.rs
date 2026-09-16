@@ -99,7 +99,7 @@ pub async fn serve(
                         access,
                         tenant,
                         runtime,
-                    ) = tokio::time::timeout(Duration::from_secs(15), async {
+                    ) = tokio::time::timeout(compiled.config.management.startup_budget(), async {
                         let reader = Arc::new(
                             InventoryReader::connect(compiled.config.database.options().map_err(
                                 |e| ProcessError::at("startup.database_configuration", e),
@@ -159,6 +159,21 @@ pub async fn serve(
                             clock,
                             readiness,
                         ));
+                        let management = compiled
+                            .config
+                            .management
+                            .open(
+                                rss_request_context::TenantId::parse(
+                                    &compiled.config.identity.tenant_id,
+                                )
+                                .map_err(|_| assembly_error(Error::Malformed))?,
+                                Arc::new(rss_identity_client::SystemClock),
+                                |resource| {
+                                    startup.stage_resource(DynManagedResource::new_box(resource))
+                                },
+                            )
+                            .await
+                            .map_err(|e| ProcessError::at("startup.management", e))?;
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
                         let app = crate::api::from_compiled(
@@ -168,6 +183,7 @@ pub async fn serve(
                             reader,
                             access.clone(),
                             runtime.clone(),
+                            management,
                         )
                         .await
                         .map_err(assembly_error)?;

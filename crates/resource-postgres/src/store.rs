@@ -184,6 +184,16 @@ impl ResourceStore {
     ) -> InTransaction<(Version, State, u64)> {
         input!(self.check(tx)?);
         STORAGE.lock(tx, "resource", id.as_str()).await?;
+        // A host may use SERIALIZABLE while another resource consumer uses READ
+        // COMMITTED. The physical row lock detects a version changed since the
+        // host snapshot; an advisory lock alone cannot refresh that snapshot.
+        let tenant = self.tenant.to_string();
+        let owner = id.as_str().to_owned();
+        tx.with_connection(move |connection|Box::pin(async move {
+            sqlx::query("SELECT revision FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+                .bind(tenant).bind(owner).fetch_optional(connection).await?;
+            Ok(())
+        })).await?;
         let s = input!(input!(self.get_in(tx, id).await?).ok_or(Rejection::NotFound));
         let v = input!(s.resource.version(version).map_err(|_| Rejection::NotFound));
         let state =

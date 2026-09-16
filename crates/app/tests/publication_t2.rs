@@ -58,7 +58,8 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(server.state.lock().unwrap().deletes, 1);
@@ -79,7 +80,8 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(server.state.lock().unwrap().deletes, 1);
@@ -115,7 +117,13 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
         .unwrap()
         .unwrap();
     service
-        .approve(&input.candidate, rel::Ring::Test, &request(&c), cutoff())
+        .approve(
+            &input.candidate,
+            rel::Ring::Test,
+            &rel::ActorId::new(tenant(), "publisher").unwrap(),
+            &request(&c),
+            cutoff(),
+        )
         .await
         .unwrap();
     let c = service
@@ -166,7 +174,8 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::WaitingPublication
     );
     assert_publication_audit(&p, "unknown");
@@ -203,7 +212,8 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     runtime.close().await;
@@ -254,7 +264,8 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(git(&config, &["rev-parse", "refs/heads/main"]), current);
@@ -268,7 +279,8 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert!(git(&config, &["show", "refs/heads/main:Formula/tool.rb"]).contains("class Tool"));
@@ -305,7 +317,8 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(server.state.lock().unwrap().posts, 2);
@@ -326,7 +339,8 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::PreflightRetryable
     );
     assert_eq!(server.state.lock().unwrap().deletes, 0);
@@ -373,7 +387,8 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
             )
             .with_subscriber(subscriber)
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::SourceOutcomeUnknown
     );
     let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
@@ -429,10 +444,11 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         Err(Error::Content)
     ));
     input.submission = original;
-    let receipt = service.create_candidate(&input, cutoff()).await.unwrap();
+    let (receipt, replayed) = service.create_candidate(&input, cutoff()).await.unwrap();
+    assert!(!replayed);
     assert_eq!(
         service.create_candidate(&input, cutoff()).await.unwrap(),
-        receipt
+        (receipt, true)
     );
     input.expected_resource_revision += 1;
     assert!(matches!(
@@ -451,7 +467,13 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         },
     };
     assert!(matches!(
-        service.archive_resource(&r, cutoff()).await,
+        service
+            .archive_resource(
+                &r,
+                &rel::ActorId::new(tenant(), "publisher").unwrap(),
+                cutoff()
+            )
+            .await,
         Err(Error::Blocked)
     ));
     let mut same = server.winget();
@@ -717,9 +739,10 @@ async fn archive_and_candidate_reference_race_is_atomic() {
             references: 0,
         },
     };
+    let publisher = rel::ActorId::new(tenant(), "publisher").unwrap();
     let (created, archived) = tokio::join!(
         service.create_candidate(&input, cutoff()),
-        service.archive_resource(&archive, cutoff())
+        service.archive_resource(&archive, &publisher, cutoff())
     );
     match (created, archived) {
         (Ok(_), Err(Error::Blocked)) => assert!(

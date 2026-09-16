@@ -174,11 +174,11 @@ fn finite_membership_truth_table_and_key_boundaries() {
             }
         }
     }
-    for bad in ["", "has space", "../path", "\n"] {
+    for bad in ["", "\0", "\n"] {
         assert!(DeviceId::new(tenant(), bad).is_err());
     }
-    assert!(DeviceId::new(tenant(), "a".repeat(128)).is_ok());
-    assert!(DeviceId::new(tenant(), "a".repeat(129)).is_err());
+    assert!(DeviceId::new(tenant(), "a".repeat(256)).is_ok());
+    assert!(DeviceId::new(tenant(), "a".repeat(257)).is_err());
     assert!(
         SourceRef::new(
             SourceId::Group(GroupId::new(tenant(), "a").unwrap()),

@@ -24,6 +24,22 @@ pub(crate) struct Snapshot {
     pub registration_id: Option<Uuid>,
     pub write_outcome: WriteOutcome,
     pub software: Option<SoftwareFact>,
+    pub management_result: Option<ManagementResult>,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum ManagementResult {
+    Performed,
+    Replayed,
+    Unknown,
+}
+impl ManagementResult {
+    pub fn audit_tag(self) -> &'static str {
+        match self {
+            Self::Performed => "success",
+            Self::Replayed => "replay",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 /// Product operation projection containing identifiers/digests only, never source content.
 #[derive(Clone, serde::Serialize)]
@@ -75,7 +91,18 @@ impl Audit {
                     registration_id: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
                     software: None,
+                    management_result: None,
                 },
+                finalized: false,
+            }),
+        }))
+    }
+    pub(crate) fn transaction_copy(&self) -> Self {
+        Self(Arc::new(Context {
+            request_id: self.0.request_id,
+            tenant: self.0.tenant.clone(),
+            state: Mutex::new(State {
+                snapshot: self.snapshot(),
                 finalized: false,
             }),
         }))
@@ -100,6 +127,11 @@ impl Audit {
         state.snapshot.actor = Some(actor.into());
         state.snapshot.client = Some(client.into());
     }
+    pub(crate) fn identify_operator(&self, actor: &str, client: &str) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(actor.into());
+        state.snapshot.client = Some(client.into());
+    }
     pub(crate) fn identify_service(&self, actor: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
@@ -112,7 +144,7 @@ impl Audit {
         self.0.state.lock().expect("audit lock").snapshot.action = action;
     }
     pub fn target(&self, target: &str) {
-        self.0.state.lock().expect("audit lock").snapshot.target = (target.len() <= 255
+        self.0.state.lock().expect("audit lock").snapshot.target = (target.len() <= 256
             && rss_observation::Id::new(target).is_ok())
         .then(|| target.to_owned());
     }
@@ -133,6 +165,14 @@ impl Audit {
             .expect("audit lock")
             .snapshot
             .registration_id = Some(id);
+    }
+    pub fn management_result(&self, result: ManagementResult) {
+        self.0
+            .state
+            .lock()
+            .expect("audit lock")
+            .snapshot
+            .management_result = Some(result);
     }
     pub fn mark_commit_started(&self) {
         let mut state = self.0.state.lock().expect("audit lock");
@@ -185,11 +225,11 @@ mod tests {
     #[test]
     fn target_rejects_values_that_cannot_be_persisted() {
         let audit = Audit::new("tenant".into(), "collection_read");
-        for invalid in ["x".repeat(256), "bad\nvalue".into(), String::new()] {
+        for invalid in ["x".repeat(257), "bad\nvalue".into(), String::new()] {
             audit.target(&invalid);
             assert!(audit.snapshot().target.is_none());
         }
-        audit.target(&"x".repeat(255));
+        audit.target(&"x".repeat(256));
         assert!(audit.snapshot().target.is_some());
         audit.finalize(None);
     }

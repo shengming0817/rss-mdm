@@ -127,7 +127,14 @@ pub(super) async fn audit(
         return Err(fault());
     }
     let audit = crate::audit::Audit::new(tx.tenant_id().to_string(), action);
-    audit.identify_service(actor.value());
+    if let Ok((client, subject)) = serde_json::from_str::<(String, String)>(actor.value()) {
+        if client.len() > 255 || subject.len() > 255 {
+            return Err(fault());
+        }
+        audit.identify_operator(&subject, &client);
+    } else {
+        audit.identify_service(actor.value());
+    }
     audit.target(target);
     let (status, result) = match fact.outcome {
         "unknown" | "attempted" => (202, "unknown"),
@@ -779,7 +786,7 @@ const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.p
 const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
 const COMPLETE_NOOP_SQL: &str = "UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)";
 
-const RESOURCE_REFERENCE_COUNT_SQL: &str = "SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3";
+const RESOURCE_REFERENCE_COUNT_SQL: &str = "SELECT (SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3) + (SELECT count(*) FROM mdm_management.resource_references WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3)";
 pub(super) async fn resource_reference_count(
     tx: &mut PgTransaction<'_>,
     resource: &str,
