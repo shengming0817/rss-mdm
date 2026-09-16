@@ -1,20 +1,34 @@
 use super::*;
 const PASSWORD: &str = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText";
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Unverified WS-Security PasswordText material; parsing does not authenticate it.
 pub struct UsernameToken {
+    /// Nonblank token ID bounded by `identifier_bytes`.
     pub id: String,
+    /// Nonblank username claim bounded by `field_bytes`.
     pub username: Secret<String>,
+    /// Nonblank plaintext password bounded by `field_bytes`; encoded XML exposes its value.
     pub password: Secret<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// WS-Security timestamp strings checked for RFC 3339 syntax only.
+/// The codec does not check ordering, expiry, current time or replay; the verifier must.
 pub struct Timestamp {
+    /// Nonblank timestamp ID bounded by `identifier_bytes`.
     pub id: String,
+    /// RFC 3339 creation text bounded by `identifier_bytes`; no clock comparison.
     pub created: String,
+    /// RFC 3339 expiry text bounded by `identifier_bytes`; no expiry/order enforcement.
     pub expires: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Supported WS-Security fields; at least one timestamp or username token is required.
+/// When both are present their IDs must differ. No signature, password or freshness
+/// verification is performed by codec construction, encoding or decoding.
 pub struct Security {
+    /// Optional timestamp; required on IssueResponse by the SOAP profile.
     pub timestamp: Option<Timestamp>,
+    /// Optional username token; required on GetPolicies and Issue requests.
     pub username: Option<UsernameToken>,
 }
 fn id(p: &mut Input<'_>, ns: &str, name: &str) -> Result<String> {

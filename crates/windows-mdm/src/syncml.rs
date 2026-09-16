@@ -9,68 +9,108 @@ pub use correlation::{
     Correlated, CorrelatedItem, CorrelatedStatus, Expected, Reference, SentMessage, correlate,
     encode_request,
 };
+/// Exact namespace URI for the supported SyncML 1.2 XML profile.
 pub const NS: &str = "SYNCML:SYNCML1.2";
 const META: &str = "syncml:metinf";
 const LOGIN_STATUS: &str = "com.microsoft/MDM/LoginStatus";
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// SyncML session/message coordinates and untrusted endpoint/credential claims.
 pub struct Header {
+    /// Session ID in 1..=65535; the product binds it to an authenticated session.
     pub session_id: u32,
+    /// Positive message ID; cross-message monotonicity belongs to the product.
     pub message_id: u32,
+    /// Nonblank target LocURI, bounded by `uri_bytes`; not endpoint authorization.
     pub target: String,
+    /// Nonblank source LocURI, bounded by `uri_bytes`; not a verified device identity.
     pub source: String,
+    /// Optional unverified authentication material.
     pub credential: Option<Credential>,
+    /// Optional supported header metainformation.
     pub meta: Option<Meta>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Unverified SyncML authentication material; codec validation does not authenticate it.
 pub struct Credential {
+    /// Authentication metadata; Type, when present, is auth-basic or auth-md5.
     pub meta: Meta,
+    /// Nonblank credential text bounded by `field_bytes`; not checked against a secret.
     pub data: Secret<String>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Supported metainformation; values are validated by message encode/decode.
 pub struct Meta {
+    /// Optional `chr`, `int`, `bool` or `b64` token; payload values are not coerced.
     pub format: Option<String>,
+    /// Optional `text/plain`, or supported auth type in credential context.
     pub media_type: Option<String>,
+    /// Optional positive advertised maximum message size in bytes; not a local budget override.
     pub max_message_size: Option<u32>,
+    /// Optional positive advertised maximum object size in bytes; not a local budget override.
     pub max_object_size: Option<u32>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One in-memory SyncML document, validated at encoding/decoding boundaries.
 pub struct Message {
+    /// Session/message header subject to profile validation.
     pub header: Header,
+    /// Nonempty bounded command list with unique positive IDs.
     pub commands: Vec<Command>,
+    /// Whether the wire includes Final; this does not prove collection completion.
     pub final_message: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Supported bounded command profile; IDs must be positive and unique per message.
 pub enum Command {
+    /// Read requested target URIs; the codec does not execute the reads.
     Get {
+        /// Positive command ID unique within this message.
         id: u32,
+        /// Optional supported command metadata.
         meta: Option<Meta>,
+        /// Nonempty items validated against this command's URI/data profile.
         items: Vec<Item>,
     },
+    /// A reported command or header status.
     Status(Status),
+    /// Values returned for a Get request.
     Results(Results),
+    /// A supported device initialization/login alert.
     Alert {
+        /// Positive command ID unique within this message.
         id: u32,
+        /// Closed alert payload to encode or decode.
         alert: Alert,
     },
     /// Only device-to-server DevInfo initialization; never a device write API.
     DevInfo {
+        /// Positive command ID unique within this message.
         id: u32,
+        /// Nonempty items validated against this command's URI/data profile.
         items: Vec<Item>,
     },
 }
 /// Supported initialization alerts. Login state is an untrusted device claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Alert {
+    /// Client-initiated management-session alert (1201).
     ClientInitiated,
+    /// Device login-state alert using the supported Microsoft media type.
     LoginStatus {
+        /// Untrusted device-reported login state.
         status: LoginStatus,
+        /// Whether the wire explicitly includes the `chr` format token.
         explicit_format: bool,
     },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Untrusted device-reported login state, never a user authorization decision.
 pub enum LoginStatus {
+    /// The device reports the `user` state.
     User,
+    /// The device reports the `others` state.
     Others,
+    /// The device reports the `none` state.
     None,
 }
 impl LoginStatus {
@@ -83,22 +123,37 @@ impl LoginStatus {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Command-specific URI, metadata and optional sensitive text payload.
+/// Get requires only a target; Results/DevInfo require source and data. Status
+/// details permit a source, target or data. Message validation enforces these roles.
 pub struct Item {
+    /// Optional source LocURI, required for Results/DevInfo and forbidden for Get.
     pub source: Option<String>,
+    /// Optional target LocURI, required for Get and forbidden for Results/DevInfo.
     pub target: Option<String>,
+    /// Optional supported item metadata.
     pub meta: Option<Meta>,
+    /// Optional sensitive text; an explicit empty string differs from an absent Data element.
     pub data: Option<Secret<String>>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Closed protocol command names used in status/result references.
 pub enum CommandName {
+    /// Header acknowledgement, paired with command reference zero.
     SyncHdr,
+    /// Get request.
     Get,
+    /// Status command.
     Status,
+    /// Alert command.
     Alert,
+    /// Replace name used for the restricted DevInfo initialization profile.
     Replace,
+    /// Results command.
     Results,
 }
 impl CommandName {
+    /// Return the exact case-sensitive protocol command name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SyncHdr => "SyncHdr",
@@ -122,34 +177,55 @@ impl CommandName {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Reported command/header status; success codes do not independently prove device effects.
 pub struct Status {
+    /// Positive local status-command ID.
     pub id: u32,
+    /// Positive ID of the message being acknowledged.
     pub message_ref: u32,
+    /// Referenced command ID; zero exactly when command is SyncHdr.
     pub command_ref: u32,
+    /// Name of the command being acknowledged.
     pub command: CommandName,
+    /// Distinct nonblank target references, bounded by item/URI limits.
     pub target_refs: Vec<String>,
+    /// Distinct nonblank source references; request correlation rejects unexpected sources.
     pub source_refs: Vec<String>,
+    /// Protocol status code in 100..=599; product logic interprets its business meaning.
     pub code: u16,
+    /// Optional bounded status details, preserved as untrusted input.
     pub items: Vec<Item>,
+    /// Optional auth challenge permitted only for a SyncHdr status.
     pub challenge: Option<Challenge>,
+    /// Optional unverified status authentication material.
     pub credential: Option<Credential>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Header-only authentication challenge, without proof of successful authentication.
 pub struct Challenge {
+    /// Supported `syncml:auth-basic` or `syncml:auth-md5` token.
     pub media_type: String,
+    /// Required only for auth-md5: base64 text decoding to 16–64 bytes, within identifier budget.
     pub nonce: Option<Secret<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Get result values and optional original-request references.
 pub struct Results {
+    /// Positive local Results-command ID.
     pub id: u32,
     /// MS-MDM default is 1 when absent; presence is retained for diagnostics.
     pub message_ref: Option<u32>,
+    /// Positive original command ID when present; correlation defaults absence to 1.
     pub command_ref: Option<u32>,
+    /// Optional referenced command name, which must be Get when present.
     pub command: Option<CommandName>,
+    /// Optional supported Results metadata.
     pub meta: Option<Meta>,
+    /// Nonempty unique source-URI/data items for the referenced Get command.
     pub items: Vec<Item>,
 }
 impl Command {
+    /// Return the command ID; message validation checks positivity and uniqueness.
     pub fn id(&self) -> u32 {
         match self {
             Self::Get { id, .. } | Self::Alert { id, .. } | Self::DevInfo { id, .. } => *id,
@@ -278,7 +354,10 @@ fn refs(p: &mut Input<'_>, name: &str) -> Result<Vec<String>> {
     }
     Ok(out)
 }
-/// Parse exactly one complete document; unsupported commands are not skipped.
+/// Parse exactly one complete bounded document; unsupported commands are not skipped.
+/// Returns closed XML, namespace, structure, duplicate, value or budget errors, never
+/// a partial message. Parsed identifiers, credentials and values remain untrusted;
+/// callers own authentication, session tracking and semantic effect verification.
 pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
     let mut p = Input::new(bytes, l.syncml_bytes, l)?;
     p.open(NS, "SyncML")?;
@@ -758,6 +837,10 @@ fn write_status(w: &mut Output<'_>, s: &Status, l: &CodecLimits) -> Result<()> {
     }
     Ok(())
 }
+/// Validate and serialize one bounded SyncML document entirely in memory.
+/// Rejects invalid structure, IDs, duplicate commands/items, unsupported profile values
+/// and exceeded [`CodecLimits`]. Returns no partial bytes on failure; successful
+/// encoding does not send the message or authorize a device operation.
 pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
     validate(m, l)?;
     let mut w = Output::new(l.syncml_bytes, l);

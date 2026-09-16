@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 //! Immutable Resource versions and lifecycle over the host-owned RSS transaction.
 mod codec;
 

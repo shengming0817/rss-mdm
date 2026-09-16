@@ -23,7 +23,7 @@
 //! ```
 #![forbid(unsafe_code)]
 #![warn(clippy::cognitive_complexity)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 mod fingerprint;
 mod identity;
 mod model;

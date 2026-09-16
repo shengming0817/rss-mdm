@@ -19,6 +19,8 @@ pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScop
     )
     .expect("static inventory projection")
 }
+/// Return the deterministic projection definition digest binding generation, field semantics
+/// and the initial migration bytes. Performs no schema inspection or migration.
 pub fn definition() -> DefinitionIdentity {
     let mut digest = Sha256::new();
     digest.update(GENERATION);
@@ -27,6 +29,12 @@ pub fn definition() -> DefinitionIdentity {
     DefinitionIdentity::new(digest.finalize().into())
 }
 /// Inventory effect consumes a source without exposing its internal handle.
+/// Applies only the canonical tenant projection scope; other datasets are filtered.
+/// Snapshot batches replace rows within the exact tenant/journal/generation/scope/
+/// coverage, while deltas upsert or delete individual fields. Source and model
+/// validation occur before writes. Writes use the supplied projection transaction;
+/// the owner controls commit/rollback and checkpoint recovery. A callback result
+/// does not prove commit, and cancellation/provider failure does not prove rollback.
 /// ```compile_fail
 /// fn bypass<C: rss_observation::Clock>(effect: rss_mdm_inventory_postgres::Inventory<C>) {
 ///     let _ = effect.source;
@@ -36,6 +44,8 @@ pub struct Inventory<C: rss_observation::Clock> {
     source: Arc<PgSource<C>>,
 }
 impl<C: rss_observation::Clock> Inventory<C> {
+    /// Bind the caller-owned Observation source without I/O or spawning tasks.
+    /// The host must supply its correctly configured runtime, schema and admission checks.
     pub fn new(source: Arc<PgSource<C>>) -> Self {
         Self { source }
     }

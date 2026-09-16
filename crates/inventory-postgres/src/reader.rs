@@ -9,17 +9,27 @@ use sqlx::{
 use std::time::Duration;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
+/// One exact-scope projected field with source-batch and timing provenance.
 pub struct InventoryField {
+    /// Canonical Inventory field key.
     pub field: String,
+    /// Validated text value, potentially sensitive product data.
     pub value: String,
+    /// Observation batch identity that last wrote this field.
     pub batch_id: String,
+    /// Producer observation time in Unix seconds.
     pub observed_at: i64,
+    /// Observation receiver time in Unix seconds.
     pub received_at: i64,
 }
+/// Restricted reader owning a PostgreSQL pool; resource authorization remains with the caller.
 pub struct InventoryReader {
     pool: PgPool,
 }
 impl InventoryReader {
+    /// Open a pool of at most four connections with a 5s acquisition timeout and
+    /// verify the restricted reader role/catalog contract. Connection or admission errors
+    /// are returned; an opened pool is closed on admission failure. Applies no migrations.
     pub async fn connect(options: PgConnectOptions) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -32,6 +42,11 @@ impl InventoryReader {
         }
         Ok(Self { pool })
     }
+    /// Read fields in field-key order for the exact tenant/scope and canonical generation/coverage.
+    /// Rejects a non-Inventory dataset before I/O. Begins its own transaction, sets the
+    /// tenant and 5s statement timeout, reads rows and commits before returning. Encoding,
+    /// SQL, decoding or commit failures return an error without partial results. An empty
+    /// list does not prove that a collection is complete; caller authorization is required.
     pub async fn read(&self, scope: &Scope) -> Result<Vec<InventoryField>> {
         ensure!(
             scope.dataset().as_str() == rss_mdm_inventory::DATASET,
@@ -48,6 +63,8 @@ impl InventoryReader {
         tx.commit().await?;
         Ok(result)
     }
+    /// Close the owned pool and await outstanding connections being returned.
+    /// The host should stop its readers first; this method adds no shutdown deadline.
     pub async fn close(&self) {
         self.pool.close().await;
     }

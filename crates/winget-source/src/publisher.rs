@@ -9,7 +9,11 @@ pub struct WriteAccess {
     key: HeaderValue,
 }
 impl WriteAccess {
-    /// Bind a service key to tenant, logical source and credential reference before I/O. The key is redacted and sent only in the management header.
+    /// Bind a service key to tenant, source and credential reference without I/O.
+    /// Identity and token constraints are the same as [`Access::new`]; violations
+    /// return [`Error::InvalidInput`]. The sensitive key is sent only in
+    /// `x-functions-key`, not a URL query or bearer header. Construction does not
+    /// authenticate the caller or authorize a write.
     pub fn new(tenant: TenantId, source: &str, reference: &str, key: &str) -> Result<Self, Error> {
         identity(source)?;
         identity(reference)?;
@@ -142,7 +146,12 @@ impl Publisher {
         .await
         .map_err(|_| Error::Timeout(RequestStage::Reconcile))?
     }
-    /// Call only after serialized ownership checks. No package-wide delete is exposed.
+    /// DELETE only the exact package version after caller-owned serialized ownership checks.
+    /// Validates tenant/source/reference before I/O; the 30s budget includes negotiation.
+    /// A 204 or 404 yields an acknowledgement, not verified withdrawal. Timeout,
+    /// cancellation, transport or response-processing errors may follow a remote effect;
+    /// retain the original approved identity and reconcile with [`Self::inspect`].
+    /// Absence alone cannot settle a lost DELETE. No package-wide delete is exposed.
     pub async fn withdraw(
         &self,
         m: &VersionManifest,

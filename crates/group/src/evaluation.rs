@@ -9,24 +9,35 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Three-valued result; only Match is eligible for a new membership set.
 pub enum Decision {
+    /// The rule is satisfied; eligible for the replacement membership set.
     Match,
+    /// The rule is definitively not satisfied.
     NoMatch,
+    /// Available facts cannot decide the rule; not eligible for new membership.
     Unknown,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Distinct missing/empty/freshness/support causes; never substituted with zero values.
 pub enum UnknownReason {
+    /// An ordinary comparison encountered explicit null.
     Null,
+    /// The fact is missing or the referenced field is outside partial coverage.
     Missing,
+    /// The evaluation time is at or after the fact's exclusive expiry.
     Stale,
+    /// The source explicitly cannot provide this fact.
     Unsupported,
+    /// The evaluation time precedes the fact's observation time.
     Future,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// A predicate result with its specific unknown reason.
 pub enum Outcome {
+    /// This predicate is satisfied.
     Match,
+    /// This predicate is definitively not satisfied.
     NoMatch,
+    /// This predicate cannot be decided for the stated reason.
     Unknown(UnknownReason),
 }
 impl Outcome {
@@ -44,23 +55,33 @@ impl Outcome {
 /// AST child-index path identifies a predicate in the immutable input rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Explanation {
+    /// Child indexes from the root; resolve with [`Rule::predicate_at`].
     pub path: Vec<usize>,
+    /// Leaf comparison result, without copying the fact value.
     pub outcome: Outcome,
 }
 /// Provenance is stored once per referenced field, not duplicated for every predicate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provenance {
+    /// Caller-supplied resolved source identity.
     pub source: String,
+    /// Caller-supplied source snapshot identity.
     pub snapshot_id: String,
+    /// Inclusive observation time used for freshness evaluation.
     pub observed_at: Timepoint,
+    /// Optional exclusive expiry used for freshness evaluation.
     pub valid_until: Option<Timepoint>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Stable leaf explanations and once-per-field provenance; contains no fact values.
 pub struct ObjectEvaluation {
+    /// Complete tenant/object identity.
     pub key: ObjectKey,
+    /// Combined three-valued rule result.
     pub decision: Decision,
+    /// All leaf outcomes in tree traversal order, even after a decisive branch.
     pub explanations: Vec<Explanation>,
+    /// One provenance record per referenced field actually present in the input.
     pub provenance: BTreeMap<String, Provenance>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,30 +89,48 @@ pub struct ObjectEvaluation {
 pub struct Evaluation {
     /// Caller-declared universe completeness; this is not a verified asset receipt.
     pub complete: bool,
+    /// Coverage copied from the validated snapshot.
     pub coverage: BTreeSet<String>,
+    /// Tenant common to the rule and snapshot.
     pub tenant: rss_request_context::TenantId,
+    /// Rule evidence identity used for this evaluation.
     pub rule_version: String,
+    /// Shared dictionary evidence identity.
     pub dictionary_version: String,
+    /// Input snapshot identity.
     pub snapshot_id: String,
+    /// Input snapshot revision identity.
     pub snapshot_version: String,
+    /// Explicit caller-provided evaluation time.
     pub as_of: Timepoint,
+    /// One result per unique object, sorted by complete object key.
     pub objects: Vec<ObjectEvaluation>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Complete calculation, its stable difference and separately listed unknown objects.
 pub struct Recalculation {
+    /// Validated complete-universe evaluation underlying the difference.
     pub evaluation: Evaluation,
+    /// Old membership versus only the objects whose decision is Match.
     pub difference: crate::Difference,
+    /// Sorted objects with Unknown decisions, excluded from replacement membership.
     pub unknown: Vec<ObjectKey>,
 }
 impl Rule {
     /// Preview accepts partial coverage. Uncovered referenced fields produce Unknown(Missing).
     /// Every input is validated before any result is returned, including unused fields.
+    /// Tenant/dictionary mismatches, denied facts, invalid structures/types/times and
+    /// budget overflow return [`Error`], without a partial result. Unknown is a valid
+    /// decision, not a validation error. Evaluation performs no I/O or membership writes.
     pub fn evaluate(&self, snapshot: &Snapshot, as_of: Timepoint) -> Result<Evaluation> {
         self.evaluate_inner(snapshot, as_of, &mut Budget::new(LimitKind::BatchBytes))
     }
     /// Only a complete candidate universe may produce a replacement membership set.
     /// An old member now Unknown is removed and is also listed in `unknown`.
+    /// Returns [`Error::IncompleteSnapshot`] unless the universe is complete and all
+    /// rule fields are covered, plus the validation errors of [`Self::evaluate`].
+    /// Old members must share the tenant and fit the same batch budget. The returned
+    /// difference is only a decision; the caller owns authorization and persistence.
     pub fn recalculate(
         &self,
         snapshot: &Snapshot,

@@ -67,6 +67,10 @@ pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, Se
     ))
 }
 impl Expected {
+    /// Bind an encoded sent snapshot to a positive expected response message ID.
+    /// Validates retained-message/command/item/URI budgets under the supplied limits;
+    /// failures return [`crate::CorrelationError::InvalidExpected`]. Does not send bytes,
+    /// verify delivery or authenticate the endpoints.
     pub fn new(
         sent: SentMessage,
         response_message_id: u32,
@@ -127,34 +131,60 @@ impl Expected {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// Exact original Get item identity within a sent message.
 pub struct Reference {
+    /// Original outbound message ID.
     pub message_id: u32,
+    /// Original outbound Get command ID.
     pub command_id: u32,
+    /// Exact target URI originally requested.
     pub uri: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One structurally matched Get value, still requiring authenticated source handling.
 pub struct CorrelatedItem {
+    /// Original message/command/URI matched to this result.
     pub reference: Reference,
+    /// Untrusted result text; Debug redaction does not encrypt it.
     pub value: Secret<String>,
+    /// Whether the response provided MsgRef rather than using the default 1.
     pub explicit_message_ref: bool,
+    /// Whether the response provided CmdRef rather than using the default 1.
     pub explicit_command_ref: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Matched status report with its effective target coverage and untrusted details.
 pub struct CorrelatedStatus {
+    /// Original outbound message being acknowledged.
     pub message_id: u32,
+    /// Original command, or zero for SyncHdr.
     pub command_id: u32,
+    /// Reported protocol code; matching does not by itself make this a success.
     pub code: u16,
+    /// Effective Get target coverage; empty for header/non-targeted command status.
     pub targets: Vec<String>,
+    /// Original status details retained for product interpretation.
     pub item_details: Vec<Item>,
 }
 #[must_use = "Inspect statuses and missing results; correlation alone is not collection completion"]
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One response's matched values, statuses and unresolved requests.
+/// Not a completeness, authentication or durable replay receipt. The product owns
+/// cross-response accumulation, status interpretation and collection completion.
 pub struct Correlated {
+    /// Matched unique Get items, in response order.
     pub results: Vec<CorrelatedItem>,
+    /// Matched statuses, including a required first header status.
     pub statuses: Vec<CorrelatedStatus>,
+    /// Sorted requested Get items not returned in this response; prior responses are not accumulated.
     pub missing_results: Vec<Reference>,
 }
 /// Structural errors never yield partial success. A valid partial response preserves missing items.
+/// Validates expected/response profiles, session and message IDs, original command/URI
+/// references, status order and nonoverlapping coverage. Results must not contradict
+/// failure statuses. Invalid inputs are classified by [`crate::CorrelationError`];
+/// unmatched identities/coverage return Mismatch. This does not authenticate source/
+/// target claims, modify expected state, persist replay protection or finish a collection.
 pub fn correlate(
     expected: &Expected,
     response: &Message,

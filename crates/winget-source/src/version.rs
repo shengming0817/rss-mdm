@@ -12,7 +12,13 @@ pub struct VersionManifest {
     bytes: Vec<u8>,
 }
 impl VersionManifest {
-    /// Parse a POST document containing exactly one version and 1–64 unique installers within `MAX_RESPONSE`. Reject unknown behavior and normalize the entire installer set.
+    /// Parse a POST document containing exactly one version and 1–64 unique installers.
+    /// Uses [`Query::new`] identities and [`parse_manifest`] field/URL validation for
+    /// every installer; rejects unsupported behavior instead of dropping it. Sorts
+    /// installers by selection identity and omits the empty Channel in canonical bytes.
+    /// Input above [`MAX_RESPONSE`] returns [`Error::BudgetExceeded`]; malformed shapes,
+    /// unsupported values, conflicting selection and invalid fields retain their parser
+    /// errors. No I/O or publication occurs; tenant/source are caller assertions.
     pub fn parse(tenant: TenantId, source: &str, bytes: &[u8]) -> Result<Self, Error> {
         identity(source)?;
         if bytes.len() > MAX_RESPONSE {

@@ -1,22 +1,42 @@
+#![deny(missing_docs)]
 //! Immutable, tenant-scoped resource definitions. No storage or execution authority.
+//!
+//! Build a [`Version`] from typed declarations, then use [`Resource`] to decide its
+//! lifecycle in memory. Constructors validate structure, not artifact availability,
+//! caller authorization or device effects. [`Artifact::verify`] checks supplied bytes.
+//! Persist snapshots and reference checks atomically in the consuming adapter; a
+//! returned decision does not prove a database commit or execution on a device.
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use sha2::{Digest as _, Sha256};
 use std::{collections::BTreeMap, fmt};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Closed validation and lifecycle failures; rejected operations leave the aggregate unchanged.
 pub enum Error {
+    /// An identity, length, variant count or restored aggregate shape is invalid.
     InvalidInput,
+    /// A SHA-256 string is malformed, or supplied bytes differ in length or digest.
     InvalidDigest,
+    /// Resource/version coordinates differ, a label is duplicated, or its content changed.
     IdentityConflict,
+    /// The version or reference facts belong to another tenant.
     TenantMismatch,
+    /// A declaration or version has a different resource kind.
     KindMismatch,
+    /// Two variants have the same platform, architecture and key.
     DuplicateVariant,
+    /// No variant matches all requested selection coordinates.
     MissingVariant,
+    /// The aggregate does not contain the requested version label.
     MissingVersion,
+    /// The current lifecycle state does not admit the requested transition.
     InvalidTransition,
+    /// The caller has not supplied a complete reference check for archival.
     IncompleteReferences,
+    /// The complete reference check reports a nonzero reference count.
     Referenced,
+    /// The supplied time precedes the last accepted aggregate change.
     StaleTime,
 }
 impl fmt::Display for Error {
@@ -30,6 +50,9 @@ impl std::error::Error for Error {}
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Id(String);
 impl Id {
+    /// Parse 1–128 ASCII bytes using letters, digits, `.`, `_`, `-` and `/`.
+    /// Returns [`Error::InvalidInput`] for empty, `.` or `..` path segments or invalid bytes.
+    /// This is an opaque identity, not a filesystem path authorization.
     pub fn new(value: impl Into<String>) -> Result<Self, Error> {
         let s = value.into();
         if s.is_empty()
@@ -43,22 +66,29 @@ impl Id {
         }
         Ok(Self(s))
     }
+    /// Borrow the validated identity without normalization.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// SHA-256 of supplied bytes; possession alone does not authenticate their source.
 pub struct Digest([u8; 32]);
 impl Digest {
+    /// Wrap an already computed 32-byte SHA-256 value without verification.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
+    /// Return the raw SHA-256 bytes.
     pub const fn bytes(self) -> [u8; 32] {
         self.0
     }
+    /// Hash the exact supplied bytes without I/O.
     pub fn of(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
+    /// Parse exactly 64 hexadecimal characters, accepting either case.
+    /// Returns [`Error::InvalidDigest`] for invalid length or non-hexadecimal bytes.
     pub fn parse(s: &str) -> Result<Self, Error> {
         if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::InvalidDigest);
@@ -69,6 +99,8 @@ impl Digest {
         }
         Ok(Self(out))
     }
+    /// Compare the SHA-256 of these bytes with this digest.
+    /// Returns [`Error::InvalidDigest`] on mismatch; this does not authenticate the bytes.
     pub fn verify(self, bytes: &[u8]) -> Result<(), Error> {
         if self == Self::of(bytes) {
             Ok(())
@@ -78,28 +110,41 @@ impl Digest {
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Resource declaration family; all variants of a version must share it.
 pub enum Kind {
+    /// A package artifact with installation and detection identities.
     Software,
+    /// A script artifact with an interpreter and detection identity.
     Script,
+    /// A configuration artifact with schema, application and detection identities.
     Configuration,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+/// Operating system selected by an exact variant lookup.
 pub enum Platform {
+    /// Windows target.
     Windows,
+    /// macOS target.
     MacOS,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+/// CPU architecture selected by an exact variant lookup.
 pub enum Architecture {
+    /// 64-bit x86 target.
     X86_64,
+    /// 64-bit ARM target.
     Aarch64,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Immutable artifact coordinates and expected bytes, without fetch or execution authority.
 pub struct Artifact {
     reference: Id,
     length: u64,
     digest: Digest,
 }
 impl Artifact {
+    /// Bind an opaque reference, positive byte length and expected digest.
+    /// Zero length returns [`Error::InvalidInput`]; no content is fetched or checked.
     pub fn new(reference: Id, length: u64, digest: Digest) -> Result<Self, Error> {
         if length == 0 {
             return Err(Error::InvalidInput);
@@ -110,15 +155,20 @@ impl Artifact {
             digest,
         })
     }
+    /// Borrow the caller-resolved artifact reference.
     pub fn reference(&self) -> &Id {
         &self.reference
     }
+    /// Return the expected length in bytes.
     pub const fn length(&self) -> u64 {
         self.length
     }
+    /// Return the expected SHA-256 of the artifact bytes.
     pub const fn digest(&self) -> Digest {
         self.digest
     }
+    /// Check both exact length and SHA-256 of supplied content.
+    /// Either mismatch returns [`Error::InvalidDigest`]; this performs no I/O.
     pub fn verify(&self, bytes: &[u8]) -> Result<(), Error> {
         if bytes.len() as u64 != self.length {
             return Err(Error::InvalidDigest);
@@ -127,12 +177,14 @@ impl Artifact {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Exact source/package/version coordinates; no package resolution or existence check.
 pub struct Package {
     source: Id,
     package: Id,
     version: Id,
 }
 impl Package {
+    /// Bind exact coordinates without contacting or authorizing the source.
     pub fn new(source: Id, package: Id, version: Id) -> Self {
         Self {
             source,
@@ -140,12 +192,15 @@ impl Package {
             version,
         }
     }
+    /// Borrow the source identity interpreted by the consumer.
     pub fn source(&self) -> &Id {
         &self.source
     }
+    /// Borrow the package identity within the source.
     pub fn package(&self) -> &Id {
         &self.package
     }
+    /// Borrow the exact package version identity; no version ordering is implied.
     pub fn version(&self) -> &Id {
         &self.version
     }
@@ -153,27 +208,44 @@ impl Package {
 /// Data only. Executor/schema identities are interpreted by a future consumer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Declaration {
+    /// Software metadata; executor identities are references, not commands.
     Software {
+        /// Exact package coordinates in the selected source.
         package: Package,
+        /// Expected immutable artifact; construction does not load its bytes.
         artifact: Artifact,
+        /// Consumer-owned installation operation identity.
         install: Id,
+        /// Consumer-owned detection operation identity.
         detect: Id,
+        /// Optional uninstallation operation identity; `None` declares none.
         uninstall: Option<Id>,
     },
+    /// Script metadata; construction does not interpret or execute the artifact.
     Script {
+        /// Expected immutable artifact; construction does not load its bytes.
         artifact: Artifact,
+        /// Consumer-owned interpreter identity.
         interpreter: Id,
+        /// Consumer-owned detection operation identity.
         detect: Id,
     },
+    /// Configuration metadata; construction does not apply it.
     Configuration {
+        /// Expected immutable artifact; construction does not load its bytes.
         artifact: Artifact,
+        /// Consumer-owned configuration schema identity.
         schema: Id,
+        /// Consumer-owned configuration application identity.
         apply: Id,
+        /// Consumer-owned detection operation identity.
         detect: Id,
+        /// Optional configuration removal identity; `None` declares none.
         remove: Option<Id>,
     },
 }
 impl Declaration {
+    /// Return the declaration family.
     pub const fn kind(&self) -> Kind {
         match self {
             Self::Software { .. } => Kind::Software,
@@ -181,6 +253,7 @@ impl Declaration {
             Self::Configuration { .. } => Kind::Configuration,
         }
     }
+    /// Borrow the expected artifact shared by every declaration family.
     pub fn artifact(&self) -> &Artifact {
         match self {
             Self::Software { artifact, .. }
@@ -190,6 +263,7 @@ impl Declaration {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One platform, architecture and variant key bound to an immutable declaration.
 pub struct Variant {
     platform: Platform,
     architecture: Architecture,
@@ -197,6 +271,8 @@ pub struct Variant {
     declaration: Declaration,
 }
 impl Variant {
+    /// Bind selection coordinates and a declaration without I/O.
+    /// Cross-variant uniqueness and kind consistency are checked by [`Version::new`].
     pub fn new(
         platform: Platform,
         architecture: Architecture,
@@ -210,15 +286,19 @@ impl Variant {
             declaration,
         }
     }
+    /// Borrow the immutable declaration.
     pub fn declaration(&self) -> &Declaration {
         &self.declaration
     }
+    /// Return the target operating system.
     pub const fn platform(&self) -> Platform {
         self.platform
     }
+    /// Return the target CPU architecture.
     pub const fn architecture(&self) -> Architecture {
         self.architecture
     }
+    /// Borrow the variant key within its platform and architecture.
     pub fn key(&self) -> &Id {
         &self.key
     }
@@ -238,6 +318,10 @@ pub struct Version {
     digest: Digest,
 }
 impl Version {
+    /// Freeze 1–64 variants, sorted by platform, architecture and key.
+    /// Returns [`Error::InvalidInput`] for an invalid count, [`Error::KindMismatch`]
+    /// for a different declaration kind, or [`Error::DuplicateVariant`] for duplicate
+    /// selection coordinates. Computes the V1 content digest; does not verify artifacts.
     pub fn new(
         tenant: TenantId,
         resource: Id,
@@ -271,24 +355,32 @@ impl Version {
         value.digest = Digest::of(&value.canonical());
         Ok(value)
     }
+    /// Return the owning tenant; this is not an authorization check.
     pub const fn tenant(&self) -> TenantId {
         self.tenant
     }
+    /// Borrow the resource identity within the tenant.
     pub fn resource(&self) -> &Id {
         &self.resource
     }
+    /// Borrow the immutable version label.
     pub fn label(&self) -> &Id {
         &self.label
     }
+    /// Return the kind shared by every declaration.
     pub const fn kind(&self) -> Kind {
         self.kind
     }
+    /// Return the digest of the canonical V1 version encoding, not an artifact digest.
     pub const fn digest(&self) -> Digest {
         self.digest
     }
+    /// Borrow variants in canonical platform/architecture/key order.
     pub fn variants(&self) -> &[Variant] {
         &self.variants
     }
+    /// Select one exact platform, architecture and key without fallback.
+    /// Returns [`Error::MissingVariant`] when no such variant exists.
     pub fn resolve(
         &self,
         platform: Platform,
@@ -380,10 +472,15 @@ impl Encoding {
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Stored lifecycle state; none of these states proves an effect on a device.
 pub enum State {
+    /// Inserted, immutable content that has not been activated.
     Frozen,
+    /// The aggregate's sole active version, without proof of deployment.
     Active,
+    /// No longer active; may be explicitly reactivated.
     Deprecated,
+    /// Archived after a complete zero-reference check; cannot be activated.
     Archived,
 }
 #[derive(Clone, Debug)]
@@ -394,15 +491,23 @@ struct Entry {
 /// Trusted storage input. Only Resource::restore validates aggregate consistency.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceSnapshot {
+    /// Tenant to which every stored version must belong.
     pub tenant: TenantId,
+    /// Resource identity to which every stored version must belong.
     pub key: Id,
+    /// Declaration kind shared by all versions.
     pub kind: Kind,
+    /// Last accepted aggregate change time; absent exactly when there are no versions.
     pub changed_at: Option<Timepoint>,
+    /// Uniquely labelled versions with at most one active entry.
     pub versions: Vec<StoredVersion>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One frozen version and its separately persisted lifecycle state.
 pub struct StoredVersion {
+    /// Validated immutable version content.
     pub version: Version,
+    /// Lifecycle state supplied by trusted storage, not inferred from device state.
     pub state: State,
 }
 /// In-memory decision aggregate. Persistence/locking remains the adapter's responsibility.
@@ -415,6 +520,7 @@ pub struct Resource {
     changed_at: Option<Timepoint>,
 }
 impl Resource {
+    /// Create an empty in-memory aggregate without persistence or authorization.
     pub fn new(tenant: TenantId, key: Id, kind: Kind) -> Self {
         Self {
             tenant,
@@ -424,6 +530,7 @@ impl Resource {
             changed_at: None,
         }
     }
+    /// Copy current state in version-label order for caller-owned persistence.
     pub fn snapshot(&self) -> ResourceSnapshot {
         ResourceSnapshot {
             tenant: self.tenant,
@@ -440,6 +547,11 @@ impl Resource {
                 .collect(),
         }
     }
+    /// Validate trusted stored state before constructing an aggregate.
+    /// Rejects inconsistent timestamp presence or multiple active entries with
+    /// [`Error::InvalidInput`], foreign tenants with [`Error::TenantMismatch`], duplicate
+    /// labels or foreign resource IDs with [`Error::IdentityConflict`], and wrong kinds
+    /// with [`Error::KindMismatch`]. Validation does not authenticate storage or history.
     pub fn restore(snapshot: ResourceSnapshot) -> Result<Self, Error> {
         if snapshot.versions.is_empty() != snapshot.changed_at.is_none()
             || snapshot
@@ -481,6 +593,10 @@ impl Resource {
             Ok(())
         }
     }
+    /// Insert a new label as [`State::Frozen`]; identical existing content returns `false`.
+    /// Checks nondecreasing time, tenant, resource and kind before changing state. Reusing
+    /// a label with different content returns [`Error::IdentityConflict`]. Exact replay
+    /// does not advance `changed_at`; the adapter owns durable atomicity.
     pub fn insert(&mut self, version: Version, at: Timepoint) -> Result<bool, Error> {
         self.time(at)?;
         if version.tenant != self.tenant {
@@ -509,18 +625,23 @@ impl Resource {
         self.changed_at = Some(at);
         Ok(true)
     }
+    /// Borrow content for a label, or return [`Error::MissingVersion`].
     pub fn version(&self, label: &Id) -> Result<&Version, Error> {
         self.versions
             .get(label)
             .map(|e| &e.version)
             .ok_or(Error::MissingVersion)
     }
+    /// Read a label's lifecycle state, or return [`Error::MissingVersion`].
     pub fn state(&self, label: &Id) -> Result<State, Error> {
         self.versions
             .get(label)
             .map(|e| e.state)
             .ok_or(Error::MissingVersion)
     }
+    /// Activate an existing non-archived version and deprecate the previous active one.
+    /// Rejects stale time, missing labels and archived versions; updates only memory.
+    /// Reactivating the active or a deprecated version is allowed.
     pub fn activate(&mut self, label: &Id, at: Timepoint) -> Result<(), Error> {
         self.time(at)?;
         if self.state(label)? == State::Archived {
@@ -536,6 +657,9 @@ impl Resource {
         self.changed_at = Some(at);
         Ok(())
     }
+    /// Deprecate an active or already deprecated version at nondecreasing time.
+    /// Frozen/archived versions return [`Error::InvalidTransition`]; missing labels and
+    /// stale time are rejected before mutation. Does not uninstall deployed content.
     pub fn deprecate(&mut self, label: &Id, at: Timepoint) -> Result<(), Error> {
         self.time(at)?;
         match self.state(label)? {
@@ -549,6 +673,10 @@ impl Resource {
         self.changed_at = Some(at);
         Ok(())
     }
+    /// Archive an existing version only with matching, complete zero-reference facts.
+    /// Rejects stale time, missing versions, mismatched coordinates, incomplete checks
+    /// and nonzero counts. Any current state may be archived; bytes are not deleted.
+    /// The caller must authorize the action and keep the reference check atomic with persistence.
     pub fn archive(&mut self, label: &Id, refs: &References, at: Timepoint) -> Result<(), Error> {
         self.time(at)?;
         self.state(label)?;
@@ -582,6 +710,10 @@ pub struct References {
     count: u64,
 }
 impl References {
+    /// Record caller-asserted reference facts for one exact tenant/resource/version.
+    /// `complete` attests full coverage; `count` is the number of remaining references.
+    /// Construction does not query storage or prove these facts; [`Resource::archive`]
+    /// requires matching coordinates, `complete == true` and `count == 0`.
     pub fn new(tenant: TenantId, resource: Id, version: Id, complete: bool, count: u64) -> Self {
         Self {
             tenant,

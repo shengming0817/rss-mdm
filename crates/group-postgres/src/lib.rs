@@ -25,7 +25,8 @@
 //! groups in ascending ID order before companion reference/audit work. Authorization
 //! and reference protection are supplied by N12; this crate has no HTTP or Inventory
 //! dependency, fallback schema, scheduler, or historical rule interpreter.
-#![warn(missing_docs, clippy::cognitive_complexity)]
+#![deny(missing_docs)]
+#![warn(clippy::cognitive_complexity)]
 
 mod admission;
 mod codec;

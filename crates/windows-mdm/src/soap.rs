@@ -12,11 +12,17 @@ pub use enrollment::{
 };
 pub use policy::Policy;
 pub use security::{Security, Timestamp, UsernameToken};
+/// SOAP 1.2 envelope namespace.
 pub const NS: &str = "http://www.w3.org/2003/05/soap-envelope";
+/// WS-Addressing 2005/08 namespace.
 pub const ADDRESS: &str = "http://www.w3.org/2005/08/addressing";
+/// Microsoft enrollment discovery namespace.
 pub const ENROLL: &str = "http://schemas.microsoft.com/windows/management/2012/01/enrollment";
+/// Microsoft certificate enrollment policy namespace.
 pub const XCEP: &str = "http://schemas.microsoft.com/windows/pki/2009/01/enrollmentpolicy";
+/// WS-Trust 200512 namespace.
 pub const TRUST: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512";
+/// Microsoft Windows certificate enrollment namespace.
 pub const WSTEP: &str = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment";
 const SECURITY: &str =
     "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
@@ -25,16 +31,25 @@ const UTILITY: &str =
 const CONTEXT: &str = "http://schemas.xmlsoap.org/ws/2006/12/authorization";
 const ANONYMOUS: &str = "http://www.w3.org/2005/08/addressing/anonymous";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Supported SOAP operation with a fixed WS-Addressing action and message budget.
 pub enum Operation {
+    /// Enrollment discovery request.
     Discover,
+    /// Enrollment discovery response.
     DiscoverResponse,
+    /// XCEP policy request.
     GetPolicies,
+    /// Single-policy XCEP response.
     GetPoliciesResponse,
+    /// WSTEP certificate enrollment request.
     Issue,
+    /// WSTEP enrollment response collection.
     IssueResponse,
+    /// Closed SOAP enrollment fault, using the discovery byte budget.
     Fault,
 }
 impl Operation {
+    /// Return the exact WS-Addressing action URI required by this operation.
     pub fn action(self) -> &'static str {
         match self {
             Self::Discover => {
@@ -71,29 +86,47 @@ impl Operation {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// WS-Addressing and optional WS-Security fields; profile validation is not authentication.
 pub struct Header {
+    /// Nonblank request MessageID, required on requests; optional on responses.
     pub message_id: Option<String>,
+    /// Original request MessageID, required on responses and absent on requests.
     pub relates_to: Option<String>,
+    /// Nonblank destination required on requests; no URL scheme/authority validation.
     pub to: Option<String>,
+    /// Whether an anonymous ReplyTo is present; responses must set this to false.
     pub reply_to: bool,
+    /// Unverified security fields; policy/issue requests need UsernameToken, issue responses need Timestamp.
     pub security: Option<Security>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One supported SOAP envelope; encode/decode validate header/body consistency.
 pub struct Message {
+    /// Addressing/security claims subject to operation-specific validation.
     pub header: Header,
+    /// Typed payload selecting the wire action and byte budget.
     pub body: Body,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Closed enrollment profile; unsupported SOAP actions or body shapes are rejected.
 pub enum Body {
+    /// Device-supplied discovery claims.
     Discover(Discover),
+    /// OnPremise discovery endpoints and enrollment version.
     DiscoverResponse(DiscoverResponse),
+    /// Fixed XCEP request with nil last-update, preferred-language and filter fields.
     GetPolicies,
+    /// The supported single-policy response.
     GetPoliciesResponse(Policy),
+    /// Unverified CSR and enrollment context claims.
     Issue(Issue),
+    /// Returned provisioning bytes and optional disposition/request ID.
     IssueResponse(IssueResponse),
+    /// Closed enrollment fault with fixed reason text.
     Fault(FaultKind),
 }
 impl Body {
+    /// Return the operation determining this body's action URI and byte budget.
     pub fn operation(&self) -> Operation {
         match self {
             Self::Discover(_) => Operation::Discover,
@@ -107,11 +140,17 @@ impl Body {
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Closed wire fault categories rendered with fixed, input-free reasons.
 pub enum FaultKind {
+    /// Request format rejection.
     MessageFormat,
+    /// Authentication failure reported by the service.
     Authentication,
+    /// Authorization failure reported by the service.
     Authorization,
+    /// Certificate request processing failure.
     CertificateRequest,
+    /// Enrollment service processing failure.
     EnrollmentServer,
 }
 impl FaultKind {
@@ -245,6 +284,11 @@ fn validate_header(h: &Header, op: Operation, l: &CodecLimits) -> Result<()> {
     }
     Ok(())
 }
+/// Decode one complete SOAP document matching exactly the expected operation.
+/// Applies operation-specific byte and XML budgets, namespaces, headers and body
+/// validation. Faults are accepted only when explicitly expected; use [`decode_response`]
+/// for response-or-Fault handling. Errors are closed codec classifications and return
+/// no partial message. No authentication, network call or certificate verification occurs.
 pub fn decode(bytes: &[u8], expected_operation: Operation, l: &CodecLimits) -> Result<Message> {
     decode_expected(bytes, expected_operation, false, l)
 }
@@ -312,6 +356,10 @@ fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
         _ => Ok(()),
     }
 }
+/// Validate and serialize a supported envelope within operation-specific and XML budgets.
+/// Invalid fields/structure/actions or exceeded limits return a codec error without
+/// partial bytes. Sensitive body/security values are present in the returned XML;
+/// encoding does not send, sign, authenticate or enroll anything.
 pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
     validate(m, l)?;
     let op = m.body.operation();
@@ -373,12 +421,19 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
 #[must_use = "Inspect the matched response or fault; correlation does not mean enrollment succeeded"]
 #[derive(Debug, PartialEq, Eq)]
 pub enum CorrelatedResponse<'a> {
+    /// Discovery payload structurally matched to the request.
     Discovery(&'a DiscoverResponse),
+    /// Policy payload structurally matched to the request.
     Policies(&'a Policy),
+    /// Issue payload with matching request context, still unverified.
     IssueResponse(&'a IssueResponse),
+    /// Matched fault; a correlated response can represent failure.
     Fault(FaultKind),
 }
 /// Match a decoded response to its originating request. Does not authenticate either party.
+/// Validates both profiles and matches RelatesTo/MessageID, response operation (or Fault),
+/// and Issue context. Invalid local/remote messages return the corresponding correlation
+/// error; mismatched identities return Mismatch. Performs no I/O or freshness/replay check.
 pub fn correlate<'a>(
     request: &Message,
     response: &'a Message,

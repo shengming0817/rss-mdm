@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Pure, tenant-scoped Group rules. Preview and recalculation share one evaluator.
 //! No legacy expression/JSON/SQL interpreter, group references, I/O or system clock.
 //! Snapshot completeness and authorization are caller assertions, not authentication.
@@ -63,18 +64,31 @@ pub use rule::{Criteria, CriteriaView, Rule, RuleView};
 /// Closed diagnostics never contain fact values or caller-supplied strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
+    /// An identity is blank or contains control characters.
     InvalidIdentity,
+    /// A tree, dictionary or fact/coverage relationship is malformed.
     InvalidStructure,
+    /// A predicate or snapshot names a field outside the dictionary.
     UnknownField,
+    /// A value, set element or nullable fact has the wrong declared type.
     InvalidType,
+    /// An operand unit differs from the dictionary; units are never converted.
     InvalidUnit,
+    /// An operator or operand shape is not allowed by the field definition.
     InvalidOperation,
+    /// An input explicitly contains a denied fact; the whole input is rejected.
     PermissionDenied,
+    /// A validity interval ends at or before its observation time.
     InvalidTime,
+    /// A rule, snapshot or member key belongs to another tenant.
     TenantMismatch,
+    /// Required universe, coverage or explicit covered facts are missing.
     IncompleteSnapshot,
+    /// Snapshot and rule dictionary versions differ.
     VersionMismatch,
+    /// Repeated object keys carry different fact maps.
     ConflictingObject,
+    /// A named fixed budget was exceeded; no truncated result is returned.
     LimitExceeded(LimitKind),
 }
 impl std::fmt::Display for Error {
@@ -83,35 +97,58 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+/// Group operation result with closed, value-free [`Error`] diagnostics.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Fixed V1 input/work budgets; exceeding a budget never truncates output.
 pub mod limits {
+    /// Maximum AST depth, counting a predicate as one level.
     pub const DEPTH: usize = 16;
+    /// Maximum AST nodes, including logical groups and predicates.
     pub const NODES: usize = 256;
+    /// Maximum dictionary entries, coverage keys or facts per object.
     pub const FIELDS: usize = 128;
+    /// Maximum scalar elements in one set.
     pub const SET_ITEMS: usize = 256;
+    /// Maximum UTF-8 bytes in one string, including identities.
     pub const STRING_BYTES: usize = 4096;
+    /// Maximum accumulated string bytes in a rule and dictionary validation.
     pub const RULE_BYTES: usize = 64 * 1024;
+    /// Maximum entries in one snapshot or membership input list before deduplication.
     pub const OBJECTS: usize = 10_000;
+    /// Maximum accumulated input string bytes in one evaluation/difference budget.
     pub const BATCH_BYTES: usize = 16 * 1024 * 1024;
+    /// Maximum accumulated scalar items, including set elements and repeated inputs.
     pub const ITEMS: usize = 1_000_000;
+    /// Maximum input-object count multiplied by AST node count.
     pub const VISITS: usize = 1_000_000;
+    /// Maximum unique-object count multiplied by predicate count.
     pub const EXPLANATIONS: usize = 65_536;
 }
 /// Closed, low-cardinality budget identity; never carries caller input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LimitKind {
+    /// The [`limits::DEPTH`] budget.
     Depth,
+    /// The [`limits::NODES`] budget.
     Nodes,
+    /// The [`limits::FIELDS`] budget.
     Fields,
+    /// The [`limits::SET_ITEMS`] budget.
     SetItems,
+    /// The [`limits::STRING_BYTES`] budget.
     StringBytes,
+    /// The [`limits::RULE_BYTES`] budget.
     RuleBytes,
+    /// The [`limits::OBJECTS`] budget.
     Objects,
+    /// The [`limits::BATCH_BYTES`] budget.
     BatchBytes,
+    /// The [`limits::ITEMS`] budget.
     Items,
+    /// The [`limits::VISITS`] budget.
     Visits,
+    /// The [`limits::EXPLANATIONS`] budget.
     Explanations,
 }
 impl LimitKind {

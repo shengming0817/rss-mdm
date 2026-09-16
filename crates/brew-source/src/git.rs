@@ -11,8 +11,11 @@ use tokio::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Nonzero lowercase SHA-1 Git identity; parsing alone does not prove object existence or type.
 pub struct CommitId(String);
 impl CommitId {
+    /// Parse exactly 40 lowercase hexadecimal bytes, rejecting the all-zero sentinel.
+    /// Invalid text returns [`Error::InvalidInput`]; no Git object is inspected.
     pub fn parse(s: &str) -> Result<Self, Error> {
         if s.len() != 40
             || !s
@@ -25,6 +28,7 @@ impl CommitId {
             Ok(Self(s.into()))
         }
     }
+    /// Borrow the validated lowercase hexadecimal identity.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -41,17 +45,22 @@ pub struct Snapshot {
     digest: [u8; 32],
 }
 impl Snapshot {
+    /// Borrow the fixed commit inspected by [`Repository::read`].
     pub fn commit(&self) -> &CommitId {
         &self.commit
     }
+    /// Borrow the SHA-1 blob identity whose bytes were checked.
     pub fn blob(&self) -> &CommitId {
         &self.blob
     }
+    /// Return the SHA-256 of the verified document bytes.
     pub const fn digest(&self) -> [u8; 32] {
         self.digest
     }
 }
 #[derive(Clone, Debug)]
+/// Prepared local commit bound to the exact repository, tenant, tap and original base.
+/// Retain it for [`Repository::apply`] retries and reconciliation; preparation is not publication.
 pub struct Prepared {
     repository: PathBuf,
     tenant: TenantId,
@@ -61,22 +70,31 @@ pub struct Prepared {
     document: Document,
 }
 impl Prepared {
+    /// Borrow the prepared commit ID; the object may still be unreachable from main.
     pub fn target(&self) -> &CommitId {
         &self.target
     }
+    /// Borrow the expected document, including for a prepared removal.
     pub fn document(&self) -> &Document {
         &self.document
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Acknowledged local main-branch update, without remote push or device installation.
 pub enum PublishResult {
+    /// Git acknowledged the compare-and-swap update.
     Applied,
+    /// Read-back found the prepared target already at the branch head.
     AlreadyApplied,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Comparison of one controlled document at a fixed commit.
 pub enum DocumentPresence {
+    /// A regular blob at the expected path has exactly the expected bytes.
     Matching,
+    /// A readable regular blob exists at the path but has different bytes.
     Different,
+    /// No tree entry exists at the expected path.
     Absent,
 }
 /// Explicitly authorized, dedicated bare repository; never clones or pushes.
@@ -86,6 +104,12 @@ pub struct Repository {
     tap: String,
 }
 impl Repository {
+    /// Bind an existing local bare SHA-1 repository to an authorized tenant/tap.
+    /// Validates the tap as in [`PackageKey::new`], rejects a symlink at the supplied
+    /// path, canonicalizes it and runs Git inspection commands. Non-bare repositories
+    /// return [`Error::PathDenied`]; non-SHA-1 format returns [`Error::Unsupported`].
+    /// Does not clone or create a repository. The host must authorize and protect
+    /// the canonical directory; path validation alone is not access control.
     pub async fn open(path: &Path, tenant: TenantId, tap_name: &str) -> Result<Self, Error> {
         tap(tap_name)?;
         if std::fs::symlink_metadata(path)
@@ -145,7 +169,12 @@ impl Repository {
         }
         Ok(())
     }
-    /// Writes unreachable objects first. No branch mutation occurs during preparation.
+    /// Write unreachable blob/tree/commit objects using a temporary index, without changing main.
+    /// `base` is an explicit original parent (`None` for an empty tree); this does not
+    /// check that main still equals it. Tenant/tap and regular-file paths must match.
+    /// `operation` follows [`PackageKey::new`] token rules; `at` fixes commit metadata.
+    /// Preserve base, document, operation and time to reconstruct the same target after
+    /// interruption. Errors may leave unreachable objects; they do not publish a branch.
     pub async fn prepare(
         &self,
         base: Option<CommitId>,
@@ -156,7 +185,10 @@ impl Repository {
         self.prepare_change(base, document, operation, at, false)
             .await
     }
-    /// Remove only the exact approved document from an explicitly selected base.
+    /// Prepare removal after [`Self::read`] verifies exact document bytes at `base`.
+    /// Uses the same operation/time rules and object-write effects as [`Self::prepare`].
+    /// Wrong bytes, missing objects, unsafe paths and provider failures remain errors;
+    /// the branch is untouched until [`Self::apply`].
     pub async fn prepare_remove(
         &self,
         base: CommitId,
@@ -275,6 +307,9 @@ impl Repository {
         }
         self.document(&p.document)
     }
+    /// Read the real `refs/heads/main` reference, returning `None` if absent.
+    /// Rejects symbolic/unexpected references with [`Error::PathDenied`]; provider
+    /// failures remain errors. Does not modify the branch or inspect a remote.
     pub async fn head(&self) -> Result<Option<CommitId>, Error> {
         let out = self
             .run(
@@ -299,7 +334,13 @@ impl Repository {
             CommitId::parse(fields[0]).map(Some)
         }
     }
-    /// CAS against the original parent. Caller retains Prepared for unknown-result recovery.
+    /// Compare and swap main from the original parent to the prepared target.
+    /// Checks repository/tap/tenant binding before I/O. An existing target head returns
+    /// [`PublishResult::AlreadyApplied`]; a different base returns [`Error::Conflict`].
+    /// After an update error, read-back may establish success or conflict; otherwise
+    /// returns [`Error::OutcomeUnknown`]. Cancellation may also interrupt after an effect.
+    /// Retain the same [`Prepared`] and reconcile head/reachability before retrying;
+    /// never replace the operation identity merely because acknowledgement was lost.
     pub async fn apply(&self, p: &Prepared) -> Result<PublishResult, Error> {
         self.apply_with(p, self.update_ref(p)).await
     }
@@ -346,7 +387,11 @@ impl Repository {
         )
         .await
     }
-    /// Read a fixed commit and prove it contains the expected controlled document.
+    /// Inspect a fixed commit and compare its regular blob with the exact expected bytes.
+    /// Checks tenant/tap, object types, safe tree modes and [`MAX_DOCUMENT`] before
+    /// returning a [`Snapshot`]. Missing objects, unsafe paths, oversized content and
+    /// mismatched bytes remain distinct errors. Performs local Git reads; this does
+    /// not prove the commit is reachable from main or published remotely.
     pub async fn read(&self, commit: &CommitId, expected: &Document) -> Result<Snapshot, Error> {
         self.document(expected)?;
         self.commit(commit).await?;
@@ -384,6 +429,9 @@ impl Repository {
         })
     }
     /// Inspect a fixed commit without conflating absent content and provider errors.
+    /// Uses [`Self::read`] validation for present content; only a byte mismatch becomes
+    /// [`DocumentPresence::Different`]. Tenant, object, path and provider errors propagate.
+    /// Performs local reads without changing the branch.
     pub async fn presence(
         &self,
         commit: &CommitId,
@@ -409,7 +457,11 @@ impl Repository {
             Err(e) => Err(e),
         }
     }
-    /// Objects written by prepare are not published until reachable from the real branch.
+    /// Check whether an existing commit is an ancestor of the current real main branch.
+    /// Returns `false` for an absent main or a non-ancestor; missing/invalid target
+    /// objects and provider failures are errors. Performs local Git reads only.
+    /// Use with the retained target to reconcile writes whose acknowledgement was lost;
+    /// a prepared object alone is not proof of publication.
     pub async fn contains_commit(&self, target: &CommitId) -> Result<bool, Error> {
         self.commit(target).await?;
         let Some(head) = self.head().await? else {

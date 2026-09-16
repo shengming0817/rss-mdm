@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 //! Sole durable owner of software publication decisions and attempt history.
 mod codec;
 

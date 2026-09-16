@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 //! Policy persistence; caller-authorized snapshots, one storage CAS and no device dispatch.
 mod codec;
 
