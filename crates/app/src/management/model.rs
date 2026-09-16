@@ -26,14 +26,19 @@ pub enum Permission {
     ReleaseRecover,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Operation<T> {
     pub operation_id: Uuid,
     pub expected_revision: u64,
     pub input: T,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum Criteria {
     Eq {
         field: String,
@@ -67,7 +72,12 @@ pub enum Criteria {
     },
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum GroupChange {
     Create {
         name: String,
@@ -102,7 +112,7 @@ pub enum Reference {
     Group(Uuid),
 }
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopeDefinition {
     pub targets: BTreeSet<Reference>,
     pub limitations: Option<BTreeSet<Reference>>,
@@ -119,13 +129,23 @@ impl ScopeDefinition {
     }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ScopeChange {
     Put { definition: ScopeDefinition },
     Delete,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum PolicyChange {
     Create,
     Activate {
@@ -138,13 +158,13 @@ pub enum PolicyChange {
     Archive,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewInput {
     pub scope: Uuid,
     pub expected_revision: u64,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavePlan {
     pub preview: Uuid,
 }
@@ -180,4 +200,34 @@ pub struct Registration {
 pub struct DeviceIdentity {
     pub revision: u64,
     pub registrations: Vec<Registration>,
+}
+
+/// Closed missing-object categories for product management endpoints.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Missing {
+    Device,
+    Group,
+    Scope,
+    Policy,
+    Preview,
+    Resource,
+    Source,
+    Candidate,
+    Rule,
+}
+impl Missing {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Device => "management_device_not_found",
+            Self::Group => "group_not_found",
+            Self::Scope => "scope_not_found",
+            Self::Policy => "policy_not_found",
+            Self::Preview => "plan_preview_not_found",
+            Self::Resource => "resource_not_found",
+            Self::Source => "software_source_not_found",
+            Self::Candidate => "software_candidate_not_found",
+            Self::Rule => "group_rule_not_found",
+        }
+    }
 }

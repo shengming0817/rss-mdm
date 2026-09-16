@@ -8,11 +8,12 @@ mod publications;
 mod resources;
 mod scopes;
 mod storage;
+mod wire;
 use crate::{Error, Failure, audit::Audit};
-pub(crate) use config::{Config, Resource};
+pub(crate) use config::Config;
 pub(crate) use http::routes;
-pub use model::Permission;
 use model::*;
+pub use model::{Missing, Permission};
 use rss_contract::Timepoint;
 use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging::policy::OperationDeadline;
@@ -24,6 +25,7 @@ use uuid::Uuid;
 pub(crate) struct Management {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
+    clock: Arc<dyn rss_identity_client::Clock>,
     groups: rss_mdm_group_postgres::GroupStore,
     policies: rss_mdm_policy_postgres::PolicyStore,
     resources: rss_mdm_resource_postgres::ResourceStore,
@@ -53,13 +55,6 @@ fn checked<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
 fn json(v: &impl serde::Serialize) -> Result<Value> {
     input(serde_json::to_value(v))
 }
-fn now() -> Result<Timepoint> {
-    use rss_identity_client::Clock;
-    let n = rss_identity_client::SystemClock
-        .unix_seconds()
-        .map_err(|_| Error::Unavailable(Failure::Clock))?;
-    input(Timepoint::try_from(n))
-}
 fn deadline() -> OperationDeadline {
     let timer = crate::lifecycle::RuntimeTimer;
     OperationDeadline::from_cutoff(
@@ -68,7 +63,11 @@ fn deadline() -> OperationDeadline {
     )
 }
 impl Management {
-    async fn new(runtime: Arc<PgRuntime>, tenant: TenantId) -> std::result::Result<Self, Error> {
+    async fn new(
+        runtime: Arc<PgRuntime>,
+        tenant: TenantId,
+        clock: Arc<dyn rss_identity_client::Clock>,
+    ) -> std::result::Result<Self, Error> {
         storage::admit(&runtime, tenant).await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
             .await
@@ -84,6 +83,7 @@ impl Management {
         Ok(Self {
             runtime,
             tenant,
+            clock,
             groups,
             policies,
             resources,
@@ -157,10 +157,21 @@ impl Management {
         if let Some(id) = operation
             && let Some(old) = storage::replay(tx, id, &fingerprint).await?
         {
+            audit.management_result(crate::audit::ManagementResult::Replayed);
             storage::audit(tx, audit).await?;
             return Ok(old);
         }
-        let value = self.dispatch(tx, command, now()?).await?;
+        let at = self
+            .clock
+            .unix_seconds()
+            .map_err(|_| Error::Unavailable(Failure::Clock))?;
+        let value = self
+            .dispatch(tx, command, input(Timepoint::try_from(at))?)
+            .await?;
+        // Reject a projection/schema defect before any mutation can commit.
+        if !matches!(command, Command::PublicationIntent { .. }) {
+            wire::Response::decode(value.clone())?;
+        }
         if let Some(id) = operation {
             storage::receipt(tx, id, &fingerprint, &value).await?;
         }
@@ -183,7 +194,7 @@ impl Management {
                 id,
                 expected_revision,
             } => self.group_preview(tx, *id, *expected_revision, at).await,
-            Command::Scope { id, change } => self.scope_change(tx, *id, change).await,
+            Command::Scope { id, change } => self.scope_change(tx, *id, change, at).await,
             Command::ScopeRead { id } => self.scope_read(tx, *id).await,
             Command::Policy { id, change } => self.policy_change(tx, id, change, at).await,
             Command::PolicyRead { id } => self.policy_read(tx, id).await,
@@ -192,9 +203,11 @@ impl Management {
                     .await
             }
             Command::Save { id, request } => self.save_plan(tx, id, request, at).await,
-            Command::PlanRead { id } => {
-                json(&storage::preview(tx, *id).await?.ok_or(Error::NotFound)?)
-            }
+            Command::PlanRead { id } => json(
+                &storage::preview(tx, *id)
+                    .await?
+                    .ok_or(Error::ManagementNotFound(Missing::Preview))?,
+            ),
         }
     }
 }
@@ -253,3 +266,13 @@ enum Command {
 
 #[cfg(test)]
 mod tests;
+
+fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>) -> Result<T> {
+    r.map_err(|e| match e {
+        rss_mdm_group_postgres::Rejection::NotFound
+        | rss_mdm_group_postgres::Rejection::Deleted => {
+            Error::ManagementNotFound(Missing::Group).into()
+        }
+        _ => Error::Conflict.into(),
+    })
+}

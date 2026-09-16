@@ -24,6 +24,22 @@ pub(crate) struct Snapshot {
     pub registration_id: Option<Uuid>,
     pub write_outcome: WriteOutcome,
     pub software: Option<SoftwareFact>,
+    pub management_result: Option<ManagementResult>,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum ManagementResult {
+    Performed,
+    Replayed,
+    Unknown,
+}
+impl ManagementResult {
+    pub fn audit_tag(self) -> &'static str {
+        match self {
+            Self::Performed => "success",
+            Self::Replayed => "replay",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 /// Product operation projection containing identifiers/digests only, never source content.
 #[derive(Clone, serde::Serialize)]
@@ -75,6 +91,7 @@ impl Audit {
                     registration_id: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
                     software: None,
+                    management_result: None,
                 },
                 finalized: false,
             }),
@@ -148,6 +165,14 @@ impl Audit {
             .expect("audit lock")
             .snapshot
             .registration_id = Some(id);
+    }
+    pub fn management_result(&self, result: ManagementResult) {
+        self.0
+            .state
+            .lock()
+            .expect("audit lock")
+            .snapshot
+            .management_result = Some(result);
     }
     pub fn mark_commit_started(&self) {
         let mut state = self.0.state.lock().expect("audit lock");

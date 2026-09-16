@@ -63,7 +63,7 @@ fn rule(tenant: TenantId, id: Uuid, c: &Criteria) -> Result<g::Rule> {
 impl Management {
     pub(super) async fn group_read(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Value> {
         let id = input(pg::GroupId::parse(&id.to_string()))?;
-        let group = checked(self.groups.lock_reference_target_in(tx, id).await?)?;
+        let group = group_checked(self.groups.lock_reference_target_in(tx, id).await?)?;
         let members = checked(self.groups.members_in(tx, id).await?)?;
         let criteria = if let Some(version) = &group.rule_version {
             let rule = self
@@ -71,7 +71,7 @@ impl Management {
                 .rule(id, version, deadline())
                 .await
                 .map_err(|_| Error::Unavailable(Failure::Runtime))?
-                .ok_or(Error::NotFound)?;
+                .ok_or(Error::ManagementNotFound(Missing::Rule))?;
             Some(criteria_view(rule.view().criteria)?)
         } else {
             None
@@ -146,7 +146,7 @@ impl Management {
                 }
             }
             GroupChange::Delete => {
-                checked(self.groups.lock_reference_target_in(tx, group).await?)?;
+                group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
                 self.reject_group_reference(tx, id).await?;
                 pg::Command::Delete {
                     group,
@@ -154,7 +154,8 @@ impl Management {
                 }
             }
             GroupChange::Recompute { snapshot } => {
-                let current = checked(self.groups.lock_reference_target_in(tx, group).await?)?;
+                let current =
+                    group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
                 let (facts, _) = self.assets(tx, at).await?;
                 if &facts.version != snapshot {
                     return Err(Error::Conflict.into());
@@ -188,7 +189,7 @@ impl Management {
         at: Timepoint,
     ) -> Result<Value> {
         let group = input(pg::GroupId::parse(&id.to_string()))?;
-        let current = checked(self.groups.lock_reference_target_in(tx, group).await?)?;
+        let current = group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
         if current.revision.get() as u64 != revision {
             return Err(Error::Conflict.into());
         }
@@ -200,7 +201,7 @@ impl Management {
             .rule(group, &version, deadline())
             .await
             .map_err(|_| Error::Unavailable(Failure::Runtime))?
-            .ok_or(Error::NotFound)?;
+            .ok_or(Error::ManagementNotFound(Missing::Rule))?;
         let (facts, provenance) = self.assets(tx, at).await?;
         let evaluated = input(rule.evaluate(&facts, at))?;
         Ok(

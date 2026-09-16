@@ -16,7 +16,8 @@ impl Management {
     }
     pub(super) async fn policy_read(&self, tx: &mut PgTransaction<'_>, id: &str) -> Result<Value> {
         let id = input(p::PolicyId::new(self.tenant, id))?;
-        let state = checked(self.policies.get_in(tx, &id).await?)?.ok_or(Error::NotFound)?;
+        let state = checked(self.policies.get_in(tx, &id).await?)?
+            .ok_or(Error::ManagementNotFound(Missing::Policy))?;
         Ok(
             json!({"id":id.value(),"storage_revision":state.storage_revision(),"revision":state.policy().revision(),"status":policy_status(state.policy().status()),"plan":state.current_plan_id().map(|id|hex(*id.bytes())),"fresh":state.plan_is_fresh()}),
         )
@@ -98,7 +99,8 @@ impl Management {
         at: Timepoint,
     ) -> Result<Value> {
         let id = input(p::PolicyId::new(self.tenant, id))?;
-        let state = checked(self.policies.get_in(tx, &id).await?)?.ok_or(Error::NotFound)?;
+        let state = checked(self.policies.get_in(tx, &id).await?)?
+            .ok_or(Error::ManagementNotFound(Missing::Policy))?;
         if state.storage_revision() != request.expected_revision {
             return Err(Error::Conflict.into());
         }
@@ -110,18 +112,27 @@ impl Management {
             .map(|d| d.value().to_owned())
             .collect::<Vec<_>>();
         let target = targets(self.tenant, preview, &devices)?;
-        let facts = checked(
-            self.policies
-                .execution_facts_in(tx, &id, None, 1000)
-                .await?,
-        )?;
-        if facts.next.is_some() {
-            return Err(Error::Malformed.into());
+        let mut facts = Vec::new();
+        let mut after = None;
+        loop {
+            let page = checked(
+                self.policies
+                    .execution_facts_in(tx, &id, after, 1000)
+                    .await?,
+            )?;
+            facts.extend(page.records);
+            if facts.len() > pg::MAX_FACTS {
+                return Err(Error::Malformed.into());
+            }
+            after = page.next;
+            if after.is_none() {
+                break;
+            }
         }
         let plan = input(p::reconcile(p::PlanInput {
             policy: state.policy(),
             targets: &target,
-            executions: &facts.records,
+            executions: &facts,
             request: input(p::RequestId::new(self.tenant, preview.to_string()))?,
             as_of: at,
         }))?;
@@ -156,17 +167,25 @@ impl Management {
     ) -> Result<Value> {
         let preview = storage::preview(tx, request.input.preview)
             .await?
-            .ok_or(Error::NotFound)?;
+            .ok_or(Error::ManagementNotFound(Missing::Preview))?;
         if preview.policy != id || preview.policy_revision != request.expected_revision {
             return Err(Error::Conflict.into());
         }
         let at = input(Timepoint::try_from(preview.as_of))?;
-        let (revision, definition) = self.scope_definition(tx, preview.scope).await?;
-        let (sources, _) = self.sources(tx, &definition, at).await?;
+        let (revision, definition) = self
+            .scope_definition(tx, preview.scope)
+            .await
+            .map_err(stale)?;
+        let (sources, _) = self.sources(tx, &definition, at).await.map_err(stale)?;
         if revision != preview.scope_revision || sources != preview.sources {
             return Err(Error::Conflict.into());
         }
-        if self.device_identities(tx, &preview.devices).await? != preview.registrations {
+        if self
+            .device_identities(tx, &preview.devices)
+            .await
+            .map_err(stale)?
+            != preview.registrations
+        {
             return Err(Error::Conflict.into());
         }
         let policy = input(p::PolicyId::new(self.tenant, id))?;
@@ -269,5 +288,12 @@ fn cancel_reason(r: p::CancelReason) -> &'static str {
         p::CancelReason::ScopeExit => "scope_exit",
         p::CancelReason::Archived => "archived",
         p::CancelReason::Superseded => "superseded",
+    }
+}
+
+fn stale(error: Fault) -> Fault {
+    match error {
+        Fault::Request(Error::ManagementNotFound(_)) => Error::Conflict.into(),
+        other => other,
     }
 }

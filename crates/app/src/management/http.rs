@@ -24,8 +24,7 @@ async fn run(
     audit: &Audit,
     permission: Permission,
     command: Command,
-) -> std::result::Result<Json<Value>, Error> {
-    app.policy.manage(&auth.proof, permission)?;
+) -> std::result::Result<Json<wire::Response>, Error> {
     match &command {
         Command::Group { id, .. }
         | Command::GroupRead { id }
@@ -49,14 +48,16 @@ async fn run(
         | Command::ScopeRead { .. }
         | Command::PolicyRead { .. }
         | Command::PlanRead { .. }
-        | Command::GroupPreview { .. } => "management_read",
+        | Command::GroupPreview { .. }
+        | Command::ResourceRead { .. } => "management_read",
         _ => "management_write",
     });
     let (operation, _) = storage::identity(&command, audit).map_err(|_| Error::Malformed)?;
     if let Some(id) = operation {
         audit.operation(id, audit.snapshot().action);
     }
-    app.management.execute(&command, audit).await.map(Json)
+    app.policy.manage(&auth.proof, permission)?;
+    wire::Response::decode(app.management.execute(&command, audit).await?).map(Json)
 }
 macro_rules! read {
     ($handler:ident,$id:ty,$permission:ident,$command:ident) => {
@@ -65,7 +66,7 @@ macro_rules! read {
             Extension(auth): Extension<RequestAuth>,
             Extension(audit): Extension<Audit>,
             Path(id): Path<$id>,
-        ) -> std::result::Result<Json<Value>, Error> {
+        ) -> std::result::Result<Json<wire::Response>, Error> {
             run(
                 &app,
                 &auth,
@@ -88,7 +89,7 @@ async fn group_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
     Json(change): Json<Operation<GroupChange>>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Response>, Error> {
     let permission = if matches!(change.input, GroupChange::Recompute { .. }) {
         Permission::GroupRecompute
     } else {
@@ -109,7 +110,7 @@ async fn scope_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
     Json(change): Json<Operation<ScopeChange>>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Response>, Error> {
     run(
         &app,
         &auth,
@@ -125,7 +126,7 @@ async fn policy_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(change): Json<Operation<PolicyChange>>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Response>, Error> {
     run(
         &app,
         &auth,
@@ -141,7 +142,7 @@ async fn preview(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(request): Json<Operation<PreviewInput>>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Response>, Error> {
     if request.expected_revision != request.input.expected_revision {
         return Err(Error::Malformed);
     }
@@ -160,7 +161,7 @@ async fn save(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(request): Json<Operation<SavePlan>>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Response>, Error> {
     run(
         &app,
         &auth,
@@ -171,7 +172,7 @@ async fn save(
     .await
 }
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Revision {
     expected_revision: u64,
 }
@@ -181,7 +182,7 @@ async fn group_preview(
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
     Query(revision): Query<Revision>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Response>, Error> {
     run(
         &app,
         &auth,
@@ -201,7 +202,7 @@ async fn resource_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(change): Json<Operation<resources::Change>>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Response>, Error> {
     run(
         &app,
         &auth,

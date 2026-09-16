@@ -49,7 +49,13 @@ pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit) -> Result<(
     let (status, result) = if admitted {
         (202, "unknown")
     } else {
-        (200, "success")
+        (
+            200,
+            audit
+                .snapshot()
+                .management_result
+                .map_or("success", |r| r.audit_tag()),
+        )
     };
     tx.with_connection(move |c| {
         Box::pin(async move {
@@ -125,7 +131,7 @@ pub(super) async fn device(tx: &mut PgTransaction<'_>, id: &str) -> Result<Devic
             .bind(tenant).bind(id).fetch_all(c).await
     })).await?;
     if rows.is_empty() {
-        return Err(Error::NotFound.into());
+        return Err(Error::ManagementNotFound(Missing::Device).into());
     }
     let registrations = rows
         .into_iter()
@@ -141,7 +147,7 @@ pub(super) async fn device(tx: &mut PgTransaction<'_>, id: &str) -> Result<Devic
         .iter()
         .map(|r| r.generation)
         .max()
-        .ok_or(Error::NotFound)?;
+        .ok_or(Error::ManagementNotFound(Missing::Device))?;
     Ok(DeviceIdentity {
         revision,
         registrations,

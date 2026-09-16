@@ -104,6 +104,7 @@ pub(crate) async fn application(
         .open(
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
                 .map_err(|_| Error::Malformed)?,
+            clock.clone(),
             |_| {},
         )
         .await?;
@@ -347,6 +348,8 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
         "denied"
     } else if status >= 400 {
         "failed"
+    } else if let Some(result) = snapshot.management_result {
+        result.audit_tag()
     } else if snapshot.operation_id.is_some() {
         "replay"
     } else {

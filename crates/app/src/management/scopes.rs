@@ -17,7 +17,7 @@ impl Management {
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT s.revision,v.definition::text FROM mdm_management.scopes s JOIN mdm_management.scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted FOR UPDATE OF s")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-        })).await?.ok_or(Error::NotFound)?;
+        })).await?.ok_or(Error::ManagementNotFound(Missing::Scope))?;
         Ok((
             row.try_get::<i64, _>("revision")? as u64,
             stored(serde_json::from_str(
@@ -30,6 +30,7 @@ impl Management {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<ScopeChange>,
+        at: Timepoint,
     ) -> Result<Value> {
         if id.is_nil() {
             return Err(Error::Malformed.into());
@@ -44,7 +45,7 @@ impl Management {
                 if definition.references().len() > 1000 {
                     return Err(Error::Malformed.into());
                 }
-                self.sources(tx, definition, now()?).await?;
+                self.sources(tx, definition, at).await?;
                 let tenant = self.tenant.to_string();
                 let definition = input(serde_json::to_string(definition))?;
                 let expected = op.expected_revision as i64;
@@ -122,7 +123,7 @@ impl Management {
                 ),
                 Reference::Group(id) => {
                     let id = input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
-                    let g = checked(self.groups.lock_reference_target_in(tx, id).await?)?;
+                    let g = group_checked(self.groups.lock_reference_target_in(tx, id).await?)?;
                     let members = checked(self.groups.members_in(tx, id).await?)?;
                     (
                         s::SourceId::Group(input(s::GroupId::new(self.tenant, id.to_string()))?),

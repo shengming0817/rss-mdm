@@ -167,10 +167,9 @@ pub async fn serve(
                                     &compiled.config.identity.tenant_id,
                                 )
                                 .map_err(|_| assembly_error(Error::Malformed))?,
-                                |runtime| {
-                                    startup.stage_resource(DynManagedResource::new_box(
-                                        crate::management::Resource(runtime),
-                                    ))
+                                Arc::new(rss_identity_client::SystemClock),
+                                |resource| {
+                                    startup.stage_resource(DynManagedResource::new_box(resource))
                                 },
                             )
                             .await

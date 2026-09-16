@@ -71,7 +71,9 @@ async fn management(t: TenantId) -> Management {
         .await
         .unwrap(),
     );
-    Management::new(runtime, t).await.unwrap()
+    Management::new(runtime, t, Arc::new(rss_identity_client::SystemClock))
+        .await
+        .unwrap()
 }
 async fn execute(m: &Management, c: &Command) -> std::result::Result<Value, Error> {
     let audit = Audit::new(m.tenant.to_string(), "management_write");
@@ -108,7 +110,17 @@ fn seed_device(device: &str) -> String {
 #[tokio::test]
 #[ignore = "real PostgreSQL; hack/management-t2.py"]
 async fn group_scope_plan_replay_stale_and_audit_atomicity() {
-    let m = management(tenant()).await;
+    let mut m = management(tenant()).await;
+    struct CountingClock(std::sync::atomic::AtomicI64);
+    impl rss_identity_client::Clock for CountingClock {
+        fn unix_seconds(&self) -> std::result::Result<i64, rss_identity_client::Error> {
+            Ok(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+    let clock = Arc::new(CountingClock(std::sync::atomic::AtomicI64::new(
+        1_700_000_000,
+    )));
+    m.clock = clock.clone();
     let device = format!("设备-{}", Uuid::new_v4());
     seed_device(&device);
     let group = Uuid::new_v4();
@@ -141,6 +153,7 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     .await
     .unwrap();
     let scope_id = Uuid::new_v4();
+    let before = clock.0.load(std::sync::atomic::Ordering::SeqCst);
     execute(
         &m,
         &Command::Scope {
@@ -155,6 +168,11 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        clock.0.load(std::sync::atomic::Ordering::SeqCst),
+        before + 1,
+        "one clock read per transaction"
+    );
     let policy = Uuid::new_v4().to_string();
     execute(
         &m,
@@ -530,7 +548,7 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
     sql(&format!(
         "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{old}';INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{t}','{request}','{grant}');INSERT INTO mdm_access.registrations VALUES('{t}','{replacement}','{device}','mdm',2,'{request}','active');"
     ));
-    for (id, revision, preview) in pending {
+    for (id, revision, preview) in pending.clone() {
         assert!(matches!(
             execute(
                 &m,
@@ -542,6 +560,23 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
             .await,
             Err(Error::Conflict)
         ));
+    }
+    sql(&format!(
+        "UPDATE mdm_access.registrations SET state='revoked' WHERE id='{replacement}'"
+    ));
+    for (id, revision, preview) in pending {
+        let result = execute(
+            &m,
+            &Command::Save {
+                id,
+                request: operation(revision, SavePlan { preview }),
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(Error::Conflict)),
+            "lost registration must stale preview: {result:?}"
+        );
     }
     m.runtime.close().await;
 }

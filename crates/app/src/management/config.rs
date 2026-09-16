@@ -47,7 +47,8 @@ impl Config {
     pub(crate) async fn open(
         &self,
         tenant: TenantId,
-        mut acquire: impl FnMut(Arc<PgRuntime>),
+        clock: Arc<dyn rss_identity_client::Clock>,
+        mut acquire: impl FnMut(Resource),
     ) -> std::result::Result<Arc<Management>, Error> {
         let invalid = || Error::Configuration(crate::ConfigIssue::Management);
         let binding = ExecutionBinding::new(
@@ -72,8 +73,11 @@ impl Config {
                 .await
                 .map_err(|_| Error::Unavailable(Failure::ManagementConnection))?,
         );
-        acquire(runtime.clone());
-        match Management::new(runtime.clone(), tenant).await {
+        acquire(Resource {
+            runtime: runtime.clone(),
+            role: Role::Management,
+        });
+        match Management::new(runtime.clone(), tenant, clock).await {
             Ok(mut service) => {
                 if !self.sources.is_empty() {
                     let setup = self
@@ -99,7 +103,7 @@ impl Config {
         &self,
         tenant: TenantId,
         management: &mut Management,
-        acquire: &mut impl FnMut(Arc<PgRuntime>),
+        acquire: &mut impl FnMut(Resource),
     ) -> std::result::Result<(), Error> {
         use crate::software_publication as p;
         let invalid = || Error::Configuration(crate::ConfigIssue::Management);
@@ -123,7 +127,10 @@ impl Config {
                 .await
                 .map_err(|_| Error::Unavailable(Failure::ManagementConnection))?,
         );
-        acquire(runtime.clone());
+        acquire(Resource {
+            runtime: runtime.clone(),
+            role: Role::Publication,
+        });
         management.publication_runtime = Some(runtime.clone());
         for source in &self.sources {
             let artifacts = p::ArtifactReader::new(
@@ -161,16 +168,27 @@ impl Config {
         Ok(())
     }
 }
-pub(crate) struct Resource(pub Arc<PgRuntime>);
+#[derive(Clone, Copy)]
+enum Role {
+    Management,
+    Publication,
+}
+pub(crate) struct Resource {
+    runtime: Arc<PgRuntime>,
+    role: Role,
+}
 impl rss_runtime::ManagedResource for Resource {
     fn name(&self) -> &str {
-        "management-postgres"
+        match self.role {
+            Role::Management => "management-runtime-postgres",
+            Role::Publication => "software-driver-postgres",
+        }
     }
     fn shutdown_timeout(&self) -> Duration {
         Duration::from_secs(5)
     }
     async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
-        self.0.close().await;
+        self.runtime.close().await;
         Ok(())
     }
 }

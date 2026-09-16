@@ -1,6 +1,7 @@
 //! The browser actor authorizes work; the controlled driver owns external effects.
 use super::*;
 use crate::api::{App, RequestAuth};
+use crate::audit::ManagementResult as Effect;
 use crate::software_publication as service;
 use axum::{
     Extension, Json, Router,
@@ -19,13 +20,18 @@ pub(crate) struct SourceConfig {
     pub max_artifact_bytes: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub(super) enum Change {
     Candidate {
         resource: String,
         version: String,
         expected_resource_revision: u64,
-        submission: service::Submission,
+        submission: wire::Submission,
     },
     Validate {
         ring: Ring,
@@ -86,6 +92,7 @@ fn failure(e: service::Error) -> Error {
         | service::Error::ArtifactAddress
         | service::Error::ArtifactBudget
         | service::Error::ArtifactDigest => Error::Malformed,
+        service::Error::CandidateNotFound => Error::ManagementNotFound(Missing::Candidate),
         service::Error::Identity => Error::Forbidden,
         service::Error::Conflict | service::Error::Blocked => Error::Conflict,
         service::Error::CommitUnknown(_) | service::Error::RollbackFailed(_) => {
@@ -105,25 +112,29 @@ async fn read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((source, id)): Path<(String, String)>,
-) -> std::result::Result<Json<Value>, Error> {
-    app.policy.manage(&auth.proof, Permission::ReleaseRead)?;
+) -> std::result::Result<Json<wire::Candidate>, Error> {
     audit.set_action("management_read");
     audit.target(&id);
+    app.policy.manage(&auth.proof, Permission::ReleaseRead)?;
     let service = app
         .management
         .publications
         .get(&source)
-        .ok_or(Error::NotFound)?;
+        .ok_or(Error::ManagementNotFound(Missing::Source))?;
     let id = rel::CandidateId::new(app.management.tenant, id).map_err(|_| Error::Malformed)?;
     let candidate = service
         .candidate(&id, cutoff())
         .await
         .map_err(failure)?
-        .ok_or(Error::NotFound)?;
+        .ok_or(Error::ManagementNotFound(Missing::Candidate))?;
     let mut view = summary(&candidate);
-    view["submission"] =
-        serde_json::to_value(service.submission(&id, cutoff()).await.map_err(failure)?)
-            .map_err(|_| Error::Unavailable(Failure::Runtime))?;
+    view.submission = Some(
+        service
+            .submission(&id, cutoff())
+            .await
+            .map_err(failure)?
+            .into(),
+    );
     Ok(Json(view))
 }
 async fn write(
@@ -132,7 +143,7 @@ async fn write(
     Extension(audit): Extension<Audit>,
     Path((source, id)): Path<(String, String)>,
     Json(request): Json<Operation<Change>>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<wire::Candidate>, Error> {
     let permission = match request.input {
         Change::Candidate { .. } => Permission::ReleaseWrite,
         Change::Validate { .. } => Permission::ReleaseValidate,
@@ -141,12 +152,15 @@ async fn write(
         Change::Recover { .. } | Change::Retry { .. } => Permission::ReleaseRecover,
         Change::Withdraw { .. } => Permission::ReleaseWithdraw,
     };
+    audit.set_action("management_write");
+    audit.target(&id);
+    audit.operation(request.operation_id, "management_write");
     app.policy.manage(&auth.proof, permission)?;
     let service = app
         .management
         .publications
         .get(&source)
-        .ok_or(Error::NotFound)?;
+        .ok_or(Error::ManagementNotFound(Missing::Source))?;
     let tenant = app.management.tenant;
     let candidate_id = rel::CandidateId::new(tenant, &id).map_err(|_| Error::Malformed)?;
     let operator = actor(tenant, auth.proof.client_id(), auth.proof.subject())?;
@@ -180,7 +194,12 @@ async fn write(
             },
             &intent_audit,
         )
-        .await?;
+        .await;
+    intent_audit.finalize(intent.as_ref().err().and_then(|e| {
+        matches!(e, Error::Unavailable(Failure::Audit))
+            .then_some(crate::audit::FailureReason::Transaction)
+    }));
+    let intent = intent?;
     let at = Timepoint::try_from(intent["as_of"].as_i64().ok_or(Error::Conflict)?)
         .map_err(|_| Error::Conflict)?;
     let operation = rel::RequestId::new(tenant, request.operation_id.to_string())
@@ -203,12 +222,16 @@ async fn write(
     // The service persists actual domain outcomes. The envelope separately audits
     // this HTTP result, including its request ID, after external effect uncertainty.
     match outcome {
-        Ok(()) => {
+        Ok(effect) => {
+            audit.management_result(effect);
+            if matches!(effect, Effect::Unknown) {
+                return Err(Error::CommitUnknown);
+            }
             let candidate = service
                 .candidate(&candidate_id, cutoff())
                 .await
                 .map_err(failure)?
-                .ok_or(Error::NotFound)?;
+                .ok_or(Error::ManagementNotFound(Missing::Candidate))?;
             Ok(Json(summary(&candidate)))
         }
         Err(e) => Err(e),
@@ -220,7 +243,7 @@ async fn perform(
     change: &Change,
     request: &service::ServiceRequest,
     client: &str,
-) -> std::result::Result<(), Error> {
+) -> std::result::Result<Effect, Error> {
     let cutoff = cutoff();
     match change {
         Change::Candidate {
@@ -232,7 +255,7 @@ async fn perform(
             if request.expected_revision != 0 {
                 return Err(Error::Conflict);
             }
-            service
+            let (_, replayed) = service
                 .create_candidate(
                     &service::CandidateInput {
                         actor: request.actor.clone(),
@@ -243,25 +266,27 @@ async fn perform(
                         version: rss_mdm_resource::Id::new(version)
                             .map_err(|_| Error::Malformed)?,
                         expected_resource_revision: *expected_resource_revision,
-                        submission: submission.clone(),
+                        submission: submission.clone().into(),
                         as_of: request.as_of,
                     },
                     cutoff,
                 )
                 .await
                 .map_err(failure)?;
+            Ok(effect(replayed))
         }
         Change::Validate { ring } => {
-            service
+            let result = service
                 .validate(id, ring.core(), request, cutoff)
                 .await
                 .map_err(failure)?;
+            Ok(transition_effect(result))
         }
         Change::Approve {
             ring,
             publisher_subject,
         } => {
-            service
+            let result = service
                 .approve(
                     id,
                     ring.core(),
@@ -271,25 +296,23 @@ async fn perform(
                 )
                 .await
                 .map_err(failure)?;
+            Ok(transition_effect(result))
         }
         Change::Authorize { ring } => {
-            service
+            let result = service
                 .authorize(id, ring.core(), request, cutoff)
                 .await
                 .map_err(failure)?;
+            Ok(transition_effect(result))
         }
         Change::Retry { ring, attempt } => {
-            service
+            let result = service
                 .retry(id, ring.core(), *attempt, request, cutoff)
                 .await
                 .map_err(failure)?;
+            Ok(transition_effect(result))
         }
-        Change::Withdraw { ring } => {
-            service
-                .withdraw(id, ring.core(), request, cutoff)
-                .await
-                .map_err(failure)?;
-        }
+        Change::Withdraw { ring } => withdraw(service, id, *ring, request, cutoff).await,
         Change::Publish {
             ring,
             publication,
@@ -304,7 +327,7 @@ async fn perform(
                 .candidate(id, cutoff)
                 .await
                 .map_err(failure)?
-                .ok_or(Error::NotFound)?;
+                .ok_or(Error::ManagementNotFound(Missing::Candidate))?;
             let snap = c.snapshot();
             let rel::RingState::Publication(p) = snap.ring_state(ring.core()) else {
                 return Err(Error::Conflict);
@@ -312,34 +335,94 @@ async fn perform(
             if p.id().digest().bytes() != *publication || p.attempt != *attempt {
                 return Err(Error::Conflict);
             }
-            if matches!(change, Change::Publish { .. }) {
+            let completed = matches!(
+                p.outcome,
+                rel::PublicationOutcome::Reported(
+                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_)
+                )
+            );
+            let result = if matches!(change, Change::Publish { .. }) {
                 service
                     .publish(p.id(), p.attempt, request.as_of, cutoff)
                     .await
-                    .map_err(failure)?;
+                    .map_err(failure)?
             } else {
                 service
                     .reconcile(p.id(), p.attempt, request.as_of, cutoff)
                     .await
-                    .map_err(failure)?;
-            }
+                    .map_err(failure)?
+            };
+            Ok(match result {
+                rel::PublicationOutcome::Reported(
+                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_),
+                ) if completed => Effect::Replayed,
+                rel::PublicationOutcome::Reported(
+                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_),
+                ) => Effect::Performed,
+                _ => Effect::Unknown,
+            })
         }
     }
-    Ok(())
 }
 fn cutoff() -> Deadline {
     Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, Duration::from_secs(6))
         .expect("constant budget")
 }
-fn summary(c: &rel::Candidate) -> Value {
+fn summary(c: &rel::Candidate) -> wire::Candidate {
     let snapshot = c.snapshot();
-    json!({"id":snapshot.id.value(),"revision":snapshot.revision,"content_digest":snapshot.content.digest().bytes(),"disposition":disposition(snapshot.disposition),"manifest_digest":snapshot.content.manifest().bytes(),"source_snapshot":snapshot.content.source_snapshot().bytes(),"rings":rel::Ring::ALL.iter().map(|ring| {
-  let (state,publication)=match snapshot.ring_state(*ring) {
-   rel::RingState::Publication(p)=>("publication",Some(json!({"id":p.id().digest().bytes(),"attempt":p.attempt,"outcome":match &p.outcome {rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))=>"published",rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_))=>"not_applied",_=>"unknown"}}))),
-   rel::RingState::Approved(_)=>("approved",None),rel::RingState::Validated(_)=>("validated",None),_ =>("candidate",None),
-  };let approval=match snapshot.ring_state(*ring) {rel::RingState::Approved(a)=>Some(a),rel::RingState::Publication(p)=>Some(&p.approval),_=>None};
-            json!({"ring":ring_name(*ring),"state":state,"publication":publication,"approval":approval.map(|a|json!({"approver":a.approver.value(),"publisher":a.publisher.value(),"at":a.at.unix_seconds(),"digest":a.digest().bytes()}))})
- }).collect::<Vec<_>>()})
+    let rings = rel::Ring::ALL
+        .iter()
+        .map(|ring| {
+            let (state, publication) = match snapshot.ring_state(*ring) {
+                rel::RingState::Publication(p) => (
+                    "publication",
+                    Some(wire::Publication {
+                        id: p.id().digest().bytes(),
+                        attempt: p.attempt,
+                        outcome: match p.outcome {
+                            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(
+                                _,
+                            )) => "published",
+                            rel::PublicationOutcome::Reported(
+                                rel::PublicationResult::NotApplied(_),
+                            ) => "not_applied",
+                            _ => "unknown",
+                        }
+                        .into(),
+                    }),
+                ),
+                rel::RingState::Approved(_) => ("approved", None),
+                rel::RingState::Validated(_) => ("validated", None),
+                _ => ("candidate", None),
+            };
+            let approval = match snapshot.ring_state(*ring) {
+                rel::RingState::Approved(a) => Some(a),
+                rel::RingState::Publication(p) => Some(&p.approval),
+                _ => None,
+            };
+            wire::CandidateRing {
+                ring: ring_name(*ring).into(),
+                state: state.into(),
+                publication,
+                approval: approval.map(|a| wire::Approval {
+                    approver: a.approver.value().into(),
+                    publisher: a.publisher.value().into(),
+                    at: a.at.unix_seconds(),
+                    digest: a.digest().bytes(),
+                }),
+            }
+        })
+        .collect();
+    wire::Candidate {
+        id: snapshot.id.value().into(),
+        revision: snapshot.revision,
+        content_digest: snapshot.content.digest().bytes(),
+        disposition: disposition(snapshot.disposition).into(),
+        manifest_digest: snapshot.content.manifest().bytes(),
+        source_snapshot: snapshot.content.source_snapshot().bytes(),
+        rings,
+        submission: None,
+    }
 }
 
 fn disposition(d: rel::Disposition) -> &'static str {
@@ -355,4 +438,47 @@ fn ring_name(r: rel::Ring) -> &'static str {
         rel::Ring::Pilot => "pilot",
         rel::Ring::Production => "production",
     }
+}
+
+fn effect(replayed: bool) -> Effect {
+    if replayed {
+        Effect::Replayed
+    } else {
+        Effect::Performed
+    }
+}
+fn transition_effect(result: rel::Transition) -> Effect {
+    effect(matches!(result, rel::Transition::Replayed(_)))
+}
+
+async fn withdraw(
+    service: &service::PublicationService,
+    id: &rel::CandidateId,
+    ring: Ring,
+    request: &service::ServiceRequest,
+    cutoff: Deadline,
+) -> std::result::Result<Effect, Error> {
+    let candidate = service
+        .candidate(id, cutoff)
+        .await
+        .map_err(failure)?
+        .ok_or(Error::ManagementNotFound(Missing::Candidate))?;
+    let before = match candidate.snapshot().ring_state(ring.core()) {
+        rel::RingState::Publication(p) => service
+            .withdrawal_status(p.id(), p.attempt, cutoff)
+            .await
+            .map_err(failure)?,
+        _ => None,
+    };
+    let result = service
+        .withdraw(id, ring.core(), request, cutoff)
+        .await
+        .map_err(failure)?;
+    Ok(match result {
+        service::Withdrawal::Complete if before == Some(service::Withdrawal::Complete) => {
+            Effect::Replayed
+        }
+        service::Withdrawal::Complete | service::Withdrawal::NotPublished => Effect::Performed,
+        _ => Effect::Unknown,
+    })
 }

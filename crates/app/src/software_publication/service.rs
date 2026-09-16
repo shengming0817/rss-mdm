@@ -114,11 +114,12 @@ impl PublicationService {
         let (_, subject, _) = self.context(id, cutoff).await?;
         Ok(subject.submission)
     }
+    /// Returns the durable receipt and whether creation was already committed.
     pub async fn create_candidate(
         &self,
         input: &CandidateInput,
         cutoff: Deadline,
-    ) -> Result<rss_mdm_software_release_postgres::OperationReceipt> {
+    ) -> Result<(rss_mdm_software_release_postgres::OperationReceipt, bool)> {
         if input.actor.tenant() != self.tenant()
             || input.candidate.tenant() != self.tenant()
             || input.request.tenant() != self.tenant()
@@ -172,17 +173,20 @@ impl PublicationService {
         i: &CandidateInput,
         c: &rel::Candidate,
         subject: &Subject,
-    ) -> InTransaction<rss_mdm_software_release_postgres::OperationReceipt> {
+    ) -> InTransaction<(rss_mdm_software_release_postgres::OperationReceipt, bool)> {
         let key = db::software_key(&c.snapshot().content)?;
         db::lock(tx, "authority", &hex(&key)).await?;
         if let Some(old) = db::subject(tx, i.candidate.value()).await? {
             if db::encode(&old)? != db::encode(subject)? {
                 return Ok(Err(Error::Conflict));
             }
-            return Ok(Ok(db::required(
-                "service::create_in",
-                self.releases.create_in(tx, &i.request, c).await?,
-            )?));
+            return Ok(Ok((
+                db::required(
+                    "service::create_in",
+                    self.releases.create_in(tx, &i.request, c).await?,
+                )?,
+                true,
+            )));
         }
         let (v, state, revision) = input!(
             self.resources
@@ -221,7 +225,7 @@ impl PublicationService {
             db::request_fact(i.request.value(), None, "candidate-create"),
         )
         .await?;
-        Ok(Ok(receipt))
+        Ok(Ok((receipt, false)))
     }
     async fn retired_owner(&self, tx: &mut PgTransaction<'_>, owner: &str) -> InTransaction<()> {
         let id = db::required(
@@ -632,10 +636,11 @@ impl PublicationService {
             self.runtime
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, id), |(s, id), tx| {
                     Box::pin(async move {
-                        let c = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
+                        let Some(c) = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
                             Error::Conflict.context("service::context", cause)
-                        }))
-                        .ok_or_else(db::fault)?;
+                        })) else {
+                            return Ok(Err(Error::CandidateNotFound));
+                        };
                         let subject = db::subject(tx, id.value()).await?.ok_or_else(db::fault)?;
                         let resource =
                             db::required("service::context", resource::Id::new(&subject.resource))?;

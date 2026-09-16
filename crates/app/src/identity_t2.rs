@@ -1057,21 +1057,21 @@ async fn matrix() -> Result<()> {
                 Method::POST,
                 format!("/api/v1/groups/{}", uuid::Uuid::new_v4()),
                 Some(
-                    json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":0,"input":{"action":"create","name":"revoked","description":"","criteria":null}}),
+                    json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"revoked","description":"","criteria":null}}),
                 ),
             ),
             (
                 Method::POST,
                 "/api/v1/policies/revoked/plans".into(),
                 Some(
-                    json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":0,"input":{"preview":uuid::Uuid::new_v4()}}),
+                    json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"preview":uuid::Uuid::new_v4()}}),
                 ),
             ),
             (
                 Method::POST,
                 "/api/v1/software-sources/revoked/candidates/revoked".into(),
                 Some(
-                    json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":0,"input":{"action":"authorize","ring":"test"}}),
+                    json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"authorize","ring":"test"}}),
                 ),
             ),
         ] {

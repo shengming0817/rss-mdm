@@ -39,7 +39,12 @@ struct Artifact {
     sha256: [u8; 32],
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 enum Declaration {
     Software {
         source: String,
@@ -72,7 +77,12 @@ pub(super) struct Variant {
     declaration: Declaration,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub(super) enum Change {
     Create {
         kind: Kind,
@@ -218,8 +228,8 @@ impl Management {
         tx: &mut PgTransaction<'_>,
         resource: &str,
     ) -> Result<Value> {
-        let stored =
-            checked(self.resources.get_in(tx, &id(resource)?).await?)?.ok_or(Error::NotFound)?;
+        let stored = checked(self.resources.get_in(tx, &id(resource)?).await?)?
+            .ok_or(Error::ManagementNotFound(Missing::Resource))?;
         let snapshot = stored.resource.snapshot();
         Ok(
             json!({"id":resource,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),

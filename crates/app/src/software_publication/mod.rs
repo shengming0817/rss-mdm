@@ -16,6 +16,8 @@ pub use spec::{
 };
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("software candidate not found")]
+    CandidateNotFound,
     /// Sanitized lower-level failure with its owning operation stage.
     #[error("{stage}: {category}: {source}")]
     Diagnostic {

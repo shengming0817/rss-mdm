@@ -948,7 +948,11 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     .await?;
     let management = config
         .management
-        .open(rss_request_context::TenantId::parse(TENANT)?, |_| {})
+        .open(
+            rss_request_context::TenantId::parse(TENANT)?,
+            Arc::new(rss_identity_client::SystemClock),
+            |_| {},
+        )
         .await?;
     let app = Arc::new(App {
         management,

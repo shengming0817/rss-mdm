@@ -435,10 +435,11 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         Err(Error::Content)
     ));
     input.submission = original;
-    let receipt = service.create_candidate(&input, cutoff()).await.unwrap();
+    let (receipt, replayed) = service.create_candidate(&input, cutoff()).await.unwrap();
+    assert!(!replayed);
     assert_eq!(
         service.create_candidate(&input, cutoff()).await.unwrap(),
-        receipt
+        (receipt, true)
     );
     input.expected_resource_revision += 1;
     assert!(matches!(
