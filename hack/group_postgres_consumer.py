@@ -21,10 +21,21 @@ DIRECT = {'rss-mdm-group-postgres', 'rss-contract', 'rss-request-context',
           'rss-transactional-messaging', 'rss-transactional-messaging-postgres',
           'tokio', 'sqlx', 'serde_json', 'uuid'}
 FORBIDDEN = {'rss-mdm-app', 'axum', 'reqwest', 'hyper'}
+def direct_dependencies(capability):
+    direct = (DIRECT - {'rss-mdm-group-postgres'}) | {f'rss-mdm-{capability}-postgres'}
+    # Backend contract assertions hash schema bytes; this dependency is already in each adapter closure.
+    return direct if capability == 'group' else (direct - {'uuid'}) | {'sha2'}
+
+
 INACTIVE_DRIVERS = {'sqlx-mysql', 'sqlx-sqlite'}
 
 
-def verify_closure(data, product_source, pin, locked):
+def verify_closure(data, product_source, pin, locked, capability="group"):
+    ci.require(capability in {"group", "policy", "resource", "software-release"}, "unknown PG capability")
+    product = f"rss-mdm-{capability}-postgres"
+    products = {product, f"rss-mdm-{capability}"}
+    if capability != "group": products.add("rss-mdm-backend-postgres-support")
+    direct_expected = direct_dependencies(capability)
     packages = {p['id']: p for p in data['packages']}
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     root = data['resolve']['root']
@@ -32,9 +43,9 @@ def verify_closure(data, product_source, pin, locked):
                'consumer must be the sole local member')
     ci.require(set(packages) == set(nodes), 'incomplete resolved graph')
     direct = nodes[root]['deps']
-    ci.require({packages[d['pkg']]['name'] for d in direct} == DIRECT, 'unexpected consumer direct dependency')
+    ci.require({packages[d['pkg']]['name'] for d in direct} == direct_expected, 'unexpected consumer direct dependency')
     ci.require(all(d['dep_kinds'] == [{'kind': None, 'target': None}] for d in direct), 'consumer requires normal edges')
-    adapter = [p['id'] for p in packages.values() if p['name'] == 'rss-mdm-group-postgres']
+    adapter = [p['id'] for p in packages.values() if p['name'] == product]
     ci.require(len(adapter) == 1, 'exactly one adapter required')
     reached, pending = set(), adapter[:]
     while pending:
@@ -52,7 +63,7 @@ def verify_closure(data, product_source, pin, locked):
         p = packages[key]
         name, source = p['name'], p['source']
         ci.require(not any(name == n or name.startswith(n + '-') for n in FORBIDDEN), f'forbidden adapter dependency: {name}')
-        if name in PRODUCTS:
+        if name in products:
             ci.require(source == product_source, 'product source must equal tested Git SHA')
             found.add(name)
         elif name in RSS:
@@ -62,7 +73,7 @@ def verify_closure(data, product_source, pin, locked):
             ci.require(not name.startswith('rss-'), f'unrelated product/RSS dependency: {name}')
             ci.require((name, p['version'], source) in locked and source == 'registry+https://github.com/rust-lang/crates.io-index', f'dependency differs from product lock: {name}')
         ci.require('integration' not in nodes[key]['features'], 'test feature leaked into production consumer')
-        if name == 'rss-mdm-group-postgres':
+        if name in {product, "rss-mdm-backend-postgres-support"}:
             ci.require(nodes[key]['features'] == [], 'extend matrix when adapter production features change')
         if name == 'rss-transactional-messaging':
             ci.require(nodes[key]['features'] == ['consumer', 'default', 'producer'], 'fixed RSS PG adapter core features differ')
@@ -74,12 +85,15 @@ def verify_closure(data, product_source, pin, locked):
             # source of those edges and independently inspect the active tree.
             parents = {packages[n['id']]['name'] for n in nodes.values() if any(d['pkg'] == key for d in n['deps'])}
             ci.require(parents <= {'sqlx', 'sqlx-macros-core'}, 'non-PG driver has a real consumer')
-    ci.require(found == PRODUCTS | RSS, 'missing required product/RSS closure')
+    ci.require(found == products | RSS, 'missing required product/RSS closure')
 
 
-def verify_active_tree(tree):
+def verify_active_tree(tree, capability="group"):
+    ci.require(capability in {"group", "policy", "resource", "software-release"}, "unknown PG capability")
+    products = {f"rss-mdm-{capability}-postgres", f"rss-mdm-{capability}"}
+    if capability != "group": products.add("rss-mdm-backend-postgres-support")
     names = {line.split()[0] for line in tree.splitlines() if line.strip()}
-    ci.require(PRODUCTS | RSS <= names and 'sqlx-postgres' in names, 'active tree is incomplete')
+    ci.require(products | RSS <= names and 'sqlx-postgres' in names, 'active tree is incomplete')
     ci.require(not any(name == banned or name.startswith(banned + '-') for name in names for banned in FORBIDDEN | INACTIVE_DRIVERS), 'forbidden active dependency')
 
 
@@ -92,19 +106,25 @@ def verify_no_feature_supplement(consumer, baseline):
     ci.require(all(used[key] <= provided[key] for key in used), 'public consumer supplements adapter features')
 
 
-def run_consumer(source, base, defaults, head, pin, out):
+def run_consumer(source, base, defaults, head, pin, out, capability="group", fixture=None, config_key="GROUP_PG_CONFIG", expected_tests=None):
+    ci.require(capability in {"group", "policy", "resource", "software-release"}, "unknown PG capability")
+    product = f"rss-mdm-{capability}-postgres"
+    direct = direct_dependencies(capability)
+    store = {"group":"GroupStore", "policy":"PolicyStore", "resource":"ResourceStore", "software-release":"ReleaseStore"}[capability]
+    fixture = fixture or pg.fixture
+    expected_tests = pg.CONSUMER_TESTS if expected_tests is None else expected_tests
     name = 'default' if defaults else 'no-default'
     root = base / name
     (root / 'tests').mkdir(parents=True)
     check_ancestors(root)
-    shutil.copytree(source / 'crates/group-postgres/tests/support', root / 'tests/support')
-    shutil.copyfile(source / 'crates/group-postgres/tests/consumer.rs', root / 'tests/consumer.rs')
+    shutil.copytree(source / f'crates/{capability}-postgres/tests/support', root / 'tests/support')
+    shutil.copyfile(source / f'crates/{capability}-postgres/tests/consumer.rs', root / 'tests/consumer.rs')
     shutil.copyfile(source / 'rust-toolchain.toml', root / 'rust-toolchain.toml')
     shutil.copyfile(source / 'Cargo.lock', root / 'Cargo.lock')
     deps = ci.tomllib.loads((source / 'Cargo.toml').read_text())['workspace']['dependencies']
     manifest = '[workspace]\n[package]\nname="group-pg-consumer"\nversion="0.0.0"\nedition="2024"\n[dependencies]\n'
-    manifest += f'rss-mdm-group-postgres={{git={json.dumps(source.as_uri())},rev="{head}",default-features={str(defaults).lower()}}}\n'
-    for dep in sorted(DIRECT - {'rss-mdm-group-postgres'}):
+    manifest += f'{product}={{git={json.dumps(source.as_uri())},rev="{head}",default-features={str(defaults).lower()}}}\n'
+    for dep in sorted(direct - {product}):
         value = deps[dep]
         if dep == 'tokio':
             value = {**value, 'features': ['macros', 'rt-multi-thread', 'time']}
@@ -140,14 +160,14 @@ def run_consumer(source, base, defaults, head, pin, out):
     data = json.loads(run(['cargo', 'metadata', '--locked', '--format-version', '1']))
     locked = {(p['name'], p['version'], p.get('source')) for p in ci.tomllib.loads((source / 'Cargo.lock').read_text())['package'] if p.get('source', '').startswith('registry+')}
     (out / f'{name}-metadata.json').write_text(json.dumps(data))
-    verify_closure(data, f'git+{source.as_uri()}?rev={head}#{head}', pin, locked)
+    verify_closure(data, f'git+{source.as_uri()}?rev={head}#{head}', pin, locked, capability)
     # Resolve a second workspace with literally one dependency to prove the
     # fixture's public RSS/SQLx/Tokio edges cannot supply missing features.
     baseline = root / 'adapter-only'
     (baseline / 'src').mkdir(parents=True)
-    (baseline / 'src/lib.rs').write_text('pub use rss_mdm_group_postgres::GroupStore;\n')
+    (baseline / 'src/lib.rs').write_text(f"pub use rss_mdm_{capability.replace('-', '_')}_postgres::{store};\n")
     (baseline / 'Cargo.toml').write_text('[workspace]\n[package]\nname="group-adapter-only"\nversion="0.0.0"\nedition="2024"\n[dependencies]\n' +
-        f'rss-mdm-group-postgres={{git={json.dumps(source.as_uri())},rev="{head}",default-features={str(defaults).lower()}}}\n')
+        f'{product}={{git={json.dumps(source.as_uri())},rev="{head}",default-features={str(defaults).lower()}}}\n')
     shutil.copyfile(root / 'Cargo.lock', baseline / 'Cargo.lock')
     baseline_env = {'CARGO_TARGET_DIR': str(baseline / 'target')}
     run(['cargo', 'metadata', '--format-version', '1'], baseline_env, baseline)
@@ -160,17 +180,18 @@ def run_consumer(source, base, defaults, head, pin, out):
     (out / f'{name}-tree.txt').write_text(run(['cargo', 'tree', '--locked', '-e', 'features']))
     active = run(['cargo', 'tree', '--locked', '--target', 'all', '-e', 'normal,build', '--prefix', 'none'])
     (out / f'{name}-active-tree.txt').write_text(active)
-    verify_active_tree(active)
+    verify_active_tree(active, capability)
     run(['cargo', 'check', '--locked', '--all-targets'])
     run(['cargo', 'test', '--locked', '--no-run'])
     # Schema is installed from this consumer's exact public dependencies as well.
     (root / 'examples').mkdir()
-    shutil.copyfile(source / 'crates/group-postgres/examples/migrations.rs', root / 'examples/migrations.rs')
+    example = 'migrations' if capability == 'group' else capability.replace('-', '_') + '_migrations'
+    shutil.copyfile(source / f'crates/{capability}-postgres/examples/{example}.rs', root / 'examples/migrations.rs')
     migration = run(['cargo', 'run', '--locked', '--quiet', '--example', 'migrations'])
-    with pg.fixture(migrations=migration) as (fixture_env, _):
+    with fixture(migrations=migration) as (fixture_env, _):
         result = run(['cargo', 'test', '--locked', '--test', 'consumer', '--', '--ignored', '--test-threads=1'],
-                     {'GROUP_PG_CONFIG': fixture_env['GROUP_PG_CONFIG']})
-        pg.verify_tests(result, pg.CONSUMER_TESTS)
+                     {config_key: fixture_env[config_key]})
+        pg.verify_tests(result, expected_tests)
     ci.require(hashlib.sha256((root / 'Cargo.lock').read_bytes()).hexdigest() == lock_hash, 'locked consumer changed its lock')
     shutil.copyfile(root / 'Cargo.lock', out / f'{name}-Cargo.lock')
     return {'head': head, 'rssRevision': pin[1], 'defaultFeatures': defaults, 'lockSha256': lock_hash,

@@ -2302,20 +2302,30 @@ dependencies = [
  "rss-contract",
  "rss-identity-client",
  "rss-identity-contracts",
+ "rss-mdm-brew-source",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
+ "rss-mdm-policy-postgres",
+ "rss-mdm-resource",
+ "rss-mdm-resource-postgres",
+ "rss-mdm-software-release",
+ "rss-mdm-software-release-postgres",
  "rss-mdm-windows-mdm",
+ "rss-mdm-winget-source",
  "rss-observation",
  "rss-observation-postgres",
  "rss-projection",
  "rss-projection-postgres",
  "rss-request-context",
  "rss-runtime",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "subtle",
+ "tempfile",
  "thiserror 2.0.20",
  "time",
  "tokio",
@@ -2328,6 +2338,20 @@ dependencies = [
  "uuid",
  "x509-cert",
  "zeroize",
+]
+
+[[package]]
+name = "rss-mdm-backend-postgres-support"
+version = "0.1.0"
+dependencies = [
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -2428,12 +2452,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-policy-postgres"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-mdm-backend-postgres-support",
+ "rss-mdm-policy",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "rss-mdm-resource"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
  "rss-request-context",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "rss-mdm-resource-postgres"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-mdm-backend-postgres-support",
+ "rss-mdm-resource",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -2453,6 +2513,24 @@ dependencies = [
  "rss-request-context",
  "sha2 0.10.9",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rss-mdm-software-release-postgres"
+version = "0.1.0"
+dependencies = [
+ "rss-contract",
+ "rss-mdm-backend-postgres-support",
+ "rss-mdm-software-release",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -2640,9 +2718,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "once_cell",
  "ring",

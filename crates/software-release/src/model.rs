@@ -15,28 +15,17 @@ pub struct SoftwareIdentityFields {
     pub version: String,
     /// Target platform key, such as `windows` or `macos`.
     pub platform: String,
-    /// Target architecture key, such as `x64` or `arm64`.
-    pub architecture: String,
-    /// Variant that distinguishes artifacts for the same package/version/platform.
-    pub variant: String,
 }
 impl SoftwareIdentityFields {
-    fn values(&self) -> [&str; 6] {
-        [
-            &self.source,
-            &self.package,
-            &self.version,
-            &self.platform,
-            &self.architecture,
-            &self.variant,
-        ]
+    fn values(&self) -> [&str; 4] {
+        [&self.source, &self.package, &self.version, &self.platform]
     }
 }
 /// Validated exact software identity, immutable after construction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SoftwareIdentity(SoftwareIdentityFields);
 impl SoftwareIdentity {
-    /// Validates all six exact fields using the bounded syntax of [`ActorId::new`].
+    /// Validates all four exact fields using the bounded syntax of [`ActorId::new`].
     ///
     /// # Errors
     /// Returns [`Error::InvalidIdentity`] if any field is invalid; no normalization occurs.
@@ -77,28 +66,22 @@ impl Artifact {
         self.digest
     }
 }
-/// Immutable content. No URLs, credentials, executable code or provider types.
+/// One architecture/variant and its complete artifact closure.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Content {
-    software: SoftwareIdentity,
-    description: Digest,
-    source_snapshot: Digest,
-    manifest: Digest,
+pub struct VariantContent {
+    architecture: String,
+    variant: String,
     artifacts: Vec<Artifact>,
 }
-impl Content {
-    /// Creates immutable content and sorts artifacts by key for canonical hashing.
-    /// The caller supplies the complete artifact set, including required dependencies.
-    ///
-    /// # Errors
-    /// Returns [`Error::InvalidArtifacts`] unless there are 1–256 distinct artifact keys.
+impl VariantContent {
+    /// Validate and sort 1–256 artifacts; duplicate keys are rejected.
     pub fn new(
-        software: SoftwareIdentity,
-        description: Digest,
-        source_snapshot: Digest,
-        manifest: Digest,
+        architecture: impl Into<String>,
+        variant: impl Into<String>,
         mut artifacts: Vec<Artifact>,
     ) -> Result<Self, Error> {
+        let architecture = checked_name(architecture.into())?;
+        let variant = checked_name(variant.into())?;
         if artifacts.is_empty() || artifacts.len() > 256 {
             return Err(Error::InvalidArtifacts);
         }
@@ -107,46 +90,111 @@ impl Content {
             return Err(Error::InvalidArtifacts);
         }
         Ok(Self {
+            architecture,
+            variant,
+            artifacts,
+        })
+    }
+    /// Exact architecture declared by the product mapping.
+    pub fn architecture(&self) -> &str {
+        &self.architecture
+    }
+    /// Exact variant declared by the product mapping.
+    pub fn variant(&self) -> &str {
+        &self.variant
+    }
+    /// Complete artifact set in canonical key order.
+    pub fn artifacts(&self) -> &[Artifact] {
+        &self.artifacts
+    }
+}
+/// Complete immutable platform package version; no URLs or provider types.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Content {
+    software: SoftwareIdentity,
+    description: Digest,
+    source_snapshot: Digest,
+    manifest: Digest,
+    variants: Vec<VariantContent>,
+}
+impl Content {
+    /// Freeze 1–64 unique variants and at most 256 artifact references.
+    /// The same artifact key may be shared only with the same digest.
+    pub fn new(
+        software: SoftwareIdentity,
+        description: Digest,
+        source_snapshot: Digest,
+        manifest: Digest,
+        mut variants: Vec<VariantContent>,
+    ) -> Result<Self, Error> {
+        if variants.is_empty()
+            || variants.len() > 64
+            || variants.iter().map(|v| v.artifacts.len()).sum::<usize>() > 256
+        {
+            return Err(Error::InvalidArtifacts);
+        }
+        variants.sort_by(|a, b| (&a.architecture, &a.variant).cmp(&(&b.architecture, &b.variant)));
+        if variants
+            .windows(2)
+            .any(|w| (w[0].architecture(), w[0].variant()) == (w[1].architecture(), w[1].variant()))
+        {
+            return Err(Error::InvalidArtifacts);
+        }
+        let mut artifacts = std::collections::BTreeMap::new();
+        for a in variants.iter().flat_map(|v| &v.artifacts) {
+            if artifacts
+                .insert(&a.key, a.digest)
+                .is_some_and(|old| old != a.digest)
+            {
+                return Err(Error::InvalidArtifacts);
+            }
+        }
+        Ok(Self {
             software,
             description,
             source_snapshot,
             manifest,
-            artifacts,
+            variants,
         })
     }
-    /// Returns the exact software identity that replacement cannot change.
+    /// Exact platform package version identity.
     pub fn software(&self) -> &SoftwareIdentity {
         &self.software
     }
-    /// Returns the digest of the approved description, not its text.
+    /// Approved description digest.
     pub fn description(&self) -> Digest {
         self.description
     }
-    /// Returns the digest of the source snapshot used to obtain this content.
+    /// Approved source/configuration snapshot digest.
     pub fn source_snapshot(&self) -> Digest {
         self.source_snapshot
     }
-    /// Returns the manifest digest included in every approval's content binding.
+    /// Complete manifest or controlled document digest.
     pub fn manifest(&self) -> Digest {
         self.manifest
     }
-    /// Returns all declared artifacts in ascending key order.
-    pub fn artifacts(&self) -> &[Artifact] {
-        &self.artifacts
+    /// Complete variants in architecture/variant order.
+    pub fn variants(&self) -> &[VariantContent] {
+        &self.variants
     }
-    /// Hashes every identity field, metadata digest and ordered artifact under the V1 content domain.
+    /// Canonical V2 content identity; V1 single-variant identities are retired.
     pub fn digest(&self) -> Digest {
-        let mut e = Encoding::new(b"rss-mdm-software-release/content/v1");
+        let mut e = Encoding::new(b"rss-mdm-software-release/content/v2");
         for part in self.software.fields().values() {
             e.bytes(part.as_bytes());
         }
         e.digest(self.description);
         e.digest(self.source_snapshot);
         e.digest(self.manifest);
-        e.number(self.artifacts.len() as u64);
-        for a in &self.artifacts {
-            e.bytes(a.key.as_bytes());
-            e.digest(a.digest);
+        e.number(self.variants.len() as u64);
+        for v in &self.variants {
+            e.bytes(v.architecture.as_bytes());
+            e.bytes(v.variant.as_bytes());
+            e.number(v.artifacts.len() as u64);
+            for a in &v.artifacts {
+                e.bytes(a.key.as_bytes());
+                e.digest(a.digest);
+            }
         }
         e.finish()
     }
@@ -244,9 +292,9 @@ pub struct Approval {
     pub predecessor: Option<PublicationId>,
 }
 impl Approval {
-    /// Hashes the complete authority snapshot under the V1 approval domain.
+    /// Hashes the complete authority snapshot under the V2 approval domain.
     pub fn digest(&self) -> Digest {
-        let mut e = Encoding::new(b"rss-mdm-software-release/approval/v1");
+        let mut e = Encoding::new(b"rss-mdm-software-release/approval/v2");
         encode_validation(&mut e, &self.validation);
         e.object(self.publisher.tenant(), self.publisher.value());
         e.object(self.approver.tenant(), self.approver.value());
@@ -266,7 +314,7 @@ impl Approval {
     }
     /// Derives a stable publication identity from this approval, excluding attempts and requests.
     pub fn publication_id(&self) -> PublicationId {
-        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v1");
+        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v2");
         e.digest(self.digest());
         PublicationId(e.finish())
     }

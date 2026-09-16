@@ -217,3 +217,52 @@ async fn git_failure_reports_safe_stage_without_raw_diagnostics() {
     ));
     assert!(!error.to_string().contains(invalid.path().to_str().unwrap()));
 }
+
+#[tokio::test]
+#[ignore = "explicit real-provider T2 target"]
+async fn conditional_removal_preserves_other_paths_and_old_commits() {
+    let (_dir, r) = repository().await;
+    let doc = document("1");
+    let first = r
+        .prepare(None, doc.clone(), "initial", now())
+        .await
+        .unwrap();
+    r.apply(&first).await.unwrap();
+    let other = Cask::new(
+        PackageKey::new(tenant(), "acme/private", "other").unwrap(),
+        "1",
+        "Other",
+        "Other app",
+        "https://acme.example/",
+        vec![(
+            Architecture::Arm64,
+            Artifact::new("https://files.example/other.dmg", [2; 32]).unwrap(),
+        )],
+        CaskArtifact::App("Other.app".into()),
+    )
+    .unwrap()
+    .render()
+    .unwrap();
+    let next = r
+        .prepare(Some(first.target().clone()), other.clone(), "other", now())
+        .await
+        .unwrap();
+    r.apply(&next).await.unwrap();
+    let remove = r
+        .prepare_remove(next.target().clone(), doc.clone(), "remove", now())
+        .await
+        .unwrap();
+    r.apply(&remove).await.unwrap();
+    assert_eq!(
+        r.presence(remove.target(), &doc).await.unwrap(),
+        DocumentPresence::Absent
+    );
+    r.read(remove.target(), &other).await.unwrap();
+    r.read(first.target(), &doc).await.unwrap();
+    assert!(r.contains_commit(first.target()).await.unwrap());
+    assert!(
+        r.prepare_remove(remove.target().clone(), doc, "again", now())
+            .await
+            .is_err()
+    );
+}

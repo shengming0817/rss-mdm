@@ -19,6 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-backend-postgres-support": "crates/backend-postgres-support",
+    "rss-mdm-policy-postgres":"crates/policy-postgres",
+    "rss-mdm-resource-postgres":"crates/resource-postgres",
+    "rss-mdm-software-release-postgres":"crates/software-release-postgres",
     "rss-mdm-software-release": "crates/software-release",
     "rss-mdm-resource": "crates/resource",
     "rss-mdm-winget-source": "crates/winget-source",
@@ -120,6 +124,25 @@ def noninteractive(env=None):
 def command(args, cwd=ROOT, env=None):
     return subprocess.run(args, cwd=cwd, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
+def verify_backend_support(data):
+    support = "rss-mdm-backend-postgres-support"
+    adapters = {f"rss-mdm-{kind}-postgres" for kind in ("policy", "resource", "software-release")}
+    packages = {p['id']: p['name'] for p in data['packages']}
+    nodes = {n['id']: n for n in data['resolve']['nodes']}
+    ids = [key for key, name in packages.items() if name == support]
+    require(len(ids) == 1, "exactly one MDM backend support package required")
+    ident = ids[0]
+    require(nodes[ident]['features'] == [], "backend support has no feature surface")
+    parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == ident for d in n['deps'])}
+    require(parents == adapters, "only three backend adapters may directly consume support")
+    visited, pending = set(), [ident]
+    while pending:
+        key = pending.pop()
+        if key in visited: continue
+        visited.add(key)
+        require(key == ident or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), "support depends on product/core/identity")
+        pending.extend(d['pkg'] for d in nodes[key]['deps'])
+
 def verify_metadata(data, root, mode, pin):
     url, rev = pin
     expected = f"git+{url}?rev={rev}#{rev}"
@@ -140,6 +163,7 @@ def verify_metadata(data, root, mode, pin):
         require(("integration" in features[name]) == (mode == "integration"), f"unexpected {mode} features for {name}")
     require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES, 'Identity SDK missing')
     nodes = {n['id']: n for n in data['resolve']['nodes']}
+    verify_backend_support(data)
     app_id = next(p['id'] for p in data['packages'] if p['name'] == 'rss-mdm-app')
     visited, todo = set(), [app_id]
     while todo:
@@ -310,7 +334,11 @@ def main():
         ("core-consumers",[sys.executable,"hack/core_consumer.py"]),
         ("t2",[sys.executable,"hack/t2.py"]),
         ("group-t2",[sys.executable,"hack/group-t2.py"]),
+        ("backend-t2",[sys.executable,"hack/backend-t2.py"]),
+        ("publication-t2",[sys.executable,"hack/publication-t2.py"]),
+        ("backend-consumers",[sys.executable,"hack/backend_postgres_consumer.py"]),
         ("group-postgres-consumers",[sys.executable,"hack/group_postgres_consumer.py"]),
+        ("source-t2-oracle",[sys.executable,"hack/test_source_t2.py"]),
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
 

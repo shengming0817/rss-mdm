@@ -391,6 +391,20 @@ struct Entry {
     version: Version,
     state: State,
 }
+/// Trusted storage input. Only Resource::restore validates aggregate consistency.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceSnapshot {
+    pub tenant: TenantId,
+    pub key: Id,
+    pub kind: Kind,
+    pub changed_at: Option<Timepoint>,
+    pub versions: Vec<StoredVersion>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredVersion {
+    pub version: Version,
+    pub state: State,
+}
 /// In-memory decision aggregate. Persistence/locking remains the adapter's responsibility.
 #[derive(Clone, Debug)]
 pub struct Resource {
@@ -409,6 +423,56 @@ impl Resource {
             versions: BTreeMap::new(),
             changed_at: None,
         }
+    }
+    pub fn snapshot(&self) -> ResourceSnapshot {
+        ResourceSnapshot {
+            tenant: self.tenant,
+            key: self.key.clone(),
+            kind: self.kind,
+            changed_at: self.changed_at,
+            versions: self
+                .versions
+                .values()
+                .map(|e| StoredVersion {
+                    version: e.version.clone(),
+                    state: e.state,
+                })
+                .collect(),
+        }
+    }
+    pub fn restore(snapshot: ResourceSnapshot) -> Result<Self, Error> {
+        if snapshot.versions.is_empty() != snapshot.changed_at.is_none()
+            || snapshot
+                .versions
+                .iter()
+                .filter(|v| v.state == State::Active)
+                .count()
+                > 1
+        {
+            return Err(Error::InvalidInput);
+        }
+        let mut resource = Self::new(snapshot.tenant, snapshot.key, snapshot.kind);
+        for item in snapshot.versions {
+            let v = item.version;
+            if v.tenant != resource.tenant {
+                return Err(Error::TenantMismatch);
+            }
+            if v.resource != resource.key || resource.versions.contains_key(&v.label) {
+                return Err(Error::IdentityConflict);
+            }
+            if v.kind != resource.kind {
+                return Err(Error::KindMismatch);
+            }
+            resource.versions.insert(
+                v.label.clone(),
+                Entry {
+                    version: v,
+                    state: item.state,
+                },
+            );
+        }
+        resource.changed_at = snapshot.changed_at;
+        Ok(resource)
     }
     fn time(&self, at: Timepoint) -> Result<(), Error> {
         if self.changed_at.is_some_and(|old| at < old) {
@@ -526,45 +590,5 @@ impl References {
             complete,
             count,
         }
-    }
-}
-/// Access metadata deliberately separate from immutable content identity.
-#[derive(Clone)]
-pub struct AccessBinding {
-    tenant: TenantId,
-    source: Id,
-    source_credential: Id,
-    artifact_credential: Id,
-}
-impl AccessBinding {
-    pub fn new(
-        tenant: TenantId,
-        source: Id,
-        source_credential: Id,
-        artifact_credential: Id,
-    ) -> Self {
-        Self {
-            tenant,
-            source,
-            source_credential,
-            artifact_credential,
-        }
-    }
-    pub const fn tenant(&self) -> TenantId {
-        self.tenant
-    }
-    pub fn source(&self) -> &Id {
-        &self.source
-    }
-    pub fn source_credential(&self) -> &Id {
-        &self.source_credential
-    }
-    pub fn artifact_credential(&self) -> &Id {
-        &self.artifact_credential
-    }
-}
-impl fmt::Debug for AccessBinding {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("AccessBinding([redacted])")
     }
 }

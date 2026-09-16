@@ -55,3 +55,10 @@ Agent 仅消费确有需求且支持目标平台的公共核心/值类型，不�
 
 独立产品 rss-identity 仅以固定新仓 Git URL + 完整 SHA 消费 rss-identity-client/contracts；不能仅因包名 rss-* 就归入RSS主仓来源，也不能放宽成任意Identity包。SDK与wire类型唯一由Identity持有，MDM不复制验证器、不引入其服务端/PG/装配。精确来源由manifest/lock持有，CI校验两组来源和普通/测试依赖图。
 OIDC只使用公钥验签；#2365 单独限定 MDM app → openidconnect 4.0.1 → rsa 0.9.10 的当前registry路径，禁止其它用途或消费者，修复可用后退出。不存在源码不可取得时的path/registry备用路径。
+
+## MDM 后端支持包依赖
+
+按[产品范围](project-scope.md#mdm-专属后端存储共享2430--2431)，三个 PG adapter
+可依赖产品内部 `rss-mdm-backend-postgres-support`。支持包必须与 adapter 来自同一产品 SHA，
+不依赖任何 MDM 核心/adapter/app/identity，无 feature 开关。它仅作为 adapter 传递依赖进入
+独立 consumer；不扩大 Group 或七个核心的允许闭包，不调整 RSS 固定 pin。

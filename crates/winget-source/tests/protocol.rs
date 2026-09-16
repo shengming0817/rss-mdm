@@ -21,8 +21,11 @@ fn exact_manifest_and_publish_output() {
     assert_eq!(m.package(), "Acme.App");
     assert_eq!(m.version(), "1.2");
     assert_eq!(m.sha256(), [0x11; 32]);
-    let bytes = m.publication_metadata().unwrap();
-    let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let complete =
+        VersionManifest::from_response(tenant(), "private", include_bytes!("fixtures/msi.json"))
+            .unwrap();
+    let bytes = complete.bytes();
+    let request: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert!(request.get("Data").is_none());
     let envelope = serde_json::json!({"Data":request});
     assert_eq!(

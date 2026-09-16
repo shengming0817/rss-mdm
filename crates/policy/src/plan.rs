@@ -109,6 +109,10 @@ pub enum Intent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlanId(pub(crate) [u8; 32]);
 impl PlanId {
+    /// Reconstruct a stored digest; does not authenticate its plan inputs.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
     pub fn bytes(&self) -> &[u8; 32] {
         &self.0
     }

@@ -1,0 +1,9 @@
+-- External administrator bootstrap, once per dedicated MDM PostgreSQL cluster.
+-- mdm_owner already exists. The product migrator never receives CREATEROLE.
+CREATE ROLE rss_tmsg_relay NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+CREATE ROLE mdm_policy_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+CREATE ROLE mdm_resource_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+CREATE ROLE mdm_software_release_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+CREATE ROLE mdm_software_driver NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+GRANT rss_tmsg_relay TO mdm_owner;
+GRANT mdm_resource_runtime,mdm_software_release_runtime TO mdm_software_driver;

@@ -73,6 +73,12 @@ pub enum PublishResult {
     Applied,
     AlreadyApplied,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DocumentPresence {
+    Matching,
+    Different,
+    Absent,
+}
 /// Explicitly authorized, dedicated bare repository; never clones or pushes.
 pub struct Repository {
     path: PathBuf,
@@ -147,6 +153,29 @@ impl Repository {
         operation: &str,
         at: Timepoint,
     ) -> Result<Prepared, Error> {
+        self.prepare_change(base, document, operation, at, false)
+            .await
+    }
+    /// Remove only the exact approved document from an explicitly selected base.
+    pub async fn prepare_remove(
+        &self,
+        base: CommitId,
+        document: Document,
+        operation: &str,
+        at: Timepoint,
+    ) -> Result<Prepared, Error> {
+        self.read(&base, &document).await?;
+        self.prepare_change(Some(base), document, operation, at, true)
+            .await
+    }
+    async fn prepare_change(
+        &self,
+        base: Option<CommitId>,
+        document: Document,
+        operation: &str,
+        at: Timepoint,
+        remove: bool,
+    ) -> Result<Prepared, Error> {
         self.document(&document)?;
         token(operation)?;
         if let Some(b) = &base {
@@ -162,29 +191,43 @@ impl Repository {
             self.run(&["read-tree", "--empty"], None, Some(&index), None)
                 .await?;
         }
-        let blob = self
-            .run(
-                &["hash-object", "-w", "--stdin"],
-                Some(document.bytes()),
-                None,
+        if remove {
+            let deletion = format!(
+                "0 0000000000000000000000000000000000000000\t{}\n",
+                document.path()
+            );
+            self.run(
+                &["update-index", "--index-info"],
+                Some(deletion.as_bytes()),
+                Some(&index),
                 None,
             )
             .await?;
-        let blob = output_id(&blob)?;
-        self.run(
-            &[
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                "100644",
-                blob.as_str(),
-                document.path(),
-            ],
-            None,
-            Some(&index),
-            None,
-        )
-        .await?;
+        } else {
+            let blob = self
+                .run(
+                    &["hash-object", "-w", "--stdin"],
+                    Some(document.bytes()),
+                    None,
+                    None,
+                )
+                .await?;
+            let blob = output_id(&blob)?;
+            self.run(
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    "100644",
+                    blob.as_str(),
+                    document.path(),
+                ],
+                None,
+                Some(&index),
+                None,
+            )
+            .await?;
+        }
         let tree = self.run(&["write-tree"], None, Some(&index), None).await?;
         let tree = output_id(&tree)?;
         let mut args = vec!["commit-tree", tree.as_str()];
@@ -192,8 +235,10 @@ impl Repository {
             args.extend(["-p", b.as_str()]);
         }
         let message = format!(
-            "resource metadata v1\ntenant: {}\ntap: {}\noperation: {operation}\n",
-            self.tenant, self.tap
+            "resource metadata v1\ntenant: {}\ntap: {}\noperation: {operation}\naction: {}\n",
+            self.tenant,
+            self.tap,
+            if remove { "remove" } else { "publish" }
         );
         let target = output_id(
             &self
@@ -337,6 +382,59 @@ impl Repository {
             blob,
             digest: expected.digest(),
         })
+    }
+    /// Inspect a fixed commit without conflating absent content and provider errors.
+    pub async fn presence(
+        &self,
+        commit: &CommitId,
+        expected: &Document,
+    ) -> Result<DocumentPresence, Error> {
+        self.document(expected)?;
+        self.commit(commit).await?;
+        self.check_path(commit, expected).await?;
+        let out = self
+            .run(
+                &["ls-tree", commit.as_str(), "--", expected.path()],
+                None,
+                None,
+                None,
+            )
+            .await?;
+        if out.is_empty() {
+            return Ok(DocumentPresence::Absent);
+        }
+        match self.read(commit, expected).await {
+            Ok(_) => Ok(DocumentPresence::Matching),
+            Err(Error::DigestMismatch) => Ok(DocumentPresence::Different),
+            Err(e) => Err(e),
+        }
+    }
+    /// Objects written by prepare are not published until reachable from the real branch.
+    pub async fn contains_commit(&self, target: &CommitId) -> Result<bool, Error> {
+        self.commit(target).await?;
+        let Some(head) = self.head().await? else {
+            return Ok(false);
+        };
+        match self
+            .run(
+                &[
+                    "merge-base",
+                    "--is-ancestor",
+                    target.as_str(),
+                    head.as_str(),
+                ],
+                None,
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(Error::GitFailure {
+                exit_code: Some(1), ..
+            }) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
     async fn run(
         &self,

@@ -190,9 +190,18 @@ pub(crate) async fn append(
     result: &str,
     registration: Option<Uuid>,
 ) -> Result<(), Error> {
+    append_on_connection(tx, audit, status, result, registration).await
+}
+pub(crate) async fn append_on_connection(
+    connection: &mut sqlx::PgConnection,
+    audit: &Audit,
+    status: u16,
+    result: &str,
+    registration: Option<Uuid>,
+) -> Result<(), Error> {
     let f = audit.snapshot();
-    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,client,target,operation_id,registration_request,action,result,status,registration_id) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11,$12::uuid)")
-        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.client).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).bind(f.registration_id.map(|v|v.to_string())).execute(&mut **tx).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
+    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,client,target,operation_id,registration_request,action,result,status,registration_id,software) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11,$12::uuid,$13::jsonb)")
+        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.client).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).bind(f.registration_id.map(|v|v.to_string())).bind(f.software.map(|v| serde_json::to_string(&v).expect("software fact serialization"))).execute(connection).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
     Ok(())
 }
 async fn admission(pool: &PgPool) -> Result<(), Error> {

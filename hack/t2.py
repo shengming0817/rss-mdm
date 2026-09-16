@@ -54,13 +54,14 @@ def verify_migrations(container, binary, config, root, env):
         sql("INSERT INTO public.mdm_migrations VALUES('"+unit+"','"+digest+"',true)")
     legacy='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
     sql(f"INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{legacy}','00000000-0000-4000-8000-000000000001','legacy','mdm','legacy-device','enrollment','available',clock_timestamp()+interval '200 seconds'),('{legacy}','00000000-0000-4000-8000-000000000002','legacy','mdm','legacy-device','enrollment','consumed',clock_timestamp()+interval '200 seconds'); INSERT INTO mdm_access.requests VALUES('{legacy}','00000000-0000-4000-8000-000000000003','00000000-0000-4000-8000-000000000002'); INSERT INTO mdm_access.devices VALUES('{legacy}','legacy-device'); INSERT INTO mdm_access.registrations VALUES('{legacy}','00000000-0000-4000-8000-000000000004','legacy-device','mdm',1,'00000000-0000-4000-8000-000000000003','active'); INSERT INTO mdm_access.credentials VALUES('{legacy}','00000000-0000-4000-8000-000000000005','00000000-0000-4000-8000-000000000004','mdm',repeat('e',64),'active'); INSERT INTO mdm_access.audit(tenant_id,id,request_id,action,result,status) VALUES('{legacy}','00000000-0000-4000-8000-000000000006','00000000-0000-4000-8000-000000000007','registration_accept','success',200); INSERT INTO mdm_access.operations VALUES('{legacy}','legacy','mdm','00000000-0000-4000-8000-000000000008',repeat('e',64),'history');")
-    before=sql(f"SELECT row_to_json(a) FROM mdm_access.audit a WHERE tenant_id='{legacy}'")
+    before=sql(f"SELECT to_jsonb(a) - 'software' FROM mdm_access.audit a WHERE tenant_id='{legacy}'")
     migrate(); migrate()
     require(sql(f"SELECT count(*) FROM mdm_access.grants WHERE tenant_id='{legacy}' AND state='available'")=='0','legacy grant remains usable')
     require(sql(f"SELECT state='cancelled' AND issuance_operation IS NULL AND password_digest IS NULL FROM mdm_access.requests WHERE tenant_id='{legacy}'")=='t','legacy request gained enrollment authority')
     require(sql(f"SELECT state FROM mdm_access.registrations WHERE tenant_id='{legacy}'")=='active','historical registration changed')
     require(sql(f"SELECT state FROM mdm_access.credentials WHERE tenant_id='{legacy}'")=='active','historical credential changed')
-    require(before==sql(f"SELECT row_to_json(a) FROM mdm_access.audit a WHERE tenant_id='{legacy}'"),'historical audit changed')
+    require(before==sql(f"SELECT to_jsonb(a) - 'software' FROM mdm_access.audit a WHERE tenant_id='{legacy}'"),'historical audit changed')
+    require(sql(f"SELECT count(*)=1 AND bool_and(software IS NULL) FROM mdm_access.audit WHERE tenant_id='{legacy}'")=='t','legacy audit gained software facts')
     require(sql(f"SELECT result FROM mdm_access.operations WHERE tenant_id='{legacy}'")=='history','historical operation changed')
     # Force index eligibility on the tiny fixture; this is not a throughput claim.
     plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
@@ -89,7 +90,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "9", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "14", "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -163,6 +164,7 @@ def main():
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
+            sql += (ROOT/'crates/app/schema/software-publication-roles.sql').read_text()
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")
@@ -175,9 +177,9 @@ def main():
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_WINDOWS_FIXTURES']=str(root)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_upgrade"], stdout=subprocess.DEVNULL, timeout=10)
-            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::populated_windows_upgrade", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
+            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::populated_windows_and_backend_upgrade", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
+            require(upgrade.returncode == 0 and 'test migration::tests::populated_windows_and_backend_upgrade ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
             if not device_only and not windows_only:
                 verify_startup_deadlines(migrators[0],root,port,env)

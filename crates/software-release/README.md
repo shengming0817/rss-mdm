@@ -13,9 +13,9 @@ N11 / #2389 负责 Resource、WinGet/Brew 映射、持久化、外部提交与�
 直接使用 `rss-request-context::TenantId`、`rss-contract::Timepoint`，本包不 re-export。
 `CandidateId`、`RequestId`、`ActorId` 分角色且包含 tenant。身份值、软件身份各项和 artifact key 为 1–128 字节，
 只允许 ASCII 字母、数字及 `._-/+@`，拒绝空路径段与 `.` / `..` 段；它们是内部引用，不接受 URL、凭据或任意正文。
-`SoftwareIdentity::new` 接收具名 `SoftwareIdentityFields`：source、package、version、platform、architecture、variant，
+`SoftwareIdentity::new` 接收具名 `SoftwareIdentityFields`：source、package、version、platform，
 由组装映射精确身份；验证后的值通过 `fields()` 只读访问。
-`Content` 接收描述、源快照、manifest 和 1–256 个具名产物的 SHA-256；产物按 key 排序，重复 key 拒绝。
+一个 Candidate 是完整平台包版本。`Content` 接收描述、源配置快照、完整 manifest 和 1–64 个 `VariantContent`；每项包含 architecture、variant 和具名产物。总计最多 256 个产物引用，排序后编码；同一产物 key 跨 variant 共享时摘要必须一致。
 多架构/依赖闭包由调用方完整声明，不由核心发现、下载或执行。
 
 ## 审批与状态
@@ -64,7 +64,7 @@ N11 必须核对真实 backend 目标、元数据和产物摘要，再构造结�
 旧 attempt 不能覆盖新尝试；Retry 取代前次 NotApplied 后，前次历史由 N11 持久记录保留。
 
 隔离/弃用后仍允许 Record：迟到 Applied 补充外部暴露事实，整体状态不变，不返回新授权。
-实际源下架、快照保留、下载凭据/缓存窗口及终端卸载/降级归后续产品流程。
+N11 app 负责真实源下架和快照保留；私有下载授权、缓存窗口及终端卸载/降级归后续产品流程。
 重新发布须创建新候选并重新审批；N11 仍须核对同版本字节不可替换及旧未知发布没有竞争写入。
 
 ## 编码和验证
@@ -72,9 +72,9 @@ N11 必须核对真实 backend 目标、元数据和产物摘要，再构造结�
 公共类型、字段与转换契约也在 item rustdoc 中提供；`cargo doc --no-deps -p rss-mdm-software-release` 可生成入口。
 crate 启用 `missing_docs`，本地 CI 的 Clippy `-D warnings` 阻止新增未文档化公共项。
 
-content、approval、publication、request 使用 `rss-mdm-software-release/<kind>/v1` 域。
+content、approval、publication、request 使用 `rss-mdm-software-release/<kind>/v2` 域。
 变长字节前缀为 big-endian u64 长度，计数/枚举/秒时间为 big-endian u64，tenant 为 canonical 16 字节，
-摘要为原始 32 字节；artifact 按 key 排序。字段与枚举标签唯一由编码源码持有，固定向量和逐字段变化测试验证。
+摘要为原始 32 字节；variant 按 architecture/variant 排序，其产物按 key 排序。字段与枚举标签唯一由编码源码持有，固定向量和逐字段变化测试验证。
 无旧 API、历史模型 alias、兼容 facade、序列化双路径或 feature 开关。
 
 ```sh
@@ -86,7 +86,7 @@ python3 hack/core_consumer.py
 MDM_IDENTITY_CANDIDATE=/absolute/approved-candidate make ci
 ```
 
-同一 tests/model.rs 在仓内和仓外 consumer 运行。每个 consumer 显式声明唯一产品包及 canonical 两个值类型 owner，
+同一 tests/model.rs、tests/version.rs 在仓内和仓外 consumer 运行。每个 consumer 显式声明唯一产品包及 canonical 两个值类型 owner，
 使用独立 workspace/配置/lock/target，验证默认/关闭默认 features、精确 Git 身份和普通/构建依赖闭包。
 从产品核心自身遍历闭包，防止 consumer 补齐缺失声明；canonical 值类型 owner 的 features 必须为空。
 本地 CI 记录受测 SHA、RSS revision、lock 摘要、features、命令和结果。
@@ -97,3 +97,5 @@ MDM_IDENTITY_CANDIDATE=/absolute/approved-candidate make ci
 - [Tough Target](https://github.com/awslabs/tough/blob/98d8eb8b2ce63515d9b4981c938ef6453c5b5771/tough/src/schema/mod.rs#L432-L500)：精确产物摘要；借鉴内容绑定，不引入 TUF 网络/验签协议。
 - [in-toto Step](https://github.com/in-toto/in-toto-rs/blob/48e57fd04624d30d081fae1dddf56caaa4a5b81e/src/models/layout/step.rs#L92-L110)：证据与参与者约束一起绑定；真实身份和验证由产品 owner 提供。
 - 历史 WinMDM `src/internal/domain/resource/{entity,value_object}.go` 和 `src/internal/application/resource/service.go` 仅作缺口证据，不继承无 tenant、可变版本 detail 或系统时钟。来源与恢复见 [reference/README](../../reference/README.md)。
+
+#2389 直接替换原单 variant 内容模型，不提供 V1 发布身份兼容路径；PG 持久化只接收当前模型。完整平台版本与一次 WinGet manifest / Brew document 发布一一对应，避免分架构审批造成未批准内容发布或撤回误删。

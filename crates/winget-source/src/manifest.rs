@@ -17,21 +17,27 @@ impl fmt::Debug for Manifest {
     }
 }
 impl Manifest {
+    /// Validated package identifier.
     pub fn package(&self) -> &str {
         self.query.package()
     }
+    /// Exact version identifier.
     pub fn version(&self) -> &str {
         self.query.version()
     }
+    /// Validated selection identity that produced this manifest.
     pub fn query(&self) -> &Query {
         &self.query
     }
+    /// Validated HTTPS artifact URL; the caller still owns artifact download authorization.
     pub fn artifact_url(&self) -> &str {
         &self.url
     }
+    /// Expected artifact SHA-256 bytes.
     pub const fn sha256(&self) -> [u8; 32] {
         self.sha256
     }
+    /// Require an exact artifact digest match, returning InvalidDigest on mismatch.
     pub fn verify_expected_digest(&self, expected: [u8; 32]) -> Result<(), Error> {
         if self.sha256 == expected {
             Ok(())
@@ -40,7 +46,7 @@ impl Manifest {
         }
     }
     /// POST /packageManifests request body (not the GET response envelope). No write.
-    pub fn publication_metadata(&self) -> Result<Vec<u8>, Error> {
+    pub(crate) fn checked_publication_metadata(&self) -> Result<Vec<u8>, Error> {
         let mut request = self.document["Data"].clone();
         let version = &mut request["Versions"][0];
         // Empty Channel is common in GET responses, but violates POST minLength=1.

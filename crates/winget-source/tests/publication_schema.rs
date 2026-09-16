@@ -33,9 +33,9 @@ fn publish_requests_satisfy_fixed_official_schema_not_our_response_parser() {
             scope,
         )
         .unwrap();
-        let manifest = parse_manifest(&query, bytes).unwrap();
-        let value: serde_json::Value =
-            serde_json::from_slice(&manifest.publication_metadata().unwrap()).unwrap();
+        parse_manifest(&query, bytes).unwrap();
+        let manifest = VersionManifest::from_response(tenant, "private", bytes).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(manifest.bytes()).unwrap();
         let errors = validator
             .iter_errors(&value)
             .map(|e| e.to_string())

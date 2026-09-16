@@ -1,0 +1,337 @@
+use rss_mdm_resource_postgres::{core as r, *};
+mod support;
+use support::*;
+fn id(s: &str) -> r::Id {
+    r::Id::new(s).unwrap()
+}
+fn version(resource: &r::Id, label: &str, byte: u8) -> r::Version {
+    r::Version::new(
+        tenant(),
+        resource.clone(),
+        id(label),
+        r::Kind::Software,
+        vec![r::Variant::new(
+            r::Platform::Windows,
+            r::Architecture::X86_64,
+            id("msi"),
+            r::Declaration::Software {
+                package: r::Package::new(id("private"), id("Acme.App"), id(label)),
+                artifact: r::Artifact::new(id("installer"), 3, r::Digest::from_bytes([byte; 32]))
+                    .unwrap(),
+                install: id("msi"),
+                detect: id("product-code"),
+                uninstall: None,
+            },
+        )],
+    )
+    .unwrap()
+}
+fn req(resource: &r::Id, revision: u64, command: Command) -> Request {
+    Request {
+        id: id(&format!("requests/{}", unique())),
+        resource: resource.clone(),
+        expected_storage_revision: revision,
+        as_of: at(10),
+        command,
+    }
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn resource_immutable_versions_restart_and_reference_rollback() {
+    let runtime = runtime().await;
+    let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let key = id(&unique());
+    s.execute(
+        &req(&key, 0, Command::Create(r::Kind::Software)),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let insert = req(&key, 1, Command::Insert(version(&key, "one", 1)));
+    let receipt = s.execute(&insert, deadline()).await.unwrap();
+    assert_eq!(receipt, s.execute(&insert, deadline()).await.unwrap());
+    assert_event(key.as_str(), insert.id.as_str(), 2, 10);
+    assert!(
+        s.execute(
+            &req(&key, 2, Command::Insert(version(&key, "one", 2))),
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    s.execute(&req(&key, 2, Command::Activate(id("one"))), deadline())
+        .await
+        .unwrap();
+    let archive = req(
+        &key,
+        3,
+        Command::Archive {
+            version: id("one"),
+            references: 0,
+        },
+    );
+    assert!(matches!(
+        s.execute(&archive, deadline()).await,
+        Err(Error::Rejected(Rejection::CompanionRequired))
+    ));
+    let blocked = req(
+        &key,
+        3,
+        Command::Archive {
+            version: id("one"),
+            references: 1,
+        },
+    );
+    let result = runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &blocked), |(s, r), tx| {
+            Box::pin(async move {
+                s.lock_version_in(tx, &r.resource, &id("one"))
+                    .await?
+                    .unwrap();
+                s.execute_in(tx, r).await
+            })
+        })
+        .await;
+    assert!(result.fold(
+        |v| v == Err(Rejection::Referenced),
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    let result = runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &archive), |(s, r), tx| {
+            Box::pin(async move {
+                s.execute_in(tx, r).await?.unwrap();
+                Err::<(), _>(rss_transactional_messaging_postgres::PgError::from(
+                    sqlx::Error::RowNotFound,
+                ))
+            })
+        })
+        .await;
+    assert!(result.fold(
+        |_| false,
+        |_| false,
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    let restarted = ResourceStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let resource = restarted.get(&key, deadline()).await.unwrap().unwrap();
+    assert_eq!(
+        resource.resource.state(&id("one")).unwrap(),
+        r::State::Active
+    );
+    assert_eq!(
+        restarted
+            .version(&key, &id("one"), deadline())
+            .await
+            .unwrap()
+            .unwrap(),
+        version(&key, "one", 1)
+    );
+    assert_eq!(
+        restarted.operation(&insert.id, deadline()).await.unwrap(),
+        Some(receipt)
+    );
+    assert!(
+        ResourceStore::new(runtime, foreign(), deadline())
+            .await
+            .unwrap()
+            .get(&key, deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn resource_cas_events_and_owner_admission() {
+    let runtime = runtime().await;
+    let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let key = id(&unique());
+    s.execute(
+        &req(&key, 0, Command::Create(r::Kind::Software)),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let a = req(&key, 1, Command::Insert(version(&key, "one", 1)));
+    let b = req(&key, 1, Command::Insert(version(&key, "two", 2)));
+    let (a, b) = tokio::join!(s.execute(&a, deadline()), s.execute(&b, deadline()));
+    assert_ne!(a.is_ok(), b.is_ok());
+    sql("REVOKE INSERT ON rss_transactional_messaging.outbox FROM mdm_resource_runtime");
+    let r = req(&key, 2, Command::Insert(version(&key, "three", 3)));
+    let result = s.execute(&r, deadline()).await;
+    sql("GRANT INSERT ON rss_transactional_messaging.outbox TO mdm_resource_runtime");
+    assert!(result.is_err());
+    assert!(
+        s.version(&key, &id("three"), deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(s.operation(&r.id, deadline()).await.unwrap().is_none());
+    let wrong = support::runtime().await;
+    let result = wrong
+        .local_tx_with_context(tenant(), deadline(), (&s, &r), |(s, r), tx| {
+            Box::pin(async move { s.execute_in(tx, r).await })
+        })
+        .await;
+    assert!(result.fold(
+        |_| false,
+        |_| false,
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    sql("GRANT UPDATE(document) ON mdm_resource.immutable TO mdm_resource_runtime");
+    let bad = ResourceStore::new(runtime, tenant(), deadline()).await;
+    sql("REVOKE UPDATE(document) ON mdm_resource.immutable FROM mdm_resource_runtime");
+    assert!(bad.is_err());
+}
+
+fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
+    use sha2::{Digest, Sha256};
+    let message_id = format!("resource.v1:{:x}", Sha256::digest(request.as_bytes()));
+    let envelope: serde_json::Value = serde_json::from_str(&sql(&format!(
+        "SELECT envelope FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='{}'",
+        tenant(), message_id
+    ))).unwrap();
+    assert_eq!(envelope["tenant"], tenant().to_string());
+    assert_eq!(envelope["occurred_at"], occurred_at);
+    assert_eq!(envelope["domain"], "mdm-resource");
+    assert_eq!(envelope["route"], "resource.changed");
+    assert_eq!(envelope["contract"], "mdm.resource.changed");
+    assert_eq!(envelope["version"], "v1");
+    assert_eq!(envelope["partition"], id);
+    assert_eq!(
+        envelope["schema"],
+        format!("sha256:{:x}", Sha256::digest(EVENT_SCHEMA))
+    );
+    let bytes: Vec<u8> = serde_json::from_value(envelope["payload"].clone()).unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        payload,
+        serde_json::json!({"v":1,"id":id,"request":request,"revision":revision})
+    );
+    let schema: serde_json::Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
+    let required: std::collections::BTreeSet<_> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        required,
+        payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect()
+    );
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn resource_admission_rejects_schema_and_privilege_drift() {
+    let runtime = runtime().await;
+    let cases = [
+        (
+            "CREATE TABLE mdm_resource.unexpected(id integer)",
+            "DROP TABLE mdm_resource.unexpected",
+        ),
+        (
+            "GRANT UPDATE(document) ON mdm_resource.immutable TO mdm_resource_runtime",
+            "REVOKE UPDATE(document) ON mdm_resource.immutable FROM mdm_resource_runtime",
+        ),
+        (
+            "ALTER TABLE mdm_resource.aggregates DISABLE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_resource.aggregates ENABLE ROW LEVEL SECURITY",
+        ),
+        (
+            "ALTER TABLE mdm_resource.aggregates NO FORCE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_resource.aggregates FORCE ROW LEVEL SECURITY",
+        ),
+        (
+            "GRANT mdm_owner TO mdm_resource_runtime",
+            "REVOKE mdm_owner FROM mdm_resource_runtime",
+        ),
+        (
+            "ALTER ROLE mdm_resource_runtime SUPERUSER",
+            "ALTER ROLE mdm_resource_runtime NOSUPERUSER",
+        ),
+        (
+            "GRANT UPDATE ON mdm_resource.aggregates TO mdm_resource_runtime",
+            "REVOKE UPDATE ON mdm_resource.aggregates FROM mdm_resource_runtime; GRANT UPDATE(revision,document,digest) ON mdm_resource.aggregates TO mdm_resource_runtime",
+        ),
+    ];
+    for (change, restore) in cases {
+        sql(change);
+        let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
+        sql(restore);
+        assert!(result.is_err(), "admitted drift: {change}");
+        ResourceStore::new(runtime.clone(), tenant(), deadline())
+            .await
+            .unwrap_or_else(|e| panic!("failed to restore {change}: {e:?}"));
+    }
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn admission_rejects_noninherited_switchable_privileges() {
+    let runtime = runtime().await;
+    let role = format!("acl_{}", unique().replace('-', "_"));
+    let bridge = format!("{role}_bridge");
+    sql(&format!(
+        "CREATE ROLE {role} NOLOGIN; CREATE ROLE {bridge} NOLOGIN; GRANT {role} TO {bridge} WITH INHERIT FALSE, SET TRUE; GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET TRUE; GRANT USAGE ON SCHEMA mdm_resource TO {role};"
+    ));
+    for membership in ["INHERIT FALSE, SET TRUE", "INHERIT TRUE, SET FALSE"] {
+        sql(&format!("GRANT {role} TO {bridge} WITH {membership}"));
+        for privilege in [
+            "TRUNCATE ON mdm_resource.requests",
+            "DELETE ON mdm_resource.immutable",
+            "UPDATE(document) ON mdm_resource.immutable",
+            "UPDATE ON mdm_resource.aggregates",
+            "REFERENCES ON mdm_resource.aggregates",
+            "TRIGGER ON mdm_resource.aggregates",
+        ] {
+            sql(&format!("GRANT {privilege} TO {role}"));
+            let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
+            sql(&format!("REVOKE {privilege} FROM {role}"));
+            assert!(
+                result.is_err(),
+                "admitted switchable privilege: {privilege}"
+            );
+        }
+    }
+    // Permitted column privileges in a switchable role remain admissible.
+    sql(&format!(
+        "GRANT UPDATE(document) ON mdm_resource.aggregates TO {role}"
+    ));
+    ResourceStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    sql(&format!(
+        "REVOKE UPDATE(document) ON mdm_resource.aggregates FROM {role}"
+    ));
+    // A role with neither inheritance nor SET permission is not executable.
+    sql(&format!(
+        "GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET FALSE; GRANT TRUNCATE ON mdm_resource.requests TO {role}"
+    ));
+    let dormant = ResourceStore::new(runtime, tenant(), deadline()).await;
+    sql(&format!(
+        "REVOKE {bridge} FROM mdm_resource_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
+    ));
+    dormant.unwrap();
+}
