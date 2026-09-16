@@ -20,7 +20,7 @@ impl Management {
         })).await?.ok_or(Error::NotFound)?;
         Ok((
             row.try_get::<i64, _>("revision")? as u64,
-            input(serde_json::from_str(
+            stored(serde_json::from_str(
                 &row.try_get::<String, _>("definition")?,
             ))?,
         ))
@@ -92,7 +92,7 @@ impl Management {
             return Err(Error::Conflict.into());
         }
         for row in rows {
-            let def: ScopeDefinition = input(serde_json::from_str(&row))?;
+            let def: ScopeDefinition = stored(serde_json::from_str(&row))?;
             if def.references().contains(&Reference::Group(id)) {
                 return Err(Error::Conflict.into());
             }
@@ -116,7 +116,7 @@ impl Management {
             let (identity, revision, member_version, members) = match &reference {
                 Reference::Device(id) => (
                     s::SourceId::Direct(input(s::DeviceId::new(self.tenant, id))?),
-                    storage::device(tx, id).await?,
+                    storage::device(tx, id).await?.revision,
                     None,
                     vec![id.clone()],
                 ),

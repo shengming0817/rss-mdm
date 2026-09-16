@@ -41,9 +41,19 @@ pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>
 }
 pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit) -> Result<()> {
     let audit = audit.clone();
+    let admitted = audit
+        .snapshot()
+        .software
+        .as_ref()
+        .is_some_and(|f| f.stage == "management_admission");
+    let (status, result) = if admitted {
+        (202, "unknown")
+    } else {
+        (200, "success")
+    };
     tx.with_connection(move |c| {
         Box::pin(async move {
-            crate::access_store::append_on_connection(c, &audit, 200, "success", None)
+            crate::access_store::append_on_connection(c, &audit, status, result, None)
                 .await
                 .map_err(|_| sqlx::Error::Protocol("management audit failed".into()))
         })
@@ -66,7 +76,7 @@ pub(super) async fn replay(
         if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint {
             return Err(Error::Conflict.into());
         }
-        return Ok(Some(input(serde_json::from_str(
+        return Ok(Some(stored(serde_json::from_str(
             &row.try_get::<String, _>("response")?,
         ))?));
     }
@@ -104,22 +114,38 @@ pub(super) async fn preview(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Opti
         sqlx::query_scalar::<_,String>("SELECT document::text FROM mdm_management.previews WHERE tenant_id=$1::uuid AND id=$2::uuid")
             .bind(tenant).bind(id.to_string()).fetch_optional(c).await
     })).await?;
-    raw.map(|v| input(serde_json::from_str(&v))).transpose()
+    raw.map(|v| stored(serde_json::from_str(&v))).transpose()
 }
-pub(super) async fn device(tx: &mut PgTransaction<'_>, id: &str) -> Result<u64> {
+pub(super) async fn device(tx: &mut PgTransaction<'_>, id: &str) -> Result<DeviceIdentity> {
     input(rss_mdm_scope::DeviceId::new(tx.tenant_id(), id))?;
     let tenant = tx.tenant_id().to_string();
     let id = id.to_owned();
     let rows=tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("SELECT id::text,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active' ORDER BY id FOR SHARE")
+        sqlx::query("SELECT id::text,generation,channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active' ORDER BY id")
             .bind(tenant).bind(id).fetch_all(c).await
     })).await?;
     if rows.is_empty() {
         return Err(Error::NotFound.into());
     }
-    // A direct source always contains exactly its stable device; generation is
-    // independently revalidated, and is never treated as a replacement device ID.
-    Ok(1)
+    let registrations = rows
+        .into_iter()
+        .map(|row| {
+            Ok(Registration {
+                id: row.try_get("id")?,
+                channel: row.try_get("channel")?,
+                generation: row.try_get::<i64, _>("generation")? as u64,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let revision = registrations
+        .iter()
+        .map(|r| r.generation)
+        .max()
+        .ok_or(Error::NotFound)?;
+    Ok(DeviceIdentity {
+        revision,
+        registrations,
+    })
 }
 
 pub(super) async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result::Result<(), Error> {
@@ -154,10 +180,10 @@ pub(super) async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result:
         .await;
     attempt.fold(
         |_| Ok(()),
-        |_| Err(Error::Unavailable(Failure::Runtime)),
-        |_| Err(Error::Unavailable(Failure::Runtime)),
+        |_| Err(Error::Unavailable(Failure::ManagementAdmission)),
+        |_| Err(Error::Unavailable(Failure::ManagementAdmission)),
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::CommitUnknown),
-        |_| Err(Error::Unavailable(Failure::Runtime)),
+        |_| Err(Error::Unavailable(Failure::ManagementAdmission)),
     )
 }

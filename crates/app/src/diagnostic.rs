@@ -77,6 +77,10 @@ pub enum ConfigIssue {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
+    ManagementAdmission,
+    ManagementConnection,
+    ManagementSource,
+    ManagementStorage,
     RequestDeadline,
     IdentityTransport,
     IdentityValidation,

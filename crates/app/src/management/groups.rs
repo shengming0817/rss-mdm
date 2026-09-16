@@ -204,7 +204,7 @@ impl Management {
         let (facts, provenance) = self.assets(tx, at).await?;
         let evaluated = input(rule.evaluate(&facts, at))?;
         Ok(
-            json!({"revision":revision,"snapshot":facts.version,"members":evaluated.objects.iter().filter(|o|o.decision==g::Decision::Match).map(|o|o.key.id()).collect::<Vec<_>>(),"assets":provenance,"decisions":evaluated.objects.iter().map(|o|json!({"device":o.key.id(),"decision":format!("{:?}",o.decision),"explanations":o.explanations.iter().map(|e|json!({"path":e.path,"outcome":format!("{:?}",e.outcome)})).collect::<Vec<_>>()})).collect::<Vec<_>>()}),
+            json!({"revision":revision,"snapshot":facts.version,"members":evaluated.objects.iter().filter(|o|o.decision==g::Decision::Match).map(|o|o.key.id()).collect::<Vec<_>>(),"assets":provenance,"decisions":evaluated.objects.iter().map(|o|json!({"device":o.key.id(),"decision":decision(o.decision),"explanations":o.explanations.iter().map(|e|json!({"path":e.path,"outcome":outcome(e.outcome)})).collect::<Vec<_>>()})).collect::<Vec<_>>()}),
         )
     }
     async fn assets(
@@ -214,7 +214,7 @@ impl Management {
     ) -> Result<(g::Snapshot, Value)> {
         let tenant = self.tenant.to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT d.id,r.id::text AS registration,s.epoch::text,s.source FROM mdm_access.devices d JOIN mdm_access.registrations r ON (r.tenant_id,r.device)=(d.tenant_id,d.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE d.tenant_id=$1::uuid AND r.state='active' AND s.enabled AND s.source='mdm.windows' ORDER BY d.id LIMIT 10001 FOR SHARE OF d,r,s")
+            sqlx::query("SELECT d.id,r.id::text AS registration,s.epoch::text,s.source FROM mdm_access.devices d JOIN mdm_access.registrations r ON (r.tenant_id,r.device)=(d.tenant_id,d.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE d.tenant_id=$1::uuid AND r.state='active' AND s.enabled AND s.source='mdm.windows' ORDER BY d.id LIMIT 10001")
                 .bind(tenant).fetch_all(c).await
         })).await?;
         if rows.len() > 10_000 {
@@ -236,7 +236,7 @@ impl Management {
             let fields = tx
                 .with_connection(move |c| {
                     Box::pin(async move {
-                        rss_mdm_inventory_postgres::read_locked_in(c, &scope)
+                        rss_mdm_inventory_postgres::read_in(c, &scope)
                             .await
                             .map_err(|_| {
                                 sqlx::Error::Protocol("management inventory read failed".into())
@@ -344,6 +344,23 @@ fn criteria_view(c: &g::Criteria) -> Result<Criteria> {
                 }
                 _ => Err(Error::Unsupported.into()),
             }
+        }
+    }
+}
+
+fn decision(d: g::Decision) -> &'static str {
+    match d {
+        g::Decision::Match => "match",
+        g::Decision::NoMatch => "no_match",
+        g::Decision::Unknown => "unknown",
+    }
+}
+fn outcome(o: g::Outcome) -> Value {
+    match o {
+        g::Outcome::Match => json!({"kind":"match"}),
+        g::Outcome::NoMatch => json!({"kind":"no_match"}),
+        g::Outcome::Unknown(r) => {
+            json!({"kind":"unknown","reason":match r {g::UnknownReason::Null=>"null",g::UnknownReason::Missing=>"missing",g::UnknownReason::Stale=>"stale",g::UnknownReason::Unsupported=>"unsupported",g::UnknownReason::Future=>"future"}})
         }
     }
 }

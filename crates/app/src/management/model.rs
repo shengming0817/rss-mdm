@@ -165,6 +165,19 @@ pub struct Preview {
     pub as_of: i64,
     pub sources: Vec<Source>,
     pub devices: Vec<String>,
+    pub registrations: std::collections::BTreeMap<String, DeviceIdentity>,
     pub explanation: serde_json::Value,
     pub plan: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct Registration {
+    pub id: String,
+    pub channel: String,
+    pub generation: u64,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct DeviceIdentity {
+    pub revision: u64,
+    pub registrations: Vec<Registration>,
 }

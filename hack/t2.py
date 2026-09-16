@@ -186,7 +186,7 @@ def main():
             print(upgrade.stdout, end='', flush=True)
             require(upgrade.returncode == 0 and 'test migration::tests::populated_windows_and_backend_upgrade ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
-            run(["docker","exec","-i",name,"psql","-U","postgres","-d","mdm_test","-v","ON_ERROR_STOP=1"],input="INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-4111-8111-111111111111',1);",stdout=subprocess.DEVNULL)
+            run(["docker","exec","-i",name,"psql","-U","postgres","-d","mdm_test","-v","ON_ERROR_STOP=1"],input="INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-4111-8111-111111111111',1),('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1);",stdout=subprocess.DEVNULL)
             if not device_only and not windows_only:
                 verify_startup_deadlines(migrators[0],root,port,env)
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)

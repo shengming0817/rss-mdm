@@ -160,6 +160,16 @@ async fn write(
     audit.target(&id);
     audit.operation(request.operation_id, "management_write");
     let intent_audit = audit.transaction_copy();
+    intent_audit.set_action("software_preflight");
+    intent_audit.software(crate::audit::SoftwareFact {
+        operation: request.operation_id.to_string(),
+        publication: None,
+        attempt: None,
+        ring: None,
+        binding: Some(source.clone()),
+        stage: "management_admission",
+        outcome: "accepted",
+    });
     let intent = app
         .management
         .execute(
@@ -323,11 +333,26 @@ fn cutoff() -> Deadline {
 }
 fn summary(c: &rel::Candidate) -> Value {
     let snapshot = c.snapshot();
-    json!({"id":snapshot.id.value(),"revision":snapshot.revision,"content_digest":snapshot.content.digest().bytes(),"disposition":format!("{:?}",snapshot.disposition),"manifest_digest":snapshot.content.manifest().bytes(),"source_snapshot":snapshot.content.source_snapshot().bytes(),"rings":rel::Ring::ALL.iter().map(|ring| {
+    json!({"id":snapshot.id.value(),"revision":snapshot.revision,"content_digest":snapshot.content.digest().bytes(),"disposition":disposition(snapshot.disposition),"manifest_digest":snapshot.content.manifest().bytes(),"source_snapshot":snapshot.content.source_snapshot().bytes(),"rings":rel::Ring::ALL.iter().map(|ring| {
   let (state,publication)=match snapshot.ring_state(*ring) {
    rel::RingState::Publication(p)=>("publication",Some(json!({"id":p.id().digest().bytes(),"attempt":p.attempt,"outcome":match &p.outcome {rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))=>"published",rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_))=>"not_applied",_=>"unknown"}}))),
    rel::RingState::Approved(_)=>("approved",None),rel::RingState::Validated(_)=>("validated",None),_ =>("candidate",None),
   };let approval=match snapshot.ring_state(*ring) {rel::RingState::Approved(a)=>Some(a),rel::RingState::Publication(p)=>Some(&p.approval),_=>None};
-            json!({"ring":format!("{ring:?}"),"state":state,"publication":publication,"approval":approval.map(|a|json!({"approver":a.approver.value(),"publisher":a.publisher.value(),"at":a.at.unix_seconds(),"digest":a.digest().bytes()}))})
+            json!({"ring":ring_name(*ring),"state":state,"publication":publication,"approval":approval.map(|a|json!({"approver":a.approver.value(),"publisher":a.publisher.value(),"at":a.at.unix_seconds(),"digest":a.digest().bytes()}))})
  }).collect::<Vec<_>>()})
+}
+
+fn disposition(d: rel::Disposition) -> &'static str {
+    match d {
+        rel::Disposition::Active => "active",
+        rel::Disposition::Quarantined => "quarantined",
+        rel::Disposition::Deprecated => "deprecated",
+    }
+}
+fn ring_name(r: rel::Ring) -> &'static str {
+    match r {
+        rel::Ring::Test => "test",
+        rel::Ring::Pilot => "pilot",
+        rel::Ring::Production => "production",
+    }
 }

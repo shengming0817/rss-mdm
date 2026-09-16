@@ -60,6 +60,7 @@ rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 rss-contract.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }

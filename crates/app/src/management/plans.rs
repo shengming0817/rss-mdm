@@ -3,11 +3,22 @@ use rss_mdm_policy as p;
 use rss_mdm_policy_postgres as pg;
 use serde_json::json;
 impl Management {
+    async fn device_identities(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        devices: &[String],
+    ) -> Result<std::collections::BTreeMap<String, DeviceIdentity>> {
+        let mut identities = std::collections::BTreeMap::new();
+        for device in devices {
+            identities.insert(device.clone(), storage::device(tx, device).await?);
+        }
+        Ok(identities)
+    }
     pub(super) async fn policy_read(&self, tx: &mut PgTransaction<'_>, id: &str) -> Result<Value> {
         let id = input(p::PolicyId::new(self.tenant, id))?;
         let state = checked(self.policies.get_in(tx, &id).await?)?.ok_or(Error::NotFound)?;
         Ok(
-            json!({"id":id.value(),"storage_revision":state.storage_revision(),"revision":state.policy().revision(),"status":format!("{:?}",state.policy().status()),"plan":state.current_plan_id().map(|id|id.bytes().to_vec()),"fresh":state.plan_is_fresh()}),
+            json!({"id":id.value(),"storage_revision":state.storage_revision(),"revision":state.policy().revision(),"status":policy_status(state.policy().status()),"plan":state.current_plan_id().map(|id|hex(*id.bytes())),"fresh":state.plan_is_fresh()}),
         )
     }
     pub(super) async fn policy_change(
@@ -114,7 +125,9 @@ impl Management {
             request: input(p::RequestId::new(self.tenant, preview.to_string()))?,
             as_of: at,
         }))?;
+        let registrations = self.device_identities(tx, &devices).await?;
         let result = Preview {
+            registrations,
             id: preview,
             policy: id.value().into(),
             policy_revision: state.storage_revision(),
@@ -151,6 +164,9 @@ impl Management {
         let (revision, definition) = self.scope_definition(tx, preview.scope).await?;
         let (sources, _) = self.sources(tx, &definition, at).await?;
         if revision != preview.scope_revision || sources != preview.sources {
+            return Err(Error::Conflict.into());
+        }
+        if self.device_identities(tx, &preview.devices).await? != preview.registrations {
             return Err(Error::Conflict.into());
         }
         let policy = input(p::PolicyId::new(self.tenant, id))?;
@@ -226,9 +242,32 @@ fn hex(bytes: [u8; 32]) -> String {
 fn plan_json(plan: &p::Plan) -> Value {
     let intents=plan.intents().iter().map(|i|match i {
         p::Intent::Add(e)=>json!({"kind":"add","device":e.key().device().value(),"version":e.key().version()}),
-        p::Intent::Retain {execution,reason}=>json!({"kind":"retain","device":execution.device().value(),"version":execution.version().number(),"reason":format!("{reason:?}")}),
+        p::Intent::Retain {execution,reason}=>json!({"kind":"retain","device":execution.device().value(),"version":execution.version().number(),"reason":retain_reason(*reason)}),
         p::Intent::Supersede {replacement,previous}=>json!({"kind":"supersede","device":replacement.key().device().value(),"version":replacement.key().version(),"previous_versions":previous.iter().map(|e|e.version()).collect::<Vec<_>>()}),
-        p::Intent::Cancel {execution,reason}=>json!({"kind":"cancel","device":execution.device().value(),"version":execution.version().number(),"reason":format!("{reason:?}")}),
+        p::Intent::Cancel {execution,reason}=>json!({"kind":"cancel","device":execution.device().value(),"version":execution.version().number(),"reason":cancel_reason(*reason)}),
     }).collect::<Vec<_>>();
     json!({"id":hex(*plan.id().bytes()),"scheduling_open":plan.scheduling_open(),"intents":intents,"dispatch":"not_requested"})
+}
+
+fn policy_status(s: p::Status) -> &'static str {
+    match s {
+        p::Status::Draft => "draft",
+        p::Status::Active => "active",
+        p::Status::Paused => "paused",
+        p::Status::Archived => "archived",
+    }
+}
+fn retain_reason(r: p::RetainReason) -> &'static str {
+    match r {
+        p::RetainReason::Current => "current",
+        p::RetainReason::Paused => "paused",
+        p::RetainReason::Historical => "historical",
+    }
+}
+fn cancel_reason(r: p::CancelReason) -> &'static str {
+    match r {
+        p::CancelReason::ScopeExit => "scope_exit",
+        p::CancelReason::Archived => "archived",
+        p::CancelReason::Superseded => "superseded",
+    }
 }

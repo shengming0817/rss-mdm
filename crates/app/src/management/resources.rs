@@ -222,7 +222,7 @@ impl Management {
             checked(self.resources.get_in(tx, &id(resource)?).await?)?.ok_or(Error::NotFound)?;
         let snapshot = stored.resource.snapshot();
         Ok(
-            json!({"id":resource,"revision":stored.storage_revision,"kind":format!("{:?}",snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":format!("{:?}",v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
+            json!({"id":resource,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
         )
     }
 }
@@ -286,5 +286,21 @@ fn variant_view(v: &r::Variant) -> Variant {
         },
         key: text(v.key()),
         declaration,
+    }
+}
+
+fn resource_kind(k: r::Kind) -> &'static str {
+    match k {
+        r::Kind::Software => "software",
+        r::Kind::Script => "script",
+        r::Kind::Configuration => "configuration",
+    }
+}
+fn resource_state(s: r::State) -> &'static str {
+    match s {
+        r::State::Frozen => "frozen",
+        r::State::Active => "active",
+        r::State::Deprecated => "deprecated",
+        r::State::Archived => "archived",
     }
 }

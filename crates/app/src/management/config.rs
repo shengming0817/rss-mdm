@@ -11,7 +11,18 @@ pub(crate) struct Config {
     pub publication_database: crate::config::Database,
     pub sources: Vec<super::publications::SourceConfig>,
 }
+pub(crate) const SOURCE_STARTUP_SECONDS: u64 = 6;
 impl Config {
+    pub(crate) fn startup_budget(&self) -> Duration {
+        Duration::from_secs(
+            15 + if self.sources.is_empty() {
+                0
+            } else {
+                5 + SOURCE_STARTUP_SECONDS * self.sources.len() as u64
+            },
+        )
+    }
+
     pub(crate) fn validate(
         &self,
         database: &crate::config::Database,
@@ -59,7 +70,7 @@ impl Config {
         let runtime = Arc::new(
             PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
                 .await
-                .map_err(|_| Error::Unavailable(Failure::Runtime))?,
+                .map_err(|_| Error::Unavailable(Failure::ManagementConnection))?,
         );
         acquire(runtime.clone());
         match Management::new(runtime.clone(), tenant).await {
@@ -110,7 +121,7 @@ impl Config {
         let runtime = Arc::new(
             PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
                 .await
-                .map_err(|_| Error::Unavailable(Failure::Runtime))?,
+                .map_err(|_| Error::Unavailable(Failure::ManagementConnection))?,
         );
         acquire(runtime.clone());
         management.publication_runtime = Some(runtime.clone());
@@ -131,11 +142,14 @@ impl Config {
                     backend: rss_mdm_software_release::ActorId::new(tenant, "mdm-software-backend")
                         .map_err(|_| invalid())?,
                 },
-                Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, Duration::from_secs(6))
-                    .map_err(|_| invalid())?,
+                Deadline::from_timeout(
+                    &crate::lifecycle::RuntimeTimer,
+                    Duration::from_secs(SOURCE_STARTUP_SECONDS),
+                )
+                .map_err(|_| invalid())?,
             )
             .await
-            .map_err(|_| Error::Unavailable(Failure::Runtime))?;
+            .map_err(|_| Error::Unavailable(Failure::ManagementSource))?;
             if management
                 .publications
                 .insert(source.name.clone(), service)
@@ -158,5 +172,36 @@ impl rss_runtime::ManagedResource for Resource {
     async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
         self.0.close().await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn slow_sources_fit_declared_startup_budget_and_remain_bounded() {
+        let mut config: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        let source = serde_json::json!({"name":"fixture","rings":{"test":{"Brew":{"tap":"a/test","repository":"/tmp/test"}},"pilot":{"Brew":{"tap":"a/pilot","repository":"/tmp/pilot"}},"production":{"Brew":{"tap":"a/production","repository":"/tmp/production"}}},"artifacts":[],"max_artifact_bytes":1});
+        config["management"]["sources"] =
+            serde_json::json!([source.clone(), source.clone(), source]);
+        let c: crate::config::Config = serde_json::from_value(config).unwrap();
+        let result = tokio::time::timeout(c.management.startup_budget(), async {
+            tokio::time::sleep(Duration::from_secs(7)).await;
+            for _ in 0..3 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            result.is_ok(),
+            "individually bounded sources exhausted the host budget"
+        );
+        assert!(
+            tokio::time::timeout(c.management.startup_budget(), std::future::pending::<()>())
+                .await
+                .is_err()
+        );
     }
 }

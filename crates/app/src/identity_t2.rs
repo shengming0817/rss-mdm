@@ -1019,6 +1019,14 @@ async fn matrix() -> Result<()> {
         &query,
     )
     .await?;
+    let mut management_config = allowed.clone();
+    management_config["bindings"][0]["management"] =
+        json!(["group_read", "group_write", "plan_save", "release_publish"]);
+    let management_router = app(&management_config, reader.clone()).await?;
+    let mut management_browser = Browser::default();
+    management_browser
+        .login(&management_router, &web, &origin, &central_csrf)
+        .await?;
     for property in ["enabled", "membership"] {
         post(
             &admin,
@@ -1036,6 +1044,53 @@ async fn matrix() -> Result<()> {
                 == StatusCode::UNAUTHORIZED,
             "revoked identity accepted"
         );
+        let counts = pg(
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.plan_references),(SELECT count(*) FROM mdm_software_composition.targets))::text",
+        )?;
+        for (method, path, body) in [
+            (
+                Method::GET,
+                format!("/api/v1/groups/{}", uuid::Uuid::new_v4()),
+                None,
+            ),
+            (
+                Method::POST,
+                format!("/api/v1/groups/{}", uuid::Uuid::new_v4()),
+                Some(
+                    json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":0,"input":{"action":"create","name":"revoked","description":"","criteria":null}}),
+                ),
+            ),
+            (
+                Method::POST,
+                "/api/v1/policies/revoked/plans".into(),
+                Some(
+                    json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":0,"input":{"preview":uuid::Uuid::new_v4()}}),
+                ),
+            ),
+            (
+                Method::POST,
+                "/api/v1/software-sources/revoked/candidates/revoked".into(),
+                Some(
+                    json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":0,"input":{"action":"authorize","ring":"test"}}),
+                ),
+            ),
+        ] {
+            ensure!(
+                management_browser
+                    .call(&management_router, method, &path, body)
+                    .await?
+                    .0
+                    == StatusCode::UNAUTHORIZED,
+                "revoked manager reached handler"
+            );
+        }
+        ensure!(
+            counts
+                == pg(
+                    "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.plan_references),(SELECT count(*) FROM mdm_software_composition.targets))::text"
+                )?
+        );
+
         browser.operation = Some(uuid::Uuid::new_v4());
         ensure!(
             browser

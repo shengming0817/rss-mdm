@@ -44,6 +44,9 @@ type Result<T> = std::result::Result<T, Fault>;
 fn input<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
     r.map_err(|_| Error::Malformed.into())
 }
+fn stored<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
+    r.map_err(|_| Error::Unavailable(Failure::ManagementStorage).into())
+}
 fn checked<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
     r.map_err(|_| Error::Conflict.into())
 }
@@ -69,15 +72,15 @@ impl Management {
         storage::admit(&runtime, tenant).await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
             .await
-            .map_err(|_| Error::Unavailable(Failure::Runtime))?;
+            .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
         let policies =
             rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, deadline())
                 .await
-                .map_err(|_| Error::Unavailable(Failure::Runtime))?;
+                .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
         let resources =
             rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, deadline())
                 .await
-                .map_err(|_| Error::Unavailable(Failure::Runtime))?;
+                .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
         Ok(Self {
             runtime,
             tenant,
@@ -111,7 +114,9 @@ impl Management {
                                         e,
                                         sqlx::Error::Protocol("management rejected".into()).into(),
                                     ),
-                                    Fault::Storage(e) => (Error::Unavailable(Failure::Runtime), e),
+                                    Fault::Storage(e) => {
+                                        (Error::Unavailable(Failure::ManagementStorage), e)
+                                    }
                                     Fault::Sql(e) => {
                                         (Error::Unavailable(Failure::Runtime), e.into())
                                     }

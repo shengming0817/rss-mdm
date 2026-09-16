@@ -66,7 +66,7 @@ pub(super) async fn matrix(
     let resource = uuid::Uuid::new_v4();
     let group_path = format!("/api/v1/groups/{group}");
     call(&mut browser,&router,&group_path,0,json!({"action":"create","name":"managed","description":"","criteria":{"kind":"eq","field":"device.model","value":"Model-A"}})).await?;
-    let (status, preview) = browser
+    let (status, mut preview) = browser
         .call(
             &router,
             Method::GET,
@@ -78,6 +78,58 @@ pub(super) async fn matrix(
         status == StatusCode::OK && preview["members"] == json!(["device-1"]),
         "trusted inventory mapping: {preview}"
     );
+    let old_snapshot = preview["snapshot"].clone();
+    pg("UPDATE mdm.inventory SET value='Model-B' WHERE field='device.model'")?;
+    let stale = json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":1,"input":{"action":"recompute","snapshot":old_snapshot}});
+    ensure!(
+        browser
+            .call(&router, Method::POST, &group_path, Some(stale))
+            .await?
+            .0
+            == StatusCode::CONFLICT,
+        "stale asset snapshot accepted"
+    );
+    ensure!(
+        browser
+            .call(&router, Method::GET, &group_path, None)
+            .await?
+            .1["group"]["member_count"]
+            == 0
+    );
+    let changed = browser
+        .call(
+            &router,
+            Method::GET,
+            &format!("{group_path}/preview?expected_revision=1"),
+            None,
+        )
+        .await?;
+    ensure!(changed.0 == StatusCode::OK && changed.1["members"] == json!([]));
+    pg("UPDATE mdm.inventory SET value='Model-A' WHERE field='device.model'")?;
+    pg(
+        "UPDATE mdm_access.report_sources SET enabled=false WHERE registration='99999999-9999-4999-8999-999999999991'",
+    )?;
+    let stale = json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":1,"input":{"action":"recompute","snapshot":old_snapshot}});
+    ensure!(
+        browser
+            .call(&router, Method::POST, &group_path, Some(stale))
+            .await?
+            .0
+            == StatusCode::CONFLICT,
+        "disabled report source accepted stale recompute"
+    );
+    pg(
+        "UPDATE mdm_access.report_sources SET enabled=true WHERE registration='99999999-9999-4999-8999-999999999991'",
+    )?;
+    preview = browser
+        .call(
+            &router,
+            Method::GET,
+            &format!("{group_path}/preview?expected_revision=1"),
+            None,
+        )
+        .await?
+        .1;
     let recompute = json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":1,"input":{"action":"recompute","snapshot":preview["snapshot"]}});
     let (status, members) = browser
         .call(&router, Method::POST, &group_path, Some(recompute.clone()))
@@ -140,6 +192,12 @@ pub(super) async fn matrix(
     )
     .await?;
     ensure!(saved["plan"] == planned["plan"] && saved["plan"]["dispatch"] == "not_requested");
+    let policy_state = browser
+        .call(&router, Method::GET, &policy_path, None)
+        .await?
+        .1;
+    ensure!(policy_state["plan"] == saved["plan"]["id"] && policy_state["status"] == "active");
+
     let stored = browser
         .call(
             &router,
@@ -254,6 +312,11 @@ async fn software(
         server.logical,
         uuid::Uuid::new_v4()
     );
+    let bad_operation = uuid::Uuid::new_v4();
+    let (bad_status,_)=publisher.call(&router,Method::POST,&path,Some(json!({"operation_id":bad_operation,"expected_revision":0,"input":{"action":"candidate","resource":"missing","version":"v1","expected_resource_revision":1,"submission":server.winget_submission()}}))).await?;
+    ensure!(bad_status.is_client_error());
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{bad_operation}' AND result='success'"))?.trim()=="0","failed publication intent claimed success");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{bad_operation}' AND result='unknown' AND status=202 AND software->>'stage'='management_admission'"))?.trim()=="1");
     let candidate=call(&mut publisher,&router,&path,0,json!({"action":"candidate","resource":resource,"version":"v1","expected_resource_revision":2,"submission":server.winget_submission()})).await?;
     let validated = call(
         &mut publisher,

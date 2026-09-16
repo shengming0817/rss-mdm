@@ -42,11 +42,6 @@ GRANT USAGE ON SCHEMA mdm_software_composition TO mdm_management_runtime;
 GRANT SELECT ON mdm_software_composition.subjects TO mdm_management_runtime;
 GRANT INSERT ON mdm_access.audit TO mdm_management_runtime;
 GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.report_sources,mdm_access.collection_runs,mdm.inventory TO mdm_management_runtime;
--- Row share locks fence generation/asset changes while computing a persisted plan.
-GRANT UPDATE(id) ON mdm_access.devices TO mdm_management_runtime;
-GRANT UPDATE(state) ON mdm_access.registrations TO mdm_management_runtime;
-GRANT UPDATE(enabled) ON mdm_access.report_sources TO mdm_management_runtime;
-GRANT UPDATE(value) ON mdm.inventory TO mdm_management_runtime;
 ALTER TABLE mdm_access.grants DROP CONSTRAINT grants_device_check;
 ALTER TABLE mdm_access.grants ADD CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]');
 ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_target_check;

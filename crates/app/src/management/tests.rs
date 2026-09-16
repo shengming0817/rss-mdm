@@ -76,7 +76,9 @@ async fn management(t: TenantId) -> Management {
 async fn execute(m: &Management, c: &Command) -> std::result::Result<Value, Error> {
     let audit = Audit::new(m.tenant.to_string(), "management_write");
     audit.identify_fixture("operator", "mdm");
-    m.execute(c, &audit).await
+    let result = m.execute(c, &audit).await;
+    audit.finalize(None);
+    result
 }
 fn operation<T>(expected_revision: u64, input: T) -> Operation<T> {
     Operation {
@@ -201,6 +203,24 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     };
     let saved = execute(&m, &save).await.unwrap();
     assert_eq!(saved, execute(&m, &save).await.unwrap());
+    let previous = execute(&m, &Command::ScopeRead { id: scope_id })
+        .await
+        .unwrap();
+    m.runtime.close().await;
+    drop(m);
+    let m = management(tenant()).await;
+    assert_eq!(saved, execute(&m, &save).await.unwrap());
+    assert_eq!(
+        previous,
+        execute(&m, &Command::ScopeRead { id: scope_id })
+            .await
+            .unwrap()
+    );
+    let historical = execute(&m, &Command::PlanRead { id: preview })
+        .await
+        .unwrap();
+    assert_eq!(historical["plan"], saved["plan"]);
+
     assert_eq!(saved["plan"]["dispatch"], "not_requested");
     assert!(matches!(
         execute(
@@ -389,6 +409,229 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         sql(restore);
         assert!(rejected);
     }
+    for (table, column) in [
+        ("mdm_access.devices", "id"),
+        ("mdm_access.registrations", "state"),
+        ("mdm_access.report_sources", "enabled"),
+        ("mdm.inventory", "value"),
+    ] {
+        assert_eq!(
+            sql(&format!(
+                "SELECT has_column_privilege('mdm_management_runtime','{table}','{column}','UPDATE')"
+            )),
+            "f"
+        );
+        sql(&format!(
+            "GRANT UPDATE({column}) ON {table} TO mdm_management_runtime"
+        ));
+        let rejected = storage::admit(&service.runtime, tenant()).await.is_err();
+        sql(&format!(
+            "REVOKE UPDATE({column}) ON {table} FROM mdm_management_runtime"
+        ));
+        assert!(rejected);
+    }
     storage::admit(&service.runtime, tenant()).await.unwrap();
     service.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn registration_replacement_invalidates_direct_and_group_previews() {
+    let m = management(tenant()).await;
+    let device = format!("device-{}", Uuid::new_v4());
+    let old = seed_device(&device);
+    let group = Uuid::new_v4();
+    execute(
+        &m,
+        &Command::Group {
+            id: group,
+            change: operation(
+                0,
+                GroupChange::Create {
+                    name: "registration".into(),
+                    description: "".into(),
+                    criteria: None,
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    execute(
+        &m,
+        &Command::Group {
+            id: group,
+            change: operation(
+                1,
+                GroupChange::Members {
+                    add: vec![device.clone()],
+                    remove: vec![],
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let mut pending = Vec::new();
+    for reference in [Reference::Device(device.clone()), Reference::Group(group)] {
+        let scope = Uuid::new_v4();
+        let policy = Uuid::new_v4().to_string();
+        execute(
+            &m,
+            &Command::Scope {
+                id: scope,
+                change: operation(
+                    0,
+                    ScopeChange::Put {
+                        definition: ScopeDefinition {
+                            targets: [reference].into(),
+                            limitations: None,
+                            exclusions: Default::default(),
+                        },
+                    },
+                ),
+            },
+        )
+        .await
+        .unwrap();
+        let created = execute(
+            &m,
+            &Command::Policy {
+                id: policy.clone(),
+                change: operation(0, PolicyChange::Create),
+            },
+        )
+        .await
+        .unwrap();
+        let revision = created["storage_revision"].as_u64().unwrap();
+        let preview = Uuid::new_v4();
+        execute(
+            &m,
+            &Command::Preview {
+                id: policy.clone(),
+                request: Operation {
+                    operation_id: preview,
+                    expected_revision: revision,
+                    input: PreviewInput {
+                        scope,
+                        expected_revision: revision,
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap();
+        pending.push((policy, revision, preview));
+    }
+    let grant = Uuid::new_v4();
+    let request = Uuid::new_v4();
+    let replacement = Uuid::new_v4();
+    let t = tenant();
+    sql(&format!(
+        "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{old}';INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{t}','{request}','{grant}');INSERT INTO mdm_access.registrations VALUES('{t}','{replacement}','{device}','mdm',2,'{request}','active');"
+    ));
+    for (id, revision, preview) in pending {
+        assert!(matches!(
+            execute(
+                &m,
+                &Command::Save {
+                    id,
+                    request: operation(revision, SavePlan { preview })
+                }
+            )
+            .await,
+            Err(Error::Conflict)
+        ));
+    }
+    m.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn group_delete_scope_reference_compete_without_dangling_references() {
+    let first = management(tenant()).await;
+    let second = management(tenant()).await;
+    for reverse in [false, true] {
+        let group = Uuid::new_v4();
+        let scope_id = Uuid::new_v4();
+        execute(
+            &first,
+            &Command::Group {
+                id: group,
+                change: operation(
+                    0,
+                    GroupChange::Create {
+                        name: "reference-race".into(),
+                        description: "".into(),
+                        criteria: None,
+                    },
+                ),
+            },
+        )
+        .await
+        .unwrap();
+        let delete = Command::Group {
+            id: group,
+            change: operation(1, GroupChange::Delete),
+        };
+        let reference = Command::Scope {
+            id: scope_id,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: scope(group),
+                },
+            ),
+        };
+        let (a, b) = if reverse {
+            tokio::join!(execute(&first, &reference), execute(&second, &delete))
+        } else {
+            tokio::join!(execute(&first, &delete), execute(&second, &reference))
+        };
+        assert_ne!(a.is_ok(), b.is_ok());
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM mdm_management.scopes s JOIN mdm_management.scope_versions v USING(tenant_id,id,revision) JOIN mdm_group.groups g ON g.tenant_id=s.tenant_id AND g.id='{group}' WHERE s.id='{scope_id}' AND g.deleted AND NOT s.deleted"
+            )),
+            "0"
+        );
+    }
+    first.runtime.close().await;
+    second.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
+    let m = management(tenant()).await;
+    let id = Uuid::new_v4();
+    execute(
+        &m,
+        &Command::Scope {
+            id,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: Default::default(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    sql(&format!(
+        "UPDATE mdm_management.scope_versions SET definition='[]' WHERE id='{id}'"
+    ));
+    assert!(matches!(
+        execute(&m, &Command::ScopeRead { id }).await,
+        Err(Error::Unavailable(Failure::ManagementStorage))
+    ));
+    sql(&format!(
+        "UPDATE mdm_management.scope_versions SET definition='{{\"targets\":[],\"limitations\":null,\"exclusions\":[]}}' WHERE id='{id}'"
+    ));
+    m.runtime.close().await;
 }

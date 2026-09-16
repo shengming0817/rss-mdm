@@ -99,7 +99,7 @@ pub async fn serve(
                         access,
                         tenant,
                         runtime,
-                    ) = tokio::time::timeout(Duration::from_secs(15), async {
+                    ) = tokio::time::timeout(compiled.config.management.startup_budget(), async {
                         let reader = Arc::new(
                             InventoryReader::connect(compiled.config.database.options().map_err(
                                 |e| ProcessError::at("startup.database_configuration", e),

@@ -53,12 +53,12 @@ impl InventoryReader {
     }
 }
 
-/// Read an exact Inventory scope while retaining row share locks in the host's
+/// Read an exact Inventory scope in the host's
 /// existing tenant transaction. The caller owns authorization, transaction
 /// lifetime and the bounded candidate universe; this method never commits.
-/// Requires SELECT and the narrow UPDATE privilege PostgreSQL requires for locks.
+/// Requires SELECT only. The host selects a consistent transaction isolation level.
 /// A foreign or missing transaction tenant is rejected before reading facts.
-pub async fn read_locked_in(
+pub async fn read_in(
     connection: &mut sqlx::PgConnection,
     scope: &Scope,
 ) -> Result<Vec<InventoryField>> {
@@ -76,7 +76,7 @@ pub async fn read_locked_in(
         "inventory transaction tenant mismatch"
     );
     let projection = super::projection_scope(scope.tenant());
-    let rows=sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=$2 AND coverage=$3 ORDER BY field FOR SHARE")
+    let rows=sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=$2 AND coverage=$3 ORDER BY field")
         .bind(tenant).bind(scope.encode()?).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).fetch_all(connection).await?;
     decode(rows)
 }
