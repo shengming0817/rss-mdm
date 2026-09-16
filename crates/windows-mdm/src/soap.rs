@@ -45,7 +45,8 @@ pub enum Operation {
     Issue,
     /// WSTEP enrollment response collection.
     IssueResponse,
-    /// Closed SOAP enrollment fault, using the discovery byte budget.
+    /// Closed SOAP enrollment fault; direct encoding/decoding uses the discovery byte budget.
+    /// [`decode_response`] applies the originating operation's budget to Fault input.
     Fault,
 }
 impl Operation {
@@ -301,6 +302,8 @@ fn response_operation(request: &Message) -> Result<Operation> {
     }
 }
 /// Decode once, accepting only the originating operation's response or a SOAP Fault.
+/// Both response and Fault input use the originating operation's byte budget:
+/// discovery for Discover, XCEP for GetPolicies and WSTEP for Issue.
 /// The matched message still carries untrusted claims; inspect its body for failure.
 pub fn decode_response(
     request: &Message,

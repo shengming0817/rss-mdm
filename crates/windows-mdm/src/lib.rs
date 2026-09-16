@@ -101,11 +101,14 @@ pub type CorrelationResult<T> = std::result::Result<T, CorrelationError>;
 /// Per-message limits. All limits are enforced; zero means no capacity, not unlimited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodecLimits {
-    /// Maximum encoded/decoded discovery or SOAP Fault message bytes; default 64 KiB.
+    /// Maximum discovery message bytes and direct SOAP Fault encoding/decoding; default 64 KiB.
+    /// [`soap::decode_response`] instead applies the originating operation's budget to Faults.
     pub discovery_bytes: usize,
     /// Maximum encoded/decoded XCEP policy message bytes; default 256 KiB.
+    /// Also bounds Fault input for a GetPolicies request in [`soap::decode_response`].
     pub xcep_bytes: usize,
     /// Maximum encoded/decoded WSTEP enrollment message bytes; default 512 KiB.
+    /// Also bounds Fault input for an Issue request in [`soap::decode_response`].
     pub wstep_bytes: usize,
     /// Maximum encoded/decoded SyncML message bytes; default 512 KiB.
     pub syncml_bytes: usize,
