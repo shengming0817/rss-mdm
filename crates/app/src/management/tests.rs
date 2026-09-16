@@ -640,24 +640,20 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
 async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     let m = management(tenant()).await;
     let id = Uuid::new_v4();
-    execute(
-        &m,
-        &Command::Scope {
-            id,
-            change: operation(
-                0,
-                ScopeChange::Put {
-                    definition: ScopeDefinition {
-                        targets: Default::default(),
-                        limitations: None,
-                        exclusions: Default::default(),
-                    },
+    let command = Command::Scope {
+        id,
+        change: operation(
+            0,
+            ScopeChange::Put {
+                definition: ScopeDefinition {
+                    targets: Default::default(),
+                    limitations: None,
+                    exclusions: Default::default(),
                 },
-            ),
-        },
-    )
-    .await
-    .unwrap();
+            },
+        ),
+    };
+    let receipt = execute(&m, &command).await.unwrap();
     sql(&format!(
         "UPDATE mdm_management.scope_versions SET definition='[]' WHERE id='{id}'"
     ));
@@ -667,6 +663,26 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     ));
     sql(&format!(
         "UPDATE mdm_management.scope_versions SET definition='{{\"targets\":[],\"limitations\":null,\"exclusions\":[]}}' WHERE id='{id}'"
+    ));
+    let operation = match &command {
+        Command::Scope { change, .. } => change.operation_id,
+        _ => unreachable!(),
+    };
+    sql(&format!(
+        "UPDATE mdm_management.operations SET response='[]' WHERE id='{operation}'"
+    ));
+    let before = sql("SELECT count(*) FROM mdm_access.audit");
+    assert!(
+        matches!(
+            execute(&m, &command).await,
+            Err(Error::Unavailable(Failure::ManagementStorage))
+        ),
+        "corrupt replay receipt must fail before success audit"
+    );
+    assert_eq!(before, sql("SELECT count(*) FROM mdm_access.audit"));
+    let document = serde_json::to_string(&receipt).unwrap().replace('\'', "''");
+    sql(&format!(
+        "UPDATE mdm_management.operations SET response='{document}' WHERE id='{operation}'"
     ));
     m.runtime.close().await;
 }

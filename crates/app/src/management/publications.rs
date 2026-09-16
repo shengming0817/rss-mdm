@@ -458,27 +458,19 @@ async fn withdraw(
     request: &service::ServiceRequest,
     cutoff: Deadline,
 ) -> std::result::Result<Effect, Error> {
-    let candidate = service
+    service
         .candidate(id, cutoff)
         .await
         .map_err(failure)?
         .ok_or(Error::ManagementNotFound(Missing::Candidate))?;
-    let before = match candidate.snapshot().ring_state(ring.core()) {
-        rel::RingState::Publication(p) => service
-            .withdrawal_status(p.id(), p.attempt, cutoff)
-            .await
-            .map_err(failure)?,
-        _ => None,
-    };
     let result = service
         .withdraw(id, ring.core(), request, cutoff)
         .await
         .map_err(failure)?;
-    Ok(match result {
-        service::Withdrawal::Complete if before == Some(service::Withdrawal::Complete) => {
-            Effect::Replayed
+    Ok(match result.outcome {
+        service::Withdrawal::Complete | service::Withdrawal::NotPublished => {
+            effect(result.replayed)
         }
-        service::Withdrawal::Complete | service::Withdrawal::NotPublished => Effect::Performed,
         _ => Effect::Unknown,
     })
 }

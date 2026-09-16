@@ -58,7 +58,8 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(server.state.lock().unwrap().deletes, 1);
@@ -79,7 +80,8 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(server.state.lock().unwrap().deletes, 1);
@@ -172,7 +174,8 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::WaitingPublication
     );
     assert_publication_audit(&p, "unknown");
@@ -209,7 +212,8 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     runtime.close().await;
@@ -260,7 +264,8 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(git(&config, &["rev-parse", "refs/heads/main"]), current);
@@ -274,7 +279,8 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert!(git(&config, &["show", "refs/heads/main:Formula/tool.rb"]).contains("class Tool"));
@@ -311,7 +317,8 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::Complete
     );
     assert_eq!(server.state.lock().unwrap().posts, 2);
@@ -332,7 +339,8 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
                 cutoff()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::PreflightRetryable
     );
     assert_eq!(server.state.lock().unwrap().deletes, 0);
@@ -379,7 +387,8 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
             )
             .with_subscriber(subscriber)
             .await
-            .unwrap(),
+            .unwrap()
+            .outcome,
         Withdrawal::SourceOutcomeUnknown
     );
     let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();

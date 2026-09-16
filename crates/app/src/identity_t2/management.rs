@@ -328,7 +328,8 @@ async fn software(
         "release_write",
         "release_validate",
         "release_publish",
-        "release_recover"
+        "release_recover",
+        "release_withdraw"
     ]);
     let initial = app(&cfg, reader.clone()).await?;
     let mut approver = Browser::default();
@@ -485,6 +486,31 @@ async fn software(
         "HTTP replay republished content"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE action='software_approve' AND actor='{}' AND client='mdm'",subject.as_str().unwrap()))?.trim()=="1","approval lost real actor");
+    let withdraw = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":published["revision"],"input":{"action":"withdraw","ring":"pilot"}});
+    let (status, withdrawn) = publisher
+        .call(&router, Method::POST, &path, Some(withdraw.clone()))
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "unpublished withdrawal: {status} {withdrawn}"
+    );
+    let (status, _) = publisher
+        .call(&router, Method::POST, &path, Some(withdraw.clone()))
+        .await?;
+    ensure!(status == StatusCode::OK);
+    let operation = withdraw["operationId"].as_str().unwrap();
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{operation}' AND action='management_write' AND result='success'"))?.trim()=="1","unpublished withdrawal replay was marked as performed");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{operation}' AND action='management_write' AND result='replay'"))?.trim()=="1");
+    let fresh = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":withdrawn["revision"],"input":{"action":"withdraw","ring":"pilot"}});
+    ensure!(
+        publisher
+            .call(&router, Method::POST, &path, Some(fresh.clone()))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    let operation = fresh["operationId"].as_str().unwrap();
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{operation}' AND action='management_write' AND result='success'"))?.trim()=="1");
     println!("MDM_SOFTWARE_MANAGEMENT_HTTP_MATRIX_PASSED");
     Ok(())
 }

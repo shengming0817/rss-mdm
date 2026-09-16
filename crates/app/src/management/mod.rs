@@ -157,6 +157,9 @@ impl Management {
         if let Some(id) = operation
             && let Some(old) = storage::replay(tx, id, &fingerprint).await?
         {
+            if !matches!(command, Command::PublicationIntent { .. }) {
+                wire::Response::decode(old.clone())?;
+            }
             audit.management_result(crate::audit::ManagementResult::Replayed);
             storage::audit(tx, audit).await?;
             return Ok(old);

@@ -22,6 +22,14 @@ pub enum Withdrawal {
     AwaitingConfirmation,
     Complete,
 }
+/// Settled quarantine operation and external withdrawal status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WithdrawalExecution {
+    /// Current external withdrawal outcome; unresolved outcomes must not imply completion.
+    pub outcome: Withdrawal,
+    /// True only when both the quarantine request and terminal withdrawal were replayed.
+    pub replayed: bool,
+}
 #[derive(Clone, Copy)]
 enum WriteObservation {
     Acknowledged,
@@ -581,51 +589,51 @@ impl PublicationService {
         ring: rel::Ring,
         request: &ServiceRequest,
         cutoff: Deadline,
-    ) -> Result<Withdrawal> {
+    ) -> Result<WithdrawalExecution> {
         let at = request.as_of;
         let r = request.core(&request.actor, rel::Operation::Quarantine);
-        {
-            settle(
-                self.runtime
-                    .local_tx_with_context(
-                        self.tenant(),
-                        budget(cutoff),
-                        (self, id, &r),
-                        |(s, id, r), tx| {
-                            Box::pin(async move {
-                                let result =
-                                    input!(s.releases.transition_in(tx, id, r).await?.map_err(
-                                        |cause| Error::Conflict.context("driver::withdraw", cause)
-                                    ));
-                                if matches!(result, rel::Transition::Applied { .. }) {
-                                    db::audit(
-                                        tx,
-                                        &r.actor,
-                                        id.value(),
-                                        "software_withdraw",
-                                        db::request_fact(
-                                            r.id.value(),
-                                            Some(ring),
-                                            "withdraw-request",
-                                        ),
-                                    )
-                                    .await?;
-                                }
-                                Ok(Ok(()))
-                            })
-                        },
-                    )
-                    .await,
-            )?;
-        }
+        let replayed = settle(
+            self.runtime
+                .local_tx_with_context(
+                    self.tenant(),
+                    budget(cutoff),
+                    (self, id, &r),
+                    |(s, id, r), tx| {
+                        Box::pin(async move {
+                            let result =
+                                input!(s.releases.transition_in(tx, id, r).await?.map_err(
+                                    |cause| Error::Conflict.context("driver::withdraw", cause)
+                                ));
+                            if matches!(result, rel::Transition::Applied { .. }) {
+                                db::audit(
+                                    tx,
+                                    &r.actor,
+                                    id.value(),
+                                    "software_withdraw",
+                                    db::request_fact(r.id.value(), Some(ring), "withdraw-request"),
+                                )
+                                .await?;
+                            }
+                            Ok(Ok(matches!(result, rel::Transition::Replayed(_))))
+                        })
+                    },
+                )
+                .await,
+        )?;
         let c = self
             .releases
             .get(id, budget(cutoff))
             .await?
             .ok_or(Error::Conflict)?;
         let rel::RingState::Publication(p) = c.snapshot().ring_state(ring) else {
-            return Ok(Withdrawal::NotPublished);
+            return Ok(WithdrawalExecution {
+                outcome: Withdrawal::NotPublished,
+                replayed,
+            });
         };
+        let replayed = replayed
+            && self.withdrawal_status(p.id(), p.attempt, cutoff).await?
+                == Some(Withdrawal::Complete);
         let publish = self
             .load_call(
                 Table::Publish,
@@ -641,7 +649,10 @@ impl PublicationService {
         if !publish.attempted {
             self.cancel_unstarted(&publish.target, at, cutoff).await?;
         }
-        self.drive_withdrawal(p.id(), p.attempt, cutoff, true).await
+        let outcome = self
+            .drive_withdrawal(p.id(), p.attempt, cutoff, true)
+            .await?;
+        Ok(WithdrawalExecution { outcome, replayed })
     }
     #[tracing::instrument(skip_all, fields(tenant = %self.tenant(), publication = %hex(&id.digest().bytes()), attempt))]
     pub async fn reconcile_withdrawal(
