@@ -5,7 +5,8 @@ use std::{
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactOrigin {
     pub base: String,
     pub addresses: Vec<IpAddr>,

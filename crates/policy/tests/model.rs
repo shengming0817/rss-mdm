@@ -499,8 +499,11 @@ fn tenant_policy_and_value_boundaries() {
             reason: ExecutionFailure::PolicyMismatch
         }
     );
-    assert!(DeviceId::new(tenant(), "bad/url").is_err());
-    assert!(DeviceId::new(tenant(), "a".repeat(129)).is_err());
+    assert_eq!(
+        DeviceId::new(tenant(), "device/原始 ID").unwrap().value(),
+        "device/原始 ID"
+    );
+    assert!(DeviceId::new(tenant(), "a".repeat(257)).is_err());
     assert!(
         Version::new(
             PolicyId::new(tenant(), "policy").unwrap(),

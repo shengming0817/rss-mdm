@@ -5,7 +5,8 @@ use rss_mdm_winget_source as winget;
 use rss_request_context::TenantId;
 use sha2::{Digest, Sha256};
 use std::{net::IpAddr, path::PathBuf};
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WingetConfig {
     pub base: String,
     pub addresses: Vec<IpAddr>,
@@ -13,18 +14,21 @@ pub struct WingetConfig {
     pub credential_reference: String,
     pub credential_file: PathBuf,
 }
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrewConfig {
     pub tap: String,
     pub repository: PathBuf,
 }
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum SourceConfig {
     Winget(WingetConfig),
     Brew(BrewConfig),
 }
 /// Fixed, named publication environments; each must own a distinct physical source.
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RingSources {
     pub test: SourceConfig,
     pub pilot: SourceConfig,
@@ -36,24 +40,12 @@ impl RingSources {
     }
 }
 /// Identities are attested by this controlled process, never by an HTTP request body.
-pub struct ServiceActors {
-    pub validator: rel::ActorId,
-    pub approver: rel::ActorId,
-    pub publisher: rel::ActorId,
+pub struct ServiceIdentity {
     pub backend: rel::ActorId,
 }
-impl ServiceActors {
+impl ServiceIdentity {
     pub(super) fn check(&self, t: TenantId) -> Result<()> {
-        if [
-            &self.validator,
-            &self.approver,
-            &self.publisher,
-            &self.backend,
-        ]
-        .iter()
-        .any(|a| a.tenant() != t)
-            || self.approver == self.publisher
-        {
+        if self.backend.tenant() != t {
             return Err(Error::Identity);
         }
         Ok(())

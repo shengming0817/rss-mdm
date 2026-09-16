@@ -159,6 +159,22 @@ pub async fn serve(
                             clock,
                             readiness,
                         ));
+                        let management = compiled
+                            .config
+                            .management
+                            .open(
+                                rss_request_context::TenantId::parse(
+                                    &compiled.config.identity.tenant_id,
+                                )
+                                .map_err(|_| assembly_error(Error::Malformed))?,
+                                |runtime| {
+                                    startup.stage_resource(DynManagedResource::new_box(
+                                        crate::management::Resource(runtime),
+                                    ))
+                                },
+                            )
+                            .await
+                            .map_err(|e| ProcessError::at("startup.management", e))?;
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
                         let app = crate::api::from_compiled(
@@ -168,6 +184,7 @@ pub async fn serve(
                             reader,
                             access.clone(),
                             runtime.clone(),
+                            management,
                         )
                         .await
                         .map_err(assembly_error)?;

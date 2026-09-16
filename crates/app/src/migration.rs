@@ -45,7 +45,7 @@ pub async fn migrate(options: &PgConnectOptions) -> Result<()> {
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 14] {
+fn units() -> [(&'static str, &'static str); 16] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -75,6 +75,7 @@ fn units() -> [(&'static str, &'static str); 14] {
             "transactional-messaging-v1",
             rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
+        ("group-v1", rss_mdm_group_postgres::MIGRATION_SQL),
         ("policy-v1", rss_mdm_policy_postgres::MIGRATION_SQL),
         ("resource-v1", rss_mdm_resource_postgres::MIGRATION_SQL),
         (
@@ -84,6 +85,10 @@ fn units() -> [(&'static str, &'static str); 14] {
         (
             "software-publication-v1",
             crate::software_publication::MIGRATION_SQL,
+        ),
+        (
+            "management-v1",
+            include_str!("../migrations/0007_management.sql"),
         ),
     ]
 }

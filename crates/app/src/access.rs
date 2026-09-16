@@ -24,6 +24,7 @@ pub struct Binding {
     pub subject: String,
     pub roles: BTreeSet<Role>,
     pub devices: BTreeSet<String>,
+    pub management: BTreeSet<crate::management::Permission>,
     pub allow_wipe: bool,
     pub allow_enrollment: bool,
     pub allow_manage_credentials: bool,
@@ -64,7 +65,7 @@ impl Policy {
                 || b.subject.len() > 255
                 || b.subject.contains('*')
                 || b.subject.chars().any(char::is_control)
-                || b.devices.is_empty()
+                || (b.devices.is_empty() && b.management.is_empty())
                 || b.devices.len() > 10000
                 || b.devices
                     .iter()
@@ -113,6 +114,26 @@ impl Policy {
             proof,
             device: device.to_owned(),
         })
+    }
+    pub(crate) fn publisher(&self, subject: &str) -> Result<(), Error> {
+        if !self.bindings.get(subject).is_some_and(|b| {
+            b.management
+                .contains(&crate::management::Permission::ReleasePublish)
+        }) {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
+    }
+    pub(crate) fn manage(
+        &self,
+        proof: &VerifiedIdentity,
+        permission: crate::management::Permission,
+    ) -> Result<(), Error> {
+        let binding = self.binding(proof)?.ok_or(Error::Forbidden)?;
+        if !binding.management.contains(&permission) {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
     }
     pub fn roles(&self, proof: &VerifiedIdentity) -> Result<Vec<Role>, Error> {
         Ok(self
@@ -455,7 +476,7 @@ mod tests {
     }
     #[test]
     fn credential_permission_is_explicit_and_not_inherited() {
-        let old = r#"{"tenant_id":"tenant","client_id":"mdm","subject":"subject","roles":["mdm_admin"],"devices":["device"],"allow_wipe":false,"allow_enrollment":true}"#;
+        let old = r#"{"tenant_id":"tenant","client_id":"mdm","subject":"subject","roles":["mdm_admin"],"devices":["device"],"management":[],"allow_wipe":false,"allow_enrollment":true}"#;
         assert!(serde_json::from_str::<Binding>(old).is_err());
     }
     #[test]
@@ -473,6 +494,7 @@ mod tests {
             subject: "subject".into(),
             roles: [Role::Auditor].into(),
             devices: ["device".into()].into(),
+            management: BTreeSet::new(),
             allow_wipe: false,
             allow_enrollment: false,
             allow_manage_credentials: false,

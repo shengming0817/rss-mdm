@@ -6,7 +6,7 @@ mod service;
 mod spec;
 mod storage;
 pub use artifact::{ArtifactOrigin, ArtifactReader};
-pub use config::{BrewConfig, RingSources, ServiceActors, SourceConfig, WingetConfig};
+pub use config::{BrewConfig, RingSources, ServiceIdentity, SourceConfig, WingetConfig};
 pub use driver::Withdrawal;
 use rss_transactional_messaging_postgres::PgError;
 pub use service::{CandidateInput, PublicationService, ServiceRequest};

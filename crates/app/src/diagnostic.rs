@@ -41,6 +41,7 @@ impl rss_observation::Clock for Monotonic {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigIssue {
+    Management,
     Listen,
     DatabaseRole,
     AccessDatabase,

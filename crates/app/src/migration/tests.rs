@@ -104,7 +104,7 @@ INSERT INTO mdm_access.management_messages SELECT tenant_id,registration,session
     migrate_on(&mut owner).await?;
     ensure!(
         current == rows(&mut admin, &tables).await?,
-        "9→14 upgrade changed existing durable/protocol data"
+        "9→16 upgrade changed existing durable/protocol data"
     );
     ensure!(
         sqlx::query_scalar::<_, bool>(
@@ -118,7 +118,7 @@ INSERT INTO mdm_access.management_messages SELECT tenant_id,registration,session
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_migrations WHERE complete")
             .fetch_one(&mut admin)
             .await?
-            == 14
+            == 16
     );
     owner.close().await?;
     admin.close().await?;

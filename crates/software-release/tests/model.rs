@@ -523,11 +523,11 @@ fn canonical_order_and_input_budgets() {
         ),
         Err(Error::InvalidArtifacts)
     );
-    for bad in ["", "../secret", "a//b", "https://host", "a b", "$secret"] {
+    for bad in ["", "\0", "\n"] {
         assert!(ActorId::new(tenant(), bad).is_err());
     }
-    assert!(ActorId::new(tenant(), "a".repeat(128)).is_ok());
-    assert!(ActorId::new(tenant(), "a".repeat(129)).is_err());
+    assert!(ActorId::new(tenant(), "a".repeat(2048)).is_ok());
+    assert!(ActorId::new(tenant(), "a".repeat(2049)).is_err());
     assert!(Digest::parse(&"a".repeat(64)).is_ok());
     assert_eq!(Digest::parse(&"g".repeat(64)), Err(Error::InvalidDigest));
     assert_eq!(Digest::parse(&"a".repeat(63)), Err(Error::InvalidDigest));

@@ -80,6 +80,16 @@ impl Audit {
             }),
         }))
     }
+    pub(crate) fn transaction_copy(&self) -> Self {
+        Self(Arc::new(Context {
+            request_id: self.0.request_id,
+            tenant: self.0.tenant.clone(),
+            state: Mutex::new(State {
+                snapshot: self.snapshot(),
+                finalized: false,
+            }),
+        }))
+    }
     pub fn request_id(&self) -> Uuid {
         self.0.request_id
     }
@@ -100,6 +110,11 @@ impl Audit {
         state.snapshot.actor = Some(actor.into());
         state.snapshot.client = Some(client.into());
     }
+    pub(crate) fn identify_operator(&self, actor: &str, client: &str) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(actor.into());
+        state.snapshot.client = Some(client.into());
+    }
     pub(crate) fn identify_service(&self, actor: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
@@ -112,7 +127,7 @@ impl Audit {
         self.0.state.lock().expect("audit lock").snapshot.action = action;
     }
     pub fn target(&self, target: &str) {
-        self.0.state.lock().expect("audit lock").snapshot.target = (target.len() <= 255
+        self.0.state.lock().expect("audit lock").snapshot.target = (target.len() <= 256
             && rss_observation::Id::new(target).is_ok())
         .then(|| target.to_owned());
     }
@@ -185,11 +200,11 @@ mod tests {
     #[test]
     fn target_rejects_values_that_cannot_be_persisted() {
         let audit = Audit::new("tenant".into(), "collection_read");
-        for invalid in ["x".repeat(256), "bad\nvalue".into(), String::new()] {
+        for invalid in ["x".repeat(257), "bad\nvalue".into(), String::new()] {
             audit.target(&invalid);
             assert!(audit.snapshot().target.is_none());
         }
-        audit.target(&"x".repeat(255));
+        audit.target(&"x".repeat(256));
         assert!(audit.snapshot().target.is_some());
         audit.finalize(None);
     }

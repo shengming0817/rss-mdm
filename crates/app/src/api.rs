@@ -26,6 +26,7 @@ use std::{sync::Arc, time::Duration};
 const COOKIE: &str = "__Host-mdm-session";
 const BROWSER: &str = "__Host-mdm-login";
 pub(crate) struct App {
+    pub(crate) management: Arc<crate::management::Management>,
     pub(crate) identity: Identity,
     pub(crate) sessions: Sessions,
     pub(crate) policy: Arc<Policy>,
@@ -39,8 +40,8 @@ pub(crate) struct App {
 }
 
 #[derive(Clone)]
-struct RequestAuth {
-    proof: Arc<VerifiedIdentity>,
+pub(crate) struct RequestAuth {
+    pub(crate) proof: Arc<VerifiedIdentity>,
     lease: Arc<Lease>,
 }
 async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
@@ -94,11 +95,25 @@ pub(crate) async fn application(
         monotonic.clone(),
     )
     .await?;
-    Ok(
-        from_compiled(config.compile()?, clock, monotonic, reader, access, runtime)
-            .await?
-            .browser,
+    let management = config
+        .management
+        .open(
+            rss_request_context::TenantId::parse(&config.identity.tenant_id)
+                .map_err(|_| Error::Malformed)?,
+            |_| {},
+        )
+        .await?;
+    Ok(from_compiled(
+        config.compile()?,
+        clock,
+        monotonic,
+        reader,
+        access,
+        runtime,
+        management,
     )
+    .await?
+    .browser)
 }
 pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
@@ -107,6 +122,7 @@ pub(crate) async fn from_compiled(
     reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
     runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
+    management: Arc<crate::management::Management>,
 ) -> Result<crate::windows::Routers, Error> {
     let crate::config::Compiled { config, policy } = compiled;
     let policy = Arc::new(policy);
@@ -128,6 +144,7 @@ pub(crate) async fn from_compiled(
             .map_err(|_| Error::Unavailable(Failure::Clock))?,
     )?;
     let state = Arc::new(App {
+        management,
         windows,
         access: access.clone(),
         identity,
@@ -140,6 +157,7 @@ pub(crate) async fn from_compiled(
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     let protected = Router::new()
+        .merge(crate::management::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))

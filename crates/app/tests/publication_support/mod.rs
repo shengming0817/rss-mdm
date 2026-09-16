@@ -252,12 +252,9 @@ fn respond(
         _ => panic!("unexpected source method"),
     }
 }
-pub fn actors() -> ServiceActors {
+pub fn actors() -> ServiceIdentity {
     let a = |s| rel::ActorId::new(tenant(), s).unwrap();
-    ServiceActors {
-        validator: a("validator"),
-        approver: a("approver"),
-        publisher: a("publisher"),
+    ServiceIdentity {
         backend: a("backend"),
     }
 }
@@ -266,6 +263,18 @@ pub fn id(s: &str) -> resource::Id {
 }
 pub fn request(c: &rel::Candidate) -> ServiceRequest {
     ServiceRequest {
+        actor: rel::ActorId::new(
+            tenant(),
+            if rel::Ring::ALL
+                .iter()
+                .any(|r| matches!(c.snapshot().ring_state(*r), rel::RingState::Validated(_)))
+            {
+                "approver"
+            } else {
+                "publisher"
+            },
+        )
+        .unwrap(),
         id: rel::RequestId::new(tenant(), unique()).unwrap(),
         expected_revision: c.snapshot().revision,
         as_of: at(10),
@@ -348,6 +357,7 @@ pub async fn seed(
             .unwrap();
     }
     CandidateInput {
+        actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
         candidate: rel::CandidateId::new(tenant(), unique()).unwrap(),
         request: rel::RequestId::new(tenant(), unique()).unwrap(),
         resource: key,
@@ -369,7 +379,13 @@ pub async fn authorize(
         .unwrap();
     let c = service.candidate(id, cutoff()).await.unwrap().unwrap();
     service
-        .approve(id, ring, &request(&c), cutoff())
+        .approve(
+            id,
+            ring,
+            &rel::ActorId::new(tenant(), "publisher").unwrap(),
+            &request(&c),
+            cutoff(),
+        )
         .await
         .unwrap();
     let c = service.candidate(id, cutoff()).await.unwrap().unwrap();

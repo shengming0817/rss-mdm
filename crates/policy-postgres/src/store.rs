@@ -505,25 +505,42 @@ impl PolicyStore {
         limit: usize,
         deadline: OperationDeadline,
     ) -> Result<FactPage, Error> {
+        settle(
+            self.runtime
+                .local_tx_with_context(
+                    self.tenant,
+                    deadline,
+                    (self, policy),
+                    move |(store, policy), tx| {
+                        Box::pin(
+                            async move { store.execution_facts_in(tx, policy, after, limit).await },
+                        )
+                    },
+                )
+                .await,
+        )
+    }
+    /// Read one bounded fact page in the host transaction, preserving the same
+    /// snapshot as the aggregate. Validates both runtime provenance and tenant.
+    pub async fn execution_facts_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: &PolicyId,
+        after: Option<String>,
+        limit: usize,
+    ) -> InTransaction<FactPage> {
+        input!(self.check(tx)?);
         if policy.tenant() != self.tenant
             || limit == 0
             || limit > 1000
             || after.as_ref().is_some_and(|s| s.len() > 512)
         {
-            return Err(Rejection::InvalidInput.into());
+            return Ok(Err(Rejection::InvalidInput));
         }
-        let owner = policy.value().to_owned();
-        settle(
-            self.runtime
-                .local_tx(self.tenant, deadline, move |tx| {
-                    Box::pin(async move {
-                        let rows = query_fact_page(tx, &owner, after, limit).await?;
-                        let records = decode_fact_page(rows, tx.tenant_id(), &owner)?;
-                        Ok(Ok(fact_page(records, limit)))
-                    })
-                })
-                .await,
-        )
+        let owner = policy.value();
+        let rows = query_fact_page(tx, owner, after, limit).await?;
+        let records = decode_fact_page(rows, tx.tenant_id(), owner)?;
+        Ok(Ok(fact_page(records, limit)))
     }
 }
 fn validate_request(r: &Request) -> Result<(), Rejection> {

@@ -46,6 +46,9 @@ sqlx.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 tokio-util.workspace = true
 
+rss-mdm-group-postgres.workspace = true
+rss-mdm-scope.workspace = true
+rss-mdm-policy.workspace = true
 rss-mdm-policy-postgres.workspace = true
 rss-mdm-resource.workspace = true
 rss-mdm-resource-postgres.workspace = true

@@ -115,7 +115,13 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
         .unwrap()
         .unwrap();
     service
-        .approve(&input.candidate, rel::Ring::Test, &request(&c), cutoff())
+        .approve(
+            &input.candidate,
+            rel::Ring::Test,
+            &rel::ActorId::new(tenant(), "publisher").unwrap(),
+            &request(&c),
+            cutoff(),
+        )
         .await
         .unwrap();
     let c = service
@@ -451,7 +457,13 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         },
     };
     assert!(matches!(
-        service.archive_resource(&r, cutoff()).await,
+        service
+            .archive_resource(
+                &r,
+                &rel::ActorId::new(tenant(), "publisher").unwrap(),
+                cutoff()
+            )
+            .await,
         Err(Error::Blocked)
     ));
     let mut same = server.winget();
@@ -717,9 +729,10 @@ async fn archive_and_candidate_reference_race_is_atomic() {
             references: 0,
         },
     };
+    let publisher = rel::ActorId::new(tenant(), "publisher").unwrap();
     let (created, archived) = tokio::join!(
         service.create_candidate(&input, cutoff()),
-        service.archive_resource(&archive, cutoff())
+        service.archive_resource(&archive, &publisher, cutoff())
     );
     match (created, archived) {
         (Ok(_), Err(Error::Blocked)) => assert!(

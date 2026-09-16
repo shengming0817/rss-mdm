@@ -1,5 +1,7 @@
 #![deny(clippy::cognitive_complexity)]
 //! Product-owned OIDC relying party, local session and resource authorization.
+#[cfg(test)]
+extern crate self as rss_mdm_app;
 mod access;
 mod access_store;
 mod audit;
@@ -7,6 +9,7 @@ mod collection;
 pub mod device;
 mod enrollment;
 mod inventory_runtime;
+mod management;
 pub use access_store::AccessStore;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};

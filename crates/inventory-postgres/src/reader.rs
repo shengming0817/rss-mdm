@@ -44,22 +44,52 @@ impl InventoryReader {
             .bind(&tenant).execute(&mut *tx).await?;
         let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=$2 AND coverage=$3 ORDER BY field")
             .bind(&tenant).bind(scope.encode()?).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).fetch_all(&mut *tx).await?;
-        let result = rows
-            .into_iter()
-            .map(|row| {
-                Ok(InventoryField {
-                    field: row.try_get("field")?,
-                    value: row.try_get("value")?,
-                    batch_id: row.try_get("batch_id")?,
-                    observed_at: row.try_get("observed_at")?,
-                    received_at: row.try_get("received_at")?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let result = decode(rows)?;
         tx.commit().await?;
         Ok(result)
     }
     pub async fn close(&self) {
         self.pool.close().await;
     }
+}
+
+/// Read an exact Inventory scope while retaining row share locks in the host's
+/// existing tenant transaction. The caller owns authorization, transaction
+/// lifetime and the bounded candidate universe; this method never commits.
+/// Requires SELECT and the narrow UPDATE privilege PostgreSQL requires for locks.
+/// A foreign or missing transaction tenant is rejected before reading facts.
+pub async fn read_locked_in(
+    connection: &mut sqlx::PgConnection,
+    scope: &Scope,
+) -> Result<Vec<InventoryField>> {
+    ensure!(
+        scope.dataset().as_str() == rss_mdm_inventory::DATASET,
+        "invalid inventory dataset"
+    );
+    let tenant = scope.tenant().to_string();
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
+            .fetch_one(&mut *connection)
+            .await?;
+    ensure!(
+        current.as_deref() == Some(tenant.as_str()),
+        "inventory transaction tenant mismatch"
+    );
+    let projection = super::projection_scope(scope.tenant());
+    let rows=sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=$2 AND coverage=$3 ORDER BY field FOR SHARE")
+        .bind(tenant).bind(scope.encode()?).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).fetch_all(connection).await?;
+    decode(rows)
+}
+fn decode(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<InventoryField>> {
+    rows.into_iter()
+        .map(|row| {
+            Ok(InventoryField {
+                field: row.try_get("field")?,
+                value: row.try_get("value")?,
+                batch_id: row.try_get("batch_id")?,
+                observed_at: row.try_get("observed_at")?,
+                received_at: row.try_get("received_at")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
 }

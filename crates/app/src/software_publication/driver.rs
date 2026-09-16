@@ -583,7 +583,7 @@ impl PublicationService {
         cutoff: Deadline,
     ) -> Result<Withdrawal> {
         let at = request.as_of;
-        let r = request.core(&self.actors.publisher, rel::Operation::Quarantine);
+        let r = request.core(&request.actor, rel::Operation::Quarantine);
         {
             settle(
                 self.runtime
@@ -600,7 +600,7 @@ impl PublicationService {
                                 if matches!(result, rel::Transition::Applied { .. }) {
                                     db::audit(
                                         tx,
-                                        &s.actors.publisher,
+                                        &r.actor,
                                         id.value(),
                                         "software_withdraw",
                                         db::request_fact(
@@ -723,7 +723,7 @@ impl PublicationService {
                             db::insert_call(tx, Table::Withdraw, t).await?;
                             db::audit(
                                 tx,
-                                &s.actors.publisher,
+                                &s.actors.backend,
                                 &t.candidate,
                                 "software_withdraw",
                                 db::target_fact(t, Table::Withdraw, "queue_withdrawal", "queued"),

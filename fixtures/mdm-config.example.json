@@ -30,6 +30,7 @@
       "devices": [
         "replace-with-device-id"
       ],
+      "management": [],
       "allow_wipe": false,
       "allow_enrollment": false,
       "allow_manage_credentials": false
@@ -68,5 +69,61 @@
     "user": "mdm_runtime",
     "password_file": "/run/mdm/mdm-runtime-password",
     "ca_file": "/run/mdm/database-ca.pem"
+  },
+  "management": {
+    "database": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_management_runtime",
+      "password_file": "/run/secrets/mdm-management",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "target": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "lineage": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "epoch": 1,
+    "sources": [],
+    "publication_database": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_software_driver",
+      "password_file": "/run/secrets/mdm-software-driver",
+      "ca_file": "/run/mdm/database-ca.pem"
+    }
   }
 }

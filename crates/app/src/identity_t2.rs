@@ -3,6 +3,10 @@
     reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
 )]
 //! The production Router consumes a fixed real Identity candidate; no mock verifier or claims constructor.
+mod management;
+#[allow(dead_code)]
+#[path = "../tests/publication_support/mod.rs"]
+mod publication_support;
 use crate::config::Config;
 use anyhow::{Result, ensure};
 use axum::{
@@ -686,7 +690,7 @@ async fn matrix() -> Result<()> {
         "invalid old cookie prevented login"
     );
     let mut allowed = base.clone();
-    allowed["bindings"] = json!([{"tenant_id":TENANT,"client_id":"mdm","subject":subject,"roles":["super_admin"],"devices":["device-1"],"allow_wipe":true,"allow_enrollment":true,"allow_manage_credentials":false}]);
+    allowed["bindings"] = json!([{"tenant_id":TENANT,"client_id":"mdm","subject":subject,"roles":["super_admin"],"devices":["device-1"],"management":[],"allow_wipe":true,"allow_enrollment":true,"allow_manage_credentials":false}]);
     let authorized = app(&allowed, reader.clone()).await?;
     // A stale product cookie after process restart must not trap the user outside login.
     ensure!(
@@ -736,6 +740,16 @@ async fn matrix() -> Result<()> {
     let (status, assets) = browser.call(&authorized, Method::GET, &query, None).await?;
     ensure!(status == StatusCode::OK && assets["fields"][0]["last_good"]["value"] == "Model-A");
     ensure!(assets["tenant_id"] == TENANT);
+    management::matrix(
+        &allowed,
+        reader.clone(),
+        &web,
+        &origin,
+        &central_csrf,
+        &admin,
+        &admin_csrf,
+    )
+    .await?;
     ensure!(assets["device_id"] == "device-1");
     ensure!(assets["registration"] == "99999999-9999-4999-8999-999999999991");
     ensure!(assets["source"] == "mdm.windows");

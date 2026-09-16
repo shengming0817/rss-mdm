@@ -52,4 +52,43 @@ macro_rules! identities {
         }
     )+ };
 }
-identities!(DeviceId, PolicyId, PayloadId, TargetSnapshotId, RequestId);
+identities!(PolicyId, PayloadId, TargetSnapshotId, RequestId);
+
+/// The original product device identity: 1–256 UTF-8 bytes, without controls.
+/// Tenant and value are preserved exactly; construction does not prove authority.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct DeviceId(Key);
+impl DeviceId {
+    /// Validate the product identity without normalization or surrogate keys.
+    pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, PolicyError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+            return Err(PolicyError::InvalidKey);
+        }
+        Ok(Self(Key { tenant, value }))
+    }
+    /// Owning tenant.
+    pub fn tenant(&self) -> TenantId {
+        self.0.tenant
+    }
+    /// Exact device identifier.
+    pub fn value(&self) -> &str {
+        &self.0.value
+    }
+}
+
+#[cfg(test)]
+mod device_identity_tests {
+    use super::*;
+    #[test]
+    fn device_identity_preserves_product_keys_without_aliases() {
+        let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+        for value in ["设备/原始 标识".to_owned(), "x".repeat(256)] {
+            assert_eq!(DeviceId::new(tenant, &value).unwrap().value(), value);
+        }
+        for value in [String::new(), "x".repeat(257), "device\n".into()] {
+            assert!(DeviceId::new(tenant, value).is_err());
+        }
+        assert!(PolicyId::new(tenant, "设备").is_err());
+    }
+}
