@@ -60,6 +60,25 @@ pub(super) async fn matrix(
         ..Default::default()
     };
     ensure!(browser.login(&router, web, origin, csrf).await? == StatusCode::SEE_OTHER);
+    let original_csrf = browser.csrf.take();
+    for token in [None, Some("incorrect-token".to_owned())] {
+        browser.csrf = token;
+        let blocked = uuid::Uuid::new_v4();
+        let response=browser.call(&router,Method::POST,&format!("/api/v1/groups/{blocked}"),Some(json!({"operation_id":uuid::Uuid::new_v4(),"expected_revision":0,"input":{"action":"create","name":"csrf-must-not-write","description":"","criteria":null}}))).await?;
+        ensure!(
+            response.0 == StatusCode::FORBIDDEN,
+            "management write accepted absent/incorrect csrf token: {}",
+            response.0
+        );
+        ensure!(
+            pg(&format!(
+                "SELECT count(*) FROM mdm_group.groups WHERE id='{blocked}'"
+            ))?
+            .trim()
+                == "0"
+        );
+    }
+    browser.csrf = original_csrf;
     let group = uuid::Uuid::new_v4();
     let scope = uuid::Uuid::new_v4();
     let policy = uuid::Uuid::new_v4();
@@ -312,6 +331,24 @@ async fn software(
         server.logical,
         uuid::Uuid::new_v4()
     );
+    let original_csrf = publisher.csrf.take();
+    for token in [None, Some("incorrect-token".to_owned())] {
+        publisher.csrf = token;
+        let blocked = uuid::Uuid::new_v4();
+        let response=publisher.call(&router,Method::POST,&path,Some(json!({"operation_id":blocked,"expected_revision":0,"input":{"action":"candidate","resource":resource,"version":"v1","expected_resource_revision":2,"submission":server.winget_submission()}}))).await?;
+        ensure!(
+            response.0 == StatusCode::FORBIDDEN,
+            "publication accepted absent/incorrect csrf token"
+        );
+        ensure!(
+            pg(&format!(
+                "SELECT count(*) FROM mdm_management.operations WHERE id='{blocked}'"
+            ))?
+            .trim()
+                == "0"
+        );
+    }
+    publisher.csrf = original_csrf;
     let bad_operation = uuid::Uuid::new_v4();
     let (bad_status,_)=publisher.call(&router,Method::POST,&path,Some(json!({"operation_id":bad_operation,"expected_revision":0,"input":{"action":"candidate","resource":"missing","version":"v1","expected_resource_revision":1,"submission":server.winget_submission()}}))).await?;
     ensure!(bad_status.is_client_error());

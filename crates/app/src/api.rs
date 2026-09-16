@@ -46,10 +46,9 @@ pub(crate) struct RequestAuth {
 }
 async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
-    if parts.method != axum::http::Method::GET
-        && parts.method != axum::http::Method::HEAD
-        && let Err(error) = same_origin(&app, &parts.headers)
-    {
+    let writes =
+        parts.method != axum::http::Method::GET && parts.method != axum::http::Method::HEAD;
+    if writes && let Err(error) = same_origin(&app, &parts.headers) {
         return error.into_response();
     }
     let lease = match local(&app, &parts.headers) {
@@ -68,6 +67,11 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
         Ok((proof, lease)) => {
             if let Some(audit) = parts.extensions.get::<Audit>() {
                 audit.identify(&proof);
+            }
+            if writes
+                && !csrf(&parts.headers).is_ok_and(|token| sessions::equal(&lease.csrf, token))
+            {
+                return Error::Forbidden.into_response();
             }
             parts.extensions.insert(RequestAuth {
                 proof: Arc::new(proof),
@@ -545,15 +549,11 @@ struct Action {
 }
 async fn action(
     State(app): State<Arc<App>>,
-    headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
     Extension(audit): Extension<Audit>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
-    if !sessions::equal(&auth.lease.csrf, csrf(&headers)?) {
-        return Err(Error::Forbidden);
-    }
     if rss_observation::Id::new(&id).is_ok() {
         audit.target(&id);
     }
@@ -583,15 +583,11 @@ fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
 }
 fn write_key(
     headers: &HeaderMap,
-    auth: &RequestAuth,
     audit: &Audit,
     action: &'static str,
 ) -> Result<uuid::Uuid, Error> {
     let key = operation_key(headers)?;
     audit.operation(key, action);
-    if !sessions::equal(&auth.lease.csrf, csrf(headers)?) {
-        return Err(Error::Forbidden);
-    }
     Ok(key)
 }
 async fn create_enrollment(
@@ -601,7 +597,7 @@ async fn create_enrollment(
     Extension(audit): Extension<Audit>,
     input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let key = write_key(&headers, &auth, &audit, "enrollment_create")?;
+    let key = write_key(&headers, &audit, "enrollment_create")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
     let permission = app.policy.enrollment(&auth.proof, &input.device_id)?;
     audit.target(&input.device_id);
@@ -647,7 +643,7 @@ async fn resume_enrollment(
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &auth, &audit, "enrollment_resume")?;
+    let key = write_key(&headers, &audit, "enrollment_resume")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
     let permission = app.policy.enrollment(&auth.proof, &device)?;
@@ -677,7 +673,7 @@ async fn cancel_enrollment(
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &auth, &audit, "enrollment_cancel")?;
+    let key = write_key(&headers, &audit, "enrollment_cancel")?;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
     let permission = app.policy.enrollment(&auth.proof, &device)?;
     audit.target(&device);
@@ -696,7 +692,7 @@ async fn revoke_registration(
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
     let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &auth, &audit, "credential_revoke")?;
+    let key = write_key(&headers, &audit, "credential_revoke")?;
     audit.target(&device);
     app.devices
         .revoke_inner(&auth.proof, &device, registration, key, &audit)
