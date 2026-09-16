@@ -35,7 +35,8 @@ pub struct Provisioning<'a> {
     pub issuer_thumbprint: &'a str,
     /// Exactly 40 hexadecimal characters naming the issued certificate store entry.
     pub certificate_thumbprint: &'a str,
-    /// Certificate subject used for Full enrollment selection; encoder does not parse the certificate.
+    /// Nonblank legal XML subject within [`CodecLimits::uri_bytes`], required by both profiles.
+    /// Only Full serializes it as selection criteria; the encoder does not parse the certificate.
     pub certificate_subject: &'a str,
     /// Nonblank management address; encoder does not enforce URL scheme or authorize it.
     pub management_url: &'a str,
