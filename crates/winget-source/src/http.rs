@@ -22,7 +22,14 @@ impl fmt::Debug for Source {
     }
 }
 impl Source {
-    /// Validate configuration before I/O; credentials and source identities remain bound to the supplied tenant.
+    /// Bind reviewed addresses to a tenant, logical source and credential reference.
+    /// Identities follow [`Query::new`] rules. The base must be HTTPS, have a trailing
+    /// slash, and contain no user information, query or fragment. Supply 1–16 IPs;
+    /// unspecified, multicast, loopback, link-local and IPv4-mapped IPv6 are rejected.
+    /// An IP-literal host must be in that set. Private unicast addresses are allowed
+    /// only by the caller's review; this constructor does not authorize the tenant
+    /// or destination. Bad structure returns [`Error::InvalidInput`], disallowed
+    /// destinations [`Error::AddressDenied`]. No network request occurs.
     pub fn new(
         tenant: TenantId,
         id: &str,
@@ -92,7 +99,11 @@ pub struct Access {
     bearer: HeaderValue,
 }
 impl Access {
-    /// Validate configuration before I/O; credentials and source identities remain bound to the supplied tenant.
+    /// Bind a bearer token to the caller-asserted tenant/source/reference without I/O.
+    /// Identities follow [`Query::new`] rules. The token must be 1–8192 ASCII bytes
+    /// using letters, digits or `-._~+/=`; violations return [`Error::InvalidInput`].
+    /// The header is marked sensitive and Debug is redacted; construction does not
+    /// verify the credential or authenticate the caller.
     pub fn new(
         tenant: TenantId,
         source: &str,
@@ -133,7 +144,8 @@ pub struct Client {
     limit: usize,
 }
 impl Client {
-    /// Validate configuration before I/O; credentials and source identities remain bound to the supplied tenant.
+    /// Build a metadata client with 5s connect, 30s total and [`MAX_RESPONSE`] bytes.
+    /// No request is sent. Uses the binding and errors of [`Self::with_limits`].
     pub fn new(source: Source) -> Result<Self, Error> {
         Self::with_limits(
             source,
@@ -142,7 +154,11 @@ impl Client {
             MAX_RESPONSE,
         )
     }
-    /// Construct a metadata client with positive connect ≤ total ≤ 30s and a bounded response size. Reject invalid limits before I/O.
+    /// Build a client with positive connect ≤ total ≤ 30s and 1..=[`MAX_RESPONSE`] bytes.
+    /// Invalid limits return [`Error::InvalidInput`]; client setup failure returns
+    /// [`Error::Transport`] at [`RequestStage::Setup`]. Connections use reviewed IPs,
+    /// TLS hostname verification, no proxy and no redirects. A supplied private CA
+    /// replaces built-in roots. No request is sent; total deadlines include negotiation.
     pub fn with_limits(
         source: Source,
         connect: Duration,

@@ -46,11 +46,16 @@ fn hex(d: &[u8; 32]) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 #[derive(Clone, Eq, PartialEq)]
+/// HTTPS artifact coordinates and expected SHA-256; no content is downloaded.
+/// URLs must have a host, no user information, query or fragment, and at most
+/// 4096 bytes with no control characters. These checks do not authorize a fetch.
 pub struct Artifact {
     url: String,
     sha256: [u8; 32],
 }
 impl Artifact {
+    /// Validate the URL under [`Artifact`] constraints, or return [`Error::InvalidInput`].
+    /// Stores the supplied digest without checking existence or downloading bytes.
     pub fn new(location: &str, sha256: [u8; 32]) -> Result<Self, Error> {
         url(location)?;
         Ok(Self {
@@ -58,12 +63,16 @@ impl Artifact {
             sha256,
         })
     }
+    /// Borrow the artifact URL; callers control its disclosure and fetch authorization.
     pub fn url(&self) -> &str {
         &self.url
     }
+    /// Return the expected SHA-256 of downloaded artifact bytes.
     pub const fn sha256(&self) -> [u8; 32] {
         self.sha256
     }
+    /// Hash supplied bytes and reject a mismatch with [`Error::DigestMismatch`].
+    /// This does not authenticate the URL or perform a download.
     pub fn verify(&self, bytes: &[u8]) -> Result<(), Error> {
         if <[u8; 32]>::from(Sha256::digest(bytes)) == self.sha256 {
             Ok(())
@@ -80,8 +89,11 @@ impl fmt::Debug for Artifact {
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+/// Supported macOS Sonoma bottle platforms.
 pub enum BottleTag {
+    /// Apple silicon on macOS Sonoma (`arm64_sonoma`).
     Arm64Sonoma,
+    /// Intel on macOS Sonoma (`sonoma`).
     Sonoma,
 }
 impl BottleTag {
@@ -93,12 +105,16 @@ impl BottleTag {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One bottle platform, shared root URL and expected artifact SHA-256.
 pub struct Bottle {
     tag: BottleTag,
     root_url: String,
     sha256: [u8; 32],
 }
 impl Bottle {
+    /// Validate `root_url` under [`Artifact`] URL constraints.
+    /// Invalid URLs return [`Error::InvalidInput`]; neither the bottle nor its digest
+    /// is verified. [`Formula::new`] checks tag uniqueness and the common root URL.
     pub fn new(tag: BottleTag, root_url: &str, sha256: [u8; 32]) -> Result<Self, Error> {
         url(root_url)?;
         Ok(Self {
@@ -109,11 +125,19 @@ impl Bottle {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Controlled Cask installation stanza, validated by [`Cask::new`].
+/// Filenames are at most 128 ASCII bytes, use letters, digits, spaces, `.`, `_`
+/// and `-`, do not start with `.`, and have the variant-specific suffix.
 pub enum CaskArtifact {
+    /// A single `.app` filename under this type's filename constraints.
     App(String),
     /// Exact pkgutil receipt IDs, never arbitrary shell or Ruby.
     Pkg {
+        /// A single `.pkg` filename under this type's filename constraints.
         path: String,
+        /// 1–32 distinct receipt IDs, each at most 255 bytes with at least two
+        /// nonempty dot-separated components of ASCII letters, digits, `_` or `-`.
+        /// Rendered as escaped, anchored patterns; arbitrary uninstall commands are unsupported.
         receipts: Vec<String>,
     },
 }
@@ -171,6 +195,7 @@ impl CaskArtifact {
     }
 }
 #[derive(Clone, Debug)]
+/// Validated architecture-specific Cask metadata rendered without Ruby execution.
 pub struct Cask {
     key: PackageKey,
     version: String,
@@ -182,6 +207,12 @@ pub struct Cask {
 }
 impl Cask {
     #[allow(clippy::too_many_arguments)]
+    /// Validate metadata and 1–2 uniquely selected architecture artifacts.
+    /// Release is 1–128 ASCII letters/digits or `._+-`; name and description are
+    /// 1–4096 bytes without controls. Homepage follows [`Artifact`] URL rules.
+    /// Invalid values/counts/receipts return [`Error::InvalidInput`], bad installation
+    /// filenames [`Error::PathDenied`], and repeated architectures [`Error::Duplicate`].
+    /// Sorts artifacts; performs no I/O or installation.
     pub fn new(
         key: PackageKey,
         release: &str,
@@ -213,6 +244,9 @@ impl Cask {
             install,
         })
     }
+    /// Render escaped, deterministic Ruby template bytes into a controlled document.
+    /// Returns [`Error::BudgetExceeded`] above [`MAX_DOCUMENT`]; writes no files and
+    /// does not execute the generated Ruby.
     pub fn render(&self) -> Result<Document, Error> {
         let mut s = format!(
             "cask {} do\n  version {}\n  name {}\n  desc {}\n  homepage {}\n",
@@ -244,6 +278,7 @@ impl Cask {
     }
 }
 #[derive(Clone, Debug)]
+/// Validated fixed Formula template for one prebuilt executable.
 pub struct Formula {
     key: PackageKey,
     version: String,
@@ -255,7 +290,14 @@ pub struct Formula {
     dependencies: Vec<PackageKey>,
 }
 impl Formula {
-    /// Fixed template installs one prebuilt executable from the source archive.
+    /// Validate a fixed template declaring one prebuilt executable in the source archive.
+    /// Release uses 1–128 ASCII letters/digits or `._+-`; description is 1–4096 bytes
+    /// without controls. Homepage follows [`Artifact`] URL rules; executable follows
+    /// [`PackageKey::new`] token rules. Requires 1–2 unique bottle tags sharing one
+    /// root URL, and at most 64 distinct same-tenant dependencies excluding self.
+    /// Invalid values/counts/self-dependency return [`Error::InvalidInput`], duplicates
+    /// [`Error::Duplicate`], differing bottle roots [`Error::Unsupported`], and foreign
+    /// dependencies [`Error::TenantMismatch`]. No archive inspection or installation occurs.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         key: PackageKey,
@@ -302,6 +344,9 @@ impl Formula {
             dependencies,
         })
     }
+    /// Render the sorted bottles and dependencies into deterministic template bytes.
+    /// Returns [`Error::BudgetExceeded`] above [`MAX_DOCUMENT`]; performs no file writes,
+    /// Ruby execution or installation.
     pub fn render(&self) -> Result<Document, Error> {
         let class = self
             .key
@@ -366,15 +411,19 @@ impl Document {
             digest,
         })
     }
+    /// Borrow the tenant/tap/package identity bound to these bytes.
     pub fn key(&self) -> &PackageKey {
         &self.key
     }
+    /// Borrow the renderer-selected `Casks/<name>.rb` or `Formula/<name>.rb` path.
     pub fn path(&self) -> &str {
         &self.path
     }
+    /// Borrow exact UTF-8 template bytes, bounded by [`MAX_DOCUMENT`].
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+    /// Return the SHA-256 of [`Self::bytes`], independent of Git's SHA-1 object ID.
     pub const fn digest(&self) -> [u8; 32] {
         self.digest
     }

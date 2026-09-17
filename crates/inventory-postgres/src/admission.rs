@@ -2,6 +2,11 @@
 use anyhow::{Result, ensure};
 use sqlx::{PgPool, Row};
 
+/// Check the projection writer's Inventory RLS, policy, role/ACL, DML and primary-key contract.
+/// Uses its own transaction with a 5s statement timeout, reads PostgreSQL catalogs
+/// and commits on success; applies no migrations or business writes. Rejected checks
+/// or SQL/commit failures return an error. The host must reject admission on failure;
+/// success does not verify product resource authorization or future configuration drift.
 pub async fn verify(pool: &PgPool) -> Result<()> {
     verify_profile(pool, false).await
 }

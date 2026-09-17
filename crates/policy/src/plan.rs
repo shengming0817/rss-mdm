@@ -9,18 +9,26 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Caller assertion about the target universe, not source authentication.
 pub enum SnapshotCompleteness {
+    /// The supplied members describe the full candidate universe, including an empty one.
     Complete,
+    /// Partial targets, rejected rather than interpreted as a complete empty set.
     Incomplete,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Validated complete same-tenant target snapshot with sorted, deduplicated devices.
 pub struct TargetSnapshot {
     key: TargetSnapshotId,
     revision: NonZeroU64,
     members: BTreeSet<DeviceId>,
 }
 impl TargetSnapshot {
+    /// Validate a complete target universe and positive revision; sort and deduplicate members.
+    /// Returns [`PolicyError::IncompleteTargets`], [`PolicyError::TenantMismatch`] or
+    /// [`PolicyError::InvalidRevision`] for invalid inputs. Does not resolve sources or
+    /// verify the caller's completeness assertion.
     pub fn new(
         key: TargetSnapshotId,
         revision: u64,
@@ -39,25 +47,34 @@ impl TargetSnapshot {
             members: members.into_iter().collect(),
         })
     }
+    /// Borrow the snapshot identity and tenant.
     pub fn key(&self) -> &TargetSnapshotId {
         &self.key
     }
+    /// Return the positive target snapshot revision used as a plan precondition.
     pub fn revision(&self) -> u64 {
         self.revision.get()
     }
+    /// Borrow the complete canonical device set.
     pub fn members(&self) -> &BTreeSet<DeviceId> {
         &self.members
     }
 }
+/// Borrowed planning facts plus caller-selected request and time metadata.
 pub struct PlanInput<'a> {
+    /// Current policy aggregate whose revision must be checked when persisting the plan.
     pub policy: &'a Policy,
+    /// Complete target snapshot whose identity and revision must remain bound to the plan.
     pub targets: &'a TargetSnapshot,
     /// One current fact per execution; exact duplicates are accepted, contradictions rejected.
     pub executions: &'a [ExecutionRecord],
+    /// Same-tenant request identity, retained as metadata rather than execution identity.
     pub request: RequestId,
+    /// Caller-selected evaluation time, retained without reading a system clock.
     pub as_of: Timepoint,
 }
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// An intended semantic execution and its exact payload, without dispatch authority.
 pub struct DesiredExecution {
     key: ExecutionKey,
     payload: PayloadRef,
@@ -69,55 +86,79 @@ impl DesiredExecution {
             payload: version.payload().clone(),
         }
     }
+    /// Borrow the stable policy/version/device/action identity.
     pub fn key(&self) -> &ExecutionKey {
         &self.key
     }
+    /// Borrow the immutable content reference to be applied.
     pub fn payload(&self) -> &PayloadRef {
         &self.payload
     }
 }
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Why an existing execution fact remains in the plan.
 pub enum RetainReason {
+    /// Execution belongs to the current version and target set.
     Current,
+    /// Current execution is retained while Apply scheduling is paused.
     Paused,
+    /// Terminal execution is preserved after archival, scope exit or supersession.
     Historical,
 }
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Why outstanding execution work should be cancelled without reverting effects.
 pub enum CancelReason {
+    /// The device is absent from the complete current target set.
     ScopeExit,
+    /// The policy has been archived.
     Archived,
+    /// A different current policy version replaces this execution's version.
     Superseded,
 }
 /// Intents never rewrite the supplied execution/effect facts.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Intent {
+    /// Create a previously absent desired execution after storage preconditions hold.
     Add(DesiredExecution),
+    /// Preserve the supplied execution and effect facts.
     Retain {
+        /// Existing facts retained without rewriting progress or effect evidence.
         execution: ExecutionRecord,
+        /// Reason the facts are retained.
         reason: RetainReason,
     },
     /// Old nonterminal executions also receive explicit Cancel intents.
+    /// Create a new version's execution while recording the prior semantic identities.
     Supersede {
+        /// New desired execution; not yet persisted or dispatched.
         replacement: DesiredExecution,
+        /// Prior-version execution keys for the same device, including terminal history.
         previous: Vec<ExecutionKey>,
     },
+    /// Request cancellation of nonterminal work; this does not undo external effects.
     Cancel {
+        /// Existing facts retained without rewriting progress or effect evidence.
         execution: ExecutionRecord,
+        /// Reason cancellation should be requested.
         reason: CancelReason,
     },
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// V1 digest of policy, target and execution semantics; request/time metadata is excluded.
+/// The digest is an identity, not authentication or proof of a persisted plan.
 pub struct PlanId(pub(crate) [u8; 32]);
 impl PlanId {
     /// Reconstruct a stored digest; does not authenticate its plan inputs.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
+    /// Borrow the raw 32-byte semantic plan digest.
     pub fn bytes(&self) -> &[u8; 32] {
         &self.0
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Deterministic, ordered intents and storage preconditions; no effects have been applied.
 pub struct Plan {
     id: PlanId,
     policy: PolicyId,
@@ -130,18 +171,23 @@ pub struct Plan {
     as_of: Timepoint,
 }
 impl Plan {
+    /// Return the deterministic semantic identity of the plan.
     pub fn id(&self) -> PlanId {
         self.id
     }
+    /// Borrow the policy identity.
     pub fn policy(&self) -> &PolicyId {
         &self.policy
     }
+    /// Return the policy revision the persistence owner must check atomically.
     pub fn expected_revision(&self) -> u64 {
         self.expected_revision
     }
+    /// Borrow the target snapshot identity bound to the plan.
     pub fn targets(&self) -> &TargetSnapshotId {
         &self.targets
     }
+    /// Return the target revision the persistence owner must check atomically.
     pub fn target_revision(&self) -> u64 {
         self.target_revision
     }
@@ -149,17 +195,26 @@ impl Plan {
     pub fn scheduling_open(&self) -> bool {
         self.scheduling_open
     }
+    /// Borrow the canonically sorted intents; these are decisions, not execution receipts.
     pub fn intents(&self) -> &[Intent] {
         &self.intents
     }
+    /// Borrow request metadata; it does not change the semantic execution/plan identities.
     pub fn request(&self) -> &RequestId {
         &self.request
     }
+    /// Return caller-supplied time metadata without implying a freshness check.
     pub fn as_of(&self) -> Timepoint {
         self.as_of
     }
 }
 
+/// Compute a plan after validating tenant, policy, immutable versions and execution facts.
+/// Exact duplicates collapse; contradictory facts or identities return [`PolicyError`]
+/// without a partial plan. Existing execution identities, including Unknown or Failed,
+/// suppress automatic re-addition. Archived/out-of-scope/superseded nonterminal work
+/// receives Cancel; terminal history remains. No device call, retry or persistence occurs.
+/// The adapter must atomically persist/check preconditions before acting on these intents.
 pub fn reconcile(input: PlanInput<'_>) -> Result<Plan, PolicyError> {
     let facts = validate(&input)?;
     let mut intents = Vec::new();

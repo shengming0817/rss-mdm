@@ -8,18 +8,30 @@ const PKCS10: &str = "http://schemas.microsoft.com/windows/pki/2009/01/enrollmen
 const B64: &str = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary";
 const ISSUE: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512/Issue";
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Untrusted device discovery claims under the supported OnPremise profile.
+/// SOAP encoding/decoding checks syntax and budgets, not the caller's identity.
 pub struct Discover {
+    /// Nonblank email claim bounded by `field_bytes`; no email syntax or ownership verification.
     pub email: Secret<String>,
+    /// One of `1.0` through `7.0`, within the identifier budget.
     pub request_version: String,
+    /// Exactly `CIMClient_Windows`.
     pub device_type: String,
+    /// Four dot-separated decimal u32 components.
     pub application_version: String,
+    /// Caller-reported OS edition number, including zero.
     pub os_edition: u32,
+    /// At most three distinct policies, including OnPremise; also bounded by `items`.
     pub auth_policies: Vec<AuthPolicy>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Advertised discovery authentication mode; codec support does not implement the mode.
 pub enum AuthPolicy {
+    /// On-premises authentication advertisement, required by this profile.
     OnPremise,
+    /// Federated advertisement preserved alongside required OnPremise.
     Federated,
+    /// Certificate advertisement preserved alongside required OnPremise.
     Certificate,
 }
 impl AuthPolicy {
@@ -42,32 +54,54 @@ impl AuthPolicy {
 /// Preserves nullable WSTEP string values without treating them as identifiers or integers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NillableText {
+    /// An explicitly nil XML element, distinct from absence and empty text.
     Nil,
+    /// Present text, possibly empty, bounded by `field_bytes` and Debug-redacted.
     Value(Secret<String>),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Optional WSTEP disposition text with preserved nil and language information.
 pub struct Disposition {
+    /// Optional nonblank XML language attribute bounded by `identifier_bytes`.
     pub language: Option<String>,
+    /// Explicit nil or text; no success/failure semantics are inferred from the text.
     pub value: NillableText,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// OnPremise discovery response; endpoint authorization belongs to the product.
 pub struct DiscoverResponse {
+    /// Exactly `4.0` in the supported response profile.
     pub enrollment_version: String,
+    /// Nonblank bounded policy endpoint text; codec does not enforce HTTPS or destination policy.
     pub policy_url: String,
+    /// Nonblank bounded enrollment endpoint text; codec does not authorize connections.
     pub enrollment_url: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Unverified certificate-request bytes and device-supplied WSTEP context.
+/// The codec bounds and decodes base64 but does not verify PKCS#10 or authorize enrollment.
 pub struct Issue {
+    /// Optional nonblank request context bounded by `identifier_bytes`; response matching preserves it.
     pub context: Option<String>,
+    /// Nonempty decoded CSR bytes bounded by `binary_bytes`; no ASN.1/signature validation.
     pub csr: Secret<Vec<u8>>,
+    /// Ordered name/value claims bounded by `items`, identifier and field bytes.
+    /// Names are unique except distinct MAC/IMEI pairs; recognized claims get profile
+    /// syntax checks. Claims are not tenant, device or enrollment authority.
     pub additional_context: Secret<Vec<(String, String)>>,
+    /// Optional WSTEP string, retaining absence, explicit nil and empty value separately.
     pub request_id: Option<NillableText>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// WSTEP provisioning response, not evidence of certificate installation or enrollment success.
 pub struct IssueResponse {
+    /// Optional context that must equal the originating Issue context during correlation.
     pub context: Option<String>,
+    /// Nonempty decoded provisioning bytes bounded by `binary_bytes`; contents are not executed.
     pub provisioning: Secret<Vec<u8>>,
+    /// Optional WSTEP request text; no numeric interpretation or identity verification.
     pub request_id: Option<NillableText>,
+    /// Optional nil/text disposition with language, preserved without business interpretation.
     pub disposition: Option<Disposition>,
 }
 fn once<T>(slot: &mut Option<T>, value: T) -> Result<()> {

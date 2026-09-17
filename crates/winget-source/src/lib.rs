@@ -171,7 +171,12 @@ pub struct Query {
     installer_id: Option<String>,
 }
 impl Query {
-    /// Validate tenant/source/package/version and exact installer selection. Package identifiers contain 2–4 dot-separated segments; no I/O is performed.
+    /// Bind caller-supplied tenant/source/package/version to an exact installer selection.
+    /// Source, package, version and optional installer IDs use 1–128 ASCII letters,
+    /// digits or `._-`, excluding `.` and `..`. Package identifiers additionally
+    /// contain 2–4 nonempty dot-separated segments of at most 32 bytes each.
+    /// Invalid text returns [`Error::InvalidInput`]. No I/O, tenant authentication,
+    /// package existence check or implicit scope/architecture fallback is performed.
     pub fn new(
         tenant: TenantId,
         source: &str,
@@ -201,7 +206,8 @@ impl Query {
             installer_id: None,
         })
     }
-    /// Validate and select one exact installer identifier.
+    /// Select an exact installer ID under [`Self::new`] identity rules.
+    /// Invalid text returns [`Error::InvalidInput`]; no installer lookup occurs.
     pub fn with_installer_id(mut self, id: &str) -> Result<Self, Error> {
         identity(id)?;
         self.installer_id = Some(id.into());

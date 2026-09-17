@@ -17,8 +17,11 @@ pub struct Criteria {
 /// Read-only structural view. Construction still goes through the bounded builders.
 #[derive(Clone, Copy, Debug)]
 pub enum CriteriaView<'a> {
+    /// One leaf comparison.
     Predicate(&'a Predicate),
+    /// Nonempty conjunction; any NoMatch dominates Unknown.
     And(&'a [Criteria]),
+    /// Nonempty disjunction; any Match dominates Unknown.
     Or(&'a [Criteria]),
 }
 impl Criteria {
@@ -90,10 +93,15 @@ pub struct Rule {
 /// Borrowed canonical inputs for persistence owned by a consumer.
 #[derive(Clone, Copy, Debug)]
 pub struct RuleView<'a> {
+    /// Tenant to which this rule applies.
     pub tenant: rss_request_context::TenantId,
+    /// Immutable rule evidence identity.
     pub version: &'a str,
+    /// Dictionary evidence identity expected on input snapshots.
     pub dictionary_version: &'a str,
+    /// Validated dictionary in field-key order.
     pub fields: &'a BTreeMap<String, Field>,
+    /// Validated immutable bounded predicate tree.
     pub criteria: &'a Criteria,
 }
 impl Rule {

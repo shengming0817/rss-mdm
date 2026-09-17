@@ -85,7 +85,16 @@ fn digest(s: &str) -> Result<[u8; 32], Error> {
     }
     Ok(d)
 }
-/// Supported 1.0 subset. Unknown behavior is rejected instead of silently discarded.
+/// Parse bounded REST 1.0 response metadata and select exactly one installer for `query`.
+/// Requires the Data envelope and matching package identity; examines at most 256
+/// versions and 128 installers per selected version within [`MAX_RESPONSE`] bytes.
+/// Selection matches version, architecture, installer technology, declared scope and
+/// optional installer ID. No match returns [`Error::NotFound`]; multiple matches
+/// return [`Error::Ambiguous`]. Unsupported selected behavior, malformed fields/JSON,
+/// invalid digests, identities and exceeded budgets retain their closed error categories.
+/// Artifact URLs must be HTTPS without credentials, query, fragment, whitespace or
+/// controls and at most 2048 bytes. No artifact is fetched or authenticated; callers
+/// must independently authorize downloads and verify bytes against the expected digest.
 pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
     if bytes.len() > MAX_RESPONSE {
         return Err(Error::BudgetExceeded);

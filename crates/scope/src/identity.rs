@@ -42,12 +42,16 @@ impl fmt::Debug for Key {
 
 macro_rules! identities {
     ($($name:ident),+ $(,)?) => { $(
-        /// Tenant-scoped role identity. Construction is not authentication evidence.
+        /// Tenant-scoped identity. Construction is not authentication evidence.
         #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
         pub struct $name(Key);
         impl $name {
+            /// Validate 1–128 ASCII letters, digits, dots, underscores or hyphens.
+            /// Invalid text returns [`ScopeError::InvalidKey`]; no authority is verified.
             pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, ScopeError> { Key::new(tenant, value).map(Self) }
+            /// Return the tenant bound to this identity.
             pub fn tenant(&self) -> TenantId { self.0.tenant }
+            /// Borrow the exact validated identifier, without normalization.
             pub fn value(&self) -> &str { &self.0.value }
         }
     )+ };

@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Canonical tenant/time types belong to their RSS owners.
 //! ```compile_fail
 //! use rss_mdm_policy::TenantId;

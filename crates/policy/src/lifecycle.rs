@@ -1,27 +1,43 @@
 use crate::{PolicyError, PolicyId, Version};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Policy lifecycle controlling new scheduling; does not describe actual device state.
 pub enum Status {
+    /// Revision zero without a version; no scheduling.
     Draft,
+    /// Current version may produce new Apply intents.
     Active,
+    /// New/progressing Apply scheduling is closed; cancellation intents remain possible.
     Paused,
+    /// Permanently closed; outstanding executions may receive cancellation intents.
     Archived,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Requested in-memory lifecycle change, checked by [`Policy::transition`].
 pub enum Transition {
+    /// Activate a same-policy, strictly newer version from any non-archived state.
     Activate(Version),
+    /// Pause an active policy, retaining its version.
     Pause,
+    /// Resume a paused policy with the same version.
     Resume,
+    /// Archive an active or paused policy without undoing device effects.
     Archive,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Payload-free lifecycle operation label used in diagnostics.
 pub enum TransitionKind {
+    /// Activation of a version.
     Activate,
+    /// Pause of scheduling.
     Pause,
+    /// Resume of scheduling.
     Resume,
+    /// Permanent archival.
     Archive,
 }
 impl Transition {
+    /// Return the operation label without exposing its version payload.
     pub fn kind(&self) -> TransitionKind {
         match self {
             Self::Activate(_) => TransitionKind::Activate,
@@ -32,6 +48,7 @@ impl Transition {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// In-memory policy aggregate; the adapter owns authorization and durable revision CAS.
 pub struct Policy {
     key: PolicyId,
     revision: u64,
@@ -39,6 +56,7 @@ pub struct Policy {
     version: Option<Version>,
 }
 impl Policy {
+    /// Create revision zero in Draft state with no version and no I/O.
     pub fn draft(key: PolicyId) -> Self {
         Self {
             key,
@@ -48,6 +66,10 @@ impl Policy {
         }
     }
     /// Rehydrate a caller-owned snapshot; does not prove database authenticity or CAS.
+    /// Draft requires revision zero and no version; all other states require positive
+    /// revision and a version. Violations return [`PolicyError::InvalidSnapshot`].
+    /// The version must have the same tenant and policy identity. Historical transition
+    /// validity and persisted evidence remain the storage owner's responsibility.
     pub fn restore(
         key: PolicyId,
         revision: u64,
@@ -71,19 +93,28 @@ impl Policy {
             version,
         })
     }
+    /// Borrow the owning policy identity.
     pub fn key(&self) -> &PolicyId {
         &self.key
     }
+    /// Return the aggregate revision used for storage CAS, distinct from version number.
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    /// Return the lifecycle state controlling planning.
     pub fn status(&self) -> Status {
         self.status
     }
+    /// Borrow the latest version, absent only in Draft state.
     pub fn version(&self) -> Option<&Version> {
         self.version.as_ref()
     }
-    /// Returns a new snapshot. The persistence owner must CAS the input revision.
+    /// Return a new snapshot with revision incremented exactly once, without mutating self.
+    /// Checks expected revision, lifecycle admissibility and overflow. Activation requires
+    /// a strictly newer same-policy version and rejects conflicting immutable version or
+    /// payload content. Failures return the corresponding [`PolicyError`].
+    /// The persistence owner must authorize and CAS the input revision; this method
+    /// performs no writes, dispatch, retries or rollback of device effects.
     pub fn transition(
         &self,
         expected_revision: u64,

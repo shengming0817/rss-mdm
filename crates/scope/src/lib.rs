@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Canonical tenant/time types belong to their RSS owners.
 //! ```compile_fail
 //! use rss_mdm_scope::TenantId;
@@ -25,7 +26,13 @@ mod model;
 pub use model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Resolve atomically: an invalid source never yields a partial member set.
+/// Resolve in memory: an invalid source never yields a partial member set.
+/// Validates every target, limitation and exclusion, including nonmatching sources.
+/// Incomplete/failed sources, foreign tenants, conflicting repeated snapshots and
+/// invalid direct-device membership return [`ScopeError`]. Duplicate members and
+/// identical source snapshots collapse deterministically. `Restricted([])` yields
+/// no members; `Unrestricted` skips that intersection. No I/O, persistence, source
+/// authorization or freshness policy is performed.
 pub fn resolve(input: &ScopeInput) -> Result<ScopeResolution, ScopeError> {
     let limits = match &input.limitations {
         Limitations::Unrestricted => &[][..],

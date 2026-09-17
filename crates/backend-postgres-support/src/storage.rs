@@ -44,6 +44,9 @@ impl BackendStorage {
         ))
     }
     /// Acquire the existing tenant/domain transaction advisory lock.
+    /// `kind` and `key` are adapter-selected lock coordinates, scoped by backend and
+    /// transaction tenant. May wait under the transaction budget; SQL/timeout failures
+    /// propagate as `PgError`. Settlement by the caller releases the lock.
     pub async fn lock(
         self,
         tx: &mut PgTransaction<'_>,
@@ -62,7 +65,9 @@ impl BackendStorage {
         })
         .await
     }
-    /// Read an aggregate in the transaction tenant.
+    /// Read an aggregate in the transaction tenant, returning `None` when absent.
+    /// Rejects an invalid stored revision or document digest with `PgError`.
+    /// Does not lock the row; the adapter must arrange concurrency protection.
     pub async fn read(
         self,
         tx: &mut PgTransaction<'_>,
@@ -90,7 +95,10 @@ impl BackendStorage {
         })
         .transpose()
     }
-    /// Insert or compare-and-swap an aggregate; exactly one row must change.
+    /// Insert when `old` is absent, otherwise compare and swap that storage revision.
+    /// Computes the document digest and requires exactly one changed row. Revisions
+    /// must fit PostgreSQL `bigint`; conversion, SQL or zero-row CAS failures return
+    /// `PgError`. The adapter enforces domain revision progression; no commit occurs.
     pub async fn write(
         self,
         tx: &mut PgTransaction<'_>,
@@ -128,7 +136,9 @@ impl BackendStorage {
         }
         Ok(())
     }
-    /// Read and verify both request and receipt without resubmitting effects.
+    /// Read and digest-check the original request and receipt, or return `None` if absent.
+    /// Invalid stored digests and SQL failures return `PgError`; no effects are resubmitted.
+    /// The adapter must also validate owner, domain encoding and exact replay inputs.
     pub async fn receipt(
         self,
         tx: &mut PgTransaction<'_>,
@@ -158,7 +168,10 @@ impl BackendStorage {
         })
         .transpose()
     }
-    /// Persist the original request/result in the caller transaction.
+    /// Insert original request/result bytes and their derived digests in the caller transaction.
+    /// `id` is the tenant-scoped request key; `owner` is the adapter's aggregate identity.
+    /// SQL conflicts/errors propagate; this is not an upsert or automatic replay check.
+    /// Caller-owned settlement must include associated aggregate and event writes.
     pub async fn save_receipt(
         self,
         tx: &mut PgTransaction<'_>,
@@ -191,7 +204,9 @@ impl BackendStorage {
         })
         .await
     }
-    /// Load a digest-verified immutable record.
+    /// Load an immutable record by transaction tenant and adapter-owned owner/kind/key.
+    /// Returns `None` when absent; digest mismatch and SQL failures return `PgError`.
+    /// Does not decode or authenticate domain content.
     pub async fn immutable(
         self,
         tx: &mut PgTransaction<'_>,
@@ -222,7 +237,9 @@ impl BackendStorage {
         row.map(|r| self.checked(r.try_get("document")?, r.try_get("digest")?))
             .transpose()
     }
-    /// Insert immutable bytes or verify identical existing contents.
+    /// Insert immutable bytes, or require exact existing bytes for the same owner/kind/key.
+    /// A content conflict is a `PgError`; no overwrite occurs. The insert/read runs in
+    /// the caller transaction and does not commit; domain validation belongs to the adapter.
     pub async fn freeze(
         self,
         tx: &mut PgTransaction<'_>,
@@ -266,7 +283,9 @@ impl BackendStorage {
         })
         .await
     }
-    /// Verify current role privileges, forced RLS and the adapter catalog.
+    /// Read current role privileges, forced RLS and the adapter-selected exact catalog.
+    /// Policy/catalog mismatch, invalid catalog JSON and SQL failures return `PgError`.
+    /// Does not migrate schemas or grant privileges; the caller owns transaction settlement.
     pub async fn verify(
         self,
         tx: &mut PgTransaction<'_>,

@@ -1,4 +1,4 @@
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 mod diagnostic;
 mod storage;
@@ -42,6 +42,11 @@ pub struct Admission {
     pub catalog: &'static str,
 }
 /// Borrowed-transaction execution for one product backend.
+/// All operations use the supplied transaction's tenant and stage work without
+/// committing or creating a runtime. The adapter owns domain validation, runtime
+/// ownership checks and lock ordering. Propagate every `PgError` to the transaction
+/// owner for settlement; prior staged work is not proven rolled back by an error.
+/// Digest checks detect inconsistent stored bytes, not maliciously rewritten storage.
 #[derive(Clone, Copy)]
 pub struct BackendStorage {
     kind: BackendKind,

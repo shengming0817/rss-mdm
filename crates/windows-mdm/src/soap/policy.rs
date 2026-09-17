@@ -1,13 +1,23 @@
 //! The enrollment profile's single-policy XCEP response. No CA or policy engine.
 use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Supported single-policy XCEP data with fixed SHA-256/profile metadata.
+/// Values are validated by SOAP encode/decode, not by struct construction; this
+/// is not a CA policy engine and does not issue or validate certificates.
 pub struct Policy {
+    /// Policy identifier bounded by `identifier_bytes`; empty is allowed by this profile.
     pub policy_id: String,
+    /// Nonblank policy common name bounded by `field_bytes`.
     pub common_name: String,
+    /// Positive requested certificate validity duration in seconds.
     pub validity_seconds: u32,
+    /// Renewal duration in seconds, strictly less than validity; zero is allowed.
     pub renewal_seconds: u32,
+    /// Positive requested minimum key length in bits; cryptographic suitability is product-owned.
     pub minimum_key_length: u32,
+    /// Policy major revision; zero is allowed.
     pub major_revision: u32,
+    /// Policy minor revision; zero is allowed.
     pub minor_revision: u32,
 }
 pub(super) fn read_request(p: &mut Input<'_>) -> Result<()> {
