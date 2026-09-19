@@ -396,20 +396,29 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
 pub(crate) async fn authenticate(app: &App, secret: SessionSecret) -> Result<Principal, Error> {
     app.identity.authenticate(secret).await
 }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityHostContext {
+    tenant_id: String,
+    principal_id: String,
+    session_id: String,
+    navigation: crate::access::IdentityNavigation,
+}
 async fn identity_context(
     State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
     Path(tenant): Path<String>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<IdentityHostContext>, Error> {
     let proof = &auth.proof;
     if tenant != proof.tenant_id() {
         return Err(Error::Unauthorized);
     }
-    let (accounts, providers) = app.policy.identity_navigation(proof)?;
-    Ok(Json(
-        json!({"tenantId":proof.tenant_id(), "principalId":proof.principal_id(),
-        "sessionId":proof.session_id(), "navigation":{"manageAccounts":accounts,"manageProviders":providers}}),
-    ))
+    Ok(Json(IdentityHostContext {
+        tenant_id: proof.tenant_id().to_owned(),
+        principal_id: proof.principal_id().to_owned(),
+        session_id: proof.session_id(),
+        navigation: app.policy.identity_navigation(proof)?,
+    }))
 }
 async fn authorization(
     State(app): State<Arc<App>>,

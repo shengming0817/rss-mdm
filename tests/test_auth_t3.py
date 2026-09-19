@@ -19,3 +19,7 @@ class ProofTests(unittest.TestCase):
         self.assertEqual(auth_t3.safe_evidence({'status':401},['secret-credential']),{'status':401})
     def test_dynamic_callback_code_cannot_enter_evidence(self):
         with self.assertRaises(RuntimeError):auth_t3.safe_evidence({'log':'/api/v2/oidc/callback?code=unanticipated-value'},[])
+
+    def test_generated_runtime_keys_and_multiline_secret_are_rejected(self):
+        for secret in ['a'*64, '-----BEGIN PRIVATE KEY-----\nprivate-key-body\n-----END PRIVATE KEY-----']:
+            with self.assertRaises(RuntimeError):auth_t3.safe_evidence({'log':secret},[secret])

@@ -48,6 +48,12 @@ pub(crate) struct DangerousAction<'a> {
 pub(crate) struct Coordinates {
     pub source: ReportSource,
 }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IdentityNavigation {
+    pub(crate) manage_accounts: bool,
+    pub(crate) manage_providers: bool,
+}
 impl Policy {
     pub fn new(tenant: &str, instance: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
         let id = rss_identity_core::InstanceId::parse(instance)
@@ -89,18 +95,21 @@ impl Policy {
             bindings: entries,
         })
     }
-    pub(crate) fn identity_navigation(&self, proof: &Principal) -> Result<(bool, bool), Error> {
+    pub(crate) fn identity_navigation(
+        &self,
+        proof: &Principal,
+    ) -> Result<IdentityNavigation, Error> {
         let binding = self.binding(proof)?;
-        Ok((
-            binding.is_some_and(|b| {
+        Ok(IdentityNavigation {
+            manage_accounts: binding.is_some_and(|b| {
                 b.identity_management
                     .contains(&IdentityPermission::Accounts)
             }),
-            binding.is_some_and(|b| {
+            manage_providers: binding.is_some_and(|b| {
                 b.identity_management
                     .contains(&IdentityPermission::Providers)
             }),
-        ))
+        })
     }
     pub(crate) fn tenant(&self) -> &str {
         &self.tenant

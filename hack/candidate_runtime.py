@@ -4,6 +4,8 @@ from enum import StrEnum
 import http.client
 import json
 import os
+import re
+import base64
 from pathlib import Path
 import shutil
 import ssl
@@ -24,6 +26,14 @@ def require(condition, message):
 
 class Stage(StrEnum):
     LOAD = "image-load"
+    NETWORK = "network-create"
+    IMAGE_INSPECT = "image-inspect"
+    IDP = "idp-start"
+    IDP_INSPECT = "idp-inspect"
+    BROWSER = "browser-run"
+    TOOLS = "tools-probe"
+    SECRET_VOLUME = "secret-volume"
+    SECRET_INPUTS = "secret-inputs"
     POSTGRES = "postgres-start"
     SQL = "postgres-sql"
     RUNTIME_VOLUME = "runtime-volume"
@@ -119,21 +129,26 @@ def inputs(root, example):
     gateway=gateway.replace("/run/config/ui.json","/certs/ui.json")
     gateway=gateway.replace("/private/mdm-tls.crt","/certs/server.crt").replace("/private/mdm-tls.key","/certs/server.key")
     (root/"nginx.conf").write_text(gateway)
-    root.chmod(0o755)
-    (root/"server.key").chmod(0o644)  # Disposable fixture key, readable by non-root TLS containers.
+    root.chmod(0o700)
+    (root/"server.key").chmod(0o600)
     return runtime,operator
 
-def failure_evidence(directory, created, safe_log_sources, primary, filename="smoke-failure.json"):
+def failure_evidence(directory, created, safe_log_sources, primary, filename="smoke-failure.json", private_values=()):
     # Product and ingress logs have closed, credential-free schemas. PostgreSQL
     # statement logs can contain input values, so capture only its closed state.
     diagnostics = {"status":"failed", "error_class":type(primary).__name__, "containers":{}}
     if isinstance(primary, DockerFailure):
         diagnostics.update(stage=primary.stage.value,outcome=primary.outcome,exit_code=primary.exit_code)
+    if hasattr(primary,'resource'):diagnostics['resource']=primary.resource
+    if hasattr(primary,'cleanup_records'):diagnostics['cleanup']=primary.cleanup_records
     for name in created:
         value = {}
         try:
             value["state"] = docker("inspect", "--format", "{{.State.Status}}:{{.State.ExitCode}}", name, timeout=10,stage=Stage.DIAGNOSTIC_STATE)
-            if name in safe_log_sources: value["log"] = docker("logs", "--tail", "200", name, timeout=10,stage=Stage.DIAGNOSTIC_LOGS)
+            if name in safe_log_sources:
+                log=docker("logs", "--tail", "200", name, timeout=10,stage=Stage.DIAGNOSTIC_LOGS)
+                try:value['log']=safe_evidence(log,private_values)
+                except RuntimeError:value['log_rejected']=True
         except Exception:
             value["diagnostic_unavailable"] = True
         diagnostics["containers"][name] = value
@@ -145,29 +160,58 @@ def failure_evidence(directory, created, safe_log_sources, primary, filename="sm
     except Exception:
         primary.add_note("candidate failure diagnostics could not be persisted")
 
+class CleanupFailure(RuntimeError):
+    def __init__(self, records):
+        self.cleanup_records=records
+        super().__init__("candidate cleanup failed")
+
 def cleanup(created, volume, network=None):
     primary = sys.exception()
-    failures = []
-    commands = [("rm", "-f", container) for container in reversed(created)]
-    commands.extend(("volume", "rm", name) for name in ([volume] if isinstance(volume,str) else reversed(volume)))
-    if network: commands.append(("network", "rm", network))
-    for command in commands:
-        try:
-            docker(*command,stage=Stage.REMOVE_CONTAINER if command[0]=="rm" else (Stage.REMOVE_NETWORK if command[0]=="network" else Stage.REMOVE_VOLUME))
-        except Exception as error:
-            failures.append(error)
+    records = []
+    commands = [("container",name,Stage.REMOVE_CONTAINER,("rm","-f",name)) for name in reversed(created)]
+    commands.extend(("volume",name,Stage.REMOVE_VOLUME,("volume","rm",name)) for name in ([volume] if isinstance(volume,str) else reversed(volume)))
+    if network:commands.append(("network",network,Stage.REMOVE_NETWORK,("network","rm",network)))
+    for kind,name,stage,command in commands:
+        record=dict(kind=kind,name=name,stage=stage.value,outcome="removed",exit_code=None)
+        try:docker(*command,stage=stage)
+        except DockerFailure as error:record.update(outcome=error.outcome,exit_code=error.exit_code)
+        except Exception:record.update(outcome="unavailable")
+        records.append(record)
+    failures=[record for record in records if record['outcome']!='removed']
     if failures:
-        message = f"candidate cleanup failed ({len(failures)} resources)"
         if primary is not None:
-            primary.add_note(message)
-        else:
-            raise RuntimeError(message) from failures[0]
+            primary.cleanup_records=getattr(primary,'cleanup_records',[])+records
+            primary.add_note(f"candidate cleanup failed ({len(failures)} resources)")
+        else:raise CleanupFailure(records)
+    return records
+
+def run_owned(created, owner, *args, stage, **kwargs):
+    """The daemon container, not its CLI process, is the owned resource.
+
+    ref: testcontainers-python DockerContainer.start/stop: retain identity until removal.
+    """
+    name=owner+'-op-'+uuid.uuid4().hex[:8]
+    created.append(name)
+    try:
+        return docker('run','--name',name,'--label','rss.owner='+owner,*args,stage=stage,**kwargs)
+    except DockerFailure as error:
+        error.resource=dict(kind='container',name=name)
+        raise
+    finally:
+        records=cleanup([name],[])
+        if records[0]['outcome']=='removed':created.remove(name)
+
+def safe_evidence(value, private_values):
+    encoded=json.dumps(value)
+    require(not re.search(r'[?&](?:code|state)=',encoded),'callback URL in evidence')
+    require(not any(secret and (secret in encoded or json.dumps(secret)[1:-1] in encoded) for secret in private_values),'sensitive evidence rejected')
+    return value
 
 
 WEB_REVISION = "a0e5ac61e98677ae96c6c80d3680d5f75c4fbbfb"
 
 def image_identity(reference):
-    value = json.loads(docker("image", "inspect", reference, stage=Stage.LOAD))[0]
+    value = json.loads(docker("image", "inspect", reference, stage=Stage.IMAGE_INSPECT))[0]
     return {"id":value["Id"], "revision":value["Config"].get("Labels",{}).get("org.opencontainers.image.revision"),
             "os":value["Os"], "architecture":value["Architecture"]}
 
@@ -205,30 +249,54 @@ class Candidate:
         self.created,self.volumes=[],[]
         self.temporary=None
         self.network_created=False
-    def command(self,*args,stage=Stage.SERVER,**kwargs):
+        self.private_values=[PASSWORD,"candidate-fixture"]
+    def command(self,*args,stage,**kwargs):
         return docker(*args,stage=stage,**kwargs)
     def sql(self,statement):
         return self.command("exec","-i",self.pg,"psql","-X","-At","-v","ON_ERROR_STOP=1","-U","postgres","-d","mdm_test",input=statement,timeout=15,stage=Stage.SQL)
+    def run_once(self,*args,stage,**kwargs):
+        return run_owned(self.created,self.name,*args,stage=stage,**kwargs)
+    def register_private_files(self):
+        for path in self.root.rglob('*'):
+            if path.is_file() and (path.suffix in {'.key','.pk8'} or 'password' in path.name or path.name in {'state','credential'}):
+                raw=path.read_bytes()
+                self.private_values.extend([raw.hex(),base64.b64encode(raw).decode()])
+                try:self.private_values.append(raw.decode().strip())
+                except UnicodeError:pass
+    def copy_secret_volume(self, volume, files, uid):
+        require(isinstance(uid,int) and uid>0,'invalid secret owner')
+        for filename in files:
+            require(filename not in {'.','..'} and re.fullmatch(r'[a-zA-Z0-9_.-]+',filename) is not None,'invalid fixture filename')
+        script='mkdir -p /private; '+''.join('cp /fixture/'+name+' /private/'+name+'; ' for name in files)+f'chown -R {uid}:{uid} /private; chmod 700 /private; chmod 600 /private/*; '
+        script+='; '.join(f'test "$(stat -c %a:%u /private/{name})" = "600:{uid}"' for name in files)
+        self.run_once('--user','0:0','--network','none','-v',str(self.root)+':/fixture:ro','-v',volume+':/private','--entrypoint','sh',self.providers['runtime'],'-ec',script,stage=Stage.SECRET_INPUTS)
+    def secret_volume(self, suffix, files, uid):
+        volume=self.name+'-'+suffix
+        self.command('volume','create',volume,stage=Stage.SECRET_VOLUME);self.volumes.append(volume)
+        self.copy_secret_volume(volume,files,uid)
+        return volume
     def operator(self,verb,config,stage):
-        return self.command("run","--rm","--network","container:"+self.pg,"-v",self.operator_volume+":/run/mdm:ro",self.image,verb,"--config","/run/mdm/"+config,stage=stage)
+        return self.run_once("--network","container:"+self.pg,"-v",self.operator_volume+":/run/mdm:ro",self.image,verb,"--config","/run/mdm/"+config,stage=stage)
     def copy_runtime(self):
-        self.command("run","--rm","--user","0:0","--network","none","-v",str(self.runtime)+":/fixture:ro","-v",self.runtime_volume+":/run/mdm", "--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=Stage.RUNTIME_INPUTS)
+        self.run_once("--user","0:0","--network","none","-v",str(self.runtime)+":/fixture:ro","-v",self.runtime_volume+":/run/mdm", "--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=Stage.RUNTIME_INPUTS)
     def start_server(self):
         self.created.append(self.server)
-        self.command("run","-d","--name",self.server,"--network","container:"+self.pg,"-v",self.runtime_volume+":/run/mdm:ro",self.image,"serve","--config","/run/mdm/config.json")
+        self.command("run","-d","--name",self.server,"--network","container:"+self.pg,"-v",self.runtime_volume+":/run/mdm:ro",self.image,"serve","--config","/run/mdm/config.json",stage=Stage.SERVER)
     def __enter__(self):
         try:
             self.temporary=tempfile.TemporaryDirectory(prefix=self.name+"-")
             self.root=Path(self.temporary.name)
             self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json")
             if self.own_network:
-                self.command("network","create",self.network,stage=Stage.POSTGRES)
+                self.command("network","create",self.network,stage=Stage.NETWORK)
                 self.network_created=True
             self.config=json.loads((self.runtime/"config.json").read_text())
             self.config["product_origin"]="https://"+self.host
             self.config["identity"].update(instance_id=self.instance,tenant_id=self.tenant)
             self.config["bindings"][0].update(instance_id=self.instance,tenant_id=self.tenant)
+            self.register_private_files()
             if self.prepare: self.prepare(self)
+            self.register_private_files()
             (self.runtime/"config.json").write_text(json.dumps(self.config))
             for file in ["migrate.json","initialize.json"]:
                 path=self.operator_root/file
@@ -239,8 +307,9 @@ class Candidate:
             gateway=(self.root/"nginx.conf").read_text().replace("mdm.example.test",self.host)
             (self.root/"nginx.conf").write_text(gateway)
             (self.root/"ui.json").write_text(json.dumps({"canonicalOrigin":"https://"+self.host,"oidcEnabled":self.config["identity"]["oidc"] is not None}))
+            self.pg_tls=self.secret_volume("pg-tls",["server.crt","server.key"],999)
             self.created.append(self.pg)
-            self.command("run","-d","--name",self.pg,"--network",self.network,"--network-alias",self.host,"-p","127.0.0.1::8445","-v",str(self.root)+":/certs:ro","-e","POSTGRES_PASSWORD=candidate-fixture","-e","POSTGRES_DB=mdm_test",self.providers["postgres"],"sh","-ec","cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key",stage=Stage.POSTGRES)
+            self.command("run","-d","--name",self.pg,"--network",self.network,"--network-alias",self.host,"-p","127.0.0.1::8445","-v",self.pg_tls+":/certs:ro","-e","POSTGRES_PASSWORD=candidate-fixture","-e","POSTGRES_DB=mdm_test",self.providers["postgres"],"sh","-ec","cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key",stage=Stage.POSTGRES)
             wait(lambda:subprocess.run(["docker","exec",self.pg,"pg_isready","-h","127.0.0.1","-U","postgres"],capture_output=True,timeout=5).returncode==0,"PostgreSQL")
             roles="".join("CREATE ROLE "+r+" LOGIN PASSWORD '"+r+"-fixture' NOSUPERUSER NOBYPASSRLS;" for r in ["mdm_owner","mdm_api","mdm_access","mdm_runtime"])
             roles+="GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
@@ -250,12 +319,13 @@ class Candidate:
             self.runtime_volume,self.operator_volume=self.name+"-runtime",self.name+"-operator"
             for volume,directory,volume_stage,input_stage in [(self.runtime_volume,self.runtime,Stage.RUNTIME_VOLUME,Stage.RUNTIME_INPUTS),(self.operator_volume,self.operator_root,Stage.OPERATOR_VOLUME,Stage.OPERATOR_INPUTS)]:
                 self.command("volume","create",volume,stage=volume_stage);self.volumes.append(volume)
-                self.command("run","--rm","--user","0:0","--network","none","-v",str(directory)+":/fixture:ro","-v",volume+":/run/mdm","--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=input_stage)
+                self.run_once("--user","0:0","--network","none","-v",str(directory)+":/fixture:ro","-v",volume+":/run/mdm","--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=input_stage)
             for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator("migrate","migrate.json",stage)
             self.operator("initialize","initialize.json",Stage.INITIALIZE)
             self.start_server()
+            self.gateway_inputs=self.secret_volume("gateway-inputs",["server.crt","server.key","nginx.conf","ui.json"],10001)
             self.created.append(self.gateway)
-            self.command("run","-d","--name",self.gateway,"--network","container:"+self.pg,"-v",str(self.root)+":/certs:ro",self.web["id"],"-c","/certs/nginx.conf",stage=Stage.GATEWAY)
+            self.command("run","-d","--name",self.gateway,"--network","container:"+self.pg,"-v",self.gateway_inputs+":/certs:ro",self.web["id"],"-c","/certs/nginx.conf",stage=Stage.GATEWAY)
             self.port=int(self.command("port",self.pg,"8445/tcp",stage=Stage.PORT).rsplit(":",1)[1])
             self.ready()
             return self
@@ -272,11 +342,13 @@ class Candidate:
         wait(check,"product readiness",seconds=60)
     def __exit__(self,kind,error,tb):
         def record(primary):
-            failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.diagnostic_filename)
+            failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.diagnostic_filename,self.private_values)
         if error:record(error)
         try:
-            cleanup(self.created,self.volumes,self.network if self.network_created else None)
-            if error and getattr(error,"__notes__",None):record(error)
+            records=cleanup(self.created,self.volumes,self.network if self.network_created else None)
+            if error:
+                if all(r["outcome"]=="removed" for r in records):error.cleanup_records=getattr(error,"cleanup_records",[])+records
+                record(error)
         except BaseException as cleanup_error:
             record(cleanup_error)
             if error:

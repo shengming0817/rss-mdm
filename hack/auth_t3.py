@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from candidate_runtime import Candidate, Stage, ROOT, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait
+from candidate_runtime import Candidate, Stage, ROOT, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait, safe_evidence, run_owned
 from candidate_smoke import Browser
 
 SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','refresh','logout','logout_all',
@@ -23,18 +23,13 @@ PLAYWRIGHT_INTEGRITY='sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5
 def validate_checks(checks):
     require(set(checks)==set(SCENARIOS) and all(v is True for v in checks.values()),'incomplete browser acceptance')
 
-def safe_evidence(value, private_values):
-    encoded=json.dumps(value)
-    require(not re.search(r'[?&](?:code|state)=',encoded),'callback URL in evidence')
-    require(not any(secret and secret in encoded for secret in private_values),'sensitive evidence rejected')
-    return value
-
 def enterprise(stack):
     """Production private access, not the integration-only loopback adapter."""
     stack.password=secrets.token_urlsafe(28)
     stack.client_secret=secrets.token_urlsafe(32)
     stack.idp_password=secrets.token_urlsafe(28)
     (stack.operator_root/'account-password').write_text(stack.password)
+    stack.private_values.extend([stack.password,stack.client_secret,stack.idp_password])
     stack.idp=stack.name+'-idp'
     issuer='https://idp.example.test:8443/realms/mdm'
     realm={'realm':'mdm','enabled':True,'sslRequired':'all','loginWithEmailAllowed':False,
@@ -44,18 +39,19 @@ def enterprise(stack):
            'users':[{'id':'external-'+name,'username':name,'enabled':True,'emailVerified':True,
                      'email':name+'@example.test','firstName':name,'lastName':'Fixture',
                      'credentials':[{'type':'password','value':stack.idp_password,'temporary':False}]} for name in ['alice','unknown']]}
-    (stack.root/'realm.json').write_text(json.dumps(realm));(stack.root/'realm.json').chmod(0o644)
+    (stack.root/'realm.json').write_text(json.dumps(realm));(stack.root/'realm.json').chmod(0o600)
+    idp_volume=stack.secret_volume('idp-inputs',['realm.json','server.crt','server.key'],1000)
     stack.created.append(stack.idp)
     docker('run','-d','--name',stack.idp,'--network',stack.network,'--network-alias','idp.example.test',
-           '-v',str(stack.root/'realm.json')+':/opt/keycloak/data/import/mdm.json:ro',
-           '-v',str(stack.root)+':/fixture:ro',stack.providers['keycloak'],'start-dev','--import-realm',
+           '-v',idp_volume+':/opt/keycloak/data/import:ro',stack.providers['keycloak'],'start-dev','--import-realm',
            '--http-enabled=false','--hostname=https://idp.example.test:8443',
-           '--https-certificate-file=/fixture/server.crt','--https-certificate-key-file=/fixture/server.key',stage=Stage.SERVER)
-    address=docker('inspect','--format','{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',stack.idp,stage=Stage.PORT)
+           '--https-certificate-file=/opt/keycloak/data/import/server.crt','--https-certificate-key-file=/opt/keycloak/data/import/server.key',stage=Stage.IDP)
+    address=docker('inspect','--format','{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',stack.idp,stage=Stage.IDP_INSPECT)
     ip=ipaddress.ip_address(address)
     require(any(ip in ipaddress.ip_network(n) for n in ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16']),'fixture needs private Docker network')
     for name in ['state','credential']:
-        path=stack.runtime/name;path.write_text(secrets.token_hex(32));path.chmod(0o600)
+        value=secrets.token_hex(32);stack.private_values.append(value)
+        path=stack.runtime/name;path.write_text(value);path.chmod(0o600)
     stack.config['identity']['oidc']={
         'group_facts_max_age_seconds':300,'state_key_file':'/run/mdm/state','active_credential_key':'current',
         'credential_keys':{'current':'/run/mdm/credential'},'return_targets':{'resume':'https://mdm.example.test/auth/resume'},
@@ -82,6 +78,7 @@ def prepare_member(stack):
     browser=Browser(stack.port,stack.root/'ca.crt')
     require(browser.call('POST',f'/api/v2/tenants/{TENANT}/login',dict(login='admin',password=stack.password))[0]==200,'bootstrap login')
     stack.member_password=secrets.token_urlsafe(28)
+    stack.private_values.append(stack.member_password)
     for name in ['member','sso-member']:
         status,result=browser.call('POST',f'/api/v2/tenants/{TENANT}/accounts',dict(login=name,password=stack.member_password))
         require(status==201,'bootstrap account')
@@ -101,7 +98,7 @@ def installation_mismatch(stack):
     ledger=stack.sql("SELECT md5(string_agg(row_to_json(m)::text,',' ORDER BY name)) FROM public.mdm_migrations m")
     value=json.loads((stack.operator_root/'migrate.json').read_text())
     value['installation']['instance_id']=str(uuid.uuid4())
-    docker('run','--rm','-i','--network','none','--user','0:0','-v',stack.operator_volume+':/run/mdm',
+    stack.run_once('-i','--network','none','--user','0:0','-v',stack.operator_volume+':/run/mdm',
            '--entrypoint','sh',stack.providers['runtime'],'-ec',
            'cat > /run/mdm/mismatch.json; chown 10001:10001 /run/mdm/mismatch.json; chmod 600 /run/mdm/mismatch.json',
            input=json.dumps(value),stage=Stage.OPERATOR_INPUTS)
@@ -119,13 +116,13 @@ def installation_mismatch(stack):
 def run(candidate, web_image, tools_image, output):
     require(not output.exists(),'T3 output must be new')
     output.mkdir(parents=True)
-    tool=image_identity(tools_image)
-    # Use an existing fixed tools artifact; no checkout or reference application runtime needed.
-    probe=docker('run','--rm','--network','none','--entrypoint','node',tool['id'],'-e',
-                 "console.log(JSON.stringify({version:require('/opt/playwright-core/package.json').version,integrity:require('fs').readFileSync('/opt/playwright-integrity','utf8')}))",stage=Stage.LOAD)
-    require(json.loads(probe)==dict(version='1.60.0',integrity=PLAYWRIGHT_INTEGRITY),'browser package mismatch')
     private=[]
     try:
+        tool=image_identity(tools_image)
+        # Use an existing fixed tools artifact; no checkout or reference application runtime needed.
+        probe=run_owned([], 'mdm-tools-'+uuid.uuid4().hex[:10], '--network','none','--entrypoint','node',tool['id'],'-e',
+                     "console.log(JSON.stringify({version:require('/opt/playwright-core/package.json').version,integrity:require('fs').readFileSync('/opt/playwright-integrity','utf8')}))",stage=Stage.TOOLS)
+        require(json.loads(probe)==dict(version='1.60.0',integrity=PLAYWRIGHT_INTEGRITY),'browser package mismatch')
         with Candidate(candidate,web_image,prepare=enterprise,diagnostics=output) as primary:
             prepare_member(primary);seed_inventory(primary)
             mismatch=installation_mismatch(primary)
@@ -135,8 +132,9 @@ def run(candidate, web_image, tools_image, output):
                 for stack in [primary,other]:
                     conf=(stack.root/'nginx.conf').read_text().replace('listen 8445 ssl;','listen 443 ssl;\n        listen 8445 ssl;')
                     (stack.root/'nginx.conf').write_text(conf)
+                    stack.copy_secret_volume(stack.gateway_inputs,['server.crt','server.key','nginx.conf','ui.json'],10001)
                     docker('exec',stack.gateway,'nginx','-c','/certs/nginx.conf','-s','reload',stage=Stage.GATEWAY)
-                private=[primary.password,primary.member_password,primary.idp_password,primary.client_secret]
+                private=primary.private_values+other.private_values
                 params=dict(tenant=TENANT,member=primary.member,ssoMember=primary.sso_member,adminPassword=primary.password,memberPassword=primary.member_password,
                             idpPassword=primary.idp_password,clientSecret=primary.client_secret,issuer=primary.issuer,
                             server=primary.server,pg=primary.pg,idp=primary.idp,otherPg=other.pg,otherTenant=other.tenant,wrongTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -148,7 +146,7 @@ def run(candidate, web_image, tools_image, output):
                 try:
                     raw=docker('run','--name',browser_name,'--network',primary.network,'--shm-size','1g',
                                '-v','/var/run/docker.sock:/var/run/docker.sock','-v',str(primary.root)+':/fixture:ro',
-                               '-v',str(ROOT/'hack')+':/runner:ro','--entrypoint','bash',tool['id'],'-ec',script,stage=Stage.SERVER,timeout=1200)
+                               '-v',str(ROOT/'hack')+':/runner:ro','--entrypoint','bash',tool['id'],'-ec',script,stage=Stage.BROWSER,timeout=1200)
                 except Exception:
                     try:
                         diagnostic=json.loads(docker('logs',browser_name,stage=Stage.LOGS))

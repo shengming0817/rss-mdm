@@ -97,10 +97,10 @@ class RuntimeOwnership(unittest.TestCase):
     def test_operator_preserves_exact_stage(self):
         owner=candidate.Candidate.__new__(candidate.Candidate)
         owner.pg,owner.operator_volume,owner.image='pg','operator','image'
-        owner.command=mock.Mock(return_value='')
+        owner.run_once=mock.Mock(return_value='')
         for stage in [candidate.Stage.MIGRATION,candidate.Stage.REPLAY,candidate.Stage.INITIALIZE]:
             owner.operator('migrate','input.json',stage)
-            self.assertEqual(owner.command.call_args.kwargs['stage'],stage)
+            self.assertEqual(owner.run_once.call_args.kwargs['stage'],stage)
 
     def test_network_cleanup_does_not_replace_primary(self):
         primary=RuntimeError('browser rejected')
@@ -124,3 +124,28 @@ class RuntimeOwnership(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'fixture failure'):
                 smoke.smoke(Path(temp),'ui')
             factory.assert_called_once_with(Path(temp),'ui',diagnostic_filename='smoke-failure.json')
+
+
+class ExternalReviewRegressions(unittest.TestCase):
+    def test_owned_timeout_reclaims_daemon_container(self):
+        created=[]
+        with mock.patch.object(candidate,'docker',side_effect=[candidate.DockerFailure(candidate.Stage.MIGRATION,'timeout'), '']) as command:
+            with self.assertRaises(candidate.DockerFailure):
+                candidate.run_owned(created,'test-owner','image','sleep','60',stage=candidate.Stage.MIGRATION)
+        self.assertEqual(created,[])
+        first=command.call_args_list[0].args
+        self.assertEqual(first[:2],('run','--name'))
+        self.assertEqual(command.call_args_list[1].args,('rm','-f',first[2]))
+
+    def test_cleanup_failure_preserves_resource_and_closed_outcome(self):
+        with mock.patch.object(candidate,'docker',side_effect=candidate.DockerFailure(candidate.Stage.REMOVE_VOLUME,'exit',7)):
+            with self.assertRaises(candidate.CleanupFailure) as failure:
+                candidate.cleanup([],['owned-volume'])
+        self.assertEqual(failure.exception.cleanup_records,[{'kind':'volume','name':'owned-volume','stage':'cleanup-volume','outcome':'exit','exit_code':7}])
+
+    def test_host_fixture_keeps_private_directory_and_tls_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            candidate.inputs(root,candidate.ROOT/'fixtures/mdm-config.example.json')
+            self.assertEqual(root.stat().st_mode & 0o077,0)
+            self.assertEqual((root/'server.key').stat().st_mode & 0o077,0)
