@@ -220,6 +220,10 @@ def load_ui(directory, ui):
     require(actual=={key:value for key,value in ui.items() if key!='archive'},'UI artifact differs from candidate')
     return actual
 
+def verify_source(revision):
+    current=subprocess.check_output(["/usr/bin/git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
+    require(current==revision and not subprocess.check_output(["/usr/bin/git","status","--porcelain"],cwd=ROOT,text=True).strip(),"candidate requires clean matching source")
+
 def verify_candidate(directory):
     manifest=json.loads((directory/"candidate.json").read_text())
     require(manifest.get("format_version")==2,"current product candidate format required")
@@ -227,8 +231,7 @@ def verify_candidate(directory):
     require(archive.parent==directory and not archive.is_symlink() and sha(archive)==manifest["archive"]["sha256"],"candidate archive mismatch")
     digest,config=oci_identity(archive)
     require(digest==manifest["archive"]["manifest_digest"] and config["config"]["Labels"]["org.opencontainers.image.revision"]==manifest["revision"] and platform(config)==manifest["platform"],"candidate image mismatch")
-    revision=subprocess.check_output(["/usr/bin/git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
-    require(revision==manifest["revision"] and not subprocess.check_output(["/usr/bin/git","status","--porcelain"],cwd=ROOT,text=True).strip(),"candidate requires clean matching source")
+    verify_source(manifest["revision"])
     require(sha(directory/"mdm-config.example.json")==manifest["config_sha256"],"candidate configuration mismatch")
     require(sha(ROOT/"Cargo.lock")==manifest["cargo_lock_sha256"],"candidate lock mismatch")
     docker("load","--input",archive,stage=Stage.LOAD)

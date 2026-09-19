@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from candidate_runtime import Candidate, Stage, ROOT, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait, safe_evidence, run_owned, immutable_image, failure_evidence
+from candidate_runtime import Candidate, Stage, ROOT, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait, safe_evidence, run_owned, immutable_image, failure_evidence, verify_source
 from candidate_smoke import Browser
 
 SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','refresh','logout','logout_all',
@@ -144,12 +144,13 @@ def run(candidate, tools_image, output):
                             runtimeVolume=primary.runtime_volume,runtimeImage=primary.providers['runtime'])
                 (primary.root/'browser-input.json').write_text(json.dumps(params));(primary.root/'browser-input.json').chmod(0o600)
                 (primary.root/'other-ca.crt').write_bytes((other.root/'ca.crt').read_bytes())
+                (primary.root/'browser.mjs').write_bytes((ROOT/'hack/auth_t3_browser.mjs').read_bytes())
                 browser_name=primary.name+'-browser';primary.created.append(browser_name)
-                script='mkdir -p /root/.pki/nssdb; certutil -N --empty-password -d sql:/root/.pki/nssdb; certutil -A -d sql:/root/.pki/nssdb -n mdm -t "C,," -i /fixture/ca.crt; certutil -A -d sql:/root/.pki/nssdb -n other -t "C,," -i /fixture/other-ca.crt; exec node /runner/auth_t3_browser.mjs'
+                script='mkdir -p /root/.pki/nssdb; certutil -N --empty-password -d sql:/root/.pki/nssdb; certutil -A -d sql:/root/.pki/nssdb -n mdm -t "C,," -i /fixture/ca.crt; certutil -A -d sql:/root/.pki/nssdb -n other -t "C,," -i /fixture/other-ca.crt; exec node /fixture/browser.mjs'
                 try:
                     raw=docker('run','--name',browser_name,'--network',primary.network,'--shm-size','1g',
                                '-v','/var/run/docker.sock:/var/run/docker.sock','-v',str(primary.root)+':/fixture:ro',
-                               '-v',str(ROOT/'hack')+':/runner:ro','--entrypoint','bash',tool['id'],'-ec',script,stage=Stage.BROWSER,timeout=1200)
+                               '--entrypoint','bash',tool['id'],'-ec',script,stage=Stage.BROWSER,timeout=1200)
                 except Exception:
                     try:
                         diagnostic=json.loads(docker('logs',browser_name,stage=Stage.LOGS))
@@ -166,7 +167,7 @@ def run(candidate, tools_image, output):
                               origins=['https://mdm.example.test','https://mdm-other.example.test'],
                               ca_sha256=[sha(primary.root/'ca.crt'),sha(other.root/'ca.crt')],
                               config_sha256=sha(primary.runtime/'config.json'),gateway_sha256=sha(primary.root/'nginx.conf'),
-                              runner_sha256=sha(ROOT/'hack/auth_t3_browser.mjs'),
+                              runner_sha256=sha(primary.root/'browser.mjs'),candidate_sha256=sha(candidate/'candidate.json'),
                               fixture='synthetic device-1 Model-2364, real product authorization and inventory query',
                               exclusions=['real device enrollment/commands/wipe','other IdP profiles','production capacity','legacy environment retirement'])
                 events=json.loads(primary.sql("SELECT COALESCE(json_agg(e),'[]')::text FROM (SELECT id,request_id,actor,target,operation_id,action,result,status FROM mdm_access.audit ORDER BY recorded_at,id) e"))
@@ -177,6 +178,7 @@ def run(candidate, tools_image, output):
                 (output/'product.log').write_text(json.dumps(logs,indent=2)+'\n')
                 result['log_sha256']=sha(output/'product.log');result['requests_sha256']=sha(output/'requests.json')
         # Resource owners have completed cleanup before publishing success.
+        verify_source(result['mdm']['revision'])
         result['status']='passed'
         staged=output/'.result.json'
         staged.write_text(json.dumps(safe_evidence(result,private),indent=2)+'\n')

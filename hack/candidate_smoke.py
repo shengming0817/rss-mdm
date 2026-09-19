@@ -19,7 +19,7 @@ from t2 import INSTANCE, ADMIN, TENANTS, installation
 TENANT = TENANTS[0]
 PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 
-from candidate_runtime import Candidate, Stage, docker, require, wait
+from candidate_runtime import Candidate, Stage, docker, require, wait, verify_source
 
 class Browser:
     def __init__(self, port, ca):
@@ -82,9 +82,10 @@ def run_smoke(directory):
         logs=docker("logs",server,stage=Stage.LOGS)
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
-        result=dict(revision=revision,manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],dependencies=manifest["dependencies"],
+        result=dict(revision=revision,candidate_sha256=sha(directory/"candidate.json"),ui=deployed.web,manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],dependencies=manifest["dependencies"],
                     checks=["migrate","migration_replay","initialize","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
+    verify_source(revision)
     return result,logs+"\n"
 
 def smoke(directory):
