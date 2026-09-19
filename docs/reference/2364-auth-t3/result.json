@@ -1,0 +1,276 @@
+{
+  "checks": {
+    "local_ui": true,
+    "account_ui": true,
+    "inventory": true,
+    "permissions": true,
+    "cookie_csrf": true,
+    "refresh": true,
+    "restart": true,
+    "isolation": true,
+    "account_disabled": true,
+    "membership_removed": true,
+    "logout": true,
+    "logout_all": true,
+    "enterprise": true,
+    "unknown_subject": true,
+    "private_binding": true,
+    "idp_down": true,
+    "pg_down": true,
+    "safe_logs": true,
+    "installation_mismatch": true
+  },
+  "browser": "148.0.7778.0",
+  "instances": [
+    {
+      "instance": "33333333-3333-4333-8333-333333333333",
+      "tenant": "11111111-1111-4111-8111-111111111111",
+      "origin": "https://mdm.example.test",
+      "server": "mdm-candidate-3f296bba23-server",
+      "gateway": "mdm-candidate-3f296bba23-gateway",
+      "config_sha256": "f68667270d61f5befa86bd76667ec7ec130ef23ac204bc18114953e0b947c555",
+      "gateway_sha256": "7324aec4f2d9d37080eb716e1194f18a65c2cf6c27d59dd82eb559b1bd9ba7c3",
+      "ui_config": {
+        "canonicalOrigin": "https://mdm.example.test",
+        "oidcEnabled": true
+      }
+    },
+    {
+      "instance": "8531461d-38c5-400b-8ce3-31f2941c86e0",
+      "tenant": "11111111-1111-4111-8111-111111111111",
+      "origin": "https://mdm-other.example.test",
+      "server": "mdm-candidate-3d6dd9f57f-server",
+      "gateway": "mdm-candidate-3d6dd9f57f-gateway",
+      "config_sha256": "c489e27a74d2feb16b4d63d8f695753d168df332eee5b32e648966c4b2a65525",
+      "gateway_sha256": "e642da718eb94bc0583fe6bfe003e3d66e656686389da20386e1abba9b4645ee",
+      "ui_config": {
+        "canonicalOrigin": "https://mdm-other.example.test",
+        "oidcEnabled": false
+      }
+    }
+  ],
+  "mdm": {
+    "format_version": 1,
+    "repository": "https://dev.azure.com/shengming0923/rss/_git/rss-mdm",
+    "revision": "500f391735a6222f4cab723dc75c645afd60c862",
+    "version": "rss-mdm 0.1.0",
+    "platform": "linux/arm64",
+    "cargo_lock_sha256": "8178f1662d95a2ccafef3ba130f552fece5a4a7bcd1873eb566c5a0db63d510b",
+    "migrations": {
+      "units": [
+        {
+          "name": "access-v1",
+          "sha256": "380576954443b102314d6b78fb2645fc4c741f793355a6cf1262262b6e330ede"
+        },
+        {
+          "name": "observation-v2",
+          "sha256": "036a7834f54519ced3dd1187c02e549e2d34bb935cc81672e4a4971fc69c9efe"
+        },
+        {
+          "name": "projection-v3",
+          "sha256": "0243ae520a336c75204ffc5b7d610a271738788d7fb5ede463d5c1a36aed7491"
+        },
+        {
+          "name": "inventory-v1",
+          "sha256": "627596dec4ca5847ddb8be93fda3645649cfe93ae4ab2649c7b29e3d279e4e92"
+        },
+        {
+          "name": "inventory-api-reader-v1",
+          "sha256": "df0d7b26535ebfa2180903b1a35375b39c7795f646ff26e483c1d9c809514cdf"
+        },
+        {
+          "name": "access-audit-request-index-v1",
+          "sha256": "18e17152181760cad0e50f5e9b7af8b5ccd7007ce885eec7f1df9a51e2b96f88"
+        },
+        {
+          "name": "device-identity-v1",
+          "sha256": "7437a837f205b6f7728e1dafb7d89d7a4ae0b6bcec2dd80f5aa9f88b77b9ab0a"
+        },
+        {
+          "name": "windows-enrollment-v1",
+          "sha256": "7ab0cb09dd874ed895e0d2823f8e50881a87d741cdfcf5817926dc854e9681e8"
+        },
+        {
+          "name": "windows-collection-v1",
+          "sha256": "206125d255a737634acf70e29368544bd5cc8937d22fd5ab1ccc618594d3f255"
+        },
+        {
+          "name": "transactional-messaging-v1",
+          "sha256": "54afca3df7f00abb2230991def06ca4a4ccdcdc5fa61e4b998fd06899871f2a1"
+        },
+        {
+          "name": "group-v1",
+          "sha256": "350a9af78b6424b25ca313700dccd9811a410c3ed7fd6a0b3c390d160767e76e"
+        },
+        {
+          "name": "policy-v1",
+          "sha256": "8fd5c0b5a8102b907ea51d58a79d1475b8771357b1b9d1fbf2574df7bc814054"
+        },
+        {
+          "name": "resource-v1",
+          "sha256": "b3b05931f2a583144dcf1574ba4bb4f7350325dcbc442d075aa89c81b8d387bf"
+        },
+        {
+          "name": "software-release-v1",
+          "sha256": "6e7920927b0108417e122ae147c6ca5eaf3f9c6a100a8879b9f1f963708c2978"
+        },
+        {
+          "name": "software-publication-v1",
+          "sha256": "2f99fd94f8b1bb2103c5a775beaf03e889d2fada8e3e36092352ac3abe7993c6"
+        },
+        {
+          "name": "management-v1",
+          "sha256": "8be4d1fc9da4b65f3b7c191047ab6322bbb58a130a9be9a4bde38bf057e2093a"
+        },
+        {
+          "name": "group-outbox-writer-v1",
+          "sha256": "dfedd87a0bbeddb71c797afeb9fe72925d4bc97d98e2783c542b6e6745376eb9"
+        },
+        {
+          "name": "policy-outbox-writer-v1",
+          "sha256": "b4308e89bf15d9d8c29627660137ddf76fe5331e8be61c99cebb5e9811e20b2e"
+        },
+        {
+          "name": "resource-outbox-writer-v1",
+          "sha256": "7eced2823a49c1d1f5068ebbd86cfb073decb1c82c0c9ed933e533e32eb0cf75"
+        },
+        {
+          "name": "software-release-outbox-writer-v1",
+          "sha256": "3348ce09d429495b06f6548d668575806db823e97f4ec973ec307ce690293a21"
+        },
+        {
+          "name": "installation-binding-v1",
+          "sha256": "afe89f19f99a55b4d90e2fd5a92cd7ed9a3c4d64823fa7986232424d03b135f2"
+        },
+        {
+          "name": "identity-authority-v10",
+          "sha256": "40cda8ba800fa0a833d7dcad3e8f1608e93745f84cd9c286385f157a4967e83f"
+        },
+        {
+          "name": "embedded-identity-coordinates-v1",
+          "sha256": "c1be83c24bee20a1e1437a8db6b01a29ec5fdf29b799c30f6af8e69d72799066"
+        }
+      ]
+    },
+    "config_sha256": "a133e889bff217a69affaafdbfef4047507b6db0fac489e6a54ed5a451698f6d",
+    "image": "rss-mdm/server:500f391735a6222f4cab723dc75c645afd60c862@sha256:dd88a01cff954ec0a0919f43809b1f8a8a418bec8e265d2bac60816541b67b85",
+    "archive": {
+      "file": "server.oci.tar",
+      "sha256": "d82dec06f9a38a04c736ef613b7e5af1f8486cf2b295f7565d530c319f3349fe",
+      "manifest_digest": "sha256:dd88a01cff954ec0a0919f43809b1f8a8a418bec8e265d2bac60816541b67b85"
+    },
+    "binary_sha256": "221a449257f1209eb58b00b8cb5906b8d2d071be3ad0204cd0d9cd3a90448da4",
+    "dependencies": [
+      {
+        "package": "rss-axum",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-contract",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-diag-context",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-identity-core",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+      },
+      {
+        "package": "rss-identity-http-axum",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+      },
+      {
+        "package": "rss-identity-oidc",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+      },
+      {
+        "package": "rss-identity-postgres",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+      },
+      {
+        "package": "rss-observation",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-observation-postgres",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-projection",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-projection-postgres",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-redact",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-request-context",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-runtime",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-transactional-messaging",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      },
+      {
+        "package": "rss-transactional-messaging-postgres",
+        "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+      }
+    ],
+    "providers": {
+      "rust": "rust:1.96.0-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc",
+      "runtime": "debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+      "postgres": "postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929",
+      "keycloak": "quay.io/keycloak/keycloak:26.7.3@sha256:ff4257d0d64efbe99ed1ddfaf07765cc3c36dc7518bf8324d41961327f441c54",
+      "nginx": "nginx:1.30.4@sha256:d5792f71a9496b833bc08ea834a758c46e2b6a6306c10f4be926f38a656cdc1c"
+    },
+    "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: aarch64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2\n",
+    "validation": {
+      "embedded_description": true,
+      "version": true
+    }
+  },
+  "web": {
+    "id": "sha256:ece79d7450cd1fcd8b5265a9dd1672ed21798fb6ae2dcd1b8a5cb6c7793d2729",
+    "revision": "a0e5ac61e98677ae96c6c80d3680d5f75c4fbbfb",
+    "os": "linux",
+    "architecture": "arm64"
+  },
+  "tools": {
+    "id": "sha256:4506dfdca351026fc0a7c3de74beabbb58c754ce3d97c42e50035d54c0484067",
+    "revision": "1c6b5c38a2adc9baf55200f5eb6bbbfe5a9be8b7",
+    "os": "linux",
+    "architecture": "arm64"
+  },
+  "origins": [
+    "https://mdm.example.test",
+    "https://mdm-other.example.test"
+  ],
+  "ca_sha256": [
+    "75ea550617bed202a3b7f76881c002cbbf16b82930a3e11e7e06960be6afd4d4",
+    "aac0f95b4891d94614af1fb80ac748c86731318540768690d990202134528488"
+  ],
+  "config_sha256": "f68667270d61f5befa86bd76667ec7ec130ef23ac204bc18114953e0b947c555",
+  "gateway_sha256": "7324aec4f2d9d37080eb716e1194f18a65c2cf6c27d59dd82eb559b1bd9ba7c3",
+  "runner_sha256": "fab62dedd52260b402acd35b9ba713002f87c73a7e1f46080e5f849ff1a46bc1",
+  "fixture": "synthetic device-1 Model-2364, real product authorization and inventory query",
+  "exclusions": [
+    "real device enrollment/commands/wipe",
+    "other IdP profiles",
+    "production capacity",
+    "legacy environment retirement"
+  ],
+  "audit_sha256": "ddc646d3c63086d66a0f340e0c65a48c1daa1a0e8e7f6dd033cc51f84eef055f",
+  "log_sha256": "a4daa99108a309103350d3267fec4fd0fd937fa6d4049ae021efd81b583d06ae",
+  "requests_sha256": "444261a0b750776710c6ce1ae0837c4248f2a7ca26d13f1b6d47b078c1e338c5",
+  "status": "passed"
+}

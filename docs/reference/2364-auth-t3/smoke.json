@@ -1,0 +1,97 @@
+{
+  "revision": "500f391735a6222f4cab723dc75c645afd60c862",
+  "manifest_digest": "sha256:dd88a01cff954ec0a0919f43809b1f8a8a418bec8e265d2bac60816541b67b85",
+  "archive_sha256": "d82dec06f9a38a04c736ef613b7e5af1f8486cf2b295f7565d530c319f3349fe",
+  "platform": "linux/arm64",
+  "dependencies": [
+    {
+      "package": "rss-axum",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-contract",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-diag-context",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-identity-core",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-identity-http-axum",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-identity-oidc",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-identity-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-observation",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-observation-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-projection",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-projection-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-redact",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-request-context",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-runtime",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-transactional-messaging",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-transactional-messaging-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    }
+  ],
+  "checks": [
+    "migrate",
+    "migration_replay",
+    "initialize",
+    "livez",
+    "readyz",
+    "local_login",
+    "authoritative_subject",
+    "enrollment",
+    "idempotent_replay",
+    "device_scope_denial",
+    "denial_no_effect",
+    "denial_audit",
+    "wipe_denial",
+    "inventory_scope_denial",
+    "refresh_rotation",
+    "logout",
+    "bounded_stop"
+  ],
+  "shutdown_seconds": 0.035,
+  "limits": [
+    "disposable MDM PostgreSQL and TLS namespace",
+    "no real Windows or macOS device T3"
+  ],
+  "log_sha256": "23e9cd0711eb11fd22a51b5500020efd4b0789c2ceeac657aac1ad4700bf45cd"
+}
