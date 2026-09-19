@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a Linux arm64 OCI candidate from clean, fixed product source."""
+"""Build a Docker-default-platform OCI candidate from clean, fixed product source."""
 import argparse
 import hashlib
 import json
@@ -36,9 +36,12 @@ def oci_identity(path):
         descriptor = descriptors[0]
         manifest = blob(descriptor["digest"])
         config = blob(manifest["config"]["digest"])
-        if (config.get("os"), config.get("architecture"), config["config"].get("User")) != ("linux", "arm64", "10001:10001"):
+        if config.get("os") != "linux" or not config.get("architecture") or config["config"].get("User") != "10001:10001":
             raise ValueError("candidate platform or user mismatch")
         return descriptor["digest"], config
+
+def platform(config):
+    return "/".join(config[key] for key in ("os", "architecture", "variant") if config.get(key))
 
 def build(out, header):
     if out.exists():
@@ -73,7 +76,7 @@ def build_staged(out, header):
             archive.extractall(source, filter="data")
         shutil.copy(source / "deployment/Dockerfile", context / "Dockerfile")
         image = "rss-mdm/server:" + revision
-        common = ["docker", "buildx", "build", "--platform", "linux/arm64", "--provenance=false",
+        common = ["docker", "buildx", "build", "--provenance=false",
                   "--secret", "id=azure_header,src=" + str(header),
                   "--build-arg", "RUST_IMAGE=" + providers["rust"],
                   "--build-arg", "RUNTIME_IMAGE=" + providers["runtime"],
@@ -85,9 +88,8 @@ def build_staged(out, header):
         if config["config"].get("Labels", {}).get("org.opencontainers.image.revision") != revision:
             raise ValueError("compiled candidate revision mismatch")
         subprocess.run(["docker", "load", "--input", str(output)], check=True)
-        migrations = json.loads(run(["docker", "run", "--rm", "--network", "none", "--platform",
-                                     "linux/arm64", image, "--describe"]))
-        version = run(["docker", "run", "--rm", "--network", "none", "--platform", "linux/arm64", image, "--version"])
+        migrations = json.loads(run(["docker", "run", "--rm", "--network", "none", image, "--describe"]))
+        version = run(["docker", "run", "--rm", "--network", "none", image, "--version"])
         subprocess.run([*common, "--target", "evidence", "--output",
                         "type=local,dest=" + str(out / "evidence"), str(context)], check=True)
         metadata = json.loads((out / "evidence/metadata.json").read_text())
@@ -95,7 +97,7 @@ def build_staged(out, header):
                   if p["name"].startswith("rss-") and p["source"]]
         manifest = {
             "format_version": 1, "repository": "https://dev.azure.com/shengming0923/rss/_git/rss-mdm",
-            "revision": revision, "version": version, "platform": "linux/arm64",
+            "revision": revision, "version": version, "platform": platform(config),
             "cargo_lock_sha256": sha(source / "Cargo.lock"), "migrations": migrations,
             "config_sha256": sha(source / "fixtures/mdm-config.example.json"),
             "image": image + "@" + digest,

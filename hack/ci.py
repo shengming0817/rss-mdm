@@ -40,7 +40,7 @@ LOCAL_PACKAGES = {
     "inventory-postgres-integration": "tests/inventory-postgres-integration",
 }
 
-IDENTITY_PACKAGES = {"rss-identity-client", "rss-identity-contracts"}
+IDENTITY_PACKAGES = {"rss-identity-core", "rss-identity-postgres", "rss-identity-http-axum", "rss-identity-oidc"}
 
 def identity_dependency(dep):
     require(isinstance(dep, dict) and set(dep)=={'git','rev'}, 'invalid Identity dependency')
@@ -161,7 +161,8 @@ def verify_metadata(data, root, mode, pin):
     features = {packages[n["id"]]: n["features"] for n in data["resolve"]["nodes"]}
     for name in ("rss-observation-postgres", "rss-projection-postgres"):
         require(("integration" in features[name]) == (mode == "integration"), f"unexpected {mode} features for {name}")
-    require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES, 'Identity SDK missing')
+    require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES, 'Identity components missing')
+    require(("test-support" in features["rss-identity-oidc"]) == (mode == "integration"), "OIDC fixture transport feature drift")
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     verify_backend_support(data)
     app_id = next(p['id'] for p in data['packages'] if p['name'] == 'rss-mdm-app')
@@ -174,8 +175,8 @@ def verify_metadata(data, root, mode, pin):
             if any(k.get('kind') != 'dev' for k in dep.get('dep_kinds', [{'kind':None}])): todo.append(dep['pkg'])
     require(not any(packages[p] == 'rss-mdm-examples' for p in visited), 'production application depends on fixtures')
 
-    # Accepted public-verification path; no additional root or version is allowed.
-    for name, version, parent in [('rsa','0.9.10','openidconnect'),('openidconnect','4.0.1','rss-mdm-app')]:
+    # Public-verification closure scoped by #2365; source/root/version drift needs renewed review.
+    for name, version, parent in [('rsa','0.9.10','openidconnect'),('openidconnect','4.0.1','rss-identity-oidc')]:
         found = [p for p in data['packages'] if p['name'] == name]
         require(len(found) == 1 and found[0]['version'] == version and found[0]['source'] == 'registry+https://github.com/rust-lang/crates.io-index', 'OIDC public-verification source drift')
         parents = {packages[n['id']] for n in data['resolve']['nodes'] if any(d['pkg'] == found[0]['id'] for d in n['deps'])}
@@ -343,6 +344,7 @@ def main():
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
 
+        ("gateway-t2",[sys.executable,"hack/login_gateway_t2.py"]),
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
@@ -384,8 +386,6 @@ def main():
     evidence = {"head":start_head, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
-    candidate=ROOT/'fixtures/identity-candidate.json'
-    evidence['identityCandidateManifestSha256']=hashlib.sha256(candidate.read_bytes()).hexdigest() if candidate.exists() else None
     (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")
     print(json.dumps(evidence, indent=2))
     return int(any(value != "passed" for value in results.values()))

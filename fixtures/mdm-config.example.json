@@ -80,7 +80,7 @@
       "port": 5432,
       "name": "mdm",
       "user": "mdm_management_runtime",
-      "password_file": "/run/secrets/mdm-management",
+      "password_file": "/run/mdm/mdm-management-password",
       "ca_file": "/run/mdm/database-ca.pem"
     },
     "target": [
@@ -126,7 +126,7 @@
       "port": 5432,
       "name": "mdm",
       "user": "mdm_software_driver",
-      "password_file": "/run/secrets/mdm-software-driver",
+      "password_file": "/run/mdm/mdm-software-driver-password",
       "ca_file": "/run/mdm/database-ca.pem"
     }
   },

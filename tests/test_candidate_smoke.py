@@ -10,7 +10,7 @@ import candidate_smoke as candidate
 
 class SmokeCompletion(unittest.TestCase):
     def test_cleanup_attempts_every_owned_resource(self):
-        with mock.patch.object(candidate.identity, "docker", side_effect=[RuntimeError("first"), "", ""]) as docker:
+        with mock.patch.object(candidate, "docker", side_effect=[RuntimeError("first"), "", ""]) as docker:
             with self.assertRaisesRegex(RuntimeError, "candidate cleanup failed"):
                 candidate.cleanup(["proxy", "server"], "inputs")
             self.assertEqual(docker.call_args_list, [mock.call("rm", "-f", "server"), mock.call("rm", "-f", "proxy"), mock.call("volume", "rm", "inputs")])
@@ -36,7 +36,7 @@ class SmokeCompletion(unittest.TestCase):
 
     def test_cleanup_preserves_primary_and_records_cleanup_failure(self):
         primary = RuntimeError("verification failed")
-        with mock.patch.object(candidate.identity, "docker", side_effect=RuntimeError("cleanup failed")):
+        with mock.patch.object(candidate, "docker", side_effect=RuntimeError("cleanup failed")):
             with self.assertRaisesRegex(RuntimeError, "verification failed"):
                 try:
                     raise primary
