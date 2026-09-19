@@ -43,7 +43,7 @@ async function logoutUI(page,all=false){
   await page.goto(origin+`/tenants/${input.tenant}/sessions`);
   const route=all?api+'/sessions/logout-all':api+'/session/logout';
   const response=page.waitForResponse(r=>new URL(r.url()).pathname===route&&r.request().method()==='POST');
-  await page.getByRole('button',{name:all?/all.*session|全部|所有/i:/^Sign out$|^Log out$|^退出$/i}).click();
+  await page.getByRole('button',{name:all?/all.*session|全部|所有/i:/^Sign out$|^Log out$|^退出当前会话$/i}).click();
   assert((await response).status()===204,'UI logout');
 }
 async function cloneSession(page,url=origin){const ctx=await browser.newContext({locale:'en-US'});const cookies=await page.context().cookies(origin);await ctx.addCookies(cookies.map(c=>({...c,domain:new URL(url).hostname})));const p=await ctx.newPage();await p.goto(url+'/');return p}
@@ -144,7 +144,7 @@ try{
   r=await post(admin,api+'/providers',{settings:deniedSettings,clientSecret:input.clientSecret,caPem:fs.readFileSync('/fixture/ca.crt','utf8')});
   assert(r.status===201,'unapproved provider persisted without network access');
   const tested=await post(admin,`${api}/providers/${r.value.id}/test`,{expectedVersion:r.value.version});
-  assert(tested.status!==200,'unapproved private client connected');checks.private_binding=true;
+  assert(tested.status===200&&tested.value.passed===false&&tested.value.diagnostic.reason==='egress_denied','unapproved private client connected');checks.private_binding=true;
 
   stage='idp_down';docker(['stop','--time','10',input.idp]);const independent=await pageAt();await login(independent,'admin',input.adminPassword);
   assert((await request(independent,api+'/accounts')).status===200,'IdP-independent account management');

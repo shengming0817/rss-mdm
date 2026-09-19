@@ -83,7 +83,7 @@ def prepare_member(stack):
     status,result=browser.call('POST',f'/api/v2/tenants/{TENANT}/accounts',dict(login='member',password=stack.member_password))
     require(status==201,'bootstrap account')
     stack.member=result['principalId']
-    binding=dict(stack.config['bindings'][0]);binding.update(principal_id=stack.member,identity_management=[],management=[],roles=['auditor'])
+    binding=dict(stack.config['bindings'][0]);binding.update(principal_id=stack.member,identity_management=[],management=[],roles=['auditor'],allow_wipe=False,allow_enrollment=False,allow_manage_credentials=False)
     stack.config['bindings'].append(binding)
     (stack.runtime/'config.json').write_text(json.dumps(stack.config))
     docker('stop','--time','45',stack.server,stage=Stage.STOP,timeout=55)
