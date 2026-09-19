@@ -36,11 +36,11 @@ def verify(image):
             end=time.monotonic()+30
             while True:
                 try:
-                    if request('/probe')[0]==200:break
+                    if request('/api/probe')[0]==200:break
                 except OSError:pass
                 if time.monotonic()>end:raise RuntimeError('gateway startup failed')
                 time.sleep(.1)
-            status, forwarded=request('/probe','203.0.113.254')
+            status, forwarded=request('/api/probe','203.0.113.254')
             if status!=200 or not forwarded or forwarded==b'203.0.113.254':raise RuntimeError('gateway failed to overwrite source header')
             statuses=[]
             for n in range(25):
@@ -49,14 +49,14 @@ def verify(image):
             if 200 not in statuses or 429 not in statuses or statuses.count(200)>14:raise RuntimeError('caller-controlled source bypassed login admission')
             time.sleep(3.2)
             if request('/api/v2/tenants/11111111-1111-4111-8111-111111111111/login')[0]!=200:raise RuntimeError('login budget did not recover')
-            if request('/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
-            if request('/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
+            if request('/api/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
+            if request('/api/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
             held=[]
             try:
                 deadline=time.monotonic()+3
                 while len(held)<8:
                     connection=socket.create_connection(('127.0.0.1',port),timeout=3)
-                    connection.sendall(b'POST /probe HTTP/1.1\r\nHost: mdm.example.test\r\nContent-Length: 1024\r\nExpect: 100-continue\r\n\r\n')
+                    connection.sendall(b'POST /api/probe HTTP/1.1\r\nHost: mdm.example.test\r\nContent-Length: 1024\r\nExpect: 100-continue\r\n\r\n')
                     reply=b''
                     while b'\r\n\r\n' not in reply:
                         chunk=connection.recv(4096)
@@ -68,13 +68,13 @@ def verify(image):
                         if time.monotonic()>deadline:raise RuntimeError('could not establish admitted connection set')
                         time.sleep(.05)
                 deadline=time.monotonic()+3
-                while request('/probe','198.51.100.99')[0]!=429:
+                while request('/api/probe','198.51.100.99')[0]!=429:
                     if time.monotonic()>deadline:raise RuntimeError('peer connection cap not enforced')
                     time.sleep(.05)
             finally:
                 for connection in held:connection.close()
             deadline=time.monotonic()+3
-            while request('/probe')[0]!=200:
+            while request('/api/probe')[0]!=200:
                 if time.monotonic()>deadline:raise RuntimeError('connection slots did not recover')
                 time.sleep(.05)
             log=subprocess.run(['docker','logs',name],check=True,capture_output=True,text=True,timeout=10)
