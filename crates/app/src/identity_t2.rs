@@ -845,6 +845,9 @@ async fn native_accounts(
             .0
             == StatusCode::OK
     );
+    // The component owns its atomic security event; a second product audit cannot
+    // overwrite a committed account mutation or discard the native response.
+    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
     let created = admin
         .call(
             admin_router,
@@ -852,7 +855,9 @@ async fn native_accounts(
             &format!("{tenant}/accounts"),
             Some(json!({"login":"managed-user","password":PASSWORD})),
         )
-        .await?;
+        .await;
+    pg("GRANT INSERT ON mdm_access.audit TO mdm_access")?;
+    let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();
     ensure!(managed.login(admin_router, "managed-user").await? == StatusCode::OK);

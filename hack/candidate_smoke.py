@@ -58,7 +58,7 @@ class Browser:
                     require("Secure" in value and "HttpOnly" in value and "Path=/" in value and "Domain=" not in value,
                             "candidate cookie protections missing")
                     self.cookie = value.split(";",1)[0]
-            value = json.loads(body) if body else None
+            value = json.loads(body) if body and response.getheader("Content-Type", "").startswith("application/json") else None
             if isinstance(value,dict) and "csrfToken" in value: self.csrf = value["csrfToken"]
             return response.status, value
         finally:

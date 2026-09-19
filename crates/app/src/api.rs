@@ -261,7 +261,10 @@ pub(crate) async fn envelope(
     let soap = route.starts_with("/EnrollmentServer/");
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
-    let audited = !matches!(request.uri().path(), "/livez" | "/readyz");
+    // Native authentication commits its own atomic security event. A second product
+    // audit must not replace that settled response (including rotated credentials).
+    let audited =
+        !matches!(request.uri().path(), "/livez" | "/readyz") && !route.starts_with("/api/v2/");
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
