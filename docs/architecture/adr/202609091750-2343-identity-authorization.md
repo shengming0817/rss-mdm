@@ -4,7 +4,7 @@
 
 MDM 直接消费 Identity 的 core/postgres/http-axum/oidc 四个公开包，使用同一完整 Git revision。组件拥有本地账户、凭据、权威会话、账户管理与可选 OIDC 联合；MDM 拥有实例、租户、数据库角色、秘密、生命周期、管理策略和资源授权。原生组件 Router 直接挂载，OIDC callback 为产品 `/api/v2/oidc/callback`。未配置 OIDC 时，本地启动、登录、刷新及退出只需 MDM 自有 PostgreSQL。
 
-每个受保护业务请求从组件权威验证获得 `AuthenticatedSession`，再形成唯一私有请求级 `Principal`；主体坐标固定为 `(instance, tenant, principal)`。不缓存认证成功证明、不接受浏览器构造身份、不提供 SessionId 二次认证入口。Policy 检查证明仍有效、实例/租户一致，再检查角色、设备范围及显式许可。被动查询不延长 idle，写请求验证同源与组件 CSRF。
+每个受保护业务请求从组件权威验证获得 `AuthenticatedSession`，再形成唯一私有请求级 `Principal`；主体坐标固定为 `(instance, tenant, principal)`。不缓存认证成功证明、不接受浏览器构造身份、不提供 SessionId 二次认证入口。Policy 检查证明仍有效、实例/租户一致，再检查角色、设备范围及显式许可。HTTP 请求统一使用组件 `authenticate_request`，严格 cookie、同源、CSRF 与 active/passive 语义由组件持有；被动查询不延长 idle。
 
 组件持有自身原子安全事件和事务预算，宿主不能通过全请求 timeout 或另一层产品审计覆盖已结算的原生响应。产品业务变更与成功审计仍在产品事务中提交；查询/拒绝审计失败不放行产品数据。产品数据库池、组件 runtime/KDF 均由生命周期作用域即时接管并有界关闭。
 

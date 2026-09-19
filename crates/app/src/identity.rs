@@ -74,6 +74,7 @@ pub(crate) struct Identity {
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
     routes: Router,
+    http: rss_identity_http_axum::HttpConfig,
 }
 impl Identity {
     pub(crate) async fn connect(
@@ -130,13 +131,15 @@ impl Identity {
         if let Some(oidc) = &config.identity.oidc {
             let federation = federation(oidc, authority.clone(), &config.product_origin, instance)?;
             routes = routes.merge(
-                rss_identity_http_axum::federated_router(federation, http).map_err(failure)?,
+                rss_identity_http_axum::federated_router(federation, http.clone())
+                    .map_err(failure)?,
             );
         }
         Ok(Self {
             authority,
             tenant,
             routes,
+            http,
         })
     }
     #[cfg(all(test, feature = "integration"))]
@@ -159,21 +162,41 @@ impl Identity {
     pub(crate) fn routes(&self) -> Router {
         self.routes.clone()
     }
-    pub(crate) async fn authenticate(
+    pub(crate) async fn authenticate_request(
         &self,
-        secret: SessionSecret,
-        active: bool,
-    ) -> Result<Principal, Error> {
-        let session = if active {
-            self.authority
-                .authenticate_session(self.tenant, secret, deadline())
-                .await
-        } else {
-            self.authority
-                .inspect_session(self.tenant, secret, deadline())
-                .await
-        }
-        .map_err(failure)?;
+        headers: &HeaderMap,
+        activity: rss_identity_http_axum::SessionActivity,
+    ) -> Result<(Principal, SessionSecret), Response> {
+        let (session, credential) = rss_identity_http_axum::authenticate_request(
+            &self.authority,
+            &self.http,
+            self.tenant,
+            headers,
+            activity,
+            deadline(),
+        )
+        .await
+        .map_err(|mut response| {
+            // Keep the component response and settlement class; product audit reads Error.
+            if let Some(rss_identity_http_axum::HttpFailure::Authority(error)) = response
+                .extensions()
+                .get::<rss_identity_http_axum::HttpFailure>()
+                .copied()
+            {
+                response.extensions_mut().insert(failure(error));
+            }
+            response
+        })?;
+        let proof = Principal::new(session).map_err(IntoResponse::into_response)?;
+        Ok((proof, credential))
+    }
+    /// Device enrollment continuations revalidate the credential without renewing idle expiry.
+    pub(crate) async fn authenticate(&self, secret: SessionSecret) -> Result<Principal, Error> {
+        let session = self
+            .authority
+            .inspect_session(self.tenant, secret, deadline())
+            .await
+            .map_err(failure)?;
         Principal::new(session)
     }
 }
@@ -338,28 +361,6 @@ fn key(path: &std::path::Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     }
     Ok(value)
 }
-/// Read only the component credential; duplicate cookies fail closed.
-pub(crate) fn credential(headers: &HeaderMap) -> Result<SessionSecret, Error> {
-    let mut value = None;
-    let mut bytes = 0usize;
-    for line in headers.get_all(axum::http::header::COOKIE) {
-        bytes += line.as_bytes().len();
-        if bytes > 8192 {
-            return Err(Error::Unauthorized);
-        }
-        for part in line.to_str().map_err(|_| Error::Unauthorized)?.split(';') {
-            if let Some((name, secret)) = part.trim().split_once('=')
-                && name == "__Host-identity-session"
-            {
-                if value.is_some() {
-                    return Err(Error::Unauthorized);
-                }
-                value = Some(SessionSecret::parse(secret.into()).map_err(|_| Error::Unauthorized)?);
-            }
-        }
-    }
-    value.ok_or(Error::Unauthorized)
-}
 /// Only the real accepted gateway peer can supply the single overwritten client IP.
 pub(crate) async fn ingress(
     State(gateway): State<std::net::IpAddr>,
@@ -410,19 +411,6 @@ pub(crate) async fn ingress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn duplicate_cookie_credentials_and_malformed_secrets_are_rejected() {
-        let value = format!("__Host-identity-session={}", "a".repeat(64));
-        let mut headers = HeaderMap::new();
-        headers.insert("cookie", value.parse().unwrap());
-        assert!(credential(&headers).is_ok());
-        headers.append("cookie", value.parse().unwrap());
-        assert!(credential(&headers).is_err());
-        headers.insert("cookie", format!("{value}; {value}").parse().unwrap());
-        assert!(credential(&headers).is_err());
-        headers.insert("cookie", "__Host-identity-session=invalid".parse().unwrap());
-        assert!(credential(&headers).is_err());
-    }
     #[tokio::test]
     async fn forwarding_requires_the_actual_accepted_gateway() -> anyhow::Result<()> {
         use axum::{Extension, middleware, routing::get};

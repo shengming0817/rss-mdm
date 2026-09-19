@@ -587,6 +587,34 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     let initial = app(&base, reader.clone()).await?;
     let mut browser = Browser::default();
     ensure!(browser.login(&initial, "other").await? == StatusCode::OK);
+    let credential = &browser.cookies["__Host-identity-session"];
+    for (method, path) in [
+        (Method::GET, "/api/v1/authorization".to_owned()),
+        (Method::GET, format!("/api/v2/tenants/{TENANT}/session")),
+        (Method::POST, "/api/v1/enrollments".to_owned()),
+    ] {
+        for cookie in [
+            format!("__Host-identity-session={credential}; broken"),
+            format!("__Host-identity-session={credential}; __Host-identity-session={credential}"),
+        ] {
+            let request = Request::builder()
+                .method(method.clone())
+                .uri(&path)
+                .header("host", "mdm.example.test")
+                .header("origin", "https://mdm.example.test")
+                .header("x-identity-request", "1")
+                .header("x-csrf-token", browser.csrf.as_ref().unwrap())
+                .header("cookie", cookie)
+                .body(Body::empty())?;
+            let response = initial.clone().oneshot(request).await?;
+            ensure!(
+                response.status() == StatusCode::BAD_REQUEST,
+                "strict host cookie boundary: {method} {path} returned {}",
+                response.status()
+            );
+            ensure!(!response.headers().contains_key("set-cookie"));
+        }
+    }
     let (_, me) = browser
         .call(&initial, Method::GET, "/api/v1/authorization", None)
         .await?;
@@ -745,7 +773,7 @@ async fn native_accounts(
         );
         ensure!(
             identity
-                .authenticate(credentials.get(reference)?, false)
+                .authenticate(credentials.get(reference)?)
                 .await
                 .is_err()
         );
@@ -768,7 +796,7 @@ async fn native_accounts(
     );
     ensure!(
         identity
-            .authenticate(credentials.get(reference)?, false)
+            .authenticate(credentials.get(reference)?)
             .await
             .is_err()
     );
@@ -801,7 +829,7 @@ async fn native_accounts(
     );
     ensure!(
         identity
-            .authenticate(credentials.get(logout_reference)?, false)
+            .authenticate(credentials.get(logout_reference)?)
             .await
             .is_err()
     );
@@ -829,7 +857,7 @@ async fn native_accounts(
     );
     ensure!(
         identity
-            .authenticate(credentials.get(password_reference)?, false)
+            .authenticate(credentials.get(password_reference)?)
             .await
             .is_err()
     );
@@ -905,7 +933,7 @@ async fn native_accounts(
     command(&["pause", &container], None)?;
     let (http, enrollment) = tokio::join!(
         admin.call(admin_router, Method::GET, "/api/v1/authorization", None),
-        identity.authenticate(credentials.get(reference)?, false)
+        identity.authenticate(credentials.get(reference)?)
     );
     command(&["unpause", &container], None)?;
     let http = http?;

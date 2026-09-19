@@ -953,7 +953,6 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         readiness: runtime.readiness.clone(),
         devices,
         access: store.clone(),
-        origin: config.product_origin,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
         windows: Windows::load(config.windows, now())?,
     });
@@ -1508,7 +1507,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         .await?;
     ensure!(
         app.identity
-            .authenticate(app.credentials.get(reference)?, false)
+            .authenticate(app.credentials.get(reference)?)
             .await
             .is_err()
     );

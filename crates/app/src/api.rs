@@ -35,7 +35,6 @@ pub(crate) struct App {
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) windows: crate::windows::Windows,
     pub(crate) access: Arc<AccessStore>,
-    pub(crate) origin: String,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
 
@@ -46,28 +45,22 @@ pub(crate) struct RequestAuth {
 }
 async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
-    let writes =
-        parts.method != axum::http::Method::GET && parts.method != axum::http::Method::HEAD;
-    if writes && let Err(error) = same_origin(&app, &parts.headers) {
-        return error.into_response();
-    }
-    let credential = match crate::identity::credential(&parts.headers) {
-        Ok(value) => value,
-        Err(error) => return error.into_response(),
-    };
-    if writes && !csrf(&parts.headers).is_ok_and(|token| credential.check_csrf(token)) {
-        return Error::Forbidden.into_response();
-    }
+    let activity =
+        if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
+            rss_identity_http_axum::SessionActivity::Passive
+        } else {
+            rss_identity_http_axum::SessionActivity::Active
+        };
     let _global = match app.requests.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return Error::Unavailable(Failure::Capacity).into_response(),
     };
-    let presented = match crate::identity::credential(&parts.headers) {
-        Ok(value) => value,
-        Err(error) => return error.into_response(),
-    };
-    match app.identity.authenticate(presented, writes).await {
-        Ok(proof) => {
+    match app
+        .identity
+        .authenticate_request(&parts.headers, activity)
+        .await
+    {
+        Ok((proof, credential)) => {
             if let Some(audit) = parts.extensions.get::<Audit>() {
                 audit.identify(&proof);
             }
@@ -83,7 +76,7 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
             .await
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
         }
-        Err(error) => error.into_response(),
+        Err(response) => response,
     }
 }
 
@@ -183,7 +176,6 @@ pub(crate) fn from_compiled(
         inventory: InventoryService::new(reader, devices.clone(), access.clone(), runtime.clone()),
         readiness: runtime.readiness.clone(),
         devices,
-        origin: config.product_origin,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     let protected = Router::new()
@@ -394,26 +386,8 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
         "success"
     }
 }
-fn same_origin(app: &App, h: &HeaderMap) -> Result<(), Error> {
-    if h.get_all("x-identity-request").iter().count() != 1
-        || h.get_all(header::ORIGIN).iter().count() != 1
-        || h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(&app.origin)
-        || h.get("x-identity-request").and_then(|v| v.to_str().ok()) != Some("1")
-    {
-        return Err(Error::Forbidden);
-    }
-    Ok(())
-}
-fn csrf(h: &HeaderMap) -> Result<&str, Error> {
-    if h.get_all("x-csrf-token").iter().count() != 1 {
-        return Err(Error::Forbidden);
-    }
-    h.get("x-csrf-token")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(Error::Forbidden)
-}
 pub(crate) async fn authenticate(app: &App, secret: SessionSecret) -> Result<Principal, Error> {
-    app.identity.authenticate(secret, false).await
+    app.identity.authenticate(secret).await
 }
 async fn authorization(
     State(app): State<Arc<App>>,

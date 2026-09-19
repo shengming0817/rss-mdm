@@ -1709,7 +1709,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -2296,7 +2296,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b7f34c7ac2db882c8412471927567c29672d18d6#b7f34c7ac2db882c8412471927567c29672d18d6"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a2d105a767177cad8d237509d4c6c6b22cd3aea3#a2d105a767177cad8d237509d4c6c6b22cd3aea3"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -2317,7 +2317,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-http-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b7f34c7ac2db882c8412471927567c29672d18d6#b7f34c7ac2db882c8412471927567c29672d18d6"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a2d105a767177cad8d237509d4c6c6b22cd3aea3#a2d105a767177cad8d237509d4c6c6b22cd3aea3"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2339,7 +2339,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-oidc"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b7f34c7ac2db882c8412471927567c29672d18d6#b7f34c7ac2db882c8412471927567c29672d18d6"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a2d105a767177cad8d237509d4c6c6b22cd3aea3#a2d105a767177cad8d237509d4c6c6b22cd3aea3"
 dependencies = [
  "ipnet",
  "openidconnect",
@@ -2357,7 +2357,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b7f34c7ac2db882c8412471927567c29672d18d6#b7f34c7ac2db882c8412471927567c29672d18d6"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a2d105a767177cad8d237509d4c6c6b22cd3aea3#a2d105a767177cad8d237509d4c6c6b22cd3aea3"
 dependencies = [
  "futures",
  "rand_core 0.6.4",
