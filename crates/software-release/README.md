@@ -84,7 +84,7 @@ cargo test --locked -p rss-mdm-software-release
 python3 -O -m unittest discover -s tests -p 'test_ci.py'
 # 提交全部输入并保持 clean 后执行固定 SHA 消费
 python3 hack/core_consumer.py
-# 完整本地入口，提供既有固定 Identity 候选和真实依赖
+# 完整本地入口，自动创建自有 PG 和可选 SSO 真实依赖
 make ci
 ```
 

@@ -522,7 +522,7 @@ AC-U01-02　设备离线、等待重启、安装失败和没有评估数据时�
 
 # 06.13　F-A：账户、SSO、会话与权限
 
-当前接入边界见 [#2343 指南](../guides/202609091600-2343-mdm-identity.md)：首期单租户、静态角色、真实资产查询与危险动作授权拒绝。危险动作有权时仍返回不支持，不表示命令执行已交付；管理员注册许可与持久审计见 [F02 指南](../guides/202609090001-2347-enrollment-audit.md)：统一 Enrollment 创建/恢复/取消与独立凭据撤销，授权、签发意图及原子绑定形成闭环，查询/拒绝审计失败不放行。[Windows 接入](../guides/202609111146-2350-windows-enrollment-management.md) 覆盖 HTTPS Discovery/XCEP/WSTEP、mTLS 与首次 SyncML 认证初始化；pending 不代表完成，T1/T2 证据由 #2350/#2351 单 PR 绑定，Windows T3 独立验收。
+当前接入边界见 [#2437 修订的认证指南](../guides/202609091600-2343-mdm-identity.md)：首期单租户、静态角色、真实资产查询与危险动作授权拒绝。危险动作有权时仍返回不支持，不表示命令执行已交付；管理员注册许可与持久审计见 [F02 指南](../guides/202609090001-2347-enrollment-audit.md)：统一 Enrollment 创建/恢复/取消与独立凭据撤销，授权、签发意图及原子绑定形成闭环，查询/拒绝审计失败不放行。[Windows 接入](../guides/202609111146-2350-windows-enrollment-management.md) 覆盖 HTTPS Discovery/XCEP/WSTEP、mTLS 与首次 SyncML 认证初始化；pending 不代表完成，T1/T2 证据由 #2350/#2351 单 PR 绑定，Windows T3 独立验收。
 
 *主要用户：系统管理员、安全管理员、集成系统。*
 
@@ -530,8 +530,8 @@ AC-U01-02　设备离线、等待重启、安装失败和没有评估数据时�
 
 | 需求编号 / 名称 | 产品要求 | 历史基础 / 分级 |
 | --- | --- | --- |
-| WMD-A01<br>本地身份 / 会话 | 本地认证、用户管理、禁用及中央会话由 Identity 持有；MDM 消费 OIDC 与每请求在线复核，持有产品 cookie 和本地退出。本地身份不依赖 AD。 | 已有<br>一级 |
-| WMD-A02<br>OIDC SSO / 映射 | IdP 配置、测试、SSO/JIT 与身份关联由 Identity 持有；MDM 持有资源角色与组映射授权。#2343 首期静态 subject 映射，可信组映射另归 #2363。 | 已有<br>一级 |
+| WMD-A01<br>本地身份 / 会话 | 本地认证、用户管理、禁用及权威会话由内嵌 Identity 四个公开组件持有；MDM 持有实例/租户、装配、秘密和产品授权，每请求重新权威验证。沿用组件 cookie、刷新和退出接口，本地身份不依赖 AD、中央服务或 IdP。 | 已有<br>一级 |
+| WMD-A02<br>OIDC SSO / 映射 | 可选 IdP 配置、SSO/JIT、显式身份关联与 step-up 由 Identity 公开组件持有，callback 属于产品；MDM 持有管理策略、资源角色与设备范围。静态绑定使用 instance/tenant/principal，外部 subject 不按邮箱自动关联；可信组映射另归 #2363。 | 已有<br>一级 |
 | WMD-A03<br>角色与危险权限 | 保留 super_admin、mdm_admin、security_admin、help_desk、auditor 的现有 API 边界；危险动作和密钥读取单独授权。 | 已有基础<br>一级 |
 | WMD-A04<br>管理员 MFA | 为商用管理面确定 MFA 实现与恢复方案，可依托选定 IdP；本地应急账户的使用及审计规则须明确。 | 规划<br>二级 |
 | WMD-A05<br>M2M / 多租户 SSO | 人类会话与 M2M client_credentials 分离；多 IdP 配置不等同 MSP 数据隔离，多租户产品范围须另立项。 | 规划<br>三级 |

@@ -80,6 +80,12 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     let closed = tokio::time::timeout(Duration::from_secs(5), runtime.close())
         .await
         .is_ok();
+    if !drained || !closed {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"mdm_maintenance_shutdown_failure", "kdf_closed":drained, "runtime_closed":closed})
+        );
+    }
     match result {
         Err(error) => Err(error),
         Ok(()) if drained && closed => Ok(()),

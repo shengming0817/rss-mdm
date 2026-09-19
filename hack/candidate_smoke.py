@@ -26,7 +26,7 @@ def docker(*args, timeout=120, input=None):
     result = subprocess.run(["docker", *map(str,args)], input=input, text=True, capture_output=True, timeout=timeout)
     # Do not echo command arguments, mounted configuration, HTTP credentials or provider stderr.
     require(result.returncode == 0, "candidate Docker operation failed: " + args[0])
-    return result.stdout.strip()
+    return (result.stdout + result.stderr if args[0] == "logs" else result.stdout).strip()
 
 def wait(check, stage, seconds=45):
     end = time.monotonic() + seconds
@@ -186,13 +186,41 @@ def run_smoke(directory):
             started=time.monotonic();docker("stop","--time","45",server,timeout=55)
             elapsed=time.monotonic()-started
             logs=docker("logs",server)
+            require("mdm_request" in logs, "candidate request diagnostics missing")
             require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
             result=dict(revision=revision,manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],dependencies=manifest["dependencies"],
                         checks=["migrate","migration_replay","initialize","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                         shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
+        except BaseException as error:
+            failure_evidence(directory, created, {server,gateway}, error)
+            raise
         finally:
-            cleanup(created,volumes)
+            try:
+                cleanup(created,volumes)
+            except BaseException as error:
+                failure_evidence(directory, created, {server,gateway}, error)
+                raise
     return result,logs+"\n"
+
+def failure_evidence(directory, created, safe_log_sources, primary):
+    # Product and ingress logs have closed, credential-free schemas. PostgreSQL
+    # statement logs can contain input values, so capture only its closed state.
+    diagnostics = {"status":"failed", "error_class":type(primary).__name__, "containers":{}}
+    for name in created:
+        value = {}
+        try:
+            value["state"] = docker("inspect", "--format", "{{.State.Status}}:{{.State.ExitCode}}", name, timeout=10)
+            if name in safe_log_sources: value["log"] = docker("logs", "--tail", "200", name, timeout=10)
+        except Exception:
+            value["diagnostic_unavailable"] = True
+        diagnostics["containers"][name] = value
+    try:
+        with tempfile.TemporaryDirectory(prefix=".smoke-failure-", dir=directory) as temporary:
+            staged = Path(temporary)/"failure.json"
+            staged.write_text(json.dumps(diagnostics,indent=2)+"\n")
+            os.replace(staged,directory/"smoke-failure.json")
+    except Exception:
+        primary.add_note("candidate failure diagnostics could not be persisted")
 
 def cleanup(created, volume):
     primary = sys.exception()
@@ -213,7 +241,7 @@ def cleanup(created, volume):
 
 def smoke(directory):
     marker, log = directory / "smoke.json", directory / "smoke.log"
-    for path in (marker, log):
+    for path in (marker, log, directory / "smoke-failure.json"):
         path.unlink(missing_ok=True)
     try:
         result, output = run_smoke(directory)

@@ -9,6 +9,32 @@ import candidate_smoke as candidate
 
 
 class SmokeCompletion(unittest.TestCase):
+    def test_readiness_retries_temporary_html_gateway_error(self):
+        browser = candidate.Browser.__new__(candidate.Browser)
+        browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""
+        unavailable = mock.Mock(status=502)
+        unavailable.getheaders.return_value = []
+        unavailable.getheader.return_value = "text/html"
+        unavailable.read.return_value = b"<html>Bad Gateway</html>"
+        ready = mock.Mock(status=200)
+        ready.getheaders.return_value = []
+        ready.getheader.return_value = "application/json"
+        ready.read.return_value = b'{"ready":true}'
+        with mock.patch.object(candidate.http.client, "HTTPSConnection") as connect:
+            connect.return_value.getresponse.side_effect = [unavailable, ready]
+            candidate.wait(lambda: browser.call("GET", "/readyz") == (200, {"ready":True}), "readiness", seconds=1)
+            self.assertEqual(connect.call_count, 2)
+            self.assertEqual(connect.return_value.close.call_count, 2)
+
+    def test_candidate_diagnostics_include_stderr_without_exposing_command_errors(self):
+        result = mock.Mock(returncode=0, stdout="", stderr='{"event":"mdm_shutdown_failure"}\n')
+        with mock.patch.object(candidate.subprocess, "run", return_value=result):
+            self.assertIn("mdm_shutdown_failure", candidate.docker("logs", "server"))
+            result.returncode = 1
+            result.stderr = "synthetic-private-input"
+            with self.assertRaisesRegex(RuntimeError, "^candidate Docker operation failed: run$"):
+                candidate.docker("run", "server")
+
     def test_cleanup_attempts_every_owned_resource(self):
         with mock.patch.object(candidate, "docker", side_effect=[RuntimeError("first"), "", ""]) as docker:
             with self.assertRaisesRegex(RuntimeError, "candidate cleanup failed"):
