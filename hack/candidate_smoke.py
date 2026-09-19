@@ -48,7 +48,7 @@ class Browser:
             connection.close()
 
 def run_smoke(directory, web_image):
-    with Candidate(directory, web_image) as deployed:
+    with Candidate(directory, web_image, diagnostic_filename="smoke-failure.json") as deployed:
         manifest=deployed.manifest
         revision=manifest["revision"];digest=manifest["archive"]["manifest_digest"];archive=directory/manifest["archive"]["file"]
         pg,gateway,server=deployed.pg,deployed.gateway,deployed.server

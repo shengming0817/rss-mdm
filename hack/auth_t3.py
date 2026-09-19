@@ -82,11 +82,14 @@ def prepare_member(stack):
     browser=Browser(stack.port,stack.root/'ca.crt')
     require(browser.call('POST',f'/api/v2/tenants/{TENANT}/login',dict(login='admin',password=stack.password))[0]==200,'bootstrap login')
     stack.member_password=secrets.token_urlsafe(28)
-    status,result=browser.call('POST',f'/api/v2/tenants/{TENANT}/accounts',dict(login='member',password=stack.member_password))
-    require(status==201,'bootstrap account')
-    stack.member=result['principalId']
-    binding=dict(stack.config['bindings'][0]);binding.update(principal_id=stack.member,identity_management=[],management=[],roles=['auditor'],allow_wipe=False,allow_enrollment=False,allow_manage_credentials=False)
-    stack.config['bindings'].append(binding)
+    for name in ['member','sso-member']:
+        status,result=browser.call('POST',f'/api/v2/tenants/{TENANT}/accounts',dict(login=name,password=stack.member_password))
+        require(status==201,'bootstrap account')
+        principal=result['principalId']
+        if name=='member':stack.member=principal
+        else:stack.sso_member=principal
+        binding=dict(stack.config['bindings'][0]);binding.update(principal_id=principal,identity_management=[],management=[],roles=['auditor'],allow_wipe=False,allow_enrollment=False,allow_manage_credentials=False)
+        stack.config['bindings'].append(binding)
     (stack.runtime/'config.json').write_text(json.dumps(stack.config))
     docker('stop','--time','45',stack.server,stage=Stage.STOP,timeout=55)
     stack.copy_runtime()
@@ -134,7 +137,7 @@ def run(candidate, web_image, tools_image, output):
                     (stack.root/'nginx.conf').write_text(conf)
                     docker('exec',stack.gateway,'nginx','-c','/certs/nginx.conf','-s','reload',stage=Stage.GATEWAY)
                 private=[primary.password,primary.member_password,primary.idp_password,primary.client_secret]
-                params=dict(tenant=TENANT,member=primary.member,adminPassword=primary.password,memberPassword=primary.member_password,
+                params=dict(tenant=TENANT,member=primary.member,ssoMember=primary.sso_member,adminPassword=primary.password,memberPassword=primary.member_password,
                             idpPassword=primary.idp_password,clientSecret=primary.client_secret,issuer=primary.issuer,
                             server=primary.server,pg=primary.pg,idp=primary.idp,otherPg=other.pg,otherTenant=other.tenant,wrongTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
                             runtimeVolume=primary.runtime_volume,runtimeImage=primary.providers['runtime'])
@@ -170,7 +173,9 @@ def run(candidate, web_image, tools_image, output):
                 result['log_sha256']=sha(output/'product.log');result['requests_sha256']=sha(output/'requests.json')
         # Resource owners have completed cleanup before publishing success.
         result['status']='passed'
-        (output/'result.json').write_text(json.dumps(safe_evidence(result,private),indent=2)+'\n')
+        staged=output/'.result.json'
+        staged.write_text(json.dumps(safe_evidence(result,private),indent=2)+'\n')
+        os.replace(staged,output/'result.json')
     except BaseException as error:
         (output/'result.json').unlink(missing_ok=True)
         (output/'failure.json').write_text(json.dumps({'status':'failed','errorClass':type(error).__name__,'diagnostics':{p.name:sha(p) for p in output.glob('*failure*.json') if p.name!='failure.json'}})+'\n')

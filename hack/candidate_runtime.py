@@ -186,7 +186,7 @@ def verify_candidate(directory):
 
 class Candidate:
     """One owned PG/network namespace, product binary and canonical UI ingress."""
-    def __init__(self, directory, web_image, *, prepare=None, network=None, host="mdm.example.test", instance=INSTANCE, tenant=TENANT, diagnostics=None):
+    def __init__(self, directory, web_image, *, prepare=None, network=None, host="mdm.example.test", instance=INSTANCE, tenant=TENANT, diagnostics=None, diagnostic_filename=None):
         self.directory,self.prepare,self.host=directory,prepare,host
         self.instance,self.tenant=instance,tenant
         self.diagnostics=diagnostics or directory
@@ -198,6 +198,7 @@ class Candidate:
         require(self.web["revision"]==WEB_REVISION,"UI revision mismatch")
         self.providers=self.manifest["providers"]
         self.name="mdm-candidate-"+uuid.uuid4().hex[:10]
+        self.diagnostic_filename=diagnostic_filename or self.name+"-failure.json"
         self.pg,self.gateway,self.server=[self.name+suffix for suffix in ("-pg","-gateway","-server")]
         self.network=network or self.name+"-network"
         self.own_network=network is None
@@ -271,7 +272,7 @@ class Candidate:
         wait(check,"product readiness",seconds=60)
     def __exit__(self,kind,error,tb):
         def record(primary):
-            failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.name+"-failure.json")
+            failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.diagnostic_filename)
         if error:record(error)
         try:
             cleanup(self.created,self.volumes,self.network if self.network_created else None)

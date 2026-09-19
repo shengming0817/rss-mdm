@@ -117,3 +117,10 @@ class RuntimeOwnership(unittest.TestCase):
             for owner in ['first','second']:
                 candidate.failure_evidence(root,[],set(),RuntimeError('failed'),owner+'-failure.json')
             self.assertEqual(len(list(root.glob('*-failure.json'))),2)
+
+    def test_smoke_explicitly_selects_fixed_diagnostic_filename(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(smoke,'Candidate') as factory:
+            factory.return_value.__enter__.side_effect=RuntimeError('fixture failure')
+            with self.assertRaisesRegex(RuntimeError,'fixture failure'):
+                smoke.smoke(Path(temp),'ui')
+            factory.assert_called_once_with(Path(temp),'ui',diagnostic_filename='smoke-failure.json')

@@ -122,7 +122,7 @@ try{
   await login(member,'member',input.memberPassword);
   stage='logout_all';const second=await pageAt();await login(second,'member',input.memberPassword);
   await logoutUI(member,true);assert((await request(second,inventory)).status===401,'all sessions revoked');await second.context().close();checks.logout_all=true;
-  await login(member,'member',input.memberPassword);
+  await member.context().clearCookies();await login(member,'sso-member',input.memberPassword);
 
   stage='enterprise';const probe=await browser.newPage();await poll(async()=>{const r=await probe.goto(input.issuer+'/.well-known/openid-configuration');return r.status()===200});await probe.close();
   const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v2/oidc/callback',scopes:['openid','profile','email'],claims:{email:'email',groups:null},jit:false};
@@ -133,11 +133,11 @@ try{
   await member.locator('#link-provider').selectOption(provider);await member.locator('#link-password').fill(input.memberPassword);
   await member.locator('form').filter({has:member.locator('#link-provider')}).locator('button').click();
   await keycloak(member,'alice');await member.waitForURL('**/sessions');
-  assert((await request(member,api+'/session')).value.identity.principalId===input.member,'link changed subject');
+  assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'link changed subject');
   await logoutUI(member);await member.context().clearCookies();
   await member.goto(origin+`/tenants/${input.tenant}/login`);
   await member.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(member,'alice');await member.waitForURL('**/sessions');
-  assert((await request(member,api+'/session')).value.identity.principalId===input.member,'SSO subject binding');
+  assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'SSO subject binding');
   assert((await request(member,inventory)).status===200,'SSO authorized resource');
   assert((await request(member,api+'/accounts')).status===403,'SSO unauthorized resource');checks.enterprise=true;
 
