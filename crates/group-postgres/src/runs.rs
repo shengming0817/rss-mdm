@@ -227,7 +227,15 @@ impl GroupStore {
                     self.tenant,
                     deadline,
                     (self, &prepared, &calculated),
-                    move |ctx, tx| Box::pin(async move { ctx.0.finish_in(tx, ctx.1, ctx.2).await }),
+                    move |ctx, tx| {
+                        Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[ctx
+                                .0
+                                .partition(&ctx.1.op.group.to_string())?])
+                                .await?;
+                            ctx.0.finish_in(tx, ctx.1, ctx.2).await
+                        })
+                    },
                 )
                 .await,
             Some(id),
@@ -236,6 +244,7 @@ impl GroupStore {
     /// Complete a bounded recalculation in the caller transaction, retaining the
     /// runtime/tenant check and group-before-operation lock order. This enables
     /// product input validation and success audit to commit with member changes.
+    /// The caller declares the operation group partition before any business locks.
     pub async fn resume_in(
         &self,
         tx: &mut PgTransaction<'_>,

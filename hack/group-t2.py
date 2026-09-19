@@ -61,7 +61,7 @@ def fixture(migrations=None):
                 sql('BEGIN; SET ROLE mdm_group_owner; '+migrations+' COMMIT;')
             except subprocess.CalledProcessError as error:
                 print(error.stderr, file=sys.stderr);raise
-            sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-1111-1111-111111111111',1),('22222222-2222-2222-2222-222222222222',1); GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_group_runtime; GRANT SELECT ON rss_transactional_messaging.policy TO mdm_group_runtime; GRANT SELECT,INSERT ON rss_transactional_messaging.outbox TO mdm_group_runtime; GRANT USAGE ON SEQUENCE rss_transactional_messaging.outbox_seq_seq TO mdm_group_runtime; GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_group_runtime;")
+            sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-1111-1111-111111111111',1),('22222222-2222-2222-2222-222222222222',1);")
             path=root/'config.json';path.write_text(json.dumps({'port':port,'ca':str(root/'ca.crt'),'container':name}));os.chmod(path,0o600)
             env=os.environ.copy();env['GROUP_PG_CONFIG']=str(path)
             yield env,sql

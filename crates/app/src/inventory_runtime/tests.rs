@@ -178,6 +178,22 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         cfg!(feature = "integration"),
         "integration feature required"
     );
+    let startup_clock = Clock::new(clock());
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let control = Control::new(&startup_clock, startup_clock.cutoff(), &cancelled);
+    ensure!(
+        ProjectionResource::open(options("mdm_runtime")?, startup_clock.clone(), &control)
+            .await
+            .is_err()
+    );
+    let active = CancellationToken::new();
+    let expired = Control::new(&startup_clock, Duration::ZERO, &active);
+    ensure!(
+        ProjectionResource::open(options("mdm_runtime")?, startup_clock.clone(), &expired)
+            .await
+            .is_err()
+    );
     let access = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
     let service = Arc::new(DeviceService::new(access.clone(), policy(A, true, true)));
     let admin = admin(A, "admin-a").await?;

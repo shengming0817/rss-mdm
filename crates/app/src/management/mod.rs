@@ -103,6 +103,15 @@ impl Management {
                 (self, command, audit, &failure),
                 |(s, command, audit, failure), tx| {
                     Box::pin(async move {
+                        let partitions = match command {
+                            Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
+                            Command::Resource { id, .. } => vec![s.resources.partition(id)?],
+                            Command::Policy { id, .. } | Command::Save { id, .. } => {
+                                vec![s.policies.partition(id)?]
+                            }
+                            _ => Vec::new(),
+                        };
+                        tx.prepare_outbox_partitions(&partitions).await?;
                         match s.execute_in(tx, command, audit).await {
                             Ok(v) => {
                                 audit.mark_commit_started();

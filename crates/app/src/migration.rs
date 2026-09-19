@@ -45,7 +45,7 @@ pub async fn migrate(options: &PgConnectOptions) -> Result<()> {
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 16] {
+fn units() -> [(&'static str, &'static str); 20] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -90,6 +90,22 @@ fn units() -> [(&'static str, &'static str); 16] {
             "management-v1",
             include_str!("../migrations/0007_management.sql"),
         ),
+        (
+            "group-outbox-writer-v1",
+            rss_mdm_group_postgres::OUTBOX_MIGRATION_SQL,
+        ),
+        (
+            "policy-outbox-writer-v1",
+            rss_mdm_policy_postgres::OUTBOX_MIGRATION_SQL,
+        ),
+        (
+            "resource-outbox-writer-v1",
+            rss_mdm_resource_postgres::OUTBOX_MIGRATION_SQL,
+        ),
+        (
+            "software-release-outbox-writer-v1",
+            rss_mdm_software_release_postgres::OUTBOX_MIGRATION_SQL,
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -120,6 +136,26 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
         .map_err(|_| MigrationError::at("installation", "installation lock"))?;
     sqlx::raw_sql("CREATE TABLE IF NOT EXISTS public.mdm_migrations(name text PRIMARY KEY,digest text NOT NULL,complete boolean NOT NULL DEFAULT false)")
         .execute(&mut *conn).await.map_err(|_|MigrationError::at("installation","ledger initialization"))?;
+    let installed: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|_| MigrationError::at("installation", "ledger read"))?;
+    let current = units();
+    if !installed.is_empty()
+        && (installed.len() != current.len()
+            || installed.iter().any(|(name, digest, complete)| {
+                !complete
+                    || !current.iter().any(|(expected, sql)| {
+                        name == expected && digest == &format!("{:x}", Sha256::digest(sql))
+                    })
+            }))
+    {
+        return Err(MigrationError::at(
+            "installation",
+            "fresh installation required; existing ledger differs or is incomplete",
+        ));
+    }
     for (name, sql) in units() {
         let digest = format!("{:x}", Sha256::digest(sql));
         let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")

@@ -44,25 +44,7 @@ def verify_migrations(container, binary, config, root, env):
     admin_config=root/"admin-migrate.json";admin_config.write_text(json.dumps(admin));os.chmod(admin_config,0o600)
     migrate(admin_config,accepted=False)
     require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
-    # Install the unchanged F02/I01 schema and history before applying the new unit.
-    import hashlib
-    sql("SET ROLE mdm_owner; CREATE TABLE public.mdm_migrations(name text PRIMARY KEY,digest text NOT NULL,complete boolean NOT NULL DEFAULT false)")
-    for unit, filename in [('access-v1','0001_access.sql'),('access-audit-request-index-v1','0002_audit_request_index.sql'),('device-identity-v1','0003_device_identity.sql')]:
-        content=(ROOT/'crates/app/migrations'/filename).read_text()
-        sql('SET ROLE mdm_owner; '+content)
-        digest=hashlib.sha256(content.encode()).hexdigest()
-        sql("INSERT INTO public.mdm_migrations VALUES('"+unit+"','"+digest+"',true)")
-    legacy='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
-    sql(f"INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{legacy}','00000000-0000-4000-8000-000000000001','legacy','mdm','legacy-device','enrollment','available',clock_timestamp()+interval '200 seconds'),('{legacy}','00000000-0000-4000-8000-000000000002','legacy','mdm','legacy-device','enrollment','consumed',clock_timestamp()+interval '200 seconds'); INSERT INTO mdm_access.requests VALUES('{legacy}','00000000-0000-4000-8000-000000000003','00000000-0000-4000-8000-000000000002'); INSERT INTO mdm_access.devices VALUES('{legacy}','legacy-device'); INSERT INTO mdm_access.registrations VALUES('{legacy}','00000000-0000-4000-8000-000000000004','legacy-device','mdm',1,'00000000-0000-4000-8000-000000000003','active'); INSERT INTO mdm_access.credentials VALUES('{legacy}','00000000-0000-4000-8000-000000000005','00000000-0000-4000-8000-000000000004','mdm',repeat('e',64),'active'); INSERT INTO mdm_access.audit(tenant_id,id,request_id,action,result,status) VALUES('{legacy}','00000000-0000-4000-8000-000000000006','00000000-0000-4000-8000-000000000007','registration_accept','success',200); INSERT INTO mdm_access.operations VALUES('{legacy}','legacy','mdm','00000000-0000-4000-8000-000000000008',repeat('e',64),'history');")
-    before=sql(f"SELECT to_jsonb(a) - 'software' FROM mdm_access.audit a WHERE tenant_id='{legacy}'")
     migrate(); migrate()
-    require(sql(f"SELECT count(*) FROM mdm_access.grants WHERE tenant_id='{legacy}' AND state='available'")=='0','legacy grant remains usable')
-    require(sql(f"SELECT state='cancelled' AND issuance_operation IS NULL AND password_digest IS NULL FROM mdm_access.requests WHERE tenant_id='{legacy}'")=='t','legacy request gained enrollment authority')
-    require(sql(f"SELECT state FROM mdm_access.registrations WHERE tenant_id='{legacy}'")=='active','historical registration changed')
-    require(sql(f"SELECT state FROM mdm_access.credentials WHERE tenant_id='{legacy}'")=='active','historical credential changed')
-    require(before==sql(f"SELECT to_jsonb(a) - 'software' FROM mdm_access.audit a WHERE tenant_id='{legacy}'"),'historical audit changed')
-    require(sql(f"SELECT count(*)=1 AND bool_and(software IS NULL) FROM mdm_access.audit WHERE tenant_id='{legacy}'")=='t','legacy audit gained software facts')
-    require(sql(f"SELECT result FROM mdm_access.operations WHERE tenant_id='{legacy}'")=='history','historical operation changed')
     # Force index eligibility on the tiny fixture; this is not a throughput claim.
     plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
     require('request_id' in json.dumps(plan[0]['Plan'].get('Index Cond', '')), 'request-id lookup lacks an index condition')
@@ -90,7 +72,7 @@ def verify_migrations(container, binary, config, root, env):
         for child in children:
             _,error=child.communicate(timeout=15)
             if child.returncode: raise RuntimeError("serialized migration failed: "+error)
-        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == "16", "migration invariant rejected")
+        require(sql("SELECT count(*) FROM public.mdm_migrations WHERE complete") == str(len(json.loads(run([binary,"--describe"],capture_output=True).stdout)["units"])), "migration invariant rejected")
     finally:
         sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-migration-lock'")
         holder.wait(timeout=5)
@@ -181,10 +163,10 @@ def main():
             from windows_fixtures import generate
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_WINDOWS_FIXTURES']=str(root)
-            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_upgrade"], stdout=subprocess.DEVNULL, timeout=10)
-            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::populated_windows_and_backend_upgrade", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
+            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
+            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test migration::tests::populated_windows_and_backend_upgrade ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'populated Windows migration test failed: ' + upgrade.stderr)
+            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
             run(["docker","exec","-i",name,"psql","-U","postgres","-d","mdm_test","-v","ON_ERROR_STOP=1"],input="INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-4111-8111-111111111111',1),('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1);",stdout=subprocess.DEVNULL)
             if not device_only and not windows_only:

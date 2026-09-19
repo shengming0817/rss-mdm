@@ -242,6 +242,8 @@ async fn release_immutable_version_request_uniqueness_and_rollback() {
             (&s, &fresh, &change),
             |(s, c, r), tx| {
                 Box::pin(async move {
+                    tx.prepare_outbox_partitions(&[s.partition(c.snapshot().id.value())?])
+                        .await?;
                     s.transition_in(tx, &c.snapshot().id, r).await?.unwrap();
                     Err::<(), _>(rss_transactional_messaging_postgres::PgError::from(
                         sqlx::Error::RowNotFound,
@@ -273,9 +275,13 @@ async fn release_event_failure_and_runtime_admission() {
         .unwrap();
     let c = candidate();
     let id = request_id();
-    sql("REVOKE INSERT ON rss_transactional_messaging.outbox FROM mdm_software_release_runtime");
+    sql(
+        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_software_release_runtime",
+    );
     let result = s.create(&id, &c, deadline()).await;
-    sql("GRANT INSERT ON rss_transactional_messaging.outbox TO mdm_software_release_runtime");
+    sql(
+        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_software_release_runtime",
+    );
     assert!(result.is_err());
     assert!(s.operation(&id, deadline()).await.unwrap().is_none());
     assert!(s.get(&c.snapshot().id, deadline()).await.unwrap().is_none());

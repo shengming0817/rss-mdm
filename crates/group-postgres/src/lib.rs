@@ -44,3 +44,6 @@ pub use store::GroupStore;
 pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_group.sql");
 #[cfg(test)]
 mod codec_tests;
+
+/// Public Outbox function permissions, installed after the immutable initial product schema.
+pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");

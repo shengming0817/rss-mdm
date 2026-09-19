@@ -35,6 +35,20 @@ pub struct ReleaseStore {
     writer: PgOutboxWriter,
 }
 impl ReleaseStore {
+    /// Identify this tenant's ordered event partition for a canonical aggregate ID.
+    /// The outer transaction declares every partition once, before any business locks.
+    pub fn partition(
+        &self,
+        id: &str,
+    ) -> Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
+        use rss_transactional_messaging::message::{PartitionIdentity, PartitionKey};
+        Ok(PartitionIdentity::new(
+            self.tenant,
+            event::domain(),
+            STORAGE.invalid("store::partition", PartitionKey::parse(id))?,
+        ))
+    }
+
     /// Admit the exact schema and effective runtime privileges, then borrow the host runtime.
     /// Returns a settlement error on admission failure; never migrates or closes the runtime.
     pub async fn new(
@@ -137,13 +151,18 @@ impl ReleaseStore {
         settle(
             self.runtime
                 .local_tx_with_context(self.tenant, d, (self, id, c), |(s, id, c), tx| {
-                    Box::pin(async move { s.create_in(tx, id, c).await })
+                    Box::pin(async move {
+                        tx.prepare_outbox_partitions(&[s.partition(c.snapshot().id.value())?])
+                            .await?;
+                        s.create_in(tx, id, c).await
+                    })
                 })
                 .await,
         )
     }
     /// Create within the caller transaction, including immutable-version checks and the request receipt.
     /// The caller owns commit/rollback and must propagate outer storage errors.
+    /// The caller must declare the complete Outbox partition set before business locks.
     pub async fn create_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -243,13 +262,18 @@ impl ReleaseStore {
         settle(
             self.runtime
                 .local_tx_with_context(self.tenant, d, (self, id, r), |(s, id, r), tx| {
-                    Box::pin(async move { s.transition_in(tx, id, r).await })
+                    Box::pin(async move {
+                        tx.prepare_outbox_partitions(&[s.partition(id.value())?])
+                            .await?;
+                        s.transition_in(tx, id, r).await
+                    })
                 })
                 .await,
         )
     }
     /// Apply a core request in the borrowed transaction; never performs external source I/O.
     /// Propagate outer PG errors and let the host settle commit/rollback.
+    /// The caller must declare the complete Outbox partition set before business locks.
     pub async fn transition_in(
         &self,
         tx: &mut PgTransaction<'_>,

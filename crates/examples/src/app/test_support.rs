@@ -368,10 +368,11 @@ async fn permissions_and_lifecycle() -> Result<()> {
     assert!(a.inspect(&Id::new("first")?).await.is_err());
     // A borrowed connection prevents draining; deadline is not successful cleanup.
     let pool = storage::pool(&options).await?;
-    let projection = rss_projection_postgres::PgStore::new(pool.clone()).await?;
-    let held = pool.acquire().await?;
     let clock = system_clock();
     let cancel = CancellationToken::new();
+    let startup = Control::new(&clock, clock.cutoff(storage::BUDGET), &cancel);
+    let projection = rss_projection_postgres::PgStore::new(pool.clone(), &startup).await?;
+    let held = pool.acquire().await?;
     let control = Control::new(&clock, Duration::from_millis(20), &cancel);
     assert_eq!(
         projection.close(&control).await,

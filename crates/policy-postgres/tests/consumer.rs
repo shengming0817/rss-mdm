@@ -358,6 +358,8 @@ async fn concurrent_cas_borrowed_rollback_and_runtime_owner() {
     let result = runtime
         .local_tx_with_context(tenant(), deadline(), (&s, &r), |(s, r), tx| {
             Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.policy().value())?])
+                    .await?;
                 s.execute_in(tx, r).await?.unwrap();
                 Err::<(), _>(rss_transactional_messaging_postgres::PgError::from(
                     sqlx::Error::RowNotFound,
@@ -411,10 +413,14 @@ async fn outbox_failure_and_immutable_inputs() {
         s.execute(&bad, deadline()).await,
         Err(Error::Rejected(Rejection::IdentityConflict))
     ));
-    sql("REVOKE INSERT ON rss_transactional_messaging.outbox FROM mdm_policy_runtime");
+    sql(
+        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_policy_runtime",
+    );
     let r = req(&p, rev, Command::Replan { policy: p.clone() });
     let result = s.execute(&r, deadline()).await;
-    sql("GRANT INSERT ON rss_transactional_messaging.outbox TO mdm_policy_runtime");
+    sql(
+        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_policy_runtime",
+    );
     assert!(result.is_err());
     assert!(s.operation(&r.id, deadline()).await.unwrap().is_none());
     assert_eq!(

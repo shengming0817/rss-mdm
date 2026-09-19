@@ -60,6 +60,8 @@ async fn static_commands_replay_and_borrowed_rollback() {
     let attempt = runtime
         .local_tx_with_context(tenant(), deadline(), (&s, &delete), |ctx, tx| {
             Box::pin(async move {
+                tx.prepare_outbox_partitions(&[ctx.0.partition(&ctx.1.group().to_string())?])
+                    .await?;
                 ctx.0.execute_in(tx, op(), at(), ctx.1).await?.unwrap();
                 Err::<(), _>(PgError::from(sqlx::Error::RowNotFound))
             })
@@ -136,6 +138,44 @@ async fn static_commands_replay_and_borrowed_rollback() {
         s.execute(op(), at(), &create, deadline()).await,
         Err(Error::Rejected(Rejection::IdentityConflict))
     ));
+    // The companion owns the complete set; repeated writes must not redeclare it.
+    let pair = [group_id(), group_id()];
+    let batch = runtime
+        .local_tx_with_context(tenant(), deadline(), &s, move |s, tx| {
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[
+                    s.partition(&pair[1].to_string())?,
+                    s.partition(&pair[0].to_string())?,
+                ])
+                .await?;
+                for id in pair {
+                    let create = Command::Create {
+                        group: id,
+                        name: "batch".into(),
+                        description: "".into(),
+                        definition: Definition::Static,
+                    };
+                    let first = s.execute_in(tx, op(), at(), &create).await?.unwrap();
+                    let edit = Command::Edit {
+                        group: id,
+                        expected: first.group.revision,
+                        name: "second write".into(),
+                        description: "".into(),
+                    };
+                    s.execute_in(tx, op(), at(), &edit).await?.unwrap();
+                }
+                Ok(())
+            })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err);
+    batch.unwrap();
+    for id in pair {
+        assert_eq!(
+            s.get(id, deadline()).await.unwrap().unwrap().revision.get(),
+            2
+        );
+    }
     runtime.close().await;
 }
 
