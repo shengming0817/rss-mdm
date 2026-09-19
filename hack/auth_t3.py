@@ -140,9 +140,18 @@ def run(candidate, web_image, tools_image, output):
                 (primary.root/'other-ca.crt').write_bytes((other.root/'ca.crt').read_bytes())
                 browser_name=primary.name+'-browser';primary.created.append(browser_name)
                 script='mkdir -p /root/.pki/nssdb; certutil -N --empty-password -d sql:/root/.pki/nssdb; certutil -A -d sql:/root/.pki/nssdb -n mdm -t "C,," -i /fixture/ca.crt; certutil -A -d sql:/root/.pki/nssdb -n other -t "C,," -i /fixture/other-ca.crt; exec node /runner/auth_t3_browser.mjs'
-                raw=docker('run','--name',browser_name,'--network',primary.network,'--shm-size','1g',
-                           '-v','/var/run/docker.sock:/var/run/docker.sock','-v',str(primary.root)+':/fixture:ro',
-                           '-v',str(ROOT/'hack')+':/runner:ro','--entrypoint','bash',tool['id'],'-ec',script,stage=Stage.SERVER,timeout=1200)
+                try:
+                    raw=docker('run','--name',browser_name,'--network',primary.network,'--shm-size','1g',
+                               '-v','/var/run/docker.sock:/var/run/docker.sock','-v',str(primary.root)+':/fixture:ro',
+                               '-v',str(ROOT/'hack')+':/runner:ro','--entrypoint','bash',tool['id'],'-ec',script,stage=Stage.SERVER,timeout=1200)
+                except Exception:
+                    try:
+                        diagnostic=json.loads(docker('logs',browser_name,stage=Stage.LOGS))
+                        safe_evidence(diagnostic,private)
+                        (output/'browser-failure.json').write_text(json.dumps(diagnostic)+'\n')
+                    except Exception:
+                        pass
+                    raise
                 result=json.loads(raw);result['checks']['installation_mismatch']=mismatch;validate_checks(result['checks'])
                 logs={name:docker('logs',name,stage=Stage.LOGS) for name in [primary.server,primary.gateway,other.server,other.gateway]}
                 safe_evidence(logs,private+result.pop('privateValues',[]))
