@@ -164,7 +164,7 @@ def cleanup(created, volume, network=None):
             raise RuntimeError(message) from failures[0]
 
 
-WEB_REVISION = "f289e3a46b4dce2adccee541f49b03d833ecdc70"
+WEB_REVISION = "a0e5ac61e98677ae96c6c80d3680d5f75c4fbbfb"
 
 def image_identity(reference):
     value = json.loads(docker("image", "inspect", reference, stage=Stage.LOAD))[0]
