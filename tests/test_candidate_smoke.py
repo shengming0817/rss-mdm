@@ -70,7 +70,7 @@ class SmokeCompletion(unittest.TestCase):
                 (directory / name).write_text("stale success")
             with mock.patch.object(smoke, "run_smoke", side_effect=RuntimeError("cleanup rejected")):
                 with self.assertRaisesRegex(RuntimeError, "cleanup rejected"):
-                    smoke.smoke(directory, "fixture-ui")
+                    smoke.smoke(directory)
             self.assertFalse((directory / "smoke.json").exists())
             self.assertFalse((directory / "smoke.log").exists())
 
@@ -79,7 +79,7 @@ class SmokeCompletion(unittest.TestCase):
             directory = Path(temporary)
             with mock.patch.object(smoke, "run_smoke", return_value=({"revision": "fixture"}, "logs")), mock.patch.object(candidate.os, "replace", side_effect=OSError("disk failure")):
                 with self.assertRaisesRegex(OSError, "disk failure"):
-                    smoke.smoke(directory, "fixture-ui")
+                    smoke.smoke(directory)
             self.assertEqual(list(directory.iterdir()), [])
 
     def test_cleanup_preserves_primary_and_records_cleanup_failure(self):
@@ -122,8 +122,8 @@ class RuntimeOwnership(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(smoke,'Candidate') as factory:
             factory.return_value.__enter__.side_effect=RuntimeError('fixture failure')
             with self.assertRaisesRegex(RuntimeError,'fixture failure'):
-                smoke.smoke(Path(temp),'ui')
-            factory.assert_called_once_with(Path(temp),'ui',diagnostic_filename='smoke-failure.json')
+                smoke.smoke(Path(temp))
+            factory.assert_called_once_with(Path(temp),diagnostic_filename='smoke-failure.json')
 
 
 class ExternalReviewRegressions(unittest.TestCase):
@@ -149,3 +149,11 @@ class ExternalReviewRegressions(unittest.TestCase):
             candidate.inputs(root,candidate.ROOT/'fixtures/mdm-config.example.json')
             self.assertEqual(root.stat().st_mode & 0o077,0)
             self.assertEqual((root/'server.key').stat().st_mode & 0o077,0)
+
+    def test_ui_archive_mismatch_fails_before_image_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'ui.tar').write_bytes(b'changed')
+            with mock.patch.object(candidate,'docker') as command:
+                with self.assertRaisesRegex(RuntimeError,'UI archive mismatch'):
+                    candidate.load_ui(root,{'archive':{'file':'ui.tar','sha256':'0'*64}})
+                command.assert_not_called()

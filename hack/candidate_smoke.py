@@ -47,8 +47,8 @@ class Browser:
         finally:
             connection.close()
 
-def run_smoke(directory, web_image):
-    with Candidate(directory, web_image, diagnostic_filename="smoke-failure.json") as deployed:
+def run_smoke(directory):
+    with Candidate(directory, diagnostic_filename="smoke-failure.json") as deployed:
         manifest=deployed.manifest
         revision=manifest["revision"];digest=manifest["archive"]["manifest_digest"];archive=directory/manifest["archive"]["file"]
         pg,gateway,server=deployed.pg,deployed.gateway,deployed.server
@@ -87,12 +87,12 @@ def run_smoke(directory, web_image):
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
     return result,logs+"\n"
 
-def smoke(directory, web_image):
+def smoke(directory):
     marker, log = directory / "smoke.json", directory / "smoke.log"
     for path in (marker, log, directory / "smoke-failure.json"):
         path.unlink(missing_ok=True)
     try:
-        result, output = run_smoke(directory, web_image)
+        result, output = run_smoke(directory)
         # Publish only after both fixture owners have finished cleanup. The marker
         # is last and binds the log, so readers never accept a partial evidence pair.
         with tempfile.TemporaryDirectory(prefix=".smoke-", dir=directory) as temporary:
@@ -111,6 +111,5 @@ def smoke(directory, web_image):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", type=Path, required=True)
-    parser.add_argument("--web-image", required=True)
     args=parser.parse_args()
-    smoke(args.candidate.resolve(), args.web_image)
+    smoke(args.candidate.resolve())

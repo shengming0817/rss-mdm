@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from candidate_runtime import Candidate, Stage, ROOT, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait, safe_evidence, run_owned
+from candidate_runtime import Candidate, Stage, ROOT, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait, safe_evidence, run_owned, immutable_image, failure_evidence
 from candidate_smoke import Browser
 
 SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','refresh','logout','logout_all',
@@ -113,20 +113,23 @@ def installation_mismatch(stack):
     require(stack.sql("SELECT md5(string_agg(row_to_json(m)::text,',' ORDER BY name)) FROM public.mdm_migrations m")==ledger,'mismatched installation changed ledger')
     return True
 
-def run(candidate, web_image, tools_image, output):
+def run(candidate, tools_image, output):
     require(not output.exists(),'T3 output must be new')
     output.mkdir(parents=True)
     private=[]
     try:
-        tool=image_identity(tools_image)
+        tool=image_identity(immutable_image(tools_image))
+        tool_archive=output/"browser-tools.image.tar"
+        docker("image","save","--output",tool_archive,tool["id"],stage=Stage.TOOLS_ARCHIVE,timeout=300)
+        tool["archive"]={"file":tool_archive.name,"sha256":sha(tool_archive)}
         # Use an existing fixed tools artifact; no checkout or reference application runtime needed.
         probe=run_owned([], 'mdm-tools-'+uuid.uuid4().hex[:10], '--network','none','--entrypoint','node',tool['id'],'-e',
                      "console.log(JSON.stringify({version:require('/opt/playwright-core/package.json').version,integrity:require('fs').readFileSync('/opt/playwright-integrity','utf8')}))",stage=Stage.TOOLS)
         require(json.loads(probe)==dict(version='1.60.0',integrity=PLAYWRIGHT_INTEGRITY),'browser package mismatch')
-        with Candidate(candidate,web_image,prepare=enterprise,diagnostics=output) as primary:
+        with Candidate(candidate,prepare=enterprise,diagnostics=output) as primary:
             prepare_member(primary);seed_inventory(primary)
             mismatch=installation_mismatch(primary)
-            with Candidate(candidate,web_image,network=primary.network,host='mdm-other.example.test',
+            with Candidate(candidate,network=primary.network,host='mdm-other.example.test',
                            instance=str(uuid.uuid4()),tenant=TENANT,diagnostics=output) as other:
                 # Same port 443 on distinct private network addresses; host smoke retains 8445.
                 for stack in [primary,other]:
@@ -179,12 +182,13 @@ def run(candidate, web_image, tools_image, output):
         staged.write_text(json.dumps(safe_evidence(result,private),indent=2)+'\n')
         os.replace(staged,output/'result.json')
     except BaseException as error:
+        failure_evidence(output,[],set(),error,'operator-failure.json',private)
         (output/'result.json').unlink(missing_ok=True)
         (output/'failure.json').write_text(json.dumps({'status':'failed','errorClass':type(error).__name__,'diagnostics':{p.name:sha(p) for p in output.glob('*failure*.json') if p.name!='failure.json'}})+'\n')
         raise
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
-    for key in ['candidate','web-image','tools-image','output']:parser.add_argument('--'+key,required=True)
+    for key in ['candidate','tools-image','output']:parser.add_argument('--'+key,required=True)
     args=parser.parse_args()
-    run(Path(args.candidate).resolve(),args.web_image,args.tools_image,Path(args.output).resolve())
+    run(Path(args.candidate).resolve(),args.tools_image,Path(args.output).resolve())

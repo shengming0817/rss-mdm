@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import uuid
-from release import ROOT, oci_identity, platform, sha
+from release import ROOT, oci_identity, platform, sha, image_metadata, immutable_image
 from t2 import INSTANCE, ADMIN, TENANTS, installation
 
 TENANT = TENANTS[0]
@@ -32,6 +32,7 @@ class Stage(StrEnum):
     IDP_INSPECT = "idp-inspect"
     BROWSER = "browser-run"
     TOOLS = "tools-probe"
+    TOOLS_ARCHIVE = "tools-archive"
     SECRET_VOLUME = "secret-volume"
     SECRET_INPUTS = "secret-inputs"
     POSTGRES = "postgres-start"
@@ -207,16 +208,21 @@ def safe_evidence(value, private_values):
     require(not any(secret and (secret in encoded or json.dumps(secret)[1:-1] in encoded) for secret in private_values),'sensitive evidence rejected')
     return value
 
-
-WEB_REVISION = "a0e5ac61e98677ae96c6c80d3680d5f75c4fbbfb"
-
 def image_identity(reference):
     value = json.loads(docker("image", "inspect", reference, stage=Stage.IMAGE_INSPECT))[0]
-    return {"id":value["Id"], "revision":value["Config"].get("Labels",{}).get("org.opencontainers.image.revision"),
-            "os":value["Os"], "architecture":value["Architecture"]}
+    return image_metadata(value)
+
+def load_ui(directory, ui):
+    archive=directory/ui['archive']['file']
+    require(archive.parent==directory and not archive.is_symlink() and sha(archive)==ui['archive']['sha256'],'UI archive mismatch')
+    docker('load','--input',archive,stage=Stage.LOAD)
+    actual=image_identity(immutable_image(ui['id']))
+    require(actual=={key:value for key,value in ui.items() if key!='archive'},'UI artifact differs from candidate')
+    return actual
 
 def verify_candidate(directory):
     manifest=json.loads((directory/"candidate.json").read_text())
+    require(manifest.get("format_version")==2,"current product candidate format required")
     archive=directory/manifest["archive"]["file"]
     require(archive.parent==directory and not archive.is_symlink() and sha(archive)==manifest["archive"]["sha256"],"candidate archive mismatch")
     digest,config=oci_identity(archive)
@@ -230,7 +236,7 @@ def verify_candidate(directory):
 
 class Candidate:
     """One owned PG/network namespace, product binary and canonical UI ingress."""
-    def __init__(self, directory, web_image, *, prepare=None, network=None, host="mdm.example.test", instance=INSTANCE, tenant=TENANT, diagnostics=None, diagnostic_filename=None):
+    def __init__(self, directory, *, prepare=None, network=None, host="mdm.example.test", instance=INSTANCE, tenant=TENANT, diagnostics=None, diagnostic_filename=None):
         self.directory,self.prepare,self.host=directory,prepare,host
         self.instance,self.tenant=instance,tenant
         self.diagnostics=diagnostics or directory
@@ -238,10 +244,9 @@ class Candidate:
         artifact=image_identity(self.manifest["image"])
         require(artifact["revision"]==self.manifest["revision"] and self.manifest["image"].endswith("@"+self.manifest["archive"]["manifest_digest"]),"runtime image differs from candidate")
         self.image=artifact["id"]
-        self.web=image_identity(web_image)
-        require(self.web["revision"]==WEB_REVISION,"UI revision mismatch")
+        self.web=load_ui(directory,self.manifest["ui"])
         self.providers=self.manifest["providers"]
-        self.name="mdm-candidate-"+uuid.uuid4().hex[:10]
+        self.name="mdm-candidate-"+uuid.uuid4().hex
         self.diagnostic_filename=diagnostic_filename or self.name+"-failure.json"
         self.pg,self.gateway,self.server=[self.name+suffix for suffix in ("-pg","-gateway","-server")]
         self.network=network or self.name+"-network"
@@ -272,7 +277,7 @@ class Candidate:
         self.run_once('--user','0:0','--network','none','-v',str(self.root)+':/fixture:ro','-v',volume+':/private','--entrypoint','sh',self.providers['runtime'],'-ec',script,stage=Stage.SECRET_INPUTS)
     def secret_volume(self, suffix, files, uid):
         volume=self.name+'-'+suffix
-        self.command('volume','create',volume,stage=Stage.SECRET_VOLUME);self.volumes.append(volume)
+        self.volumes.append(volume);self.command('volume','create',volume,stage=Stage.SECRET_VOLUME)
         self.copy_secret_volume(volume,files,uid)
         return volume
     def operator(self,verb,config,stage):
@@ -288,8 +293,8 @@ class Candidate:
             self.root=Path(self.temporary.name)
             self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json")
             if self.own_network:
-                self.command("network","create",self.network,stage=Stage.NETWORK)
                 self.network_created=True
+                self.command("network","create",self.network,stage=Stage.NETWORK)
             self.config=json.loads((self.runtime/"config.json").read_text())
             self.config["product_origin"]="https://"+self.host
             self.config["identity"].update(instance_id=self.instance,tenant_id=self.tenant)
@@ -318,7 +323,7 @@ class Candidate:
             self.sql(roles)
             self.runtime_volume,self.operator_volume=self.name+"-runtime",self.name+"-operator"
             for volume,directory,volume_stage,input_stage in [(self.runtime_volume,self.runtime,Stage.RUNTIME_VOLUME,Stage.RUNTIME_INPUTS),(self.operator_volume,self.operator_root,Stage.OPERATOR_VOLUME,Stage.OPERATOR_INPUTS)]:
-                self.command("volume","create",volume,stage=volume_stage);self.volumes.append(volume)
+                self.volumes.append(volume);self.command("volume","create",volume,stage=volume_stage)
                 self.run_once("--user","0:0","--network","none","-v",str(directory)+":/fixture:ro","-v",volume+":/run/mdm","--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=input_stage)
             for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator("migrate","migrate.json",stage)
             self.operator("initialize","initialize.json",Stage.INITIALIZE)

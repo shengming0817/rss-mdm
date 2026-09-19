@@ -14,6 +14,12 @@ spec.loader.exec_module(release)
 
 
 class CandidatePublication(unittest.TestCase):
+    def test_candidate_inputs_reject_mutable_image_tags(self):
+        for value in ['rss-identity-web:latest','rss-tools:test','sha256:short']:
+            with self.assertRaises(ValueError):release.immutable_image(value)
+        expected='sha256:'+'a'*64
+        self.assertEqual(release.immutable_image(expected),expected)
+
     def test_platform_comes_from_verified_oci_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             for architecture in ["amd64", "arm64"]:
@@ -47,7 +53,7 @@ class CandidatePublication(unittest.TestCase):
                     release.subprocess, "run", side_effect=RuntimeError("source archive unavailable")
                 ):
                     with self.assertRaisesRegex(RuntimeError, "source archive unavailable"):
-                        release.build(output, header)
+                        release.build(output, header, "sha256:"+"a"*64)
                 self.assertFalse(output.exists())
                 self.assertEqual(sorted(p.name for p in root.iterdir()), ["header"])
 
