@@ -7,7 +7,7 @@
 在干净、已提交源码执行，构建机需 Docker Buildx 和私有 Git 只读凭据。授权头文件须为 owner 独占普通文件，仅作为 BuildKit secret 提供给 cargo fetch，离线编译和运行镜像不保存凭据。
 
 ~~~sh
-python3 hack/release.py --output artifacts/candidate --git-auth-header-file /private/azure-header --web-image sha256:<固定UI镜像ID>
+python3 hack/release.py --output artifacts/candidate --git-auth-header-file /private/azure-header --web-image "$MDM_UI_IMAGE_ID"
 python3 hack/candidate_smoke.py --candidate artifacts/candidate
 ~~~
 
