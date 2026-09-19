@@ -25,7 +25,7 @@ use uuid::Uuid;
 pub(crate) struct Management {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
-    clock: Arc<dyn rss_identity_client::Clock>,
+    clock: Arc<dyn crate::clock::Clock>,
     groups: rss_mdm_group_postgres::GroupStore,
     policies: rss_mdm_policy_postgres::PolicyStore,
     resources: rss_mdm_resource_postgres::ResourceStore,
@@ -66,7 +66,7 @@ impl Management {
     async fn new(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
-        clock: Arc<dyn rss_identity_client::Clock>,
+        clock: Arc<dyn crate::clock::Clock>,
     ) -> std::result::Result<Self, Error> {
         storage::admit(&runtime, tenant).await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())

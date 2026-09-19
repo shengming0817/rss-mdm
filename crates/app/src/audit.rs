@@ -17,7 +17,7 @@ struct State {
 #[derive(Clone)]
 pub(crate) struct Snapshot {
     pub actor: Option<String>,
-    pub client: Option<String>,
+    pub instance: Option<String>,
     pub action: &'static str,
     pub target: Option<String>,
     pub operation_id: Option<Uuid>,
@@ -84,7 +84,7 @@ impl Audit {
             state: Mutex::new(State {
                 snapshot: Snapshot {
                     actor: None,
-                    client: None,
+                    instance: None,
                     action,
                     target: None,
                     operation_id: None,
@@ -116,26 +116,26 @@ impl Audit {
     pub fn snapshot(&self) -> Snapshot {
         self.0.state.lock().expect("audit lock").snapshot.clone()
     }
-    pub fn identify(&self, proof: &rss_identity_client::VerifiedIdentity) {
+    pub fn identify(&self, proof: &crate::identity::Principal) {
         let mut state = self.0.state.lock().expect("audit lock");
-        state.snapshot.actor = Some(proof.subject().into());
-        state.snapshot.client = Some(proof.client_id().into());
+        state.snapshot.actor = Some(proof.principal_id().into());
+        state.snapshot.instance = Some(proof.instance_id().into());
     }
     #[cfg(test)]
-    pub fn identify_fixture(&self, actor: &str, client: &str) {
+    pub fn identify_fixture(&self, actor: &str, instance: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
-        state.snapshot.client = Some(client.into());
+        state.snapshot.instance = Some(instance.into());
     }
-    pub(crate) fn identify_operator(&self, actor: &str, client: &str) {
+    pub(crate) fn identify_operator(&self, actor: &str, instance: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
-        state.snapshot.client = Some(client.into());
+        state.snapshot.instance = Some(instance.into());
     }
     pub(crate) fn identify_service(&self, actor: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
-        state.snapshot.client = Some("mdm-software-publication".into());
+        state.snapshot.instance = None;
     }
     pub(crate) fn software(&self, fact: SoftwareFact) {
         self.0.state.lock().expect("audit lock").snapshot.software = Some(fact);
@@ -156,7 +156,7 @@ impl Audit {
     pub fn identify_device(&self, registration: Uuid) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(format!("device:{registration}"));
-        state.snapshot.client = Some("device".into());
+        state.snapshot.instance = None;
     }
     pub fn registration(&self, id: Uuid) {
         self.0
@@ -241,7 +241,7 @@ mod tests {
         a.operation(key, "enrollment_create");
         a.registration(registration);
         a.target("sensitive-target-not-for-logs");
-        a.identify_fixture("sensitive-actor", "sensitive-client");
+        a.identify_fixture("sensitive-actor", "sensitive-instance");
         let event = |reason| a.0.failure_event(&a.snapshot(), reason);
         assert_eq!(
             event(FailureReason::Cancelled)["write_outcome"],
@@ -264,7 +264,7 @@ mod tests {
             assert_eq!(event["registration_id"], registration.to_string());
             assert!(!event.to_string().contains("sensitive-target"));
             assert!(!event.to_string().contains("sensitive-actor"));
-            assert!(!event.to_string().contains("sensitive-client"));
+            assert!(!event.to_string().contains("sensitive-instance"));
         }
         a.finalize(None);
     }

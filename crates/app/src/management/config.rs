@@ -15,7 +15,7 @@ pub(crate) const SOURCE_STARTUP_SECONDS: u64 = 6;
 impl Config {
     pub(crate) fn startup_budget(&self) -> Duration {
         Duration::from_secs(
-            15 + if self.sources.is_empty() {
+            35 + if self.sources.is_empty() {
                 0
             } else {
                 5 + SOURCE_STARTUP_SECONDS * self.sources.len() as u64
@@ -47,7 +47,7 @@ impl Config {
     pub(crate) async fn open(
         &self,
         tenant: TenantId,
-        clock: Arc<dyn rss_identity_client::Clock>,
+        clock: Arc<dyn crate::clock::Clock>,
         mut acquire: impl FnMut(Resource),
     ) -> std::result::Result<Arc<Management>, Error> {
         let invalid = || Error::Configuration(crate::ConfigIssue::Management);

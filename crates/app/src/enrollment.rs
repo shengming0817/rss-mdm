@@ -1,7 +1,7 @@
 //! Enrollment is the single lifecycle owner; the grant retains immutable authorization origin.
 pub(crate) mod read;
 pub(crate) mod store;
-use crate::{Error, sessions};
+use crate::Error;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -24,13 +24,13 @@ pub(crate) struct Resume {
 pub(crate) struct Password(Zeroizing<String>);
 impl Password {
     pub(crate) fn new(value: String) -> Result<Self, Error> {
-        if !sessions::valid(&value) {
+        if !valid(&value) {
             return Err(Error::Malformed);
         }
         Ok(Self(Zeroizing::new(value)))
     }
     pub(crate) fn digest(&self, tenant: &str, device: &str) -> Result<String, Error> {
-        if !sessions::valid(&self.0) {
+        if !valid(&self.0) {
             return Err(Error::Malformed);
         }
         Ok(digest(&(
@@ -62,12 +62,33 @@ pub(crate) struct Authorization {
     pub id: Uuid,
     pub device: String,
     pub actor: String,
-    pub client: String,
-    pub session_ref: Uuid,
+    pub instance: String,
+    pub credential_ref: Uuid,
     pub version: i64,
     pub expected_generation: i64,
     pub operation: Uuid,
     pub state: String,
+}
+
+/// Enrollment password generation, independent of browser authentication.
+pub(crate) fn random() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
+    rand::rngs::OsRng.fill_bytes(bytes.as_mut());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_ref())
+}
+
+pub(crate) fn equal(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    bool::from(a.as_bytes().ct_eq(b.as_bytes()))
+}
+fn valid(value: &str) -> bool {
+    use base64::Engine;
+    value.len() == 43
+        && base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(value)
+            .is_ok_and(|v| v.len() == 32)
 }
 
 #[cfg(test)]
@@ -75,7 +96,7 @@ mod tests {
     use super::*;
     #[test]
     fn password_is_canonical_256_bits_and_domain_separated() {
-        let password = Password::new(sessions::random()).unwrap();
+        let password = Password::new(random()).unwrap();
         assert_ne!(
             password.digest("tenant-a", "device").unwrap(),
             password.digest("tenant-b", "device").unwrap()

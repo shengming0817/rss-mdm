@@ -4,17 +4,15 @@ use crate::{
     access::InventoryService,
     device::tests::{admin, options, policy},
     enrollment::{Authorization, Password},
-    sessions::{Session, Sessions},
 };
+use crate::{clock::Clock, identity::Principal};
 use anyhow::ensure;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rss_identity_client::{Clock, VerifiedIdentity};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use sqlx::{Connection, Executor, PgConnection};
 use std::{path::PathBuf, time::Duration};
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use x509_cert::der::{Decode, Encode};
-use zeroize::Zeroizing;
 const TENANT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 #[tokio::test]
 async fn invalid_csr_has_certificate_request_fault() -> anyhow::Result<()> {
@@ -32,13 +30,13 @@ fn root() -> anyhow::Result<PathBuf> {
     Ok(std::env::var("MDM_WINDOWS_FIXTURES")?.into())
 }
 fn now() -> i64 {
-    rss_identity_client::SystemClock.unix_seconds().unwrap()
+    crate::clock::SystemClock.unix_seconds().unwrap()
 }
 fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
     Ok(Windows::load(config, now())?)
 }
-fn audit(proof: &VerifiedIdentity, key: Uuid, device: &str, action: &'static str) -> Audit {
+fn audit(proof: &Principal, key: Uuid, device: &str, action: &'static str) -> Audit {
     let a = Audit::new(proof.tenant_id().into(), action);
     a.identify(proof);
     a.target(device);
@@ -47,7 +45,7 @@ fn audit(proof: &VerifiedIdentity, key: Uuid, device: &str, action: &'static str
 }
 async fn create(
     store: &AccessStore,
-    proof: &VerifiedIdentity,
+    proof: &Principal,
     device: &str,
     password: &Password,
     reference: Uuid,
@@ -70,7 +68,7 @@ async fn complete(
     store: &AccessStore,
     w: &Windows,
     auth: &Authorization,
-    proof: &VerifiedIdentity,
+    proof: &Principal,
     intent: &issuance::Intent,
     cert: &[u8],
 ) -> Result<(), Error> {
@@ -152,7 +150,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let other = admin(TENANT, "other-a").await?;
     let store = AccessStore::connect(options("mdm_access")?).await?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
-    let password = Password::new(crate::sessions::random())?;
+    let password = Password::new(crate::enrollment::random())?;
     let key = Uuid::new_v4();
     let receipt = create(
         &store,
@@ -201,7 +199,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .enrollment_authorization(
                 TENANT,
                 receipt.enrollment_id,
-                &Password::new(crate::sessions::random())?
+                &Password::new(crate::enrollment::random())?
             )
             .await
             .is_err()
@@ -392,7 +390,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         ensure!(count == 1);
     }
     // Rotation invalidates an in-flight authorization without replacing the CSR or generation.
-    let next = Password::new(crate::sessions::random())?;
+    let next = Password::new(crate::enrollment::random())?;
     let resume_key = Uuid::new_v4();
     let a = audit(&proof, resume_key, "windows-device", "enrollment_resume");
     access
@@ -817,7 +815,7 @@ async fn discover_and_policy(
         .username
         .as_mut()
         .unwrap()
-        .password = Secret(crate::sessions::random());
+        .password = Secret(crate::enrollment::random());
     let denied = client
         .post(&found.policy_url)
         .header("content-type", "application/soap+xml")
@@ -898,14 +896,11 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     value["windows"]["management"]["origin"] =
         serde_json::json!(format!("https://localhost:{}", manage.local_addr()?.port()));
     value["windows"]["management"]["listen"] = serde_json::json!(manage.local_addr()?.to_string());
-    value["identity"]["origin"] = serde_json::json!(std::env::var("MDM_TEST_IDENTITY")?);
-    value["identity"]["issuer"] = value["identity"]["origin"].clone();
+    value["identity"] = serde_json::from_slice::<serde_json::Value>(&std::fs::read(
+        std::env::var("MDM_TEST_CONFIG")?,
+    )?)?["identity"]
+        .clone();
     value["identity"]["tenant_id"] = serde_json::json!(TENANT);
-    value["identity"]["audience"] = serde_json::json!("rss-mdm");
-    value["identity"]["oidc_secret_file"] = serde_json::json!(root.join("oidc-windows-secret"));
-    value["identity"]["validation_secret_file"] =
-        serde_json::json!(root.join("validation-windows-secret"));
-    value["identity"]["ca_file"] = serde_json::json!(root.join("ca.crt"));
     let db: sqlx::postgres::PgConnectOptions = std::env::var("DATABASE_URL")?.parse()?;
     let management_password = root.join("management-password");
     std::fs::write(&management_password, "runtime-fixture")?;
@@ -913,26 +908,15 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     std::fs::set_permissions(&management_password, std::fs::Permissions::from_mode(0o600))?;
     value["management"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_management_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
     let config: crate::config::Config = serde_json::from_value(value)?;
-    let clock = Arc::new(rss_identity_client::SystemClock);
-    let identity = crate::identity::Identity::connect(&config, clock.clone()).await?;
-    let sessions = Sessions::new(clock, 100, 100);
-    let session = sessions.establish(
-        None,
-        Session {
-            credential: Zeroizing::new("admin-a".into()),
-            subject: "administrator".into(),
-            identity_session: "11111111-1111-4111-8111-111111111111".into(),
-            csrf: crate::sessions::random(),
-            expires: now() + 600,
-        },
-    )?;
-    let reference = sessions.reference(&sessions.get(&session)?)?;
-    ensure!(
-        sessions.get(&reference.to_string()).is_err(),
-        "non-login reference was a login cookie"
-    );
-    let store = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
+    let clock = Arc::new(crate::clock::SystemClock);
     let policy = policy(TENANT, true, true);
+    let identity = crate::identity::Identity::connect(&config, policy.clone(), |_| {}).await?;
+    let secret = crate::identity_fixture::login(&identity, "admin").await?;
+    let credentials = crate::enrollment_credentials::Credentials::new(monotonic(), 100);
+    let reference = credentials.insert(rss_identity_core::session::SessionSecret::parse(
+        secret.expose().into(),
+    )?)?;
+    let store = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
     let devices = Arc::new(crate::device::DeviceService::new(
         store.clone(),
         policy.clone(),
@@ -950,14 +934,15 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         .management
         .open(
             rss_request_context::TenantId::parse(TENANT)?,
-            Arc::new(rss_identity_client::SystemClock),
+            Arc::new(crate::clock::SystemClock),
             |_| {},
         )
         .await?;
     let app = Arc::new(App {
         management,
         identity,
-        sessions,
+        credentials,
+        clock,
         policy,
         inventory: InventoryService::new(
             reader.clone(),
@@ -1034,7 +1019,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         "TLS requests lost the RSS-owned accepted peer"
     );
     let proof = admin(TENANT, "admin-a").await?;
-    let plain = crate::sessions::random();
+    let plain = crate::enrollment::random();
     let password = Password::new(plain.clone())?;
     let receipt = create(
         &store,
@@ -1512,9 +1497,21 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     ensure!(post(followup).send().await?.status() == StatusCode::UNAUTHORIZED);
     retention_tests::verify(&store, TENANT, intent.registration).await?;
     ingress_burst(&client, &app, &ingress_clock).await?;
-    app.sessions
-        .remove(&session, &app.sessions.get(&session)?.csrf)?;
-    ensure!(app.sessions.by_reference(reference).is_err());
+    let actor = app
+        .identity
+        .authority
+        .authenticate_session(app.identity.tenant, secret, crate::identity::deadline())
+        .await?;
+    app.identity
+        .authority
+        .revoke_current_session(actor, crate::identity::deadline())
+        .await?;
+    ensure!(
+        app.identity
+            .authenticate(app.credentials.get(reference)?, false)
+            .await
+            .is_err()
+    );
     running.close().await?;
     runtime.close_fixture().await?;
     reader.close().await;

@@ -25,12 +25,13 @@ pub(crate) fn policy(tenant: &str, enroll: bool, credentials: bool) -> Arc<Polic
     Arc::new(
         Policy::new(
             tenant,
-            "mdm",
+            crate::identity_fixture::INSTANCE,
             vec![Binding {
                 management: Default::default(),
                 tenant_id: tenant.into(),
-                client_id: "mdm".into(),
-                subject: "administrator".into(),
+                instance_id: crate::identity_fixture::INSTANCE.into(),
+                principal_id: crate::identity_fixture::ADMIN.into(),
+                identity_management: [crate::access::IdentityPermission::Accounts].into(),
                 roles: [Role::MdmAdmin].into(),
                 devices: ["*".into()].into(),
                 allow_wipe: false,
@@ -41,25 +42,28 @@ pub(crate) fn policy(tenant: &str, enroll: bool, credentials: bool) -> Arc<Polic
         .unwrap(),
     )
 }
-pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<VerifiedIdentity> {
-    let origin = std::env::var("MDM_TEST_IDENTITY")?;
-    let client = rss_identity_client::IdentityClient::new(
-        rss_identity_client::ClientConfig {
-            identity_origin: origin.clone(),
-            issuer: origin,
-            client_id: "mdm".into(),
-            validation_secret: zeroize::Zeroizing::new(
-                "device-t2-validation-secret-00000000".into(),
+pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Principal> {
+    let identity = crate::identity_fixture::identity(tenant).await?;
+    let login = match (tenant, token) {
+        (A, "admin-a") | (B, "admin-b") => "admin",
+        (A, "other-a") => "other",
+        _ => anyhow::bail!("credential tenant mismatch"),
+    };
+    let secret = crate::identity_fixture::credential(&identity, login)?;
+    // This direct-store matrix is one bounded fixture operation; HTTP requests use their own budget.
+    let proof = identity
+        .authority
+        .inspect_session(
+            identity.tenant,
+            secret,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(900),
             ),
-            tenant_id: tenant.into(),
-            audience: "rss-mdm".into(),
-            timeout: Duration::from_secs(2),
-            ca_pem: Some(std::fs::read(std::env::var("PG_CA_FILE")?)?),
-        },
-        Arc::new(rss_identity_client::SystemClock),
-    )?;
-    Ok(client.validate(token).await?)
+        )
+        .await?;
+    Ok(Principal::new(proof)?)
 }
+
 pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
     Ok(std::env::var(if user == "postgres" {
         "MDM_ADMIN_URL"
@@ -80,7 +84,7 @@ pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
 async fn request(
     store: &AccessStore,
     policy: &Policy,
-    admin: &VerifiedIdentity,
+    admin: &Principal,
     device: &str,
 ) -> anyhow::Result<Uuid> {
     let audit = Audit::new(admin.tenant_id().into(), "enrollment_create");
@@ -91,7 +95,7 @@ async fn request(
     let receipt = store
         .create_enrollment(
             policy.enrollment(admin, device)?,
-            &Password::new(crate::sessions::random())?,
+            &Password::new(crate::enrollment::random())?,
             Uuid::new_v4(),
             key,
             &audit,
@@ -102,7 +106,7 @@ async fn request(
 }
 pub(crate) async fn bind(
     service: &DeviceService,
-    admin: &VerifiedIdentity,
+    admin: &Principal,
     proof: &VerifiedChannelCredential,
     device: &str,
     generation: i64,
@@ -123,7 +127,7 @@ pub(crate) async fn bind(
     Ok((command, receipt))
 }
 #[tokio::test]
-#[ignore = "make t2: real TLS PostgreSQL; SDK response authority and channel evidence are test fixtures"]
+#[ignore = "make t2: real TLS PostgreSQL; embedded authority and channel evidence are test fixtures"]
 async fn postgres_boundary() -> anyhow::Result<()> {
     anyhow::ensure!(
         cfg!(feature = "integration"),
@@ -511,7 +515,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
 // arbitrate this race: the database unique constraint must roll back the loser's retire.
 async fn credential_race(
     service: &DeviceService,
-    admin: &VerifiedIdentity,
+    admin: &Principal,
     root: &mut PgConnection,
 ) -> anyhow::Result<()> {
     let pa = proof(A, Channel::Mdm, 60);
@@ -603,7 +607,7 @@ async fn credential_race(
 
 async fn commit_deadlines(
     service: &DeviceService,
-    admin: &VerifiedIdentity,
+    admin: &Principal,
     root: &mut PgConnection,
 ) -> anyhow::Result<()> {
     let mut outcomes = Vec::new();

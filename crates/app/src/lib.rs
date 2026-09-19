@@ -1,5 +1,5 @@
 #![deny(clippy::cognitive_complexity)]
-//! Product-owned OIDC relying party, local session and resource authorization.
+//! Embedded authentication assembly and product-owned device/resource authorization.
 #[cfg(test)]
 extern crate self as rss_mdm_app;
 mod access;
@@ -15,13 +15,17 @@ pub use management::Missing as ManagementObject;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 mod api;
+mod clock;
 pub mod config;
+mod enrollment_credentials;
 mod identity;
+#[cfg(test)]
+mod identity_fixture;
 #[cfg(test)]
 mod identity_t2;
 mod lifecycle;
+pub mod maintenance;
 pub mod migration;
-mod sessions;
 pub mod software_publication;
 pub mod windows;
 use axum::{
@@ -50,11 +54,6 @@ pub enum Error {
     Forbidden,
     #[error("dependency unavailable")]
     Unavailable(Failure),
-    #[error("identity server rejected request")]
-    IdentityServer {
-        code: rss_identity_contracts::ValidationFailureCode,
-        correlation_id: uuid::Uuid,
-    },
     #[error("management object not found")]
     ManagementNotFound(ManagementObject),
     #[error("inventory not found")]
@@ -74,13 +73,7 @@ impl IntoResponse for Error {
             Self::ManagementNotFound(object) => (StatusCode::NOT_FOUND, object.code()),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
-            Self::IdentityServer {
-                code:
-                    rss_identity_contracts::ValidationFailureCode::InvalidCredential
-                    | rss_identity_contracts::ValidationFailureCode::IdentityNotActive,
-                ..
-            } => (StatusCode::UNAUTHORIZED, "invalid_identity"),
-            Self::Configuration(_) | Self::Unavailable(_) | Self::IdentityServer { .. } => {
+            Self::Configuration(_) | Self::Unavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
         };

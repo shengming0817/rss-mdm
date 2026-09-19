@@ -1,4 +1,5 @@
 use super::*;
+use crate::identity::Principal;
 use crate::{
     AccessStore, Failure,
     access::EnrollmentPermission,
@@ -6,14 +7,13 @@ use crate::{
     audit::Audit,
     device::{Channel, store::lock_channel},
 };
-use rss_identity_client::VerifiedIdentity;
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 
-pub(crate) fn actor(proof: &VerifiedIdentity) -> Actor<'_> {
+pub(crate) fn actor(proof: &Principal) -> Actor<'_> {
     Actor {
         tenant: proof.tenant_id(),
-        subject: proof.subject(),
-        client: proof.client_id(),
+        subject: proof.principal_id(),
+        instance: proof.instance_id(),
     }
 }
 pub(crate) fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
@@ -25,8 +25,8 @@ fn authorization(row: PgRow) -> Result<Authorization, Error> {
         id: uuid(&row, "id")?,
         device: row.try_get("device").map_err(db)?,
         actor: row.try_get("actor").map_err(db)?,
-        client: row.try_get("client").map_err(db)?,
-        session_ref: uuid(&row, "session_ref")?,
+        instance: row.try_get("instance").map_err(db)?,
+        credential_ref: uuid(&row, "credential_ref")?,
         version: row.try_get("password_version").map_err(db)?,
         expected_generation: row.try_get("expected_generation").map_err(db)?,
         operation: uuid(&row, "issuance_operation")?,
@@ -39,7 +39,7 @@ pub(crate) async fn request(
     id: Uuid,
 ) -> Result<PgRow, Error> {
     // Cancelled legacy rows have no password or session and can never be resumed.
-    sqlx::query("SELECT r.id::text,r.state,r.password_digest,r.password_version,r.expected_generation,r.session_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at>clock_timestamp() AS live,g.actor,g.client,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL FOR UPDATE OF r")
+    sqlx::query("SELECT r.id::text,r.state,r.password_digest,r.password_version,r.expected_generation,r.credential_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at>clock_timestamp() AS live,g.actor,g.instance,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL FOR UPDATE OF r")
         .bind(tenant).bind(id.to_string()).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Forbidden)
 }
 impl AccessStore {
@@ -70,9 +70,9 @@ impl AccessStore {
             .bind(proof.tenant_id()).bind(device).fetch_one(&mut *tx).await.map_err(db)?;
         let id = Uuid::new_v4();
         let grant = Uuid::new_v4();
-        sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2::uuid,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
-            .bind(proof.tenant_id()).bind(grant.to_string()).bind(proof.subject()).bind(proof.client_id()).bind(device).execute(&mut *tx).await.map_err(db)?;
-        let expires: i64 = sqlx::query_scalar("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,expected_generation,password_digest,password_version,session_ref,expires_at,issuance_operation) VALUES($1::uuid,$2::uuid,$3::uuid,'pending',$4,$5,1,$6::uuid,clock_timestamp()+interval '300 seconds',$7::uuid) RETURNING floor(extract(epoch FROM expires_at))::bigint")
+        sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2::uuid,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
+            .bind(proof.tenant_id()).bind(grant.to_string()).bind(proof.principal_id()).bind(proof.instance_id()).bind(device).execute(&mut *tx).await.map_err(db)?;
+        let expires: i64 = sqlx::query_scalar("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation) VALUES($1::uuid,$2::uuid,$3::uuid,'pending',$4,$5,1,$6::uuid,clock_timestamp()+interval '300 seconds',$7::uuid) RETURNING floor(extract(epoch FROM expires_at))::bigint")
             .bind(proof.tenant_id()).bind(id.to_string()).bind(grant.to_string()).bind(generation).bind(password_digest).bind(session.to_string()).bind(Uuid::new_v4().to_string()).fetch_one(&mut *tx).await.map_err(db)?;
         let receipt = Receipt {
             operation_id: key,
@@ -93,7 +93,7 @@ impl AccessStore {
     }
     pub(crate) async fn enrollment_target(
         &self,
-        proof: &VerifiedIdentity,
+        proof: &Principal,
         id: Uuid,
     ) -> Result<String, Error> {
         let mut tx = self.begin(proof.tenant_id()).await?;
@@ -156,7 +156,7 @@ impl AccessStore {
             {
                 return Err(Error::Conflict);
             }
-            sqlx::query_scalar("UPDATE mdm_access.requests SET password_digest=$3,password_version=password_version+1,session_ref=$4::uuid,expires_at=clock_timestamp()+interval '300 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid RETURNING floor(extract(epoch FROM expires_at))::bigint")
+            sqlx::query_scalar("UPDATE mdm_access.requests SET password_digest=$3,password_version=password_version+1,credential_ref=$4::uuid,expires_at=clock_timestamp()+interval '300 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid RETURNING floor(extract(epoch FROM expires_at))::bigint")
                 .bind(proof.tenant_id()).bind(id.to_string()).bind(password_digest).bind(reference.to_string()).fetch_one(&mut *tx).await.map_err(db)?
         } else {
             sqlx::query("UPDATE mdm_access.requests SET state='cancelled' WHERE tenant_id=$1::uuid AND id=$2::uuid")
@@ -195,7 +195,7 @@ impl AccessStore {
         let device: String = row.try_get("device").map_err(db)?;
         if row.try_get::<String, _>("state").map_err(db)? == "cancelled"
             || !row.try_get::<bool, _>("live").map_err(db)?
-            || !sessions::equal(
+            || !super::equal(
                 &password.digest(tenant, &device)?,
                 &row.try_get::<String, _>("password_digest").map_err(db)?,
             )
@@ -223,9 +223,9 @@ impl AccessStore {
         uuid(&row, "id")
     }
 }
-fn same_actor(row: &PgRow, proof: &VerifiedIdentity) -> Result<(), Error> {
-    if row.try_get::<String, _>("actor").map_err(db)? != proof.subject()
-        || row.try_get::<String, _>("client").map_err(db)? != proof.client_id()
+fn same_actor(row: &PgRow, proof: &Principal) -> Result<(), Error> {
+    if row.try_get::<String, _>("actor").map_err(db)? != proof.principal_id()
+        || row.try_get::<String, _>("instance").map_err(db)? != proof.instance_id()
     {
         return Err(Error::Forbidden);
     }

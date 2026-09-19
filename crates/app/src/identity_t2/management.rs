@@ -16,11 +16,7 @@ async fn call(
 pub(super) async fn matrix(
     base: &Value,
     reader: Arc<InventoryReader>,
-    web: &Client,
-    origin: &str,
-    csrf: &str,
-    admin: &Client,
-    admin_csrf: &str,
+    session: &Browser,
 ) -> Result<()> {
     let mut cfg = base.clone();
     cfg["bindings"][0]["management"] = json!([
@@ -57,9 +53,8 @@ pub(super) async fn matrix(
                 .build()?,
             format!("http://{address}"),
         )),
-        ..Default::default()
+        ..session.clone()
     };
-    ensure!(browser.login(&router, web, origin, csrf).await? == StatusCode::SEE_OTHER);
     let original_csrf = browser.csrf.take();
     for token in [None, Some("incorrect-token".to_owned())] {
         browser.csrf = token;
@@ -290,10 +285,9 @@ pub(super) async fn matrix(
     ensure!(browser.call(&router,Method::POST,&format!("{policy_path}/plans"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":current_revision,"input":{"preview":stale["id"]}}))).await?.0==StatusCode::CONFLICT);
     scale_preview(&mut browser, &router, &policy_path, current_revision).await?;
     // The common protected tree never inherits management access from super_admin.
-    software(base, reader.clone(), web, origin, csrf, admin, admin_csrf).await?;
+    software(base, reader.clone(), session).await?;
     let restricted = app(base, reader).await?;
-    let mut denied = Browser::default();
-    denied.login(&restricted, web, origin, csrf).await?;
+    let mut denied = session.clone();
     for path in [&group_path, &policy_path, &resource_path] {
         ensure!(
             denied.call(&restricted, Method::GET, path, None).await?.0 == StatusCode::FORBIDDEN
@@ -308,15 +302,7 @@ pub(super) async fn matrix(
     Ok(())
 }
 
-async fn software(
-    base: &Value,
-    reader: Arc<InventoryReader>,
-    web: &Client,
-    origin: &str,
-    csrf: &str,
-    admin: &Client,
-    admin_csrf: &str,
-) -> Result<()> {
+async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser) -> Result<()> {
     let server = publication_support::Server::new().await;
     let mut cfg = base.clone();
     let source_config = |ring: &str| json!({"Winget":{"base":format!("{}{ring}/",server.base),"addresses":[server.address],"private_ca":server.ca,"credential_reference":"source-key","credential_file":server.secret}});
@@ -333,17 +319,17 @@ async fn software(
     ]);
     let initial = app(&cfg, reader.clone()).await?;
     let mut approver = Browser::default();
-    approver.login(&initial, admin, origin, admin_csrf).await?;
+    approver.login(&initial, "admin").await?;
     let subject = approver
-        .call(&initial, Method::GET, "/api/v1/auth/me", None)
+        .call(&initial, Method::GET, "/api/v1/authorization", None)
         .await?
-        .1["subject"]
+        .1["principal_id"]
         .clone();
     let mut binding = cfg["bindings"][0].clone();
-    binding["subject"] = subject.clone();
+    binding["principal_id"] = subject.clone();
     binding["management"] = json!(["release_read", "release_approve"]);
     cfg["bindings"].as_array_mut().unwrap().push(binding);
-    permission_matrix(&cfg, reader.clone(), web, origin, csrf).await?;
+    permission_matrix(&cfg, reader.clone(), session).await?;
     let router = app(&cfg, reader).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -367,10 +353,10 @@ async fn software(
     };
     approver = Browser {
         network: Some((transport, format!("http://{address}"))),
-        ..Default::default()
+        ..approver
     };
-    publisher.login(&router, web, origin, csrf).await?;
-    approver.login(&router, admin, origin, admin_csrf).await?;
+    publisher.cookies = session.cookies.clone();
+    publisher.csrf = session.csrf.clone();
     let resource = uuid::Uuid::new_v4();
     let resource_path = format!("/api/v1/resources/{resource}");
     call(
@@ -428,7 +414,7 @@ async fn software(
         json!({"action":"validate","ring":"test"}),
     )
     .await?;
-    let approval = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":validated["revision"],"input":{"action":"approve","ring":"test","publisherSubject":cfg["bindings"][0]["subject"]}});
+    let approval = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":validated["revision"],"input":{"action":"approve","ring":"test","publisherSubject":cfg["bindings"][0]["principal_id"]}});
     ensure!(
         publisher
             .call(&router, Method::POST, &path, Some(approval.clone()))
@@ -485,7 +471,7 @@ async fn software(
         server.state.lock().unwrap().posts == 1,
         "HTTP replay republished content"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE action='software_approve' AND actor='{}' AND client='mdm'",subject.as_str().unwrap()))?.trim()=="1","approval lost real actor");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE action='software_approve' AND actor='{}' AND instance='{INSTANCE}'",subject.as_str().unwrap()))?.trim()=="1","approval lost real actor");
     let withdraw = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":published["revision"],"input":{"action":"withdraw","ring":"pilot"}});
     let (status, withdrawn) = publisher
         .call(&router, Method::POST, &path, Some(withdraw.clone()))
@@ -520,7 +506,7 @@ fn seed_management_device(device: &str) -> Result<()> {
     let request = uuid::Uuid::new_v4();
     let registration = uuid::Uuid::new_v4();
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','{request}','{grant}');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active');"
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','{request}','{grant}');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active');"
     ))?;
     Ok(())
 }
@@ -532,7 +518,7 @@ async fn scale_preview(
 ) -> Result<()> {
     let prefix = uuid::Uuid::new_v4();
     pg(&format!(
-        "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,1001) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','mdm',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id) SELECT '{TENANT}',request,grant_id FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations SELECT '{TENANT}',registration,device,'mdm',1,request,'active' FROM scale_devices;"
+        "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,1001) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id) SELECT '{TENANT}',request,grant_id FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations SELECT '{TENANT}',registration,device,'mdm',1,request,'active' FROM scale_devices;"
     ))?;
     let group = uuid::Uuid::new_v4();
     let scope = uuid::Uuid::new_v4();
@@ -607,9 +593,7 @@ async fn scale_preview(
 async fn permission_matrix(
     base: &Value,
     reader: Arc<InventoryReader>,
-    web: &Client,
-    origin: &str,
-    csrf: &str,
+    session: &Browser,
 ) -> Result<()> {
     let id = uuid::Uuid::new_v4();
     let source = base["management"]["sources"][0]["name"].as_str().unwrap();
@@ -704,7 +688,7 @@ async fn permission_matrix(
             Method::POST,
             release.clone(),
             op(
-                json!({"action":"approve","ring":"test","publisherSubject":base["bindings"][1]["subject"]}),
+                json!({"action":"approve","ring":"test","publisherSubject":base["bindings"][1]["principal_id"]}),
             ),
         ),
         (
@@ -779,9 +763,8 @@ async fn permission_matrix(
                     .build()?,
                 format!("http://{address}"),
             )),
-            ..Default::default()
+            ..session.clone()
         };
-        browser.login(&router, web, origin, csrf).await?;
         let before = counts()?;
         for (needed, method, path, body) in &cases {
             if grant == needed {
@@ -831,6 +814,6 @@ async fn permission_matrix(
         }
         task.abort();
     }
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE target='{id}' AND result='denied' AND action IN ('management_read','management_write','plan_preview','plan_save') AND actor IS NOT NULL AND client='mdm'"))?.trim()==expected_denied.to_string(),"denied action/target/actor audit incomplete");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE target='{id}' AND result='denied' AND action IN ('management_read','management_write','plan_preview','plan_save') AND actor IS NOT NULL AND instance='{INSTANCE}'"))?.trim()==expected_denied.to_string(),"denied action/target/actor audit incomplete");
     Ok(())
 }

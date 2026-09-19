@@ -83,11 +83,11 @@ impl AccessStore {
             .execute(&mut **tx)
             .await
             .map_err(db)?;
-        let old = sqlx::query("SELECT digest,result,client FROM mdm_access.operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
+        let old = sqlx::query("SELECT digest,result,instance FROM mdm_access.operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
             .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).fetch_optional(&mut **tx).await.map_err(db)?;
         old.map(|old| {
             if old.try_get::<String, _>("digest").map_err(db)? != *digest
-                || old.try_get::<String, _>("client").map_err(db)? != proof.client
+                || old.try_get::<String, _>("instance").map_err(db)? != proof.instance
             {
                 return Err(Error::Conflict);
             }
@@ -111,13 +111,13 @@ impl AccessStore {
         let facts = audit.snapshot();
         if audit.tenant() != proof.tenant
             || facts.actor.as_deref() != Some(proof.subject)
-            || facts.client.as_deref() != Some(proof.client)
+            || facts.instance.as_deref() != Some(proof.instance)
             || facts.operation_id != Some(*key)
         {
             return Err(Error::Forbidden);
         }
-        sqlx::query("INSERT INTO mdm_access.operations(tenant_id,actor,operation_id,digest,result,client) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.client).execute(&mut *tx).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_access.operations(tenant_id,actor,operation_id,digest,result,instance) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)")
+            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.instance).execute(&mut *tx).await.map_err(db)?;
         self.commit_audited(tx, audit, request).await
     }
     pub(crate) async fn commit_audited(
@@ -166,7 +166,7 @@ impl AccessStore {
 pub(crate) struct Actor<'a> {
     pub tenant: &'a str,
     pub subject: &'a str,
-    pub client: &'a str,
+    pub instance: &'a str,
 }
 pub(crate) struct Operation<'a> {
     pub actor: Actor<'a>,
@@ -200,8 +200,8 @@ pub(crate) async fn append_on_connection(
     registration: Option<Uuid>,
 ) -> Result<(), Error> {
     let f = audit.snapshot();
-    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,client,target,operation_id,registration_request,action,result,status,registration_id,software) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11,$12::uuid,$13::jsonb)")
-        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.client).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).bind(f.registration_id.map(|v|v.to_string())).bind(f.software.map(|v| serde_json::to_string(&v).expect("software fact serialization"))).execute(connection).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
+    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,instance,target,operation_id,registration_request,action,result,status,registration_id,software) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11,$12::uuid,$13::jsonb)")
+        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.instance).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).bind(f.registration_id.map(|v|v.to_string())).bind(f.software.map(|v| serde_json::to_string(&v).expect("software fact serialization"))).execute(connection).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
     Ok(())
 }
 async fn admission(pool: &PgPool) -> Result<(), Error> {
@@ -222,7 +222,7 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
  AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
  AND NOT has_column_privilege(current_user,'mdm_access.grants','state','UPDATE')
- AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.requests',col,'UPDATE')) FROM unnest(ARRAY['state','password_digest','password_version','session_ref','expires_at']) col)
+ AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.requests',col,'UPDATE')) FROM unnest(ARRAY['state','password_digest','password_version','credential_ref','expires_at']) col)
  AND has_column_privilege(current_user,'mdm_access.enrollment_certificates','server_nonce','UPDATE')
  AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.management_sessions',col,'UPDATE')) FROM unnest(ARRAY['state','last_message','correlation','nonce','client_authenticated','run_id']) col)
  AND has_column_privilege(current_user,'mdm_access.registrations','state','UPDATE')
@@ -230,7 +230,7 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND has_column_privilege(current_user,'mdm_access.report_sources','enabled','UPDATE')
  AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.report_sources',col,'UPDATE')) FROM unnest(ARRAY['next_command','next_sequence']) col)
  AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.collection_runs',col,'UPDATE')) FROM unnest(ARRAY['attempts','result','reason','batch','digest','sealed_at','delivery_pending']) col)
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname IN ('enabled','next_command','next_sequence') OR c.relname='requests' AND a.attname IN ('state','password_digest','password_version','session_ref','expires_at') OR c.relname='management_sessions' AND a.attname IN ('state','last_message','correlation','nonce','client_authenticated','run_id') OR c.relname='collection_runs' AND a.attname IN ('attempts','result','reason','batch','digest','sealed_at','delivery_pending') OR c.relname='enrollment_certificates' AND a.attname='server_nonce') AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname IN ('enabled','next_command','next_sequence') OR c.relname='requests' AND a.attname IN ('state','password_digest','password_version','credential_ref','expires_at') OR c.relname='management_sessions' AND a.attname IN ('state','last_message','correlation','nonce','client_authenticated','run_id') OR c.relname='collection_runs' AND a.attname IN ('attempts','result','reason','batch','digest','sealed_at','delivery_pending') OR c.relname='enrollment_certificates' AND a.attname='server_nonce') AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute col JOIN pg_class c ON c.oid=col.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(col.attacl) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND (a.is_grantable OR a.privilege_type='REFERENCES'))))

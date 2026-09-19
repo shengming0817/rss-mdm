@@ -71,7 +71,7 @@ async fn management(t: TenantId) -> Management {
         .await
         .unwrap(),
     );
-    Management::new(runtime, t, Arc::new(rss_identity_client::SystemClock))
+    Management::new(runtime, t, Arc::new(crate::clock::SystemClock))
         .await
         .unwrap()
 }
@@ -103,7 +103,7 @@ fn seed_device(device: &str) -> String {
     let epoch = Uuid::new_v4();
     let t = tenant();
     sql(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{t}','{request}','{grant}');INSERT INTO mdm_access.devices VALUES('{t}','{device}');INSERT INTO mdm_access.registrations VALUES('{t}','{registration}','{device}','mdm',1,'{request}','active');INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{t}','{registration}','mdm.windows','{epoch}','{{}}',true);"
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{t}','{request}','{grant}');INSERT INTO mdm_access.devices VALUES('{t}','{device}');INSERT INTO mdm_access.registrations VALUES('{t}','{registration}','{device}','mdm',1,'{request}','active');INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{t}','{registration}','mdm.windows','{epoch}','{{}}',true);"
     ));
     registration
 }
@@ -112,8 +112,8 @@ fn seed_device(device: &str) -> String {
 async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     let mut m = management(tenant()).await;
     struct CountingClock(std::sync::atomic::AtomicI64);
-    impl rss_identity_client::Clock for CountingClock {
-        fn unix_seconds(&self) -> std::result::Result<i64, rss_identity_client::Error> {
+    impl crate::clock::Clock for CountingClock {
+        fn unix_seconds(&self) -> std::result::Result<i64, crate::Error> {
             Ok(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
         }
     }
@@ -546,7 +546,7 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
     let replacement = Uuid::new_v4();
     let t = tenant();
     sql(&format!(
-        "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{old}';INSERT INTO mdm_access.grants(tenant_id,id,actor,client,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{t}','{request}','{grant}');INSERT INTO mdm_access.registrations VALUES('{t}','{replacement}','{device}','mdm',2,'{request}','active');"
+        "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{old}';INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{t}','{request}','{grant}');INSERT INTO mdm_access.registrations VALUES('{t}','{replacement}','{device}','mdm',2,'{request}','active');"
     ));
     for (id, revision, preview) in pending.clone() {
         assert!(matches!(

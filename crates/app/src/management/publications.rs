@@ -79,10 +79,10 @@ impl Ring {
 }
 fn actor(
     tenant: TenantId,
-    client: &str,
+    instance: &str,
     subject: &str,
 ) -> std::result::Result<rel::ActorId, Error> {
-    rel::ActorId::new(tenant, json!([client, subject]).to_string()).map_err(|_| Error::Malformed)
+    rel::ActorId::new(tenant, json!([instance, subject]).to_string()).map_err(|_| Error::Malformed)
 }
 fn failure(e: service::Error) -> Error {
     match e {
@@ -163,7 +163,7 @@ async fn write(
         .ok_or(Error::ManagementNotFound(Missing::Source))?;
     let tenant = app.management.tenant;
     let candidate_id = rel::CandidateId::new(tenant, &id).map_err(|_| Error::Malformed)?;
-    let operator = actor(tenant, auth.proof.client_id(), auth.proof.subject())?;
+    let operator = actor(tenant, auth.proof.instance_id(), auth.proof.principal_id())?;
     if let Change::Approve {
         publisher_subject, ..
     } = &request.input
@@ -216,7 +216,7 @@ async fn write(
         &candidate_id,
         &request.input,
         &call,
-        auth.proof.client_id(),
+        auth.proof.instance_id(),
     )
     .await;
     // The service persists actual domain outcomes. The envelope separately audits
@@ -242,7 +242,7 @@ async fn perform(
     id: &rel::CandidateId,
     change: &Change,
     request: &service::ServiceRequest,
-    client: &str,
+    instance: &str,
 ) -> std::result::Result<Effect, Error> {
     let cutoff = cutoff();
     match change {
@@ -290,7 +290,7 @@ async fn perform(
                 .approve(
                     id,
                     ring.core(),
-                    &actor(id.tenant(), client, publisher_subject)?,
+                    &actor(id.tenant(), instance, publisher_subject)?,
                     request,
                     cutoff,
                 )

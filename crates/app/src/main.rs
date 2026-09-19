@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm serve|migrate --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm serve|migrate|initialize|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -50,8 +50,13 @@ async fn execute() -> Result<(), ProcessError> {
                 .database
                 .options()
                 .map_err(|e| ProcessError::at("migration.database_configuration", e))?;
-            rss_mdm_app::migration::migrate(&options).await?;
+            rss_mdm_app::migration::migrate(&options, &config.installation).await?;
             Ok(())
+        }
+        "initialize" | "recover-password" => {
+            rss_mdm_app::maintenance::run(config::load(path)?, args[0] == "initialize")
+                .await
+                .map_err(|error| ProcessError::at("identity.maintenance", error))
         }
         _ => Err(ProcessError::Stage {
             stage: "arguments",

@@ -1,4 +1,5 @@
 use super::{certificate::Csr, *};
+use crate::identity::Principal;
 use crate::{
     access_store::{Operation, db},
     audit::Audit,
@@ -8,7 +9,6 @@ use crate::{
         store::{actor, request, uuid},
     },
 };
-use rss_identity_client::VerifiedIdentity;
 use rss_mdm_windows_mdm::provisioning::EnrollmentType;
 use rss_request_context::TenantId;
 use sqlx::Row;
@@ -53,7 +53,7 @@ impl crate::AccessStore {
         &self,
         windows: &Windows,
         auth: &Authorization,
-        proof: &VerifiedIdentity,
+        proof: &Principal,
         input: (&[u8], EnrollmentType),
         now: i64,
     ) -> Result<Intent, Error> {
@@ -113,7 +113,7 @@ impl crate::AccessStore {
         &self,
         windows: &Windows,
         auth: &Authorization,
-        proof: &VerifiedIdentity,
+        proof: &Principal,
         intent: &Intent,
         certificate: &[u8],
         audit: &Audit,
@@ -203,14 +203,14 @@ impl crate::AccessStore {
 fn current(
     row: &sqlx::postgres::PgRow,
     auth: &Authorization,
-    proof: &VerifiedIdentity,
+    proof: &Principal,
 ) -> Result<(), Error> {
     if row.try_get::<String, _>("state").map_err(db)? == "cancelled"
         || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
-        || uuid(row, "session_ref")? != auth.session_ref
+        || uuid(row, "credential_ref")? != auth.credential_ref
         || !row.try_get::<bool, _>("live").map_err(db)?
-        || auth.actor != proof.subject()
-        || auth.client != proof.client_id()
+        || auth.actor != proof.principal_id()
+        || auth.instance != proof.instance_id()
     {
         return Err(Error::Unauthorized);
     }

@@ -22,10 +22,11 @@ rss-mdm-scope = { path = "crates/scope" }
 rss-mdm-policy = { path = "crates/policy" }
 rss-mdm-group = { path = "crates/group" }
 rss-mdm-app = { path = "crates/app" }
-rss-identity-client = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "2e66cac2bb8064701c5e99c992858b178f875656" }
-rss-identity-contracts = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "2e66cac2bb8064701c5e99c992858b178f875656" }
+rss-identity-core = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b7f34c7ac2db882c8412471927567c29672d18d6" }
+rss-identity-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b7f34c7ac2db882c8412471927567c29672d18d6" }
+rss-identity-http-axum = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b7f34c7ac2db882c8412471927567c29672d18d6" }
+rss-identity-oidc = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b7f34c7ac2db882c8412471927567c29672d18d6" }
 axum = { version = "=0.8.9", features = ["json", "query"] }
-openidconnect = { version = "=4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls"] }
 url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }

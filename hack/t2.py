@@ -13,8 +13,8 @@ import tempfile
 import time
 import uuid
 
-IMAGE = "postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 ROOT = Path(__file__).resolve().parents[1]
+IMAGE = json.loads((ROOT / "deployment/providers.lock.json").read_text())["postgres"]
 
 def require(condition,message):
     if not condition:raise RuntimeError(message)
@@ -82,16 +82,7 @@ def verify_migrations(container, binary, config, root, env):
 
 def verify_startup_deadlines(binary, root, port, env):
     import socket
-    config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
-    for name,value in [('api-password','api-fixture'),('access-password','access-fixture'),('runtime-password','runtime-fixture'),('oidc-secret','o'*40),('validation-secret','v'*40)]:
-        (root/name).write_text(value);os.chmod(root/name,0o600)
-    config['database']={'host':'localhost','port':int(port),'name':'mdm_test','user':'mdm_api','password_file':str(root/'api-password'),'ca_file':str(root/'ca.crt')}
-    config['access_database']={**config['database'],'user':'mdm_access','password_file':str(root/'access-password')}
-    config['runtime_database']={**config['database'],'user':'mdm_runtime','password_file':str(root/'runtime-password')}
-    config['identity'].update(oidc_secret_file=str(root/'oidc-secret'),validation_secret_file=str(root/'validation-secret'),ca_file=str(root/'ca.crt'))
-    config["windows"]=json.loads((root/"windows.json").read_text())
-    config['management']['database']={**config['runtime_database'],'user':'mdm_management_runtime'}
-    config['management']['publication_database']={**config['runtime_database'],'user':'mdm_software_driver'}
+    config=json.loads((root/'runtime.json').read_text())
     runtime_password = config['runtime_database']['password_file']
     config['runtime_database']['password_file'] = str(root/'missing-runtime-password')
     invalid_runtime = root/'invalid-runtime.json'
@@ -100,7 +91,7 @@ def verify_startup_deadlines(binary, root, port, env):
     require(result.returncode != 0 and 'startup.runtime_database_configuration' in result.stderr,
             'runtime database input lost its startup stage: ' + result.stderr)
     config['runtime_database']['password_file'] = runtime_password
-    for stage in ['database','identity']:
+    for stage in ['database']:
         with socket.socket() as stalled:
             stalled.bind(('127.0.0.1',0));stalled.listen(8)
             stalled_port=stalled.getsockname()[1]
@@ -109,7 +100,7 @@ def verify_startup_deadlines(binary, root, port, env):
             config['runtime_database']['port']=config['database']['port']
             config['management']['database']['port']=config['database']['port']
             config['management']['publication_database']['port']=config['database']['port']
-            config['identity']['issuer']='https://localhost:'+str(stalled_port)+'/oidc'
+            config['identity']['database']['port']=config['database']['port']
             path=root/'stalled.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
             start=time.monotonic()
             result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
@@ -119,7 +110,35 @@ def verify_startup_deadlines(binary, root, port, env):
             require('api-fixture' not in result.stderr and 'o'*40 not in result.stderr, 'startup diagnostics exposed credentials')
     print('startup dependency stalls rejected within budget with safe stage diagnostics',flush=True)
 
-def main():
+INSTANCE = '33333333-3333-4333-8333-333333333333'
+ADMIN = '44444444-4444-4444-8444-444444444444'
+TENANTS = ['11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb']
+
+def installation():
+    return dict(instance_id=INSTANCE,target=[1]*16,lineage=[2]*16,epoch=1,tenants=TENANTS)
+
+def configure_identity(root, port, binary, env):
+    def write(name, value):
+        path=root/name;path.write_text(value if isinstance(value,str) else json.dumps(value));path.chmod(0o600);return str(path)
+    config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
+    def database(role, password):
+        return dict(host='localhost',port=int(port),name='mdm_test',user=role,password_file=write(role+'-password',password),ca_file=str(root/'ca.crt'))
+    for key,role,password in [('database','mdm_api','api-fixture'),('access_database','mdm_access','access-fixture'),('runtime_database','mdm_runtime','runtime-fixture')]:config[key]=database(role,password)
+    config['identity']['database']=database('mdm_identity_runtime','identity-runtime-fixture')
+    config['management']['database']=database('mdm_management_runtime','runtime-fixture')
+    config['management']['publication_database']=database('mdm_software_driver','runtime-fixture')
+    config['windows']=json.loads((root/'windows.json').read_text())
+    config['bindings']=[dict(tenant_id=TENANTS[0],instance_id=INSTANCE,principal_id=ADMIN,roles=['mdm_admin'],devices=['*'],management=[],identity_management=['accounts','providers'],allow_wipe=False,allow_enrollment=True,allow_manage_credentials=True)]
+    env['MDM_TEST_CONFIG']=write('runtime.json',config)
+    maintenance=database('mdm_identity_maintenance','identity-maintenance-fixture')
+    password=write('account-password','Fixture-only-correct-horse-battery-2026!')
+    for tenant in TENANTS:
+        path=write('initialize.json',dict(database=maintenance,installation=installation(),tenant_id=tenant,principal_id=ADMIN,login='admin',password_file=password))
+        result=subprocess.run([binary,'initialize','--config',path],env=env,cwd=ROOT,text=True,capture_output=True,timeout=30)
+        require(result.returncode==0,'component initialization failed: '+result.stderr)
+    run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
+
+def main(identity_only=False):
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -132,7 +151,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="mdm-pg-") as directory:
         root = Path(directory)
         quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "timeout": 20}
-        run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=MDM T2 CA", "-keyout", str(root / "ca.key"), "-out", str(root / "ca.crt")], **quiet)
+        run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=MDM T2 CA", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", str(root / "ca.key"), "-out", str(root / "ca.crt")], **quiet)
         run(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-keyout", str(root / "server.key"), "-out", str(root / "server.csr")], **quiet)
         (root / "extensions").write_text("basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n")
         run(["openssl", "x509", "-req", "-in", str(root / "server.csr"), "-CA", str(root / "ca.crt"), "-CAkey", str(root / "ca.key"), "-CAcreateserial", "-days", "1", "-extfile", str(root / "extensions"), "-out", str(root / "server.crt")], **quiet)
@@ -150,15 +169,15 @@ def main():
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text())
-            sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture';"
+            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text())
+            sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")
             (root / "owner-password").write_text("owner-fixture")
             os.chmod(root / "owner-password", 0o600)
             migration_config = root / "migrate.json"
-            migration_config.write_text(json.dumps({"database":{"host":"localhost","port":int(port),"name":"mdm_test","user":"mdm_owner","password_file":str(root/"owner-password"),"ca_file":str(root/"ca.crt")}}))
+            migration_config.write_text(json.dumps({"installation":installation(),"database":{"host":"localhost","port":int(port),"name":"mdm_test","user":"mdm_owner","password_file":str(root/"owner-password"),"ca_file":str(root/"ca.crt")}}))
             os.chmod(migration_config, 0o600)
             from windows_fixtures import generate
             generate(root, root/'server.crt', root/'server.key')
@@ -168,25 +187,34 @@ def main():
             print(upgrade.stdout, end='', flush=True)
             require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
-            run(["docker","exec","-i",name,"psql","-U","postgres","-d","mdm_test","-v","ON_ERROR_STOP=1"],input="INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-4111-8111-111111111111',1),('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1);",stdout=subprocess.DEVNULL)
-            if not device_only and not windows_only:
+            configure_identity(root, port, migrators[0], env)
+            env['MDM_TEST_PG_CONTAINER'] = name
+            if identity_only:
+                import importlib.util
+                spec=importlib.util.spec_from_file_location('mdm_source_t2', ROOT/'hack/source-t2.py');source=importlib.util.module_from_spec(spec);spec.loader.exec_module(source)
+                source_root=root/'source';source_root.mkdir()
+                env.update(source.tls_environment(source_root))
+                run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
+                from enterprise_idp import fixture as enterprise
+                with enterprise(root) as provider:
+                    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env={**env,**provider})
+                return
+            if not device_only and not windows_only and not identity_only:
                 verify_startup_deadlines(migrators[0],root,port,env)
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)
-            if not device_only and not windows_only:
+            if not device_only and not windows_only and not identity_only:
                 run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
                 run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
-            from device_t2 import identities
-            with identities(root) as origin:
-                windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-                print(windows.stdout,end='',flush=True)
-                require(windows.returncode == 0, 'Windows T2 failed')
-                verify_windows_result(windows.stdout)
-                collection=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","inventory_runtime::tests::durable_report_recovery_and_projection","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-                print(collection.stdout,end='',flush=True)
-                require(collection.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in collection.stdout, 'collection recovery T2 did not execute successfully')
-                require('"event":"mdm_inventory_failure"' in collection.stdout and '"phase":"projection_run"' in collection.stdout,
-                        'worker failure lost its safe phase diagnostic')
-                if not windows_only: run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env={**env,"MDM_TEST_IDENTITY":origin})
+            windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            print(windows.stdout,end='',flush=True)
+            require(windows.returncode == 0, 'Windows T2 failed')
+            verify_windows_result(windows.stdout)
+            collection=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","inventory_runtime::tests::durable_report_recovery_and_projection","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            print(collection.stdout,end='',flush=True)
+            require(collection.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in collection.stdout, 'collection recovery T2 did not execute successfully')
+            require('"event":"mdm_inventory_failure"' in collection.stdout and '"phase":"projection_run"' in collection.stdout,
+                    'worker failure lost its safe phase diagnostic')
+            if not windows_only: run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","device::tests::postgres_boundary","--","--ignored","--test-threads=1"],cwd=ROOT,env=env)
         finally:
             primary = sys.exception()
             try:

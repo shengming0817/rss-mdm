@@ -8,8 +8,10 @@ publish.workspace = true
 [dependencies]
 rss-mdm-inventory.workspace = true
 rss-mdm-inventory-postgres.workspace = true
-rss-identity-client.workspace = true
-rss-identity-contracts.workspace = true
+rss-identity-core.workspace = true
+rss-identity-postgres.workspace = true
+rss-identity-http-axum.workspace = true
+rss-identity-oidc.workspace = true
 rss-observation.workspace = true
 rss-observation-postgres.workspace = true
 rss-projection-postgres.workspace = true
@@ -19,7 +21,6 @@ rss-runtime.workspace = true
 rss-axum.workspace = true
 rss-request-context.workspace = true
 axum.workspace = true
-openidconnect.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 url.workspace = true
 uuid.workspace = true
@@ -69,7 +70,7 @@ tower.workspace = true
 
 [features]
 default = []
-integration = ["rss-observation-postgres/integration", "rss-projection-postgres/integration"]
+integration = ["rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
 
 [lints]
 workspace = true

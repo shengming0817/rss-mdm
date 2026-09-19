@@ -40,7 +40,10 @@ pub(super) async fn manage(
     {
         return Err(Error::Malformed);
     }
-    let checked = app.windows.ca.verify(peer.chain(), app.sessions.now()?)?;
+    let checked = app
+        .windows
+        .ca
+        .verify(peer.chain(), app.clock.unix_seconds()?)?;
     let credential = VerifiedChannelCredential::windows(
         TenantId::parse(app.policy.tenant()).map_err(|_| Error::Unauthorized)?,
         &checked,
@@ -273,7 +276,7 @@ fn authenticate_client(
                 "{registration}:{}",
                 secrets.client_password.as_str()
             )));
-            if !crate::sessions::equal(&credential.data.0, &expected) {
+            if !crate::enrollment::equal(&credential.data.0, &expected) {
                 return Err(Error::Unauthorized);
             }
             true

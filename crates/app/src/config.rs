@@ -46,24 +46,22 @@ impl Database {
 #[serde(deny_unknown_fields)]
 pub struct MigrationConfig {
     pub database: Database,
+    pub installation: crate::migration::Installation,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
-    pub origin: String,
-    pub issuer: String,
-    pub client_id: String,
+    pub instance_id: String,
     pub tenant_id: String,
-    pub audience: String,
-    pub oidc_secret_file: PathBuf,
-    pub validation_secret_file: PathBuf,
-    pub ca_file: PathBuf,
+    pub database: Database,
+    pub oidc: Option<crate::identity::OidcConfig>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub listen: SocketAddr,
     pub product_origin: String,
+    pub trusted_gateway: std::net::IpAddr,
     pub identity: Identity,
     pub database: Database,
     pub access_database: Database,
@@ -98,21 +96,22 @@ impl Config {
         {
             return Err(Error::Configuration(ConfigIssue::RuntimeDatabase));
         }
-        for (value, field) in [
-            (&self.product_origin, ConfigIssue::ProductOrigin),
-            (&self.identity.origin, ConfigIssue::IdentityOrigin),
-        ] {
-            let u = https_url(value).map_err(|_| Error::Configuration(field))?;
-            if u.origin().ascii_serialization() != *value {
-                return Err(Error::Configuration(field));
-            }
-        }
-        let issuer = https_url(&self.identity.issuer)
-            .map_err(|_| Error::Configuration(ConfigIssue::Issuer))?;
         let product = https_url(&self.product_origin)
             .map_err(|_| Error::Configuration(ConfigIssue::ProductOrigin))?;
-        if issuer.host_str() == product.host_str() || self.identity.origin == self.product_origin {
-            return Err(Error::Configuration(ConfigIssue::CookieAuthority));
+        if product.origin().ascii_serialization() != self.product_origin {
+            return Err(Error::Configuration(ConfigIssue::ProductOrigin));
+        }
+        let instance = rss_identity_core::InstanceId::parse(&self.identity.instance_id)
+            .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
+        if instance.to_string() != self.identity.instance_id {
+            return Err(Error::Configuration(ConfigIssue::Instance));
+        }
+        if self.identity.database.user != "mdm_identity_runtime"
+            || self.identity.database.host != self.database.host
+            || self.identity.database.port != self.database.port
+            || self.identity.database.name != self.database.name
+        {
+            return Err(Error::Configuration(ConfigIssue::IdentityDatabase));
         }
         let tenant = uuid::Uuid::parse_str(&self.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
@@ -123,7 +122,7 @@ impl Config {
         self.windows.validate(self.listen)?;
         let policy = crate::access::Policy::new(
             &self.identity.tenant_id,
-            &self.identity.client_id,
+            &self.identity.instance_id,
             std::mem::take(&mut self.bindings),
         )?;
         Ok(Compiled {
@@ -207,13 +206,31 @@ mod tests {
         assert!(serde_json::from_value::<Config>(old).is_err());
     }
     #[test]
-    fn cookie_authorities_cannot_share_a_hostname() {
+    fn local_authentication_configuration_needs_only_product_storage() {
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
                 .unwrap();
-        value["product_origin"] = serde_json::json!("https://identity.example.test:8443");
+        value["identity"] = serde_json::json!({
+            "instance_id":"33333333-3333-4333-8333-333333333333",
+            "tenant_id":"11111111-1111-4111-8111-111111111111",
+            "database": {"host":"postgres.example.test","port":5432,"name":"mdm","user":"mdm_identity_runtime","password_file":"/run/mdm/identity-runtime","ca_file":"/run/mdm/database-ca.pem"},
+            "oidc":null
+        });
+        value["trusted_gateway"] = serde_json::json!("127.0.0.1");
+        value["bindings"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("client_id");
+        value["bindings"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("subject");
+        value["bindings"][0]["instance_id"] = value["identity"]["instance_id"].clone();
+        value["bindings"][0]["principal_id"] =
+            serde_json::json!("44444444-4444-4444-8444-444444444444");
+        value["bindings"][0]["identity_management"] = serde_json::json!([]);
         let config: Config = serde_json::from_value(value).unwrap();
-        assert!(config.compile().is_err());
+        assert!(config.compile().is_ok());
     }
     #[test]
     fn startup_configuration_diagnostics_identify_safe_fields() {
@@ -230,21 +247,20 @@ mod tests {
                 "ProductOrigin",
             ),
             (
-                "/identity/origin",
-                serde_json::json!("http://synthetic-secret.example.test"),
-                "IdentityOrigin",
+                "/identity/instance_id",
+                serde_json::json!("synthetic-secret"),
+                "Instance",
             ),
             (
-                "/identity/issuer",
-                serde_json::json!("http://synthetic-secret.example.test"),
-                "Issuer",
+                "/identity/database/user",
+                serde_json::json!("postgres"),
+                "IdentityDatabase",
             ),
             (
                 "/identity/tenant_id",
                 serde_json::json!("synthetic-secret"),
                 "Tenant",
             ),
-            ("/identity/client_id", serde_json::json!("*"), "ClientId"),
             (
                 "/windows/enrollment/origin",
                 serde_json::json!("http://synthetic-secret.example.test"),

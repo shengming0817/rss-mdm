@@ -176,7 +176,7 @@ pub async fn serve(
                                     &compiled.config.identity.tenant_id,
                                 )
                                 .map_err(|_| assembly_error(Error::Malformed))?,
-                                Arc::new(rss_identity_client::SystemClock),
+                                Arc::new(crate::clock::SystemClock),
                                 |resource| {
                                     startup.stage_resource(DynManagedResource::new_box(resource))
                                 },
@@ -185,17 +185,25 @@ pub async fn serve(
                             .map_err(|e| ProcessError::at("startup.management", e))?;
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
-                        let app = crate::api::from_compiled(
+                        let gateway = compiled.config.trusted_gateway;
+                        let mut app = crate::api::from_compiled(
                             compiled,
-                            Arc::new(rss_identity_client::SystemClock),
+                            Arc::new(crate::clock::SystemClock),
                             monotonic,
                             reader,
                             access.clone(),
                             runtime.clone(),
                             management,
+                            |resource| startup.stage_resource(resource),
+                            #[cfg(test)]
+                            None,
                         )
                         .await
                         .map_err(assembly_error)?;
+                        app.browser = app.browser.layer(axum::middleware::from_fn_with_state(
+                            gateway,
+                            crate::identity::ingress,
+                        ));
                         let listener =
                             tokio::net::TcpListener::bind(listen).await.map_err(|e| {
                                 ProcessError::Io {
