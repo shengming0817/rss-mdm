@@ -66,6 +66,9 @@ impl Principal {
     pub(crate) fn tenant_id(&self) -> &str {
         &self.tenant
     }
+    pub(crate) fn session_id(&self) -> String {
+        self.session.view().id.to_string()
+    }
     pub(crate) fn principal_id(&self) -> &str {
         &self.principal
     }
@@ -93,6 +96,7 @@ impl Identity {
             Authority,
             &str,
             InstanceId,
+            TenantId,
         ) -> Result<rss_identity_postgres::Federation, Error>,
     ) -> Result<Self, Error> {
         let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid())?;
@@ -129,7 +133,13 @@ impl Identity {
         let mut routes =
             rss_identity_http_axum::router(authority.clone(), http.clone()).map_err(failure)?;
         if let Some(oidc) = &config.identity.oidc {
-            let federation = federation(oidc, authority.clone(), &config.product_origin, instance)?;
+            let federation = federation(
+                oidc,
+                authority.clone(),
+                &config.product_origin,
+                instance,
+                tenant,
+            )?;
             routes = routes.merge(
                 rss_identity_http_axum::federated_router(federation, http.clone())
                     .map_err(failure)?,
@@ -151,7 +161,7 @@ impl Identity {
             config,
             policy,
             |_| {},
-            |config, authority, origin, instance| {
+            |config, authority, origin, instance, _tenant| {
                 let oidc = rss_identity_oidc::HttpOidc::for_loopback_test(config.profiles()?)
                     .map_err(|_| invalid())?;
                 config.federation_using(authority, origin, instance, Arc::new(oidc))
@@ -281,6 +291,7 @@ pub struct OidcConfig {
     pub credential_keys: BTreeMap<String, PathBuf>,
     pub return_targets: BTreeMap<String, String>,
     pub assurance_profiles: Vec<AssuranceProfile>,
+    pub private_providers: Vec<PrivateProvider>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -290,14 +301,52 @@ pub struct AssuranceProfile {
     pub client_id: String,
     pub keycloak_totp: bool,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateProvider {
+    pub tenant_id: String,
+    pub issuer: String,
+    pub client_id: String,
+    pub cidrs: Vec<String>,
+}
 impl OidcConfig {
+    fn private_access(
+        &self,
+        tenant: TenantId,
+    ) -> Result<Vec<rss_identity_oidc::PrivateProviderAccess>, Error> {
+        self.private_providers
+            .iter()
+            .map(|p| {
+                let owner = TenantId::parse(&p.tenant_id).map_err(|_| invalid())?;
+                if owner != tenant {
+                    return Err(invalid());
+                }
+                Ok(rss_identity_oidc::PrivateProviderAccess {
+                    tenant: owner,
+                    issuer: p.issuer.clone(),
+                    client_id: p.client_id.clone(),
+                    cidrs: p
+                        .cidrs
+                        .iter()
+                        .map(|s| s.parse().map_err(|_| invalid()))
+                        .collect::<Result<_, _>>()?,
+                })
+            })
+            .collect()
+    }
+    fn transport(&self, tenant: TenantId) -> Result<rss_identity_oidc::HttpOidc, Error> {
+        rss_identity_oidc::HttpOidc::new(self.profiles()?, self.private_access(tenant)?)
+            .map_err(|_| invalid())
+    }
+
     fn federation(
         &self,
         authority: Authority,
         origin: &str,
         instance: InstanceId,
+        tenant: TenantId,
     ) -> Result<rss_identity_postgres::Federation, Error> {
-        let oidc = rss_identity_oidc::HttpOidc::new(self.profiles()?).map_err(|_| invalid())?;
+        let oidc = self.transport(tenant)?;
         self.federation_using(authority, origin, instance, Arc::new(oidc))
     }
     fn profiles(&self) -> Result<Vec<rss_identity_oidc::TrustedAssuranceProfile>, Error> {
@@ -411,6 +460,31 @@ pub(crate) async fn ingress(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_provider_permission_is_explicit_and_tenant_bound() {
+        let mut value = serde_json::json!({
+            "group_facts_max_age_seconds":300,"state_key_file":"/private/state",
+            "active_credential_key":"one","credential_keys":{},"return_targets":{},
+            "assurance_profiles":[]
+        });
+        assert!(serde_json::from_value::<OidcConfig>(value.clone()).is_err());
+        value["private_providers"] = serde_json::json!([]);
+        let config: OidcConfig = serde_json::from_value(value.clone()).unwrap();
+        let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        assert!(config.private_access(tenant).unwrap().is_empty());
+        value["private_providers"] = serde_json::json!([{
+            "tenant_id":tenant.to_string(),"issuer":"https://idp.example.test/realms/mdm",
+            "client_id":"mdm","cidrs":["10.20.0.0/24"]
+        }]);
+        let config: OidcConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(config.private_access(tenant).unwrap().len(), 1);
+        let other = TenantId::parse("33333333-3333-4333-8333-333333333333").unwrap();
+        assert!(config.private_access(other).is_err());
+        value["private_providers"][0]["cidrs"] = serde_json::json!(["127.0.0.0/8"]);
+        let config: OidcConfig = serde_json::from_value(value).unwrap();
+        assert!(config.transport(tenant).is_err());
+    }
+
     #[tokio::test]
     async fn forwarding_requires_the_actual_accepted_gateway() -> anyhow::Result<()> {
         use axum::{Extension, middleware, routing::get};

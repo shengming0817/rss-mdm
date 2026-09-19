@@ -195,7 +195,14 @@ pub(crate) fn from_compiled(
         .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     let (enrollment, management) = crate::windows::routers(state.clone(), monotonic.clone());
+    let host_context = Router::new()
+        .route(
+            "/api/identity-host/v1/tenants/{tenant}/context",
+            get(identity_context),
+        )
+        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     let browser = Router::new()
+        .merge(host_context)
         .nest("/api/v1", protected)
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready))
@@ -388,6 +395,21 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
 }
 pub(crate) async fn authenticate(app: &App, secret: SessionSecret) -> Result<Principal, Error> {
     app.identity.authenticate(secret).await
+}
+async fn identity_context(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(tenant): Path<String>,
+) -> Result<Json<Value>, Error> {
+    let proof = &auth.proof;
+    if tenant != proof.tenant_id() {
+        return Err(Error::Unauthorized);
+    }
+    let (accounts, providers) = app.policy.identity_navigation(proof)?;
+    Ok(Json(
+        json!({"tenantId":proof.tenant_id(), "principalId":proof.principal_id(),
+        "sessionId":proof.session_id(), "navigation":{"manageAccounts":accounts,"manageProviders":providers}}),
+    ))
 }
 async fn authorization(
     State(app): State<Arc<App>>,

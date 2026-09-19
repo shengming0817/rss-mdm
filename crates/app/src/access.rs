@@ -89,6 +89,19 @@ impl Policy {
             bindings: entries,
         })
     }
+    pub(crate) fn identity_navigation(&self, proof: &Principal) -> Result<(bool, bool), Error> {
+        let binding = self.binding(proof)?;
+        Ok((
+            binding.is_some_and(|b| {
+                b.identity_management
+                    .contains(&IdentityPermission::Accounts)
+            }),
+            binding.is_some_and(|b| {
+                b.identity_management
+                    .contains(&IdentityPermission::Providers)
+            }),
+        ))
+    }
     pub(crate) fn tenant(&self) -> &str {
         &self.tenant
     }

@@ -6,12 +6,13 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hack"))
-import candidate_smoke as candidate
+import candidate_smoke as smoke
+import candidate_runtime as candidate
 
 
 class SmokeCompletion(unittest.TestCase):
     def test_readiness_retries_temporary_html_gateway_error(self):
-        browser = candidate.Browser.__new__(candidate.Browser)
+        browser = smoke.Browser.__new__(smoke.Browser)
         browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""
         unavailable = mock.Mock(status=502)
         unavailable.getheaders.return_value = []
@@ -67,18 +68,18 @@ class SmokeCompletion(unittest.TestCase):
             directory = Path(temporary)
             for name in ["smoke.json", "smoke.log"]:
                 (directory / name).write_text("stale success")
-            with mock.patch.object(candidate, "run_smoke", side_effect=RuntimeError("cleanup rejected")):
+            with mock.patch.object(smoke, "run_smoke", side_effect=RuntimeError("cleanup rejected")):
                 with self.assertRaisesRegex(RuntimeError, "cleanup rejected"):
-                    candidate.smoke(directory)
+                    smoke.smoke(directory, "fixture-ui")
             self.assertFalse((directory / "smoke.json").exists())
             self.assertFalse((directory / "smoke.log").exists())
 
     def test_publication_failure_leaves_no_success_marker(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            with mock.patch.object(candidate, "run_smoke", return_value=({"revision": "fixture"}, "logs")), mock.patch.object(candidate.os, "replace", side_effect=OSError("disk failure")):
+            with mock.patch.object(smoke, "run_smoke", return_value=({"revision": "fixture"}, "logs")), mock.patch.object(candidate.os, "replace", side_effect=OSError("disk failure")):
                 with self.assertRaisesRegex(OSError, "disk failure"):
-                    candidate.smoke(directory)
+                    smoke.smoke(directory, "fixture-ui")
             self.assertEqual(list(directory.iterdir()), [])
 
     def test_cleanup_preserves_primary_and_records_cleanup_failure(self):

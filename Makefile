@@ -38,3 +38,7 @@ t2-publication:
 	python3 hack/publication-t2.py
 backend-consumers:
 	python3 hack/backend_postgres_consumer.py
+
+.PHONY: t3-auth
+t3-auth:
+	python3 hack/auth_t3.py --candidate "$(MDM_CANDIDATE)" --web-image "$(MDM_WEB_IMAGE)" --tools-image "$(MDM_BROWSER_IMAGE)" --output "$(MDM_T3_OUTPUT)"

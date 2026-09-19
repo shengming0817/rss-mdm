@@ -8,7 +8,7 @@
 
 ~~~sh
 python3 hack/release.py --output artifacts/candidate --git-auth-header-file /private/azure-header
-python3 hack/candidate_smoke.py --candidate artifacts/candidate
+python3 hack/candidate_smoke.py --candidate artifacts/candidate --web-image rss-identity-web:2366
 ~~~
 
 输入镜像由 `deployment/providers.lock.json` 固定。Rust 使用容器原生工具链和标准 `target/release` 路径；MDM 专属 Cargo 缓存用 BuildKit 自动 TARGETPLATFORM 隔离。候选目录只在所有构建检查通过后发布，失败可原命令重试，已有目录不覆盖。
@@ -19,7 +19,7 @@ smoke 只运行实际 MDM OCI、自有 TLS PostgreSQL 和 HTTPS 网关。它执�
 
 ## 全新实例安装
 
-当前版本要求全新 PostgreSQL 17 实例，完整 RSS schema 和 Identity v9。旧 ledger、摘要、安装主体或存储坐标不匹配时拒绝；不回填旧 Outbox、不改历史 digest、不删数据重试。旧账户、会话及非终态业务不续接。
+当前版本要求全新 PostgreSQL 17 实例，完整 RSS schema 和 Identity v10。旧 ledger、摘要、安装主体或存储坐标不匹配时拒绝；不回填旧 Outbox、不改历史 digest、不删数据重试。旧账户、会话及非终态业务不续接。
 
 按[认证指南](../guides/202609091600-2343-mdm-identity.md)准备数据库基础角色，再按顺序安装候选源码中的 `software-publication-roles.sql`、`management-roles.sql`、`identity-roles.sql`（位于 `crates/app/schema/`）。为各运行角色配置独立登录秘密。`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 权限，脚本成功不代表角色准入成功。
 

@@ -620,6 +620,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         .await?;
     ensure!(me["instance_id"] == INSTANCE && me["tenant_id"] == TENANT && me["roles"] == json!([]));
     let subject = me["principal_id"].as_str().unwrap();
+    host_context_matrix(&base, reader.clone(), &browser, subject).await?;
     let query = format!("{DEVICE}/inventory?source=mdm.windows");
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
     let mut allowed = base.clone();
@@ -942,5 +943,71 @@ async fn native_accounts(
             && http.1.get("roles").is_none()
             && enrollment.is_err()
     );
+    Ok(())
+}
+
+async fn host_context_matrix(
+    base: &Value,
+    reader: Arc<InventoryReader>,
+    browser: &Browser,
+    subject: &str,
+) -> Result<()> {
+    let path = format!("/api/identity-host/v1/tenants/{TENANT}/context");
+    for permissions in [
+        json!([]),
+        json!(["accounts"]),
+        json!(["providers"]),
+        json!(["accounts", "providers"]),
+    ] {
+        let mut config = base.clone();
+        config["bindings"][0]["principal_id"] = json!(subject);
+        config["bindings"][0]["identity_management"] = permissions.clone();
+        let router = app(&config, reader.clone()).await?;
+        ensure!(
+            Browser::default()
+                .call(&router, Method::GET, &path, None)
+                .await?
+                .0
+                == StatusCode::UNAUTHORIZED
+        );
+        let mut member = browser.clone();
+        let before = member
+            .call(
+                &router,
+                Method::GET,
+                &format!("/api/v2/tenants/{TENANT}/session"),
+                None,
+            )
+            .await?
+            .1;
+        let (status, context) = member.call(&router, Method::GET, &path, None).await?;
+        ensure!(status == StatusCode::OK);
+        ensure!(
+            context
+                == json!({"tenantId":TENANT,"principalId":subject,"sessionId":before["session"]["id"],"navigation":{
+            "manageAccounts":permissions.as_array().unwrap().contains(&json!("accounts")),
+            "manageProviders":permissions.as_array().unwrap().contains(&json!("providers"))}})
+        );
+        let after = member
+            .call(
+                &router,
+                Method::GET,
+                &format!("/api/v2/tenants/{TENANT}/session"),
+                None,
+            )
+            .await?
+            .1;
+        ensure!(before["session"]["idleExpiresAt"] == after["session"]["idleExpiresAt"]);
+        let wrong = path.replace(TENANT, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        ensure!(
+            member.call(&router, Method::GET, &wrong, None).await?.0 == StatusCode::UNAUTHORIZED
+        );
+    }
+    let router = app(base, reader).await?;
+    let (_, context) = browser
+        .clone()
+        .call(&router, Method::GET, &path, None)
+        .await?;
+    ensure!(context["navigation"] == json!({"manageAccounts":false,"manageProviders":false}));
     Ok(())
 }

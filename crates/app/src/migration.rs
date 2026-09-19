@@ -159,7 +159,7 @@ fn units() -> [(&'static str, &'static str); 23] {
             include_str!("../migrations/0009_installation.sql"),
         ),
         (
-            "identity-authority-v9",
+            "identity-authority-v10",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (
@@ -245,7 +245,7 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             .execute(&mut *conn)
             .await
             .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
-        if name == "identity-authority-v9" {
+        if name == "identity-authority-v10" {
             install_identity(conn, installation, instance).await?;
         } else {
             sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
@@ -313,7 +313,7 @@ async fn install_identity(
     }
     install(conn, installation, instance).await.map_err(|_| {
         MigrationError::at(
-            "identity-authority-v9",
+            "identity-authority-v10",
             "installation not confirmed; inspect ledger",
         )
     })
