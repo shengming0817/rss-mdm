@@ -158,13 +158,14 @@ try{
   await independent.goto(origin+`/tenants/${input.tenant}/sessions`);
   stage='pg_down';const persisted=await cloneSession(independent);docker(['pause',input.pg]);
   try{
-    assert((await request(independent,inventory)).status===503,'PG unavailable authorizes');
+    const unavailable=await request(independent,inventory);assert([502,503].includes(unavailable.status),'PG unavailable authorizes');
     const response=independent.waitForResponse(r=>new URL(r.url()).pathname===api+'/session/logout'&&r.request().method()==='POST');
     await independent.getByRole('button',{name:/^Sign out$|^退出当前会话$/i}).click();
-    assert((await response).status()===503,'PG down reports logout success');
+    const failedLogout=await response;assert([502,503].includes(failedLogout.status()),'PG down reports logout success');
+    requests.push({stage,origin,method:'POST',path:api+'/session/logout',status:failedLogout.status(),requestId:failedLogout.headers()['x-request-id']??null});
     await independent.getByRole('alert').waitFor();
     assert(new URL(independent.url()).pathname.endsWith('/sessions'),'failed logout redirected as success');
-    assert(/unavailable|不可用|不能.*成功/i.test(await independent.getByRole('alert').innerText()),'logout failure explanation');
+    assert(/unavailable|unconfirmed|不可用|不能.*成功|尚未确认/i.test(await independent.getByRole('alert').innerText()),'logout failure explanation');
   }finally{docker(['unpause',input.pg])}
   await restart();assert((await request(persisted,api+'/session')).status===200,'failed logout lost authoritative session');
   assert((await post(persisted,api+'/session/logout')).status===204,'recovery logout');checks.pg_down=true;

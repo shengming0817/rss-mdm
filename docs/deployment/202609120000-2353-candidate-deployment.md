@@ -8,7 +8,7 @@
 
 ~~~sh
 python3 hack/release.py --output artifacts/candidate --git-auth-header-file /private/azure-header
-python3 hack/candidate_smoke.py --candidate artifacts/candidate --web-image rss-identity-web:2366
+python3 hack/candidate_smoke.py --candidate artifacts/candidate --web-image rss-identity-web:2364-logout
 ~~~
 
 输入镜像由 `deployment/providers.lock.json` 固定。Rust 使用容器原生工具链和标准 `target/release` 路径；MDM 专属 Cargo 缓存用 BuildKit 自动 TARGETPLATFORM 隔离。候选目录只在所有构建检查通过后发布，失败可原命令重试，已有目录不覆盖。

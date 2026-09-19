@@ -160,7 +160,7 @@ def run(candidate, web_image, tools_image, output):
                 result=json.loads(raw);result['checks']['installation_mismatch']=mismatch;validate_checks(result['checks'])
                 logs={name:docker('logs',name,stage=Stage.LOGS) for name in [primary.server,primary.gateway,other.server,other.gateway]}
                 safe_evidence(logs,private+result.pop('privateValues',[]))
-                result['instances']=[dict(instance=s.instance,tenant=s.tenant,origin='https://'+s.host,server=s.server,gateway=s.gateway,config_sha256=sha(s.runtime/'config.json'),gateway_sha256=sha(s.root/'nginx.conf')) for s in [primary,other]]
+                result['instances']=[dict(instance=s.instance,tenant=s.tenant,origin='https://'+s.host,server=s.server,gateway=s.gateway,config_sha256=sha(s.runtime/'config.json'),gateway_sha256=sha(s.root/'nginx.conf'),ui_config=json.loads((s.root/'ui.json').read_text())) for s in [primary,other]]
                 result.update(mdm=primary.manifest,web=primary.web,tools=tool,
                               origins=['https://mdm.example.test','https://mdm-other.example.test'],
                               ca_sha256=[sha(primary.root/'ca.crt'),sha(other.root/'ca.crt')],
@@ -168,6 +168,10 @@ def run(candidate, web_image, tools_image, output):
                               runner_sha256=sha(ROOT/'hack/auth_t3_browser.mjs'),
                               fixture='synthetic device-1 Model-2364, real product authorization and inventory query',
                               exclusions=['real device enrollment/commands/wipe','other IdP profiles','production capacity','legacy environment retirement'])
+                events=json.loads(primary.sql("SELECT COALESCE(json_agg(e),'[]')::text FROM (SELECT id,request_id,actor,target,operation_id,action,result,status FROM mdm_access.audit ORDER BY recorded_at,id) e"))
+                require(len(events)>0,'product audit evidence absent')
+                (output/'audit.json').write_text(json.dumps(safe_evidence(events,private),indent=2)+'\n')
+                result['audit_sha256']=sha(output/'audit.json')
                 (output/'requests.json').write_text(json.dumps(safe_evidence(result.pop('requests'),private),indent=2)+'\n')
                 (output/'product.log').write_text(json.dumps(logs,indent=2)+'\n')
                 result['log_sha256']=sha(output/'product.log');result['requests_sha256']=sha(output/'requests.json')
