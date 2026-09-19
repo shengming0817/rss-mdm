@@ -43,6 +43,7 @@ class Stage(StrEnum):
     DIAGNOSTIC_LOGS = "diagnostic-logs"
     REMOVE_CONTAINER = "cleanup-container"
     REMOVE_VOLUME = "cleanup-volume"
+    REMOVE_NETWORK = "cleanup-network"
 
 class DockerFailure(RuntimeError):
     def __init__(self, stage, outcome, exit_code=None):
@@ -122,7 +123,7 @@ def inputs(root, example):
     (root/"server.key").chmod(0o644)  # Disposable fixture key, readable by non-root TLS containers.
     return runtime,operator
 
-def failure_evidence(directory, created, safe_log_sources, primary):
+def failure_evidence(directory, created, safe_log_sources, primary, filename="smoke-failure.json"):
     # Product and ingress logs have closed, credential-free schemas. PostgreSQL
     # statement logs can contain input values, so capture only its closed state.
     diagnostics = {"status":"failed", "error_class":type(primary).__name__, "containers":{}}
@@ -140,18 +141,19 @@ def failure_evidence(directory, created, safe_log_sources, primary):
         with tempfile.TemporaryDirectory(prefix=".smoke-failure-", dir=directory) as temporary:
             staged = Path(temporary)/"failure.json"
             staged.write_text(json.dumps(diagnostics,indent=2)+"\n")
-            os.replace(staged,directory/"smoke-failure.json")
+            os.replace(staged,directory/filename)
     except Exception:
         primary.add_note("candidate failure diagnostics could not be persisted")
 
-def cleanup(created, volume):
+def cleanup(created, volume, network=None):
     primary = sys.exception()
     failures = []
     commands = [("rm", "-f", container) for container in reversed(created)]
     commands.extend(("volume", "rm", name) for name in ([volume] if isinstance(volume,str) else reversed(volume)))
+    if network: commands.append(("network", "rm", network))
     for command in commands:
         try:
-            docker(*command,stage=Stage.REMOVE_CONTAINER if command[0]=="rm" else Stage.REMOVE_VOLUME)
+            docker(*command,stage=Stage.REMOVE_CONTAINER if command[0]=="rm" else (Stage.REMOVE_NETWORK if command[0]=="network" else Stage.REMOVE_VOLUME))
         except Exception as error:
             failures.append(error)
     if failures:
@@ -189,7 +191,9 @@ class Candidate:
         self.instance,self.tenant=instance,tenant
         self.diagnostics=diagnostics or directory
         self.manifest=verify_candidate(directory)
-        self.image=image_identity(self.manifest["image"])["id"]
+        artifact=image_identity(self.manifest["image"])
+        require(artifact["revision"]==self.manifest["revision"] and self.manifest["image"].endswith("@"+self.manifest["archive"]["manifest_digest"]),"runtime image differs from candidate")
+        self.image=artifact["id"]
         self.web=image_identity(web_image)
         require(self.web["revision"]==WEB_REVISION,"UI revision mismatch")
         self.providers=self.manifest["providers"]
@@ -199,12 +203,13 @@ class Candidate:
         self.own_network=network is None
         self.created,self.volumes=[],[]
         self.temporary=None
+        self.network_created=False
     def command(self,*args,stage=Stage.SERVER,**kwargs):
         return docker(*args,stage=stage,**kwargs)
     def sql(self,statement):
         return self.command("exec","-i",self.pg,"psql","-X","-At","-v","ON_ERROR_STOP=1","-U","postgres","-d","mdm_test",input=statement,timeout=15,stage=Stage.SQL)
-    def operator(self,verb,config):
-        return self.command("run","--rm","--network","container:"+self.pg,"-v",self.operator_volume+":/run/mdm:ro",self.image,verb,"--config","/run/mdm/"+config,stage=Stage.MIGRATION)
+    def operator(self,verb,config,stage):
+        return self.command("run","--rm","--network","container:"+self.pg,"-v",self.operator_volume+":/run/mdm:ro",self.image,verb,"--config","/run/mdm/"+config,stage=stage)
     def copy_runtime(self):
         self.command("run","--rm","--user","0:0","--network","none","-v",str(self.runtime)+":/fixture:ro","-v",self.runtime_volume+":/run/mdm", "--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=Stage.RUNTIME_INPUTS)
     def start_server(self):
@@ -215,7 +220,9 @@ class Candidate:
             self.temporary=tempfile.TemporaryDirectory(prefix=self.name+"-")
             self.root=Path(self.temporary.name)
             self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json")
-            if self.own_network: self.command("network","create",self.network,stage=Stage.POSTGRES)
+            if self.own_network:
+                self.command("network","create",self.network,stage=Stage.POSTGRES)
+                self.network_created=True
             self.config=json.loads((self.runtime/"config.json").read_text())
             self.config["product_origin"]="https://"+self.host
             self.config["identity"].update(instance_id=self.instance,tenant_id=self.tenant)
@@ -240,11 +247,11 @@ class Candidate:
             for role in ["mdm_management_runtime","mdm_software_driver","mdm_identity_runtime","mdm_identity_maintenance"]:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.runtime_volume,self.operator_volume=self.name+"-runtime",self.name+"-operator"
-            for volume,directory in [(self.runtime_volume,self.runtime),(self.operator_volume,self.operator_root)]:
-                self.command("volume","create",volume,stage=Stage.RUNTIME_VOLUME);self.volumes.append(volume)
-                self.command("run","--rm","--user","0:0","--network","none","-v",str(directory)+":/fixture:ro","-v",volume+":/run/mdm","--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=Stage.RUNTIME_INPUTS)
-            for _ in range(2):self.operator("migrate","migrate.json")
-            self.operator("initialize","initialize.json")
+            for volume,directory,volume_stage,input_stage in [(self.runtime_volume,self.runtime,Stage.RUNTIME_VOLUME,Stage.RUNTIME_INPUTS),(self.operator_volume,self.operator_root,Stage.OPERATOR_VOLUME,Stage.OPERATOR_INPUTS)]:
+                self.command("volume","create",volume,stage=volume_stage);self.volumes.append(volume)
+                self.command("run","--rm","--user","0:0","--network","none","-v",str(directory)+":/fixture:ro","-v",volume+":/run/mdm","--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=input_stage)
+            for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator("migrate","migrate.json",stage)
+            self.operator("initialize","initialize.json",Stage.INITIALIZE)
             self.start_server()
             self.created.append(self.gateway)
             self.command("run","-d","--name",self.gateway,"--network","container:"+self.pg,"-v",str(self.root)+":/certs:ro",self.web["id"],"-c","/certs/nginx.conf",stage=Stage.GATEWAY)
@@ -263,11 +270,17 @@ class Candidate:
             finally:conn.close()
         wait(check,"product readiness",seconds=60)
     def __exit__(self,kind,error,tb):
-        if error:failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},error)
+        def record(primary):
+            failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.name+"-failure.json")
+        if error:record(error)
         try:
-            cleanup(self.created,self.volumes)
+            cleanup(self.created,self.volumes,self.network if self.network_created else None)
+            if error and getattr(error,"__notes__",None):record(error)
+        except BaseException as cleanup_error:
+            record(cleanup_error)
+            if error:
+                error.add_note("candidate cleanup failed")
+            else:
+                raise
         finally:
-            try:
-                if self.own_network:self.command("network","rm",self.network,stage=Stage.REMOVE_CONTAINER)
-            finally:
-                if self.temporary:self.temporary.cleanup()
+            if self.temporary:self.temporary.cleanup()

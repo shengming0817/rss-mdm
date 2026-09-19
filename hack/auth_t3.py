@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
@@ -24,6 +25,7 @@ def validate_checks(checks):
 
 def safe_evidence(value, private_values):
     encoded=json.dumps(value)
+    require(not re.search(r'[?&](?:code|state)=',encoded),'callback URL in evidence')
     require(not any(secret and secret in encoded for secret in private_values),'sensitive evidence rejected')
     return value
 
@@ -67,7 +69,7 @@ def seed_inventory(stack):
     coverage=json.dumps(dict(id='device-basics',version='1',definition='model-os',format='utf8-v1'),separators=(',',':'))
     scope=json.dumps(dict(tenant=TENANT,object=registration,registration=registration,source='mdm.windows',dataset='inventory',epoch=epoch),separators=(',',':'))
     stack.sql(f"""
-    INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','2364-synthetic-read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '1 hour');
+    INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','2364-synthetic-read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
     INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
     INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
     INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
@@ -101,7 +103,7 @@ def installation_mismatch(stack):
            'cat > /run/mdm/mismatch.json; chown 10001:10001 /run/mdm/mismatch.json; chmod 600 /run/mdm/mismatch.json',
            input=json.dumps(value),stage=Stage.OPERATOR_INPUTS)
     rejected=False
-    try:stack.operator('migrate','mismatch.json')
+    try:stack.operator('migrate','mismatch.json',Stage.MIGRATION)
     except Exception as error:
         from candidate_runtime import DockerFailure
         if not isinstance(error,DockerFailure) or error.outcome!='exit':raise
@@ -125,7 +127,7 @@ def run(candidate, web_image, tools_image, output):
             prepare_member(primary);seed_inventory(primary)
             mismatch=installation_mismatch(primary)
             with Candidate(candidate,web_image,network=primary.network,host='mdm-other.example.test',
-                           instance=str(uuid.uuid4()),tenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',diagnostics=output) as other:
+                           instance=str(uuid.uuid4()),tenant=TENANT,diagnostics=output) as other:
                 # Same port 443 on distinct private network addresses; host smoke retains 8445.
                 for stack in [primary,other]:
                     conf=(stack.root/'nginx.conf').read_text().replace('listen 8445 ssl;','listen 443 ssl;\n        listen 8445 ssl;')
@@ -134,7 +136,7 @@ def run(candidate, web_image, tools_image, output):
                 private=[primary.password,primary.member_password,primary.idp_password,primary.client_secret]
                 params=dict(tenant=TENANT,member=primary.member,adminPassword=primary.password,memberPassword=primary.member_password,
                             idpPassword=primary.idp_password,clientSecret=primary.client_secret,issuer=primary.issuer,
-                            server=primary.server,pg=primary.pg,idp=primary.idp,otherPg=other.pg,otherTenant=other.tenant,
+                            server=primary.server,pg=primary.pg,idp=primary.idp,otherPg=other.pg,otherTenant=other.tenant,wrongTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
                             runtimeVolume=primary.runtime_volume,runtimeImage=primary.providers['runtime'])
                 (primary.root/'browser-input.json').write_text(json.dumps(params));(primary.root/'browser-input.json').chmod(0o600)
                 (primary.root/'other-ca.crt').write_bytes((other.root/'ca.crt').read_bytes())
@@ -155,6 +157,7 @@ def run(candidate, web_image, tools_image, output):
                 result=json.loads(raw);result['checks']['installation_mismatch']=mismatch;validate_checks(result['checks'])
                 logs={name:docker('logs',name,stage=Stage.LOGS) for name in [primary.server,primary.gateway,other.server,other.gateway]}
                 safe_evidence(logs,private+result.pop('privateValues',[]))
+                result['instances']=[dict(instance=s.instance,tenant=s.tenant,origin='https://'+s.host,server=s.server,gateway=s.gateway,config_sha256=sha(s.runtime/'config.json'),gateway_sha256=sha(s.root/'nginx.conf')) for s in [primary,other]]
                 result.update(mdm=primary.manifest,web=primary.web,tools=tool,
                               origins=['https://mdm.example.test','https://mdm-other.example.test'],
                               ca_sha256=[sha(primary.root/'ca.crt'),sha(other.root/'ca.crt')],
@@ -163,14 +166,14 @@ def run(candidate, web_image, tools_image, output):
                               fixture='synthetic device-1 Model-2364, real product authorization and inventory query',
                               exclusions=['real device enrollment/commands/wipe','other IdP profiles','production capacity','legacy environment retirement'])
                 (output/'requests.json').write_text(json.dumps(safe_evidence(result.pop('requests'),private),indent=2)+'\n')
-                (output/'product.log').write_text('\n'.join(logs.values()))
+                (output/'product.log').write_text(json.dumps(logs,indent=2)+'\n')
                 result['log_sha256']=sha(output/'product.log');result['requests_sha256']=sha(output/'requests.json')
         # Resource owners have completed cleanup before publishing success.
         result['status']='passed'
         (output/'result.json').write_text(json.dumps(safe_evidence(result,private),indent=2)+'\n')
     except BaseException as error:
         (output/'result.json').unlink(missing_ok=True)
-        (output/'failure.json').write_text(json.dumps({'status':'failed','errorClass':type(error).__name__})+'\n')
+        (output/'failure.json').write_text(json.dumps({'status':'failed','errorClass':type(error).__name__,'diagnostics':{p.name:sha(p) for p in output.glob('*failure*.json') if p.name!='failure.json'}})+'\n')
         raise
 
 if __name__=='__main__':

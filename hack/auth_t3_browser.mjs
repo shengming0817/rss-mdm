@@ -17,14 +17,14 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function poll(check,seconds=60){const end=Date.now()+seconds*1000;while(Date.now()<end){try{if(await check())return}catch{}await delay(500)}throw new Error('readiness deadline')}
 const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
 const consoleText=[];
-async function pageAt(url=origin){const ctx=await browser.newContext({locale:'en-US'});const page=await ctx.newPage();page.setDefaultTimeout(15000);page.on('console',m=>consoleText.push(m.text()));await page.goto(`${url}/tenants/${url===origin?input.tenant:input.otherTenant}/login`);return page}
+async function pageAt(url=origin){const ctx=await browser.newContext({locale:'en-US'});const page=await ctx.newPage();page.setDefaultTimeout(15000);page.on('console',m=>consoleText.push(m.text()));page.on('request',r=>{const u=new URL(r.url());if(u.pathname==='/api/v2/oidc/callback')for(const name of ['code','state']){const value=u.searchParams.get(name);if(value)privateValues.push(value)}});await page.goto(`${url}/tenants/${url===origin?input.tenant:input.otherTenant}/login`);return page}
 async function request(page,path,method='GET',body,headers={}){
   const result=await page.evaluate(async ({path,method,body,headers})=>{
     const r=await fetch(path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json','X-Identity-Request':'1',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
     const text=await r.text();let value=null;try{value=JSON.parse(text)}catch{}
     return {status:r.status,value,id:r.headers.get('x-request-id')};
   },{path,method,body,headers});
-  requests.push({stage,method,path:path.split('?')[0],status:result.status,requestId:result.id});
+  requests.push({stage,origin:new URL(page.url()).origin,method,path:path.split('?')[0],status:result.status,requestId:result.id});
   return result;
 }
 async function post(page,path,body,token){
@@ -60,7 +60,11 @@ try{
   member=await pageAt();const initial=await login(member,'member',input.memberPassword);
   assert(initial.identity.principalId===input.member,'member coordinate');
   const context=await request(member,`/api/identity-host/v1/tenants/${input.tenant}/context`);
-  assert(context.status===200&&context.value.sessionId===initial.session.id&&!context.value.navigation.manageAccounts,'host context');checks.local_ui=true;
+  assert(context.status===200&&context.value.sessionId===initial.session.id&&!context.value.navigation.manageAccounts,'host context');await admin.locator(`nav a[href$='/accounts']`).waitFor();
+  await admin.locator(`nav a[href$='/providers']`).waitFor();
+  assert(await member.locator(`nav a[href$='/accounts'],nav a[href$='/providers']`).count()===0,'member navigation permissions');
+  for(const path of ['/api','/api/not-a-route'])assert((await request(member,path)).status===404,'unknown API became SPA');
+  checks.local_ui=true;
 
   stage='account_ui';await admin.goto(origin+`/tenants/${input.tenant}/accounts`);
   await admin.locator('#account-login').fill('ui-created');await admin.locator('#account-password').fill(input.memberPassword);
@@ -101,8 +105,8 @@ try{
 
   stage='isolation';assert((await request(attacker,'/api/v1/authorization')).status===401,'host cookie isolation');
   const replay=await cloneSession(member,other);assert((await request(replay,'/api/v1/authorization')).status===401,'instance replay');
-  assert((await request(member,`/api/v2/tenants/${input.otherTenant}/session`)).status===401,'tenant replay');
-  assert((await request(member,`/api/identity-host/v1/tenants/${input.otherTenant}/context`)).status===401,'context tenant replay');
+  assert((await request(member,`/api/v2/tenants/${input.wrongTenant}/session`)).status===401,'tenant replay');
+  assert((await request(member,`/api/identity-host/v1/tenants/${input.wrongTenant}/context`)).status===401,'context tenant replay');
   await replay.context().close();await attacker.context().close();checks.isolation=true;
 
   for(const [field,key] of [['enabled','account_disabled'],['membership','membership_removed']]){
@@ -151,10 +155,16 @@ try{
   assert((await request(independent,inventory)).status===200,'IdP-independent request');
   const createdLocal=await post(independent,api+'/accounts',{login:'while-idp-down',password:input.memberPassword});assert(createdLocal.status===201,'IdP-independent account write');checks.idp_down=true;
 
-  stage='pg_down';const persisted=await cloneSession(independent);const outageCsrf=(await request(independent,api+'/session')).value.csrfToken;docker(['pause',input.pg]);
+  await independent.goto(origin+`/tenants/${input.tenant}/sessions`);
+  stage='pg_down';const persisted=await cloneSession(independent);docker(['pause',input.pg]);
   try{
     assert((await request(independent,inventory)).status===503,'PG unavailable authorizes');
-    assert((await request(independent,api+'/session/logout','POST',undefined,{'X-CSRF-Token':outageCsrf})).status===503,'PG down reports logout success');
+    const response=independent.waitForResponse(r=>new URL(r.url()).pathname===api+'/session/logout'&&r.request().method()==='POST');
+    await independent.getByRole('button',{name:/^Sign out$|^退出当前会话$/i}).click();
+    assert((await response).status()===503,'PG down reports logout success');
+    await independent.getByRole('alert').waitFor();
+    assert(new URL(independent.url()).pathname.endsWith('/sessions'),'failed logout redirected as success');
+    assert(/unavailable|不可用|不能.*成功/i.test(await independent.getByRole('alert').innerText()),'logout failure explanation');
   }finally{docker(['unpause',input.pg])}
   await restart();assert((await request(persisted,api+'/session')).status===200,'failed logout lost authoritative session');
   assert((await post(persisted,api+'/session/logout')).status===204,'recovery logout');checks.pg_down=true;

@@ -91,3 +91,29 @@ class SmokeCompletion(unittest.TestCase):
                 finally:
                     candidate.cleanup(["server"], "inputs")
         self.assertEqual(primary.__notes__, ["candidate cleanup failed (2 resources)"])
+
+
+class RuntimeOwnership(unittest.TestCase):
+    def test_operator_preserves_exact_stage(self):
+        owner=candidate.Candidate.__new__(candidate.Candidate)
+        owner.pg,owner.operator_volume,owner.image='pg','operator','image'
+        owner.command=mock.Mock(return_value='')
+        for stage in [candidate.Stage.MIGRATION,candidate.Stage.REPLAY,candidate.Stage.INITIALIZE]:
+            owner.operator('migrate','input.json',stage)
+            self.assertEqual(owner.command.call_args.kwargs['stage'],stage)
+
+    def test_network_cleanup_does_not_replace_primary(self):
+        primary=RuntimeError('browser rejected')
+        with mock.patch.object(candidate,'docker',side_effect=RuntimeError('cleanup')) as command:
+            with self.assertRaisesRegex(RuntimeError,'browser rejected'):
+                try:raise primary
+                finally:candidate.cleanup(['server'],['volume'],'network')
+            self.assertEqual(command.call_count,3)
+        self.assertIn('3 resources',primary.__notes__[0])
+
+    def test_two_owners_keep_both_failure_records(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for owner in ['first','second']:
+                candidate.failure_evidence(root,[],set(),RuntimeError('failed'),owner+'-failure.json')
+            self.assertEqual(len(list(root.glob('*-failure.json'))),2)

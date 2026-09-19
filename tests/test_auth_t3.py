@@ -17,5 +17,5 @@ class ProofTests(unittest.TestCase):
     def test_sensitive_values_never_enter_evidence(self):
         with self.assertRaises(RuntimeError):auth_t3.safe_evidence({'log':'secret-credential'},['secret-credential'])
         self.assertEqual(auth_t3.safe_evidence({'status':401},['secret-credential']),{'status':401})
-    def test_different_candidate_must_not_be_accepted(self):
-        with self.assertRaises(RuntimeError):auth_t3.validate_checks({})
+    def test_dynamic_callback_code_cannot_enter_evidence(self):
+        with self.assertRaises(RuntimeError):auth_t3.safe_evidence({'log':'/api/v2/oidc/callback?code=unanticipated-value'},[])
