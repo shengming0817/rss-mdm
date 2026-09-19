@@ -15,7 +15,7 @@ python3 hack/candidate_smoke.py --candidate artifacts/candidate
 
 smoke 只运行实际 MDM OCI、自有 TLS PostgreSQL 和 HTTPS 网关。它执行安装及重放、初始化、本地登录、实例/租户/主体检查、设备注册及幂等重放、设备范围与 wipe 拒绝、拒绝无业务效果及审计、刷新轮换、退出、健康及有界关闭。runtime 和 operator 使用分离的秘密卷；服务不挂载安装或 maintenance 密码。测试网络命名空间只为本地候选运行，不证明生产拓扑。
 
-全部检查和资源清理完成后才原子发布 smoke.json 及其绑定的 smoke.log。失败重跑移除旧成功标记；清理前保存独立 smoke-failure.json，包含产品/网关安全日志与容器状态，不采集可能含输入值的 PG statement 日志。交付目录含 server.oci.tar、candidate.json、smoke.json、smoke.log、evidence 和示例配置；使用前核对摘要。此验证不含 Windows/macOS 真机 T3，也不代表生产发布。
+全部检查和资源清理完成后才原子发布 smoke.json 及其绑定的 smoke.log。失败重跑移除旧成功标记；清理前保存独立 smoke-failure.json，包含产品/网关安全日志与容器状态。Docker 失败记录固定阶段名（如 migration、initialize、server-start）、退出码或 timeout/unavailable 分类，不记录命令参数、provider stderr 或可能含输入值的 PG statement 日志。交付目录含 server.oci.tar、candidate.json、smoke.json、smoke.log、evidence 和示例配置；使用前核对摘要。此验证不含 Windows/macOS 真机 T3，也不代表生产发布。
 
 ## 全新实例安装
 

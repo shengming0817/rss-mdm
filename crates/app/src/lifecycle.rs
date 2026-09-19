@@ -186,19 +186,25 @@ pub async fn serve(
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
                         let gateway = compiled.config.trusted_gateway;
-                        let mut app = crate::api::from_compiled(
-                            compiled,
-                            Arc::new(crate::clock::SystemClock),
-                            monotonic,
-                            reader,
-                            access.clone(),
-                            runtime.clone(),
-                            management,
+                        let identity = crate::identity::Identity::connect(
+                            &compiled.config,
+                            compiled.policy.clone(),
                             |resource| startup.stage_resource(resource),
-                            #[cfg(test)]
-                            None,
                         )
                         .await
+                        .map_err(|error| ProcessError::at("startup.identity", error))?;
+                        let mut app = crate::api::from_compiled(
+                            compiled,
+                            crate::api::AssemblyDependencies {
+                                clock: Arc::new(crate::clock::SystemClock),
+                                monotonic,
+                                reader,
+                                access: access.clone(),
+                                runtime: runtime.clone(),
+                                management,
+                                identity,
+                            },
+                        )
                         .map_err(assembly_error)?;
                         app.browser = app.browser.layer(axum::middleware::from_fn_with_state(
                             gateway,

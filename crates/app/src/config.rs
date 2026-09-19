@@ -7,6 +7,7 @@ use std::{
     io::Read,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use zeroize::Zeroizing;
 
@@ -72,7 +73,7 @@ pub struct Config {
 }
 pub(crate) struct Compiled {
     pub config: Config,
-    pub policy: crate::access::Policy,
+    pub policy: Arc<crate::access::Policy>,
 }
 impl Config {
     pub(crate) fn compile(mut self) -> Result<Compiled, Error> {
@@ -127,7 +128,7 @@ impl Config {
         )?;
         Ok(Compiled {
             config: self,
-            policy,
+            policy: Arc::new(policy),
         })
     }
 }

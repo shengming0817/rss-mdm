@@ -87,6 +87,11 @@ async fn seed_accounts() -> Result<()> {
                 crate::identity::deadline(),
             )
             .await?;
+        // Protocol/store tests use this tenant's real credential. The HTTP tenant
+        // performs its own logins so fixture setup does not consume its attempt budget.
+        if tenant == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+            save(&identity, "other", &login(&identity, "other").await?)?;
+        }
     }
     Ok(())
 }

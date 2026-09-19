@@ -113,48 +113,52 @@ pub(crate) async fn application(
             |_| {},
         )
         .await?;
+    let compiled = config.compile()?;
+    let identity = match identity {
+        Some(identity) => identity,
+        None => Identity::connect(&compiled.config, compiled.policy.clone(), |_| {}).await?,
+    };
     Ok(from_compiled(
-        config.compile()?,
+        compiled,
+        AssemblyDependencies {
+            clock,
+            monotonic,
+            reader,
+            access,
+            runtime,
+            management,
+            identity,
+        },
+    )?
+    .browser)
+}
+pub(crate) struct AssemblyDependencies {
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
+    pub(crate) reader: Arc<InventoryReader>,
+    pub(crate) access: Arc<AccessStore>,
+    pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
+    pub(crate) management: Arc<crate::management::Management>,
+    pub(crate) identity: Identity,
+}
+pub(crate) fn from_compiled(
+    compiled: crate::config::Compiled,
+    dependencies: AssemblyDependencies,
+) -> Result<crate::windows::Routers, Error> {
+    let crate::config::Compiled { config, policy } = compiled;
+    let AssemblyDependencies {
         clock,
         monotonic,
         reader,
         access,
         runtime,
         management,
-        |_| {},
         identity,
-    )
-    .await?
-    .browser)
-}
-#[allow(
-    clippy::too_many_arguments,
-    reason = "host hands already-owned resources to router assembly"
-)]
-pub(crate) async fn from_compiled(
-    compiled: crate::config::Compiled,
-    clock: Arc<dyn Clock>,
-    monotonic: Arc<dyn rss_observation::Clock>,
-    reader: Arc<InventoryReader>,
-    access: Arc<AccessStore>,
-    runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
-    management: Arc<crate::management::Management>,
-    acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
-    #[cfg(test)] fixture_identity: Option<Identity>,
-) -> Result<crate::windows::Routers, Error> {
-    let crate::config::Compiled { config, policy } = compiled;
-    let policy = Arc::new(policy);
+    } = dependencies;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.clone(),
         policy.clone(),
     ));
-    #[cfg(not(test))]
-    let identity = Identity::connect(&config, policy.clone(), acquire).await?;
-    #[cfg(test)]
-    let identity = match fixture_identity {
-        Some(identity) => identity,
-        None => Identity::connect(&config, policy.clone(), acquire).await?,
-    };
     let authentication = identity.routes();
     let host = config
         .product_origin

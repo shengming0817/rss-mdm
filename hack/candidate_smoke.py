@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the fixed MDM OCI with only its own PostgreSQL and HTTPS ingress."""
 import argparse
+from enum import StrEnum
 import http.client
 import json
 import os
@@ -22,10 +23,45 @@ def require(condition, message):
     if not condition:
         raise RuntimeError(message)
 
-def docker(*args, timeout=120, input=None):
-    result = subprocess.run(["docker", *map(str,args)], input=input, text=True, capture_output=True, timeout=timeout)
+class Stage(StrEnum):
+    LOAD = "image-load"
+    POSTGRES = "postgres-start"
+    SQL = "postgres-sql"
+    RUNTIME_VOLUME = "runtime-volume"
+    OPERATOR_VOLUME = "operator-volume"
+    RUNTIME_INPUTS = "runtime-inputs"
+    OPERATOR_INPUTS = "operator-inputs"
+    MIGRATION = "migration"
+    REPLAY = "migration-replay"
+    INITIALIZE = "initialize"
+    GATEWAY = "gateway-start"
+    SERVER = "server-start"
+    PORT = "gateway-port"
+    STOP = "server-stop"
+    LOGS = "server-logs"
+    EXIT = "server-exit"
+    DIAGNOSTIC_STATE = "diagnostic-state"
+    DIAGNOSTIC_LOGS = "diagnostic-logs"
+    REMOVE_CONTAINER = "cleanup-container"
+    REMOVE_VOLUME = "cleanup-volume"
+
+class DockerFailure(RuntimeError):
+    def __init__(self, stage, outcome, exit_code=None):
+        self.stage, self.outcome, self.exit_code = stage, outcome, exit_code
+        super().__init__(f"candidate Docker failure: stage={stage.value} outcome={outcome} exit_code={exit_code}")
+
+def docker(*args, stage, timeout=120, input=None):
+    if not isinstance(stage, Stage):
+        raise ValueError("candidate Docker stage must be a closed value")
+    try:
+        result = subprocess.run(["docker", *map(str,args)], input=input, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise DockerFailure(stage, "timeout") from None
+    except OSError:
+        raise DockerFailure(stage, "unavailable") from None
     # Do not echo command arguments, mounted configuration, HTTP credentials or provider stderr.
-    require(result.returncode == 0, "candidate Docker operation failed: " + args[0])
+    if result.returncode:
+        raise DockerFailure(stage, "exit", result.returncode)
     return (result.stdout + result.stderr if args[0] == "logs" else result.stdout).strip()
 
 def wait(check, stage, seconds=45):
@@ -120,7 +156,7 @@ def run_smoke(directory):
     require(revision==manifest["revision"] and not subprocess.check_output(["/usr/bin/git","status","--porcelain"],cwd=ROOT,text=True).strip(),"smoke requires clean candidate source")
     example=directory/"mdm-config.example.json"
     require(sha(example)==manifest["config_sha256"],"candidate configuration mismatch")
-    docker("load","--input",archive)
+    docker("load","--input",archive,stage=Stage.LOAD)
     image,providers=manifest["image"],manifest["providers"]
     name="mdm-candidate-"+uuid.uuid4().hex[:10]
     pg,gateway,server=name+"-pg",name+"-gateway",name+"-server"
@@ -134,29 +170,29 @@ def run_smoke(directory):
             created.append(pg)
             docker("run","-d","--name",pg,"-p","127.0.0.1::8445","-v",str(root)+":/certs:ro",
                    "-e","POSTGRES_PASSWORD=candidate-fixture","-e","POSTGRES_DB=mdm_test",providers["postgres"],"sh","-ec",
-                   "cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key")
+                   "cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key",stage=Stage.POSTGRES)
             wait(lambda: subprocess.run(["docker","exec",pg,"pg_isready","-h","127.0.0.1","-U","postgres"],capture_output=True,timeout=5).returncode==0,"PostgreSQL")
             def sql(statement):
-                return docker("exec","-i",pg,"psql","-X","-At","-v","ON_ERROR_STOP=1","-U","postgres","-d","mdm_test",input=statement,timeout=15)
+                return docker("exec","-i",pg,"psql","-X","-At","-v","ON_ERROR_STOP=1","-U","postgres","-d","mdm_test",input=statement,timeout=15,stage=Stage.SQL)
             roles="".join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ["mdm_owner","mdm_api","mdm_access","mdm_runtime"])
             roles+="GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
             for owner in ["software-publication","management","identity"]: roles+=(ROOT/f"crates/app/schema/{owner}-roles.sql").read_text()
             for role in ["mdm_management_runtime","mdm_software_driver","mdm_identity_runtime","mdm_identity_maintenance"]:
                 roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             sql(roles)
-            for volume,directory_input in [(runtime_volume,runtime),(operator_volume,operator)]:
-                docker("volume","create",volume);volumes.append(volume)
+            for volume,directory_input,volume_stage,input_stage in [(runtime_volume,runtime,Stage.RUNTIME_VOLUME,Stage.RUNTIME_INPUTS),(operator_volume,operator,Stage.OPERATOR_VOLUME,Stage.OPERATOR_INPUTS)]:
+                docker("volume","create",volume,stage=volume_stage);volumes.append(volume)
                 docker("run","--rm","--user","0:0","--network","none","-v",str(directory_input)+":/fixture:ro","-v",volume+":/run/mdm",
-                       "--entrypoint","sh",providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm")
+                       "--entrypoint","sh",providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=input_stage)
             network=["--network","container:"+pg]
             operator_mount=["-v",operator_volume+":/run/mdm:ro"]
-            for _ in range(2): docker("run","--rm",*network,*operator_mount,image,"migrate","--config","/run/mdm/migrate.json")
-            docker("run","--rm",*network,*operator_mount,image,"initialize","--config","/run/mdm/initialize.json")
+            for stage in [Stage.MIGRATION,Stage.REPLAY]: docker("run","--rm",*network,*operator_mount,image,"migrate","--config","/run/mdm/migrate.json",stage=stage)
+            docker("run","--rm",*network,*operator_mount,image,"initialize","--config","/run/mdm/initialize.json",stage=Stage.INITIALIZE)
             created.append(gateway)
-            docker("run","-d","--name",gateway,*network,"-v",str(root)+":/certs:ro",providers["nginx"],"nginx","-e","stderr","-c","/certs/nginx.conf","-g","daemon off;")
+            docker("run","-d","--name",gateway,*network,"-v",str(root)+":/certs:ro",providers["nginx"],"nginx","-e","stderr","-c","/certs/nginx.conf","-g","daemon off;",stage=Stage.GATEWAY)
             created.append(server)
-            docker("run","-d","--name",server,*network,"-v",runtime_volume+":/run/mdm:ro",image,"serve","--config","/run/mdm/config.json")
-            port=int(docker("port",pg,"8445/tcp").rsplit(":",1)[1])
+            docker("run","-d","--name",server,*network,"-v",runtime_volume+":/run/mdm:ro",image,"serve","--config","/run/mdm/config.json",stage=Stage.SERVER)
+            port=int(docker("port",pg,"8445/tcp",stage=Stage.PORT).rsplit(":",1)[1])
             browser=Browser(port,root/"ca.crt")
             wait(lambda: browser.call("GET","/livez")== (200,{"alive":True}),"liveness")
             wait(lambda: browser.call("GET","/readyz")== (200,{"ready":True}),"readiness")
@@ -183,11 +219,11 @@ def run_smoke(directory):
             require(stale.call("GET","/api/v1/authorization")[0]==401,"rotated credential accepted")
             require(browser.call("POST",tenant+"/session/logout")[0]==204,"candidate logout failed")
             require(browser.call("GET","/api/v1/authorization")[0]==401,"logged-out candidate accepted")
-            started=time.monotonic();docker("stop","--time","45",server,timeout=55)
+            started=time.monotonic();docker("stop","--time","45",server,timeout=55,stage=Stage.STOP)
             elapsed=time.monotonic()-started
-            logs=docker("logs",server)
+            logs=docker("logs",server,stage=Stage.LOGS)
             require("mdm_request" in logs, "candidate request diagnostics missing")
-            require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
+            require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
             result=dict(revision=revision,manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],dependencies=manifest["dependencies"],
                         checks=["migrate","migration_replay","initialize","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                         shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
@@ -206,11 +242,13 @@ def failure_evidence(directory, created, safe_log_sources, primary):
     # Product and ingress logs have closed, credential-free schemas. PostgreSQL
     # statement logs can contain input values, so capture only its closed state.
     diagnostics = {"status":"failed", "error_class":type(primary).__name__, "containers":{}}
+    if isinstance(primary, DockerFailure):
+        diagnostics.update(stage=primary.stage.value,outcome=primary.outcome,exit_code=primary.exit_code)
     for name in created:
         value = {}
         try:
-            value["state"] = docker("inspect", "--format", "{{.State.Status}}:{{.State.ExitCode}}", name, timeout=10)
-            if name in safe_log_sources: value["log"] = docker("logs", "--tail", "200", name, timeout=10)
+            value["state"] = docker("inspect", "--format", "{{.State.Status}}:{{.State.ExitCode}}", name, timeout=10,stage=Stage.DIAGNOSTIC_STATE)
+            if name in safe_log_sources: value["log"] = docker("logs", "--tail", "200", name, timeout=10,stage=Stage.DIAGNOSTIC_LOGS)
         except Exception:
             value["diagnostic_unavailable"] = True
         diagnostics["containers"][name] = value
@@ -229,7 +267,7 @@ def cleanup(created, volume):
     commands.extend(("volume", "rm", name) for name in ([volume] if isinstance(volume,str) else reversed(volume)))
     for command in commands:
         try:
-            docker(*command)
+            docker(*command,stage=Stage.REMOVE_CONTAINER if command[0]=="rm" else Stage.REMOVE_VOLUME)
         except Exception as error:
             failures.append(error)
     if failures:

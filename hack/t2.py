@@ -80,7 +80,7 @@ def verify_migrations(container, binary, config, root, env):
             if child.poll() is None: child.terminate();child.wait(timeout=5)
     print("migration admission, immutable digest, interrupted ledger and concurrent installers passed",flush=True)
 
-def verify_startup_deadlines(binary, root, port, env):
+def verify_startup_deadlines(binary, root, env):
     import socket
     config=json.loads((root/'runtime.json').read_text())
     runtime_password = config['runtime_database']['password_file']
@@ -91,24 +91,50 @@ def verify_startup_deadlines(binary, root, port, env):
     require(result.returncode != 0 and 'startup.runtime_database_configuration' in result.stderr,
             'runtime database input lost its startup stage: ' + result.stderr)
     config['runtime_database']['password_file'] = runtime_password
-    for stage in ['database']:
-        with socket.socket() as stalled:
-            stalled.bind(('127.0.0.1',0));stalled.listen(8)
-            stalled_port=stalled.getsockname()[1]
-            config['database']['port']=stalled_port if stage=='database' else int(port)
-            config['access_database']['port']=config['database']['port']
-            config['runtime_database']['port']=config['database']['port']
-            config['management']['database']['port']=config['database']['port']
-            config['management']['publication_database']['port']=config['database']['port']
-            config['identity']['database']['port']=config['database']['port']
-            path=root/'stalled.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
-            start=time.monotonic()
-            result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
-            require(result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget')
-            expected='startup.reader_connection_or_admission' if stage=='database' else 'startup.identity'
-            require(expected in result.stderr, 'startup failure lost safe stage classification: ' + result.stderr)
-            require('api-fixture' not in result.stderr and 'o'*40 not in result.stderr, 'startup diagnostics exposed credentials')
-    print('startup dependency stalls rejected within budget with safe stage diagnostics',flush=True)
+    secrets=['api-fixture','access-fixture','runtime-fixture','identity-runtime-fixture','identity-maintenance-fixture','o'*40]
+    def verify(result, start, stage):
+        require(result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget')
+        require(stage in result.stderr, 'startup failure lost safe stage classification: ' + result.stderr)
+        require(all(secret not in result.stderr for secret in secrets), 'startup diagnostics exposed credentials')
+    with socket.socket() as stalled:
+        stalled.bind(('127.0.0.1',0));stalled.listen(8)
+        stalled_port=stalled.getsockname()[1]
+        for key in ['database','access_database','runtime_database']:
+            config[key]['port']=stalled_port
+        for key in ['database','publication_database']:
+            config['management'][key]['port']=stalled_port
+        config['identity']['database']['port']=stalled_port
+        path=root/'stalled.json';path.write_text(json.dumps(config));path.chmod(0o600)
+        start=time.monotonic()
+        result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
+        verify(result,start,'startup.reader_connection_or_admission')
+    # Keep the same physical PG identity required by production configuration.
+    # This table is probed only by Identity; the earlier product stores remain healthy.
+    container=env['MDM_TEST_PG_CONTAINER']
+    def sql(statement):
+        return run(['docker','exec',container,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test','-c',statement],capture_output=True,timeout=5).stdout.strip()
+    holder=subprocess.Popen(['docker','exec','-e','PGAPPNAME=mdm-t2-identity-startup-holder',container,'psql','-X','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test','-c',
+        'BEGIN; LOCK TABLE identity_authority.deployment IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(60); ROLLBACK;'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    child=None
+    try:
+        end=time.monotonic()+5
+        while sql("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING(pid) WHERE a.application_name='mdm-t2-identity-startup-holder' AND l.relation='identity_authority.deployment'::regclass AND l.mode='AccessExclusiveLock' AND l.granted") != '1':
+            require(holder.poll() is None and time.monotonic()<end,'identity startup lock holder deadline')
+            time.sleep(.1)
+        start=time.monotonic()
+        child=subprocess.Popen([binary,'serve','--config',str(root/'runtime.json')],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        end=time.monotonic()+8
+        while sql("SELECT count(*) FROM pg_stat_activity WHERE usename='mdm_identity_runtime' AND wait_event_type='Lock'") != '1':
+            require(child.poll() is None and time.monotonic()<end,'startup did not reach the blocked Identity probe')
+            time.sleep(.1)
+        output,error=child.communicate(timeout=22)
+        verify(subprocess.CompletedProcess(child.args,child.returncode,output,error),start,'startup.identity')
+    finally:
+        sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='mdm-t2-identity-startup-holder'")
+        holder.wait(timeout=5)
+        if child is not None and child.poll() is None:
+            child.terminate();child.communicate(timeout=10)
+    print('database and Identity startup stalls rejected within budget with safe stage diagnostics',flush=True)
 
 INSTANCE = '33333333-3333-4333-8333-333333333333'
 ADMIN = '44444444-4444-4444-8444-444444444444'
@@ -200,7 +226,7 @@ def main(identity_only=False):
                     run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env={**env,**provider})
                 return
             if not device_only and not windows_only and not identity_only:
-                verify_startup_deadlines(migrators[0],root,port,env)
+                verify_startup_deadlines(migrators[0],root,env)
             print(json.dumps({"provider": IMAGE, "tls": "verify-full", "runtime": "NOSUPERUSER NOBYPASSRLS"}), flush=True)
             if not device_only and not windows_only and not identity_only:
                 run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
