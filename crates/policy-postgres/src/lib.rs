@@ -30,3 +30,6 @@ pub(crate) const ADMISSION: Admission = Admission {
     ],
     catalog: include_str!("catalog.json"),
 };
+
+/// Public Outbox function permissions, installed after the immutable initial product schema.
+pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");

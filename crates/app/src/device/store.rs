@@ -2,11 +2,11 @@ use super::*;
 use crate::access_store::{Actor, Operation, db};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
-fn actor(proof: &VerifiedIdentity) -> Actor<'_> {
+fn actor(proof: &Principal) -> Actor<'_> {
     Actor {
         tenant: proof.tenant_id(),
-        subject: proof.subject(),
-        client: proof.client_id(),
+        subject: proof.principal_id(),
+        instance: proof.instance_id(),
     }
 }
 fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
@@ -37,9 +37,10 @@ pub(crate) async fn lock_channel(
     Ok(())
 }
 impl DeviceService {
+    #[cfg(test)]
     pub(super) async fn bind_inner(
         &self,
-        admin: &VerifiedIdentity,
+        admin: &Principal,
         credential: &VerifiedChannelCredential,
         command: &BindRegistration,
         audit: &Audit,
@@ -57,8 +58,8 @@ impl DeviceService {
         }
         let mut tx = self.access.begin(admin.tenant_id()).await?;
         // The accepted request supplies the target; its UUID alone never authorizes binding.
-        let request = sqlx::query("SELECT g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.client=$4 AND g.state='consumed' AND r.state<>'cancelled'")
-            .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.subject()).bind(admin.client_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+        let request = sqlx::query("SELECT g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
+            .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.principal_id()).bind(admin.instance_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
         let device: String = request.try_get("device").map_err(db)?;
         let _permission = self.policy.enrollment(admin, &device)?;
         audit.target(&device);
@@ -103,7 +104,7 @@ impl DeviceService {
     }
     pub(crate) async fn revoke_inner(
         &self,
-        admin: &VerifiedIdentity,
+        admin: &Principal,
         device: &str,
         registration: Uuid,
         key: Uuid,
@@ -193,7 +194,7 @@ impl DeviceService {
     }
     pub(crate) async fn current_scope(
         &self,
-        proof: &VerifiedIdentity,
+        proof: &Principal,
         device: &str,
         coordinates: Coordinates,
     ) -> Result<Scope, Error> {
@@ -259,7 +260,7 @@ async fn retire(
 /// Borrow the AccessStore transaction; the caller commits binding, certificate and audit together.
 pub(crate) async fn bind_in(
     tx: &mut Transaction<'_, Postgres>,
-    admin: &VerifiedIdentity,
+    admin: &Principal,
     credential: &VerifiedChannelCredential,
     command: &BindRegistration,
     device: String,

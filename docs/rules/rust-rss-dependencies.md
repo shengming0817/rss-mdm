@@ -51,10 +51,11 @@ consumer 行为用例及必要脚本随各实现 owner 入库，临时 workspace
 
 Agent 仅消费确有需求且支持目标平台的公共核心/值类型，不带服务端 PostgreSQL、AMQP 或运行角色依赖。共享 wire 协议由产品协议包唯一维护；schema 版本、能力协商、未知字段、状态兼容和可升级窗口独立于 RSS crate 版本验证。
 
-## Identity 消费（#2343）
+## Identity 消费（#2437）
 
-独立产品 rss-identity 仅以固定新仓 Git URL + 完整 SHA 消费 rss-identity-client/contracts；不能仅因包名 rss-* 就归入RSS主仓来源，也不能放宽成任意Identity包。SDK与wire类型唯一由Identity持有，MDM不复制验证器、不引入其服务端/PG/装配。精确来源由manifest/lock持有，CI校验两组来源和普通/测试依赖图。
-OIDC只使用公钥验签；#2365 单独限定 MDM app → openidconnect 4.0.1 → rsa 0.9.10 的当前registry路径，禁止其它用途或消费者，修复可用后退出。不存在源码不可取得时的path/registry备用路径。
+独立 Identity 仓的四个公开包 core/postgres/http-axum/oidc 使用固定 Git URL + 同一完整 SHA，精确来源由 manifest/lock 持有。MDM 直接嵌入公开组件，拥有宿主装配与产品权限，不依赖参考应用或复制账户/认证机制。普通及测试依赖图分别检查 RSS 和 Identity 唯一来源/revision，禁止跨仓 path/patch。
+
+OIDC 仅使用 RSA 公钥验证。新路径为 MDM app → rss-identity-oidc → openidconnect 4.0.1 → rsa 0.9.10；#2365 的旧路径豁免不继承，交付需基于最终 lock 和实际普通/测试闭包取得该路径的明确风险接受。修复版本可用时升级退出。测试 loopback 能力仅在显式 integration 测试构建中调用，生产装配固定使用 HttpOidc::new。
 
 ## MDM 后端支持包依赖
 

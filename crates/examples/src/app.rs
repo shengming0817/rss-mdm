@@ -63,35 +63,35 @@ impl App {
             }
         };
         drop(pool);
+        let cancel = CancellationToken::new();
+        let control = Control::new(&clock, clock.cutoff(BUDGET), &cancel);
         let projection = async {
-            let pool = storage::pool(options).await?;
-            if let Err(error) =
-                tokio::time::timeout(BUDGET, rss_mdm_inventory_postgres::verify_admission(&pool))
-                    .await
-                    .map_err(anyhow::Error::from)
-                    .and_then(|r| r)
-            {
-                return failure::finish(
-                    Err(failure::at("inventory_admission", error)),
-                    [("projection_pool_close", storage::close_pool(&pool).await)],
-                );
+            let pool = control
+                .run(async {
+                    storage::pool(options).await.map_err(|_| {
+                        rss_projection::Error::new(rss_projection::ErrorKind::Unavailable)
+                    })
+                })
+                .await?;
+            let result = async {
+                control
+                    .run(async {
+                        rss_mdm_inventory_postgres::verify_admission(&pool)
+                            .await
+                            .map_err(|_| {
+                                rss_projection::Error::new(rss_projection::ErrorKind::Unavailable)
+                            })
+                    })
+                    .await?;
+                rss_projection_postgres::PgStore::new(pool.clone(), &control).await
             }
-            let result =
-                tokio::time::timeout(BUDGET, rss_projection_postgres::PgStore::new(pool.clone()))
-                    .await;
+            .await;
             match result {
-                Ok(Ok(store)) => Ok(store),
-                failure => {
-                    let error = match failure {
-                        Ok(Err(e)) => anyhow::Error::from(e),
-                        Err(e) => e.into(),
-                        _ => unreachable!(),
-                    };
-                    failure::finish(
-                        Err(failure::at("projection_open", error)),
-                        [("projection_pool_close", storage::close_pool(&pool).await)],
-                    )
-                }
+                Ok(store) => Ok(store),
+                Err(error) => failure::finish(
+                    Err(failure::at("projection_open", error)),
+                    [("projection_pool_close", storage::close_pool(&pool).await)],
+                ),
             }
         }
         .await;

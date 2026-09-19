@@ -161,7 +161,13 @@ impl PublicationService {
                     budget(cutoff),
                     (self, input, &candidate, &subject),
                     |(s, i, c, subject), tx| {
-                        Box::pin(async move { s.create_in(tx, i, c, subject).await })
+                        Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[s
+                                .releases
+                                .partition(c.snapshot().id.value())?])
+                                .await?;
+                            s.create_in(tx, i, c, subject).await
+                        })
                     },
                 )
                 .await,
@@ -451,6 +457,10 @@ impl PublicationService {
                     (self, c, subject, r, &target),
                     |(s, c, subject, r, target), tx| {
                         Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[s
+                                .releases
+                                .partition(c.snapshot().id.value())?])
+                                .await?;
                             db::lock(
                                 tx,
                                 "source",
@@ -718,6 +728,10 @@ impl PublicationService {
                     (self, c, subject, r),
                     move |(s, c, subject, r), tx| {
                         Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[s
+                                .releases
+                                .partition(c.snapshot().id.value())?])
+                                .await?;
                             let replay = db::required(
                                 "service::transition_audited",
                                 s.releases.operation_in(tx, &r.id).await?,
@@ -768,6 +782,10 @@ impl PublicationService {
                     (self, r, version, actor),
                     |(s, r, v, actor), tx| {
                         Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[s
+                                .resources
+                                .partition(r.resource.as_str())?])
+                                .await?;
                             input!(
                                 s.resources
                                     .lock_version_in(tx, &r.resource, v)

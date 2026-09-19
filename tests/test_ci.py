@@ -31,8 +31,8 @@ class IsolationGates(unittest.TestCase):
         extra += [{'id':name,'name':name,'source':identity_source} for name in ci.IDENTITY_PACKAGES]
         data['packages'][-2:-2] = extra
         for node in data['resolve']['nodes']: node['deps'] = []
-        next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')['deps'] = [{'pkg':'openidconnect'},{'pkg':'rss-identity-client'}]
-        data['resolve']['nodes'][-2:-2] = [{'id':p['id'],'features':[],'deps':([{'pkg':'rsa'}] if p['id']=='openidconnect' else [])} for p in extra]
+        next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')['deps'] = [{'pkg':name} for name in ci.IDENTITY_PACKAGES]
+        data['resolve']['nodes'][-2:-2] = [{'id':p['id'],'features':[],'deps':([{'pkg':'rsa'}] if p['id']=='openidconnect' else [{'pkg':'openidconnect'}] if p['id']=='rss-identity-oidc' else [])} for p in extra]
         for kind in ('policy', 'resource', 'software-release'):
             next(n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres')['deps'].append({'pkg':'rss-mdm-backend-postgres-support'})
         ci.verify_metadata(data,root,"normal",pin)

@@ -20,7 +20,7 @@ def verify(image):
         config=(ROOT/'deployment/nginx.conf').read_text()
         config=config.replace('listen 443 ssl;','listen 8080;').replace('ssl_certificate /private/mdm-tls.crt;','').replace('ssl_certificate_key /private/mdm-tls.key;','')
         config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
-        config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; location / { return 200 "{}"; } }}'
+        config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; location / { return 200 "$http_x_forwarded_for"; } }}'
         (root/'nginx.conf').write_text(config)
         try:
             subprocess.run(['docker','run','-d','--rm','--name',name,'--label','rss.test=2343','-p','127.0.0.1::8080','-v',str(root/'nginx.conf')+':/tmp/input.conf:ro',image,'nginx','-e','stderr','-c','/tmp/input.conf','-g','daemon off;'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -28,7 +28,7 @@ def verify(image):
             def request(path,forward='',body=None):
                 c=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
                 try:
-                    c.request('POST',path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-MDM-Request':'1','X-Forwarded-For':forward})
+                    c.request('POST',path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-Identity-Request':'1','X-Forwarded-For':forward})
                     r=c.getresponse();body=r.read()
                     if r.status>=400 and any(r.getheader(k)!=v for k,v in [('Cache-Control','no-store'),('Referrer-Policy','no-referrer'),('X-Content-Type-Options','nosniff')]):raise RuntimeError('gateway rejection omitted security headers')
                     return r.status,body
@@ -40,13 +40,15 @@ def verify(image):
                 except OSError:pass
                 if time.monotonic()>end:raise RuntimeError('gateway startup failed')
                 time.sleep(.1)
+            status, forwarded=request('/probe','203.0.113.254')
+            if status!=200 or not forwarded or forwarded==b'203.0.113.254':raise RuntimeError('gateway failed to overwrite source header')
             statuses=[]
             for n in range(25):
-                status,body=request('/auth/login','203.0.113.'+str(n));statuses.append(status)
+                status,body=request('/api/v2/tenants/11111111-1111-4111-8111-111111111111/login','203.0.113.'+str(n));statuses.append(status)
                 if status==429 and json.loads(body)!={'code':'request_limited'}:raise RuntimeError('incorrect rate-limit response')
             if 200 not in statuses or 429 not in statuses or statuses.count(200)>14:raise RuntimeError('caller-controlled source bypassed login admission')
             time.sleep(3.2)
-            if request('/auth/login')[0]!=200:raise RuntimeError('login budget did not recover')
+            if request('/api/v2/tenants/11111111-1111-4111-8111-111111111111/login')[0]!=200:raise RuntimeError('login budget did not recover')
             if request('/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
             if request('/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
             held=[]
@@ -85,3 +87,6 @@ def verify(image):
             except Exception:
                 if primary is None:raise RuntimeError('login gateway cleanup failed') from None
                 primary.add_note('login gateway cleanup also failed')
+
+if __name__ == "__main__":
+    verify(json.loads((ROOT/"deployment/providers.lock.json").read_text())["nginx"])

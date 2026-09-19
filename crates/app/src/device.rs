@@ -4,16 +4,20 @@
 pub(crate) mod store;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+use crate::audit::{FailureReason, WriteOutcome};
+use crate::identity::Principal;
 use crate::{
     AccessStore, Error, Failure,
     access::{Coordinates, Policy},
-    audit::{Audit, FailureReason, WriteOutcome},
+    audit::Audit,
 };
-use rss_identity_client::VerifiedIdentity;
 use rss_observation::{Epoch, Id, Registration, Scope};
 use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+#[cfg(test)]
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -153,9 +157,10 @@ impl DeviceService {
             .await
             .map(|(principal, _)| principal)
     }
-    pub async fn bind(
+    #[cfg(test)]
+    pub(crate) async fn bind(
         &self,
-        admin: &VerifiedIdentity,
+        admin: &Principal,
         credential: &VerifiedChannelCredential,
         command: BindRegistration,
     ) -> Result<RegistrationReceipt, Error> {
@@ -165,9 +170,10 @@ impl DeviceService {
         self.audited(&audit, self.bind_inner(admin, credential, &command, &audit))
             .await
     }
-    pub async fn revoke(
+    #[cfg(test)]
+    pub(crate) async fn revoke(
         &self,
-        admin: &VerifiedIdentity,
+        admin: &Principal,
         device: &str,
         registration: Uuid,
         operation_id: Uuid,
@@ -182,6 +188,7 @@ impl DeviceService {
         )
         .await
     }
+    #[cfg(test)]
     async fn audited<T>(
         &self,
         audit: &Audit,
@@ -197,6 +204,7 @@ impl DeviceService {
         // New writes already recorded success atomically. A remaining Ok is a stored receipt.
         self.record_result(audit, result, "replay").await
     }
+    #[cfg(test)]
     async fn record_result<T>(
         &self,
         audit: &Audit,

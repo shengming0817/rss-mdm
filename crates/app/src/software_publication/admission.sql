@@ -48,11 +48,11 @@ SELECT
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
- AND (n.nspname,c.relname)<>('rss_transactional_messaging','outbox_seq_seq')
+
  AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
- AND p.oid<>'rss_transactional_messaging.check_execution()'::regprocedure
+ AND p.oid NOT IN ('rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
  AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND (SELECT count(*)=1 FROM pg_policy WHERE polrelid='mdm_access.audit'::regclass)
  AND EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='mdm_access.audit'::regclass AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]

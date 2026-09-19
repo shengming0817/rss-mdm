@@ -7,79 +7,76 @@ use crate::{
 use crate::{
     Error,
     access::{Coordinates, InventoryResponse, InventoryService, Policy},
+    enrollment_credentials::Credentials,
     identity::Identity,
-    sessions::{self, Lease, Sessions},
 };
+use crate::{clock::Clock, identity::Principal};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, header},
     middleware::{self, Next},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
-use rss_identity_client::{Clock, VerifiedIdentity};
+use rss_identity_core::session::SessionSecret;
 use rss_mdm_inventory_postgres::InventoryReader;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
-const COOKIE: &str = "__Host-mdm-session";
-const BROWSER: &str = "__Host-mdm-login";
 pub(crate) struct App {
     pub(crate) management: Arc<crate::management::Management>,
     pub(crate) identity: Identity,
-    pub(crate) sessions: Sessions,
+    pub(crate) credentials: Credentials,
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) policy: Arc<Policy>,
     pub(crate) inventory: InventoryService,
     pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) windows: crate::windows::Windows,
     pub(crate) access: Arc<AccessStore>,
-    pub(crate) origin: String,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
 pub(crate) struct RequestAuth {
-    pub(crate) proof: Arc<VerifiedIdentity>,
-    lease: Arc<Lease>,
+    pub(crate) proof: Arc<Principal>,
+    credential: Arc<SessionSecret>,
 }
 async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
-    let writes =
-        parts.method != axum::http::Method::GET && parts.method != axum::http::Method::HEAD;
-    if writes && let Err(error) = same_origin(&app, &parts.headers) {
-        return error.into_response();
-    }
-    let lease = match local(&app, &parts.headers) {
-        Ok(lease) => lease,
-        Err(error) => return error.into_response(),
-    };
-    let _session = match lease.requests.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => return Error::Unavailable(Failure::Capacity).into_response(),
-    };
+    let activity =
+        if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
+            rss_identity_http_axum::SessionActivity::Passive
+        } else {
+            rss_identity_http_axum::SessionActivity::Active
+        };
     let _global = match app.requests.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return Error::Unavailable(Failure::Capacity).into_response(),
     };
-    match authenticate(&app, lease).await {
-        Ok((proof, lease)) => {
+    match app
+        .identity
+        .authenticate_request(&parts.headers, activity)
+        .await
+    {
+        Ok((proof, credential)) => {
             if let Some(audit) = parts.extensions.get::<Audit>() {
                 audit.identify(&proof);
             }
-            if writes
-                && !csrf(&parts.headers).is_ok_and(|token| sessions::equal(&lease.csrf, token))
-            {
-                return Error::Forbidden.into_response();
-            }
             parts.extensions.insert(RequestAuth {
                 proof: Arc::new(proof),
-                lease: Arc::new(lease),
+                credential: Arc::new(credential),
             });
-            next.run(Request::from_parts(parts, body)).await
+            // Authentication has settled. Only the product operation uses the host timeout.
+            tokio::time::timeout(
+                Duration::from_secs(8),
+                next.run(Request::from_parts(parts, body)),
+            )
+            .await
+            .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
         }
-        Err(error) => error.into_response(),
+        Err(response) => response,
     }
 }
 
@@ -90,6 +87,7 @@ pub(crate) async fn application(
     monotonic: Arc<dyn rss_observation::Clock>,
     reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
+    identity: Option<Identity>,
 ) -> Result<Router, Error> {
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
@@ -108,34 +106,53 @@ pub(crate) async fn application(
             |_| {},
         )
         .await?;
+    let compiled = config.compile()?;
+    let identity = match identity {
+        Some(identity) => identity,
+        None => Identity::connect(&compiled.config, compiled.policy.clone(), |_| {}).await?,
+    };
     Ok(from_compiled(
-        config.compile()?,
+        compiled,
+        AssemblyDependencies {
+            clock,
+            monotonic,
+            reader,
+            access,
+            runtime,
+            management,
+            identity,
+        },
+    )?
+    .browser)
+}
+pub(crate) struct AssemblyDependencies {
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
+    pub(crate) reader: Arc<InventoryReader>,
+    pub(crate) access: Arc<AccessStore>,
+    pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
+    pub(crate) management: Arc<crate::management::Management>,
+    pub(crate) identity: Identity,
+}
+pub(crate) fn from_compiled(
+    compiled: crate::config::Compiled,
+    dependencies: AssemblyDependencies,
+) -> Result<crate::windows::Routers, Error> {
+    let crate::config::Compiled { config, policy } = compiled;
+    let AssemblyDependencies {
         clock,
         monotonic,
         reader,
         access,
         runtime,
         management,
-    )
-    .await?
-    .browser)
-}
-pub(crate) async fn from_compiled(
-    compiled: crate::config::Compiled,
-    clock: Arc<dyn Clock>,
-    monotonic: Arc<dyn rss_observation::Clock>,
-    reader: Arc<InventoryReader>,
-    access: Arc<AccessStore>,
-    runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
-    management: Arc<crate::management::Management>,
-) -> Result<crate::windows::Routers, Error> {
-    let crate::config::Compiled { config, policy } = compiled;
-    let policy = Arc::new(policy);
+        identity,
+    } = dependencies;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.clone(),
         policy.clone(),
     ));
-    let identity = Identity::connect(&config, clock.clone()).await?;
+    let authentication = identity.routes();
     let host = config
         .product_origin
         .strip_prefix("https://")
@@ -153,12 +170,12 @@ pub(crate) async fn from_compiled(
         windows,
         access: access.clone(),
         identity,
-        sessions: Sessions::new(clock, 1000, 10000),
+        credentials: Credentials::new(monotonic.clone(), 10000),
+        clock,
         policy,
         inventory: InventoryService::new(reader, devices.clone(), access.clone(), runtime.clone()),
         readiness: runtime.readiness.clone(),
         devices,
-        origin: config.product_origin,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     let protected = Router::new()
@@ -172,7 +189,7 @@ pub(crate) async fn from_compiled(
             "/devices/{device}/registrations/{registration}/revoke",
             post(revoke_registration),
         )
-        .route("/auth/me", get(me))
+        .route("/authorization", get(authorization))
         .route("/devices/{id}/inventory", get(inventory))
         .route("/devices/{id}/collection-runs/{run}", get(collection_run))
         .route("/devices/{id}/actions", post(action))
@@ -180,15 +197,10 @@ pub(crate) async fn from_compiled(
     let (enrollment, management) = crate::windows::routers(state.clone(), monotonic.clone());
     let browser = Router::new()
         .nest("/api/v1", protected)
-        .route("/auth/login", post(login))
-        .route(
-            "/auth/callback",
-            get(callback).head(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED }),
-        )
-        .route("/api/v1/auth/logout", post(logout))
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready))
         .with_state(state)
+        .merge(authentication)
         .layer(DefaultBodyLimit::max(16384))
         .layer(middleware::from_fn_with_state(
             Envelope {
@@ -235,9 +247,7 @@ pub(crate) async fn envelope(
         "/api/v1/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
-        "/auth/login" | "/auth/callback" | "/api/v1/auth/logout" | "/api/v1/auth/me" => {
-            "authentication"
-        }
+        path if path.starts_with("/api/v2/") => "authentication",
         "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
@@ -247,7 +257,10 @@ pub(crate) async fn envelope(
     let soap = route.starts_with("/EnrollmentServer/");
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
-    let audited = !matches!(request.uri().path(), "/livez" | "/readyz");
+    // Native authentication commits its own atomic security event. A second product
+    // audit must not replace that settled response (including rotated credentials).
+    let audited =
+        !matches!(request.uri().path(), "/livez" | "/readyz") && !route.starts_with("/api/v2/");
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -259,9 +272,7 @@ pub(crate) async fn envelope(
     {
         Error::Malformed.into_response()
     } else {
-        tokio::time::timeout(Duration::from_secs(8), next.run(request))
-            .await
-            .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
+        bounded_body(request, next).await
     };
     let snapshot = audit.snapshot();
     if matches!(
@@ -330,6 +341,25 @@ pub(crate) fn secure_response(mut response: Response, request_id: uuid::Uuid) ->
     );
     response
 }
+async fn bounded_body(request: Request, next: Next) -> Response {
+    // Bound ingress before starting any transaction. Component operations then settle
+    // within their own budgets; product operations are bounded after authentication.
+    let (parts, body) = request.into_parts();
+    match tokio::time::timeout(
+        Duration::from_secs(8),
+        axum::body::to_bytes(body, 2 * 1024 * 1024),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => {
+            next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+                .await
+        }
+        Ok(Err(_)) => axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) => Error::Unavailable(Failure::RequestDeadline).into_response(),
+    }
+}
+
 fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'static str {
     let status = response.status().as_u16();
     if matches!(
@@ -356,177 +386,17 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
         "success"
     }
 }
-fn cookie_raw(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
-    let mut result = None;
-    for line in headers.get_all(header::COOKIE) {
-        let line = line.to_str().map_err(|_| Error::Unauthorized)?;
-        if line.len() > 8192 {
-            return Err(Error::Unauthorized);
-        }
-        for part in line.split(';') {
-            if let Some((key, value)) = part.trim().split_once('=')
-                && key == name
-            {
-                if result.is_some() {
-                    return Err(Error::Unauthorized);
-                }
-                result = Some(value.to_owned());
-            }
-        }
-    }
-    Ok(result)
+pub(crate) async fn authenticate(app: &App, secret: SessionSecret) -> Result<Principal, Error> {
+    app.identity.authenticate(secret).await
 }
-fn cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>, Error> {
-    let value = cookie_raw(headers, name)?;
-    if value.as_deref().is_some_and(|v| !sessions::valid(v)) {
-        return Err(Error::Unauthorized);
-    }
-    Ok(value)
-}
-
-fn same_origin(app: &App, h: &HeaderMap) -> Result<(), Error> {
-    if h.get_all("x-mdm-request").iter().count() != 1
-        || h.get_all(header::ORIGIN).iter().count() != 1
-        || h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(&app.origin)
-        || h.get("x-mdm-request").and_then(|v| v.to_str().ok()) != Some("1")
-    {
-        return Err(Error::Forbidden);
-    }
-    Ok(())
-}
-fn csrf(h: &HeaderMap) -> Result<&str, Error> {
-    if h.get_all("x-csrf-token").iter().count() != 1 {
-        return Err(Error::Forbidden);
-    }
-    h.get("x-csrf-token")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(Error::Forbidden)
-}
-fn local(app: &App, h: &HeaderMap) -> Result<Lease, Error> {
-    app.sessions
-        .get(&cookie(h, COOKIE)?.ok_or(Error::Unauthorized)?)
-}
-pub(crate) async fn authenticate(
-    app: &App,
-    lease: Lease,
-) -> Result<(VerifiedIdentity, Lease), Error> {
-    let proof = app.identity.validate(&lease).await?;
-    app.sessions.get(&lease.id)?; // Reject local logout/replacement during remote verification.
-    Ok((proof, lease))
-}
-fn set_cookie(r: &mut Response, name: &str, value: &str, max_age: i64) -> Result<(), Error> {
-    let v = HeaderValue::from_str(&format!(
-        "{name}={value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}"
-    ))
-    .map_err(|_| Error::Unavailable(Failure::Runtime))?;
-    r.headers_mut().append(header::SET_COOKIE, v);
-    Ok(())
-}
-async fn login(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, Error> {
-    same_origin(&app, &headers)?;
-    let presented = cookie_raw(&headers, COOKIE)?;
-    let old = match presented
-        .as_deref()
-        .filter(|id| sessions::valid(id))
-        .map(|id| app.sessions.get(id))
-    {
-        Some(Ok(session)) => {
-            if !sessions::equal(&session.csrf, csrf(&headers)?) {
-                return Err(Error::Forbidden);
-            }
-            presented.clone()
-        }
-        Some(Err(Error::Unauthorized)) | None => None,
-        Some(Err(error)) => return Err(error),
-    };
-    let clear_stale = presented.is_some() && old.is_none();
-    let browser = cookie_raw(&headers, BROWSER)?
-        .filter(|value| sessions::valid(value))
-        .unwrap_or_else(sessions::random);
-    let (url, state, pending) = app
-        .identity
-        .begin(browser.clone(), old, app.sessions.now()?);
-    app.sessions.begin(state, pending)?;
-    let mut response = Json(json!({"authorization_url":url})).into_response();
-    set_cookie(&mut response, BROWSER, &browser, 300)?;
-    if clear_stale {
-        set_cookie(&mut response, COOKIE, "", 0)?;
-    }
-    Ok(response)
-}
-#[derive(Deserialize)]
-struct Callback {
-    code: Option<String>,
-    state: String,
-    iss: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
-    error_uri: Option<String>,
-    scope: Option<String>,
-}
-async fn callback(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    input: Result<Query<Callback>, axum::extract::rejection::QueryRejection>,
-) -> Result<Response, Error> {
-    let c = input.map_err(|_| Error::Malformed)?.0;
-    let _global = app
-        .requests
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Error::Unavailable(Failure::Capacity))?;
-    let browser = cookie(&headers, BROWSER)?.ok_or(Error::Unauthorized)?;
-    let old = cookie(&headers, COOKIE)?;
-    let pending = app.sessions.consume(&c.state, &browser, old.as_deref())?;
-    // Error descriptions and URIs are never followed, rendered or logged.
-    let _ = (c.error_description, c.error_uri, c.scope);
-    if c.iss
-        .as_deref()
-        .is_some_and(|iss| !app.identity.is_issuer(iss))
-    {
-        return Err(Error::Unauthorized);
-    }
-    if let Some(error) = c.error {
-        return Err(match error.as_str() {
-            "access_denied"
-            | "invalid_request"
-            | "unauthorized_client"
-            | "unsupported_response_type"
-            | "invalid_scope" => Error::Unauthorized,
-            "server_error" | "temporarily_unavailable" => {
-                Error::Unavailable(Failure::IdentityServer)
-            }
-            _ => Error::Unavailable(Failure::IdentityProtocol),
-        });
-    }
-    let code = c
-        .code
-        .filter(|v| !v.is_empty() && v.len() <= 4096)
-        .ok_or(Error::Malformed)?;
-    let session = app.identity.finish(code, pending).await?;
-    let age = session.expires - app.sessions.now()?;
-    let id = app.sessions.establish(old.as_deref(), session)?;
-    let mut response = Redirect::to("/api/v1/auth/me").into_response();
-    set_cookie(&mut response, COOKIE, &id, age)?;
-    Ok(response)
-}
-async fn me(
+async fn authorization(
     State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<Value>, Error> {
     let proof = &auth.proof;
     Ok(Json(
-        json!({"subject":proof.subject(),"tenant_id":proof.tenant_id(),"client_id":proof.client_id(),"roles":app.policy.roles(proof)?,"csrf_token":auth.lease.csrf,"expires_at":proof.expires_at()}),
+        json!({"instance_id":proof.instance_id(),"tenant_id":proof.tenant_id(),"principal_id":proof.principal_id(),"roles":app.policy.roles(proof)?}),
     ))
-}
-
-async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, Error> {
-    same_origin(&app, &headers)?;
-    let id = cookie(&headers, COOKIE)?.ok_or(Error::Unauthorized)?;
-    app.sessions.remove(&id, csrf(&headers)?)?;
-    let mut response = axum::http::StatusCode::NO_CONTENT.into_response();
-    set_cookie(&mut response, COOKIE, "", 0)?;
-    Ok(response)
 }
 async fn inventory(
     State(app): State<Arc<App>>,
@@ -604,7 +474,9 @@ async fn create_enrollment(
     let input = input.map_err(|_| Error::Malformed)?.0;
     let permission = app.policy.enrollment(&auth.proof, &input.device_id)?;
     audit.target(&input.device_id);
-    let reference = app.sessions.reference(&auth.lease)?;
+    let reference = app.credentials.insert(
+        SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
+    )?;
     app.access
         .create_enrollment(permission, &input.password, reference, key, &audit)
         .await
@@ -651,7 +523,9 @@ async fn resume_enrollment(
     let device = app.access.enrollment_target(&auth.proof, id).await?;
     let permission = app.policy.enrollment(&auth.proof, &device)?;
     audit.target(&device);
-    let reference = app.sessions.reference(&auth.lease)?;
+    let reference = app.credentials.insert(
+        SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
+    )?;
     app.access
         .change_enrollment(
             permission,
@@ -815,8 +689,7 @@ mod tests {
         use tower::ServiceExt;
         for reason in [
             Failure::RequestDeadline,
-            Failure::IdentityTransport,
-            Failure::IdentityServer,
+            Failure::IdentityStorage,
             Failure::InventoryPool,
             Failure::InventoryQuery,
             Failure::Clock,
@@ -863,32 +736,6 @@ mod tests {
             assert_eq!(
                 serde_json::from_slice::<Value>(&bytes).unwrap(),
                 json!({"code":"service_unavailable"})
-            );
-        }
-    }
-    #[test]
-    fn oauth_extensions_are_ignored_but_known_duplicates_rejected() {
-        for query in [
-            "state=s&code=c&session_state=extension",
-            "state=s&error=access_denied&custom=extension",
-        ] {
-            assert!(
-                Query::<Callback>::try_from_uri(
-                    &format!("/auth/callback?{query}").parse().unwrap()
-                )
-                .is_ok()
-            );
-        }
-        for query in [
-            "state=a&state=b&code=c",
-            "state=a&code=b&code=c",
-            "state=a&iss=a&iss=b",
-        ] {
-            assert!(
-                Query::<Callback>::try_from_uri(
-                    &format!("/auth/callback?{query}").parse().unwrap()
-                )
-                .is_err()
             );
         }
     }

@@ -1,7 +1,7 @@
 //! Current, secret-free control-plane projections; write receipts remain immutable.
 use super::*;
+use crate::identity::Principal;
 use crate::{AccessStore, access::EnrollmentPermission, access_store::db};
-use rss_identity_client::VerifiedIdentity;
 use sqlx::Row;
 
 #[derive(Serialize)]
@@ -51,7 +51,7 @@ impl AccessStore {
     pub(crate) async fn registration_list(
         &self,
         policy: &crate::access::Policy,
-        proof: &VerifiedIdentity,
+        proof: &Principal,
         device: &str,
         page: Page,
     ) -> Result<Registrations, Error> {

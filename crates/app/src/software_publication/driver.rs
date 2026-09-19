@@ -518,6 +518,8 @@ impl PublicationService {
                     (self, t),
                     move |(s, t), tx| {
                         Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
+                                .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let id = db::required(
@@ -600,6 +602,8 @@ impl PublicationService {
                     (self, id, &r),
                     |(s, id, r), tx| {
                         Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
+                                .await?;
                             let result =
                                 input!(s.releases.transition_in(tx, id, r).await?.map_err(
                                     |cause| Error::Conflict.context("driver::withdraw", cause)
@@ -756,6 +760,8 @@ impl PublicationService {
                     (self, t),
                     move |(s, t), tx| {
                         Box::pin(async move {
+                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
+                                .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let call = db::call(tx, Table::Publish, &t.key())

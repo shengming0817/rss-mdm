@@ -1,15 +1,21 @@
-# 单一身份验证入口与 MDM 请求授权
+# 内嵌权威认证与 MDM 请求授权
 
-状态：已决定；实现与验证结果由 #2343 / PR #978 记录。对应 PRD §06.13。
+状态：已决定；#2437 修订并替代 #2343 的中央认证和产品会话设计。对应 PRD §06.13；验证以产品 PR 的受测 HEAD 为准，不代表生产 T3。
 
-MDM 直接消费固定 revision 的 Identity client/contracts。Identity 负责账户、成员和中央会话，MDM 负责浏览器 OIDC Code+PKCE、进程内产品会话和资源授权。协议凭据只存服务端，浏览器使用有界、不可预测的句柄。每个业务请求重新取得 SDK VerifiedIdentity，不缓存成功结果，也不自动刷新。
+MDM 直接消费 Identity 的 core/postgres/http-axum/oidc 四个公开包，使用同一完整 Git revision。组件拥有本地账户、凭据、权威会话、账户管理与可选 OIDC 联合；MDM 拥有实例、租户、数据库角色、秘密、生命周期、管理策略和资源授权。原生组件 Router 直接挂载，OIDC callback 为产品 `/api/v2/oidc/callback`。未配置 OIDC 时，本地启动、登录、刷新及退出只需 MDM 自有 PostgreSQL。
 
-受保护的 Router 统一执行在线验证。可信身份和静态绑定进入唯一授权函数，产生字段私有的请求级凭证；资产服务只接受该凭证，handler 不持有数据库连接池。租户只来自验证身份，设备及完整来源坐标参与授权与查询。同一 PostgreSQL 事务设置 RLS 上下文并读取固定 journal/generation，mdm_api 只读，启动时拒绝权限漂移。
+每个受保护业务请求从组件权威验证获得 `AuthenticatedSession`，再形成唯一私有请求级 `Principal`；主体坐标固定为 `(instance, tenant, principal)`。不缓存认证成功证明、不接受浏览器构造身份、不提供 SessionId 二次认证入口。Policy 检查证明仍有效、实例/租户一致，再检查角色、设备范围及显式许可。HTTP 请求统一使用组件 `authenticate_request`，严格 cookie、同源、CSRF 与 active/passive 语义由组件持有；被动查询不延长 idle。
 
-产品仅有 rss-mdm 应用与 migrate 入口；旧示例改为 rss-mdm-fixture，不留名称或迁移转发。既有迁移和持久化格式保持原样，追加只读角色授权。迁移要求预建 mdm_owner/mdm_api，拒绝不完整记录与摘要漂移，不自动修复未知提交结果。
+组件持有自身原子安全事件和事务预算，宿主不能通过全请求 timeout 或另一层产品审计覆盖已结算的原生响应。产品业务变更与成功审计仍在产品事务中提交；查询/拒绝审计失败不放行产品数据。产品数据库池、组件 runtime/KDF 均由生命周期作用域即时接管并有界关闭。
 
-五种角色可读取显式设备范围；wipe 另需管理员角色与显式危险许可，无权 403，有权 501，不创建执行记录。未分配角色可读取自身身份。退出只删除本地会话，Identity 故障时仍可执行，不宣称中央退出。
+账户/IdP 管理由窄 `ManagementPolicy` 控制：同实例、同租户、accounts/providers 显式许可；自助改密仅本人；读取列表外的管理操作要求 Recent(300s)。配置中的账户管理员不得经 HTTP 停用或移除成员关系，变更管理员集合需部署配置调整。五种产品角色可读显式设备范围；wipe 保持管理员角色加显式许可的原义，不增加 MFA 承诺。发布管理及人员分离按原产品权限执行。
 
-单实例、静态角色和重启失效是本期明确限制。TLS 反向代理持有登录来源限流，应用只监听回环；Identity 与 MDM 使用不同主机名隔离 cookie。组映射 #2363、部署浏览器 T3 #2364、限定 RSA 接受 #2365 独立跟踪；注册许可与持久审计由 #2347 持有。
+Windows 注册仅保留容量 10000、最长 300 秒、不续期、可零化的组件凭据引用缓存。后续请求查到凭据后，每次重新权威验证并检查当前设备权限；撤销、注销、轮换、停用或 PG 不可用均阻断。缓存不签发会话、不存成功证明。
 
-SDK 固定 2e66cac2bb8064701c5e99c992858b178f875656。候选构建缺陷由 Identity #2377 修复，实际候选源码 SHA、UI SHA、OCI 和锁文件绑定于候选清单；这不改变 SDK 来源。候选接入未通过不得关闭 #2343，T1/T2 不替代设备执行或生产 T3。
+全新 PostgreSQL 17 实例安装完整 RSS schema 与 Identity v9；安装绑定实例、存储 lineage/epoch 和租户，并核验实际 runtime/maintenance 角色。已提交产品 SQL 不变，追加迁移表达字段和权限调整；旧或不完整账本、摘要、安装坐标不匹配时拒绝并保留数据。`migrate`、`initialize`、`recover-password` 为独立 operator 路径，日常账户操作不使用 maintenance。
+
+不读取旧 cookie，不保留中央协议、远程 validate、MDM 独立浏览器会话、旧配置、候选 fixture 或回退开关。旧主体坐标与新实例坐标不自动对应；外部 subject 保持不透明，不按邮箱自动关联。旧审计保留历史含义，旧会话和非终态业务不续接。回退仅指停止新部署后恢复旧独立部署及其一致备份。
+
+HTTPS 网关按真实 peer 限流并覆盖来源头；后端只在实际 TCP peer 匹配 trusted_gateway 后读取单一转发地址，浏览器监听保持 loopback。构建及实际候选使用 Docker 默认平台，平台身份取实际 OCI 元数据。配置和操作见[认证指南](../../guides/202609091600-2343-mdm-identity.md)与[候选部署](../../deployment/202609120000-2353-candidate-deployment.md)。
+
+组件 pin 和 lock 为依赖真源；普通及测试闭包必须分别验证唯一来源/revision，不能通过跨仓 path/patch 消除类型边界。#2365 对最终 RSA 公钥验签路径要求独立限定接受，旧接受不继承；#2364 持有部署浏览器验收。真实 PG、Keycloak 与 MDM OCI T2 不替代生产或设备 T3。

@@ -63,7 +63,7 @@ impl Clock {
     fn deadline(&self) -> Deadline {
         Deadline::at(self.now.now() + BUDGET)
     }
-    fn cutoff(&self) -> Duration {
+    pub(crate) fn cutoff(&self) -> Duration {
         rss_projection::Timer::now(self) + BUDGET
     }
 }
@@ -134,23 +134,38 @@ pub(crate) struct ProjectionResource {
     clock: Clock,
 }
 impl ProjectionResource {
-    pub(crate) async fn open(options: PgConnectOptions, clock: Clock) -> Result<Self, Error> {
-        let pool = pool(options).await?;
-        let result = tokio::time::timeout(BUDGET, async {
-            rss_mdm_inventory_postgres::verify_admission(&pool)
-                .await
-                .map_err(|_| unavailable())?;
-            Projection::new(pool.clone())
-                .await
-                .map_err(|_| unavailable())
-        })
+    pub(crate) async fn open(
+        options: PgConnectOptions,
+        clock: Clock,
+        control: &Control<'_, Clock>,
+    ) -> Result<Self, Error> {
+        let pool = control
+            .run(async {
+                pool(options)
+                    .await
+                    .map_err(|_| rss_projection::Error::new(rss_projection::ErrorKind::Unavailable))
+            })
+            .await
+            .map_err(|_| unavailable())?;
+        let result = async {
+            control
+                .run(async {
+                    rss_mdm_inventory_postgres::verify_admission(&pool)
+                        .await
+                        .map_err(|_| {
+                            rss_projection::Error::new(rss_projection::ErrorKind::Unavailable)
+                        })
+                })
+                .await?;
+            Projection::new(pool.clone(), control).await
+        }
         .await;
         match result {
-            Ok(Ok(store)) => Ok(Self {
+            Ok(store) => Ok(Self {
                 store: Arc::new(store),
                 clock,
             }),
-            _ => {
+            Err(_) => {
                 close_pool(&pool).await?;
                 Err(unavailable())
             }
@@ -492,7 +507,9 @@ impl InventoryRuntime {
     ) -> Result<Arc<Self>, Error> {
         let clock = Clock::new(monotonic);
         let observation = ObservationResource::open(options.clone(), clock.clone()).await?;
-        let projection = match ProjectionResource::open(options, clock.clone()).await {
+        let cancel = CancellationToken::new();
+        let control = Control::new(&clock, clock.cutoff(), &cancel);
+        let projection = match ProjectionResource::open(options, clock.clone(), &control).await {
             Ok(p) => p,
             Err(error) => {
                 observation.shutdown().await.map_err(|_| unavailable())?;

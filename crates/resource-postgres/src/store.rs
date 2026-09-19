@@ -69,6 +69,20 @@ pub struct ResourceStore {
     writer: PgOutboxWriter,
 }
 impl ResourceStore {
+    /// Identify this tenant's ordered event partition for a canonical aggregate ID.
+    /// The outer transaction declares every partition once, before any business locks.
+    pub fn partition(
+        &self,
+        id: &str,
+    ) -> Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
+        use rss_transactional_messaging::message::{PartitionIdentity, PartitionKey};
+        Ok(PartitionIdentity::new(
+            self.tenant,
+            event::domain(),
+            STORAGE.invalid("store::partition", PartitionKey::parse(id))?,
+        ))
+    }
+
     /// Admit the exact schema and effective runtime privileges, then borrow the host runtime.
     /// Returns a settlement error on admission failure; never migrates or closes the runtime.
     pub async fn new(
@@ -209,12 +223,17 @@ impl ResourceStore {
         settle(
             self.runtime
                 .local_tx_with_context(self.tenant, d, (self, r), |(s, r), tx| {
-                    Box::pin(async move { s.execute_in(tx, r).await })
+                    Box::pin(async move {
+                        tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                            .await?;
+                        s.execute_in(tx, r).await
+                    })
                 })
                 .await,
         )
     }
     /// Archive requires the host to lock/check all external references in this same transaction.
+    /// The caller must declare the complete Outbox partition set before business locks.
     pub async fn execute_in(
         &self,
         tx: &mut PgTransaction<'_>,

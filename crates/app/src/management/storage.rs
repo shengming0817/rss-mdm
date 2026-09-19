@@ -34,7 +34,7 @@ pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>
     let bytes = input(serde_json::to_vec(&(
         audit.tenant(),
         who.actor,
-        who.client,
+        who.instance,
         command,
     )))?;
     Ok((id, Sha256::digest(bytes).to_vec()))

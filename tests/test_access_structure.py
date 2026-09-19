@@ -15,8 +15,9 @@ class AccessOwnership(unittest.TestCase):
 
     def test_identity_has_one_fixed_public_source(self):
         shared = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['dependencies']
-        client = shared['rss-identity-client']
+        client = shared['rss-identity-core']
         self.assertRegex(client['rev'], r'^[0-9a-f]{40}$')
-        self.assertEqual(client, shared['rss-identity-contracts'])
+        for name in ['rss-identity-postgres','rss-identity-http-axum','rss-identity-oidc']:
+            self.assertEqual(client, shared[name])
         self.assertNotEqual(client['git'], shared['rss-runtime']['git'])
         self.assertNotIn('path', client)

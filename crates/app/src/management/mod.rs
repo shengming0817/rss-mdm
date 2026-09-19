@@ -25,7 +25,7 @@ use uuid::Uuid;
 pub(crate) struct Management {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
-    clock: Arc<dyn rss_identity_client::Clock>,
+    clock: Arc<dyn crate::clock::Clock>,
     groups: rss_mdm_group_postgres::GroupStore,
     policies: rss_mdm_policy_postgres::PolicyStore,
     resources: rss_mdm_resource_postgres::ResourceStore,
@@ -66,7 +66,7 @@ impl Management {
     async fn new(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
-        clock: Arc<dyn rss_identity_client::Clock>,
+        clock: Arc<dyn crate::clock::Clock>,
     ) -> std::result::Result<Self, Error> {
         storage::admit(&runtime, tenant).await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
@@ -103,6 +103,15 @@ impl Management {
                 (self, command, audit, &failure),
                 |(s, command, audit, failure), tx| {
                     Box::pin(async move {
+                        let partitions = match command {
+                            Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
+                            Command::Resource { id, .. } => vec![s.resources.partition(id)?],
+                            Command::Policy { id, .. } | Command::Save { id, .. } => {
+                                vec![s.policies.partition(id)?]
+                            }
+                            _ => Vec::new(),
+                        };
+                        tx.prepare_outbox_partitions(&partitions).await?;
                         match s.execute_in(tx, command, audit).await {
                             Ok(v) => {
                                 audit.mark_commit_started();

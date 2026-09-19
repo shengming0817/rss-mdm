@@ -333,20 +333,20 @@ async fn enrollment(
             .access
             .enrollment_authorization(app.policy.tenant(), id, &password)
             .await?;
-        let lease = app.sessions.by_reference(auth.session_ref)?;
-        let _session = lease
+        let credential = app.credentials.get(auth.credential_ref)?;
+        let _global = app
             .requests
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Unavailable(Failure::Capacity))?;
-        let (proof, lease) = authenticate(&app, lease).await?;
-        if proof.subject() != auth.actor || proof.client_id() != auth.client {
+        let proof = authenticate(&app, credential).await?;
+        if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
             return Err(Error::Unauthorized);
         }
         let _permission = app.policy.enrollment(&proof, &auth.device)?;
         audit.identify(&proof);
         audit.target(&auth.device);
-        let now = app.sessions.now()?;
+        let now = app.clock.unix_seconds()?;
         if let Some(t) = &security.timestamp {
             let parse = |v: &str| {
                 time::OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339)
@@ -423,7 +423,8 @@ async fn enrollment(
             &auth,
             proof.tenant_id(),
         )?;
-        app.sessions.get(&lease.id)?;
+        let proof = authenticate(&app, app.credentials.get(auth.credential_ref)?).await?;
+        let _permission = app.policy.enrollment(&proof, &auth.device)?;
         app.access
             .complete_issuance(
                 &app.windows,
@@ -432,7 +433,7 @@ async fn enrollment(
                 &intent,
                 &certificate,
                 &audit,
-                app.sessions.now()?,
+                app.clock.unix_seconds()?,
             )
             .await?;
         response(

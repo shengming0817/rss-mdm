@@ -10,7 +10,8 @@ unknown-git = "deny"
 allow-git = ["https://dev.azure.com/shengming0923/rss/_git/rss", "https://dev.azure.com/shengming0923/rss/_git/rss-identity"]
 # Full revisions and exact package sets are enforced in hack/ci.py.
 [advisories]
-# #2365: explicit MDM-only risk acceptance. Only app -> openidconnect -> rsa public verification.
+# #2365: MDM app -> rss-identity-oidc -> openidconnect -> rsa public verification.
+# New-path owner decision is required for delivery; previous central-path acceptance does not carry over.
 # Reject versions, sources and additional roots in hack/ci.py; remove once upstream is patched.
 ignore = ["RUSTSEC-2023-0071"]
 unused-ignored-advisory = "deny"

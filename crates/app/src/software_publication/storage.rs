@@ -127,11 +127,11 @@ pub(super) async fn audit(
         return Err(fault());
     }
     let audit = crate::audit::Audit::new(tx.tenant_id().to_string(), action);
-    if let Ok((client, subject)) = serde_json::from_str::<(String, String)>(actor.value()) {
-        if client.len() > 255 || subject.len() > 255 {
+    if let Ok((instance, subject)) = serde_json::from_str::<(String, String)>(actor.value()) {
+        if instance.len() > 255 || subject.len() > 255 {
             return Err(fault());
         }
-        audit.identify_operator(&subject, &client);
+        audit.identify_operator(&subject, &instance);
     } else {
         audit.identify_service(actor.value());
     }

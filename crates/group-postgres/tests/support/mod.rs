@@ -141,7 +141,13 @@ pub async fn execute_companion(
             store.tenant(),
             deadline(),
             (store, command),
-            move |(s, c), tx| Box::pin(async move { s.execute_in(tx, operation, at(), c).await }),
+            move |(s, c), tx| {
+                Box::pin(async move {
+                    tx.prepare_outbox_partitions(&[s.partition(&c.group().to_string())?])
+                        .await?;
+                    s.execute_in(tx, operation, at(), c).await
+                })
+            },
         )
         .await
         .fold(

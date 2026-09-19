@@ -17,9 +17,12 @@ fixture 是可信本地输入，不代替设备认证。只投影固定 coverage
 | 仓库 | 拥有 | 不拥有 |
 | --- | --- | --- |
 | RSS | 已接纳的公共契约、持久消息、命令、Observation、Projection、Reconcile、Saga、runtime 等组件及 provider | MDM 业务、设备认证、平台协议、产品配置与迁移执行 |
-| rss-mdm | Device/Registration/Authority、CollectionRun、Inventory、Group/Criteria、EffectiveDevicePlan、Policy/Compliance、Artifact/Deployment、Access/Audit、原生会话与交付、服务端装配 | 第二套通用 Outbox/命令引擎、终端安装与更新实现 |
+| rss-mdm | Device/Registration/Authority、CollectionRun、Inventory、Group/Criteria、EffectiveDevicePlan、Policy/Compliance、Artifact/Deployment、Access/Audit、设备协议会话与交付、服务端装配 | 第二套通用 Outbox/命令引擎、终端安装与更新实现 |
+| rss-identity | 本地账户、凭据、权威会话、原生 HTTP 和 OIDC 四个公共认证组件 | MDM 角色、设备范围和产品业务授权 |
 | rss-mdm-agent | Rust Agent 的本地 journal、采集、执行、结果恢复、Windows/macOS 适配、签名安装和更新 | 服务端策略权威、PG/broker adapter、另一份共享协议定义 |
 | 现有前端仓 | 页面与交互；适配版本化管理 API | 产品状态与字段规则的独立实现 |
+
+MDM 认证按 [#2437 修订的身份 ADR](202609091750-2343-identity-authorization.md)直接装配四个组件，使用自有 PG；不依赖中央参考应用，不另建浏览器会话。组件原子安全事件与产品业务审计各归其事务 owner。
 
 Agent wire schema/DTO 由 `rss-mdm` 中的独立协议包拥有，经版本化 artifact 向 Agent 发布；只含协议值类型与兼容约定，不传 Rust 内存对象，不引入服务端 domain、PG 或 RSS provider 闭包。两端可以使用不同 RSS 版本，线上协议兼容不等于 Cargo 版本相同。
 

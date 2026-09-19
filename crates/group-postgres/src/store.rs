@@ -36,6 +36,20 @@ pub struct GroupStore {
     writer: PgOutboxWriter,
 }
 impl GroupStore {
+    /// Identify this tenant's ordered event partition for a canonical aggregate ID.
+    /// The outer transaction declares every partition once, before any business locks.
+    pub fn partition(
+        &self,
+        id: &str,
+    ) -> Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
+        use rss_transactional_messaging::message::{PartitionIdentity, PartitionKey};
+        Ok(PartitionIdentity::new(
+            self.tenant,
+            event::domain(),
+            data(PartitionKey::parse(id))?,
+        ))
+    }
+
     /// Verify the installed Group catalog/security contract using the host-owned runtime.
     /// The host must keep this same runtime for every borrowed transaction passed to the store.
     pub async fn new(
@@ -167,7 +181,13 @@ impl GroupStore {
         settle(
             self.runtime
                 .local_tx_with_context(self.tenant, deadline, (self, command), move |ctx, tx| {
-                    Box::pin(async move { ctx.0.execute_in(tx, operation, as_of, ctx.1).await })
+                    Box::pin(async move {
+                        tx.prepare_outbox_partitions(&[ctx
+                            .0
+                            .partition(&ctx.1.group().to_string())?])
+                            .await?;
+                        ctx.0.execute_in(tx, operation, as_of, ctx.1).await
+                    })
                 })
                 .await,
             Some(operation),
@@ -176,6 +196,7 @@ impl GroupStore {
     /// Stage a complete command and its genuine change event; never commit.
     /// For deletion, N12 must first lock_reference_target_in and check references in this
     /// same transaction. Its success audit must also be staged before the outer commit.
+    /// The caller must declare the complete Outbox partition set before business locks.
     pub async fn execute_in(
         &self,
         tx: &mut PgTransaction<'_>,

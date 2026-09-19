@@ -1,5 +1,5 @@
 //! Registration-bound encryption; no protocol secret is stored as plaintext.
-use crate::{ConfigIssue, Error, Failure, config, sessions};
+use crate::{ConfigIssue, Error, Failure, config, enrollment};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use md5::{Digest, Md5};
 use ring::{
@@ -24,8 +24,8 @@ impl Secrets {
             .fill(&mut nonce)
             .map_err(|_| Error::Unavailable(Failure::Protocol))?;
         Ok(Self {
-            client_password: Zeroizing::new(sessions::random()),
-            server_password: Zeroizing::new(sessions::random()),
+            client_password: Zeroizing::new(enrollment::random()),
+            server_password: Zeroizing::new(enrollment::random()),
             server_nonce: nonce,
         })
     }

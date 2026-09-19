@@ -57,6 +57,8 @@ fn assert_event(r: &Receipt, kind: &str) {
     assert_eq!(e["contract"], "mdm.group.changed");
     assert_eq!(e["version"], "v1");
     assert_eq!(e["partition"], r.group.id.to_string());
+    let ordinal: i64 = admin(&format!("SELECT partition_seq FROM rss_transactional_messaging.outbox WHERE message_id='group.changed.v1:{}'", r.operation)).parse().unwrap();
+    assert_eq!(ordinal, r.group.revision.get());
     assert_eq!(
         e["schema"],
         format!("sha256:{:x}", sha2::Sha256::digest(EVENT_SCHEMA.as_bytes()))
@@ -437,9 +439,13 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
         add: vec!["设".repeat(1365), "b".into()],
         remove: vec![],
     };
-    admin("REVOKE INSERT ON rss_transactional_messaging.outbox FROM mdm_group_runtime");
+    admin(
+        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_group_runtime",
+    );
     let failed = s.execute(operation, at(), &change, deadline()).await;
-    admin("GRANT INSERT ON rss_transactional_messaging.outbox TO mdm_group_runtime");
+    admin(
+        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_group_runtime",
+    );
     assert!(failed.is_err());
     assert_eq!(s.get(id, deadline()).await.unwrap().unwrap(), r.group);
     assert_eq!(event_count(operation), 0);
@@ -844,7 +850,11 @@ async fn standalone_delete_requires_companion_transaction() {
     // A host that owns the companion checks/audit can still delete in its transaction.
     let result = runtime
         .local_tx_with_context(tenant(), deadline(), (&s, &command), move |(s, c), tx| {
-            Box::pin(async move { s.execute_in(tx, operation, at(), c).await })
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(&c.group().to_string())?])
+                    .await?;
+                s.execute_in(tx, operation, at(), c).await
+            })
         })
         .await
         .fold(Ok, Err, Err, Err, Err, Err)

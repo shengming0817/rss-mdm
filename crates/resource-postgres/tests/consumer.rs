@@ -87,6 +87,8 @@ async fn resource_immutable_versions_restart_and_reference_rollback() {
     let result = runtime
         .local_tx_with_context(tenant(), deadline(), (&s, &blocked), |(s, r), tx| {
             Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                    .await?;
                 s.lock_version_in(tx, &r.resource, &id("one"))
                     .await?
                     .unwrap();
@@ -105,6 +107,8 @@ async fn resource_immutable_versions_restart_and_reference_rollback() {
     let result = runtime
         .local_tx_with_context(tenant(), deadline(), (&s, &archive), |(s, r), tx| {
             Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                    .await?;
                 s.execute_in(tx, r).await?.unwrap();
                 Err::<(), _>(rss_transactional_messaging_postgres::PgError::from(
                     sqlx::Error::RowNotFound,
@@ -168,10 +172,14 @@ async fn resource_cas_events_and_owner_admission() {
     let b = req(&key, 1, Command::Insert(version(&key, "two", 2)));
     let (a, b) = tokio::join!(s.execute(&a, deadline()), s.execute(&b, deadline()));
     assert_ne!(a.is_ok(), b.is_ok());
-    sql("REVOKE INSERT ON rss_transactional_messaging.outbox FROM mdm_resource_runtime");
+    sql(
+        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_resource_runtime",
+    );
     let r = req(&key, 2, Command::Insert(version(&key, "three", 3)));
     let result = s.execute(&r, deadline()).await;
-    sql("GRANT INSERT ON rss_transactional_messaging.outbox TO mdm_resource_runtime");
+    sql(
+        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_resource_runtime",
+    );
     assert!(result.is_err());
     assert!(
         s.version(&key, &id("three"), deadline())

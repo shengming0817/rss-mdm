@@ -1,8 +1,8 @@
 //! MDM alone owns roles and device permissions. Identity facts never contain them.
 use crate::Error;
 use crate::device::{DeviceService, ReportSource};
+use crate::identity::Principal;
 use crate::{ConfigIssue, Failure};
-use rss_identity_client::VerifiedIdentity;
 use rss_observation::{Id, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,27 +20,28 @@ pub enum Role {
 #[serde(deny_unknown_fields)]
 pub struct Binding {
     pub tenant_id: String,
-    pub client_id: String,
-    pub subject: String,
+    pub instance_id: String,
+    pub principal_id: String,
     pub roles: BTreeSet<Role>,
     pub devices: BTreeSet<String>,
     pub management: BTreeSet<crate::management::Permission>,
+    pub identity_management: BTreeSet<IdentityPermission>,
     pub allow_wipe: bool,
     pub allow_enrollment: bool,
     pub allow_manage_credentials: bool,
 }
 pub(crate) struct Policy {
     tenant: String,
-    client: String,
+    instance: String,
     bindings: BTreeMap<String, Binding>,
 }
 pub(crate) struct InventoryRead<'a> {
-    proof: &'a VerifiedIdentity,
+    proof: &'a Principal,
     device: String,
     coordinates: Coordinates,
 }
 pub(crate) struct DangerousAction<'a> {
-    _proof: &'a VerifiedIdentity,
+    _proof: &'a Principal,
 }
 #[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,24 +49,25 @@ pub(crate) struct Coordinates {
     pub source: ReportSource,
 }
 impl Policy {
-    pub fn new(tenant: &str, client: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
-        if client.is_empty()
-            || client.len() > 255
-            || client.contains('*')
-            || client.contains(':')
-            || bindings.len() > 10000
-        {
-            return Err(Error::Configuration(ConfigIssue::ClientId));
+    pub fn new(tenant: &str, instance: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
+        let id = rss_identity_core::InstanceId::parse(instance)
+            .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
+        if id.to_string() != instance || bindings.len() > 10000 {
+            return Err(Error::Configuration(ConfigIssue::Instance));
         }
         let mut entries = BTreeMap::new();
         for b in bindings {
-            if b.tenant_id != tenant
-                || b.client_id != client
-                || b.subject.is_empty()
-                || b.subject.len() > 255
-                || b.subject.contains('*')
-                || b.subject.chars().any(char::is_control)
-                || (b.devices.is_empty() && b.management.is_empty())
+            if !rss_identity_core::PrincipalId::parse(&b.principal_id)
+                .is_ok_and(|id| id.as_uuid().to_string() == b.principal_id)
+                || b.tenant_id != tenant
+                || b.instance_id != instance
+                || b.principal_id.is_empty()
+                || b.principal_id.len() > 255
+                || b.principal_id.contains('*')
+                || b.principal_id.chars().any(char::is_control)
+                || (b.devices.is_empty()
+                    && b.management.is_empty()
+                    && b.identity_management.is_empty())
                 || b.devices.len() > 10000
                 || b.devices
                     .iter()
@@ -76,29 +78,30 @@ impl Policy {
                         .roles
                         .iter()
                         .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin)))
-                || entries.insert(b.subject.clone(), b).is_some()
+                || entries.insert(b.principal_id.clone(), b).is_some()
             {
                 return Err(Error::Configuration(ConfigIssue::Bindings));
             }
         }
         Ok(Self {
             tenant: tenant.into(),
-            client: client.into(),
+            instance: instance.into(),
             bindings: entries,
         })
     }
     pub(crate) fn tenant(&self) -> &str {
         &self.tenant
     }
-    fn binding(&self, proof: &VerifiedIdentity) -> Result<Option<&Binding>, Error> {
-        if proof.tenant_id() != self.tenant || proof.client_id() != self.client {
+    fn binding(&self, proof: &Principal) -> Result<Option<&Binding>, Error> {
+        proof.check_live()?;
+        if proof.tenant_id() != self.tenant || proof.instance_id() != self.instance {
             return Err(Error::Unauthorized);
         }
-        Ok(self.bindings.get(proof.subject()))
+        Ok(self.bindings.get(proof.principal_id()))
     }
     pub fn enrollment<'a>(
         &self,
-        proof: &'a VerifiedIdentity,
+        proof: &'a Principal,
         device: &str,
     ) -> Result<EnrollmentPermission<'a>, Error> {
         let b = self.device(proof, device)?;
@@ -126,7 +129,7 @@ impl Policy {
     }
     pub(crate) fn manage(
         &self,
-        proof: &VerifiedIdentity,
+        proof: &Principal,
         permission: crate::management::Permission,
     ) -> Result<(), Error> {
         let binding = self.binding(proof)?.ok_or(Error::Forbidden)?;
@@ -135,13 +138,13 @@ impl Policy {
         }
         Ok(())
     }
-    pub fn roles(&self, proof: &VerifiedIdentity) -> Result<Vec<Role>, Error> {
+    pub fn roles(&self, proof: &Principal) -> Result<Vec<Role>, Error> {
         Ok(self
             .binding(proof)?
             .map(|b| b.roles.iter().copied().collect())
             .unwrap_or_default())
     }
-    fn device(&self, proof: &VerifiedIdentity, device: &str) -> Result<&Binding, Error> {
+    fn device(&self, proof: &Principal, device: &str) -> Result<&Binding, Error> {
         let b = self.binding(proof)?.ok_or(Error::Forbidden)?;
         if b.roles.is_empty() || !(b.devices.contains(device) || b.devices.contains("*")) {
             return Err(Error::Forbidden);
@@ -150,7 +153,7 @@ impl Policy {
     }
     pub fn inventory<'a>(
         &self,
-        proof: &'a VerifiedIdentity,
+        proof: &'a Principal,
         device: &str,
         c: Coordinates,
     ) -> Result<InventoryRead<'a>, Error> {
@@ -162,7 +165,7 @@ impl Policy {
             coordinates: c,
         })
     }
-    pub(crate) fn credentials(&self, proof: &VerifiedIdentity, device: &str) -> Result<(), Error> {
+    pub(crate) fn credentials(&self, proof: &Principal, device: &str) -> Result<(), Error> {
         let b = self.device(proof, device)?;
         if !b.allow_manage_credentials
             || !b
@@ -177,7 +180,7 @@ impl Policy {
 
     pub fn dangerous<'a>(
         &self,
-        proof: &'a VerifiedIdentity,
+        proof: &'a Principal,
         device: &str,
     ) -> Result<DangerousAction<'a>, Error> {
         let b = self.device(proof, device)?;
@@ -444,11 +447,11 @@ fn run_summary(run: &crate::collection::Run) -> RunSummary {
 }
 
 pub(crate) struct EnrollmentPermission<'a> {
-    proof: &'a VerifiedIdentity,
+    proof: &'a Principal,
     device: String,
 }
 impl EnrollmentPermission<'_> {
-    pub(super) fn proof(&self) -> &VerifiedIdentity {
+    pub(super) fn proof(&self) -> &Principal {
         self.proof
     }
     pub(super) fn device(&self) -> &str {
@@ -474,27 +477,21 @@ mod tests {
         assert!(serde_json::from_str::<Coordinates>(r#"{"source":"mdm.windows"}"#).is_ok());
         assert!(serde_json::from_str::<Coordinates>(r#"{"source":"invented"}"#).is_err());
     }
+    const INSTANCE: &str = "33333333-3333-4333-8333-333333333333";
     #[test]
-    fn credential_permission_is_explicit_and_not_inherited() {
-        let old = r#"{"tenant_id":"tenant","client_id":"mdm","subject":"subject","roles":["mdm_admin"],"devices":["device"],"management":[],"allow_wipe":false,"allow_enrollment":true}"#;
-        assert!(serde_json::from_str::<Binding>(old).is_err());
-    }
-    #[test]
-    fn client_id_fits_persistent_audit_and_grants() {
-        assert!(Policy::new("tenant", &"a".repeat(255), vec![]).is_ok());
-        assert!(matches!(
-            Policy::new("tenant", &"a".repeat(256), vec![]),
-            Err(Error::Configuration(ConfigIssue::ClientId))
-        ));
+    fn instance_is_a_canonical_persistent_coordinate() {
+        assert!(Policy::new("tenant", INSTANCE, vec![]).is_ok());
+        assert!(Policy::new("tenant", "unscoped", vec![]).is_err());
     }
     fn binding() -> Binding {
         Binding {
             tenant_id: "tenant".into(),
-            client_id: "mdm".into(),
-            subject: "subject".into(),
+            instance_id: INSTANCE.into(),
+            principal_id: "44444444-4444-4444-8444-444444444444".into(),
             roles: [Role::Auditor].into(),
             devices: ["device".into()].into(),
             management: BTreeSet::new(),
+            identity_management: BTreeSet::new(),
             allow_wipe: false,
             allow_enrollment: false,
             allow_manage_credentials: false,
@@ -502,23 +499,93 @@ mod tests {
     }
     #[test]
     fn configuration_never_infers_roles_or_dangerous_grants() {
-        assert!(Policy::new("tenant", "mdm", vec![binding()]).is_ok());
-        assert!(Policy::new("tenant", "mdm", vec![binding(), binding()]).is_err());
+        assert!(Policy::new("tenant", INSTANCE, vec![binding()]).is_ok());
+        assert!(Policy::new("tenant", INSTANCE, vec![binding(), binding()]).is_err());
         let mut b = binding();
         b.allow_wipe = true;
-        assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
+        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
         let mut b = binding();
         b.tenant_id = "other".into();
-        assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
+        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
         let mut b = binding();
-        b.subject = "*".into();
-        assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
+        b.principal_id = "*".into();
+        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
         let mut b = binding();
         b.devices.insert("*".into());
-        assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
+        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
         let mut b = binding();
         b.allow_manage_credentials = true;
-        assert!(Policy::new("tenant", "mdm", vec![b]).is_err());
+        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
         assert!(serde_json::from_str::<Role>("\"administrator\"").is_err());
+    }
+}
+
+/// Product-owned grants for the embedded account and provider management interfaces.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityPermission {
+    Accounts,
+    Providers,
+}
+impl rss_identity_postgres::ManagementPolicy for Policy {
+    fn authorize(
+        &self,
+        context: &rss_identity_postgres::ManagementContext<'_>,
+    ) -> Result<
+        rss_identity_postgres::ReauthenticationRequirement,
+        rss_identity_postgres::ManagementDenied,
+    > {
+        use rss_identity_postgres::{
+            ManagementDenied, ManagementOperation as Op, ReauthenticationRequirement as Auth,
+        };
+        if context.instance().to_string() != self.instance
+            || context.actor().tenant.to_string() != self.tenant
+            || context
+                .target()
+                .is_some_and(|target| target.tenant != context.actor().tenant)
+        {
+            return Err(ManagementDenied);
+        }
+        if context.operation() == Op::ChangeOwnPassword {
+            return if context.target() == Some(context.actor()) {
+                Ok(Auth::Recent(std::time::Duration::from_secs(300)))
+            } else {
+                Err(ManagementDenied)
+            };
+        }
+        let actor = self
+            .bindings
+            .get(&context.actor().principal.as_uuid().to_string())
+            .ok_or(ManagementDenied)?;
+        let permission = match context.operation() {
+            Op::ListProviders
+            | Op::CreateProvider
+            | Op::UpdateProvider(_)
+            | Op::SetProviderEnabled(_, _)
+            | Op::TestProvider(_) => IdentityPermission::Providers,
+            _ => IdentityPermission::Accounts,
+        };
+        if !actor.identity_management.contains(&permission) {
+            return Err(ManagementDenied);
+        }
+        // Protect every restart-owned account manager from disabling/removing membership.
+        if matches!(
+            context.operation(),
+            Op::SetAccountEnabled(false) | Op::SetMembership(false)
+        ) && context.target().is_some_and(|key| {
+            self.bindings
+                .get(&key.principal.as_uuid().to_string())
+                .is_some_and(|binding| {
+                    binding
+                        .identity_management
+                        .contains(&IdentityPermission::Accounts)
+                })
+        }) {
+            return Err(ManagementDenied);
+        }
+        Ok(match context.operation() {
+            Op::ListAccounts | Op::ListProviders => Auth::None,
+            _ => Auth::Recent(std::time::Duration::from_secs(300)),
+        })
     }
 }

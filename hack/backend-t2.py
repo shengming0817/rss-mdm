@@ -37,18 +37,19 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
             sql(((source/'crates/app/schema/software-publication-roles.sql').read_text()+(source/'crates/app/schema/management-roles.sql').read_text()))
             for schema in SCHEMAS:sql(f"ALTER ROLE {schema}_runtime LOGIN PASSWORD 'backend-fixture';")
             if app:
+                sql((source/'crates/app/schema/identity-roles.sql').read_text())
                 sql("ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'backend-fixture';")
                 sql("ALTER ROLE mdm_software_driver LOGIN PASSWORD 'backend-fixture'; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS;")
                 password=root/'owner-password';password.write_text('owner-fixture');password.chmod(0o600)
-                config=root/'migration.json';config.write_text(json.dumps({'database':{'host':'localhost','port':port,'name':'backend','user':'mdm_owner','password_file':str(password),'ca_file':str(root/'ca.crt')}}));config.chmod(0o600)
+                config=root/'migration.json';config.write_text(json.dumps({'installation':{'instance_id':'33333333-3333-4333-8333-333333333333','target':[1]*16,'lineage':[2]*16,'epoch':1,'tenants':['11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222']},'database':{'host':'localhost','port':port,'name':'backend','user':'mdm_owner','password_file':str(password),'ca_file':str(root/'ca.crt')}}));config.chmod(0o600)
                 run(['cargo','run','--locked','--quiet','-p','rss-mdm-app','--bin','rss-mdm','--','migrate','--config',str(config)],cwd=source)
             else:
                 if migrations is None:
                     migrations=run(['cargo','run','--locked','--quiet','-p','rss-mdm-policy-postgres','--example','policy_migrations'],cwd=source,capture_output=True).stdout
-                    migrations+='\n'+(source/'crates/resource-postgres/migrations/0001.sql').read_text()+'\n'+(source/'crates/software-release-postgres/migrations/0001.sql').read_text()
+                    migrations+='\n'+'\n'.join((source/f'crates/{name}-postgres/migrations/{unit}').read_text() for name in ('resource','software-release') for unit in ('0001.sql','0002_outbox_writer.sql'))
                 try:sql('BEGIN; SET ROLE mdm_owner; '+migrations+' COMMIT;')
                 except subprocess.CalledProcessError as e:print(e.stderr,file=sys.stderr);raise
-            sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-1111-1111-111111111111',1),('22222222-2222-2222-2222-222222222222',1);")
+            if not app: sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-1111-1111-111111111111',1),('22222222-2222-2222-2222-222222222222',1);")
             if write_catalogs:
                 for n in NAMES:
                     d=source/'crates'/f'{n}-postgres/src'

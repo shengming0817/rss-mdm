@@ -72,8 +72,11 @@ pub async fn serve(
 ) -> Result<(), ProcessError> {
     let readiness = Arc::new(crate::inventory_runtime::Readiness::default());
     let stop_readiness = readiness.clone();
+    let startup_cancel = tokio_util::sync::CancellationToken::new();
+    let stop_cancel = startup_cancel.clone();
     let stop = async move {
         let result = stop.await;
+        stop_cancel.cancel();
         stop_readiness.stop();
         result
     };
@@ -141,9 +144,15 @@ pub async fn serve(
                                 .map_err(|e| ProcessError::at("startup.observation", e))?;
                         let observation_store = observation.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(observation));
-                        let projection = ProjectionResource::open(runtime_options, clock.clone())
-                            .await
-                            .map_err(|e| ProcessError::at("startup.projection", e))?;
+                        let startup_control =
+                            rss_projection::Control::new(&clock, clock.cutoff(), &startup_cancel);
+                        let projection = ProjectionResource::open(
+                            runtime_options,
+                            clock.clone(),
+                            &startup_control,
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.projection", e))?;
                         let projection_store = projection.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(projection));
                         let runtime = Arc::new(InventoryRuntime::new(
@@ -167,7 +176,7 @@ pub async fn serve(
                                     &compiled.config.identity.tenant_id,
                                 )
                                 .map_err(|_| assembly_error(Error::Malformed))?,
-                                Arc::new(rss_identity_client::SystemClock),
+                                Arc::new(crate::clock::SystemClock),
                                 |resource| {
                                     startup.stage_resource(DynManagedResource::new_box(resource))
                                 },
@@ -176,17 +185,31 @@ pub async fn serve(
                             .map_err(|e| ProcessError::at("startup.management", e))?;
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
-                        let app = crate::api::from_compiled(
-                            compiled,
-                            Arc::new(rss_identity_client::SystemClock),
-                            monotonic,
-                            reader,
-                            access.clone(),
-                            runtime.clone(),
-                            management,
+                        let gateway = compiled.config.trusted_gateway;
+                        let identity = crate::identity::Identity::connect(
+                            &compiled.config,
+                            compiled.policy.clone(),
+                            |resource| startup.stage_resource(resource),
                         )
                         .await
+                        .map_err(|error| ProcessError::at("startup.identity", error))?;
+                        let mut app = crate::api::from_compiled(
+                            compiled,
+                            crate::api::AssemblyDependencies {
+                                clock: Arc::new(crate::clock::SystemClock),
+                                monotonic,
+                                reader,
+                                access: access.clone(),
+                                runtime: runtime.clone(),
+                                management,
+                                identity,
+                            },
+                        )
                         .map_err(assembly_error)?;
+                        app.browser = app.browser.layer(axum::middleware::from_fn_with_state(
+                            gateway,
+                            crate::identity::ingress,
+                        ));
                         let listener =
                             tokio::net::TcpListener::bind(listen).await.map_err(|e| {
                                 ProcessError::Io {

@@ -25,8 +25,6 @@ def generate(root, tls_certificate, tls_key):
     openssl("x509", "-req", "-inform", "DER", "-in", root/"device.csr", "-CA", root/"rogue-ca.pem", "-CAkey", root/"rogue-ca.key",
             "-set_serial", "2", "-days", "90", "-sha256", "-extfile", root/"rogue-leaf.ext", "-out", root/"rogue-client.pem")
     (root/"protocol.key").write_bytes(secrets.token_bytes(32))
-    (root/"oidc-windows-secret").write_text(secrets.token_urlsafe(32))
-    (root/"validation-windows-secret").write_text("device-t2-validation-secret-00000000")
     for path in root.iterdir():
         if path.is_file() and (path.suffix in (".key", ".pk8") or path.name.endswith("-secret")):
             os.chmod(path, 0o600)
