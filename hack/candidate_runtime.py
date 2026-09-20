@@ -44,6 +44,8 @@ class Stage(StrEnum):
     MIGRATION = "migration"
     REPLAY = "migration-replay"
     INITIALIZE = "initialize"
+    AUTHORIZATION_INITIALIZE = "authorization_initialize"
+    AUTHORIZATION_REPLAY = "authorization_replay"
     GATEWAY = "gateway-start"
     SERVER = "server-start"
     PORT = "gateway-port"
@@ -120,8 +122,8 @@ def inputs(root, example):
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
     config["management"]["database"]=database(runtime,"mdm_management_runtime")
     config["management"]["publication_database"]=database(runtime,"mdm_software_driver")
-    config["bindings"]=[dict(tenant_id=TENANT,instance_id=INSTANCE,principal_id=ADMIN,roles=["mdm_admin"],devices=["device-1"],
-                             management=[],identity_management=["accounts"],allow_wipe=False,allow_enrollment=True,allow_manage_credentials=True)]
+    config["identity_management"]=[dict(tenant_id=TENANT,instance_id=INSTANCE,principal_id=ADMIN,permissions=["accounts"])]
+    write(operator,"authorization.json",dict(database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),installation=installation()))
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,principal_id=ADMIN,
@@ -301,7 +303,7 @@ class Candidate:
             self.config=json.loads((self.runtime/"config.json").read_text())
             self.config["product_origin"]="https://"+self.host
             self.config["identity"].update(instance_id=self.instance,tenant_id=self.tenant)
-            self.config["bindings"][0].update(instance_id=self.instance,tenant_id=self.tenant)
+            self.config["identity_management"][0].update(instance_id=self.instance,tenant_id=self.tenant)
             self.register_private_files()
             if self.prepare: self.prepare(self)
             self.register_private_files()
@@ -312,6 +314,11 @@ class Candidate:
                 if self.tenant not in value["installation"]["tenants"]:value["installation"]["tenants"].append(self.tenant)
                 if file=="initialize.json":value["tenant_id"]=self.tenant
                 path.write_text(json.dumps(value))
+            path=self.operator_root/'authorization.json'
+            authorization=json.loads(path.read_text());authorization['user'].update(instanceId=self.instance,tenantId=self.tenant)
+            authorization['installation']['instance_id']=self.instance
+            if self.tenant not in authorization['installation']['tenants']:authorization['installation']['tenants'].append(self.tenant)
+            path.write_text(json.dumps(authorization))
             gateway=(self.root/"nginx.conf").read_text().replace("mdm.example.test",self.host)
             (self.root/"nginx.conf").write_text(gateway)
             (self.root/"ui.json").write_text(json.dumps({"canonicalOrigin":"https://"+self.host,"oidcEnabled":self.config["identity"]["oidc"] is not None}))
@@ -330,6 +337,8 @@ class Candidate:
                 self.run_once("--user","0:0","--network","none","-v",str(directory)+":/fixture:ro","-v",volume+":/run/mdm","--entrypoint","sh",self.providers["runtime"],"-ec","cp -R /fixture/. /run/mdm/; chown -R 10001:10001 /run/mdm; chmod 700 /run/mdm",stage=input_stage)
             for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator("migrate","migrate.json",stage)
             self.operator("initialize","initialize.json",Stage.INITIALIZE)
+            self.operator("initialize-authorization","authorization.json",Stage.AUTHORIZATION_INITIALIZE)
+            self.operator("initialize-authorization","authorization.json",Stage.AUTHORIZATION_REPLAY)
             self.start_server()
             self.gateway_inputs=self.secret_volume("gateway-inputs",["server.crt","server.key","nginx.conf","ui.json"],10001)
             self.created.append(self.gateway)

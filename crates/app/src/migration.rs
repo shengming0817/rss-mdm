@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 23] {
+fn units() -> [(&'static str, &'static str); 24] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -159,12 +159,16 @@ fn units() -> [(&'static str, &'static str); 23] {
             include_str!("../migrations/0009_installation.sql"),
         ),
         (
-            "identity-authority-v10",
+            "identity-authority-v11",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (
             "embedded-identity-coordinates-v1",
             include_str!("../migrations/0008_embedded_identity_coordinates.sql"),
+        ),
+        (
+            "authorization-v1",
+            include_str!("../migrations/0010_authorization.sql"),
         ),
     ]
 }
@@ -245,7 +249,7 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             .execute(&mut *conn)
             .await
             .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
-        if name == "identity-authority-v10" {
+        if name == "identity-authority-v11" {
             install_identity(conn, installation, instance).await?;
         } else {
             sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
@@ -313,7 +317,7 @@ async fn install_identity(
     }
     install(conn, installation, instance).await.map_err(|_| {
         MigrationError::at(
-            "identity-authority-v10",
+            "identity-authority-v11",
             "installation not confirmed; inspect ledger",
         )
     })

@@ -3,10 +3,7 @@
     reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
 )]
 use super::*;
-use crate::{
-    access::{Binding, Role},
-    enrollment::Password,
-};
+use crate::enrollment::Password;
 use anyhow::Context;
 use sqlx::{
     Connection, Executor, PgConnection,
@@ -20,27 +17,6 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
         channel,
         locator: [key; 32],
     }
-}
-pub(crate) fn policy(tenant: &str, enroll: bool, credentials: bool) -> Arc<Policy> {
-    Arc::new(
-        Policy::new(
-            tenant,
-            crate::identity_fixture::INSTANCE,
-            vec![Binding {
-                management: Default::default(),
-                tenant_id: tenant.into(),
-                instance_id: crate::identity_fixture::INSTANCE.into(),
-                principal_id: crate::identity_fixture::ADMIN.into(),
-                identity_management: [crate::access::IdentityPermission::Accounts].into(),
-                roles: [Role::MdmAdmin].into(),
-                devices: ["*".into()].into(),
-                allow_wipe: false,
-                allow_enrollment: enroll,
-                allow_manage_credentials: credentials,
-            }],
-        )
-        .unwrap(),
-    )
 }
 pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Principal> {
     let identity = crate::identity_fixture::identity(tenant).await?;
@@ -61,7 +37,10 @@ pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Principal
             ),
         )
         .await?;
-    Ok(Principal::new(proof)?)
+    let access = AccessStore::connect(options("mdm_access")?).await?;
+    let proof = Principal::new(proof)?.load_authorization(&access).await?;
+    access.close().await;
+    Ok(proof)
 }
 
 pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
@@ -81,12 +60,7 @@ pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
     .ssl_mode(PgSslMode::VerifyFull)
     .ssl_root_cert(std::env::var("PG_CA_FILE")?))
 }
-async fn request(
-    store: &AccessStore,
-    policy: &Policy,
-    admin: &Principal,
-    device: &str,
-) -> anyhow::Result<Uuid> {
+async fn request(store: &AccessStore, admin: &Principal, device: &str) -> anyhow::Result<Uuid> {
     let audit = Audit::new(admin.tenant_id().into(), "enrollment_create");
     audit.identify(admin);
     audit.target(device);
@@ -94,7 +68,7 @@ async fn request(
     audit.operation(key, "enrollment_create");
     let receipt = store
         .create_enrollment(
-            policy.enrollment(admin, device)?,
+            admin.enrollment(device)?,
             &Password::new(crate::enrollment::random())?,
             Uuid::new_v4(),
             key,
@@ -113,7 +87,7 @@ pub(crate) async fn bind(
 ) -> anyhow::Result<(BindRegistration, RegistrationReceipt)> {
     let command = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&service.access, &service.policy, admin, device).await?,
+        request_id: request(&service.access, admin, device).await?,
         expected_generation: generation,
         source: match proof.channel {
             Channel::Mdm => ReportSource::MdmWindows,
@@ -142,9 +116,8 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let service = DeviceService::new(access.clone(), policy(A, true, true));
-    let service_b = DeviceService::new(access.clone(), policy(B, true, true));
-    let no_permission = DeviceService::new(access.clone(), policy(A, false, false));
+    let service = DeviceService::new(access.clone(), A.into());
+    let service_b = DeviceService::new(access.clone(), B.into());
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     commit_deadlines(&service, &admin_a, &mut root).await?;
     let mdm = proof(A, Channel::Mdm, 1);
@@ -171,7 +144,6 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     for bad in [
         service.bind(&other, &mdm, command.clone()).await,
         service.bind(&admin_b, &mdm, command.clone()).await,
-        no_permission.bind(&admin_a, &mdm, command.clone()).await,
     ] {
         assert!(bad.is_err());
     }
@@ -238,8 +210,8 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     // Independent explicit credential permission, including on replay.
     let revoke_key = Uuid::new_v4();
     assert!(
-        no_permission
-            .revoke(&admin_a, "same-serial", second.registration, revoke_key)
+        service
+            .revoke(&other, "same-serial", second.registration, revoke_key)
             .await
             .is_err()
     );
@@ -256,14 +228,14 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let restart = DeviceService::new(restart_access.clone(), policy(A, true, true));
+    let restart = DeviceService::new(restart_access.clone(), A.into());
     let receipt = restart
         .revoke(&admin_a, "same-serial", second.registration, revoke_key)
         .await?;
     assert_eq!(receipt.registration, second.registration);
     assert!(matches!(
-        no_permission
-            .revoke(&admin_a, "same-serial", second.registration, revoke_key)
+        service
+            .revoke(&other, "same-serial", second.registration, revoke_key)
             .await,
         Err(Error::Forbidden)
     ));
@@ -302,7 +274,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     let third_proof = proof(A, Channel::Mdm, 3);
     let pending = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &service.policy, &admin_a, "same-serial").await?,
+        request_id: request(&access, &admin_a, "same-serial").await?,
         expected_generation: 2,
         source: ReportSource::MdmWindows,
     };
@@ -359,16 +331,11 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     );
     let audits:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND operation_id=$2::uuid AND result='success'").bind(A).bind(pending.operation_id.to_string()).fetch_one(&mut root).await?;
     assert_eq!(audits, 1);
-    assert!(
-        no_permission
-            .bind(&admin_a, &third_proof, pending)
-            .await
-            .is_err()
-    );
+    assert!(service.bind(&other, &third_proof, pending).await.is_err());
     // Failed replacement must leave the existing generation/credential/source fully active.
     let replace = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &service.policy, &admin_a, "same-serial").await?,
+        request_id: request(&access, &admin_a, "same-serial").await?,
         expected_generation: 3,
         source: ReportSource::MdmWindows,
     };
@@ -441,7 +408,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     for retired in [&mdm, &newer] {
         let retry = BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&access, &service.policy, &admin_a, "same-serial").await?,
+            request_id: request(&access, &admin_a, "same-serial").await?,
             expected_generation: 4,
             source: ReportSource::MdmWindows,
         };
@@ -462,13 +429,13 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     // Two accepted requests racing for the same expected generation cannot silently overwrite.
     let left = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &service.policy, &admin_a, "concurrent").await?,
+        request_id: request(&access, &admin_a, "concurrent").await?,
         expected_generation: 0,
         source: ReportSource::MdmWindows,
     };
     let right = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &service.policy, &admin_a, "concurrent").await?,
+        request_id: request(&access, &admin_a, "concurrent").await?,
         expected_generation: 0,
         source: ReportSource::MdmWindows,
     };
@@ -526,7 +493,7 @@ async fn credential_race(
     for device in [&a.device, &b.device] {
         commands.push(BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&service.access, &service.policy, admin, device).await?,
+            request_id: request(&service.access, admin, device).await?,
             expected_generation: 1,
             source: ReportSource::MdmWindows,
         });
@@ -586,7 +553,7 @@ async fn credential_race(
         .await?;
     let retry = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&service.access, &service.policy, admin, &loser.device).await?,
+        request_id: request(&service.access, admin, &loser.device).await?,
         expected_generation: 1,
         source: ReportSource::MdmWindows,
     };
@@ -616,7 +583,7 @@ async fn commit_deadlines(
         let credential = proof(A, Channel::Mdm, 100 + fault);
         let command = BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&service.access, &service.policy, admin, &device).await?,
+            request_id: request(&service.access, admin, &device).await?,
             expected_generation: 0,
             source: ReportSource::MdmWindows,
         };

@@ -115,7 +115,7 @@ async fn read(
 ) -> std::result::Result<Json<wire::Candidate>, Error> {
     audit.set_action("management_read");
     audit.target(&id);
-    app.policy.manage(&auth.proof, Permission::ReleaseRead)?;
+    auth.proof.manage(Permission::ReleaseRead)?;
     let service = app
         .management
         .publications
@@ -155,7 +155,7 @@ async fn write(
     audit.set_action("management_write");
     audit.target(&id);
     audit.operation(request.operation_id, "management_write");
-    app.policy.manage(&auth.proof, permission)?;
+    auth.proof.manage(permission)?;
     let service = app
         .management
         .publications
@@ -168,7 +168,13 @@ async fn write(
         publisher_subject, ..
     } = &request.input
     {
-        app.policy.publisher(publisher_subject)?;
+        auth.proof
+            .authorization()?
+            .publisher(&crate::authorization::User {
+                instance_id: auth.proof.instance_id().into(),
+                tenant_id: auth.proof.tenant_id().into(),
+                principal_id: publisher_subject.clone(),
+            })?;
     }
     audit.set_action("management_write");
     audit.target(&id);
@@ -193,6 +199,7 @@ async fn write(
                 request: request.clone(),
             },
             &intent_audit,
+            &|| auth.proof.manage(permission),
         )
         .await;
     intent_audit.finalize(intent.as_ref().err().and_then(|e| {
@@ -210,6 +217,18 @@ async fn write(
         expected_revision: request.expected_revision,
         as_of: at,
     };
+    let current = app.access.authorization_snapshot(&auth.proof).await?;
+    current.require(&auth.proof, permission, None)?;
+    if let Change::Approve {
+        publisher_subject, ..
+    } = &request.input
+    {
+        current.publisher(&crate::authorization::User {
+            instance_id: auth.proof.instance_id().into(),
+            tenant_id: auth.proof.tenant_id().into(),
+            principal_id: publisher_subject.clone(),
+        })?;
+    }
     audit.mark_commit_started();
     let outcome = perform(
         service,

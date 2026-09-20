@@ -141,7 +141,7 @@ pub(crate) fn routers(
                     host: origin.trim_start_matches("https://").into(),
                     clock: clock.clone(),
                     access: app.access.clone(),
-                    tenant: app.policy.tenant().into(),
+                    tenant: app.identity.tenant.to_string(),
                 },
                 envelope,
             ))
@@ -331,7 +331,7 @@ async fn enrollment(
         let password = Password::new(token.password.0.clone()).map_err(|_| Error::Unauthorized)?;
         let auth = app
             .access
-            .enrollment_authorization(app.policy.tenant(), id, &password)
+            .enrollment_authorization(&app.identity.tenant.to_string(), id, &password)
             .await?;
         let credential = app.credentials.get(auth.credential_ref)?;
         let _global = app
@@ -343,7 +343,7 @@ async fn enrollment(
         if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
             return Err(Error::Unauthorized);
         }
-        let _permission = app.policy.enrollment(&proof, &auth.device)?;
+        let _permission = proof.enrollment(&auth.device)?;
         audit.identify(&proof);
         audit.target(&auth.device);
         let now = app.clock.unix_seconds()?;
@@ -424,7 +424,7 @@ async fn enrollment(
             proof.tenant_id(),
         )?;
         let proof = authenticate(&app, app.credentials.get(auth.credential_ref)?).await?;
-        let _permission = app.policy.enrollment(&proof, &auth.device)?;
+        let _permission = proof.enrollment(&auth.device)?;
         app.access
             .complete_issuance(
                 &app.windows,

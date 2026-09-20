@@ -6,7 +6,7 @@ use crate::{
 };
 use crate::{
     Error,
-    access::{Coordinates, InventoryResponse, InventoryService, Policy},
+    access::{Coordinates, IdentityManagementPolicy, InventoryResponse, InventoryService},
     enrollment_credentials::Credentials,
     identity::Identity,
 };
@@ -22,14 +22,16 @@ use axum::{
 use rss_identity_core::session::SessionSecret;
 use rss_mdm_inventory_postgres::InventoryReader;
 use serde::Deserialize;
-use serde_json::{Value, json};
+#[cfg(test)]
+use serde_json::Value;
+use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub(crate) struct App {
     pub(crate) management: Arc<crate::management::Management>,
     pub(crate) identity: Identity,
     pub(crate) credentials: Credentials,
     pub(crate) clock: Arc<dyn Clock>,
-    pub(crate) policy: Arc<Policy>,
+    pub(crate) identity_management: Arc<IdentityManagementPolicy>,
     pub(crate) inventory: InventoryService,
     pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
@@ -44,6 +46,17 @@ pub(crate) struct RequestAuth {
     credential: Arc<SessionSecret>,
 }
 async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+    authenticate_and_run(app, request, next, true).await
+}
+async fn identity_only(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+    authenticate_and_run(app, request, next, false).await
+}
+async fn authenticate_and_run(
+    app: Arc<App>,
+    request: Request,
+    next: Next,
+    authorization: bool,
+) -> Response {
     let (mut parts, body) = request.into_parts();
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
@@ -64,15 +77,22 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
             if let Some(audit) = parts.extensions.get::<Audit>() {
                 audit.identify(&proof);
             }
-            parts.extensions.insert(RequestAuth {
-                proof: Arc::new(proof),
-                credential: Arc::new(credential),
-            });
-            // Authentication has settled. Only the product operation uses the host timeout.
-            tokio::time::timeout(
-                Duration::from_secs(8),
-                next.run(Request::from_parts(parts, body)),
-            )
+            // Authentication has settled. Authorization I/O and the handler share the host budget.
+            tokio::time::timeout(Duration::from_secs(8), async {
+                let proof = if authorization {
+                    match proof.load_authorization(&app.access).await {
+                        Ok(proof) => proof,
+                        Err(error) => return error.into_response(),
+                    }
+                } else {
+                    proof
+                };
+                parts.extensions.insert(RequestAuth {
+                    proof: Arc::new(proof),
+                    credential: Arc::new(credential),
+                });
+                next.run(Request::from_parts(parts, body)).await
+            })
             .await
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
         }
@@ -109,7 +129,14 @@ pub(crate) async fn application(
     let compiled = config.compile()?;
     let identity = match identity {
         Some(identity) => identity,
-        None => Identity::connect(&compiled.config, compiled.policy.clone(), |_| {}).await?,
+        None => {
+            Identity::connect(
+                &compiled.config,
+                compiled.identity_management.clone(),
+                |_| {},
+            )
+            .await?
+        }
     };
     Ok(from_compiled(
         compiled,
@@ -138,7 +165,10 @@ pub(crate) fn from_compiled(
     compiled: crate::config::Compiled,
     dependencies: AssemblyDependencies,
 ) -> Result<crate::windows::Routers, Error> {
-    let crate::config::Compiled { config, policy } = compiled;
+    let crate::config::Compiled {
+        config,
+        identity_management,
+    } = compiled;
     let AssemblyDependencies {
         clock,
         monotonic,
@@ -150,7 +180,7 @@ pub(crate) fn from_compiled(
     } = dependencies;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.clone(),
-        policy.clone(),
+        config.identity.tenant_id.clone(),
     ));
     let authentication = identity.routes();
     let host = config
@@ -172,7 +202,7 @@ pub(crate) fn from_compiled(
         identity,
         credentials: Credentials::new(monotonic.clone(), 10000),
         clock,
-        policy,
+        identity_management,
         inventory: InventoryService::new(reader, devices.clone(), access.clone(), runtime.clone()),
         readiness: runtime.readiness.clone(),
         devices,
@@ -180,6 +210,7 @@ pub(crate) fn from_compiled(
     });
     let protected = Router::new()
         .merge(crate::management::routes())
+        .merge(crate::authorization::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))
@@ -189,7 +220,6 @@ pub(crate) fn from_compiled(
             "/devices/{device}/registrations/{registration}/revoke",
             post(revoke_registration),
         )
-        .route("/authorization", get(authorization))
         .route("/devices/{id}/inventory", get(inventory))
         .route("/devices/{id}/collection-runs/{run}", get(collection_run))
         .route("/devices/{id}/actions", post(action))
@@ -200,7 +230,7 @@ pub(crate) fn from_compiled(
             "/api/identity-host/v1/tenants/{tenant}/context",
             get(identity_context),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
+        .route_layer(middleware::from_fn_with_state(state.clone(), identity_only));
     let browser = Router::new()
         .merge(host_context)
         .nest("/api/v1", protected)
@@ -245,6 +275,14 @@ pub(crate) async fn envelope(
         .map(|p| p.as_str())
         .unwrap_or("");
     let action = match route {
+        "/api/v1/authorization" => "authorization_effective_read",
+        "/api/v1/authorization/rules" => "authorization_rules_read",
+        "/api/v1/authorization/user-groups" => "authorization_groups_read",
+        "/api/v1/authorization/user-groups/{id}/members" => "authorization_members_read",
+        "/api/v1/authorization/departments" => "authorization_departments_read",
+        "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
+            "authorization_write"
+        }
         "/api/v1/enrollments" => "enrollment_create",
         "/api/v1/enrollments/{id}" => "enrollment_read",
         "/api/v1/devices/{device}/registrations" => "registration_read",
@@ -394,7 +432,11 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
     }
 }
 pub(crate) async fn authenticate(app: &App, secret: SessionSecret) -> Result<Principal, Error> {
-    app.identity.authenticate(secret).await
+    app.identity
+        .authenticate(secret)
+        .await?
+        .load_authorization(&app.access)
+        .await
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,17 +459,8 @@ async fn identity_context(
         tenant_id: proof.tenant_id().to_owned(),
         principal_id: proof.principal_id().to_owned(),
         session_id: proof.session_id(),
-        navigation: app.policy.identity_navigation(proof)?,
+        navigation: app.identity_management.identity_navigation(proof)?,
     }))
-}
-async fn authorization(
-    State(app): State<Arc<App>>,
-    Extension(auth): Extension<RequestAuth>,
-) -> Result<Json<Value>, Error> {
-    let proof = &auth.proof;
-    Ok(Json(
-        json!({"instance_id":proof.instance_id(),"tenant_id":proof.tenant_id(),"principal_id":proof.principal_id(),"roles":app.policy.roles(proof)?}),
-    ))
 }
 async fn inventory(
     State(app): State<Arc<App>>,
@@ -440,9 +473,9 @@ async fn inventory(
         audit.target(&id);
     }
     audit.set_action("inventory_read");
-    let grant = app
-        .policy
-        .inventory(&auth.proof, &id, input.map_err(|_| Error::Malformed)?.0)?;
+    let grant = auth
+        .proof
+        .inventory(&id, input.map_err(|_| Error::Malformed)?.0)?;
     app.inventory.read(grant).await.map(Json)
 }
 
@@ -452,7 +485,6 @@ struct Action {
     action: String,
 }
 async fn action(
-    State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
     Extension(audit): Extension<Audit>,
@@ -462,7 +494,7 @@ async fn action(
         audit.target(&id);
     }
     audit.set_action("device_action");
-    let _grant = app.policy.dangerous(&auth.proof, &id)?;
+    let _grant = auth.proof.dangerous(&id)?;
     if input.map_err(|_| Error::Malformed)?.0.action != "wipe" {
         return Err(Error::Malformed);
     }
@@ -503,7 +535,7 @@ async fn create_enrollment(
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
-    let permission = app.policy.enrollment(&auth.proof, &input.device_id)?;
+    let permission = auth.proof.enrollment(&input.device_id)?;
     audit.target(&input.device_id);
     let reference = app.credentials.insert(
         SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
@@ -521,7 +553,7 @@ async fn enrollment_status(
 ) -> Result<Json<crate::enrollment::read::Status>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
-    let permission = app.policy.enrollment(&auth.proof, &device)?;
+    let permission = auth.proof.enrollment(&device)?;
     audit.target(&device);
     app.access.enrollment_status(permission, id).await.map(Json)
 }
@@ -536,7 +568,7 @@ async fn registrations(
     let Query(page) = query.map_err(|_| Error::Malformed)?;
     audit.target(&device);
     app.access
-        .registration_list(&app.policy, &auth.proof, &device, page)
+        .registration_list(&auth.proof, &device, page)
         .await
         .map(Json)
 }
@@ -552,7 +584,7 @@ async fn resume_enrollment(
     let key = write_key(&headers, &audit, "enrollment_resume")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
-    let permission = app.policy.enrollment(&auth.proof, &device)?;
+    let permission = auth.proof.enrollment(&device)?;
     audit.target(&device);
     let reference = app.credentials.insert(
         SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
@@ -583,7 +615,7 @@ async fn cancel_enrollment(
     let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
     let key = write_key(&headers, &audit, "enrollment_cancel")?;
     let device = app.access.enrollment_target(&auth.proof, id).await?;
-    let permission = app.policy.enrollment(&auth.proof, &device)?;
+    let permission = auth.proof.enrollment(&device)?;
     audit.target(&device);
     app.access
         .change_enrollment(permission, id, None, key, &audit)
@@ -630,7 +662,7 @@ async fn collection_run(
     let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
     audit.target(&device);
     audit.set_action("collection_read");
-    let grant = app.policy.inventory(&auth.proof, &device, coordinates)?;
+    let grant = auth.proof.inventory(&device, coordinates)?;
     Ok(Json(app.inventory.run(grant, run).await?))
 }
 

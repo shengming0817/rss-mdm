@@ -4,7 +4,7 @@ use crate::{
     collection,
     device::{
         Channel, DeviceService, VerifiedChannelCredential,
-        tests::{admin, bind, options, policy, proof},
+        tests::{admin, bind, options, proof},
     },
 };
 use anyhow::{Result, ensure};
@@ -195,7 +195,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .is_err()
     );
     let access = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
-    let service = Arc::new(DeviceService::new(access.clone(), policy(A, true, true)));
+    let service = Arc::new(DeviceService::new(access.clone(), A.into()));
     let admin = admin(A, "admin-a").await?;
     let credential = proof(A, Channel::Mdm, 121);
     let (_, registration) = bind(&service, &admin, &credential, "collection-recovery", 0).await?;

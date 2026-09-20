@@ -522,7 +522,7 @@ AC-U01-02　设备离线、等待重启、安装失败和没有评估数据时�
 
 # 06.13　F-A：账户、SSO、会话与权限
 
-当前接入边界见 [#2437 修订的认证指南](../guides/202609091600-2343-mdm-identity.md)：首期单租户、静态角色、真实资产查询与危险动作授权拒绝。危险动作有权时仍返回不支持，不表示命令执行已交付；管理员注册许可与持久审计见 [F02 指南](../guides/202609090001-2347-enrollment-audit.md)：统一 Enrollment 创建/恢复/取消与独立凭据撤销，授权、签发意图及原子绑定形成闭环，查询/拒绝审计失败不放行。[Windows 接入](../guides/202609111146-2350-windows-enrollment-management.md) 覆盖 HTTPS Discovery/XCEP/WSTEP、mTLS 与首次 SyncML 认证初始化；pending 不代表完成，T1/T2 证据由 #2350/#2351 单 PR 绑定，Windows T3 独立验收。
+当前接入边界见 [#2437 修订的认证指南](../guides/202609091600-2343-mdm-identity.md)：首期单租户、持久化四类主体授权、真实资产查询与危险动作授权拒绝。规则、用户组启停及成员由受保护 API 管理；操作与资源范围成对匹配、并集生效、默认拒绝，详见 [#2363 授权指南](../guides/202609200002-2363-authorization.md)。危险动作有权时仍返回不支持，不表示命令执行已交付；管理员注册许可与持久审计见 [F02 指南](../guides/202609090001-2347-enrollment-audit.md)：统一 Enrollment 创建/恢复/取消与独立凭据撤销，授权、签发意图及原子绑定形成闭环，查询/拒绝审计失败不放行。[Windows 接入](../guides/202609111146-2350-windows-enrollment-management.md) 覆盖 HTTPS Discovery/XCEP/WSTEP、mTLS 与首次 SyncML 认证初始化；pending 不代表完成，T1/T2 证据由 #2350/#2351 单 PR 绑定，Windows T3 独立验收。
 
 *主要用户：系统管理员、安全管理员、集成系统。*
 
@@ -531,22 +531,22 @@ AC-U01-02　设备离线、等待重启、安装失败和没有评估数据时�
 | 需求编号 / 名称 | 产品要求 | 历史基础 / 分级 |
 | --- | --- | --- |
 | WMD-A01<br>本地身份 / 会话 | 本地认证、用户管理、禁用及权威会话由内嵌 Identity 四个公开组件持有；MDM 持有实例/租户、装配、秘密和产品授权，每请求重新权威验证。沿用组件 cookie、刷新和退出接口，本地身份不依赖 AD、中央服务或 IdP。 | 已有<br>一级 |
-| WMD-A02<br>OIDC SSO / 映射 | 可选 IdP 配置、SSO/JIT、显式身份关联与 step-up 由 Identity 公开组件持有，callback 属于产品；MDM 持有管理策略、资源角色与设备范围。静态绑定使用 instance/tenant/principal，外部 subject 不按邮箱自动关联；可信组映射另归 #2363。 | 已有<br>一级 |
-| WMD-A03<br>角色与危险权限 | 保留 super_admin、mdm_admin、security_admin、help_desk、auditor 的现有 API 边界；危险动作和密钥读取单独授权。 | 已有基础<br>一级 |
+| WMD-A02<br>OIDC SSO / 映射 | 可选 IdP 配置、SSO/JIT、显式身份关联与 step-up 由 Identity 公开组件持有，callback 属于产品；MDM 持有产品授权规则与设备范围。用户按 instance/tenant/principal 精确匹配；安全组与完整部门树使用 Identity 验证的 provider/issuer/configurationVersion 来源和独立期限，部门规则显式选择 exact/subtree；外部 subject 不按邮箱或显示名自动关联。 | 已有<br>一级 |
+| WMD-A03<br>主体授权与危险权限 | 持久化用户、IdP 安全组、部门及本地显式用户组四类规则；每项 grant 绑定 operation/scope。危险动作、凭据与软件发布均显式授权。旧五角色、静态 Binding 和 allow_* API 删除，不提供兼容读写。Identity 账户/provider 管理保留独立配置。 | #2363<br>一级 |
 | WMD-A04<br>管理员 MFA | 为商用管理面确定 MFA 实现与恢复方案，可依托选定 IdP；本地应急账户的使用及审计规则须明确。 | 规划<br>二级 |
 | WMD-A05<br>M2M / 多租户 SSO | 人类会话与 M2M client_credentials 分离；多 IdP 配置不等同 MSP 数据隔离，多租户产品范围须另立项。 | 规划<br>三级 |
 
 ## 关键规则与边界
 
-历史 RBAC 路由实现不能替代当前产品的页面和内部接口越权测试。SSO 组变化、账户禁用、会话注销后的权限失效需作为行为验收。
+历史五角色和 RBAC 路由只保留为来源参考，不构成当前 API 承诺或隐式特权。每请求读取当前规则与本地用户组一致快照；组停用、成员移除和规则撤销在新请求生效，来源期限在每次使用时复核，Windows 续接/最终绑定与延迟发布重新授权。初始化只显式执行一次；删除后的 tombstone 和历史回执不会恢复权限。SSO 组/部门变化、账户禁用与会话注销需作为行为验收。
 
 多 IdP 配置与组织/租户隔离分别建模和验证；支持多个 IdP 不代表已经具备多租户数据隔离。
 
 ## 验收场景
 
-AC-A01-01　各角色分别调用设备动作、审计、用户管理和配置接口；无权请求被拒绝且不产生业务副作用。
+AC-A01-01　四类主体的操作/范围授权分别影响设备与管理接口；规则并集不交叉扩大权限，未授权及跨来源/跨实例/跨租户请求拒绝且无业务副作用。规则与成员 CAS、组启停、撤销、墓碑及幂等重放行为可解释并有审计；Identity 管理权限独立验证。
 
-AC-A01-02　SSO 组映射可实际影响登录权限；禁用/删除账户、无效 token 与注销会话不能继续通过受保护入口。
+AC-A01-02　可信安全组及部门 exact/subtree 影响产品权限；来源缺失、非法或过期只移除对应授权，独立用户/本地组授权继续独立判定。禁用/删除账户、无效 token 与注销会话不能继续通过受保护入口；上游变化按公开快照期限验收，不宣称实时获知撤组。
 
 > 依据：[D02](../reference/historical-sources.md#d02) F-A/认证；[D05](../reference/historical-sources.md#d05)；[D06](../reference/historical-sources.md#d06) 权限增强；[D08](../reference/historical-sources.md#d08) B4；[C01](../reference/historical-sources.md#c01)/C17/C18。
 

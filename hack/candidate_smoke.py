@@ -58,7 +58,9 @@ def run_smoke(directory):
         require(browser.call("GET","/api/v1/authorization")[0]==401,"anonymous candidate accepted")
         require(browser.call("POST",tenant+"/login",dict(login="admin",password=PASSWORD))[0]==200,"local candidate login failed")
         status,principal=browser.call("GET","/api/v1/authorization")
-        require(status==200 and (principal["instance_id"],principal["tenant_id"],principal["principal_id"])==(INSTANCE,TENANT,ADMIN),"candidate subject mismatch")
+        require(status==200 and (principal["instanceId"],principal["tenantId"],principal["principalId"])==(INSTANCE,TENANT,ADMIN),"candidate subject mismatch")
+        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='device',id='device-1')) for operation in ['inventory_read','enrollment','credentials']])
+        require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate explicit authorization')
         operation=str(uuid.uuid4())
         enrollment=dict(deviceId="device-1",password="A"*43)
         status,receipt=browser.call("POST","/api/v1/enrollments",enrollment,operation)
@@ -83,7 +85,7 @@ def run_smoke(directory):
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
         result=dict(revision=revision,candidate_sha256=sha(directory/"candidate.json"),ui=deployed.web,manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],dependencies=manifest["dependencies"],
-                    checks=["migrate","migration_replay","initialize","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+                    checks=["migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
     verify_source(revision)
     return result,logs+"\n"

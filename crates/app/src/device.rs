@@ -7,11 +7,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 use crate::audit::{FailureReason, WriteOutcome};
 use crate::identity::Principal;
-use crate::{
-    AccessStore, Error, Failure,
-    access::{Coordinates, Policy},
-    audit::Audit,
-};
+use crate::{AccessStore, Error, Failure, access::Coordinates, audit::Audit};
 use rss_observation::{Epoch, Id, Registration, Scope};
 use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
@@ -143,11 +139,11 @@ pub struct RevocationReceipt {
 /// The caller retains ownership of both pools; this service creates or closes none.
 pub struct DeviceService {
     access: Arc<AccessStore>,
-    policy: Arc<Policy>,
+    tenant: String,
 }
 impl DeviceService {
-    pub(crate) fn new(access: Arc<AccessStore>, policy: Arc<Policy>) -> Self {
-        Self { access, policy }
+    pub(crate) fn new(access: Arc<AccessStore>, tenant: String) -> Self {
+        Self { access, tenant }
     }
     pub(crate) async fn management_principal(
         &self,

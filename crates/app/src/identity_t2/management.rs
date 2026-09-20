@@ -18,20 +18,26 @@ pub(super) async fn matrix(
     reader: Arc<InventoryReader>,
     session: &Browser,
 ) -> Result<()> {
-    let mut cfg = base.clone();
-    cfg["bindings"][0]["management"] = json!([
-        "group_read",
-        "group_write",
-        "group_recompute",
-        "scope_read",
-        "scope_write",
-        "policy_read",
-        "policy_write",
-        "plan_preview",
-        "plan_save",
-        "resource_read",
-        "resource_write"
-    ]);
+    let cfg = base.clone();
+    let initial = app(base, reader.clone()).await?;
+    let member = browser_subject(session, &initial).await?;
+    set_management_grants(
+        &member,
+        json!([
+            "group_read",
+            "group_write",
+            "group_recompute",
+            "scope_read",
+            "scope_write",
+            "policy_read",
+            "policy_write",
+            "plan_preview",
+            "plan_save",
+            "resource_read",
+            "resource_write"
+        ]),
+    )
+    .await?;
     let router = app(&cfg, reader.clone()).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -284,8 +290,9 @@ pub(super) async fn matrix(
     .await?;
     ensure!(browser.call(&router,Method::POST,&format!("{policy_path}/plans"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":current_revision,"input":{"preview":stale["id"]}}))).await?.0==StatusCode::CONFLICT);
     scale_preview(&mut browser, &router, &policy_path, current_revision).await?;
-    // The common protected tree never inherits management access from super_admin.
+    // Revocation is persistent and visible to every existing router/session.
     software(base, reader.clone(), session).await?;
+    set_management_grants(&member, json!([])).await?;
     let restricted = app(base, reader).await?;
     let mut denied = session.clone();
     for path in [&group_path, &policy_path, &resource_path] {
@@ -293,6 +300,7 @@ pub(super) async fn matrix(
             denied.call(&restricted, Method::GET, path, None).await?.0 == StatusCode::FORBIDDEN
         );
     }
+    set_management_grants(&member, json!(["group_write"])).await?;
     pg("REVOKE INSERT ON mdm_access.audit FROM mdm_management_runtime")?;
     let failed=browser.call(&router,Method::POST,&format!("/api/v1/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
     pg("GRANT INSERT ON mdm_access.audit TO mdm_management_runtime")?;
@@ -307,7 +315,9 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     let mut cfg = base.clone();
     let source_config = |ring: &str| json!({"Winget":{"base":format!("{}{ring}/",server.base),"addresses":[server.address],"private_ca":server.ca,"credential_reference":"source-key","credential_file":server.secret}});
     cfg["management"]["sources"] = json!([{"name":server.logical,"rings":{"test":source_config("test"),"pilot":source_config("pilot"),"production":source_config("production")},"artifacts":[{"base":format!("{}artifacts/",server.base),"addresses":[server.address],"private_ca":server.ca}],"max_artifact_bytes":1048576}]);
-    cfg["bindings"][0]["management"] = json!([
+    let baseline = app(base, reader.clone()).await?;
+    let member = browser_subject(session, &baseline).await?;
+    let publisher_grants = json!([
         "resource_read",
         "resource_write",
         "release_read",
@@ -317,19 +327,27 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         "release_recover",
         "release_withdraw"
     ]);
+    set_management_grants(&member, publisher_grants.clone()).await?;
     let initial = app(&cfg, reader.clone()).await?;
     let mut approver = Browser::default();
     approver.login(&initial, "admin").await?;
     let subject = approver
         .call(&initial, Method::GET, "/api/v1/authorization", None)
         .await?
-        .1["principal_id"]
+        .1["principalId"]
         .clone();
-    let mut binding = cfg["bindings"][0].clone();
-    binding["principal_id"] = subject.clone();
-    binding["management"] = json!(["release_read", "release_approve"]);
-    cfg["bindings"].as_array_mut().unwrap().push(binding);
+    set_management_grants(
+        subject.as_str().unwrap(),
+        json!(["release_read", "release_approve"]),
+    )
+    .await?;
     permission_matrix(&cfg, reader.clone(), session).await?;
+    set_management_grants(&member, publisher_grants.clone()).await?;
+    set_management_grants(
+        subject.as_str().unwrap(),
+        json!(["release_read", "release_approve"]),
+    )
+    .await?;
     let router = app(&cfg, reader).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -414,7 +432,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         json!({"action":"validate","ring":"test"}),
     )
     .await?;
-    let approval = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":validated["revision"],"input":{"action":"approve","ring":"test","publisherSubject":cfg["bindings"][0]["principal_id"]}});
+    let approval = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":validated["revision"],"input":{"action":"approve","ring":"test","publisherSubject":member}});
     ensure!(
         publisher
             .call(&router, Method::POST, &path, Some(approval.clone()))
@@ -436,6 +454,52 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     .await?;
     let publication = &authorized["rings"][0]["publication"];
     let request = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":authorized["revision"],"input":{"action":"publish","ring":"test","publication":publication["id"],"attempt":publication["attempt"]}});
+    // Hold the actual management lock after HTTP admission, revoke, then let the intent finish.
+    use sqlx::Connection;
+    let mut holder =
+        sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2390))")
+        .bind(TENANT)
+        .execute(&mut holder)
+        .await?;
+    let posts_before = server.state.lock().unwrap().posts;
+    let mut delayed = publisher.clone();
+    let revoke = async {
+        let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            + Duration::from_millis(750);
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_management_runtime' AND wait_event='advisory')").fetch_one(&mut holder).await?;
+            if waiting {
+                break;
+            }
+            ensure!(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < deadline,
+                "publication did not wait at management lock"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        set_management_grants(&member, json!([])).await?;
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2390))")
+            .bind(TENANT)
+            .execute(&mut holder)
+            .await?;
+        anyhow::Ok(())
+    };
+    let (delayed, revoked) = tokio::join!(
+        delayed.call(&router, Method::POST, &path, Some(request.clone())),
+        revoke
+    );
+    holder.close().await?;
+    revoked?;
+    set_management_grants(&member, publisher_grants).await?;
+    ensure!(
+        delayed?.0 == StatusCode::FORBIDDEN,
+        "delayed publication used revoked permission"
+    );
+    ensure!(
+        server.state.lock().unwrap().posts == posts_before,
+        "revoked publication reached source"
+    );
     {
         let mut state = server.state.lock().unwrap();
         state.drop_post_response = true;
@@ -687,9 +751,7 @@ async fn permission_matrix(
             "release_approve",
             Method::POST,
             release.clone(),
-            op(
-                json!({"action":"approve","ring":"test","publisherSubject":base["bindings"][1]["principal_id"]}),
-            ),
+            op(json!({"action":"approve","ring":"test","publisherSubject":ADMIN})),
         ),
         (
             "release_publish",
@@ -747,9 +809,11 @@ async fn permission_matrix(
         )
     };
     for grant in &grants {
-        let mut config = base.clone();
-        config["bindings"][0]["management"] = json!([grant]);
-        config["bindings"][1]["management"] = json!(["release_publish"]);
+        let config = base.clone();
+        let initial = app(base, reader.clone()).await?;
+        let member = browser_subject(session, &initial).await?;
+        set_management_grants(&member, json!([grant])).await?;
+        set_management_grants(ADMIN, json!(["release_publish"])).await?;
         let router = app(&config, reader.clone()).await?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;

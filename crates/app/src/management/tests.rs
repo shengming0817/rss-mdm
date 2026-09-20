@@ -78,7 +78,7 @@ async fn management(t: TenantId) -> Management {
 async fn execute(m: &Management, c: &Command) -> std::result::Result<Value, Error> {
     let audit = Audit::new(m.tenant.to_string(), "management_write");
     audit.identify_fixture("operator", "mdm");
-    let result = m.execute(c, &audit).await;
+    let result = m.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result
 }
@@ -685,4 +685,75 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
         "UPDATE mdm_management.operations SET response='{document}' WHERE id='{operation}'"
     ));
     m.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn expired_guard_after_lock_rejects_mutation_and_replay() {
+    use sqlx::{
+        Connection,
+        postgres::{PgConnectOptions, PgSslMode},
+    };
+    let m = management(tenant()).await;
+    let config = fixture();
+    let options = PgConnectOptions::new()
+        .host("localhost")
+        .port(config["port"].as_u64().unwrap() as u16)
+        .database("backend")
+        .username("postgres")
+        .password("admin-fixture")
+        .ssl_mode(PgSslMode::VerifyFull)
+        .ssl_root_cert(config["ca"].as_str().unwrap());
+    let mut holder = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    for replay in [false, true] {
+        let id = Uuid::new_v4();
+        let command = Command::Group {
+            id,
+            change: operation(
+                0,
+                GroupChange::Create {
+                    name: "guarded".into(),
+                    description: String::new(),
+                    criteria: None,
+                },
+            ),
+        };
+        if replay {
+            execute(&m, &command).await.unwrap();
+        }
+        sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2390))")
+            .bind(tenant().to_string())
+            .execute(&mut holder)
+            .await
+            .unwrap();
+        let audit = Audit::new(tenant().to_string(), "management_write");
+        audit.identify_fixture("operator", "mdm");
+        let expires = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            + Duration::from_millis(150);
+        let authorize = || {
+            if rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < expires {
+                Ok(())
+            } else {
+                Err(Error::Forbidden)
+            }
+        };
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2390))")
+                .bind(tenant().to_string())
+                .execute(&mut holder)
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(m.execute(&command, &audit, &authorize), release);
+        audit.finalize(None);
+        assert!(matches!(result, Err(Error::Forbidden)));
+        let read = execute(&m, &Command::GroupRead { id }).await;
+        assert_eq!(
+            read.is_ok(),
+            replay,
+            "expired new write must leave no group"
+        );
+    }
+    holder.close().await.unwrap();
 }

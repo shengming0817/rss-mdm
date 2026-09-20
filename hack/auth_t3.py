@@ -57,7 +57,7 @@ def enterprise(stack):
         'credential_keys':{'current':'/run/mdm/credential'},'return_targets':{'resume':'https://mdm.example.test/auth/resume'},
         'assurance_profiles':[],
         'private_providers':[{'tenant_id':TENANT,'issuer':issuer,'client_id':'mdm','cidrs':[address+'/32']}]}
-    stack.config['bindings'][0].update(identity_management=['accounts','providers'],management=['group_read','group_write','release_read'])
+    stack.config['identity_management'][0]['permissions']=['accounts','providers']
     stack.issuer=issuer
 
 def seed_inventory(stack):
@@ -85,12 +85,10 @@ def prepare_member(stack):
         principal=result['principalId']
         if name=='member':stack.member=principal
         else:stack.sso_member=principal
-        binding=dict(stack.config['bindings'][0]);binding.update(principal_id=principal,identity_management=[],management=[],roles=['auditor'],allow_wipe=False,allow_enrollment=False,allow_manage_credentials=False)
-        stack.config['bindings'].append(binding)
-    (stack.runtime/'config.json').write_text(json.dumps(stack.config))
-    docker('stop','--time','45',stack.server,stage=Stage.STOP,timeout=55)
-    stack.copy_runtime()
-    docker('start',stack.server,stage=Stage.SERVER);stack.ready()
+        grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=principal)),grants=[dict(operation='inventory_read',scope=dict(kind='device',id='device-1'))])
+        require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit member inventory authorization')
+    grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='tenant')) for operation in ['group_read','group_write','release_read']])
+    require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit administrator management authorization')
     require(browser.call('POST',f'/api/v2/tenants/{TENANT}/session/logout')[0]==204,'bootstrap logout')
 
 def installation_mismatch(stack):

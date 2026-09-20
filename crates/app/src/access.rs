@@ -1,39 +1,81 @@
-//! MDM alone owns roles and device permissions. Identity facts never contain them.
-use crate::Error;
+//! Inventory access capabilities and independent Identity management configuration.
+use crate::authorization::Permission;
 use crate::device::{DeviceService, ReportSource};
 use crate::identity::Principal;
-use crate::{ConfigIssue, Failure};
-use rss_observation::{Id, Scope};
+use crate::{ConfigIssue, Error, Failure};
+use rss_observation::Scope;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    SuperAdmin,
-    MdmAdmin,
-    SecurityAdmin,
-    HelpDesk,
-    Auditor,
-}
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Binding {
+pub struct IdentityManagementGrant {
     pub tenant_id: String,
     pub instance_id: String,
     pub principal_id: String,
-    pub roles: BTreeSet<Role>,
-    pub devices: BTreeSet<String>,
-    pub management: BTreeSet<crate::management::Permission>,
-    pub identity_management: BTreeSet<IdentityPermission>,
-    pub allow_wipe: bool,
-    pub allow_enrollment: bool,
-    pub allow_manage_credentials: bool,
+    pub permissions: BTreeSet<IdentityPermission>,
 }
-pub(crate) struct Policy {
+pub(crate) struct IdentityManagementPolicy {
     tenant: String,
     instance: String,
-    bindings: BTreeMap<String, Binding>,
+    grants: BTreeMap<String, IdentityManagementGrant>,
+}
+impl IdentityManagementPolicy {
+    pub(crate) fn new(
+        tenant: &str,
+        instance: &str,
+        grants: Vec<IdentityManagementGrant>,
+    ) -> Result<Self, Error> {
+        let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
+        crate::authorization::canonical_uuid(tenant).map_err(|_| invalid())?;
+        crate::authorization::canonical_uuid(instance).map_err(|_| invalid())?;
+        if grants.len() > 10000 {
+            return Err(invalid());
+        }
+        let mut entries = BTreeMap::new();
+        for grant in grants {
+            crate::authorization::canonical_uuid(&grant.principal_id).map_err(|_| invalid())?;
+            if grant.tenant_id != tenant
+                || grant.instance_id != instance
+                || grant.permissions.is_empty()
+                || entries.insert(grant.principal_id.clone(), grant).is_some()
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(Self {
+            tenant: tenant.into(),
+            instance: instance.into(),
+            grants: entries,
+        })
+    }
+    pub(crate) fn identity_navigation(
+        &self,
+        proof: &Principal,
+    ) -> Result<IdentityNavigation, Error> {
+        proof.check_live()?;
+        if proof.tenant_id() != self.tenant || proof.instance_id() != self.instance {
+            return Err(Error::Unauthorized);
+        }
+        let grant = self.grants.get(proof.principal_id());
+        Ok(IdentityNavigation {
+            manage_accounts: grant
+                .is_some_and(|g| g.permissions.contains(&IdentityPermission::Accounts)),
+            manage_providers: grant
+                .is_some_and(|g| g.permissions.contains(&IdentityPermission::Providers)),
+        })
+    }
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IdentityNavigation {
+    pub(crate) manage_accounts: bool,
+    pub(crate) manage_providers: bool,
+}
+#[derive(Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Coordinates {
+    pub source: ReportSource,
 }
 pub(crate) struct InventoryRead<'a> {
     proof: &'a Principal,
@@ -43,178 +85,35 @@ pub(crate) struct InventoryRead<'a> {
 pub(crate) struct DangerousAction<'a> {
     _proof: &'a Principal,
 }
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Coordinates {
-    pub source: ReportSource,
-}
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct IdentityNavigation {
-    pub(crate) manage_accounts: bool,
-    pub(crate) manage_providers: bool,
-}
-impl Policy {
-    pub fn new(tenant: &str, instance: &str, bindings: Vec<Binding>) -> Result<Self, Error> {
-        let id = rss_identity_core::InstanceId::parse(instance)
-            .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
-        if id.to_string() != instance || bindings.len() > 10000 {
-            return Err(Error::Configuration(ConfigIssue::Instance));
-        }
-        let mut entries = BTreeMap::new();
-        for b in bindings {
-            if !rss_identity_core::PrincipalId::parse(&b.principal_id)
-                .is_ok_and(|id| id.as_uuid().to_string() == b.principal_id)
-                || b.tenant_id != tenant
-                || b.instance_id != instance
-                || b.principal_id.is_empty()
-                || b.principal_id.len() > 255
-                || b.principal_id.contains('*')
-                || b.principal_id.chars().any(char::is_control)
-                || (b.devices.is_empty()
-                    && b.management.is_empty()
-                    && b.identity_management.is_empty())
-                || b.devices.len() > 10000
-                || b.devices
-                    .iter()
-                    .any(|d| d != "*" && rss_observation::Id::new(d).is_err())
-                || (b.devices.contains("*") && b.devices.len() != 1)
-                || ((b.allow_wipe || b.allow_enrollment || b.allow_manage_credentials)
-                    && !b
-                        .roles
-                        .iter()
-                        .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin)))
-                || entries.insert(b.principal_id.clone(), b).is_some()
-            {
-                return Err(Error::Configuration(ConfigIssue::Bindings));
-            }
-        }
-        Ok(Self {
-            tenant: tenant.into(),
-            instance: instance.into(),
-            bindings: entries,
-        })
-    }
-    pub(crate) fn identity_navigation(
-        &self,
-        proof: &Principal,
-    ) -> Result<IdentityNavigation, Error> {
-        let binding = self.binding(proof)?;
-        Ok(IdentityNavigation {
-            manage_accounts: binding.is_some_and(|b| {
-                b.identity_management
-                    .contains(&IdentityPermission::Accounts)
-            }),
-            manage_providers: binding.is_some_and(|b| {
-                b.identity_management
-                    .contains(&IdentityPermission::Providers)
-            }),
-        })
-    }
-    pub(crate) fn tenant(&self) -> &str {
-        &self.tenant
-    }
-    fn binding(&self, proof: &Principal) -> Result<Option<&Binding>, Error> {
-        proof.check_live()?;
-        if proof.tenant_id() != self.tenant || proof.instance_id() != self.instance {
-            return Err(Error::Unauthorized);
-        }
-        Ok(self.bindings.get(proof.principal_id()))
-    }
-    pub fn enrollment<'a>(
-        &self,
-        proof: &'a Principal,
-        device: &str,
-    ) -> Result<EnrollmentPermission<'a>, Error> {
-        let b = self.device(proof, device)?;
-        if !b.allow_enrollment
-            || !b
-                .roles
-                .iter()
-                .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin))
-        {
-            return Err(Error::Forbidden);
-        }
+impl Principal {
+    pub(crate) fn enrollment(&self, device: &str) -> Result<EnrollmentPermission<'_>, Error> {
+        self.require(Permission::Enrollment, Some(device))?;
         Ok(EnrollmentPermission {
-            proof,
-            device: device.to_owned(),
-        })
-    }
-    pub(crate) fn publisher(&self, subject: &str) -> Result<(), Error> {
-        if !self.bindings.get(subject).is_some_and(|b| {
-            b.management
-                .contains(&crate::management::Permission::ReleasePublish)
-        }) {
-            return Err(Error::Forbidden);
-        }
-        Ok(())
-    }
-    pub(crate) fn manage(
-        &self,
-        proof: &Principal,
-        permission: crate::management::Permission,
-    ) -> Result<(), Error> {
-        let binding = self.binding(proof)?.ok_or(Error::Forbidden)?;
-        if !binding.management.contains(&permission) {
-            return Err(Error::Forbidden);
-        }
-        Ok(())
-    }
-    pub fn roles(&self, proof: &Principal) -> Result<Vec<Role>, Error> {
-        Ok(self
-            .binding(proof)?
-            .map(|b| b.roles.iter().copied().collect())
-            .unwrap_or_default())
-    }
-    fn device(&self, proof: &Principal, device: &str) -> Result<&Binding, Error> {
-        let b = self.binding(proof)?.ok_or(Error::Forbidden)?;
-        if b.roles.is_empty() || !(b.devices.contains(device) || b.devices.contains("*")) {
-            return Err(Error::Forbidden);
-        }
-        Ok(b)
-    }
-    pub fn inventory<'a>(
-        &self,
-        proof: &'a Principal,
-        device: &str,
-        c: Coordinates,
-    ) -> Result<InventoryRead<'a>, Error> {
-        self.device(proof, device)?;
-        Id::new(device).map_err(|_| Error::Malformed)?;
-        Ok(InventoryRead {
-            proof,
+            proof: self,
             device: device.into(),
-            coordinates: c,
         })
     }
-    pub(crate) fn credentials(&self, proof: &Principal, device: &str) -> Result<(), Error> {
-        let b = self.device(proof, device)?;
-        if !b.allow_manage_credentials
-            || !b
-                .roles
-                .iter()
-                .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin))
-        {
-            return Err(Error::Forbidden);
-        }
-        Ok(())
-    }
-
-    pub fn dangerous<'a>(
+    pub(crate) fn inventory(
         &self,
-        proof: &'a Principal,
         device: &str,
-    ) -> Result<DangerousAction<'a>, Error> {
-        let b = self.device(proof, device)?;
-        if !b.allow_wipe
-            || !b
-                .roles
-                .iter()
-                .any(|r| matches!(r, Role::SuperAdmin | Role::MdmAdmin))
-        {
-            return Err(Error::Forbidden);
-        }
-        Ok(DangerousAction { _proof: proof })
+        coordinates: Coordinates,
+    ) -> Result<InventoryRead<'_>, Error> {
+        self.require(Permission::InventoryRead, Some(device))?;
+        Ok(InventoryRead {
+            proof: self,
+            device: device.into(),
+            coordinates,
+        })
+    }
+    pub(crate) fn credentials(&self, device: &str) -> Result<(), Error> {
+        self.require(Permission::Credentials, Some(device))
+    }
+    pub(crate) fn manage(&self, permission: Permission) -> Result<(), Error> {
+        self.require(permission, None)
+    }
+    pub(crate) fn dangerous(&self, device: &str) -> Result<DangerousAction<'_>, Error> {
+        self.require(Permission::DeviceWipe, Some(device))?;
+        Ok(DangerousAction { _proof: self })
     }
 }
 #[derive(Serialize)]
@@ -361,6 +260,7 @@ impl InventoryService {
                 }
             })
             .collect();
+        grant.proof.inventory(&grant.device, grant.coordinates)?;
         Ok(InventoryResponse {
             tenant_id: scope.tenant().to_string(),
             device_id: grant.device,
@@ -445,6 +345,7 @@ impl InventoryService {
                 time_basis: TimeBasis::ServerReceived,
             })
             .collect();
+        grant.proof.inventory(&grant.device, grant.coordinates)?;
         Ok(CollectionResponse {
             run: run_summary(&run),
             registration: scope.registration().as_str().to_owned(),
@@ -499,47 +400,6 @@ mod tests {
         assert!(serde_json::from_str::<Coordinates>(r#"{"source":"mdm.windows"}"#).is_ok());
         assert!(serde_json::from_str::<Coordinates>(r#"{"source":"invented"}"#).is_err());
     }
-    const INSTANCE: &str = "33333333-3333-4333-8333-333333333333";
-    #[test]
-    fn instance_is_a_canonical_persistent_coordinate() {
-        assert!(Policy::new("tenant", INSTANCE, vec![]).is_ok());
-        assert!(Policy::new("tenant", "unscoped", vec![]).is_err());
-    }
-    fn binding() -> Binding {
-        Binding {
-            tenant_id: "tenant".into(),
-            instance_id: INSTANCE.into(),
-            principal_id: "44444444-4444-4444-8444-444444444444".into(),
-            roles: [Role::Auditor].into(),
-            devices: ["device".into()].into(),
-            management: BTreeSet::new(),
-            identity_management: BTreeSet::new(),
-            allow_wipe: false,
-            allow_enrollment: false,
-            allow_manage_credentials: false,
-        }
-    }
-    #[test]
-    fn configuration_never_infers_roles_or_dangerous_grants() {
-        assert!(Policy::new("tenant", INSTANCE, vec![binding()]).is_ok());
-        assert!(Policy::new("tenant", INSTANCE, vec![binding(), binding()]).is_err());
-        let mut b = binding();
-        b.allow_wipe = true;
-        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
-        let mut b = binding();
-        b.tenant_id = "other".into();
-        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
-        let mut b = binding();
-        b.principal_id = "*".into();
-        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
-        let mut b = binding();
-        b.devices.insert("*".into());
-        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
-        let mut b = binding();
-        b.allow_manage_credentials = true;
-        assert!(Policy::new("tenant", INSTANCE, vec![b]).is_err());
-        assert!(serde_json::from_str::<Role>("\"administrator\"").is_err());
-    }
 }
 
 /// Product-owned grants for the embedded account and provider management interfaces.
@@ -549,7 +409,7 @@ pub enum IdentityPermission {
     Accounts,
     Providers,
 }
-impl rss_identity_postgres::ManagementPolicy for Policy {
+impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
     fn authorize(
         &self,
         context: &rss_identity_postgres::ManagementContext<'_>,
@@ -576,7 +436,7 @@ impl rss_identity_postgres::ManagementPolicy for Policy {
             };
         }
         let actor = self
-            .bindings
+            .grants
             .get(&context.actor().principal.as_uuid().to_string())
             .ok_or(ManagementDenied)?;
         let permission = match context.operation() {
@@ -587,7 +447,7 @@ impl rss_identity_postgres::ManagementPolicy for Policy {
             | Op::TestProvider(_) => IdentityPermission::Providers,
             _ => IdentityPermission::Accounts,
         };
-        if !actor.identity_management.contains(&permission) {
+        if !actor.permissions.contains(&permission) {
             return Err(ManagementDenied);
         }
         // Protect every restart-owned account manager from disabling/removing membership.
@@ -595,13 +455,9 @@ impl rss_identity_postgres::ManagementPolicy for Policy {
             context.operation(),
             Op::SetAccountEnabled(false) | Op::SetMembership(false)
         ) && context.target().is_some_and(|key| {
-            self.bindings
+            self.grants
                 .get(&key.principal.as_uuid().to_string())
-                .is_some_and(|binding| {
-                    binding
-                        .identity_management
-                        .contains(&IdentityPermission::Accounts)
-                })
+                .is_some_and(|binding| binding.permissions.contains(&IdentityPermission::Accounts))
         }) {
             return Err(ManagementDenied);
         }

@@ -154,7 +154,7 @@ def configure_identity(root, port, binary, env):
     config['management']['database']=database('mdm_management_runtime','runtime-fixture')
     config['management']['publication_database']=database('mdm_software_driver','runtime-fixture')
     config['windows']=json.loads((root/'windows.json').read_text())
-    config['bindings']=[dict(tenant_id=TENANTS[0],instance_id=INSTANCE,principal_id=ADMIN,roles=['mdm_admin'],devices=['*'],management=[],identity_management=['accounts','providers'],allow_wipe=False,allow_enrollment=True,allow_manage_credentials=True)]
+    config['identity_management']=[dict(tenant_id=TENANTS[0],instance_id=INSTANCE,principal_id=ADMIN,permissions=['accounts','providers'])]
     env['MDM_TEST_CONFIG']=write('runtime.json',config)
     maintenance=database('mdm_identity_maintenance','identity-maintenance-fixture')
     password=write('account-password','Fixture-only-correct-horse-battery-2026!')
@@ -220,6 +220,7 @@ def main(identity_only=False):
                 spec=importlib.util.spec_from_file_location('mdm_source_t2', ROOT/'hack/source-t2.py');source=importlib.util.module_from_spec(spec);spec.loader.exec_module(source)
                 source_root=root/'source';source_root.mkdir()
                 env.update(source.tls_environment(source_root))
+                run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::authorization::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
                 run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
                 from enterprise_idp import fixture as enterprise
                 with enterprise(root) as provider:

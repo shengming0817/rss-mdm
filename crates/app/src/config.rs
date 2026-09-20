@@ -1,6 +1,6 @@
 //! Configuration is read once; all changes require a process restart.
 use crate::ConfigIssue;
-use crate::{Error, access::Binding};
+use crate::{Error, access::IdentityManagementGrant};
 use serde::Deserialize;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 use std::{
@@ -68,12 +68,12 @@ pub struct Config {
     pub access_database: Database,
     pub runtime_database: Database,
     pub(crate) management: crate::management::Config,
-    pub bindings: Vec<Binding>,
+    pub identity_management: Vec<IdentityManagementGrant>,
     pub windows: crate::windows::WindowsConfig,
 }
 pub(crate) struct Compiled {
     pub config: Config,
-    pub policy: Arc<crate::access::Policy>,
+    pub identity_management: Arc<crate::access::IdentityManagementPolicy>,
 }
 impl Config {
     pub(crate) fn compile(mut self) -> Result<Compiled, Error> {
@@ -121,14 +121,14 @@ impl Config {
         }
         self.management.validate(&self.database)?;
         self.windows.validate(self.listen)?;
-        let policy = crate::access::Policy::new(
+        let identity_management = crate::access::IdentityManagementPolicy::new(
             &self.identity.tenant_id,
             &self.identity.instance_id,
-            std::mem::take(&mut self.bindings),
+            std::mem::take(&mut self.identity_management),
         )?;
         Ok(Compiled {
             config: self,
-            policy: Arc::new(policy),
+            identity_management: Arc::new(identity_management),
         })
     }
 }
@@ -192,46 +192,22 @@ pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
 mod tests {
     use super::*;
     #[test]
-    fn enrollment_configuration_requires_explicit_permissions_and_store() {
-        let value: serde_json::Value =
-            serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
-                .unwrap();
-        let mut old = value.clone();
-        old.as_object_mut().unwrap().remove("access_database");
-        assert!(serde_json::from_value::<Config>(old).is_err());
-        let mut old = value;
-        old["bindings"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("allow_enrollment");
-        assert!(serde_json::from_value::<Config>(old).is_err());
-    }
-    #[test]
-    fn local_authentication_configuration_needs_only_product_storage() {
+    fn static_business_permissions_are_rejected() {
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
                 .unwrap();
-        value["identity"] = serde_json::json!({
-            "instance_id":"33333333-3333-4333-8333-333333333333",
-            "tenant_id":"11111111-1111-4111-8111-111111111111",
-            "database": {"host":"postgres.example.test","port":5432,"name":"mdm","user":"mdm_identity_runtime","password_file":"/run/mdm/identity-runtime","ca_file":"/run/mdm/database-ca.pem"},
-            "oidc":null
-        });
-        value["trusted_gateway"] = serde_json::json!("127.0.0.1");
-        value["bindings"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("client_id");
-        value["bindings"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("subject");
-        value["bindings"][0]["instance_id"] = value["identity"]["instance_id"].clone();
-        value["bindings"][0]["principal_id"] =
-            serde_json::json!("44444444-4444-4444-8444-444444444444");
-        value["bindings"][0]["identity_management"] = serde_json::json!([]);
-        let config: Config = serde_json::from_value(value).unwrap();
-        assert!(config.compile().is_ok());
+        value["bindings"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<Config>(value.clone()).is_err());
+        value.as_object_mut().unwrap().remove("bindings");
+        value["identity_management"] = serde_json::json!([]);
+        assert!(
+            serde_json::from_value::<Config>(value.clone())
+                .unwrap()
+                .compile()
+                .is_ok()
+        );
+        value.as_object_mut().unwrap().remove("access_database");
+        assert!(serde_json::from_value::<Config>(value).is_err());
     }
     #[test]
     fn startup_configuration_diagnostics_identify_safe_fields() {
