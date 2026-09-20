@@ -5,6 +5,7 @@ extern crate self as rss_mdm_app;
 mod access;
 mod access_store;
 mod audit;
+pub mod authorization;
 mod collection;
 pub mod device;
 mod enrollment;

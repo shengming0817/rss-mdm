@@ -1,6 +1,7 @@
 //! Product callback, explicit linking and provider isolation with real HTTPS Keycloak.
 use super::*;
 use crate::clock::Clock;
+mod authorization;
 const CALLBACK: &str = "https://mdm.example.test/api/v2/oidc/callback";
 
 fn form(html: &str) -> Result<String> {
@@ -167,15 +168,15 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         std::fs::write(&file, "ab".repeat(32))?;
         std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
     }
-    base["identity"]["oidc"] = json!({"group_facts_max_age_seconds":300,"state_key_file":directory.path().join("state"),
+    base["identity"]["oidc"] = json!({"group_facts_max_age_seconds":8,"state_key_file":directory.path().join("state"),
         "active_credential_key":"current","credential_keys":{"current":directory.path().join("credential")},
         "return_targets":{"home":"https://mdm.example.test/done"},
         "private_providers":[], "assurance_profiles":[{"tenant_id":TENANT,"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
     let config: Config = serde_json::from_value(base.clone())?;
-    let policy = Arc::new(crate::access::Policy::new(
+    let policy = Arc::new(crate::access::IdentityManagementPolicy::new(
         TENANT,
         INSTANCE,
-        config.bindings.clone(),
+        config.identity_management.clone(),
     )?);
     let identity = crate::identity::Identity::for_oidc_fixture(&config, policy).await?;
     let reader = Arc::new(InventoryReader::connect(config.database.options()?).await?);
@@ -194,7 +195,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     let mut admin = Browser::default();
     ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
     let tenant = format!("/api/v2/tenants/{TENANT}");
-    let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"email":"email","groups":null},"jit":true});
+    let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"email":"email","groups":"groups","departmentSnapshot":{"claim":"organization_snapshot","maxAgeSeconds":20}},"jit":true});
     let (status,created)=admin.call(&router,Method::POST,&format!("{tenant}/providers"),Some(json!({"settings":settings,"clientSecret":"fixture-secret","caPem":std::fs::read_to_string(std::env::var("MDM_TEST_SSO_CA")?)?}))).await?;
     ensure!(
         status == StatusCode::CREATED,
@@ -223,12 +224,21 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         )
         .await?;
     ensure!(created_local.0 == StatusCode::CREATED);
+    let created_survivor = admin
+        .call(
+            &router,
+            Method::POST,
+            &format!("{tenant}/accounts"),
+            Some(json!({"login":"sso-survivor","password":PASSWORD})),
+        )
+        .await?;
+    ensure!(created_survivor.0 == StatusCode::CREATED);
     let mut linked = Browser::default();
     ensure!(linked.login(&router, "sso-local").await? == StatusCode::OK);
     let original = linked
         .call(&router, Method::GET, "/api/v1/authorization", None)
         .await?
-        .1["principal_id"]
+        .1["principalId"]
         .clone();
     roundtrip(&router, &mut linked, provider, "link", "alice").await?;
     // Explicit linking preserves the local account, including an opaque upstream subject.
@@ -236,7 +246,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         linked
             .call(&router, Method::GET, "/api/v1/authorization", None)
             .await?
-            .1["principal_id"]
+            .1["principalId"]
             == original
     );
     let mut alice = Browser::default();
@@ -245,7 +255,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         alice
             .call(&router, Method::GET, "/api/v1/authorization", None)
             .await?
-            .1["principal_id"]
+            .1["principalId"]
             == original
     );
     let mut bob = Browser::default();
@@ -253,10 +263,19 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     ensure!(
         bob.call(&router, Method::GET, "/api/v1/authorization", None)
             .await?
-            .1["principal_id"]
+            .1["principalId"]
             != original,
         "same email linked two external subjects"
     );
+    authorization::four_subjects_and_independent_lifetimes(
+        &router,
+        &mut admin,
+        &mut alice,
+        &bob,
+        provider,
+        enabled["version"].as_i64().unwrap(),
+    )
+    .await?;
     let mut old = alice.clone();
     roundtrip(&router, &mut alice, provider, "step-up", "alice").await?;
     ensure!(
@@ -306,7 +325,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         None,
     )?;
     let mut local = Browser::default();
-    ensure!(local.login(&router, "admin").await? == StatusCode::OK);
+    ensure!(local.login(&router, "sso-survivor").await? == StatusCode::OK);
     ensure!(
         local
             .call(

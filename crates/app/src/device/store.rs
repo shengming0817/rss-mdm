@@ -51,7 +51,8 @@ impl DeviceService {
         {
             return Err(Error::Malformed);
         }
-        if admin.tenant_id() != credential.tenant.to_string()
+        if admin.tenant_id() != self.tenant
+            || admin.tenant_id() != credential.tenant.to_string()
             || command.source.channel() != credential.channel
         {
             return Err(Error::Forbidden);
@@ -61,7 +62,7 @@ impl DeviceService {
         let request = sqlx::query("SELECT g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
             .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.principal_id()).bind(admin.instance_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
         let device: String = request.try_get("device").map_err(db)?;
-        let _permission = self.policy.enrollment(admin, &device)?;
+        let _permission = admin.enrollment(&device)?;
         audit.target(&device);
         let digest = digest(&(
             "registration_bind",
@@ -113,7 +114,10 @@ impl DeviceService {
         if key.is_nil() || registration.is_nil() || Id::new(device).is_err() {
             return Err(Error::Malformed);
         }
-        self.policy.credentials(admin, device)?;
+        if admin.tenant_id() != self.tenant {
+            return Err(Error::Forbidden);
+        }
+        admin.credentials(device)?;
         let digest = digest(&("credential_revoke", device, registration));
         let operation = Operation {
             actor: actor(admin),
@@ -138,6 +142,7 @@ impl DeviceService {
             return Err(Error::Conflict);
         }
         retire(&mut tx, admin.tenant_id(), registration, "revoked").await?;
+        admin.credentials(device)?;
         audit.registration(registration);
         let receipt = RevocationReceipt {
             operation_id: key,
@@ -159,9 +164,7 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         source: ReportSource,
     ) -> Result<(DevicePrincipal, Scope), Error> {
-        if source.channel() != credential.channel
-            || self.policy.tenant() != credential.tenant.to_string()
-        {
+        if source.channel() != credential.channel || self.tenant != credential.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let tenant = credential.tenant.to_string();
@@ -198,9 +201,11 @@ impl DeviceService {
         device: &str,
         coordinates: Coordinates,
     ) -> Result<Scope, Error> {
+        if proof.tenant_id() != self.tenant {
+            return Err(Error::Forbidden);
+        }
         // Recheck current MDM resource permission. Requested coordinates only choose a source.
-        let _permission = self.policy.inventory(
-            proof,
+        let _permission = proof.inventory(
             device,
             Coordinates {
                 source: coordinates.source,

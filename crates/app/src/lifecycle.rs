@@ -188,7 +188,7 @@ pub async fn serve(
                         let gateway = compiled.config.trusted_gateway;
                         let identity = crate::identity::Identity::connect(
                             &compiled.config,
-                            compiled.policy.clone(),
+                            compiled.identity_management.clone(),
                             |resource| startup.stage_resource(resource),
                         )
                         .await

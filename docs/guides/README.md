@@ -25,3 +25,5 @@
 - [Policy / Resource / 发布持久化](202609132008-2388-2389-backend-persistence.md)：三个独立 PG adapter、公开产物、源发布/撤回与原身份恢复。
 
 - [授权管理与计划闭环](202609161020-2390-management-plans.md)：真实管理员权限、资产/组/Scope 组装、预览保存和私有源审批。
+
+- [#2363 持久化 MDM 授权](202609200002-2363-authorization.md)

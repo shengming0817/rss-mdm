@@ -190,6 +190,7 @@ impl crate::AccessStore {
             return Err(Error::Unauthorized);
         }
         audit.registration(receipt.registration);
+        proof.enrollment(&auth.device)?;
         self.finish(
             tx,
             &operation,
@@ -205,6 +206,7 @@ fn current(
     auth: &Authorization,
     proof: &Principal,
 ) -> Result<(), Error> {
+    proof.enrollment(&auth.device)?;
     if row.try_get::<String, _>("state").map_err(db)? == "cancelled"
         || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
         || uuid(row, "credential_ref")? != auth.credential_ref

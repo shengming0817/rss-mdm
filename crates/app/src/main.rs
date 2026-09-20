@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm serve|migrate|initialize|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm serve|migrate|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -51,6 +51,16 @@ async fn execute() -> Result<(), ProcessError> {
                 .options()
                 .map_err(|e| ProcessError::at("migration.database_configuration", e))?;
             rss_mdm_app::migration::migrate(&options, &config.installation).await?;
+            Ok(())
+        }
+        "initialize-authorization" => {
+            let receipt = rss_mdm_app::authorization::initialize(config::load(path)?)
+                .await
+                .map_err(|error| ProcessError::at("authorization.initialize", error))?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("receipt serialization")
+            );
             Ok(())
         }
         "initialize" | "recover-password" => {

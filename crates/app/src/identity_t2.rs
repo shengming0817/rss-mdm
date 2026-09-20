@@ -3,6 +3,7 @@
     reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
 )]
 //! Real MDM Router with its own PG authority and native component HTTP routes.
+mod authorization;
 mod management;
 #[allow(dead_code)]
 #[path = "../tests/publication_support/mod.rs"]
@@ -94,7 +95,7 @@ impl Browser {
             .method(&method)
             .uri(path)
             .header("host", "mdm.example.test");
-        if method == Method::POST {
+        if !method.is_safe() {
             request = request
                 .header("origin", "https://mdm.example.test")
                 .header("x-identity-request", "1");
@@ -260,8 +261,14 @@ async fn enrollment_matrix(
     query: &str,
 ) -> Result<()> {
     let issue = "/api/v1/enrollments";
-    let mut enrollment_only = config.clone();
-    enrollment_only["bindings"][0]["allow_wipe"] = json!(false);
+    let enrollment_only = config.clone();
+    set_device_grants(
+        browser,
+        router,
+        "device-1",
+        &["inventory_read", "enrollment"],
+    )
+    .await?;
     let enrollment_router = app(&enrollment_only, reader.clone()).await?;
     let mut enrollment_browser = browser.clone();
     ensure!(
@@ -352,8 +359,8 @@ async fn enrollment_matrix(
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))).await?.0 == StatusCode::FORBIDDEN);
-    let mut no_permission = config.clone();
-    no_permission["bindings"][0]["allow_enrollment"] = json!(false);
+    let no_permission = config.clone();
+    set_device_grants(browser, router, "device-1", &["inventory_read"]).await?;
     let restarted = app(&no_permission, reader.clone()).await?;
     let mut denied = Browser::default();
     ensure!(denied.login(&restarted, "other").await? == StatusCode::OK);
@@ -371,6 +378,13 @@ async fn enrollment_matrix(
             == StatusCode::FORBIDDEN
     );
     browser.operation = Some(uuid::Uuid::new_v4());
+    set_device_grants(
+        browser,
+        router,
+        "device-1",
+        &["inventory_read", "enrollment"],
+    )
+    .await?;
     let cancel = format!("/api/v1/enrollments/{enrollment}/cancel");
     let (status, cancelled) = browser
         .call(router, Method::POST, &cancel, Some(json!({})))
@@ -446,9 +460,15 @@ async fn revoke_http_matrix(
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
     let path = format!("/api/v1/devices/revoke-device/registrations/{registration}/revoke");
     let listing = "/api/v1/devices/revoke-device/registrations";
-    let mut cfg = config.clone();
-    cfg["bindings"][0]["devices"] = json!(["revoke-device"]);
-    cfg["bindings"][0]["allow_manage_credentials"] = json!(false);
+    let cfg = config.clone();
+    let initial = app(&cfg, reader.clone()).await?;
+    set_device_grants(
+        &mut session.clone(),
+        &initial,
+        "revoke-device",
+        &["inventory_read"],
+    )
+    .await?;
     let denied = app(&cfg, reader.clone()).await?;
     let mut browser = session.clone();
     ensure!(browser.call(&denied, Method::GET, listing, None).await?.0 == StatusCode::FORBIDDEN);
@@ -460,8 +480,7 @@ async fn revoke_http_matrix(
             .0
             == StatusCode::FORBIDDEN
     );
-    cfg["bindings"][0]["allow_manage_credentials"] = json!(true);
-    cfg["bindings"][0]["allow_enrollment"] = json!(false);
+    set_device_grants(&mut browser, &denied, "revoke-device", &["credentials"]).await?;
     let allowed = app(&cfg, reader).await?;
     browser = session.clone();
     let listed = browser.call(&allowed, Method::GET, listing, None).await?;
@@ -618,13 +637,21 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     let (_, me) = browser
         .call(&initial, Method::GET, "/api/v1/authorization", None)
         .await?;
-    ensure!(me["instance_id"] == INSTANCE && me["tenant_id"] == TENANT && me["roles"] == json!([]));
-    let subject = me["principal_id"].as_str().unwrap();
+    ensure!(me["instanceId"] == INSTANCE && me["tenantId"] == TENANT && me["grants"] == json!([]));
+    let subject = me["principalId"].as_str().unwrap();
     host_context_matrix(&base, reader.clone(), &browser, subject).await?;
     let query = format!("{DEVICE}/inventory?source=mdm.windows");
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
-    let mut allowed = base.clone();
-    allowed["bindings"] = json!([{"tenant_id":TENANT,"instance_id":INSTANCE,"principal_id":subject,"roles":["super_admin"],"devices":["device-1"],"management":[],"identity_management":[],"allow_wipe":true,"allow_enrollment":true,"allow_manage_credentials":false}]);
+    let allowed = base.clone();
+    crate::identity_fixture::set_grants(
+        TENANT,
+        subject,
+        crate::identity_fixture::device_grants(
+            Some("device-1"),
+            &["inventory_read", "device_wipe", "enrollment"],
+        )?,
+    )
+    .await?;
     let authorized = app(&allowed, reader.clone()).await?;
     // Restarting the host preserves only the component credential, whose PG state is checked again.
     ensure!(
@@ -960,8 +987,11 @@ async fn host_context_matrix(
         json!(["accounts", "providers"]),
     ] {
         let mut config = base.clone();
-        config["bindings"][0]["principal_id"] = json!(subject);
-        config["bindings"][0]["identity_management"] = permissions.clone();
+        config["identity_management"] = if permissions.as_array().unwrap().is_empty() {
+            json!([])
+        } else {
+            json!([{"tenant_id":TENANT,"instance_id":INSTANCE,"principal_id":subject,"permissions":permissions}])
+        };
         let router = app(&config, reader.clone()).await?;
         ensure!(
             Browser::default()
@@ -1010,4 +1040,41 @@ async fn host_context_matrix(
         .await?;
     ensure!(context["navigation"] == json!({"manageAccounts":false,"manageProviders":false}));
     Ok(())
+}
+
+async fn browser_subject(browser: &Browser, router: &Router) -> Result<String> {
+    let (status, value) = browser
+        .clone()
+        .call(router, Method::GET, "/api/v1/authorization", None)
+        .await?;
+    ensure!(status == StatusCode::OK);
+    Ok(value["principalId"].as_str().unwrap().into())
+}
+async fn set_device_grants(
+    browser: &mut Browser,
+    router: &Router,
+    device: &str,
+    operations: &[&str],
+) -> Result<()> {
+    let subject = browser_subject(browser, router).await?;
+    crate::identity_fixture::set_grants(
+        TENANT,
+        &subject,
+        crate::identity_fixture::device_grants(Some(device), operations)?,
+    )
+    .await
+}
+async fn set_management_grants(subject: &str, permissions: Value) -> Result<()> {
+    let grants = permissions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            Ok(crate::authorization::Grant {
+                operation: serde_json::from_value(p.clone())?,
+                scope: crate::authorization::Scope::Tenant,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    crate::identity_fixture::set_grants(TENANT, subject, grants).await
 }

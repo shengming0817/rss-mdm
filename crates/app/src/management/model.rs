@@ -2,29 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-/// Explicit tenant-wide product capabilities. Existing roles do not imply these grants.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
-#[serde(rename_all = "snake_case")]
-pub enum Permission {
-    GroupRead,
-    GroupWrite,
-    GroupRecompute,
-    ScopeRead,
-    ScopeWrite,
-    PolicyRead,
-    PolicyWrite,
-    PlanPreview,
-    PlanSave,
-    ResourceRead,
-    ResourceWrite,
-    ReleaseRead,
-    ReleaseWrite,
-    ReleaseValidate,
-    ReleaseApprove,
-    ReleasePublish,
-    ReleaseWithdraw,
-    ReleaseRecover,
-}
+pub use crate::authorization::Permission;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Operation<T> {

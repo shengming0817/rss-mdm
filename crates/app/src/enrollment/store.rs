@@ -52,6 +52,7 @@ impl AccessStore {
         audit: &Audit,
     ) -> Result<Receipt, Error> {
         let proof = permission.proof();
+        proof.enrollment(permission.device())?;
         let device = permission.device();
         let password_digest = password.digest(proof.tenant_id(), device)?;
         let digest = digest(&("enrollment_create", device, &password_digest));
@@ -81,6 +82,7 @@ impl AccessStore {
             expires_at: expires,
             registration: None,
         };
+        proof.enrollment(permission.device())?;
         self.finish(
             tx,
             &op,
@@ -110,6 +112,7 @@ impl AccessStore {
         audit: &Audit,
     ) -> Result<Receipt, Error> {
         let proof = permission.proof();
+        proof.enrollment(permission.device())?;
         let password_digest = resume
             .map(|(p, _)| p.digest(proof.tenant_id(), permission.device()))
             .transpose()?;
@@ -174,6 +177,7 @@ impl AccessStore {
             expires_at: expires,
             registration,
         };
+        proof.enrollment(permission.device())?;
         self.finish(
             tx,
             &op,

@@ -50,13 +50,12 @@ impl AccessStore {
     }
     pub(crate) async fn registration_list(
         &self,
-        policy: &crate::access::Policy,
         proof: &Principal,
         device: &str,
         page: Page,
     ) -> Result<Registrations, Error> {
         rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
-        policy.credentials(proof, device)?;
+        proof.credentials(device)?;
         let mut tx = self.begin(proof.tenant_id()).await?;
         let rows = sqlx::query("SELECT id::text,request_id::text,channel,generation,state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND ($3::uuid IS NULL OR id>$3::uuid) ORDER BY id LIMIT 101")
             .bind(proof.tenant_id()).bind(device).bind(page.after.map(|v|v.to_string())).fetch_all(&mut *tx).await.map_err(db)?;

@@ -56,7 +56,7 @@ async fn run(
     if let Some(id) = operation {
         audit.operation(id, audit.snapshot().action);
     }
-    app.policy.manage(&auth.proof, permission)?;
+    auth.proof.manage(permission)?;
     wire::Response::decode(app.management.execute(&command, audit).await?).map(Json)
 }
 macro_rules! read {

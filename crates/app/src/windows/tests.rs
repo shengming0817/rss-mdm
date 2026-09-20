@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     AccessStore,
     access::InventoryService,
-    device::tests::{admin, options, policy},
+    device::tests::{admin, options},
     enrollment::{Authorization, Password},
 };
 use crate::{clock::Clock, identity::Principal};
@@ -53,13 +53,7 @@ async fn create(
 ) -> anyhow::Result<crate::enrollment::Receipt> {
     let a = audit(proof, key, device, "enrollment_create");
     let receipt = store
-        .create_enrollment(
-            policy(TENANT, true, true).enrollment(proof, device)?,
-            password,
-            reference,
-            key,
-            &a,
-        )
+        .create_enrollment(proof.enrollment(device)?, password, reference, key, &a)
         .await;
     a.finalize(None);
     Ok(receipt?)
@@ -287,7 +281,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         &checked,
     );
     let access = Arc::new(store);
-    let service = crate::device::DeviceService::new(access.clone(), policy(TENANT, true, true));
+    let service = crate::device::DeviceService::new(access.clone(), TENANT.into());
     ensure!(
         service.management_principal(&credential).await.is_err(),
         "unbound signed certificate admitted"
@@ -395,7 +389,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let a = audit(&proof, resume_key, "windows-device", "enrollment_resume");
     access
         .change_enrollment(
-            policy(TENANT, true, true).enrollment(&proof, "windows-device")?,
+            proof.enrollment("windows-device")?,
             auth.id,
             Some((&next, Uuid::new_v4())),
             resume_key,
@@ -423,7 +417,11 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     );
     complete(&access, &w, &resumed, &proof, &intent, &cert).await?;
     // Cancelled/expired authorizations cannot publish an already computed signature.
-    for (device, cancel) in [("cancel-race", true), ("expiry-race", false)] {
+    for (device, cause) in [
+        ("cancel-race", "cancel"),
+        ("expiry-race", "expiry"),
+        ("permission-race", "permission"),
+    ] {
         let pending = create(
             &access,
             &proof,
@@ -448,34 +446,47 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
                 now(),
             )
             .await?;
-        if cancel {
+        if cause == "cancel" {
             let key = Uuid::new_v4();
             let a = audit(&proof, key, device, "enrollment_cancel");
             access
-                .change_enrollment(
-                    policy(TENANT, true, true).enrollment(&proof, device)?,
-                    auth.id,
-                    None,
-                    key,
-                    &a,
-                )
+                .change_enrollment(proof.enrollment(device)?, auth.id, None, key, &a)
                 .await?;
             a.finalize(None);
-        } else {
+        } else if cause == "expiry" {
             sqlx::query("UPDATE mdm_access.requests SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(TENANT).bind(auth.id.to_string()).execute(&mut pg).await?;
         }
-        ensure!(
-            complete(
-                &access,
-                &w,
-                &auth,
-                &proof,
-                &intent,
-                &w.ca.sign(&intent.tbs)?
+        let current = if cause == "permission" {
+            crate::identity_fixture::set_grants(TENANT, crate::identity_fixture::ADMIN, vec![])
+                .await?;
+            Some(admin(TENANT, "admin-a").await?)
+        } else {
+            None
+        };
+        let result = complete(
+            &access,
+            &w,
+            &auth,
+            current.as_ref().unwrap_or(&proof),
+            &intent,
+            &w.ca.sign(&intent.tbs)?,
+        )
+        .await;
+        if cause == "permission" {
+            crate::identity_fixture::set_grants(
+                TENANT,
+                crate::identity_fixture::ADMIN,
+                crate::identity_fixture::device_grants(
+                    None,
+                    &["inventory_read", "enrollment", "credentials"],
+                )?,
             )
-            .await
-            .is_err()
-        );
+            .await?;
+        }
+        ensure!(result.is_err());
+        let bound: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
+            .bind(TENANT).bind(auth.id.to_string()).fetch_one(&mut pg).await?;
+        ensure!(bound == 0);
     }
     // Audit failure rolls back the entire final binding, then the same intent can finish.
     let r = create(
@@ -586,7 +597,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ensure!(
         access
             .change_enrollment(
-                policy(TENANT, true, true).enrollment(&proof, "windows-device")?,
+                proof.enrollment("windows-device")?,
                 auth.id,
                 Some((&password, Uuid::new_v4())),
                 key,
@@ -909,8 +920,13 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     value["management"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_management_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
     let config: crate::config::Config = serde_json::from_value(value)?;
     let clock = Arc::new(crate::clock::SystemClock);
-    let policy = policy(TENANT, true, true);
-    let identity = crate::identity::Identity::connect(&config, policy.clone(), |_| {}).await?;
+    let identity_management = Arc::new(crate::access::IdentityManagementPolicy::new(
+        TENANT,
+        crate::identity_fixture::INSTANCE,
+        config.identity_management.clone(),
+    )?);
+    let identity =
+        crate::identity::Identity::connect(&config, identity_management.clone(), |_| {}).await?;
     let secret = crate::identity_fixture::login(&identity, "admin").await?;
     let credentials = crate::enrollment_credentials::Credentials::new(monotonic(), 100);
     let reference = credentials.insert(rss_identity_core::session::SessionSecret::parse(
@@ -919,7 +935,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     let store = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
     let devices = Arc::new(crate::device::DeviceService::new(
         store.clone(),
-        policy.clone(),
+        TENANT.into(),
     ));
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
@@ -943,7 +959,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         identity,
         credentials,
         clock,
-        policy,
+        identity_management,
         inventory: InventoryService::new(
             reader.clone(),
             devices.clone(),
@@ -1401,8 +1417,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     ensure!(fields.len() == 2 && fields[0].value == "Model-TLS" && fields[1].value == "10.0.26100");
     let result = app
         .inventory
-        .read(app.policy.inventory(
-            &proof,
+        .read(proof.inventory(
             "tls-device",
             crate::access::Coordinates {
                 source: crate::device::ReportSource::MdmWindows,

@@ -45,7 +45,7 @@ pub(super) async fn manage(
         .ca
         .verify(peer.chain(), app.clock.unix_seconds()?)?;
     let credential = VerifiedChannelCredential::windows(
-        TenantId::parse(app.policy.tenant()).map_err(|_| Error::Unauthorized)?,
+        TenantId::parse(&app.identity.tenant.to_string()).map_err(|_| Error::Unauthorized)?,
         &checked,
     );
     let principal = app.devices.management_principal(&credential).await?;
