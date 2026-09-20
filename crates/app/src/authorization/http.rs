@@ -61,20 +61,19 @@ async fn groups(
 ) -> Result<Json<Value>, Error> {
     auth.proof.require(Permission::UserGroupRead, None)?;
     // Memberships have a separately bounded, revision-bearing projection.
-    let groups = auth
-        .proof
-        .authorization()?
-        .groups
-        .iter()
-        .map(|r| Revision {
-            id: r.id,
-            revision: r.revision,
-            value: r
-                .value
-                .as_ref()
-                .map(|g| json!({"name":g.name,"memberCount":g.members.len()})),
-        })
-        .collect::<Vec<_>>();
+    let groups =
+        auth.proof
+            .authorization()?
+            .groups
+            .iter()
+            .map(|r| Revision {
+                id: r.id,
+                revision: r.revision,
+                value: r.value.as_ref().map(
+                    |g| json!({"name":g.name,"enabled":g.enabled,"memberCount":g.members.len()}),
+                ),
+            })
+            .collect::<Vec<_>>();
     Ok(Json(page(&groups, page_request.after)))
 }
 async fn rule_write(

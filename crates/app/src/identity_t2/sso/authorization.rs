@@ -113,7 +113,7 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
         router,
         &group_path,
         0,
-        json!({"name":"MDM explicit members","members":[user]}),
+        json!({"name":"MDM explicit members","enabled":true,"members":[user]}),
     )
     .await?;
     let cases = [

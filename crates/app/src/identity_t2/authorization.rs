@@ -157,7 +157,8 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     let group_id = Uuid::new_v4();
     let group_path = format!("/api/v1/authorization/user-groups/{group_id}");
     let group_key = Uuid::new_v4();
-    let group = json!({"name":"explicit users","members":[user(&subject)["user"].clone()]});
+    let group =
+        json!({"name":"explicit users","enabled":true,"members":[user(&subject)["user"].clone()]});
     let created_group = put(
         &mut admin,
         &router,
@@ -171,6 +172,64 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     let group_rule_path = format!("/api/v1/authorization/rules/{}", Uuid::new_v4());
     ensure!(put(&mut admin, &router, &group_rule_path, Uuid::new_v4(), 0, json!({"subject":{"kind":"user_group","id":group_id},"grants":[grant("group_read",json!({"kind":"tenant"}))]})).await?.0 == StatusCode::OK);
     let target = format!("/api/v1/groups/{}", Uuid::new_v4());
+    ensure!(member.call(&router, Method::GET, &target, None).await?.0 == StatusCode::NOT_FOUND);
+    let mut disabled = group.clone();
+    disabled["enabled"] = json!(false);
+    ensure!(
+        put(
+            &mut admin,
+            &router,
+            &group_path,
+            Uuid::new_v4(),
+            1,
+            disabled
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    ensure!(member.call(&router, Method::GET, &target, None).await?.0 == StatusCode::FORBIDDEN);
+    let listed = admin
+        .call(
+            &router,
+            Method::GET,
+            "/api/v1/authorization/user-groups",
+            None,
+        )
+        .await?
+        .1;
+    let listed = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"] == group_id.to_string())
+        .unwrap();
+    ensure!(listed["value"]["enabled"] == false && listed["value"]["memberCount"] == 1);
+    // Replaying the enabled creation returns its receipt without changing the disabled document.
+    ensure!(
+        put(
+            &mut admin,
+            &router,
+            &group_path,
+            group_key,
+            0,
+            group.clone()
+        )
+        .await?
+        .1 == created_group.1
+    );
+    ensure!(member.call(&router, Method::GET, &target, None).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(
+        put(
+            &mut admin,
+            &router,
+            &group_path,
+            Uuid::new_v4(),
+            2,
+            group.clone()
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     ensure!(member.call(&router, Method::GET, &target, None).await?.0 == StatusCode::NOT_FOUND);
     let members_path = format!("{group_path}/members");
     ensure!(
@@ -189,8 +248,8 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
             &router,
             &group_path,
             Uuid::new_v4(),
-            1,
-            json!({"name":"explicit users","members":[]})
+            3,
+            json!({"name":"explicit users","enabled":true,"members":[]})
         )
         .await?
         .0 == StatusCode::OK
@@ -209,7 +268,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
             &router,
             &group_path,
             Uuid::new_v4(),
-            2,
+            4,
             Value::Null
         )
         .await?
@@ -395,7 +454,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
             &privilege_group_path,
             Uuid::new_v4(),
             0,
-            json!({"name":"privileged","members":[]})
+            json!({"name":"privileged","enabled":true,"members":[]})
         )
         .await?
         .0 == StatusCode::OK
@@ -410,7 +469,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         &privilege_group_path,
         Uuid::new_v4(),
         1,
-        json!({"name":"privileged","members":[user(&subject)["user"].clone()]}),
+        json!({"name":"privileged","enabled":true,"members":[user(&subject)["user"].clone()]}),
     )
     .await?;
     let escalation_denied = escalation.0 == StatusCode::FORBIDDEN;

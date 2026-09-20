@@ -177,6 +177,7 @@ impl Rule {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserGroup {
     pub name: String,
+    pub enabled: bool,
     pub members: Vec<User>,
 }
 impl UserGroup {

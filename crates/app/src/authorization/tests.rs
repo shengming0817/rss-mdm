@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn user_group_requires_an_explicit_enabled_state() {
+    assert!(
+        serde_json::from_value::<UserGroup>(serde_json::json!({"name":"operators","members":[]}))
+            .is_err()
+    );
+    for enabled in [true, false] {
+        assert!(
+            serde_json::from_value::<UserGroup>(
+                serde_json::json!({"name":"operators","enabled":enabled,"members":[]})
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn grants_keep_each_operation_with_its_scope() {
     let read = Grant {
         operation: Permission::InventoryRead,

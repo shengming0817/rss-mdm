@@ -120,7 +120,7 @@ impl Snapshot {
                     g.id == *id
                         && g.value
                             .as_ref()
-                            .is_some_and(|g| g.members.contains(&proof.user()))
+                            .is_some_and(|g| g.enabled && g.members.contains(&proof.user()))
                 })
                 .then_some(None)),
             Subject::IdpGroup { source, id } => {
