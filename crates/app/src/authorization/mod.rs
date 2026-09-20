@@ -8,6 +8,8 @@ pub(crate) use evaluate::Snapshot;
 #[cfg(test)]
 use evaluate::department_matches;
 pub(crate) use http::routes;
+#[cfg(test)]
+pub(crate) use initialize::bounded as bounded_initialization;
 pub use initialize::{Initialize, initialize};
 pub use model::*;
 #[cfg(test)]

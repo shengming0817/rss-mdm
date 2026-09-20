@@ -112,9 +112,11 @@ struct MemberPage {
 }
 async fn members(
     Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
     Query(page): Query<MemberPage>,
 ) -> Result<Json<Value>, Error> {
+    audit.target(&id.to_string());
     auth.proof.require(Permission::UserGroupRead, None)?;
     let record = auth
         .proof

@@ -36,10 +36,32 @@ pub enum Permission {
 }
 impl Permission {
     fn device(self) -> bool {
-        matches!(
-            self,
-            Self::InventoryRead | Self::Enrollment | Self::Credentials | Self::DeviceWipe
-        )
+        match self {
+            Self::InventoryRead | Self::Enrollment | Self::Credentials | Self::DeviceWipe => true,
+            Self::AuthorizationRead
+            | Self::AuthorizationWrite
+            | Self::UserGroupRead
+            | Self::UserGroupWrite
+            | Self::DepartmentRead
+            | Self::GroupRead
+            | Self::GroupWrite
+            | Self::GroupRecompute
+            | Self::ScopeRead
+            | Self::ScopeWrite
+            | Self::PolicyRead
+            | Self::PolicyWrite
+            | Self::PlanPreview
+            | Self::PlanSave
+            | Self::ResourceRead
+            | Self::ResourceWrite
+            | Self::ReleaseRead
+            | Self::ReleaseWrite
+            | Self::ReleaseValidate
+            | Self::ReleaseApprove
+            | Self::ReleasePublish
+            | Self::ReleaseWithdraw
+            | Self::ReleaseRecover => false,
+        }
     }
 }
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]

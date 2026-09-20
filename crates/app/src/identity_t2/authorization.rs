@@ -1,6 +1,7 @@
 //! Real Router and PostgreSQL rules, membership, CAS, receipts and one-time initialization.
 use super::*;
 use uuid::Uuid;
+mod boundaries;
 
 async fn put(
     browser: &mut Browser,
@@ -64,6 +65,33 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
+    for (suffix, action, allowed) in [
+        ("", "authorization_effective_read", true),
+        ("/rules", "authorization_rules_read", false),
+        ("/user-groups", "authorization_groups_read", false),
+        ("/departments", "authorization_departments_read", false),
+    ] {
+        let path = format!("/api/v1/authorization{suffix}");
+        for (browser, expected) in [
+            (&mut admin, 200),
+            (&mut member, if allowed { 200 } else { 403 }),
+        ] {
+            let before = pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE action='{action}' AND status={expected}"))?.trim().parse::<i64>()?;
+            ensure!(
+                browser
+                    .call(&router, Method::GET, &path, None)
+                    .await?
+                    .0
+                    .as_u16()
+                    == expected
+            );
+            let after = pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE action='{action}' AND status={expected}"))?.trim().parse::<i64>()?;
+            ensure!(
+                after == before + 1,
+                "authorization read audit action missing: {action}"
+            );
+        }
+    }
     let rule_id = Uuid::new_v4();
     let key = Uuid::new_v4();
     let path = format!("/api/v1/authorization/rules/{rule_id}");
@@ -286,6 +314,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
+    boundaries::verify(&router, &mut admin, &mut member, &store).await?;
     // The initializer marker, grant, receipt and audit must all roll back together.
     let mut isolated = crate::identity_fixture::user(TENANT, ADMIN);
     isolated.instance_id = Uuid::new_v4().to_string();

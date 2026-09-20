@@ -275,6 +275,14 @@ pub(crate) async fn envelope(
         .map(|p| p.as_str())
         .unwrap_or("");
     let action = match route {
+        "/api/v1/authorization" => "authorization_effective_read",
+        "/api/v1/authorization/rules" => "authorization_rules_read",
+        "/api/v1/authorization/user-groups" => "authorization_groups_read",
+        "/api/v1/authorization/user-groups/{id}/members" => "authorization_members_read",
+        "/api/v1/authorization/departments" => "authorization_departments_read",
+        "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
+            "authorization_write"
+        }
         "/api/v1/enrollments" => "enrollment_create",
         "/api/v1/enrollments/{id}" => "enrollment_read",
         "/api/v1/devices/{device}/registrations" => "registration_read",

@@ -243,10 +243,29 @@ async fn lock(
 }
 
 impl AccessStore {
+    #[cfg(test)]
     pub(crate) async fn initialize_authorization(
         &self,
         user: User,
         key: Uuid,
+    ) -> Result<Receipt, Error> {
+        let audit = Audit::new(user.tenant_id.clone(), "authorization_initialize");
+        let result = self
+            .initialize_authorization_audited(user, key, &audit)
+            .await;
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| crate::audit::FailureReason::Transaction),
+        );
+        result
+    }
+    pub(crate) async fn initialize_authorization_audited(
+        &self,
+        user: User,
+        key: Uuid,
+        audit: &Audit,
     ) -> Result<Receipt, Error> {
         canonical_uuid(&user.instance_id)?;
         canonical_uuid(&user.tenant_id)?;
@@ -254,7 +273,6 @@ impl AccessStore {
         if key.is_nil() {
             return Err(Error::Malformed);
         }
-        let audit = Audit::new(user.tenant_id.clone(), "authorization_initialize");
         audit.identify_operator(&user.principal_id, &user.instance_id);
         audit.operation(key, "authorization_initialize");
         let digest = format!(
@@ -276,12 +294,10 @@ impl AccessStore {
         let mut tx = self.begin(&user.tenant_id).await?;
         lock(&mut tx, &user.tenant_id, &user.instance_id).await?;
         if let Some(receipt) = AccessStore::replay(&mut tx, &operation).await? {
-            audit.finalize(None);
             return decode(&receipt);
         }
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid)").bind(&user.tenant_id).bind(&user.instance_id).fetch_one(&mut *tx).await.map_err(db)?;
         if exists {
-            audit.finalize(None);
             return Err(Error::Conflict);
         }
         let id = Uuid::new_v4();
@@ -313,16 +329,10 @@ impl AccessStore {
                 tx,
                 &operation,
                 &serde_json::to_string(&receipt).map_err(|_| Error::Malformed)?,
-                &audit,
+                audit,
                 None,
             )
             .await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| crate::audit::FailureReason::Transaction),
-        );
         result?;
         Ok(receipt)
     }
