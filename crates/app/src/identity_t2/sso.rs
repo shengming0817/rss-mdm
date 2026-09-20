@@ -170,7 +170,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     base["identity"]["oidc"] = json!({"group_facts_max_age_seconds":300,"state_key_file":directory.path().join("state"),
         "active_credential_key":"current","credential_keys":{"current":directory.path().join("credential")},
         "return_targets":{"home":"https://mdm.example.test/done"},
-        "assurance_profiles":[{"tenant_id":TENANT,"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
+        "private_providers":[], "assurance_profiles":[{"tenant_id":TENANT,"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
     let config: Config = serde_json::from_value(base.clone())?;
     let policy = Arc::new(crate::access::Policy::new(
         TENANT,

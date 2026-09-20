@@ -7,3 +7,5 @@
 Windows 协议监听、CA/保护密钥、升级顺序和恢复边界见 [Windows 注册与管理通道](../guides/202609111146-2350-windows-enrollment-management.md) 与 [Enrollment 操作](../guides/202609090001-2347-enrollment-audit.md)。
 
 - [Docker 候选 候选部署](202609120000-2353-candidate-deployment.md)（#2353）：OCI、配置、迁移、健康与关闭。
+
+- [产品认证浏览器验收](202609190000-2364-authentication-t3.md)（#2364）：固定候选、私网 IdP、撤销与故障隔离。

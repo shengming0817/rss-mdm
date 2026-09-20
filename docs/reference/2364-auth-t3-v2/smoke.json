@@ -1,0 +1,104 @@
+{
+  "revision": "a4dd2dc2ae7082b72b27dd4e0691ab001b39763d",
+  "candidate_sha256": "111a65f11fd78a8dc57c2fbae44c5078359f5facaede5dc15fcba40332e44573",
+  "ui": {
+    "id": "sha256:ece79d7450cd1fcd8b5265a9dd1672ed21798fb6ae2dcd1b8a5cb6c7793d2729",
+    "revision": "a0e5ac61e98677ae96c6c80d3680d5f75c4fbbfb",
+    "os": "linux",
+    "architecture": "arm64"
+  },
+  "manifest_digest": "sha256:d8b79639a1868b84070e20652f75b8c7e9250feb5fd0221ba3a31f9b05a99d75",
+  "archive_sha256": "1439df538a73a0615bb55c3be42b9413b4f3c21b92b312025f50b921930cf1d7",
+  "platform": "linux/arm64",
+  "dependencies": [
+    {
+      "package": "rss-axum",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-contract",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-diag-context",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-identity-core",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-identity-http-axum",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-identity-oidc",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-identity-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=7236f77414706ccf1ede95f62b48bb99b4b65104#7236f77414706ccf1ede95f62b48bb99b4b65104"
+    },
+    {
+      "package": "rss-observation",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-observation-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-projection",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-projection-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-redact",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-request-context",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-runtime",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-transactional-messaging",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    },
+    {
+      "package": "rss-transactional-messaging-postgres",
+      "source": "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+    }
+  ],
+  "checks": [
+    "migrate",
+    "migration_replay",
+    "initialize",
+    "livez",
+    "readyz",
+    "local_login",
+    "authoritative_subject",
+    "enrollment",
+    "idempotent_replay",
+    "device_scope_denial",
+    "denial_no_effect",
+    "denial_audit",
+    "wipe_denial",
+    "inventory_scope_denial",
+    "refresh_rotation",
+    "logout",
+    "bounded_stop"
+  ],
+  "shutdown_seconds": 0.056,
+  "limits": [
+    "disposable MDM PostgreSQL and TLS namespace",
+    "no real Windows or macOS device T3"
+  ],
+  "log_sha256": "194008402c560c9e327feaf1e75e7d2757e2810bba2d8bf82108e9e9fb41fad4"
+}

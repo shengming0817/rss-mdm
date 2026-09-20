@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -43,17 +44,37 @@ def oci_identity(path):
 def platform(config):
     return "/".join(config[key] for key in ("os", "architecture", "variant") if config.get(key))
 
-def build(out, header):
+def immutable_image(reference):
+    if not re.fullmatch(r'(?:[^\s]+@)?sha256:[0-9a-f]{64}',reference):
+        raise ValueError("immutable image ID or repository digest required")
+    return reference
+
+def image_metadata(value):
+    result={"id":value["Id"], "revision":value["Config"].get("Labels",{}).get("org.opencontainers.image.revision"),
+            "os":value["Os"], "architecture":value["Architecture"]}
+    if value.get('Variant'):result['variant']=value['Variant']
+    return result
+
+def snapshot_ui(reference, output):
+    value=json.loads(run(['docker','image','inspect',immutable_image(reference)]))[0]
+    metadata=image_metadata(value)
+    if not re.fullmatch(r'[0-9a-f]{40}',metadata['revision'] or '') or value['Config'].get('User')!='10001:10001':
+        raise ValueError('UI source revision or runtime user mismatch')
+    subprocess.run(['docker','image','save','--output',str(output),metadata['id']],check=True)
+    metadata['archive']={'file':output.name,'sha256':sha(output)}
+    return metadata
+
+def build(out, header, web_image):
     if out.exists():
         raise ValueError("candidate output must be new")
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".mdm-candidate-", dir=out.parent) as temporary:
         staged = Path(temporary) / "candidate"
-        build_staged(staged, header)
+        build_staged(staged, header, web_image)
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
-def build_staged(out, header):
+def build_staged(out, header, web_image):
     if out.exists():
         raise ValueError("candidate output must be new")
     if header.is_symlink() or not header.is_file() or header.stat().st_mode & 0o077:
@@ -74,6 +95,7 @@ def build_staged(out, header):
             subprocess.run(["/usr/bin/git", "archive", revision], cwd=ROOT, stdout=archive, check=True)
         with tarfile.open(archive_path) as archive:
             archive.extractall(source, filter="data")
+        ui=snapshot_ui(web_image,out/"identity-ui.image.tar")
         shutil.copy(source / "deployment/Dockerfile", context / "Dockerfile")
         image = "rss-mdm/server:" + revision
         common = ["docker", "buildx", "build", "--provenance=false",
@@ -96,7 +118,7 @@ def build_staged(out, header):
         inputs = [{"package": p["name"], "source": p["source"]} for p in metadata["packages"]
                   if p["name"].startswith("rss-") and p["source"]]
         manifest = {
-            "format_version": 1, "repository": "https://dev.azure.com/shengming0923/rss/_git/rss-mdm",
+            "format_version": 2, "ui":ui, "repository": "https://dev.azure.com/shengming0923/rss/_git/rss-mdm",
             "revision": revision, "version": version, "platform": platform(config),
             "cargo_lock_sha256": sha(source / "Cargo.lock"), "migrations": migrations,
             "config_sha256": sha(source / "fixtures/mdm-config.example.json"),
@@ -116,5 +138,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--git-auth-header-file", type=Path, required=True)
+    parser.add_argument("--web-image", required=True, help="immutable UI image ID or repository digest")
     args = parser.parse_args()
-    build(args.output.resolve(), args.git_auth_header_file.absolute())
+    build(args.output.resolve(), args.git_auth_header_file.absolute(), args.web_image)

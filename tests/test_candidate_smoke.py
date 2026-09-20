@@ -6,12 +6,13 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hack"))
-import candidate_smoke as candidate
+import candidate_smoke as smoke
+import candidate_runtime as candidate
 
 
 class SmokeCompletion(unittest.TestCase):
     def test_readiness_retries_temporary_html_gateway_error(self):
-        browser = candidate.Browser.__new__(candidate.Browser)
+        browser = smoke.Browser.__new__(smoke.Browser)
         browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""
         unavailable = mock.Mock(status=502)
         unavailable.getheaders.return_value = []
@@ -67,18 +68,18 @@ class SmokeCompletion(unittest.TestCase):
             directory = Path(temporary)
             for name in ["smoke.json", "smoke.log"]:
                 (directory / name).write_text("stale success")
-            with mock.patch.object(candidate, "run_smoke", side_effect=RuntimeError("cleanup rejected")):
+            with mock.patch.object(smoke, "run_smoke", side_effect=RuntimeError("cleanup rejected")):
                 with self.assertRaisesRegex(RuntimeError, "cleanup rejected"):
-                    candidate.smoke(directory)
+                    smoke.smoke(directory)
             self.assertFalse((directory / "smoke.json").exists())
             self.assertFalse((directory / "smoke.log").exists())
 
     def test_publication_failure_leaves_no_success_marker(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            with mock.patch.object(candidate, "run_smoke", return_value=({"revision": "fixture"}, "logs")), mock.patch.object(candidate.os, "replace", side_effect=OSError("disk failure")):
+            with mock.patch.object(smoke, "run_smoke", return_value=({"revision": "fixture"}, "logs")), mock.patch.object(candidate.os, "replace", side_effect=OSError("disk failure")):
                 with self.assertRaisesRegex(OSError, "disk failure"):
-                    candidate.smoke(directory)
+                    smoke.smoke(directory)
             self.assertEqual(list(directory.iterdir()), [])
 
     def test_cleanup_preserves_primary_and_records_cleanup_failure(self):
@@ -90,3 +91,69 @@ class SmokeCompletion(unittest.TestCase):
                 finally:
                     candidate.cleanup(["server"], "inputs")
         self.assertEqual(primary.__notes__, ["candidate cleanup failed (2 resources)"])
+
+
+class RuntimeOwnership(unittest.TestCase):
+    def test_operator_preserves_exact_stage(self):
+        owner=candidate.Candidate.__new__(candidate.Candidate)
+        owner.pg,owner.operator_volume,owner.image='pg','operator','image'
+        owner.run_once=mock.Mock(return_value='')
+        for stage in [candidate.Stage.MIGRATION,candidate.Stage.REPLAY,candidate.Stage.INITIALIZE]:
+            owner.operator('migrate','input.json',stage)
+            self.assertEqual(owner.run_once.call_args.kwargs['stage'],stage)
+
+    def test_network_cleanup_does_not_replace_primary(self):
+        primary=RuntimeError('browser rejected')
+        with mock.patch.object(candidate,'docker',side_effect=RuntimeError('cleanup')) as command:
+            with self.assertRaisesRegex(RuntimeError,'browser rejected'):
+                try:raise primary
+                finally:candidate.cleanup(['server'],['volume'],'network')
+            self.assertEqual(command.call_count,3)
+        self.assertIn('3 resources',primary.__notes__[0])
+
+    def test_two_owners_keep_both_failure_records(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for owner in ['first','second']:
+                candidate.failure_evidence(root,[],set(),RuntimeError('failed'),owner+'-failure.json')
+            self.assertEqual(len(list(root.glob('*-failure.json'))),2)
+
+    def test_smoke_explicitly_selects_fixed_diagnostic_filename(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(smoke,'Candidate') as factory:
+            factory.return_value.__enter__.side_effect=RuntimeError('fixture failure')
+            with self.assertRaisesRegex(RuntimeError,'fixture failure'):
+                smoke.smoke(Path(temp))
+            factory.assert_called_once_with(Path(temp),diagnostic_filename='smoke-failure.json')
+
+
+class ExternalReviewRegressions(unittest.TestCase):
+    def test_owned_timeout_reclaims_daemon_container(self):
+        created=[]
+        with mock.patch.object(candidate,'docker',side_effect=[candidate.DockerFailure(candidate.Stage.MIGRATION,'timeout'), '']) as command:
+            with self.assertRaises(candidate.DockerFailure):
+                candidate.run_owned(created,'test-owner','image','sleep','60',stage=candidate.Stage.MIGRATION)
+        self.assertEqual(created,[])
+        first=command.call_args_list[0].args
+        self.assertEqual(first[:2],('run','--name'))
+        self.assertEqual(command.call_args_list[1].args,('rm','-f',first[2]))
+
+    def test_cleanup_failure_preserves_resource_and_closed_outcome(self):
+        with mock.patch.object(candidate,'docker',side_effect=candidate.DockerFailure(candidate.Stage.REMOVE_VOLUME,'exit',7)):
+            with self.assertRaises(candidate.CleanupFailure) as failure:
+                candidate.cleanup([],['owned-volume'])
+        self.assertEqual(failure.exception.cleanup_records,[{'kind':'volume','name':'owned-volume','stage':'cleanup-volume','outcome':'exit','exit_code':7}])
+
+    def test_host_fixture_keeps_private_directory_and_tls_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            candidate.inputs(root,candidate.ROOT/'fixtures/mdm-config.example.json')
+            self.assertEqual(root.stat().st_mode & 0o077,0)
+            self.assertEqual((root/'server.key').stat().st_mode & 0o077,0)
+
+    def test_ui_archive_mismatch_fails_before_image_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'ui.tar').write_bytes(b'changed')
+            with mock.patch.object(candidate,'docker') as command:
+                with self.assertRaisesRegex(RuntimeError,'UI archive mismatch'):
+                    candidate.load_ui(root,{'archive':{'file':'ui.tar','sha256':'0'*64}})
+                command.assert_not_called()
