@@ -93,15 +93,21 @@ impl Management {
     }
     // Business rejection must roll back already executed companion steps. Keep its
     // closed category separately; PgError deliberately redacts provider error sources.
-    async fn execute(&self, command: &Command, audit: &Audit) -> std::result::Result<Value, Error> {
+    async fn execute(
+        &self,
+        command: &Command,
+        audit: &Audit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+    ) -> std::result::Result<Value, Error> {
+        authorize()?;
         let failure = std::sync::Mutex::new(None);
         let attempt = self
             .runtime
             .local_tx_with_context(
                 self.tenant,
                 deadline(),
-                (self, command, audit, &failure),
-                |(s, command, audit, failure), tx| {
+                (self, command, audit, &failure, authorize),
+                |(s, command, audit, failure, authorize), tx| {
                     Box::pin(async move {
                         let partitions = match command {
                             Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
@@ -112,7 +118,7 @@ impl Management {
                             _ => Vec::new(),
                         };
                         tx.prepare_outbox_partitions(&partitions).await?;
-                        match s.execute_in(tx, command, audit).await {
+                        match s.execute_in(tx, command, audit, authorize).await {
                             Ok(v) => {
                                 audit.mark_commit_started();
                                 Ok(v)
@@ -160,8 +166,10 @@ impl Management {
         tx: &mut PgTransaction<'_>,
         command: &Command,
         audit: &Audit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
         storage::lock(tx).await?;
+        authorize()?;
         let (operation, fingerprint) = storage::identity(command, audit)?;
         if let Some(id) = operation
             && let Some(old) = storage::replay(tx, id, &fingerprint).await?
@@ -171,6 +179,7 @@ impl Management {
             }
             audit.management_result(crate::audit::ManagementResult::Replayed);
             storage::audit(tx, audit).await?;
+            authorize()?;
             return Ok(old);
         }
         let at = self
@@ -188,6 +197,7 @@ impl Management {
             storage::receipt(tx, id, &fingerprint, &value).await?;
         }
         storage::audit(tx, audit).await?;
+        authorize()?;
         Ok(value)
     }
     async fn dispatch(

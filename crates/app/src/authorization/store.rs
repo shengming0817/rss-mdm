@@ -15,15 +15,32 @@ impl AccessStore {
         &self,
         proof: &Principal,
     ) -> Result<Snapshot, Error> {
-        proof.check_live()?;
-        let mut tx = self.begin(proof.tenant_id()).await?;
-        let json: String = sqlx::query_scalar("WITH rules AS MATERIALIZED (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001), groups AS MATERIALIZED (SELECT * FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001) SELECT CASE WHEN (SELECT coalesce(sum(octet_length(document::text)),0) FROM rules)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM groups)<=8388608 THEN jsonb_build_object('rules',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM rules),'[]'::jsonb),'groups',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM groups),'[]'::jsonb)) ELSE NULL END::text")
-            .bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(&mut *tx).await.map_err(db)?;
-        let snapshot: Snapshot = decode(&json)?;
-        snapshot.validate(proof.tenant_id(), proof.instance_id())?;
-        tx.rollback().await.map_err(db)?;
-        proof.check_live()?;
-        Ok(snapshot)
+        use sqlx::Acquire;
+        let mut connection = None;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            proof.check_live()?;
+            connection = Some(self.acquire().await?);
+            let mut tx = connection
+                .as_mut()
+                .expect("acquired connection")
+                .begin()
+                .await
+                .map_err(db)?;
+            Self::configure_transaction(&mut tx, proof.tenant_id()).await?;
+            let snapshot = read_snapshot(&mut tx, proof).await?;
+            tx.rollback().await.map_err(db)?;
+            proof.check_live()?;
+            Ok(snapshot)
+        })
+        .await;
+        if !matches!(result, Ok(Ok(_)))
+            && let Some(connection) = &mut connection
+        {
+            // SQLx cancellation queues rollback. Do not return a stalled protocol stream to the pool.
+            // ref: sqlx-core 0.9.0 src/pool/connection.rs close_on_drop (bounded close).
+            connection.close_on_drop();
+        }
+        result.map_err(|_| Error::Unavailable(Failure::RequestDeadline))?
     }
     pub(crate) async fn change_rule(
         &self,
@@ -47,6 +64,7 @@ impl AccessStore {
         audit: &Audit,
     ) -> Result<Receipt, Error> {
         proof.require(Permission::UserGroupWrite, None)?;
+        proof.require(Permission::AuthorizationWrite, None)?;
         if let Some(value) = &change.value {
             value.validate(proof.tenant_id(), proof.instance_id())?;
         }
@@ -91,7 +109,11 @@ impl AccessStore {
         audit.target(&id.to_string());
         let mut tx = self.begin(proof.tenant_id()).await?;
         lock(&mut tx, proof.tenant_id(), proof.instance_id()).await?;
-        if let Some(result) = AccessStore::replay(&mut tx, &operation).await? {
+        let replay = AccessStore::replay(&mut tx, &operation).await?;
+        // The tenant/instance lock serializes writes; authorize the version now locked.
+        let current = read_snapshot(&mut tx, proof).await?;
+        authorize_change(&current, proof, table)?;
+        if let Some(result) = replay {
             return decode(&result);
         }
         let query = format!(
@@ -148,13 +170,7 @@ impl AccessStore {
         if !bounded {
             return Err(Error::Conflict);
         }
-        proof.require(
-            match table {
-                Table::Rules => Permission::AuthorizationWrite,
-                Table::Groups => Permission::UserGroupWrite,
-            },
-            None,
-        )?;
+        authorize_change(&current, proof, table)?;
         let receipt = Receipt {
             id,
             revision: (revision + 1) as u64,
@@ -170,6 +186,24 @@ impl AccessStore {
         .await?;
         Ok(receipt)
     }
+}
+async fn read_snapshot(
+    tx: &mut Transaction<'_, Postgres>,
+    proof: &Principal,
+) -> Result<Snapshot, Error> {
+    let json: String = sqlx::query_scalar("WITH rules AS MATERIALIZED (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001), groups AS MATERIALIZED (SELECT * FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001) SELECT CASE WHEN (SELECT coalesce(sum(octet_length(document::text)),0) FROM rules)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM groups)<=8388608 THEN jsonb_build_object('rules',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM rules),'[]'::jsonb),'groups',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM groups),'[]'::jsonb)) ELSE NULL END::text")
+            .bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(&mut **tx).await.map_err(db)?;
+    let snapshot: Snapshot = decode(&json)?;
+    snapshot.validate(proof.tenant_id(), proof.instance_id())?;
+    proof.check_live()?;
+    Ok(snapshot)
+}
+fn authorize_change(snapshot: &Snapshot, proof: &Principal, table: Table) -> Result<(), Error> {
+    snapshot.require(proof, Permission::AuthorizationWrite, None)?;
+    if matches!(table, Table::Groups) {
+        snapshot.require(proof, Permission::UserGroupWrite, None)?;
+    }
+    Ok(())
 }
 fn actor(proof: &Principal) -> Actor<'_> {
     Actor {
@@ -208,30 +242,6 @@ async fn lock(
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Initialize {
-    pub database: crate::config::Database,
-    pub operation_id: Uuid,
-    pub user: User,
-}
-/// Explicit operator command, never invoked by serve. Marker and first rule commit with receipt/audit.
-pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
-    if config.database.user != "mdm_access" || config.operation_id.is_nil() {
-        return Err(Error::Malformed);
-    }
-    canonical_uuid(&config.user.instance_id)?;
-    canonical_uuid(&config.user.tenant_id)?;
-    config
-        .user
-        .validate(&config.user.tenant_id, &config.user.instance_id)?;
-    let store = AccessStore::connect(config.database.options()?).await?;
-    let result = store
-        .initialize_authorization(config.user, config.operation_id)
-        .await;
-    store.close().await;
-    result
-}
 impl AccessStore {
     pub(crate) async fn initialize_authorization(
         &self,
@@ -307,7 +317,12 @@ impl AccessStore {
                 None,
             )
             .await;
-        audit.finalize(None);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| crate::audit::FailureReason::Transaction),
+        );
         result?;
         Ok(receipt)
     }

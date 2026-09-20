@@ -342,7 +342,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     )
     .await?;
     permission_matrix(&cfg, reader.clone(), session).await?;
-    set_management_grants(&member, publisher_grants).await?;
+    set_management_grants(&member, publisher_grants.clone()).await?;
     set_management_grants(
         subject.as_str().unwrap(),
         json!(["release_read", "release_approve"]),
@@ -454,6 +454,52 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     .await?;
     let publication = &authorized["rings"][0]["publication"];
     let request = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":authorized["revision"],"input":{"action":"publish","ring":"test","publication":publication["id"],"attempt":publication["attempt"]}});
+    // Hold the actual management lock after HTTP admission, revoke, then let the intent finish.
+    use sqlx::Connection;
+    let mut holder =
+        sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2390))")
+        .bind(TENANT)
+        .execute(&mut holder)
+        .await?;
+    let posts_before = server.state.lock().unwrap().posts;
+    let mut delayed = publisher.clone();
+    let revoke = async {
+        let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            + Duration::from_millis(750);
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_management_runtime' AND wait_event='advisory')").fetch_one(&mut holder).await?;
+            if waiting {
+                break;
+            }
+            ensure!(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < deadline,
+                "publication did not wait at management lock"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        set_management_grants(&member, json!([])).await?;
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2390))")
+            .bind(TENANT)
+            .execute(&mut holder)
+            .await?;
+        anyhow::Ok(())
+    };
+    let (delayed, revoked) = tokio::join!(
+        delayed.call(&router, Method::POST, &path, Some(request.clone())),
+        revoke
+    );
+    holder.close().await?;
+    revoked?;
+    set_management_grants(&member, publisher_grants).await?;
+    ensure!(
+        delayed?.0 == StatusCode::FORBIDDEN,
+        "delayed publication used revoked permission"
+    );
+    ensure!(
+        server.state.lock().unwrap().posts == posts_before,
+        "revoked publication reached source"
+    );
     {
         let mut state = server.state.lock().unwrap();
         state.drop_post_response = true;

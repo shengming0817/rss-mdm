@@ -10,7 +10,7 @@ Identity #2451 拥有完整组织快照与签名/会话/存储校验。MDM 只�
 
 请求获得权威身份后，单 SQL 读取当前规则和成员的一致快照；进程没有授权缓存。Windows 每次续接/最终绑定、延迟发布执行前重读，事务等待后重新检查来源与证明期限。操作/范围按同一 grant 匹配，随后取并集，默认拒绝。所有业务和授权管理使用此路径，Identity 管理保留其宿主独立策略。
 
-授权写入复用 AccessStore 的角色/RLS、事务、operation receipt 和审计。每实例/租户 advisory lock 串行化 CAS/容量判断；唯一操作身份检测重复载荷，永久 tombstone 禁止复用，重放只返回历史结果。新库由显式 initialize-authorization 操作原子写入持久标记与首条管理规则；serve 永不种子。保留有界文档和分页，避免每请求快照无界增长。
+授权写入复用 AccessStore 的角色/RLS、事务、operation receipt 和审计。每实例/租户 advisory lock 串行化 CAS/容量判断，锁后重读当前授权；本地组写入同时要求授权管理权，成员变更不能成为隐式授权委派；唯一操作身份检测重复载荷，永久 tombstone 禁止复用，重放只返回历史结果。新库由显式 initialize-authorization 先通过当前安装的 Identity 本地认证核对主体，再原子写入持久标记与首条管理规则；serve 永不种子。保留有界文档和分页，避免每请求快照无界增长。
 
 ## 取舍与影响
 

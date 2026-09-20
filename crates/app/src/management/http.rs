@@ -57,7 +57,12 @@ async fn run(
         audit.operation(id, audit.snapshot().action);
     }
     auth.proof.manage(permission)?;
-    wire::Response::decode(app.management.execute(&command, audit).await?).map(Json)
+    wire::Response::decode(
+        app.management
+            .execute(&command, audit, &|| auth.proof.manage(permission))
+            .await?,
+    )
+    .map(Json)
 }
 macro_rules! read {
     ($handler:ident,$id:ty,$permission:ident,$command:ident) => {

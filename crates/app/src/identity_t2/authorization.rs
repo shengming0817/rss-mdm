@@ -244,6 +244,13 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     ] {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{}'", isolated.instance_id))?.trim() == "0");
     }
+    store.fail_next(2);
+    ensure!(matches!(
+        store
+            .initialize_authorization(isolated.clone(), init_key)
+            .await,
+        Err(crate::Error::CommitUnknown)
+    ));
     let initial = store
         .initialize_authorization(isolated.clone(), init_key)
         .await?;
@@ -281,12 +288,22 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     let denied = member
         .call(&router, Method::GET, "/api/v1/authorization", None)
         .await?;
+    let context = admin
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/identity-host/v1/tenants/{TENANT}/context"),
+            None,
+        )
+        .await?;
     let reconnect = crate::AccessStore::connect(config.access_database.options()?).await;
     pg("GRANT SELECT ON mdm_access.authorization_rules TO mdm_access")?;
     ensure!(
         denied.0 == StatusCode::SERVICE_UNAVAILABLE
             && denied.1.get("grants").is_none()
             && reconnect.is_err()
+            && context.0 == StatusCode::OK
+            && context.1["navigation"]["manageAccounts"] == true
     );
     ensure!(
         pg(&format!(
@@ -295,7 +312,160 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         .trim()
             == "1"
     );
-    store.close().await;
+    // A valid-looking but absent target never acquires the irreversible bootstrap marker.
+    let wrong_key = Uuid::new_v4();
+    let mut init = json!({"database":base["access_database"],"identityDatabase":base["identity"]["database"],
+        "installation":{"instance_id":INSTANCE,"target":base["management"]["target"],"lineage":base["management"]["lineage"],"epoch":base["management"]["epoch"],"tenants":[TENANT]},
+        "login":"authorization-member","passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
+        "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":TENANT,"principalId":Uuid::new_v4()}});
+    ensure!(matches!(
+        crate::authorization::initialize(serde_json::from_value(init.clone())?).await,
+        Err(crate::Error::Forbidden)
+    ));
+    init["user"]["principalId"] = subject.clone().into();
+    init["user"]["instanceId"] = Uuid::new_v4().to_string().into();
+    ensure!(matches!(
+        crate::authorization::initialize(serde_json::from_value(init)?).await,
+        Err(crate::Error::Configuration(_))
+    ));
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.operations WHERE operation_id='{wrong_key}'"
+        ))?
+        .trim()
+            == "0"
+    );
+    // A proof loaded before revocation cannot later mutate authorization state.
+    let writer_id = Uuid::new_v4();
+    let writer_path = format!("/api/v1/authorization/rules/{writer_id}");
+    let writer_rule = json!({"subject":user(&subject),"grants":[grant("authorization_write",json!({"kind":"tenant"}))]});
+    ensure!(
+        put(
+            &mut admin,
+            &router,
+            &writer_path,
+            Uuid::new_v4(),
+            0,
+            writer_rule
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    let identity = crate::identity_fixture::identity(TENANT).await?;
+    let stale = crate::identity::Principal::new(
+        identity
+            .authority
+            .inspect_session(
+                identity.tenant,
+                rss_identity_core::session::SessionSecret::parse(
+                    member.cookies["__Host-identity-session"].clone(),
+                )?,
+                crate::identity::deadline(),
+            )
+            .await?,
+    )?
+    .load_authorization(&store)
+    .await?;
+    ensure!(
+        put(
+            &mut admin,
+            &router,
+            &writer_path,
+            Uuid::new_v4(),
+            1,
+            Value::Null
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    let audit = crate::audit::Audit::new(TENANT.into(), "authorization_write");
+    audit.identify(&stale);
+    let rejected = store.change_rule(&stale, Uuid::new_v4(), crate::authorization::Change {
+        operation_id:Uuid::new_v4(), expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
+    }, &audit).await;
+    audit.finalize(None);
+    let stale_denied = matches!(rejected, Err(crate::Error::Forbidden));
+    // Membership administration cannot confer a group's unrelated authority.
+    let privilege_group = Uuid::new_v4();
+    let privilege_group_path = format!("/api/v1/authorization/user-groups/{privilege_group}");
+    ensure!(
+        put(
+            &mut admin,
+            &router,
+            &privilege_group_path,
+            Uuid::new_v4(),
+            0,
+            json!({"name":"privileged","members":[]})
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    let group_rule = format!("/api/v1/authorization/rules/{}", Uuid::new_v4());
+    ensure!(put(&mut admin, &router, &group_rule, Uuid::new_v4(), 0, json!({"subject":{"kind":"user_group","id":privilege_group},"grants":[grant("authorization_write",json!({"kind":"tenant"}))]})).await?.0 == StatusCode::OK);
+    let member_rule = format!("/api/v1/authorization/rules/{}", Uuid::new_v4());
+    ensure!(put(&mut admin, &router, &member_rule, Uuid::new_v4(), 0, json!({"subject":user(&subject),"grants":[grant("user_group_write",json!({"kind":"tenant"}))]})).await?.0 == StatusCode::OK);
+    let escalation = put(
+        &mut member,
+        &router,
+        &privilege_group_path,
+        Uuid::new_v4(),
+        1,
+        json!({"name":"privileged","members":[user(&subject)["user"].clone()]}),
+    )
+    .await?;
+    let escalation_denied = escalation.0 == StatusCode::FORBIDDEN;
+    ensure!(
+        stale_denied && escalation_denied,
+        "stale writer denied={stale_denied}; group escalation denied={escalation_denied}"
+    );
+    // Stop protocol replies after BEGIN/query, beyond the pool acquire timeout.
+    use sqlx::Connection;
+    let mut holder =
+        sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+    sqlx::raw_sql("BEGIN; LOCK TABLE mdm_access.authorization_rules IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut holder)
+        .await?;
+    let container = std::env::var("MDM_TEST_PG_CONTAINER")?;
+    let freeze = async {
+        let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            + Duration::from_millis(750);
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE 'WITH rules AS MATERIALIZED%')").fetch_one(&mut holder).await?;
+            if waiting {
+                break;
+            }
+            ensure!(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < deadline,
+                "snapshot did not enter SQL"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        command(&["pause", &container], None)?;
+        tokio::time::sleep(Duration::from_millis(3200)).await;
+        command(&["unpause", &container], None)?;
+        sqlx::query("ROLLBACK").execute(&mut holder).await?;
+        anyhow::Ok(())
+    };
+    let (stalled, frozen) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(4), store.authorization_snapshot(&stale)),
+        freeze
+    );
+    frozen?;
+    holder.close().await?;
+    ensure!(matches!(
+        stalled,
+        Ok(Err(crate::Error::Unavailable(
+            crate::Failure::RequestDeadline
+        )))
+    ));
+    ensure!(
+        member
+            .call(&router, Method::GET, "/api/v1/authorization", None)
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    tokio::time::timeout(Duration::from_secs(8), store.close()).await?;
     println!("MDM_DYNAMIC_AUTHORIZATION_PG_HTTP_PASSED");
     Ok(())
 }

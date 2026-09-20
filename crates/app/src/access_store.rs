@@ -46,9 +46,19 @@ impl AccessStore {
     }
     pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)")
-            .bind(tenant).execute(&mut *tx).await.map_err(db)?;
+        Self::configure_transaction(&mut tx, tenant).await?;
         Ok(tx)
+    }
+    pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
+        self.pool.acquire().await.map_err(db)
+    }
+    pub(crate) async fn configure_transaction(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant: &str,
+    ) -> Result<(), Error> {
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)")
+            .bind(tenant).execute(&mut **tx).await.map_err(db)?;
+        Ok(())
     }
     pub(crate) async fn record(
         &self,

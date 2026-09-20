@@ -46,6 +46,17 @@ pub(crate) struct RequestAuth {
     credential: Arc<SessionSecret>,
 }
 async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+    authenticate_and_run(app, request, next, true).await
+}
+async fn identity_only(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+    authenticate_and_run(app, request, next, false).await
+}
+async fn authenticate_and_run(
+    app: Arc<App>,
+    request: Request,
+    next: Next,
+    authorization: bool,
+) -> Response {
     let (mut parts, body) = request.into_parts();
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
@@ -66,19 +77,22 @@ async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> R
             if let Some(audit) = parts.extensions.get::<Audit>() {
                 audit.identify(&proof);
             }
-            let proof = match proof.load_authorization(&app.access).await {
-                Ok(proof) => proof,
-                Err(error) => return error.into_response(),
-            };
-            parts.extensions.insert(RequestAuth {
-                proof: Arc::new(proof),
-                credential: Arc::new(credential),
-            });
-            // Authentication has settled. Only the product operation uses the host timeout.
-            tokio::time::timeout(
-                Duration::from_secs(8),
-                next.run(Request::from_parts(parts, body)),
-            )
+            // Authentication has settled. Authorization I/O and the handler share the host budget.
+            tokio::time::timeout(Duration::from_secs(8), async {
+                let proof = if authorization {
+                    match proof.load_authorization(&app.access).await {
+                        Ok(proof) => proof,
+                        Err(error) => return error.into_response(),
+                    }
+                } else {
+                    proof
+                };
+                parts.extensions.insert(RequestAuth {
+                    proof: Arc::new(proof),
+                    credential: Arc::new(credential),
+                });
+                next.run(Request::from_parts(parts, body)).await
+            })
             .await
             .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
         }
@@ -216,7 +230,7 @@ pub(crate) fn from_compiled(
             "/api/identity-host/v1/tenants/{tenant}/context",
             get(identity_context),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
+        .route_layer(middleware::from_fn_with_state(state.clone(), identity_only));
     let browser = Router::new()
         .merge(host_context)
         .nest("/api/v1", protected)

@@ -73,6 +73,14 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         Ok(())
     }
     .await;
+    settle(runtime, kdf, result).await
+}
+/// Operator commands own the same bounded KDF/runtime cleanup, including failed authentication.
+pub(crate) async fn settle<T>(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    kdf: Arc<PasswordKdf>,
+    result: Result<T, Error>,
+) -> Result<T, Error> {
     kdf.close();
     let drained = tokio::time::timeout(Duration::from_secs(5), kdf.wait_closed())
         .await
@@ -88,7 +96,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     }
     match result {
         Err(error) => Err(error),
-        Ok(()) if drained && closed => Ok(()),
-        Ok(()) => Err(Error::Unavailable(Failure::Runtime)),
+        Ok(value) if drained && closed => Ok(value),
+        Ok(_) => Err(Error::Unavailable(Failure::Runtime)),
     }
 }

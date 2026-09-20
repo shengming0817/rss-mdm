@@ -55,7 +55,6 @@ pub enum ConfigIssue {
     IdentityConfiguration,
     Issuer,
     Tenant,
-    Bindings,
     FileAccess,
     FileShape,
     FileSize,
@@ -136,10 +135,38 @@ impl ProcessError {
         match error {
             Error::Configuration(issue) => Self::Configuration { stage, issue },
             Error::Unavailable(reason) => Self::Dependency { stage, reason },
-            _ => Self::Stage {
+            error => Self::Stage {
                 stage,
-                kind: "operation rejected",
+                kind: match error {
+                    Error::CommitUnknown => "commit_unknown; retry_same_operation",
+                    Error::Conflict => "conflict",
+                    Error::Malformed => "malformed_input",
+                    Error::Unauthorized => "unauthorized",
+                    Error::Forbidden => "forbidden",
+                    _ => "operation rejected",
+                },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn operator_unknown_commit_preserves_safe_recovery_class() {
+        assert!(
+            ProcessError::at("authorization.initialize", Error::CommitUnknown)
+                .to_string()
+                .contains("retry_same_operation")
+        );
+        assert_eq!(
+            ProcessError::at("authorization.initialize", Error::Conflict).to_string(),
+            "authorization.initialize: conflict"
+        );
+        assert_eq!(
+            ProcessError::at("authorization.initialize", Error::Malformed).to_string(),
+            "authorization.initialize: malformed_input"
+        );
     }
 }

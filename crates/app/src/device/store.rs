@@ -80,6 +80,7 @@ impl DeviceService {
                 serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
             audit.registration(receipt.registration);
             tx.rollback().await.map_err(db)?;
+            admin.enrollment(&device)?;
             return Ok(receipt);
         }
         let receipt = bind_in(
@@ -130,6 +131,7 @@ impl DeviceService {
                 serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
             audit.registration(registration);
             tx.rollback().await.map_err(db)?;
+            admin.credentials(device)?;
             return Ok(receipt);
         }
         let row = sqlx::query("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND device=$3")

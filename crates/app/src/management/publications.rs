@@ -199,6 +199,7 @@ async fn write(
                 request: request.clone(),
             },
             &intent_audit,
+            &|| auth.proof.manage(permission),
         )
         .await;
     intent_audit.finalize(intent.as_ref().err().and_then(|e| {

@@ -63,6 +63,7 @@ impl AccessStore {
         };
         let mut tx = self.begin(proof.tenant_id()).await?;
         if let Some(old) = Self::replay(&mut tx, &op).await? {
+            proof.enrollment(permission.device())?;
             return serde_json::from_str(&old)
                 .map_err(|_| Error::Unavailable(Failure::AccessStore));
         }
@@ -129,6 +130,7 @@ impl AccessStore {
         };
         let mut tx = self.begin(proof.tenant_id()).await?;
         if let Some(old) = Self::replay(&mut tx, &op).await? {
+            proof.enrollment(permission.device())?;
             return serde_json::from_str(&old)
                 .map_err(|_| Error::Unavailable(Failure::AccessStore));
         }
