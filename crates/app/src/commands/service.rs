@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 pub(super) fn target(tenant: TenantId, device: &str) -> rss_reconcile::Target {
     rss_reconcile::Target::new(
-        rss_reconcile::Scope::new(tenant, "mdm.commands.v1").expect("fixed name"),
+        recovery_scope(tenant),
         format!("{:x}", Sha256::digest(device.as_bytes())),
     )
     .expect("bounded digest")
@@ -35,12 +35,13 @@ impl Commands {
             (self, proof, device, input, audit, &failure),
             |ctx, tx| {
                 Box::pin(async move {
-                    match ctx.0.create_in(tx, ctx.1, ctx.2, ctx.3, ctx.4).await {
+                    let (service, proof, device, input, audit, failure) = *ctx;
+                    match service.create_in(tx, proof, device, input, audit).await {
                         Ok(v) => {
-                            ctx.4.mark_commit_started();
+                            audit.mark_commit_started();
                             Ok(v)
                         }
-                        Err(e) => Err(rejection(e, ctx.5)),
+                        Err(e) => Err(rejection(e, failure)),
                     }
                 })
             },
@@ -115,13 +116,14 @@ impl Commands {
         audit: &Audit,
     ) -> std::result::Result<Value, Error> {
         self.transact((self,proof,device,id,audit),audit,|ctx,tx|Box::pin(async move {
-            storage::authorized(tx,ctx.1,ctx.2,Permission::OperationRead).await?;
-            let op=storage::load(tx,ctx.3).await?;
-            if op.device!=ctx.2{return Err(Error::Forbidden.into());}
-            let command=ctx.0.required_command(tx,&op).await?;
+            let (service,proof,device,id,audit) = *ctx;
+            storage::authorized(tx,proof,device,Permission::OperationRead).await?;
+            let op=storage::load(tx,id).await?;
+            if op.device!=device{return Err(Error::Forbidden.into());}
+            let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(tx,&op,now).await?;
             let observation=protocol::observation(tx,&op).await?;
-            storage::audit(tx,ctx.4,200).await?;
+            storage::audit(tx,audit,200).await?;
             Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"field":op.request.field,"expectedValue":op.request.expected_value,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
         })).await
     }
@@ -138,29 +140,30 @@ impl Commands {
             return Err(Error::Malformed);
         }
         self.transact((self,proof,device,id,change,approve,audit),audit,|ctx,tx|Box::pin(async move {
-            let permission=if ctx.5 {Permission::StateVerify}else{Permission::OperationCancel};
-            let auth=storage::authorized(tx,ctx.1,ctx.2,permission).await?;
-            storage::lock(tx,&format!("request:{}",ctx.4.request_id)).await?;storage::lock(tx,ctx.2).await?;
-            let fingerprint=Sha256::digest(invalid(serde_json::to_vec(&(ctx.1.user(),ctx.2,ctx.3,ctx.4,ctx.5)))?).to_vec();
-            if let Some(value)=replay(tx,ctx.4.request_id,&fingerprint).await? {ctx.6.management_result(crate::audit::ManagementResult::Replayed);storage::audit(tx,ctx.6,200).await?;return Ok(value);}
-            let op=storage::load(tx,ctx.3).await?;
-            if op.device!=ctx.2{return Err(Error::Forbidden.into());}
-            if op.revision!=ctx.4.expected_revision{return Err(Error::Conflict.into());}
-            let command=ctx.0.required_command(tx,&op).await?;
+            let (service,proof,device,id,change,approve,audit) = *ctx;
+            let permission=if approve {Permission::StateVerify}else{Permission::OperationCancel};
+            let auth=storage::authorized(tx,proof,device,permission).await?;
+            storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
+            let fingerprint=Sha256::digest(invalid(serde_json::to_vec(&(proof.user(),device,id,change,approve)))?).to_vec();
+            if let Some(value)=replay(tx,change.request_id,&fingerprint).await? {audit.management_result(crate::audit::ManagementResult::Replayed);storage::audit(tx,audit,200).await?;return Ok(value);}
+            let op=storage::load(tx,id).await?;
+            if op.device!=device{return Err(Error::Forbidden.into());}
+            if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
+            let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;
             if command.status().is_terminal() || now>=op.request.deadline {return Err(Error::Conflict.into());}
-            let approval=if ctx.5 {
-                if storage::current_registration(tx,ctx.2).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
-                Approval::from_proof(&auth,ctx.1,ctx.2)?
+            let approval=if approve {
+                if storage::current_registration(tx,device).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
+                Approval::from_proof(&auth,proof,device)?
             } else {
-                let transition=ctx.0.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
+                let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
                 if transition.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
                 op.approval
             };
-            let approval=invalid(serde_json::to_string(&approval))?;let tenant=ctx.0.tenant.to_string();let id=ctx.3.to_string();
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET approval=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(approval).execute(c).await?;Ok(())})).await?;
-            let result=json!({"operationId":ctx.3,"revision":op.revision+1});
-            receipt(tx,ctx.4.request_id,ctx.3,fingerprint,&result).await?;storage::audit(tx,ctx.6,200).await?;ctx.1.check_live()?;Ok(result)
+            let approval=invalid(serde_json::to_string(&approval))?;let tenant=service.tenant.to_string();let operation_key=id.to_string();
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET approval=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(approval).execute(c).await?;Ok(())})).await?;
+            let result=json!({"operationId":id,"revision":op.revision+1});
+            receipt(tx,change.request_id,id,fingerprint,&result).await?;storage::audit(tx,audit,200).await?;proof.check_live()?;Ok(result)
         })).await
     }
 }
@@ -224,7 +227,7 @@ fn dispatch(
             AuthoredMessageMetadata::new(
                 tenant,
                 invalid(Timepoint::try_from(now))?,
-                invalid(MessagingDomain::parse("mdm.commands.v1"))?,
+                messaging_domain(),
                 invalid(MessageRoute::parse("windows.verify"))?,
                 ContractIdentity::new(
                     invalid(ContractId::parse("mdm.state-verify"))?,

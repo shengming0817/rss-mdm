@@ -165,7 +165,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(identity_only=False,command_only=False):
+def main(identity_only=False,command_only=False,catalog_mode=None):
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -214,12 +214,18 @@ def main(identity_only=False,command_only=False):
             print(upgrade.stdout, end='', flush=True)
             require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
+            if catalog_mode:
+                from command_catalog import capture
+                capture(name, catalog_mode)
+                return
             configure_identity(root, port, migrators[0], env)
             env['MDM_TEST_PG_CONTAINER'] = name
             if command_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')
+                diagnostics=[json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+                require(any(item.get('event')=='mdm_command_recovery_failure' and item.get('phase')=='runner' and item.get('reason')=='StorageContract' for item in diagnostics),'fatal recovery diagnostic was not emitted')
                 return
             if identity_only:
                 import importlib.util

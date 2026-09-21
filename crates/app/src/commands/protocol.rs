@@ -12,20 +12,21 @@ impl Commands {
         audit: &Audit,
     ) -> std::result::Result<Vec<u8>, Error> {
         self.transact((self,windows,principal,message,bytes,audit),audit,|ctx,tx|Box::pin(async move {
-            let tenant=ctx.0.tenant.to_string();let instance=ctx.0.instance.clone();
+            let (service,windows,principal,message,bytes,audit) = *ctx;
+            let tenant=service.tenant.to_string();let instance=service.instance.clone();
             tx.with_connection(move|c|Box::pin(async move {Ok(crate::authorization::lock_on(c,&tenant,&instance).await)})).await??;
-            storage::lock(tx,ctx.2.device()).await?;
-            replay_permitted(ctx.0,tx,ctx.2,ctx.3.header.session_id,ctx.3.header.message_id).await?;
-            let windows=ctx.1.clone();let principal=ctx.2.clone();let message=ctx.3.clone();let bytes=ctx.4.to_vec();let audit=ctx.5.clone();
-            let response=tx.with_connection(move|c|Box::pin(async move {Ok(crate::windows::management::management_on(c,&windows,&principal,&message,&bytes,&audit).await)})).await??;
-            let tenant=ctx.0.tenant.to_string();let registration=ctx.2.registration().to_string();let session=ctx.3.header.session_id.to_string();
+            storage::lock(tx,principal.device()).await?;
+            replay_permitted(service,tx,principal,message.header.session_id,message.header.message_id).await?;
+            let native_windows=windows.clone();let native_principal=principal.clone();let native_message=message.clone();let native_bytes=bytes.to_vec();let native_audit=audit.clone();
+            let response=tx.with_connection(move|c|Box::pin(async move {Ok(crate::windows::management::management_on(c,&native_windows,&native_principal,&native_message,&native_bytes,&native_audit).await)})).await??;
+            let tenant=service.tenant.to_string();let registration=principal.registration().to_string();let session=message.header.session_id.to_string();
             let run=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<String>>("SELECT run_id::text FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3").bind(tenant).bind(registration).bind(session).fetch_optional(c).await})).await?.flatten();
             if let Some(run)=run {
                 let run=corrupt(Uuid::parse_str(&run))?;
-                attach(ctx.0,tx,ctx.2,run,ctx.3.header.message_id).await?;
-                receive(ctx.0,tx,ctx.2,run).await?;
+                attach(service,tx,principal,run,message.header.message_id).await?;
+                receive(service,tx,principal,run).await?;
             }
-            storage::audit(tx,ctx.5,200).await?;
+            storage::audit(tx,audit,200).await?;
             Ok(response)
         })).await
     }

@@ -21,6 +21,14 @@ use std::{
 };
 use uuid::Uuid;
 
+const DOMAIN: &str = "mdm.commands.v1";
+fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
+    rss_transactional_messaging::message::MessagingDomain::parse(DOMAIN).expect("fixed domain")
+}
+fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
+    rss_reconcile::Scope::new(tenant, DOMAIN).expect("fixed scope")
+}
+
 pub(crate) struct Commands {
     runtime: Arc<PgRuntime>,
     outbox: Arc<PgOutboxStore<()>>,
@@ -124,16 +132,17 @@ impl Commands {
                 (context, Some(operation), audit, &failure),
                 |state, tx| {
                     Box::pin(async move {
+                        let (context, operation, audit, failure) = state;
                         if let Err(e) = storage::admit(tx).await {
-                            return Err(rejection(e, state.3));
+                            return Err(rejection(e, failure));
                         }
-                        let f = state.1.take().expect("one callback");
-                        match f(&mut state.0, tx).await {
+                        let f = operation.take().expect("one callback");
+                        match f(context, tx).await {
                             Ok(v) => {
-                                state.2.mark_commit_started();
+                                audit.mark_commit_started();
                                 Ok(v)
                             }
-                            Err(e) => Err(rejection(e, state.3)),
+                            Err(e) => Err(rejection(e, failure)),
                         }
                     })
                 },

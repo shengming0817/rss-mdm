@@ -69,7 +69,9 @@
 
 relay 对可恢复故障按 1–60 秒退避；提交未知保留原消息和身份。非法消息身份、指纹冲突或存储不变量损坏使关键 worker 失败，由统一运行时关闭并报告，修复存储后重启。诊断包含阶段、原因及合法消息 UUID；reconcile 诊断带设备 scope 的摘要标识。不得通过更换任务 ID 绕过损坏。
 
-事务准入的 `dependencies.json` 是固定依赖版本及迁移的 catalog 指纹，包含所用表的约束/策略和 RSS 函数定义/ACL，不包含业务数据。仅在依赖或迁移明确变更时从隔离安装重新生成并审核；不得在生产环境自动接受新指纹。
+事务准入的 `catalog.json` / `dependencies.json` 是固定依赖版本及迁移的 catalog 契约，包含所用表的约束/策略和 RSS 函数定义/ACL，不包含业务数据。`make command-catalog`（或 `python3 hack/command_catalog.py --check`）在独立 TLS PostgreSQL 容器中执行候选迁移，以固定 `mdm_command_runtime` 角色和 `pg_catalog` search path 读取两份契约并比较；差异即失败，完整 CI 包含此门禁。
+
+依赖或迁移明确变更后，运行 `python3 hack/command_catalog.py --write`，审核并提交两份 JSON。输出统一排序，每份文件以临时文件原子替换；生成器没有生产连接参数，不读取生产业务数据，也不从运行期漂移自动学习新契约。
 
 ## 后续消费者的设计样本
 

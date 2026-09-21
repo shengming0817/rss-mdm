@@ -4,6 +4,7 @@
 )]
 //! Real product Router and embedded Identity; the native peer is supplied by Windows T2.
 use super::*;
+mod native;
 use crate::identity_t2::Browser;
 use anyhow::ensure;
 use axum::{
@@ -151,6 +152,8 @@ impl Client {
         );
         let audit = Audit::new(TENANT.into(), "management_read");
         #[cfg(feature = "integration")]
+        self.retry_gateway().await?;
+        #[cfg(feature = "integration")]
         self.crash_relay().await?;
         self.app.commands.relay_once().await?;
         // Drive the public bounded recovery seam without a competing fault consumer.
@@ -257,6 +260,60 @@ impl Client {
         Ok(())
     }
 
+    #[cfg(feature = "integration")]
+    async fn retry_gateway(&self) -> anyhow::Result<()> {
+        use rss_transactional_messaging::outbox::OutboxRelayStore;
+        use rss_transactional_messaging_postgres::PgTransactionFault;
+        let service = &self.app.commands;
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let mut fingerprint = None;
+        for (index, fault) in [
+            PgTransactionFault::CommitPending,
+            PgTransactionFault::CommitUnknownAfterAck,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let claims = service
+                .outbox
+                .claim_partition_heads(std::num::NonZeroUsize::MIN, deadline())
+                .await?;
+            ensure!(claims.len() == 1);
+            for claim in claims {
+                let message = PgOutboxStore::<()>::message(&claim);
+                ensure!(message.message_id().as_str() == format!("dispatch.{}", self.operation));
+                let digest = message.fingerprint().as_bytes().to_vec();
+                if let Some(previous) = &fingerprint {
+                    ensure!(previous == &digest);
+                } else {
+                    fingerprint = Some(digest.clone());
+                }
+                service.inject_fault(fault);
+                ensure!(matches!(
+                    service.relay_claim(claim).await,
+                    Err(Error::CommitUnknown)
+                ));
+                let row:(String,i32,Vec<u8>)=sqlx::query_as("SELECT status,retry_count,fingerprint FROM rss_transactional_messaging.outbox WHERE message_id=$1").bind(format!("dispatch.{}",self.operation)).fetch_one(&mut pg).await?;
+                ensure!(
+                    row == ("pending".into(), index as i32 + 1, digest),
+                    "unknown gateway acceptance was published or identity changed"
+                );
+                let accepted: bool = sqlx::query_scalar(
+                    "SELECT gateway_accepted FROM mdm_commands.operations WHERE id=$1::uuid",
+                )
+                .bind(self.operation.to_string())
+                .fetch_one(&mut pg)
+                .await?;
+                let successes:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND action='command_dispatch' AND result='success'").bind(self.operation.to_string()).fetch_one(&mut pg).await?;
+                ensure!(accepted == (index == 1) && successes == index as i64);
+            }
+            // Respect the provider's durable Retry schedule, without rewriting its clock/state.
+            tokio::time::sleep(Duration::from_millis((1u64 << index) * 1000 + 100)).await;
+        }
+        pg.close().await?;
+        Ok(())
+    }
     #[cfg(feature = "integration")]
     async fn crash_relay(&self) -> anyhow::Result<()> {
         struct Child(std::process::Child);
@@ -683,6 +740,8 @@ impl Client {
             .await?
             .0 == StatusCode::CONFLICT
         );
+        self.other_native_outcomes(peer, url, &initial, &ack)
+            .await?;
         let expiry = Uuid::new_v4();
         ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"field":"model","expectedValue":"after-deadline","deadline":self.app.clock.unix_seconds()?+1}))).await?.0==StatusCode::ACCEPTED);
         self.expiring = Some(expiry);
@@ -751,16 +810,8 @@ impl Client {
             max_backoff: Duration::from_secs(1),
             max_attempts: 3,
         })?;
-        let scope = rss_reconcile::Scope::new(restarted.tenant, "mdm.commands.v1")?;
-        let report = Box::pin(rss_reconcile::run(
-            &restarted.reconcile,
-            restarted.as_ref(),
-            &scope,
-            policy,
-            &control,
-            |_| {},
-        ))
-        .await?;
+        let scope = recovery_scope(restarted.tenant);
+        let report = restarted.run_recovery(&scope, policy, &control).await?;
         ensure!(
             report.execution_failed == 0 && report.suspended == 0,
             "recovery did not complete {:?}",
@@ -774,6 +825,20 @@ impl Client {
             "expiry or unknown effect lost {:?}",
             read
         );
+        sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'damaged'")
+            .execute(&mut pg)
+            .await?;
+        let fatal_timer = recovery::Timer::new();
+        let fatal_control =
+            rss_reconcile::Control::new(&fatal_timer, Duration::from_secs(2), &cancel);
+        let fatal = restarted.run_recovery(&scope, policy, &fatal_control).await;
+        sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'rss-reconcile-postgres:1'")
+            .execute(&mut pg)
+            .await?;
+        ensure!(
+            fatal.is_err_and(|error| error.kind() == rss_reconcile::ErrorKind::StorageContract),
+            "fatal storage contract was not propagated"
+        );
         use rss_runtime::ManagedResource;
         config::Resource(restarted).shutdown().await?;
         pg.close().await?;
@@ -785,14 +850,12 @@ impl Client {
 #[tokio::test]
 #[ignore = "subprocess killed by command T2 after confirmed PG acceptance"]
 async fn relay_crash_child() -> anyhow::Result<()> {
-    use rss_transactional_messaging::{
-        message::MessagingDomain, outbox::OutboxRelayStore, policy::DeliveryBudget,
-    };
+    use rss_transactional_messaging::{outbox::OutboxRelayStore, policy::DeliveryBudget};
     let config = crate::identity_fixture::config(TENANT)?;
     let service = Box::pin(Commands::open(&config)).await?;
     let relay = PgOutboxStore::<()>::new(
         service.runtime.clone(),
-        MessagingDomain::parse("mdm.commands.v1")?,
+        messaging_domain(),
         DeliveryBudget::new(
             Duration::from_secs(10),
             Duration::from_secs(1),

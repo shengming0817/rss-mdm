@@ -289,64 +289,6 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "attempts",
-      "attempts_pkey",
-      "CREATE UNIQUE INDEX attempts_pkey ON mdm_commands.attempts USING btree (tenant_id, operation, ordinal)",
-      true,
-      true,
-      true
-    ],
-    [
-      "attempts",
-      "attempts_tenant_id_id_key",
-      "CREATE UNIQUE INDEX attempts_tenant_id_id_key ON mdm_commands.attempts USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "attempts",
-      "attempts_tenant_id_operation_collection_key",
-      "CREATE UNIQUE INDEX attempts_tenant_id_operation_collection_key ON mdm_commands.attempts USING btree (tenant_id, operation, collection)",
-      true,
-      true,
-      true
-    ],
-    [
-      "devices",
-      "devices_pkey",
-      "CREATE UNIQUE INDEX devices_pkey ON mdm_commands.devices USING btree (tenant_id, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "devices",
-      "devices_tenant_id_command_device_key",
-      "CREATE UNIQUE INDEX devices_tenant_id_command_device_key ON mdm_commands.devices USING btree (tenant_id, command_device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "operations",
-      "operations_pkey",
-      "CREATE UNIQUE INDEX operations_pkey ON mdm_commands.operations USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "requests",
-      "requests_pkey",
-      "CREATE UNIQUE INDEX requests_pkey ON mdm_commands.requests USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
     [
       "attempts",
@@ -535,6 +477,64 @@
       "requests_tenant_id_operation_fkey",
       "f",
       "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "attempts",
+      "attempts_pkey",
+      "CREATE UNIQUE INDEX attempts_pkey ON mdm_commands.attempts USING btree (tenant_id, operation, ordinal)",
+      true,
+      true,
+      true
+    ],
+    [
+      "attempts",
+      "attempts_tenant_id_id_key",
+      "CREATE UNIQUE INDEX attempts_tenant_id_id_key ON mdm_commands.attempts USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "attempts",
+      "attempts_tenant_id_operation_collection_key",
+      "CREATE UNIQUE INDEX attempts_tenant_id_operation_collection_key ON mdm_commands.attempts USING btree (tenant_id, operation, collection)",
+      true,
+      true,
+      true
+    ],
+    [
+      "devices",
+      "devices_pkey",
+      "CREATE UNIQUE INDEX devices_pkey ON mdm_commands.devices USING btree (tenant_id, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "devices",
+      "devices_tenant_id_command_device_key",
+      "CREATE UNIQUE INDEX devices_tenant_id_command_device_key ON mdm_commands.devices USING btree (tenant_id, command_device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_commands.operations USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "requests",
+      "requests_pkey",
+      "CREATE UNIQUE INDEX requests_pkey ON mdm_commands.requests USING btree (tenant_id, id)",
+      true,
+      true,
       true
     ]
   ]

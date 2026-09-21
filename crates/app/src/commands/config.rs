@@ -1,7 +1,6 @@
 use super::*;
 use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
-    message::MessagingDomain,
     policy::DeliveryBudget,
 };
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
@@ -41,7 +40,7 @@ impl Commands {
             let outbox = Arc::new(
                 PgOutboxStore::new(
                     runtime.clone(),
-                    MessagingDomain::parse("mdm.commands.v1").map_err(|_| bad())?,
+                    messaging_domain(),
                     DeliveryBudget::new(
                         Duration::from_secs(60),
                         Duration::from_secs(6),

@@ -47,6 +47,16 @@ SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最�
 
 监控 mdm_inventory_progress、mdm_management_retention_failure、mdm_shutdown_failure、mdm_maintenance_shutdown_failure 和 audit_failure；日志记录闭合类别与操作坐标，不打印凭据或协议正文。提交未知按原操作查询恢复，不更换幂等键或删除 ledger。
 
+命令闭环另监控 `mdm_command_relay_failure` 与 `mdm_command_recovery_failure`：
+
+| 条件 | 阈值与处置 |
+|---|---|
+| relay `transient` 或 recovery `Transient` / `Deadline` | 同一 messageId/target 持续 5 分钟告警；检查 PostgreSQL 可达性、Retry 时间和租约持有者，保持原消息与幂等键 |
+| `commit_unknown` / `CommitUnknown` | 首次出现即告警；按原 operationId 查询并精确重放，不能换 ID、清 Outbox 或当作回滚 |
+| `invariant` / `Invariant`、`StorageContract`、`Permanent`，尤其 `phase=runner` | 立即告警；关键 worker 退出由统一运行时关闭服务。核对候选、迁移账本、角色/ACL/RLS 与固定 catalog，修复根因后重启同一身份的服务 |
+
+relay 的 `messageId=dispatch.<UUID>` 关联同 UUID 的 operation；recovery 的 `target` 是设备文本 ID 的 SHA-256 scope，结合 `mdm_commands.devices` 定位。使用有设备读取权限的管理查询查看 command、最新 attempt 和 CollectionRun。`phase` 区分 claim、accept、settle 与 runner/scan；日志不携带预期值、原生正文或浏览器凭据。恢复后确认告警停止、同一 command 可继续收敛；终态任务不得因重启复活。候选契约可用 `make command-catalog` 离线校验，生产修复是否满足契约仍由启动/事务准入判断，禁止导出漂移生产结构覆盖固定 JSON。
+
 安装失败保持服务停止并保留证据。回退指停止新部署后恢复原有独立部署及其一致数据库/密钥备份；新代码没有中央认证回退路径。仅在新候选和 smoke 通过后，按精确镜像身份、归档目录和专属缓存记录清理本任务废弃产物，不进行全局 prune。
 
 当前 candidate.json 为 V2，统一绑定服务端与独立认证 UI 的源码 revision、实际平台和归档摘要。构建只接受 UI image ID 或 repository digest；smoke 和 T3 从候选加载唯一 UI，不再接受另配 UI 或旧格式。恢复时先核验归档摘要再 docker load，并核对 image ID 与标签；不从 tag 拉取替代产物。

@@ -43,3 +43,7 @@ backend-consumers:
 .PHONY: t3-auth
 t3-auth:
 	python3 hack/auth_t3.py --candidate "$(MDM_CANDIDATE)" --tools-image "$(MDM_BROWSER_IMAGE)" --output "$(MDM_T3_OUTPUT)"
+
+.PHONY: command-catalog
+command-catalog:
+	python3 hack/command_catalog.py --check
