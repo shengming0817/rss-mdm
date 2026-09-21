@@ -118,11 +118,11 @@ impl Commands {
             storage::authorized(tx,ctx.1,ctx.2,Permission::OperationRead).await?;
             let op=storage::load(tx,ctx.3).await?;
             if op.device!=ctx.2{return Err(Error::Forbidden.into());}
-            let command=ctx.0.store.load(tx,op.scope,&op.command_id()?).await?.ok_or(Error::NotFound)?;
+            let command=ctx.0.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(tx,&op,now).await?;
             let observation=protocol::observation(tx,&op).await?;
             storage::audit(tx,ctx.4,200).await?;
-            Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
+            Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"field":op.request.field,"expectedValue":op.request.expected_value,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
         })).await
     }
     pub(super) async fn change(
@@ -146,7 +146,7 @@ impl Commands {
             let op=storage::load(tx,ctx.3).await?;
             if op.device!=ctx.2{return Err(Error::Forbidden.into());}
             if op.revision!=ctx.4.expected_revision{return Err(Error::Conflict.into());}
-            let command=ctx.0.store.load(tx,op.scope,&op.command_id()?).await?.ok_or(Error::NotFound)?;
+            let command=ctx.0.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;
             if command.status().is_terminal() || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let approval=if ctx.5 {

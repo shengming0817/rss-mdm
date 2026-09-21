@@ -25,6 +25,7 @@ impl rss_reconcile::Timer for Timer {
 }
 fn failure(error: Error) -> rss_reconcile::Error {
     rss_reconcile::Error::new(match error {
+        Error::Unavailable(Failure::CommandInvariant) => rss_reconcile::ErrorKind::Permanent,
         Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
         Error::Conflict => rss_reconcile::ErrorKind::Fenced,
         Error::Malformed | Error::Forbidden | Error::Unauthorized => {
@@ -34,15 +35,45 @@ fn failure(error: Error) -> rss_reconcile::Error {
     })
 }
 fn diagnostic(event: rss_reconcile::Observation) {
-    let (phase, error) = match event {
-        rss_reconcile::Observation::AttemptFailed { stage, error, .. } => {
-            (format!("{stage:?}"), error)
-        }
-        rss_reconcile::Observation::ScanFailed { error, .. } => ("scan".to_owned(), error),
+    let (phase, error, target) = match event {
+        rss_reconcile::Observation::AttemptFailed {
+            target,
+            stage,
+            error,
+        } => (
+            format!("{stage:?}"),
+            error,
+            Some(target.entity().to_owned()),
+        ),
+        rss_reconcile::Observation::ScanFailed { error, .. } => ("scan".to_owned(), error, None),
     };
     eprintln!(
         "{}",
-        serde_json::json!({"event":"mdm_command_recovery_failure","phase":phase,"reason":format!("{:?}",error.kind())})
+        serde_json::json!({"event":"mdm_command_recovery_failure","phase":phase,"target":target,"reason":format!("{:?}",error.kind())})
+    );
+}
+fn permanent(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Unavailable(Failure::CommandInvariant)
+            | Error::Malformed
+            | Error::Forbidden
+            | Error::Unauthorized
+    )
+}
+fn provider(error: PgError) -> Error {
+    use rss_transactional_messaging::error::MessagingErrorKind;
+    match error.kind() {
+        MessagingErrorKind::Permanent
+        | MessagingErrorKind::Invariant
+        | MessagingErrorKind::Conflict => Error::Unavailable(Failure::CommandInvariant),
+        _ => Error::Unavailable(Failure::CommandStorage),
+    }
+}
+fn relay_diagnostic(phase: &str, id: Option<Uuid>, error: &Error) {
+    eprintln!(
+        "{}",
+        serde_json::json!({"event":"mdm_command_relay_failure","phase":phase,"messageId":id.map(|v|format!("dispatch.{v}")),"reason":if permanent(error){"invariant"}else if matches!(error, Error::CommitUnknown){"commit_unknown"}else{"transient"}})
     );
 }
 impl Commands {
@@ -55,17 +86,25 @@ impl Commands {
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:1,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_secs(5),initial_backoff:Duration::from_secs(5),max_backoff:Duration::from_secs(60),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
             tokio::select! {
                 result=Box::pin(rss_reconcile::run(&self.reconcile,self.as_ref(),&scope,policy,&control, diagnostic))=>{result.map_err(rss_runtime::ShutdownError::new)?;},
-                ()=self.relay(&cancel)=>{},
+                result=self.relay(&cancel)=>{result.map_err(rss_runtime::ShutdownError::new)?;},
             }
             Ok(())
         })
     }
-    async fn relay(&self, cancel: &tokio_util::sync::CancellationToken) {
+    async fn relay(
+        &self,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<(), Error> {
+        let mut delay = 1;
         loop {
             tokio::select! {biased;
-                ()=cancel.cancelled()=>return,
-                result=async {tokio::time::sleep(Duration::from_secs(1)).await;self.relay_once().await}=>{
-                    if result.is_err(){tracing::warn!(reason="command_relay","command delivery deferred");}
+                ()=cancel.cancelled()=>return Ok(()),
+                result=async {tokio::time::sleep(Duration::from_secs(delay)).await;self.relay_once().await}=>{
+                    match result {
+                        Ok(()) => delay = 1,
+                        Err(e) if permanent(&e) => return Err(e),
+                        Err(_) => delay = (delay * 2).min(60),
+                    }
                 }
             }
         }
@@ -75,7 +114,11 @@ impl Commands {
             .outbox
             .claim_partition_heads(std::num::NonZeroUsize::MIN, deadline())
             .await
-            .map_err(|_| Error::Unavailable(Failure::CommandStorage))?;
+            .map_err(|e| {
+                let e = provider(e.into());
+                relay_diagnostic("claim", None, &e);
+                e
+            })?;
         for claim in claims {
             let message = PgOutboxStore::<()>::message(&claim);
             let id = message
@@ -83,9 +126,20 @@ impl Commands {
                 .as_str()
                 .strip_prefix("dispatch.")
                 .and_then(|s| Uuid::parse_str(s).ok())
-                .ok_or(Error::Conflict)?;
+                .ok_or_else(|| {
+                    let e = Error::Unavailable(Failure::CommandInvariant);
+                    relay_diagnostic("identity", None, &e);
+                    e
+                })?;
             let fingerprint = message.fingerprint().as_bytes().to_vec();
             let result = self.accept_dispatch(id, fingerprint).await;
+            if let Err(e) = &result {
+                relay_diagnostic("accept", Some(id), e);
+                // Preserve the claim and original message for repair; never retry poisoned facts.
+                if permanent(e) {
+                    return result;
+                }
+            }
             // Only a confirmed gateway commit can authorize a published settlement.
             let settlement = if result.is_ok() {
                 OutboxSettlement::Published(())
@@ -95,7 +149,11 @@ impl Commands {
             self.outbox
                 .settle(claim, settlement, deadline())
                 .await
-                .map_err(|_| Error::CommitUnknown)?;
+                .map_err(|e| {
+                    let e = provider(e.into());
+                    relay_diagnostic("settle", Some(id), &e);
+                    e
+                })?;
             result?;
         }
         Ok(())
@@ -113,7 +171,7 @@ impl Commands {
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
                 if old==Some(false) {sqlx::query("UPDATE mdm_commands.operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).execute(c).await?;}
                 Ok(old)
-            })).await?.ok_or(Error::Conflict)?;
+            })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             if old {ctx.3.management_result(crate::audit::ManagementResult::Replayed);}
             storage::audit(tx,ctx.3,200).await?;Ok(())
         })).await;
@@ -147,7 +205,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
                 if ids.is_empty(){return Ok(false);}
                 for id in ids {
                     after=corrupt(Uuid::parse_str(&id))?;let op=storage::load(tx,after).await?;
-                    if ctx.0.store.load(tx,op.scope,&op.command_id()?).await?.ok_or(Error::NotFound)?.status().is_terminal(){continue;}
+                    if ctx.0.required_command(tx,&op).await?.status().is_terminal(){continue;}
                     return Ok(true);
                 }
             }

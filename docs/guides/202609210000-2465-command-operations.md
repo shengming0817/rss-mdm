@@ -29,6 +29,48 @@
 
 命令连接配置是必填 `command_database`，使用 `mdm_command_runtime`，与产品其他连接指向同一数据库。完整配置见 `fixtures/mdm-config.example.json`。命令 store 与 Outbox 共享精确同一 messaging runtime；Windows 会话、命令回执和成功审计借用同一事务。Observation 接收与 Inventory 投影仍有各自事务，任务核实不宣称投影或合规已经完成。
 
+## 请求与响应契约
+
+创建请求示例（截止时间须替换为未来的 Unix 秒）：
+
+```json
+{"operationId":"a2998159-d1b6-4e8a-87d1-6253367530e9","field":"model","expectedValue":"Surface Pro","deadline":1800000000}
+```
+
+成功返回 `202`：
+
+```json
+{"operationId":"a2998159-d1b6-4e8a-87d1-6253367530e9","commandId":"a2998159-d1b6-4e8a-87d1-6253367530e9","revision":1,"accepted":true}
+```
+
+`operationId`/`requestId` 是非零 UUID。`field` 仅接受 `model` 或 `os_version`；`expectedValue` 是字段允许的非空字符串。所有请求拒绝未知字段。取消与重新批准使用独立请求：
+
+```json
+{"requestId":"05b31cc6-d0a4-4e97-819d-c06b8f3b1ded","expectedRevision":1}
+```
+
+成功返回 `200 {"operationId":"…","revision":2}`。版本是任务批准/取消版本，不是 RSS command version；查询获得当前版本后再提交。精确重放返回原版本回执。
+
+查询成功返回 `200`，字段为 `operationId`、`commandId`、`revision`、`field`、`expectedValue`、`deadline`、`authorization`、`commandStatus`、`observation`。任务规格始终是受理时的不可变内容。`authorization` 为 `approved` 或 `blocked`，不代表 command 已执行。`commandStatus` 枚举为 `queued`、`published`、`received`、`applied`、`rejected`、`timed_out`、`superseded`、`cancelled`。
+
+尚未发出尝试时，`observation` 仅为 `{"result":"unknown"}`。已有尝试时包含：
+
+| 字段 | 类型及含义 |
+|---|---|
+| `attemptId`、`collectionRun` | UUID 字符串，最新尝试及其唯一观察记录 |
+| `attempt` | 从 1 开始的整数 |
+| `result` | `unknown`、`mismatched`、`matched` |
+| `quality` | `pending`、`success`、`failed`、`invalid`、`missing` |
+| `nativeStatus` | 原生 Status 整数；未收到为 null |
+| `value` | 原生字段字符串；未收到为 null |
+| `receivedAt` | 接收时间 Unix 秒；未收到为 null |
+
+错误响应为 `{"code":"…"}`。400 表示字段/期限无效；401 表示身份无效；403 表示缺权限、批准失效或禁止缓存投递；404 表示产品任务不存在；409 表示幂等冲突、版本冲突或终态不能再批准。503 `service_unavailable` 包括依赖故障及已存在任务缺失关联 command 等存储不变量损坏，不能当作任务不存在重建。503 `operation_unknown` 按原身份查询和精确重放。
+
+relay 对可恢复故障按 1–60 秒退避；提交未知保留原消息和身份。非法消息身份、指纹冲突或存储不变量损坏使关键 worker 失败，由统一运行时关闭并报告，修复存储后重启。诊断包含阶段、原因及合法消息 UUID；reconcile 诊断带设备 scope 的摘要标识。不得通过更换任务 ID 绕过损坏。
+
+事务准入的 `dependencies.json` 是固定依赖版本及迁移的 catalog 指纹，包含所用表的约束/策略和 RSS 函数定义/ACL，不包含业务数据。仅在依赖或迁移明确变更时从隔离安装重新生成并审核；不得在生产环境自动接受新指纹。
+
 ## 后续消费者的设计样本
 
 #2466 的状态型命令：防火墙配置写入使用其固定 DDF/CSP 编译结果；同一逻辑 command 可以关联多个原生 CmdID。写入的 Status 只证明协议结果，另一个 Get/Results 提供实际值；需要 Atomic 的规则载荷由 Windows 配置 owner 决定。本项只实现已有 Get profile，不将样本解释为写入能力已开放。

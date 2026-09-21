@@ -112,6 +112,7 @@ impl Client {
         let mut conflict = request.clone();
         conflict["expectedValue"] = "other".into();
         ensure!(self.call(Method::POST, "", Some(conflict)).await?.0 == StatusCode::CONFLICT);
+        #[cfg(feature = "integration")]
         self.atomic_failure(&request).await?;
         self.admission_and_scope().await?;
         self.set_authorized(false).await?;
@@ -166,6 +167,8 @@ impl Client {
             .await?;
         ensure!(
             read.0 == StatusCode::OK
+                && read.1["field"] == "model"
+                && read.1["expectedValue"] == "Final-Model"
                 && read.1["commandStatus"] == "published"
                 && read.1["observation"]["result"] == "unknown",
             "published is not observed {:?}",
@@ -198,6 +201,43 @@ impl Client {
             .await?
             .0 == StatusCode::OK
         );
+
+        for different in [false, true] {
+            let id = Uuid::new_v4();
+            let mut first = request.clone();
+            first["operationId"] = id.to_string().into();
+            let mut second = first.clone();
+            if different {
+                second["expectedValue"] = "different-target".into();
+            }
+            let (a, b) = tokio::join!(
+                one.call(&self.router, Method::POST, &path, Some(first)),
+                two.call(&self.router, Method::POST, &path, Some(second))
+            );
+            let (a, b) = (a?, b?);
+            if different {
+                ensure!(
+                    (a.0 == StatusCode::ACCEPTED && b.0 == StatusCode::CONFLICT)
+                        || (b.0 == StatusCode::ACCEPTED && a.0 == StatusCode::CONFLICT)
+                );
+            } else {
+                ensure!(a == b && a.0 == StatusCode::ACCEPTED);
+            }
+            let facts:(i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2),(SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND action='command_accept' AND result='success')").bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
+            ensure!(
+                facts == (1, 1, 1, 1),
+                "concurrent request duplicated facts {facts:?}"
+            );
+            ensure!(
+                self.call(
+                    Method::POST,
+                    &format!("/{id}/cancel"),
+                    Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
+                )
+                .await?
+                .0 == StatusCode::OK
+            );
+        }
 
         let successes:Vec<(String,i64)>=sqlx::query_as("SELECT action,count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND result='success' AND action IN('command_accept','command_dispatch') GROUP BY action ORDER BY action").bind(self.operation.to_string()).fetch_all(&mut pg).await?;
         ensure!(
@@ -289,6 +329,26 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         for (damage, restore) in [
             (
+                "CREATE POLICY widened ON mdm_access.registrations USING(true)",
+                "DROP POLICY widened ON mdm_access.registrations",
+            ),
+            (
+                "ALTER TABLE mdm_access.collection_runs DISABLE ROW LEVEL SECURITY",
+                "ALTER TABLE mdm_access.collection_runs ENABLE ROW LEVEL SECURITY",
+            ),
+            (
+                "CREATE FUNCTION rss_device_command.unexpected() RETURNS void LANGUAGE sql SECURITY DEFINER AS 'SELECT';",
+                "DROP FUNCTION rss_device_command.unexpected()",
+            ),
+            (
+                "ALTER FUNCTION rss_device_command.lock_authority(uuid,uuid) SECURITY INVOKER",
+                "ALTER FUNCTION rss_device_command.lock_authority(uuid,uuid) SECURITY DEFINER",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION rss_device_command.lock_authority(uuid,uuid) TO PUBLIC",
+                "REVOKE EXECUTE ON FUNCTION rss_device_command.lock_authority(uuid,uuid) FROM PUBLIC",
+            ),
+            (
                 "GRANT UPDATE(fingerprint) ON mdm_commands.requests TO mdm_command_runtime",
                 "REVOKE UPDATE(fingerprint) ON mdm_commands.requests FROM mdm_command_runtime",
             ),
@@ -318,24 +378,53 @@ impl Client {
                     == StatusCode::OK
             );
         }
+        sqlx::query("UPDATE rss_device_command.commands SET command_id=$2 WHERE command_id=$1")
+            .bind(self.operation.to_string())
+            .bind(Uuid::nil().to_string())
+            .execute(&mut pg)
+            .await?;
+        let missing = self
+            .call(Method::GET, &format!("/{}", self.operation), None)
+            .await?;
+        sqlx::query("UPDATE rss_device_command.commands SET command_id=$2 WHERE command_id=$1")
+            .bind(Uuid::nil().to_string())
+            .bind(self.operation.to_string())
+            .execute(&mut pg)
+            .await?;
+        ensure!(
+            missing.0 == StatusCode::SERVICE_UNAVAILABLE
+                && missing.1["code"] == "service_unavailable",
+            "missing command misclassified {missing:?}"
+        );
+        let poison = self
+            .app
+            .commands
+            .accept_dispatch(Uuid::new_v4(), vec![0; 32])
+            .await;
+        ensure!(matches!(
+            poison,
+            Err(Error::Unavailable(Failure::CommandInvariant))
+        ));
         pg.close().await?;
         Ok(())
     }
+    #[cfg(feature = "integration")]
     async fn atomic_failure(&mut self, request: &Value) -> anyhow::Result<()> {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
-        // The failure occurs after command/outbox admission, inside the success audit insert.
-        sqlx::raw_sql("CREATE FUNCTION public.reject_command_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='command_accept' AND NEW.result='success' THEN RAISE EXCEPTION 'fixture audit failure'; END IF; RETURN NEW; END $$; REVOKE ALL ON FUNCTION public.reject_command_audit() FROM PUBLIC; CREATE TRIGGER reject_command_audit BEFORE INSERT ON mdm_access.audit FOR EACH ROW EXECUTE FUNCTION public.reject_command_audit();").execute(&mut pg).await?;
+        // The provider loses the commit future after all business SQL has run.
+        self.app
+            .commands
+            .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
         let mut next = request.clone();
         let id = Uuid::new_v4();
         next["operationId"] = id.to_string().into();
         let result = self.call(Method::POST, "", Some(next)).await?;
-        sqlx::raw_sql("DROP TRIGGER reject_command_audit ON mdm_access.audit; DROP FUNCTION public.reject_command_audit();").execute(&mut pg).await?;
         ensure!(result.0 == StatusCode::SERVICE_UNAVAILABLE);
-        let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid)+(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$2)+(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$3)").bind(id.to_string()).bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
+        let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid)+(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$2)+(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$3)+(SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND action='command_accept' AND result='success')").bind(id.to_string()).bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
         ensure!(
             count == 0,
-            "audit failure partially committed command/outbox"
+            "abandoned commit partially persisted command/outbox"
         );
         pg.close().await?;
         Ok(())
@@ -371,6 +460,7 @@ impl Client {
         url: &str,
         initial: &rss_mdm_windows_mdm::syncml::Message,
         ack: &rss_mdm_windows_mdm::syncml::Message,
+        old_results: &[u8],
     ) -> anyhow::Result<()> {
         use base64::Engine;
         use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
@@ -421,6 +511,26 @@ impl Client {
             })
             .collect();
         ensure!(gets.len() == 2);
+        let before = self
+            .call(Method::GET, &format!("/{}", self.operation), None)
+            .await?;
+        let late = peer
+            .post(url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(old_results.to_vec())
+            .send()
+            .await?;
+        ensure!(
+            matches!(late.status(), StatusCode::OK | StatusCode::CONFLICT),
+            "old attempt response {}",
+            late.status()
+        );
+        ensure!(
+            self.call(Method::GET, &format!("/{}", self.operation), None)
+                .await?
+                == before,
+            "old attempt changed current observation"
+        );
         let header_status = |id, previous| {
             s::Command::Status(s::Status {
                 id,
@@ -522,6 +632,16 @@ impl Client {
             "reobservation failed {:?}",
             applied
         );
+        let rejected = peer
+            .post(url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(s::encode(&ack, &CodecLimits::default())?)
+            .send()
+            .await?;
+        ensure!(
+            rejected.status() == StatusCode::FORBIDDEN,
+            "completed Get replayed"
+        );
         let id = Uuid::new_v4();
         let body = json!({"operationId":id,"field":"model","expectedValue":"never","deadline":self.app.clock.unix_seconds()?+60});
         ensure!(self.call(Method::POST, "", Some(body)).await?.0 == StatusCode::ACCEPTED);
@@ -555,6 +675,41 @@ impl Client {
         let expiry = Uuid::new_v4();
         ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"field":"model","expectedValue":"after-deadline","deadline":self.app.clock.unix_seconds()?+1}))).await?.0==StatusCode::ACCEPTED);
         self.expiring = Some(expiry);
+        Ok(())
+    }
+    pub(crate) async fn new_registration_operation(&mut self) -> anyhow::Result<Value> {
+        let old = self
+            .call(Method::GET, &format!("/{}", self.operation), None)
+            .await?;
+        self.operation = Uuid::new_v4();
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":self.operation,"field":"model","expectedValue":"new-registration","deadline":self.app.clock.unix_seconds()?+60}))).await?.0==StatusCode::ACCEPTED);
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let generations: (i64, i64) = sqlx::query_as(
+            "SELECT registration_generation,epoch FROM mdm_commands.operations WHERE id=$1::uuid",
+        )
+        .bind(self.operation.to_string())
+        .fetch_one(&mut pg)
+        .await?;
+        ensure!(
+            generations == (2, 2),
+            "registration/authority did not advance {generations:?}"
+        );
+        ensure!(old.1["commandStatus"] == "applied");
+        Ok(self
+            .call(Method::GET, &format!("/{}", self.operation), None)
+            .await?
+            .1)
+    }
+    pub(crate) async fn unchanged(&mut self, previous: &Value) -> anyhow::Result<()> {
+        ensure!(
+            &self
+                .call(Method::GET, &format!("/{}", self.operation), None)
+                .await?
+                .1
+                == previous,
+            "stale registration changed current task"
+        );
         Ok(())
     }
     pub(crate) async fn retained_and_recovered(&mut self) -> anyhow::Result<()> {

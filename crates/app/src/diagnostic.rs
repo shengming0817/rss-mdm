@@ -71,6 +71,7 @@ pub enum ConfigIssue {
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
     CommandStorage,
+    CommandInvariant,
     ManagementAdmission,
     ManagementConnection,
     ManagementSource,

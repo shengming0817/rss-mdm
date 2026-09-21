@@ -43,7 +43,7 @@ fn invalid<T>(value: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> 
     value.map_err(|_| Error::Malformed.into())
 }
 fn corrupt<T>(value: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
-    value.map_err(|_| Error::Unavailable(Failure::CommandStorage).into())
+    value.map_err(|_| Error::Unavailable(Failure::CommandInvariant).into())
 }
 pub(crate) fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
@@ -55,6 +55,9 @@ fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
             use rss_transactional_messaging::error::MessagingErrorKind;
             let reason = match e.kind() {
                 MessagingErrorKind::OwnershipLost | MessagingErrorKind::Conflict => Error::Conflict,
+                MessagingErrorKind::Permanent | MessagingErrorKind::Invariant => {
+                    Error::Unavailable(Failure::CommandInvariant)
+                }
                 _ => Error::Unavailable(Failure::CommandStorage),
             };
             (reason, e)
@@ -87,6 +90,17 @@ fn settle<T>(
     )
 }
 impl Commands {
+    async fn required_command(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        op: &storage::Operation,
+    ) -> Result<dc::Command> {
+        self.store
+            .load(tx, op.scope, &op.command_id()?)
+            .await?
+            .ok_or_else(|| Error::Unavailable(Failure::CommandInvariant).into())
+    }
+
     pub(crate) async fn transact<C: Send, R: Send, F>(
         &self,
         context: C,

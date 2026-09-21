@@ -1186,7 +1186,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     )?;
     let rogue = reqwest::Client::builder()
         .no_proxy()
-        .add_root_certificate(root_cert)
+        .add_root_certificate(root_cert.clone())
         .identity(rogue_identity)
         .timeout(Duration::from_secs(12))
         .build()?;
@@ -1586,6 +1586,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
                 &url,
                 &message,
                 &syncml::decode(&followup, &CodecLimits::default())?,
+                &model,
             )
             .await?;
     }
@@ -1597,6 +1598,48 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     retention_tests::verify(&store, TENANT, intent.registration).await?;
     if let Some(client) = &mut task_client {
         client.retained_and_recovered().await?;
+        // Real WSTEP issuance creates generation 2, then the old authenticated TLS
+        // keepalive submits a delayed native Results against the new task authority.
+        let plain = crate::enrollment::random();
+        let password = Password::new(plain.clone())?;
+        let next = create(
+            &store,
+            &proof,
+            "tls-device",
+            &password,
+            reference,
+            Uuid::new_v4(),
+        )
+        .await?;
+        let mut issue = issue.clone();
+        issue.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
+        let token = issue
+            .header
+            .security
+            .as_mut()
+            .unwrap()
+            .username
+            .as_mut()
+            .unwrap();
+        token.username = Secret(next.enrollment_id.to_string());
+        token.password = Secret(plain);
+        let issued = reqwest::Client::builder()
+            .no_proxy()
+            .add_root_certificate(root_cert.clone())
+            .build()?
+            .post(&path)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&issue, &CodecLimits::default())?)
+            .send()
+            .await?;
+        ensure!(
+            issued.status() == StatusCode::OK,
+            "second registration {}",
+            issued.status()
+        );
+        let current = client.new_registration_operation().await?;
+        ensure!(post(model.clone()).send().await?.status() == StatusCode::UNAUTHORIZED);
+        client.unchanged(&current).await?;
     }
     ingress_burst(&client, &app, &ingress_clock).await?;
     let actor = app

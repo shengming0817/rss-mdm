@@ -48,19 +48,12 @@ async fn replay_permitted(
     let now = storage::now(tx).await?;
     for id in ids {
         let op = storage::load(tx, corrupt(Uuid::parse_str(&id))?).await?;
-        let command = s
-            .store
-            .load(tx, op.scope, &op.command_id()?)
-            .await?
-            .ok_or(Error::Conflict)?;
+        let command = s.required_command(tx, &op).await?;
         if now >= op.request.deadline
             || !storage::approval_valid(tx, &op, now).await?
-            || matches!(
+            || !matches!(
                 command.status(),
-                dc::Status::Cancelled
-                    | dc::Status::TimedOut
-                    | dc::Status::Superseded
-                    | dc::Status::Rejected
+                dc::Status::Published | dc::Status::Received
             )
         {
             return Err(Error::Forbidden.into());
@@ -107,11 +100,7 @@ async fn attach_one(
     {
         return Ok(false);
     }
-    let command = s
-        .store
-        .load(tx, op.scope, &op.command_id()?)
-        .await?
-        .ok_or(Error::Conflict)?;
+    let command = s.required_command(tx, &op).await?;
     if !matches!(
         command.status(),
         dc::Status::Published | dc::Status::Received
@@ -149,11 +138,7 @@ async fn receive(
         if latest != run.to_string() {
             continue;
         }
-        let command = s
-            .store
-            .load(tx, op.scope, &op.command_id()?)
-            .await?
-            .ok_or(Error::Conflict)?;
+        let command = s.required_command(tx, &op).await?;
         if command.status().is_terminal() {
             continue;
         }
