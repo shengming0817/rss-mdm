@@ -10,6 +10,8 @@ def run(source,base,kind,head,pin,out,defaults):
     product='rss-mdm-inventory'+('-postgres' if kind=='pg' else '')
     root=base/(kind+('-default' if defaults else '-minimal'));(root/'tests').mkdir(parents=True)
     check_ancestors(root)
+    (root/".cargo").mkdir()
+    (root/".cargo/config.toml").write_text("[net]\ngit-fetch-with-cli = true\n")
     (root/'rust-toolchain.toml').write_bytes((source/'rust-toolchain.toml').read_bytes())
     (root/'Cargo.lock').write_bytes((source/'Cargo.lock').read_bytes())
     package=f'git = "{source.as_uri()}", rev = "{head}", default-features = {str(defaults).lower()}'

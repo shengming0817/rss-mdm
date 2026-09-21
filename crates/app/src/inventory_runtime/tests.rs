@@ -38,14 +38,14 @@ fn status(id: u32, command_ref: u32, command: CommandName, code: u16) -> Command
         credential: None,
     })
 }
-async fn report(
+pub(crate) async fn report(
     service: &DeviceService,
     access: &AccessStore,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
 ) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
-    let mut tx = access.begin(A).await?;
+    let mut tx = access.begin(&principal.tenant().to_string()).await?;
     let scope = collection::revalidate(&mut tx, &principal).await?;
     let mut request = Message {
         header: Header {
@@ -97,8 +97,17 @@ async fn report(
             }));
         }
     }
-    ensure!(collection::accept(&mut tx, A, id, &response, &previous).await?);
-    let audit = Audit::new(A.into(), "windows_management");
+    ensure!(
+        collection::accept(
+            &mut tx,
+            &principal.tenant().to_string(),
+            id,
+            &response,
+            &previous
+        )
+        .await?
+    );
+    let audit = Audit::new(principal.tenant().to_string(), "windows_management");
     audit.operation(id, "windows_management");
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
@@ -107,7 +116,7 @@ async fn report(
     audit.finalize(None);
     Ok(access.collection(&scope, Some(id)).await?.unwrap())
 }
-async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownStack> {
+pub(crate) async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownStack> {
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -117,7 +126,7 @@ async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownSt
     launch.finish();
     Ok(owner)
 }
-async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
+pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             if runtime.readiness.ready()
@@ -441,7 +450,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         [Some("After-failure"), Some("12")],
     )
     .await?;
-    root.execute("CREATE FUNCTION mdm.reject_inventory_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; REVOKE ALL ON FUNCTION mdm.reject_inventory_test() FROM PUBLIC; CREATE TRIGGER reject_inventory_test AFTER INSERT ON mdm.inventory FOR EACH ROW EXECUTE FUNCTION mdm.reject_inventory_test()").await?;
+    root.execute("CREATE FUNCTION mdm.reject_inventory_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; REVOKE ALL ON FUNCTION mdm.reject_inventory_test() FROM PUBLIC; CREATE TRIGGER reject_inventory_test AFTER INSERT OR UPDATE ON mdm.inventory FOR EACH ROW EXECUTE FUNCTION mdm.reject_inventory_test()").await?;
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
     let stopped = tokio::time::timeout(
@@ -457,7 +466,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .await?[0]
             .fact
             .state
-            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("New".into()))
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("Newer".into()))
     );
     ensure!(
         runtime.inspect(&broken).await?.projection

@@ -1,5 +1,5 @@
 BEGIN;
-GRANT SELECT ON mdm_access.credentials TO mdm_management_runtime;
+GRANT SELECT(tenant_id,registration,state) ON mdm_access.credentials TO mdm_management_runtime;
 GRANT SELECT,INSERT ON mdm.manual_assignments TO mdm_management_runtime;
 GRANT UPDATE(revision,fact) ON mdm.manual_assignments TO mdm_management_runtime;
 CREATE TABLE mdm_management.saved_queries (

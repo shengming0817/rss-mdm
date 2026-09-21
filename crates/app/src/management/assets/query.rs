@@ -62,6 +62,7 @@ impl Management {
         let mut definition = q.clone();
         definition.cursor = None;
         let fingerprint = digest(&(
+            rss_mdm_inventory::DICTIONARY,
             self.tenant.to_string(),
             scope,
             &definition,

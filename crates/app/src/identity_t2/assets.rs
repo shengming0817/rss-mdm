@@ -121,6 +121,88 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     );
     Ok(())
 }
+async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value) -> Result<()> {
+    use crate::inventory_runtime::tests::{report, start, wait_ready_projection};
+    let (registration, _) = seed_source("tie-a", "mdm", "mdm.windows", "seed")?;
+    pg(&format!(
+        "UPDATE mdm_access.credentials SET locator=repeat('79',32) WHERE registration='{registration}'"
+    ))?;
+    let access = access_store(base).await?;
+    let service = crate::device::DeviceService::new(access.clone(), TENANT.into());
+    let proof = crate::device::tests::proof(TENANT, crate::device::Channel::Mdm, 121);
+    let config: Config = serde_json::from_value(base.clone())?;
+    let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
+        config.runtime_database.options()?,
+        access.clone(),
+        rss_request_context::TenantId::parse(TENANT)?,
+        monotonic(),
+    )
+    .await?;
+    let owner = start(runtime.clone()).await?;
+    let full = report(&service, &access, &proof, [Some("Collected"), Some("11")]).await?;
+    wait_ready_projection(&runtime, &full).await?;
+    let criteria = predicate("device.model", "string", json!("Collected"));
+    for (values, result) in [
+        ([Some("Unconfirmed"), None], "partial"),
+        ([None, None], "failed"),
+    ] {
+        report(&service, &access, &proof, values).await?;
+        let detail = ok(
+            browser,
+            router,
+            Method::GET,
+            "/api/v1/devices/tie-a/inventory",
+            None,
+        )
+        .await?;
+        ensure!(
+            detail["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
+                == "Collected"
+        );
+        ensure!(detail["asset"]["device"]["quality"][0]["result"] == result);
+        let search = ok(
+            browser,
+            router,
+            Method::POST,
+            "/api/v1/devices/search",
+            Some(json!({"criteria":criteria})),
+        )
+        .await?;
+        ensure!(
+            search["asset"]["summary"]["matched"] == 1
+                && search["asset"]["items"][0]["device"] == "tie-a"
+        );
+        let group = format!("/api/v1/groups/{}", Uuid::new_v4());
+        ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":result,"description":"collection proof","criteria":criteria})))).await?;
+        let preview = ok(
+            browser,
+            router,
+            Method::GET,
+            &format!("{group}/preview?expectedRevision=1"),
+            None,
+        )
+        .await?;
+        ensure!(preview["members"] == json!(["tie-a"]));
+        ok(
+            browser,
+            router,
+            Method::POST,
+            &group,
+            Some(request(
+                1,
+                json!({"action":"recompute","snapshot":preview["snapshot"]}),
+            )),
+        )
+        .await?;
+        ensure!(
+            ok(browser, router, Method::GET, &group, None).await?["members"] == json!(["tie-a"])
+        );
+    }
+    ensure!(owner.shutdown().join().await?.is_clean());
+    runtime.close_fixture().await?;
+    access.close().await;
+    Ok(())
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "hack/asset-t2.py: real authenticated Router and TLS PostgreSQL"]
 async fn asset_write_query_group_and_isolation() -> Result<()> {
@@ -557,6 +639,50 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             .0
             == StatusCode::NOT_FOUND
     );
+    permissions(&subject, None, true).await?;
+    pg(&format!(
+        "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-c'),('{TENANT}','tie-a'),('{TENANT}','tie-b')"
+    ))?;
+    for device in ["tie-c", "tie-a", "tie-b"] {
+        ok(
+            &mut browser,
+            &router,
+            Method::PUT,
+            &format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),
+            Some(request(
+                0,
+                json!({"action":"set","value":{"kind":"integer","value":99}}),
+            )),
+        )
+        .await?;
+    }
+    for descending in [false, true] {
+        let mut query = json!({"limit":1,"criteria":predicate("custom.office_floor","integer",json!(99)),"sort":{"field":"custom.office_floor","descending":descending}});
+        let mut seen = Vec::new();
+        loop {
+            let page = ok(
+                &mut browser,
+                &router,
+                Method::POST,
+                "/api/v1/devices/search",
+                Some(query.clone()),
+            )
+            .await?;
+            seen.push(
+                page["asset"]["items"][0]["device"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+            if page["asset"]["nextCursor"].is_null() {
+                break;
+            }
+            query["cursor"] = page["asset"]["nextCursor"].clone();
+            ensure!(seen.len() < 4);
+        }
+        ensure!(seen == ["tie-a", "tie-b", "tie-c"]);
+    }
+    collection_matrix(&mut browser, &router, &base).await?;
     reader.close().await;
     Ok(())
 }

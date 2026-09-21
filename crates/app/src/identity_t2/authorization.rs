@@ -527,6 +527,9 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             + Duration::from_millis(750);
         loop {
+            sqlx::query("SELECT pg_stat_clear_snapshot()")
+                .execute(&mut holder)
+                .await?;
             let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE 'WITH rules AS MATERIALIZED%')").fetch_one(&mut holder).await?;
             if waiting {
                 break;

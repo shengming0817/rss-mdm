@@ -24,7 +24,7 @@ fn field_index(command: u32, first: u32) -> Option<usize> {
         .filter(|index| *index < FIELD_COUNT)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RunResult {
     Pending,
@@ -33,7 +33,7 @@ pub(crate) enum RunResult {
     Failed,
 }
 impl RunResult {
-    fn parse(value: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(value: &str) -> Result<Self, Error> {
         match value {
             "pending" => Ok(Self::Pending),
             "snapshot" => Ok(Self::Snapshot),
@@ -43,7 +43,7 @@ impl RunResult {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FinishReason {
     Complete,
@@ -53,7 +53,7 @@ pub(crate) enum FinishReason {
     Revoked,
 }
 impl FinishReason {
-    fn parse(value: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(value: &str) -> Result<Self, Error> {
         match value {
             "complete" => Ok(Self::Complete),
             "message_budget" => Ok(Self::MessageBudget),

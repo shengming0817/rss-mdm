@@ -114,6 +114,18 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             "REVOKE SELECT(scope) ON rss_observation.batches FROM mdm_api",
         ),
         (
+            "DROP INDEX mdm.inventory_source",
+            "CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch)",
+        ),
+        (
+            "ALTER TABLE mdm.inventory ALTER COLUMN epoch DROP NOT NULL",
+            "ALTER TABLE mdm.inventory ALTER COLUMN epoch SET NOT NULL",
+        ),
+        (
+            "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK(true)",
+            "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK((state='known')=(value IS NOT NULL))",
+        ),
+        (
             "ALTER TABLE mdm.inventory NO FORCE ROW LEVEL SECURITY",
             "ALTER TABLE mdm.inventory FORCE ROW LEVEL SECURITY",
         ),

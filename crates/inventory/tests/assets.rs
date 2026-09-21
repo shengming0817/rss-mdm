@@ -30,6 +30,24 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
     assert!(!FieldKey::Model.definition().manual);
     assert!(FieldKey::AssetTag.definition().manual);
     assert_eq!(FieldKey::observed().count(), 2);
+    let mut manual = fact("tag", "manual");
+    manual.evidence.registration = None;
+    manual.evidence.registration_generation = None;
+    manual.evidence.epoch = None;
+    manual.evidence.actor = Some("alice".into());
+    for state in [State::Missing, State::Unsupported, State::Conflict] {
+        manual.state = state;
+        assert!(resolve(FieldKey::AssetTag, vec![manual.clone()]).is_err());
+    }
+    manual.state = State::Deleted;
+    manual.last_known = Some(rss_mdm_inventory::KnownValue {
+        value: Scalar::String("tag".into()),
+        evidence: manual.evidence.clone(),
+    });
+    manual.last_known.as_mut().unwrap().evidence.actor = Some("bob".into());
+    assert!(resolve(FieldKey::AssetTag, vec![manual.clone()]).is_ok());
+    manual.last_known.as_mut().unwrap().evidence.source = "mdm.windows".into();
+    assert!(resolve(FieldKey::AssetTag, vec![manual]).is_err());
 }
 #[test]
 fn source_conflict_preserves_both_values_and_equal_sources_resolve() {

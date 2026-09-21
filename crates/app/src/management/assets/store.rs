@@ -132,15 +132,30 @@ impl Management {
                 .bind(tenant).bind(keys).fetch_all(c).await
         })).await?;
         for row in quality {
-            let raw: Value = stored(serde_json::from_str(row.try_get("attempts")?))?;
-            let attempts = raw
-                .get("fields")
-                .and_then(Value::as_array)
-                .ok_or(Error::Unavailable(Failure::InventoryQuery))?;
-            let fields:Vec<_>=FieldKey::observed().zip(attempts).map(|(field,a)|serde_json::json!({"field":field,"quality":a["quality"],"status":a["status"],"receivedAt":a["received_at"]})).collect();
+            let attempts: crate::collection::Attempts =
+                stored(serde_json::from_str(row.try_get("attempts")?))?;
+            let fields = FieldKey::observed()
+                .zip(attempts.fields)
+                .map(|(field, a)| QualityField {
+                    field,
+                    quality: a.quality,
+                    status: a.status,
+                    received_at: a.received_at,
+                })
+                .collect();
             let scope: String = row.try_get("scope")?;
             let device = subjects.get(&scope).ok_or(Error::Malformed)?;
-            devices.get_mut(device).ok_or(Error::Malformed)?.quality.push(serde_json::json!({"runId":row.try_get::<String,_>("id")?,"sequence":row.try_get::<i64,_>("sequence")?,"result":row.try_get::<String,_>("result")?,"deliveryPending":row.try_get::<bool,_>("delivery_pending")?,"fields":fields}));
+            devices
+                .get_mut(device)
+                .ok_or(Error::Malformed)?
+                .quality
+                .push(QualityRun {
+                    run_id: stored(Uuid::parse_str(row.try_get("id")?))?,
+                    sequence: row.try_get("sequence")?,
+                    result: crate::collection::RunResult::parse(row.try_get("result")?)?,
+                    delivery_pending: row.try_get("delivery_pending")?,
+                    fields,
+                });
         }
         for (id, device) in &mut devices {
             for field in FieldKey::ALL {

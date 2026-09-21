@@ -111,7 +111,7 @@ pub(crate) struct DeviceView {
     pub device: String,
     pub channels: BTreeSet<String>,
     pub fields: BTreeMap<FieldKey, rss_mdm_inventory::ResolvedField>,
-    pub quality: Vec<serde_json::Value>,
+    pub quality: Vec<QualityRun>,
     pub revisions: BTreeMap<FieldKey, i64>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -211,4 +211,22 @@ impl Command {
             _ => None,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct QualityRun {
+    pub run_id: Uuid,
+    pub sequence: i64,
+    pub result: crate::collection::RunResult,
+    pub delivery_pending: bool,
+    pub fields: Vec<QualityField>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct QualityField {
+    pub field: FieldKey,
+    pub quality: crate::collection::Quality,
+    pub status: Option<u16>,
+    pub received_at: Option<i64>,
 }

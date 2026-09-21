@@ -124,34 +124,33 @@ pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<Resolved
     }
     let manual = field.definition().manual;
     for fact in &sources {
-        let e = &fact.evidence;
-        if if manual {
-            !field.definition().sources.contains(&e.source.as_str())
-                || e.registration.is_some()
-                || e.epoch.is_some()
-                || e.actor.as_ref().is_none_or(|a| a.is_empty())
-        } else {
-            !field.definition().sources.contains(&e.source.as_str())
-                || e.registration.as_ref().is_none_or(|s| s.is_empty())
-                || e.epoch.as_ref().is_none_or(|s| s.is_empty())
-        } {
-            return Err(Invalid);
-        }
-        if e.snapshot_id.is_empty()
-            || e.snapshot_id.len() > 256
-            || rss_contract::Timepoint::try_from(e.observed_at).is_err()
-            || rss_contract::Timepoint::try_from(e.received_at).is_err()
-        {
-            return Err(Invalid);
-        }
+        validate_evidence(field, &fact.evidence)?;
         match &fact.state {
             State::Known(v) => field.validate_scalar(v)?,
             State::Null if !manual => return Err(Invalid),
-            State::Conflict => return Err(Invalid),
+            State::Missing | State::Conflict => return Err(Invalid),
+            State::Unsupported if manual => return Err(Invalid),
             _ => {}
         }
         if let Some(v) = &fact.last_known {
             field.validate_scalar(&v.value)?;
+            validate_evidence(field, &v.evidence)?;
+            let e = &fact.evidence;
+            let old = &v.evidence;
+            // The historical actor and operation must remain the original ones.
+            if (
+                e.source.as_str(),
+                &e.registration,
+                e.registration_generation,
+                &e.epoch,
+            ) != (
+                old.source.as_str(),
+                &old.registration,
+                old.registration_generation,
+                &old.epoch,
+            ) {
+                return Err(Invalid);
+            }
         }
     }
     sources.sort_by(|a, b| a.evidence.source.cmp(&b.evidence.source));
@@ -178,4 +177,27 @@ pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<Resolved
         state,
         sources,
     })
+}
+
+fn validate_evidence(field: FieldKey, e: &Evidence) -> Result<()> {
+    let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
+    if !field.definition().sources.contains(&e.source.as_str())
+        || !bounded(&e.snapshot_id)
+        || rss_contract::Timepoint::try_from(e.observed_at).is_err()
+        || rss_contract::Timepoint::try_from(e.received_at).is_err()
+        || if field.is_manual() {
+            e.registration.is_some()
+                || e.registration_generation.is_some()
+                || e.epoch.is_some()
+                || e.actor.as_ref().is_none_or(|s| !bounded(s))
+        } else {
+            e.registration.as_ref().is_none_or(|s| !bounded(s))
+                || e.epoch.as_ref().is_none_or(|s| !bounded(s))
+                || e.actor.is_some()
+                || e.registration_generation == Some(0)
+        }
+    {
+        return Err(Invalid);
+    }
+    Ok(())
 }
