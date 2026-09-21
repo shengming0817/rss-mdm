@@ -839,6 +839,37 @@ impl Client {
             fatal.is_err_and(|error| error.kind() == rss_reconcile::ErrorKind::StorageContract),
             "fatal storage contract was not propagated"
         );
+        // Exercise the same unbounded worker entry used by the runtime registration.
+        // The expired operation has not been published; an autonomous relay must progress
+        // without reviving the command, then stop via its normal cancellation signal.
+        let message_id = format!("dispatch.{}", self.expiring.unwrap());
+        let pending: String = sqlx::query_scalar(
+            "SELECT status FROM rss_transactional_messaging.outbox WHERE message_id=$1",
+        )
+        .bind(&message_id)
+        .fetch_one(&mut pg)
+        .await?;
+        ensure!(pending == "pending");
+        let worker_cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = Box::pin(restarted.run_worker(&worker_cancel));
+        tokio::select! {
+            outcome=&mut worker => anyhow::bail!("production worker exited before publication: {outcome:?}"),
+            observed=tokio::time::timeout(Duration::from_secs(5),async {
+                loop {
+                    let status:String=sqlx::query_scalar("SELECT status FROM rss_transactional_messaging.outbox WHERE message_id=$1").bind(&message_id).fetch_one(&mut pg).await?;
+                    if status=="published" {return Ok::<(),anyhow::Error>(());}
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }) => observed??,
+        }
+        worker_cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(2), worker).await??;
+        ensure!(
+            self.call(Method::GET, &format!("/{}", self.expiring.unwrap()), None)
+                .await?
+                .1["commandStatus"]
+                == "timed_out"
+        );
         use rss_runtime::ManagedResource;
         config::Resource(restarted).shutdown().await?;
         pg.close().await?;

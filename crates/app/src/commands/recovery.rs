@@ -20,7 +20,11 @@ impl rss_reconcile::Timer for Timer {
         self.0.elapsed()
     }
     async fn sleep_until(&self, at: Duration) {
-        tokio::time::sleep_until(self.0 + at).await;
+        match self.0.checked_add(at) {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            // An unbounded controller still races this wait against cancellation.
+            None => std::future::pending().await,
+        }
     }
 }
 fn failure(error: Error) -> rss_reconcile::Error {
@@ -80,16 +84,30 @@ impl Commands {
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) =
             rss_runtime::ManagedTask::prepare("mdm-command-recovery", Duration::from_secs(8));
-        task.into_registration(move|cancel|async move {
-            let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&cancel);
-            let scope=recovery_scope(self.tenant);
-            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:1,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_secs(5),initial_backoff:Duration::from_secs(5),max_backoff:Duration::from_secs(60),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
-            tokio::select! {
-                result=self.run_recovery(&scope,policy,&control)=>{result.map_err(rss_runtime::ShutdownError::new)?;},
-                result=self.relay(&cancel)=>{result.map_err(rss_runtime::ShutdownError::new)?;},
-            }
-            Ok(())
+        task.into_registration(move |cancel| async move { self.run_worker(&cancel).await })
+    }
+    pub(super) async fn run_worker(
+        &self,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        let timer = Timer::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::MAX, cancel);
+        let scope = recovery_scope(self.tenant);
+        let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
+            concurrency: 1,
+            lease_ttl: Duration::from_secs(30),
+            attempt_timeout: Duration::from_secs(6),
+            scan_interval: Duration::from_secs(5),
+            initial_backoff: Duration::from_secs(5),
+            max_backoff: Duration::from_secs(60),
+            max_attempts: 1000,
         })
+        .map_err(rss_runtime::ShutdownError::new)?;
+        tokio::select! {
+            result=self.run_recovery(&scope,policy,&control)=>{result.map_err(rss_runtime::ShutdownError::new)?;},
+            result=self.relay(cancel)=>{result.map_err(rss_runtime::ShutdownError::new)?;},
+        }
+        Ok(())
     }
     pub(super) async fn run_recovery<T: rss_reconcile::Timer>(
         &self,
@@ -285,5 +303,32 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
             audit.finalize(None);
             result.map_err(failure)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn unbounded_control_is_cancellable() {
+        let timer = super::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, std::time::Duration::MAX, &cancel);
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                control.run(std::future::pending::<
+                    std::result::Result<(), rss_reconcile::Error>,
+                >()),
+                async {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    cancel.cancel();
+                }
+            )
+        })
+        .await
+        .expect("unbounded worker control must remain cancellable");
+        assert_eq!(
+            outcome.unwrap_err().kind(),
+            rss_reconcile::ErrorKind::Cancelled
+        );
     }
 }
