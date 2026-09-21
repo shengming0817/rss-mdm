@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-pub use rss_mdm_inventory::{Channel, ReportSource};
+use rss_mdm_inventory::{Channel, ReportSource};
 /// Evidence from a trusted channel verifier, not a credential ID submitted by a device.
 /// I01 has no production constructor. F04 must verify the actual channel credential first.
 /// ```compile_fail

@@ -3,11 +3,12 @@ use crate::{
     audit::Audit,
     collection,
     device::{
-        Channel, DeviceService, VerifiedChannelCredential,
+        DeviceService, VerifiedChannelCredential,
         tests::{admin, bind, options, proof},
     },
 };
 use anyhow::{Result, ensure};
+use rss_mdm_inventory::Channel;
 use rss_mdm_windows_mdm::{
     CodecLimits, Secret,
     syncml::{self, Command, CommandName, Header, Message, Status},

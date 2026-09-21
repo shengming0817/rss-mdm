@@ -129,7 +129,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     ))?;
     let access = access_store(base).await?;
     let service = crate::device::DeviceService::new(access.clone(), TENANT.into());
-    let proof = crate::device::tests::proof(TENANT, crate::device::Channel::Mdm, 121);
+    let proof = crate::device::tests::proof(TENANT, rss_mdm_inventory::Channel::Mdm, 121);
     let config: Config = serde_json::from_value(base.clone())?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,

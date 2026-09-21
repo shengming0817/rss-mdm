@@ -1,8 +1,9 @@
 //! Inventory access capabilities and independent Identity management configuration.
 use crate::authorization::Permission;
-use crate::device::{DeviceService, ReportSource};
+use crate::device::DeviceService;
 use crate::identity::Principal;
 use crate::{ConfigIssue, Error};
+use rss_mdm_inventory::ReportSource;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 

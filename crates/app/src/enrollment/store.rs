@@ -5,8 +5,9 @@ use crate::{
     access::EnrollmentPermission,
     access_store::{Actor, Operation, db},
     audit::Audit,
-    device::{Channel, store::lock_channel},
+    device::store::lock_channel,
 };
+use rss_mdm_inventory::Channel;
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 
 pub(crate) fn actor(proof: &Principal) -> Actor<'_> {

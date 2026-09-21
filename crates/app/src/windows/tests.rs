@@ -1351,7 +1351,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             &proof,
             "tls-device",
             crate::access::Coordinates {
-                source: crate::device::ReportSource::MdmWindows,
+                source: rss_mdm_inventory::ReportSource::MdmWindows,
             },
         )
         .await?;
