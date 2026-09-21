@@ -60,6 +60,11 @@ rss-mdm-brew-source.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
 
+rss-device-command.workspace = true
+rss-device-command-postgres.workspace = true
+rss-reconcile.workspace = true
+rss-reconcile-postgres.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
@@ -70,7 +75,7 @@ tower.workspace = true
 
 [features]
 default = []
-integration = ["rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
+integration = ["rss-transactional-messaging-postgres/integration","rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
 
 [lints]
 workspace = true

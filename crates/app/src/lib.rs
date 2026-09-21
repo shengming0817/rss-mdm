@@ -7,6 +7,7 @@ mod access_store;
 mod audit;
 pub mod authorization;
 mod collection;
+mod commands;
 pub mod device;
 mod enrollment;
 mod inventory_runtime;

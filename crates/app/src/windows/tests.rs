@@ -894,6 +894,18 @@ async fn rejected_csrs(
 #[tokio::test]
 #[ignore = "make t2: native HTTPS enrollment and mTLS management with real PG"]
 async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<()> {
+    native_matrix(false).await
+}
+#[tokio::test]
+#[ignore = "command T2: authenticated HTTP operation and native mTLS participant"]
+async fn native_command_operations_and_observation() -> anyhow::Result<()> {
+    native_matrix(true).await
+}
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "sequential native HTTP authentication, failure and recovery matrix"
+)]
+async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     use x509_cert::der::{EncodePem, pem::LineEnding};
     let root = root()?;
     let enroll = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -918,6 +930,8 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&management_password, std::fs::Permissions::from_mode(0o600))?;
     value["management"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_management_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
+    value["command_database"] = value["management"]["database"].clone();
+    value["command_database"]["user"] = "mdm_command_runtime".into();
     let config: crate::config::Config = serde_json::from_value(value)?;
     let clock = Arc::new(crate::clock::SystemClock);
     let identity_management = Arc::new(crate::access::IdentityManagementPolicy::new(
@@ -954,7 +968,9 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             |_| {},
         )
         .await?;
+    let commands = crate::commands::Commands::open(&config).await?;
     let app = Arc::new(App {
+        commands,
         management,
         identity,
         credentials,
@@ -970,11 +986,24 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         devices,
         access: store.clone(),
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
-        windows: Windows::load(config.windows, now())?,
+        windows: Arc::new(Windows::load(config.windows, now())?),
     });
     tls::verify_tls_lifecycle(store.clone(), app.windows.enrollment_tls.clone(), &root).await?;
     let ingress_clock = IngressClock::new();
-    let (mut enrollment, management) = routers(app.clone(), ingress_clock.clone());
+    let crate::windows::Routers {
+        browser,
+        mut enrollment,
+        management,
+    } = crate::api::from_state(
+        app.clone(),
+        "mdm.example.test".into(),
+        ingress_clock.clone(),
+    );
+    let mut task_client = if with_commands {
+        Some(crate::commands::tests::Client::start(browser, app.clone()).await?)
+    } else {
+        None
+    };
     enrollment.router = enrollment.router.route(
         "/accepted-peer",
         axum::routing::get(
@@ -1170,6 +1199,9 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             .is_err(),
         "management accepted an untrusted client CA"
     );
+    if let Some(client) = &mut task_client {
+        client.accept().await?;
+    }
     let mut message = syncml::decode(
         include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
         &CodecLimits::default(),
@@ -1208,10 +1240,16 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             .header("content-type", "application/vnd.syncml.dm+xml")
             .body(bytes)
     };
-    store.fail_next(1);
-    ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
-    store.fail_next(2);
-    ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
+    #[cfg(feature = "integration")]
+    {
+        app.commands
+            .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+        ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
+        app.commands.inject_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+        );
+        ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
+    }
     let first = post(wire.clone()).send().await?;
     ensure!(first.status() == StatusCode::OK);
     let first = first.bytes().await?;
@@ -1345,11 +1383,41 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         ],
         final_message: true,
     };
-    let model = syncml::encode(&packet(3, 2, 0, "Model-TLS"), &CodecLimits::default())?;
+    let extra = u32::from(with_commands);
+    if let Some(client) = &mut task_client {
+        let mut received = packet(3, 2, 0, "Model-TLS");
+        received
+            .commands
+            .retain(|c| !matches!(c, Command::Results(_)));
+        ensure!(
+            post(syncml::encode(&received, &CodecLimits::default())?)
+                .send()
+                .await?
+                .status()
+                == StatusCode::OK
+        );
+        client.received().await?;
+    }
+    let model = syncml::encode(
+        &packet(3 + extra, 2 + extra, 0, "Model-TLS"),
+        &CodecLimits::default(),
+    )?;
     let first_fragment = post(model.clone()).send().await?;
     ensure!(first_fragment.status() == StatusCode::OK);
     let first_fragment = first_fragment.bytes().await?;
     ensure!(post(model.clone()).send().await?.bytes().await? == first_fragment);
+    if let Some(client) = &mut task_client {
+        let (revocation, replay) = tokio::join!(client.observed(), post(followup.clone()).send());
+        revocation?;
+        ensure!(matches!(
+            replay?.status(),
+            StatusCode::OK | StatusCode::FORBIDDEN
+        ));
+        ensure!(
+            post(followup.clone()).send().await?.status() == StatusCode::FORBIDDEN,
+            "revoked cached dispatch replayed"
+        );
+    }
     let scope = app
         .devices
         .current_scope(
@@ -1366,7 +1434,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         reader.read(&scope).await?.is_empty(),
         "fragment projected before complete collection"
     );
-    let mut conflicting = packet(4, 3, 0, "changed");
+    let mut conflicting = packet(4 + extra, 3 + extra, 0, "changed");
     ensure!(
         post(syncml::encode(&conflicting, &CodecLimits::default())?)
             .send()
@@ -1374,10 +1442,17 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
             .status()
             == StatusCode::CONFLICT
     );
-    conflicting = packet(4, 3, 1, "10.0.26100");
+    conflicting = packet(4 + extra, 3 + extra, 1, "10.0.26100");
     let final_fragment = syncml::encode(&conflicting, &CodecLimits::default())?;
-    store.fail_next(2);
-    ensure!(post(final_fragment.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
+    #[cfg(feature = "integration")]
+    {
+        app.commands.inject_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+        );
+        ensure!(
+            post(final_fragment.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
     let replay = post(final_fragment.clone()).send().await?;
     ensure!(replay.status() == StatusCode::OK);
     let replay = syncml::decode(&replay.bytes().await?, &CodecLimits::default())?;
@@ -1504,12 +1579,25 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         current.header.credential.unwrap().data.0
             == protection::digest("RSS-MDM", &secrets.server_password, &[9u8; 32])
     );
+    if let Some(client) = &mut task_client {
+        client
+            .reobserve(
+                &mutual,
+                &url,
+                &message,
+                &syncml::decode(&followup, &CodecLimits::default())?,
+            )
+            .await?;
+    }
     // Existing TLS keepalive connections do not cache the active mapping.
     app.devices
         .revoke(&proof, "tls-device", intent.registration, Uuid::new_v4())
         .await?;
     ensure!(post(followup).send().await?.status() == StatusCode::UNAUTHORIZED);
     retention_tests::verify(&store, TENANT, intent.registration).await?;
+    if let Some(client) = &mut task_client {
+        client.retained_and_recovered().await?;
+    }
     ingress_burst(&client, &app, &ingress_clock).await?;
     let actor = app
         .identity

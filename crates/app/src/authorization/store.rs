@@ -191,13 +191,22 @@ async fn read_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     proof: &Principal,
 ) -> Result<Snapshot, Error> {
-    let json: String = sqlx::query_scalar("WITH rules AS MATERIALIZED (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001), groups AS MATERIALIZED (SELECT * FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001) SELECT CASE WHEN (SELECT coalesce(sum(octet_length(document::text)),0) FROM rules)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM groups)<=8388608 THEN jsonb_build_object('rules',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM rules),'[]'::jsonb),'groups',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM groups),'[]'::jsonb)) ELSE NULL END::text")
-            .bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(&mut **tx).await.map_err(db)?;
-    let snapshot: Snapshot = decode(&json)?;
-    snapshot.validate(proof.tenant_id(), proof.instance_id())?;
+    let snapshot = snapshot_on(tx, proof.tenant_id(), proof.instance_id()).await?;
     proof.check_live()?;
     Ok(snapshot)
 }
+pub(crate) async fn snapshot_on(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    instance: &str,
+) -> Result<Snapshot, Error> {
+    let json: String = sqlx::query_scalar("WITH rules AS MATERIALIZED (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001), groups AS MATERIALIZED (SELECT * FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001) SELECT CASE WHEN (SELECT coalesce(sum(octet_length(document::text)),0) FROM rules)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM groups)<=8388608 THEN jsonb_build_object('rules',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM rules),'[]'::jsonb),'groups',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM groups),'[]'::jsonb)) ELSE NULL END::text")
+            .bind(tenant).bind(instance).fetch_one(&mut *tx).await.map_err(db)?;
+    let snapshot: Snapshot = decode(&json)?;
+    snapshot.validate(tenant, instance)?;
+    Ok(snapshot)
+}
+
 fn authorize_change(snapshot: &Snapshot, proof: &Principal, table: Table) -> Result<(), Error> {
     snapshot.require(proof, Permission::AuthorizationWrite, None)?;
     if matches!(table, Table::Groups) {
@@ -229,14 +238,14 @@ impl Table {
 fn decode<T: DeserializeOwned>(value: &str) -> Result<T, Error> {
     serde_json::from_str(value).map_err(|_| Error::Unavailable(Failure::AccessStore))
 }
-async fn lock(
-    tx: &mut Transaction<'_, Postgres>,
+pub(crate) async fn lock(
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     instance: &str,
 ) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2363))")
         .bind(format!("{tenant}:{instance}"))
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
     Ok(())

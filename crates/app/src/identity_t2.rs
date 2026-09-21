@@ -67,14 +67,14 @@ fn pg(sql: &str) -> Result<String> {
 }
 use crate::identity_fixture::{ADMIN, INSTANCE, PASSWORD};
 #[derive(Default, Clone)]
-struct Browser {
-    network: Option<(Client, String)>,
+pub(crate) struct Browser {
+    pub(crate) network: Option<(Client, String)>,
     cookies: BTreeMap<String, String>,
     csrf: Option<String>,
     operation: Option<uuid::Uuid>,
 }
 impl Browser {
-    async fn call(
+    pub(crate) async fn call(
         &mut self,
         app: &Router,
         method: Method,

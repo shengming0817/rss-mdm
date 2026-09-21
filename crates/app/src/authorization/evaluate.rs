@@ -16,19 +16,19 @@ pub(crate) struct Snapshot {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveGrant {
-    rule_id: Uuid,
-    rule_revision: u64,
+    pub(super) rule_id: Uuid,
+    pub(super) rule_revision: u64,
     subject: Subject,
     #[serde(flatten)]
-    grant: Grant,
-    observation: Option<Observation>,
+    pub(super) grant: Grant,
+    pub(super) observation: Option<Observation>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Observation {
+pub(super) struct Observation {
     snapshot_id: Uuid,
     observed_at: i64,
-    expires_at: i64,
+    pub(super) expires_at: i64,
     source_revision: Option<String>,
 }
 impl Snapshot {

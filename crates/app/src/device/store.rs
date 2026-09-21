@@ -23,7 +23,7 @@ fn locator(proof: &VerifiedChannelCredential) -> String {
     proof.locator.iter().map(|v| format!("{v:02x}")).collect()
 }
 pub(crate) async fn lock_channel(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
     channel: Channel,
@@ -31,7 +31,7 @@ pub(crate) async fn lock_channel(
     let key = serde_json::to_string(&(tenant, device, channel)).expect("closed identity");
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
         .bind(key)
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
     Ok(())

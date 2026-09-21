@@ -102,6 +102,7 @@ pub async fn serve(
                         access,
                         tenant,
                         runtime,
+                        commands,
                     ) = tokio::time::timeout(compiled.config.management.startup_budget(), async {
                         let reader = Arc::new(
                             InventoryReader::connect(compiled.config.database.options().map_err(
@@ -183,6 +184,12 @@ pub async fn serve(
                             )
                             .await
                             .map_err(|e| ProcessError::at("startup.management", e))?;
+                        let commands = crate::commands::Commands::open(&compiled.config)
+                            .await
+                            .map_err(|e| ProcessError::at("startup.commands", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(
+                            crate::commands::Resource(commands.clone()),
+                        ));
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
                         let gateway = compiled.config.trusted_gateway;
@@ -202,6 +209,7 @@ pub async fn serve(
                                 access: access.clone(),
                                 runtime: runtime.clone(),
                                 management,
+                                commands: commands.clone(),
                                 identity,
                             },
                         )
@@ -239,6 +247,7 @@ pub async fn serve(
                             access,
                             tenant,
                             runtime,
+                            commands,
                         ))
                     })
                     .await
@@ -247,6 +256,7 @@ pub async fn serve(
                         kind: "total deadline exceeded",
                     })??;
                     let mut launch = startup.commit();
+                    launch.stage_deferred_task_with_token(commands.registration().critical());
                     launch.stage_deferred_task_with_token(runtime.registration().critical());
                     launch.stage_task_with_token(
                         crate::windows::retention::registration(access.clone(), tenant.clone())
@@ -368,6 +378,7 @@ mod tests {
                     |startup| {
                         Box::pin(async move {
                             let mut launch = startup.commit();
+
                             let (task, _) =
                                 rss_runtime::ManagedTask::prepare(name, Duration::from_secs(1));
                             launch.stage_task_with_token(

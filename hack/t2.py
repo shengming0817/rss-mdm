@@ -99,7 +99,7 @@ def verify_startup_deadlines(binary, root, env):
     with socket.socket() as stalled:
         stalled.bind(('127.0.0.1',0));stalled.listen(8)
         stalled_port=stalled.getsockname()[1]
-        for key in ['database','access_database','runtime_database']:
+        for key in ['database','access_database','runtime_database','command_database']:
             config[key]['port']=stalled_port
         for key in ['database','publication_database']:
             config['management'][key]['port']=stalled_port
@@ -152,6 +152,7 @@ def configure_identity(root, port, binary, env):
     for key,role,password in [('database','mdm_api','api-fixture'),('access_database','mdm_access','access-fixture'),('runtime_database','mdm_runtime','runtime-fixture')]:config[key]=database(role,password)
     config['identity']['database']=database('mdm_identity_runtime','identity-runtime-fixture')
     config['management']['database']=database('mdm_management_runtime','runtime-fixture')
+    config['command_database']=database('mdm_command_runtime','runtime-fixture')
     config['management']['publication_database']=database('mdm_software_driver','runtime-fixture')
     config['windows']=json.loads((root/'windows.json').read_text())
     config['identity_management']=[dict(tenant_id=TENANTS[0],instance_id=INSTANCE,principal_id=ADMIN,permissions=['accounts','providers'])]
@@ -164,7 +165,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(identity_only=False):
+def main(identity_only=False,command_only=False):
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -195,8 +196,8 @@ def main(identity_only=False):
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text())
-            sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
+            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text())
+            sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")
@@ -215,6 +216,11 @@ def main(identity_only=False):
             verify_migrations(name, migrators[0], migration_config, root, env)
             configure_identity(root, port, migrators[0], env)
             env['MDM_TEST_PG_CONTAINER'] = name
+            if command_only:
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(result.stdout,flush=True)
+                require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')
+                return
             if identity_only:
                 import importlib.util
                 spec=importlib.util.spec_from_file_location('mdm_source_t2', ROOT/'hack/source-t2.py');source=importlib.util.module_from_spec(spec);spec.loader.exec_module(source)
@@ -232,7 +238,7 @@ def main(identity_only=False):
             if not device_only and not windows_only and not identity_only:
                 run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
                 run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
-            windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1","--skip","windows::tests::native_command_operations_and_observation"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             print(windows.stdout,end='',flush=True)
             require(windows.returncode == 0, 'Windows T2 failed')
             verify_windows_result(windows.stdout)

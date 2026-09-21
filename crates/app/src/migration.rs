@@ -1,6 +1,6 @@
 //! The product owns one bounded installer; immutable SQL units retain their component owners.
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, PgConnection, Row, postgres::PgConnectOptions};
+use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 use std::time::Duration;
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("migration {unit}: {phase} (cleanup_failed={cleanup_failed})")]
@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 24] {
+fn units() -> [(&'static str, &'static str); 27] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -170,13 +170,45 @@ fn units() -> [(&'static str, &'static str); 24] {
             "authorization-v1",
             include_str!("../migrations/0010_authorization.sql"),
         ),
+        (
+            "device-command-v1",
+            rss_device_command_postgres::MIGRATION_SQL,
+        ),
+        ("reconcile-v1", rss_reconcile_postgres::MIGRATION_SQL),
+        (
+            "commands-v1",
+            include_str!("../migrations/0011_commands.sql"),
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.
 pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))}))})
 }
+fn validate_history(installed: &[(String, String, bool)], current: &[(&str, &str)]) -> Result<()> {
+    if installed.len() > current.len()
+        || current[..installed.len()].iter().any(|(name, sql)| {
+            !installed.iter().any(|(old, digest, complete)| {
+                old == name && *complete && digest == &format!("{:x}", Sha256::digest(sql))
+            })
+        })
+    {
+        return Err(MigrationError::at(
+            "installation",
+            "changed, unknown or incomplete migration prefix",
+        ));
+    }
+    Ok(())
+}
+
 async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
+    migrate_units(conn, installation, &units()).await
+}
+async fn migrate_units(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    current: &[(&'static str, &'static str)],
+) -> Result<()> {
     let instance = installation.validate()?;
     sqlx::raw_sql("SET statement_timeout='30s'; SET lock_timeout='10s';")
         .execute(&mut *conn)
@@ -206,41 +238,11 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             .fetch_all(&mut *conn)
             .await
             .map_err(|_| MigrationError::at("installation", "ledger read"))?;
-    let current = units();
-    if !installed.is_empty()
-        && (installed.len() != current.len()
-            || installed.iter().any(|(name, digest, complete)| {
-                !complete
-                    || !current.iter().any(|(expected, sql)| {
-                        name == expected && digest == &format!("{:x}", Sha256::digest(sql))
-                    })
-            }))
-    {
-        return Err(MigrationError::at(
-            "installation",
-            "fresh installation required; existing ledger differs or is incomplete",
-        ));
-    }
-    for (name, sql) in units() {
+    validate_history(&installed, current)?;
+    verify_upgrade_base(conn, installation, instance, installed.len()).await?;
+    for (name, sql) in current.iter().copied() {
         let digest = format!("{:x}", Sha256::digest(sql));
-        let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
-            .bind(name)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|_| MigrationError::at(name, "ledger read"))?;
-        if let Some(row) = old {
-            let old_digest: String = row
-                .try_get("digest")
-                .map_err(|_| MigrationError::at(name, "invalid ledger shape"))?;
-            let complete: bool = row
-                .try_get("complete")
-                .map_err(|_| MigrationError::at(name, "invalid ledger shape"))?;
-            if old_digest != digest || !complete {
-                return Err(MigrationError::at(
-                    name,
-                    "changed or interrupted; inspect/restore installation, do not delete ledger",
-                ));
-            }
+        if installed.iter().any(|(old, _, _)| old == name) {
             continue;
         }
         sqlx::query("INSERT INTO public.mdm_migrations(name,digest) VALUES($1,$2)")
@@ -267,6 +269,24 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
     }
     verify_installation(conn, installation, instance).await?;
     Ok(())
+}
+
+async fn verify_upgrade_base(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    instance: rss_identity_core::InstanceId,
+    count: usize,
+) -> Result<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    if count < 24 {
+        return Err(MigrationError::at(
+            "installation",
+            "incomplete product installation",
+        ));
+    }
+    verify_installation(conn, installation, instance).await
 }
 
 async fn install_identity(
