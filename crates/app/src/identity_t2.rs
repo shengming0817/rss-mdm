@@ -155,7 +155,9 @@ impl Browser {
             *output.headers_mut() = headers;
             output
         } else {
-            app.clone().oneshot(request).await?
+            // Match a served request's task boundary: do not nest the complete
+            // TLS/SQL/Router poll stack inside the multi-phase test future.
+            tokio::spawn(app.clone().oneshot(request)).await??
         };
         let status = response.status();
         if method == Method::GET && path.contains("/collection-runs/") {
@@ -240,7 +242,8 @@ async fn app(value: &Value, reader: Arc<InventoryReader>) -> Result<Router> {
         access_store(value).await?,
         None,
     )
-    .await?
+    .await
+    .map_err(|error| anyhow::anyhow!("fixture application admission: {error:?}"))?
     .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
         "127.0.0.1".parse()?,
     ))))

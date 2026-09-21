@@ -19,8 +19,9 @@ async fn create(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(device): Path<String>,
-    Json(input): Json<Create>,
+    input: std::result::Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
+    let input = input.map_err(|_| Error::Malformed)?.0;
     audit.operation(input.operation_id, "command_accept");
     audit.target(&device);
     app.commands
@@ -46,8 +47,9 @@ async fn cancel(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((device, id)): Path<(String, Uuid)>,
-    Json(change): Json<Change>,
+    input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
+    let change = input.map_err(|_| Error::Malformed)?.0;
     audit.operation(change.request_id, "command_cancel");
     audit.target(&device);
     app.commands
@@ -60,8 +62,9 @@ async fn approve(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((device, id)): Path<(String, Uuid)>,
-    Json(change): Json<Change>,
+    input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
+    let change = input.map_err(|_| Error::Malformed)?.0;
     audit.operation(change.request_id, "command_approve");
     audit.target(&device);
     app.commands

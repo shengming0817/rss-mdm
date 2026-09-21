@@ -90,6 +90,13 @@ impl Client {
     pub(crate) async fn accept(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
         let request = json!({"operationId":self.operation,"field":"model","expectedValue":"Final-Model","deadline":self.app.clock.unix_seconds()?+300});
+        let mut malformed = request.clone();
+        malformed["unexpected"] = true.into();
+        let rejected = self.call(Method::POST, "", Some(malformed)).await?;
+        ensure!(
+            rejected.0 == StatusCode::BAD_REQUEST && rejected.1["code"] == "malformed_request",
+            "JSON contract: {rejected:?}"
+        );
         // The complete transaction committed, but its ACK is withheld by the provider.
         #[cfg(feature = "integration")]
         {
@@ -328,6 +335,10 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         for (damage, restore) in [
+            (
+                "ALTER ROLE mdm_owner BYPASSRLS",
+                "ALTER ROLE mdm_owner NOBYPASSRLS",
+            ),
             (
                 "CREATE POLICY widened ON mdm_access.registrations USING(true)",
                 "DROP POLICY widened ON mdm_access.registrations",
