@@ -10,45 +10,7 @@ pub struct Operation<T> {
     pub expected_revision: u64,
     pub input: T,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum Criteria {
-    Eq {
-        field: String,
-        value: String,
-    },
-    Ne {
-        field: String,
-        value: String,
-    },
-    In {
-        field: String,
-        values: BTreeSet<String>,
-    },
-    NotIn {
-        field: String,
-        values: BTreeSet<String>,
-    },
-    NotContains {
-        field: String,
-        value: String,
-    },
-    Contains {
-        field: String,
-        value: String,
-    },
-    And {
-        children: Vec<Criteria>,
-    },
-    Or {
-        children: Vec<Criteria>,
-    },
-}
+pub(crate) use super::assets::Criteria;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "action",

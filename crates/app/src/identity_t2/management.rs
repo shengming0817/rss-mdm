@@ -85,7 +85,7 @@ pub(super) async fn matrix(
     let policy = uuid::Uuid::new_v4();
     let resource = uuid::Uuid::new_v4();
     let group_path = format!("/api/v1/groups/{group}");
-    call(&mut browser,&router,&group_path,0,json!({"action":"create","name":"managed","description":"","criteria":{"kind":"eq","field":"device.model","value":"Model-A"}})).await?;
+    call(&mut browser,&router,&group_path,0,json!({"action":"create","name":"managed","description":"","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}})).await?;
     let (status, mut preview) = browser
         .call(
             &router,

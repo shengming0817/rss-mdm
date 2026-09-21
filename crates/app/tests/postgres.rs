@@ -32,8 +32,8 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .await?;
         let projection =
             rss_mdm_inventory_postgres::projection_scope(scope(tenant, source).tenant());
-        sqlx::query("INSERT INTO mdm.inventory VALUES($1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2) ON CONFLICT DO NOTHING")
-            .bind(tenant).bind(scope(tenant,source).encode()?).bind(value).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES($1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2,'known','reg',$7,'one') ON CONFLICT DO NOTHING")
+            .bind(tenant).bind(scope(tenant,source).encode()?).bind(value).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).bind(source).execute(&mut *tx).await?;
         tx.commit().await?;
     }
     assert!(
@@ -43,11 +43,37 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     );
     let reader = InventoryReader::connect(options("mdm_api")?).await?;
     for _ in 0..5 {
-        assert_eq!(reader.read(&scope(a, "one")).await?[0].value, "A");
-        assert_eq!(reader.read(&scope(b, "one")).await?[0].value, "B");
-        assert_eq!(reader.read(&scope(a, "two")).await?[0].value, "C");
+        assert_eq!(
+            reader
+                .read(scope(a, "one").tenant(), &[scope(a, "one")])
+                .await?[0]
+                .fact
+                .state,
+            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("A".into()))
+        );
+        assert_eq!(
+            reader
+                .read(scope(b, "one").tenant(), &[scope(b, "one")])
+                .await?[0]
+                .fact
+                .state,
+            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("B".into()))
+        );
+        assert_eq!(
+            reader
+                .read(scope(a, "two").tenant(), &[scope(a, "two")])
+                .await?[0]
+                .fact
+                .state,
+            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("C".into()))
+        );
     }
-    assert!(reader.read(&scope(a, "absent")).await?.is_empty());
+    assert!(
+        reader
+            .read(scope(a, "absent").tenant(), &[scope(a, "absent")])
+            .await?
+            .is_empty()
+    );
     let mut api = PgConnection::connect_with(&options("mdm_api")?).await?;
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mdm.inventory")

@@ -64,7 +64,6 @@ pub struct Config {
     pub product_origin: String,
     pub trusted_gateway: std::net::IpAddr,
     pub identity: Identity,
-    pub database: Database,
     pub access_database: Database,
     pub runtime_database: Database,
     pub(crate) management: crate::management::Config,
@@ -80,20 +79,13 @@ impl Config {
         if !self.listen.ip().is_loopback() {
             return Err(Error::Configuration(ConfigIssue::Listen));
         }
-        if self.database.user != "mdm_api" {
-            return Err(Error::Configuration(ConfigIssue::DatabaseRole));
-        }
-        if self.access_database.user != "mdm_access"
-            || self.access_database.host != self.database.host
-            || self.access_database.port != self.database.port
-            || self.access_database.name != self.database.name
-        {
+        if self.access_database.user != "mdm_access" {
             return Err(Error::Configuration(ConfigIssue::AccessDatabase));
         }
         if self.runtime_database.user != "mdm_runtime"
-            || self.runtime_database.host != self.database.host
-            || self.runtime_database.port != self.database.port
-            || self.runtime_database.name != self.database.name
+            || self.runtime_database.host != self.access_database.host
+            || self.runtime_database.port != self.access_database.port
+            || self.runtime_database.name != self.access_database.name
         {
             return Err(Error::Configuration(ConfigIssue::RuntimeDatabase));
         }
@@ -108,9 +100,9 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::Instance));
         }
         if self.identity.database.user != "mdm_identity_runtime"
-            || self.identity.database.host != self.database.host
-            || self.identity.database.port != self.database.port
-            || self.identity.database.name != self.database.name
+            || self.identity.database.host != self.access_database.host
+            || self.identity.database.port != self.access_database.port
+            || self.identity.database.name != self.access_database.name
         {
             return Err(Error::Configuration(ConfigIssue::IdentityDatabase));
         }
@@ -119,7 +111,7 @@ impl Config {
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
             return Err(Error::Configuration(ConfigIssue::Tenant));
         }
-        self.management.validate(&self.database)?;
+        self.management.validate(&self.access_database)?;
         self.windows.validate(self.listen)?;
         let identity_management = crate::access::IdentityManagementPolicy::new(
             &self.identity.tenant_id,

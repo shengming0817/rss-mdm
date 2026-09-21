@@ -6,7 +6,7 @@ use crate::{
 };
 use crate::{
     Error,
-    access::{Coordinates, IdentityManagementPolicy, InventoryResponse, InventoryService},
+    access::{CollectionService, Coordinates, IdentityManagementPolicy},
     enrollment_credentials::Credentials,
     identity::Identity,
 };
@@ -20,7 +20,6 @@ use axum::{
     routing::{get, post},
 };
 use rss_identity_core::session::SessionSecret;
-use rss_mdm_inventory_postgres::InventoryReader;
 use serde::Deserialize;
 #[cfg(test)]
 use serde_json::Value;
@@ -32,7 +31,7 @@ pub(crate) struct App {
     pub(crate) credentials: Credentials,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) identity_management: Arc<IdentityManagementPolicy>,
-    pub(crate) inventory: InventoryService,
+    pub(crate) collection: CollectionService,
     pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) windows: crate::windows::Windows,
@@ -105,7 +104,6 @@ pub(crate) async fn application(
     config: crate::config::Config,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
-    reader: Arc<InventoryReader>,
     access: Arc<AccessStore>,
     identity: Option<Identity>,
 ) -> Result<Router, Error> {
@@ -143,7 +141,6 @@ pub(crate) async fn application(
         AssemblyDependencies {
             clock,
             monotonic,
-            reader,
             access,
             runtime,
             management,
@@ -155,7 +152,6 @@ pub(crate) async fn application(
 pub(crate) struct AssemblyDependencies {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
-    pub(crate) reader: Arc<InventoryReader>,
     pub(crate) access: Arc<AccessStore>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub(crate) management: Arc<crate::management::Management>,
@@ -172,7 +168,6 @@ pub(crate) fn from_compiled(
     let AssemblyDependencies {
         clock,
         monotonic,
-        reader,
         access,
         runtime,
         management,
@@ -203,7 +198,7 @@ pub(crate) fn from_compiled(
         credentials: Credentials::new(monotonic.clone(), 10000),
         clock,
         identity_management,
-        inventory: InventoryService::new(reader, devices.clone(), access.clone(), runtime.clone()),
+        collection: CollectionService::new(devices.clone(), access.clone(), runtime.clone()),
         readiness: runtime.readiness.clone(),
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -220,7 +215,6 @@ pub(crate) fn from_compiled(
             "/devices/{device}/registrations/{registration}/revoke",
             post(revoke_registration),
         )
-        .route("/devices/{id}/inventory", get(inventory))
         .route("/devices/{id}/collection-runs/{run}", get(collection_run))
         .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
@@ -462,23 +456,6 @@ async fn identity_context(
         navigation: app.identity_management.identity_navigation(proof)?,
     }))
 }
-async fn inventory(
-    State(app): State<Arc<App>>,
-    Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<String>,
-    Extension(audit): Extension<Audit>,
-    input: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<InventoryResponse>, Error> {
-    if rss_observation::Id::new(&id).is_ok() {
-        audit.target(&id);
-    }
-    audit.set_action("inventory_read");
-    let grant = auth
-        .proof
-        .inventory(&id, input.map_err(|_| Error::Malformed)?.0)?;
-    app.inventory.read(grant).await.map(Json)
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Action {
@@ -663,7 +640,7 @@ async fn collection_run(
     audit.target(&device);
     audit.set_action("collection_read");
     let grant = auth.proof.inventory(&device, coordinates)?;
-    Ok(Json(app.inventory.run(grant, run).await?))
+    Ok(Json(app.collection.run(grant, run).await?))
 }
 
 #[cfg(test)]

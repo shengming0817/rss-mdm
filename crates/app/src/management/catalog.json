@@ -154,6 +154,60 @@
       ""
     ],
     [
+      "saved_queries",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "saved_queries",
+      "instance",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "saved_queries",
+      "owner",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "saved_queries",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "saved_queries",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "saved_queries",
+      "document",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "scope_versions",
       "tenant_id",
       "uuid",
@@ -260,6 +314,14 @@
       true
     ],
     [
+      "saved_queries",
+      "saved_queries_pkey",
+      "CREATE UNIQUE INDEX saved_queries_pkey ON mdm_management.saved_queries USING btree (tenant_id, instance, owner, id)",
+      true,
+      true,
+      true
+    ],
+    [
       "scope_versions",
       "scope_versions_pkey",
       "CREATE UNIQUE INDEX scope_versions_pkey ON mdm_management.scope_versions USING btree (tenant_id, id, revision)",
@@ -345,6 +407,27 @@
       "resource_references_pkey",
       "p",
       "PRIMARY KEY (tenant_id, resource, version, policy)",
+      true
+    ],
+    [
+      "saved_queries",
+      "saved_queries_document_check",
+      "c",
+      "CHECK ((octet_length((document)::text) <= 16384))",
+      true
+    ],
+    [
+      "saved_queries",
+      "saved_queries_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, instance, owner, id)",
+      true
+    ],
+    [
+      "saved_queries",
+      "saved_queries_revision_check",
+      "c",
+      "CHECK ((revision > 0))",
       true
     ],
     [

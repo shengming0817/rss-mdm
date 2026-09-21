@@ -335,7 +335,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(owner.shutdown().join().await?.is_clean());
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
-    ensure!(reader.read(&first.scope).await?[0].value == "First");
+    ensure!(
+        reader
+            .read(first.scope.tenant(), std::slice::from_ref(&first.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("First".into()))
+    );
     runtime.close_fixture().await?;
 
     // Fresh epoch; Partial/Failed receipts retain the last complete values.
@@ -359,33 +366,54 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         runtime.inspect(&failed).await?.projection
             == crate::inventory_runtime::ProjectionStatus::NotApplicable
     );
-    ensure!(reader.read(&full.scope).await?[0].value == "New");
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("New".into()))
+    );
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
 
-    // Deterministically commit/project a newer run between the constituent reads.
+    // A borrowed repeatable-read snapshot never mixes a concurrently committed projection.
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
-    let inventory = crate::access::InventoryService::new(
-        reader.clone(),
-        service.clone(),
-        access.clone(),
-        runtime.clone(),
-    );
-    let (latest, fields, _) = inventory
-        .read_state(&full.scope, async {
-            let newer_run = report(&service, &access, &newer, [Some("New"), Some("11")])
-                .await
-                .unwrap();
-            wait_ready_projection(&runtime, &newer_run).await.unwrap();
-        })
+    let mut connection = PgConnection::connect_with(&options("mdm_api")?).await?;
+    let mut snapshot = connection.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *snapshot)
         .await?;
-    let latest = latest.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(A)
+        .execute(&mut *snapshot)
+        .await?;
+    let before = rss_mdm_inventory_postgres::read_in(
+        &mut snapshot,
+        full.scope.tenant(),
+        std::slice::from_ref(&full.scope),
+    )
+    .await?;
+    let newer_run = report(&service, &access, &newer, [Some("Newer"), Some("12")]).await?;
+    wait_ready_projection(&runtime, &newer_run).await?;
     ensure!(
-        fields
+        before
+            == rss_mdm_inventory_postgres::read_in(
+                &mut snapshot,
+                full.scope.tenant(),
+                std::slice::from_ref(&full.scope)
+            )
+            .await?
+    );
+    snapshot.commit().await?;
+    connection.close().await?;
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?
             .iter()
-            .all(|field| field.batch_id == latest.id.to_string()),
-        "inventory mixed a new projection with an older run"
+            .all(|f| f.fact.evidence.snapshot_id == newer_run.id.to_string())
     );
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
@@ -423,7 +451,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     .await?;
     ensure!(matches!(stopped, rss_runtime::TaskExit::Failed(_)) && !runtime.readiness.ready());
     ensure!(!owner.shutdown().join().await?.is_clean());
-    ensure!(reader.read(&full.scope).await?[0].value == "New");
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("New".into()))
+    );
     ensure!(
         runtime.inspect(&broken).await?.projection
             == crate::inventory_runtime::ProjectionStatus::Pending
@@ -433,7 +468,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_ready_projection(&runtime, &broken).await?;
-    ensure!(reader.read(&full.scope).await?[0].value == "After-failure");
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
+                "After-failure".into()
+            ))
+    );
     ensure!(owner.shutdown().join().await?.is_clean());
 
     // Explicit CmdID exhaustion fails without allocating a new run or wrapping to old IDs.

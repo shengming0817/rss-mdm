@@ -9,6 +9,7 @@ use axum::{
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
         .merge(publications::routes())
+        .merge(assets::routes())
         .route("/resources/{id}", get(resource_read).post(resource_write))
         .route("/groups/{id}", get(group_read).post(group_write))
         .route("/groups/{id}/preview", get(group_preview))
@@ -25,7 +26,21 @@ async fn run(
     permission: Permission,
     command: Command,
 ) -> std::result::Result<Json<wire::Response>, Error> {
+    if matches!(
+        &command,
+        Command::GroupPreview { .. }
+            | Command::Group {
+                change: Operation {
+                    input: GroupChange::Recompute { .. },
+                    ..
+                },
+                ..
+            }
+    ) {
+        assets::ReadScope::from_proof(&auth.proof)?.full()?;
+    }
     match &command {
+        Command::Asset { .. } => return Err(Error::Malformed),
         Command::Group { id, .. }
         | Command::GroupRead { id }
         | Command::GroupPreview { id, .. }
@@ -56,13 +71,25 @@ async fn run(
     if let Some(id) = operation {
         audit.operation(id, audit.snapshot().action);
     }
-    auth.proof.manage(permission)?;
-    wire::Response::decode(
-        app.management
-            .execute(&command, audit, &|| auth.proof.manage(permission))
-            .await?,
-    )
-    .map(Json)
+    let authorize = || {
+        auth.proof.manage(permission)?;
+        if matches!(
+            &command,
+            Command::GroupPreview { .. }
+                | Command::Group {
+                    change: Operation {
+                        input: GroupChange::Recompute { .. },
+                        ..
+                    },
+                    ..
+                }
+        ) {
+            assets::ReadScope::from_proof(&auth.proof)?.full()?;
+        }
+        Ok(())
+    };
+    authorize()?;
+    wire::Response::decode(app.management.execute(&command, audit, &authorize).await?).map(Json)
 }
 macro_rules! read {
     ($handler:ident,$id:ty,$permission:ident,$command:ident) => {

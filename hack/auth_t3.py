@@ -71,7 +71,7 @@ def seed_inventory(stack):
     INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
     INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','{registration}','mdm',repeat('a',64),'active');
     INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);
-    INSERT INTO mdm.inventory VALUES('{TENANT}','mdm.observation.v1','inventory-v1','{scope}','{coverage}','device.model','Model-2364','synthetic-2364',1,2);
+    INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v2','{scope}','{coverage}','device.model','Model-2364','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}');
     """)
 
 def prepare_member(stack):

@@ -1,4 +1,5 @@
 //! Product management composition. Core decisions and component storage retain their owners.
+pub(crate) mod assets;
 mod config;
 mod groups;
 mod http;
@@ -24,6 +25,7 @@ use uuid::Uuid;
 
 pub(crate) struct Management {
     runtime: Arc<PgRuntime>,
+    asset_cursor_key: ring::hmac::Key,
     tenant: TenantId,
     clock: Arc<dyn crate::clock::Clock>,
     groups: rss_mdm_group_postgres::GroupStore,
@@ -80,7 +82,11 @@ impl Management {
             rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, deadline())
                 .await
                 .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
+        let mut key = [0; 32];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut key)
+            .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
         Ok(Self {
+            asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
             runtime,
             tenant,
             clock,
@@ -133,7 +139,16 @@ impl Management {
                                         (Error::Unavailable(Failure::ManagementStorage), e)
                                     }
                                     Fault::Sql(e) => {
-                                        (Error::Unavailable(Failure::Runtime), e.into())
+                                        let reason = if e
+                                            .as_database_error()
+                                            .and_then(|d| d.code())
+                                            .is_some_and(|c| c == "40001" || c == "40P01")
+                                        {
+                                            Error::Conflict
+                                        } else {
+                                            Error::Unavailable(Failure::Runtime)
+                                        };
+                                        (reason, e.into())
                                     }
                                 };
                                 *failure.lock().expect("request failure lock") = Some(reason);
@@ -207,6 +222,7 @@ impl Management {
         at: Timepoint,
     ) -> Result<Value> {
         match command {
+            Command::Asset { command } => self.asset_dispatch(tx, command, at).await,
             Command::PublicationIntent { .. } => Ok(serde_json::json!({"as_of":at.unix_seconds()})),
             Command::Resource { id, change } => self.resource_change(tx, id, change, at).await,
             Command::ResourceRead { id } => self.resource_read(tx, id).await,
@@ -236,6 +252,9 @@ impl Management {
 #[derive(serde::Serialize)]
 #[serde(tag = "kind")]
 enum Command {
+    Asset {
+        command: assets::Command,
+    },
     PublicationIntent {
         source: String,
         id: String,

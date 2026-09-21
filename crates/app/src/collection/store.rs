@@ -143,13 +143,13 @@ pub(crate) async fn create(
         .bind(FIELD_COUNT as i64).bind(i64::from(u32::MAX) - FIELD_COUNT as i64 + 1)
         .fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Conflict)?;
     let first: i64 = row.try_get("command").map_err(db)?;
-    for (index, key) in FieldKey::ALL.iter().enumerate() {
+    for (index, key) in FieldKey::observed().enumerate() {
         response.commands.push(Command::Get {
             id: first as u32 + index as u32,
             meta: None,
             items: vec![Item {
                 source: None,
-                target: Some(uri(*key).into()),
+                target: Some(uri(key).into()),
                 meta: None,
                 data: None,
             }],

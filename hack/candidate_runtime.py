@@ -117,7 +117,7 @@ def inputs(root, example):
         return "/run/mdm/"+path.name
     config=json.loads(example.read_text())
     config["windows"]=copy_inputs(windows)
-    for field,role in [("database","mdm_api"),("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
+    for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
         config[field]=database(runtime,role)
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
     config["management"]["database"]=database(runtime,"mdm_management_runtime")

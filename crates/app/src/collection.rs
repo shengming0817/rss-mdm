@@ -9,11 +9,12 @@ pub(crate) use store::{
     DurableReport, Run, accept, create, revalidate, terminate, terminate_session,
 };
 
-const FIELD_COUNT: usize = FieldKey::ALL.len();
+const FIELD_COUNT: usize = FieldKey::OBSERVED_COUNT;
 fn uri(key: FieldKey) -> &'static str {
     match key {
         FieldKey::Model => "./DevInfo/Mod",
         FieldKey::OsVersion => "./DevDetail/SwV",
+        _ => unreachable!("collection only uses observed catalog entries"),
     }
 }
 fn field_index(command: u32, first: u32) -> Option<usize> {
@@ -112,7 +113,11 @@ impl Attempts {
             return Err(Error::Conflict);
         }
         field.value_digest = Some(digest);
-        field.value = FieldKey::ALL[index].validate(&value).then_some(value);
+        field.value = FieldKey::observed()
+            .nth(index)
+            .expect("collection field index")
+            .validate(&value)
+            .then_some(value);
         self.refresh(index);
         Ok(())
     }
@@ -149,7 +154,7 @@ impl Attempts {
         let changes: Vec<_> = self
             .fields
             .iter()
-            .zip(FieldKey::ALL)
+            .zip(FieldKey::observed())
             .filter_map(|(field, key)| {
                 field.value.as_ref().map(|value| {
                     Change::upsert(
@@ -202,7 +207,11 @@ impl Attempts {
                 return Err(Error::Conflict);
             }
             let index = field_index(result.reference.command_id, first).ok_or(Error::Conflict)?;
-            if result.reference.uri != uri(FieldKey::ALL[index]) {
+            if result.reference.uri
+                != uri(FieldKey::observed()
+                    .nth(index)
+                    .expect("collection field index"))
+            {
                 return Err(Error::Conflict);
             }
             self.value(index, result.value.0.clone())?;

@@ -127,7 +127,9 @@ pub async fn matrix(executable: &str) -> Result<()> {
         inspect(&a, "delta").await?["assets"]
             .as_array()
             .unwrap()
-            .len(),
+            .iter()
+            .filter(|a| a["fact"]["state"]["kind"] == "known")
+            .count(),
         1
     );
     let other = app(scope(2, "d1")).await?;
@@ -150,7 +152,8 @@ pub async fn matrix(executable: &str) -> Result<()> {
         inspect(&a, "empty").await?["assets"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .iter()
+            .all(|a| a["fact"]["state"]["kind"] == "deleted" && !a["fact"]["lastKnown"].is_null())
     );
     assert_eq!(
         inspect(&other, "first").await?["assets"]
@@ -685,7 +688,13 @@ async fn empty_and_delete() -> Result<()> {
     assert_eq!(inspect(&a, "delete").await?["projection"], "not_projected");
     a.project(&cancel).await?;
     let view = inspect(&a, "delete").await?;
-    assert!(view["assets"].as_array().unwrap().is_empty());
+    assert!(
+        view["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["fact"]["state"]["kind"] == "deleted" && !a["fact"]["lastKnown"].is_null())
+    );
     assert_eq!(view["projection"], "projected");
     a.close().await?;
     Ok(())

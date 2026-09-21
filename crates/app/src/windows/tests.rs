@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     AccessStore,
-    access::InventoryService,
+    access::CollectionService,
     device::tests::{admin, options},
     enrollment::{Authorization, Password},
 };
@@ -960,12 +960,7 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         credentials,
         clock,
         identity_management,
-        inventory: InventoryService::new(
-            reader.clone(),
-            devices.clone(),
-            store.clone(),
-            runtime.clone(),
-        ),
+        collection: CollectionService::new(devices.clone(), store.clone(), runtime.clone()),
         readiness: runtime.readiness.clone(),
         devices,
         access: store.clone(),
@@ -1363,7 +1358,10 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
     let pending = store.collection(&scope, None).await?.unwrap();
     ensure!(pending.result == crate::collection::RunResult::Pending && pending.batch().is_none());
     ensure!(
-        reader.read(&scope).await?.is_empty(),
+        reader
+            .read(scope.tenant(), std::slice::from_ref(&scope))
+            .await?
+            .is_empty(),
         "fragment projected before complete collection"
     );
     let mut conflicting = packet(4, 3, 0, "changed");
@@ -1413,21 +1411,19 @@ async fn native_tls_enrollment_management_replay_and_revoke() -> anyhow::Result<
         Ok::<_, Error>(())
     })
     .await??;
-    let fields = reader.read(&scope).await?;
-    ensure!(fields.len() == 2 && fields[0].value == "Model-TLS" && fields[1].value == "10.0.26100");
-    let result = app
-        .inventory
-        .read(proof.inventory(
-            "tls-device",
-            crate::access::Coordinates {
-                source: crate::device::ReportSource::MdmWindows,
-            },
-        )?)
+    let fields = reader
+        .read(scope.tenant(), std::slice::from_ref(&scope))
         .await?;
-    let result = serde_json::to_value(result)?;
     ensure!(
-        result["availability"] == "current"
-            && result["fields"][0]["last_good"]["value"] == "Model-TLS"
+        fields.len() == 2
+            && fields[0].fact.state
+                == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
+                    "Model-TLS".into()
+                ))
+            && fields[1].fact.state
+                == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
+                    "10.0.26100".into()
+                ))
     );
     // The 212 NextNonce is persisted for the next session, while current-session
     // responses and retransmissions continue using the old digest.

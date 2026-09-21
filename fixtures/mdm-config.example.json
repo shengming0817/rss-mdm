@@ -14,14 +14,6 @@
     },
     "oidc": null
   },
-  "database": {
-    "host": "postgres.example.test",
-    "port": 5432,
-    "name": "mdm",
-    "user": "mdm_api",
-    "password_file": "/run/mdm/mdm-api-password",
-    "ca_file": "/run/mdm/database-ca.pem"
-  },
   "access_database": {
     "host": "postgres.example.test",
     "port": 5432,

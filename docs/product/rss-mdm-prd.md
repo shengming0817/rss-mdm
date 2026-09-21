@@ -109,7 +109,7 @@ RSS MDM 面向企业私有化部署，统一管理 Windows 与 macOS 的设备�
 
 ## J6　自定义字段发现问题并闭环修复
 
-定义 custom.corporate_agent.version → 为不同平台绑定 osquery/脚本或可用 MDM 字段 → 字段过期/失败可见 → 智能组定位不满足版本的设备 → 单一写通道修复 → 新观测验证离组。未知设备单列，不能把未知直接当作已合规或自动执行高危修复。
+定义 custom.corporate_agent.version → 为不同平台绑定 osquery/脚本或可用 MDM 字段 → 字段缺失/失败/冲突可见 → 智能组定位不满足版本的设备 → 单一写通道修复 → 新观测验证离组。未知设备单列，不能把未知直接当作已合规或自动执行高危修复。
 
 ## J7　私有软件版本发布与撤回
 
@@ -236,7 +236,7 @@ AC-D01-02　模拟一个通道失败和证书不可恢复，API/界面显示部�
 
 AC-Q01-01　选取数值、字符串、日期和 JSON 路径字段组成查询，验证排序/分页/选列及非法字段拒绝；保存并重放查询得到相同语义。
 
-AC-Q01-02　设备不支持某 CSP 或未签入时，采集结果显示未知/部分/过期及原因，而非空值即成功或不合规。
+AC-Q01-02　设备不支持某 CSP 或未签入时，采集结果显示未知/部分/失败及原因，而非空值即成功或不合规。
 
 > 依据：[D03](../reference/historical-sources.md#d03) 资产管理；[D04](../reference/historical-sources.md#d04)；[D05](../reference/historical-sources.md#d05) 028；[D13](../reference/historical-sources.md#d13)；[D15](../reference/historical-sources.md#d15)；[C01](../reference/historical-sources.md#c01)/C13/C19/C29。
 
@@ -260,7 +260,7 @@ AC-Q01-02　设备不支持某 CSP 或未签入时，采集结果显示未知/�
 
 组成员变化不得导致同一目标重复执行相同策略版本；离开范围只触发已声明的移除规则。删除被引用组须给出影响或阻止无提示破坏。
 
-预览与正式重算需采用等价条件；数据未知或过期时的成员归属必须可解释，不能默认当真。
+预览与正式重算需采用等价条件；数据未知或冲突时的成员归属必须可解释，不能默认当真。
 
 ## 验收场景
 
@@ -405,7 +405,7 @@ AC-R01-02　签名错误不执行；超时能结束进程树；结果上报中�
 
 | 需求编号 / 名称 | 产品要求 | 历史基础 / 分级 |
 | --- | --- | --- |
-| WMD-X01<br>统一扩展字段定义 | 定义稳定键、类型、单位、敏感等级、来源权威、有效期与适用范围；支持标量、受限数组和结构化路径。数据字典统一供搜索、智能组、合规和 UI 消费，详见 WMD-COL。 | 规划扩展 <br>一级 |
+| WMD-X01<br>统一扩展字段定义 | 定义稳定键、类型、单位、敏感等级、来源权威与适用范围；支持标量、受限数组和结构化路径。数据字典统一供搜索、智能组、合规和 UI 消费，详见 WMD-COL。 | 规划扩展 <br>一级 |
 | WMD-X02<br>Manual 属性 | 管理员或授权 API 为设备写入属性值，记录来源、修改者、时间与审计。 | 规划<br>二级 |
 | WMD-X03<br>MDM 来源属性 | Windows 以受支持 CSP Get 映射，macOS 以原生命令响应或 DDM 状态映射到扩展字段；无对应原生信息的字段标记不支持，不将自定义字段声明误当成设备会自动产生该数据。 | 目标明确 <br>二级 |
 | WMD-X04<br>Script 属性 | 依赖 WMD-R，绑定脚本版本执行并转换结果；失败、未知与旧值必须区分。 | 规划<br>二级 |
@@ -421,7 +421,7 @@ MDM Get 可读属性不是任意脚本运行能力；Exec 也不等同于 PowerS
 
 AC-X01-01　Manual 或 MDM 属性更新后，详情、搜索、智能组三处值及类型一致；非法类型不污染旧值。
 
-AC-X01-02　Script EA 从真实执行产生值，再驱动分组与策略；脚本失败、数据过期与设备离线都能被区分。
+AC-X01-02　Script EA 从真实执行产生值，再驱动分组与策略；脚本失败、字段缺失与设备离线都能被区分。
 
 > 依据：[D05](../reference/historical-sources.md#d05) 030；[D08](../reference/historical-sources.md#d08) Agent B；[D12](../reference/historical-sources.md#d12)/D13；[C14](../reference/historical-sources.md#c14)/C29。
 
@@ -451,7 +451,7 @@ CSP 返回成功只能证明相应命令的结果，不能替代所有受控设�
 
 AC-H01-01　配置应用后再次读取对应状态；人为改变受控项可识别漂移并按策略修复，保留完整时间线。
 
-AC-H01-02　缺失/过期数据、宽限期未结束、证据验证失败都不显示为已通过；历史结果能定位对应规则版本。
+AC-H01-02　缺失/冲突资产事实、宽限期未结束、证据验证失败都不显示为已通过；历史结果能定位对应规则版本。
 
 > 依据：[D04](../reference/historical-sources.md#d04) 019–022；[D05](../reference/historical-sources.md#d05)；[D06](../reference/historical-sources.md#d06) §8；[D07](../reference/historical-sources.md#d07) P8；[C01](../reference/historical-sources.md#c01)/C13/C14。
 
@@ -701,7 +701,7 @@ macOS 是正式产品目标。现有归档仅有 PlatformMacOS 预留值与 mock
 | WMD-MAC03<br>ABM/ADE 自动注册 | 对接组织的 Apple 设备分配/ADE 服务，管理 token、序列号同步、注册配置与 Setup Assistant 阶段；自动化注册不依赖 CSV。 | 新增目标<br>二级 |
 | WMD-MAC04<br>配置描述文件 | 提供密码、Wi-Fi、VPN、证书、限制等已选定 payload 的模板/上传、版本、Scope、安装、移除与结果；识别设备/用户级作用域。 | 新增目标<br>一级 |
 | WMD-MAC05<br>声明式设备管理 DDM | 管理声明标识/版本、配置/激活/资产、声明集合与状态报告；支持期望状态与实际状态比较、退役/移除以及旧 profile 共存冲突检查。 | 新增目标<br>二级 |
-| WMD-MAC06<br>原生资产与安全清单 | 按原生 DeviceInformation、SecurityInfo、应用/profile 清单及已支持 DDM 状态映射统一字段；保留缺失/受限/过期，不声称能采任意路径或脚本输出。 | 新增目标<br>一级 |
+| WMD-MAC06<br>原生资产与安全清单 | 按原生 DeviceInformation、SecurityInfo、应用/profile 清单及已支持 DDM 状态映射统一字段；保留缺失/受限/冲突，不声称能采任意路径或脚本输出。 | 新增目标<br>一级 |
 | WMD-MAC07<br>隐私权限与系统能力配置 | 管理所需 PPPC、系统扩展、后台项等模板，绑定应用签名身份与版本前提；区分允许管理、需要用户批准与不可自动授予。 | 新增目标<br>二级 |
 | WMD-MAC08<br>FileVault 管理与 PRK 托管 | 提供 FileVault 期望、启用/延期进度、个人恢复密钥托管、授权查询与轮换验证；已加密与密钥已安全托管分别显示。 | 新增目标<br>二级 |
 | WMD-MAC09<br>Bootstrap Token 与恢复访问保护 | 独立维护 Bootstrap Token 托管状态及支持设备的 Recovery Lock；Secure Token、volume ownership 只采集/解释可获信号，不承诺任意远程生成或转移。 | 新增目标<br>二级 |
@@ -816,13 +816,15 @@ AC-06-20-03　用户自装同名 App、共享依赖及自更新 App 不被无提
 | WMD-COL04<br>即时与离线采集 | 即时查询为异步任务，支持选择仅在线或等待下次签入、截止时间与逐设备状态。返回已收到部分结果并保留覆盖率，不承诺离线设备实时响应。 | 新增目标<br>一级 |
 | WMD-COL05<br>osquery 集成 | 复用 osquery 查询/计划能力，Agent 统一监督其生命周期和任务归属；校验表/列/版本、控制高风险表和输出，区分查询错误、零行、权限受限与未执行。 | 新增目标<br>一级 |
 | WMD-COL06<br>扩展字段注册与类型 | 复用 WMD-X 的唯一字典，支持 string/integer/number/boolean/timestamp 及受限数组/对象路径；声明命名空间、schema 版本、单位、枚举、长度、敏感级别和可搜索性。 | 新增目标<br>一级 |
-| WMD-COL07<br>观测来源、时间与合并 | Observation 带设备/注册世代、字段版本、来源、采集/接收时间、批次/序列、有效期和证据状态；按字段权威与新鲜度选值，不采用简单最后到达覆盖。 | 新增目标<br>一级 |
-| WMD-COL08<br>未知、删除与过期语义 | 区分未采集、不支持、无权限、失败、已过期、合法空值和明确删除；保留 last_known 与当前质量。只有声明完整的快照或 tombstone 才可删除旧清单项。 | 新增目标<br>一级 |
+| WMD-COL07<br>观测来源、时间与合并 | Observation 带设备/注册世代、字段版本、来源、采集/接收时间、批次/序列和证据状态；按字段来源权威及明确的冲突规则选值，不采用简单最后到达覆盖。 | 新增目标<br>一级 |
+| WMD-COL08<br>未知、删除与冲突语义 | 区分未采集、不支持、无权限、失败、冲突、合法空值和明确删除；保留 last_known 与当前质量。只有声明完整的快照或 tombstone 才可删除旧清单项。 | 新增目标<br>一级 |
 | WMD-COL09<br>字段消费与自动化 | 字段进入设备详情、查询、智能组、合规和受控模板变量；用相同类型/权限语义，引用缺失时拒绝发布。防止采集→分组→修复→采集的无限循环。 | 新增目标<br>二级 |
 | WMD-COL10<br>隐私、保留与原始结果 | 预置采集不包含个人文件、浏览/聊天内容等原排除数据；脚本/osquery 需审核允许范围、输出脱敏与留存。敏感凭据进入专用托管，不进扩展字段。 | 新增目标<br>一级 |
 | WMD-COL11<br>可选自定义采集扩展 | 先支持字段映射与脚本，不为新增字段创建新 Agent 或新表引擎；只有确需新系统数据源时才接入签名、版本锁定的 osquery 扩展并控制权限/资源。 | 新增目标<br>三级 |
 
 ## 关键规则与边界
+
+资产字段完全不支持 TTL、validUntil、expiresAt 或字段到期状态；采集、接收、修改时间仅用于溯源，时间流逝不会使值失效或自动触发组重算。时间类型字段仍可与显式常量比较。认证会话、凭据、任务期限及合规宽限期分别由其 owner 持有，不属于资产字段有效期。该范围由 #2463、#2464、#2469 同步执行。
 
 统一模型区分 FieldDefinition（字段语义）、CollectorBinding（如何得到）、Observation（来源证据）、ResolvedAsset（当前选值）。不要把所有值直接覆盖进一个无类型 JSON 后交给每个功能自行解释。
 
@@ -836,7 +838,7 @@ osquery 是采集执行器，不等于策略配置引擎。其 SQL 表跨平台�
 
 AC-06-21-01　新增 custom.corporate_agent.version，用 Windows osquery 与 macOS shell 试运行；另选原生 MDM 明确支持的资产字段做映射，三种来源均进入同一搜索与智能组。
 
-AC-06-21-02　验证脚本失败、权限不足、空结果、过期、部分快照、断网旧结果晚到和来源冲突；查询、分组、合规不产生不同结论。
+AC-06-21-02　验证脚本失败、权限不足、空结果、显式删除、部分快照、断网旧结果晚到和来源冲突；查询、分组、合规不产生不同结论。
 
 AC-06-21-03　大结果、慢查询、敏感字段、错误 schema、未批准自定义扩展都不能绕过预算与访问控制。
 
@@ -886,12 +888,12 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 | 软件与仓库 | 逻辑应用及平台实现；WinGet 源、Brew Tap/产物源；提交/验证/审批/快照/发布/隔离；凭据只显示引用/到期，不显示明文。 |
 | 采集与字段 | 内置/MDM/osquery/脚本模板；平台适用性、权限、试运行、调度预算；字段字典、引用、类型变更影响、观测与当前选值。 |
 | Apple 管理 | APNs/身份 CA/SCEP/ADE/应用许可状态与到期；Profile/DDM；Bootstrap Token、FileVault、Recovery Lock 采用独立访问流程。 |
-| 组/合规/更新 | 复用标准字段和条件编辑；混合 OS 组计数一致；未知/过期可筛选；更新状态保留平台特有前提。 |
+| 组/合规/更新 | 复用标准字段和条件编辑；混合 OS 组计数一致；未知/冲突可解释；更新状态保留平台特有前提。 |
 | 审计/系统 | 管理主体、变更、审批与操作证据；源/证书/任务队列/投影延迟；SSO/RBAC、部署配置和备份恢复。 |
 
 异步任务受理后立即显示 operation_id、目标数量与可预期等待阶段，不以长连接是否保持作为成功标准。高危动作展示对象、影响、通道及不可逆性，前后端均校验授权。批次只显示汇总不能替代逐设备失败诊断。
 
-标准操作无需用户重复选择 OS；原生模板编辑明确提示平台专用；必要差异不隐藏。未知字段、无权限、无设备、尚未采集、过期、真正为空分别展示。控制台支持中文和英文；仍不提供 UI 导出或 CSV 导入导出。[D02](../reference/historical-sources.md#d02)[D15](../reference/historical-sources.md#d15)
+标准操作无需用户重复选择 OS；原生模板编辑明确提示平台专用；必要差异不隐藏。未知字段、无权限、无设备、尚未采集、来源冲突、真正为空分别展示。控制台支持中文和英文；仍不提供 UI 导出或 CSV 导入导出。[D02](../reference/historical-sources.md#d02)[D15](../reference/historical-sources.md#d15)
 
 ---
 
@@ -907,14 +909,14 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 | Agent 任务 | 历史：pending → dispatched → completed/failed。[C27](../reference/historical-sources.md#c27)；D08 增 executing。 | 新增 executing 须协议升级；历史客户端尚不产生真实执行终态。 |
 | 统一设备 | 各通道在线状态 + lifecycleState；模型含 retired/pending_reenroll 等。[C14](../reference/historical-sources.md#c14) | 在线、注册有效、证书可用、合规是独立维度。 |
 | 应用安装 | 规划：not_installed → downloading → installing → installed/failed。[D05](../reference/historical-sources.md#d05) | installed 必须有检测或原生可靠结果；退出码不当然等于目标状态。 |
-| 合规 | 历史有 compliant/non_compliant/pending/unknown；规划包含宽限期。[C31](../reference/historical-sources.md#c31)[D05](../reference/historical-sources.md#d05)[D07](../reference/historical-sources.md#d07) | 过期证据与缺失证据不可当作通过。 |
+| 合规 | 历史有 compliant/non_compliant/pending/unknown；规划包含宽限期。[C31](../reference/historical-sources.md#c31)[D05](../reference/historical-sources.md#d05)[D07](../reference/historical-sources.md#d07) | 资产缺失/冲突与证据验证失败不可当作通过。 |
 | 预注册 | 规划：pending → matched/expired。[D05](../reference/historical-sources.md#d05) | 已匹配资产资料不代表已经持有有效管理证书。 |
 
 ## 最小可追溯数据要求
 
 建议在相关管理证据中保留：产品设备标识、通道设备标识、策略/应用/脚本及版本、执行/任务/命令标识、关联事件或请求标识、发生与接收时间、当前阶段、结果码、原因与可重试性。该清单是产品追踪要求，不规定数据库列名。
 
-资产值附带来源、类型与新鲜度；Scope 解析结果附带引用组与版本/时间；敏感材料只保留受控标识，避免进入普通日志、搜索与 Webhook。
+资产值附带来源、类型与采集/接收时间；Scope 解析结果附带引用组与版本/时间；敏感材料只保留受控标识，避免进入普通日志、搜索与 Webhook。
 
 > 实施时须检查现有 API 响应、写模型和读模型三处语义，不仅修改状态枚举。尤其重新激活与证书恢复的响应不得自相矛盾。[C14](../reference/historical-sources.md#c14)[C22](../reference/historical-sources.md#c22)[C23](../reference/historical-sources.md#c23)
 
@@ -991,7 +993,7 @@ Mac Agent 安装/升级要验证签名、公证、权限与服务恢复；软件
 | T3-01 初始化与双通道接入 | Setup 安全关闭；MDM-only、Agent-only、双通道分别正确注册/展示，非法接入被拒绝。 | E01–E04、D01、A01–A03 |
 | T3-02 智能组驱动配置 | 设备属性 → 组 DIFF → Scope → 新执行 → 真实 CSP 结果；排除对象不接收配置。 | G01–G04、P01–P04、C01–C04 |
 | T3-03 Agent 执行与补传 | 真实 Agent 执行签名脚本，超时、安全拒绝、断网补传与重复回执行为正确。 | R01–R05 |
-| T3-04 EA 参与管理 | Manual/MDM 子集或 Script 来源分别产生属性，再驱动搜索和分组；失败/过期明确。 | X01–X05、Q03、G05 |
+| T3-04 EA 参与管理 | Manual/MDM 子集或 Script 来源分别产生属性，再驱动搜索和分组；失败/缺失/冲突明确。 | X01–X05、Q03、G05 |
 | T3-05 应用生命周期 | 选定通道安装、检测、升级、卸载、失败暂停、断点续传及权限校验。 | S01–S06 |
 | T3-06 凭证托管 | 密钥轮换、安全托管、授权查阅与审计；拒绝越权且日志无明文。 | K01–K04 |
 | T3-07 更新环 | 更新分环、暂停恢复与实际设备状态一致；失败与未知可区分。 | U01–U03 |

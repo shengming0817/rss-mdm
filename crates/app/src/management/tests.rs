@@ -418,8 +418,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE DELETE ON mdm_management.previews FROM mdm_management_runtime",
         ),
         (
-            "GRANT SELECT ON mdm_access.credentials TO mdm_management_runtime",
-            "REVOKE SELECT ON mdm_access.credentials FROM mdm_management_runtime",
+            "GRANT SELECT ON mdm_access.authorization_rules TO mdm_management_runtime",
+            "REVOKE SELECT ON mdm_access.authorization_rules FROM mdm_management_runtime",
         ),
     ] {
         sql(change);

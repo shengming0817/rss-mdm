@@ -8,7 +8,7 @@ publish.workspace = true
 [dependencies]
 rss-observation.workspace = true
 
-[dev-dependencies]
+serde.workspace = true
 rss-contract.workspace = true
 
 [lints]

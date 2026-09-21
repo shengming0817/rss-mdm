@@ -46,10 +46,13 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema') AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  ELSE (SELECT bool_and(has_table_privilege(current_user,t.oid,p)) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p) END AS dml,
- EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, coverage, field)') AS identity
+ EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, coverage, field)') AS identity,
+ (SELECT count(*)=8 FROM pg_attribute WHERE attrelid=t.oid AND NOT attisdropped AND attname IN('state','last_known','last_known_batch','last_known_observed','last_known_received','registration','source','epoch'))
+ AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=t.oid AND attname='value' AND NOT attnotnull)
+ AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_value_state' AND convalidated) AS assets
 FROM target t
 "#).bind(reader).fetch_one(&mut *transaction).await?;
-    for field in ["rls", "policy", "roles", "acl", "dml", "identity"] {
+    for field in ["rls", "policy", "roles", "acl", "dml", "identity", "assets"] {
         ensure!(
             row.try_get::<bool, _>(field)?,
             "Inventory admission rejected: {field}"

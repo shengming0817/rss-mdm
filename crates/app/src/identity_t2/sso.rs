@@ -179,12 +179,20 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         config.identity_management.clone(),
     )?);
     let identity = crate::identity::Identity::for_oidc_fixture(&config, policy).await?;
-    let reader = Arc::new(InventoryReader::connect(config.database.options()?).await?);
+    let reader = Arc::new(
+        InventoryReader::connect(
+            config
+                .access_database
+                .options()?
+                .username("mdm_api")
+                .password("api-fixture"),
+        )
+        .await?,
+    );
     let router = crate::api::application(
         config,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
-        reader.clone(),
         access_store(&base).await?,
         Some(identity),
     )

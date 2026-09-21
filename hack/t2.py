@@ -99,7 +99,7 @@ def verify_startup_deadlines(binary, root, env):
     with socket.socket() as stalled:
         stalled.bind(('127.0.0.1',0));stalled.listen(8)
         stalled_port=stalled.getsockname()[1]
-        for key in ['database','access_database','runtime_database']:
+        for key in ['access_database','runtime_database']:
             config[key]['port']=stalled_port
         for key in ['database','publication_database']:
             config['management'][key]['port']=stalled_port
@@ -107,7 +107,7 @@ def verify_startup_deadlines(binary, root, env):
         path=root/'stalled.json';path.write_text(json.dumps(config));path.chmod(0o600)
         start=time.monotonic()
         result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
-        verify(result,start,'startup.reader_connection_or_admission')
+        verify(result,start,'startup.access_store')
     # Keep the same physical PG identity required by production configuration.
     # This table is probed only by Identity; the earlier product stores remain healthy.
     container=env['MDM_TEST_PG_CONTAINER']
@@ -149,7 +149,7 @@ def configure_identity(root, port, binary, env):
     config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
     def database(role, password):
         return dict(host='localhost',port=int(port),name='mdm_test',user=role,password_file=write(role+'-password',password),ca_file=str(root/'ca.crt'))
-    for key,role,password in [('database','mdm_api','api-fixture'),('access_database','mdm_access','access-fixture'),('runtime_database','mdm_runtime','runtime-fixture')]:config[key]=database(role,password)
+    for key,role,password in [('access_database','mdm_access','access-fixture'),('runtime_database','mdm_runtime','runtime-fixture')]:config[key]=database(role,password)
     config['identity']['database']=database('mdm_identity_runtime','identity-runtime-fixture')
     config['management']['database']=database('mdm_management_runtime','runtime-fixture')
     config['management']['publication_database']=database('mdm_software_driver','runtime-fixture')
@@ -164,7 +164,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(identity_only=False):
+def main(identity_only=False, asset_only=False):
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -215,6 +215,11 @@ def main(identity_only=False):
             verify_migrations(name, migrators[0], migration_config, root, env)
             configure_identity(root, port, migrators[0], env)
             env['MDM_TEST_PG_CONTAINER'] = name
+            if asset_only:
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(result.stdout,flush=True)
+                require(result.returncode==0 and 'test identity_t2::assets::asset_write_query_group_and_isolation ... ok' in result.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'asset Router/PG T2 failed')
+                return
             if identity_only:
                 import importlib.util
                 spec=importlib.util.spec_from_file_location('mdm_source_t2', ROOT/'hack/source-t2.py');source=importlib.util.module_from_spec(spec);spec.loader.exec_module(source)

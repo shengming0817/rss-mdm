@@ -23,12 +23,12 @@ pub enum UnknownReason {
     Null,
     /// The fact is missing or the referenced field is outside partial coverage.
     Missing,
-    /// The evaluation time is at or after the fact's exclusive expiry.
-    Stale,
+    /// The source explicitly deleted the value.
+    Deleted,
     /// The source explicitly cannot provide this fact.
     Unsupported,
-    /// The evaluation time precedes the fact's observation time.
-    Future,
+    /// Current sources disagree on the value.
+    Conflict,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// A predicate result with its specific unknown reason.
@@ -67,10 +67,8 @@ pub struct Provenance {
     pub source: String,
     /// Caller-supplied source snapshot identity.
     pub snapshot_id: String,
-    /// Inclusive observation time used for freshness evaluation.
+    /// Observation timestamp retained for provenance only.
     pub observed_at: Timepoint,
-    /// Optional exclusive expiry used for freshness evaluation.
-    pub valid_until: Option<Timepoint>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Stable leaf explanations and once-per-field provenance; contains no fact values.
@@ -119,7 +117,7 @@ pub struct Recalculation {
 impl Rule {
     /// Preview accepts partial coverage. Uncovered referenced fields produce Unknown(Missing).
     /// Every input is validated before any result is returned, including unused fields.
-    /// Tenant/dictionary mismatches, denied facts, invalid structures/types/times and
+    /// Tenant/dictionary mismatches, denied facts, invalid structures/types and
     /// budget overflow return [`Error`], without a partial result. Unknown is a valid
     /// decision, not a validation error. Evaluation performs no I/O or membership writes.
     pub fn evaluate(&self, snapshot: &Snapshot, as_of: Timepoint) -> Result<Evaluation> {
@@ -206,9 +204,6 @@ impl Rule {
                 }
                 budget.identity(&fact.source)?;
                 budget.identity(&fact.snapshot_id)?;
-                if fact.valid_until.is_some_and(|end| end <= fact.observed_at) {
-                    return Err(Error::InvalidTime);
-                }
                 match &fact.state {
                     FactState::Known(value) => {
                         value.validate(budget)?;
@@ -254,7 +249,6 @@ impl Rule {
                                     source: f.source.clone(),
                                     snapshot_id: f.snapshot_id.clone(),
                                     observed_at: f.observed_at,
-                                    valid_until: f.valid_until,
                                 },
                             )
                         })
@@ -326,7 +320,7 @@ fn evaluate_node(
         }
     }
 }
-fn predicate(fact: Option<&Fact>, op: Op, operand: Option<&Value>, now: Timepoint) -> Outcome {
+fn predicate(fact: Option<&Fact>, op: Op, operand: Option<&Value>, _now: Timepoint) -> Outcome {
     use UnknownReason::*;
     let unknown = Outcome::Unknown;
     let Some(fact) = fact else {
@@ -334,15 +328,11 @@ fn predicate(fact: Option<&Fact>, op: Op, operand: Option<&Value>, now: Timepoin
     };
     match fact.state {
         FactState::Missing => return unknown(Missing),
+        FactState::Deleted => return unknown(Deleted),
+        FactState::Conflict => return unknown(Conflict),
         FactState::Unsupported => return unknown(Unsupported),
         FactState::Denied => unreachable!("all facts are validated before evaluation"),
         _ => {}
-    }
-    if now < fact.observed_at {
-        return unknown(Future);
-    }
-    if fact.valid_until.is_some_and(|end| now >= end) {
-        return unknown(Stale);
     }
     let null = matches!(fact.state, FactState::Null);
     if op == Op::IsNull {

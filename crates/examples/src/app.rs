@@ -16,7 +16,7 @@ use rss_projection::{
     SourceScope, Stop,
 };
 use rss_projection_postgres::CloseOutcome;
-use sqlx::{Row, postgres::PgConnectOptions};
+use sqlx::postgres::PgConnectOptions;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -217,10 +217,9 @@ impl App {
                     .map(|fp| fp.iter().map(|b| format!("{b:02x}")).collect::<String>())
             })
             .transpose()?;
-        let encoded = scope.encode()?;
         let projection = self.projection_scope();
         let source = projection.source().clone();
-        let tenant = source.tenant().to_string();
+        let tenant = source.tenant();
         let cancel = CancellationToken::new();
         let control = Control::new(&self.clock, self.clock.cutoff(BUDGET), &cancel);
         let status = match event_id {
@@ -243,16 +242,26 @@ impl App {
             .and_then(|checkpoint| checkpoint.position)
             .map(|p| p.get());
         let projected = status.is_some_and(|status| status.is_settled());
-        let journal = projection.source().source().to_owned();
-        let generation = projection.generation().to_owned();
-        let assets = self.projection.local_tx(&source, &control, move |tx| Box::pin(async move {
-            tx.with_connection(move |conn| Box::pin(async move {
-                let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 ORDER BY field").bind(&tenant).bind(journal).bind(generation).bind(&encoded).fetch_all(&mut *conn).await?;
-                let mut assets = Vec::new();
-                for r in rows { assets.push(serde_json::json!({"field":r.try_get::<String,_>("field")?,"value":r.try_get::<String,_>("value")?,"batchId":r.try_get::<String,_>("batch_id")?,"observedAt":r.try_get::<i64,_>("observed_at")?,"receivedAt":r.try_get::<i64,_>("received_at")?})); }
-                Ok(assets)
-            })).await
-        })).await?;
+        let selected = scope.clone();
+        let assets = self
+            .projection
+            .local_tx(&source, &control, move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |conn| {
+                        Box::pin(async move {
+                            let rows =
+                                rss_mdm_inventory_postgres::read_in(conn, tenant, &[selected])
+                                    .await
+                                    .map_err(|_| {
+                                        sqlx::Error::Protocol("asset inspect failed".into())
+                                    })?;
+                            Ok(rows)
+                        })
+                    })
+                    .await
+                })
+            })
+            .await?;
         Ok(
             serde_json::json!({"receipt":receipt.map(|r|serde_json::json!({"batchId":r.batch().id().as_str(),"receivedAt":r.received_at(),"decision":r.decision()})),"projection":if projected { BatchProjection::Projected } else { BatchProjection::NotProjected },"checkpoint":position,"assets":assets}),
         )

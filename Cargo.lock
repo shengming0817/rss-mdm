@@ -2519,6 +2519,7 @@ version = "0.1.0"
 dependencies = [
  "rss-contract",
  "rss-observation",
+ "serde",
 ]
 
 [[package]]

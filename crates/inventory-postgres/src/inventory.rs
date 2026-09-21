@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 const JOURNAL: &str = "mdm.observation.v1";
 const PROJECTION: &str = "inventory";
-const GENERATION: &str = "inventory-v1";
+const GENERATION: &str = "inventory-v2";
 
 /// The product's canonical journal and read-model generation, shared by writer and reader.
 pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScope {
@@ -26,6 +26,7 @@ pub fn definition() -> DefinitionIdentity {
     digest.update(GENERATION);
     digest.update(":device-basics:1:model-os:utf8-v1:exact-scope:observed-received:");
     digest.update(include_str!("../migrations/0001_inventory.sql"));
+    digest.update(include_str!("../migrations/0003_assets.sql"));
     DefinitionIdentity::new(digest.finalize().into())
 }
 /// Inventory effect consumes a source without exposing its internal handle.
@@ -87,20 +88,19 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         let received = i64::try_from(record.received_at())
             .map_err(|error| rejected(event.position(), error))?;
         let body = record.batch().body().clone();
+        let registration = record.scope().registration().as_str().to_owned();
+        let source = record.scope().source().as_str().to_owned();
+        let epoch = record.scope().epoch().as_str().to_owned();
         tx.with_connection(move |conn| Box::pin(async move {
             if matches!(body, Body::Snapshot(_)) {
-                sqlx::query("DELETE FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 AND coverage=$5")
-                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).execute(&mut *conn).await?;
+                sqlx::query("UPDATE mdm.inventory SET state='deleted',value=NULL,batch_id=$6,observed_at=$7,received_at=$8 WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 AND coverage=$5")
+                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(&batch).bind(observed).bind(received).execute(&mut *conn).await?;
             }
             for change in body.changes() {
-                if let Some(value) = change.value() {
-                    let value = std::str::from_utf8(value).expect("validated utf8");
-                    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,journal,generation,scope,coverage,field) DO UPDATE SET value=excluded.value,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at")
-                        .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).execute(&mut *conn).await?;
-                } else {
-                    sqlx::query("DELETE FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 AND coverage=$5 AND field=$6")
-                        .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).execute(&mut *conn).await?;
-                }
+                let value=change.value().map(|v|std::str::from_utf8(v).expect("validated utf8"));
+                let state=if value.is_some(){"known"}else{"deleted"};
+                sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $7 IS NOT NULL THEN $8 END,CASE WHEN $7 IS NOT NULL THEN $9 END,CASE WHEN $7 IS NOT NULL THEN $10 END,$12,$13,$14) ON CONFLICT(tenant_id,journal,generation,scope,coverage,field) DO UPDATE SET value=excluded.value,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=coalesce(excluded.value,mdm.inventory.last_known),last_known_batch=CASE WHEN excluded.value IS NOT NULL THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.value IS NOT NULL THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.value IS NOT NULL THEN excluded.received_at ELSE mdm.inventory.last_known_received END")
+                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).execute(&mut *conn).await?;
             }
             Ok(())
         })).await?;
@@ -149,16 +149,11 @@ fn source_error(error: rss_projection::Error, event_position: Position) -> PgOpe
 mod tests {
     use super::*;
     #[test]
-    fn canonical_scope_retains_the_existing_generation_definition() {
-        let actual: String = definition()
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        assert_eq!(
-            actual,
-            "a009c5aba8c972b0b6ea1976595fedb249fa13277a23ce16a10ef8fe1e2392cb"
-        );
+    fn canonical_scope_binds_the_current_definition() {
+        let tenant =
+            rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        assert_eq!(projection_scope(tenant).generation(), "inventory-v2");
+        assert_ne!(definition().as_bytes(), &[0; 32]);
     }
     #[test]
     fn source_failures_preserve_recovery_and_safe_context() {

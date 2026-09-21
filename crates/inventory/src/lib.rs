@@ -10,30 +10,21 @@ use rss_observation::{Batch, Coverage, Error, ErrorKind, Id};
 /// Observation dataset name selected by the Inventory projection.
 pub const DATASET: &str = "inventory";
 
-/// The product field catalog. Protocol adapters map URIs to these keys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldKey {
-    /// Product model text, mapped to `device.model`.
-    Model,
-    /// Operating-system version text, mapped to `device.os.version`.
-    OsVersion,
-}
-impl FieldKey {
-    /// Complete supported field catalog in model/OS-version order.
-    pub const ALL: [Self; 2] = [Self::Model, Self::OsVersion];
-    /// Return the canonical Observation key for this field.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Model => "device.model",
-            Self::OsVersion => "device.os.version",
-        }
-    }
-    /// Accept nonblank text of at most 256 UTF-8 bytes without control characters.
-    /// Does not trim or normalize the stored value; both fields use the same rules.
-    pub fn validate(self, value: &str) -> bool {
-        !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+mod assets;
+mod catalog;
+pub use assets::{Evidence, KnownValue, ResolvedField, Scalar, SourceFact, State, resolve};
+pub use catalog::{DICTIONARY, FieldDefinition, FieldKey, Kind, Operator};
+/// Closed, value-free diagnostic for malformed asset input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Invalid;
+impl std::fmt::Display for Invalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid asset input")
     }
 }
+impl std::error::Error for Invalid {}
+/// Product asset policy result.
+pub type Result<T> = std::result::Result<T, Invalid>;
 
 /// Return fixed `device-basics` / `1` / `model-os` / `utf8-v1` coverage identities.
 /// Construction performs no I/O and makes no assertion about a particular report.
@@ -46,13 +37,12 @@ pub fn coverage() -> Coverage {
 /// Rejects unknown keys, mismatched coverage, invalid UTF-8 or values failing
 /// [`FieldKey::validate`] with `rss_observation::ErrorKind::InvalidInput`.
 /// Deletions carry no value to validate. Does not mutate or authenticate the batch.
-pub fn validate(batch: &Batch) -> Result<(), Error> {
+pub fn validate(batch: &Batch) -> std::result::Result<(), Error> {
     if batch.coverage() != &coverage() {
         return Err(ErrorKind::InvalidInput.into());
     }
     for change in batch.body().changes() {
-        let field = FieldKey::ALL
-            .into_iter()
+        let field = FieldKey::observed()
             .find(|key| key.as_str() == change.key().as_str())
             .ok_or_else(|| Error::from(ErrorKind::InvalidInput))?;
         if let Some(value) = change.value() {
