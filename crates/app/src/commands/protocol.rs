@@ -23,11 +23,13 @@ impl Commands {
             let run=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<String>>("SELECT run_id::text FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3").bind(tenant).bind(registration).bind(session).fetch_optional(c).await})).await?.flatten();
             if let Some(run)=run {
                 let run=corrupt(Uuid::parse_str(&run))?;
-                attach(service,tx,principal,run,message.header.message_id).await?;
+                // Only a newly produced response can introduce a task attempt.
+                // A cached Inventory Get may predate this operation's acceptance.
+                if !response.is_replay() {attach(service,tx,principal,run,message.header.message_id).await?;}
                 receive(service,tx,principal,run).await?;
             }
             storage::audit(tx,audit,200).await?;
-            Ok(response)
+            Ok(response.into_bytes())
         })).await
     }
 }

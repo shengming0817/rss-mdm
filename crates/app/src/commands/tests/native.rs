@@ -14,13 +14,18 @@ async fn post(
         .send()
         .await?)
 }
+struct ReadExchange {
+    first: s::Message,
+    gets: Vec<(u32, String)>,
+    ack: s::Message,
+}
 async fn begin(
     peer: &reqwest::Client,
     url: &str,
     initial: &s::Message,
     ack: &s::Message,
     session: u32,
-) -> anyhow::Result<(s::Message, Vec<(u32, String)>)> {
+) -> anyhow::Result<ReadExchange> {
     use base64::Engine;
     let mut first = initial.clone();
     first.header.session_id = session;
@@ -44,7 +49,7 @@ async fn begin(
         })
         .collect::<Vec<_>>();
     ensure!(gets.len() == 2 && gets[1].1.ends_with("/SwV"));
-    Ok((first, gets))
+    Ok(ReadExchange { first, gets, ack })
 }
 fn report(first: &s::Message, gets: &[(u32, String)], version: &str, status: u16) -> s::Message {
     let native_status = |id, command_ref, code, command| {
@@ -128,18 +133,47 @@ impl Client {
         initial: &s::Message,
         ack: &s::Message,
     ) -> anyhow::Result<()> {
+        // This ordinary Inventory Get was issued before the new operation exists.
+        let historic = begin(peer, url, initial, ack, 901).await?;
         let os = Uuid::new_v4();
         ensure!(self.call(Method::POST,"",Some(json!({"operationId":os,"field":"os_version","expectedValue":"11.0.10000","deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
         self.publish_operation(os).await?;
+        ensure!(post(peer, url, &historic.ack).await?.status() == StatusCode::OK);
+        let before = self.call(Method::GET, &format!("/{os}"), None).await?;
+        ensure!(
+            before.1["commandStatus"] == "published"
+                && before.1["observation"].get("attempt").is_none(),
+            "cached pre-acceptance Get acquired a new task: {before:?}"
+        );
+        ensure!(
+            post(
+                peer,
+                url,
+                &report(&historic.first, &historic.gets, "11.0.10000", 200)
+            )
+            .await?
+            .status()
+                == StatusCode::OK
+        );
+        let stale = self.call(Method::GET, &format!("/{os}"), None).await?;
+        ensure!(
+            stale.1["commandStatus"] == "published"
+                && stale.1["observation"] == json!({"result":"unknown"}),
+            "pre-acceptance reading completed a new task: {stale:?}"
+        );
         for (session, value, expected) in [
-            (901, "10.0.26100", "mismatched"),
-            (902, "11.0.10000", "matched"),
+            (902, "10.0.26100", "mismatched"),
+            (903, "11.0.10000", "matched"),
         ] {
-            let (first, gets) = begin(peer, url, initial, ack, session).await?;
+            let exchange = begin(peer, url, initial, ack, session).await?;
             ensure!(
-                post(peer, url, &report(&first, &gets, value, 200))
-                    .await?
-                    .status()
+                post(
+                    peer,
+                    url,
+                    &report(&exchange.first, &exchange.gets, value, 200)
+                )
+                .await?
+                .status()
                     == StatusCode::OK
             );
             let read = self.call(Method::GET, &format!("/{os}"), None).await?;
@@ -158,13 +192,13 @@ impl Client {
                         "received"
                     }
             );
-            ensure!(read.1["observation"]["attempt"] == session - 900);
+            ensure!(read.1["observation"]["attempt"] == session - 901);
         }
         let rejected = Uuid::new_v4();
         ensure!(self.call(Method::POST,"",Some(json!({"operationId":rejected,"field":"model","expectedValue":"never","deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
         self.publish_operation(rejected).await?;
-        let (first, gets) = begin(peer, url, initial, ack, 903).await?;
-        let packet = report(&first, &gets, "unused", 500);
+        let exchange = begin(peer, url, initial, ack, 904).await?;
+        let packet = report(&exchange.first, &exchange.gets, "unused", 500);
         #[cfg(feature = "integration")]
         {
             self.app.commands.inject_fault(

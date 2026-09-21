@@ -23,6 +23,8 @@
 
 不匹配继续等待后续签入。每个 command 至多一个未结束的 attempt；新尝试沿用 operation/command，分配新的 attempt 与 CollectionRun。提前到达的 Results 由 CollectionRun 保存，在对应 Status 到达前不标记匹配成功。旧尝试、错误注册或乱序消息不能覆盖当前结果。
 
+任务只在原生适配器生成新的 Get 响应时关联 CollectionRun。合法缓存重放沿用已有 attempt；不能把受理前或批准失效期间发出的普通 Inventory Get 事后绑定给新任务。旧读数仍可作为 Inventory 观察保留，但不完成新任务。
+
 取消、过期和撤权阻止后续任务投递；含失效任务的缓存响应也拒绝重放。已经发出的合法回执仍可保留；服务端终态不表示终端撤销、停止或效果回滚。会话缓存可清理，任务关联与 CollectionRun 证据保留。
 
 503 `operation_unknown` 表示提交可能完成。保留原请求及 UUID，先 GET 查询并以完全相同的请求重试；暂时 404 也不构成回滚证明。不要生成替代 operation。后台恢复由 RSS reconcile 的持久唤醒/租约和 device-command 的有界恢复提供，组件状态没有产品副本。

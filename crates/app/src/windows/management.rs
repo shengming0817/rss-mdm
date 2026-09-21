@@ -83,6 +83,20 @@ pub(super) async fn manage(
     )
         .into_response())
 }
+/// Response provenance belongs to the native adapter, independently of audit formatting.
+pub(crate) struct ManagementReply {
+    bytes: Vec<u8>,
+    replayed: bool,
+}
+impl ManagementReply {
+    pub(crate) fn is_replay(&self) -> bool {
+        self.replayed
+    }
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
 pub(crate) async fn management_on(
     conn: &mut sqlx::PgConnection,
     windows: &Windows,
@@ -90,7 +104,7 @@ pub(crate) async fn management_on(
     message: &syncml::Message,
     bytes: &[u8],
     audit: &Audit,
-) -> Result<Vec<u8>, Error> {
+) -> Result<ManagementReply, Error> {
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
     let session = message.header.session_id.to_string();
@@ -108,7 +122,12 @@ pub(crate) async fn management_on(
     sqlx::query("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting') FOR UPDATE")
             .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
     let stored = match session_decision(tx, principal, message, &digest, audit).await? {
-        SessionDecision::Replay(bytes) => return Ok(bytes),
+        SessionDecision::Replay(bytes) => {
+            return Ok(ManagementReply {
+                bytes,
+                replayed: true,
+            });
+        }
         SessionDecision::Continue(stored) => stored,
     };
     let registration_data=sqlx::query("SELECT i.request_id::text,i.secrets,c.server_nonce FROM mdm_access.enrollment_intents i JOIN mdm_access.enrollment_certificates c ON (c.tenant_id,c.request_id)=(i.tenant_id,i.request_id) WHERE i.tenant_id=$1::uuid AND i.registration=$2::uuid FOR UPDATE OF c")
@@ -176,7 +195,10 @@ pub(crate) async fn management_on(
     server.persist_nonce(tx, &tenant, request, message).await?;
     sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&response).execute(&mut *tx).await.map_err(db)?;
-    Ok(response)
+    Ok(ManagementReply {
+        bytes: response,
+        replayed: false,
+    })
 }
 
 fn session_state(complete: bool, run_id: Option<Uuid>) -> &'static str {
