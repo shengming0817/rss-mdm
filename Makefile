@@ -15,6 +15,7 @@ t2:
 	python3 hack/backend-t2.py
 	python3 hack/publication-t2.py
 	python3 hack/management-t2.py
+	python3 hack/command-t2.py
 
 .PHONY: source-t2 source-consumers
 source-t2:
@@ -42,3 +43,7 @@ backend-consumers:
 .PHONY: t3-auth
 t3-auth:
 	python3 hack/auth_t3.py --candidate "$(MDM_CANDIDATE)" --tools-image "$(MDM_BROWSER_IMAGE)" --output "$(MDM_T3_OUTPUT)"
+
+.PHONY: command-catalog
+command-catalog:
+	python3 hack/command_catalog.py --check

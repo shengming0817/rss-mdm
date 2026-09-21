@@ -67,6 +67,7 @@ pub struct Config {
     pub database: Database,
     pub access_database: Database,
     pub runtime_database: Database,
+    pub command_database: Database,
     pub(crate) management: crate::management::Config,
     pub identity_management: Vec<IdentityManagementGrant>,
     pub windows: crate::windows::WindowsConfig,
@@ -118,6 +119,13 @@ impl Config {
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
             return Err(Error::Configuration(ConfigIssue::Tenant));
+        }
+        if self.command_database.user != "mdm_command_runtime"
+            || self.command_database.host != self.database.host
+            || self.command_database.port != self.database.port
+            || self.command_database.name != self.database.name
+        {
+            return Err(Error::Configuration(ConfigIssue::Commands));
         }
         self.management.validate(&self.database)?;
         self.windows.validate(self.listen)?;

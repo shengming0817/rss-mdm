@@ -21,7 +21,7 @@ smoke 只运行实际 MDM OCI、自有 TLS PostgreSQL 和 HTTPS 网关。它执�
 
 当前版本要求全新 PostgreSQL 17 实例，完整 RSS schema 和 Identity v11。旧 ledger、摘要、安装主体或存储坐标不匹配时拒绝；不回填旧 Outbox、不改历史 digest、不删数据重试。旧账户、会话及非终态业务不续接。
 
-按[认证指南](../guides/202609091600-2343-mdm-identity.md)准备数据库基础角色，再按顺序安装候选源码中的 `software-publication-roles.sql`、`management-roles.sql`、`identity-roles.sql`（位于 `crates/app/schema/`）。为各运行角色配置独立登录秘密。`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 权限，脚本成功不代表角色准入成功。
+按[认证指南](../guides/202609091600-2343-mdm-identity.md)准备数据库基础角色，再按顺序安装候选源码中的 `software-publication-roles.sql`、`management-roles.sql`、`identity-roles.sql`、`commands-roles.sql`（位于 `crates/app/schema/`）。为各运行角色配置独立登录秘密。`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 权限，脚本成功不代表角色准入成功。
 
 迁移输入含 database 和 installation；installation 固定 instance_id、target、lineage、epoch 和所有租户。初始化输入另含 tenant_id、principal_id、login、password_file；通过组件维护接口初始化，日常账户与 IdP 管理使用受保护公共 HTTP 接口。
 
@@ -46,6 +46,16 @@ Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 
 SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
 
 监控 mdm_inventory_progress、mdm_management_retention_failure、mdm_shutdown_failure、mdm_maintenance_shutdown_failure 和 audit_failure；日志记录闭合类别与操作坐标，不打印凭据或协议正文。提交未知按原操作查询恢复，不更换幂等键或删除 ledger。
+
+命令闭环另监控 `mdm_command_relay_failure` 与 `mdm_command_recovery_failure`：
+
+| 条件 | 阈值与处置 |
+|---|---|
+| relay `transient` 或 recovery `Transient` / `Deadline` | 同一 messageId/target 持续 5 分钟告警；检查 PostgreSQL 可达性、Retry 时间和租约持有者，保持原消息与幂等键 |
+| `commit_unknown` / `CommitUnknown` | 首次出现即告警；按原 operationId 查询并精确重放，不能换 ID、清 Outbox 或当作回滚 |
+| `invariant` / `Invariant`、`StorageContract`、`Permanent`，尤其 `phase=runner` | 立即告警；关键 worker 退出由统一运行时关闭服务。核对候选、迁移账本、角色/ACL/RLS 与固定 catalog，修复根因后重启同一身份的服务 |
+
+relay 的 `messageId=dispatch.<UUID>` 关联同 UUID 的 operation；recovery 的 `target` 是设备文本 ID 的 SHA-256 scope，结合 `mdm_commands.devices` 定位。使用有设备读取权限的管理查询查看 command、最新 attempt 和 CollectionRun。`phase` 区分 claim、accept、settle 与 runner/scan；日志不携带预期值、原生正文或浏览器凭据。恢复后确认告警停止、同一 command 可继续收敛；终态任务不得因重启复活。候选契约可用 `make command-catalog` 离线校验，生产修复是否满足契约仍由启动/事务准入判断，禁止导出漂移生产结构覆盖固定 JSON。
 
 安装失败保持服务停止并保留证据。回退指停止新部署后恢复原有独立部署及其一致数据库/密钥备份；新代码没有中央认证回退路径。仅在新候选和 smoke 通过后，按精确镜像身份、归档目录和专属缓存记录清理本任务废弃产物，不进行全局 prune。
 

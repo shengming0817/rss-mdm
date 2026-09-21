@@ -117,7 +117,7 @@ def inputs(root, example):
         return "/run/mdm/"+path.name
     config=json.loads(example.read_text())
     config["windows"]=copy_inputs(windows)
-    for field,role in [("database","mdm_api"),("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
+    for field,role in [("database","mdm_api"),("access_database","mdm_access"),("runtime_database","mdm_runtime"),("command_database","mdm_command_runtime")]:
         config[field]=database(runtime,role)
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
     config["management"]["database"]=database(runtime,"mdm_management_runtime")
@@ -328,8 +328,8 @@ class Candidate:
             wait(lambda:subprocess.run(["docker","exec",self.pg,"pg_isready","-h","127.0.0.1","-U","postgres"],capture_output=True,timeout=5).returncode==0,"PostgreSQL")
             roles="".join("CREATE ROLE "+r+" LOGIN PASSWORD '"+r+"-fixture' NOSUPERUSER NOBYPASSRLS;" for r in ["mdm_owner","mdm_api","mdm_access","mdm_runtime"])
             roles+="GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            for owner in ["software-publication","management","identity"]:roles+=(ROOT/f"crates/app/schema/{owner}-roles.sql").read_text()
-            for role in ["mdm_management_runtime","mdm_software_driver","mdm_identity_runtime","mdm_identity_maintenance"]:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
+            for owner in ["software-publication","management","identity","commands"]:roles+=(ROOT/f"crates/app/schema/{owner}-roles.sql").read_text()
+            for role in ["mdm_command_runtime","mdm_management_runtime","mdm_software_driver","mdm_identity_runtime","mdm_identity_maintenance"]:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.runtime_volume,self.operator_volume=self.name+"-runtime",self.name+"-operator"
             for volume,directory,volume_stage,input_stage in [(self.runtime_volume,self.runtime,Stage.RUNTIME_VOLUME,Stage.RUNTIME_INPUTS),(self.operator_volume,self.operator_root,Stage.OPERATOR_VOLUME,Stage.OPERATOR_INPUTS)]:

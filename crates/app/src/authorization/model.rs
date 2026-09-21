@@ -9,6 +9,9 @@ pub enum Permission {
     Enrollment,
     Credentials,
     DeviceWipe,
+    StateVerify,
+    OperationRead,
+    OperationCancel,
     AuthorizationRead,
     AuthorizationWrite,
     UserGroupRead,
@@ -37,7 +40,13 @@ pub enum Permission {
 impl Permission {
     fn device(self) -> bool {
         match self {
-            Self::InventoryRead | Self::Enrollment | Self::Credentials | Self::DeviceWipe => true,
+            Self::InventoryRead
+            | Self::Enrollment
+            | Self::Credentials
+            | Self::DeviceWipe
+            | Self::StateVerify
+            | Self::OperationRead
+            | Self::OperationCancel => true,
             Self::AuthorizationRead
             | Self::AuthorizationWrite
             | Self::UserGroupRead

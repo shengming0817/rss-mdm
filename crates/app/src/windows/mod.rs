@@ -2,7 +2,7 @@
 mod admission;
 pub(crate) mod certificate;
 mod issuance;
-mod management;
+pub(crate) mod management;
 mod protection;
 pub(crate) mod retention;
 #[cfg(test)]

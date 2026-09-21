@@ -3,6 +3,33 @@ use anyhow::{Result, ensure};
 use sqlx::Executor;
 use std::str::FromStr;
 
+#[test]
+fn completed_prefix_can_upgrade_but_holes_and_damage_cannot() {
+    let current = [
+        ("one", "SELECT 1"),
+        ("two", "SELECT 2"),
+        ("three", "SELECT 3"),
+    ];
+    let row = |i: usize| {
+        (
+            current[i].0.to_owned(),
+            format!("{:x}", Sha256::digest(current[i].1)),
+            true,
+        )
+    };
+    assert!(validate_history(&[], &current).is_ok());
+    assert!(validate_history(&[row(0), row(1)], &current).is_ok());
+    assert!(validate_history(&[row(1), row(0)], &current).is_ok());
+    assert!(validate_history(&[row(0), row(2)], &current).is_err());
+    assert!(validate_history(&[("foreign".into(), row(0).1, true)], &current).is_err());
+    let mut damaged = row(0);
+    damaged.2 = false;
+    assert!(validate_history(&[damaged], &current).is_err());
+    let mut damaged = row(0);
+    damaged.1 = "wrong".into();
+    assert!(validate_history(&[damaged], &current).is_err());
+}
+
 #[tokio::test]
 #[ignore = "make t2: fresh installation and rejected ledger in a disposable database"]
 async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
@@ -18,7 +45,43 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         tenants: vec!["11111111-1111-4111-8111-111111111111".into()],
     };
     let mut owner = PgConnection::connect_with(&options).await?;
+    migrate_units(&mut owner, &installation, &units()[..24]).await?;
+    let baseline: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM public.mdm_migrations WHERE complete")
+            .fetch_one(&mut owner)
+            .await?;
+    ensure!(baseline == 24);
+    sqlx::raw_sql("BEGIN; SET LOCAL rss.tenant_id='11111111-1111-4111-8111-111111111111'; INSERT INTO mdm_access.devices VALUES('11111111-1111-4111-8111-111111111111','upgrade-preserved'); COMMIT;").execute(&mut owner).await?;
+    let mut wrong = Installation {
+        instance_id: "55555555-5555-4555-8555-555555555555".into(),
+        ..Installation {
+            instance_id: installation.instance_id.clone(),
+            target: installation.target,
+            lineage: installation.lineage,
+            epoch: installation.epoch,
+            tenants: installation.tenants.clone(),
+        }
+    };
+    ensure!(migrate_on(&mut owner, &wrong).await.is_err());
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT to_regnamespace('mdm_commands') IS NULL")
+            .fetch_one(&mut owner)
+            .await?
+    );
+    wrong.instance_id = installation.instance_id.clone();
     migrate_on(&mut owner, &installation).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(&installation.tenants[0])
+        .execute(&mut owner)
+        .await?;
+    ensure!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM mdm_access.devices WHERE id='upgrade-preserved'"
+        )
+        .fetch_one(&mut owner)
+        .await?
+            == 1
+    );
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
             .fetch_all(&mut owner)

@@ -336,6 +336,8 @@ def main():
         ("t2",[sys.executable,"hack/t2.py"]),
         ("group-t2",[sys.executable,"hack/group-t2.py"]),
         ("management-t2",[sys.executable,"hack/management-t2.py"]),
+        ("command-catalog",[sys.executable,"hack/command_catalog.py","--check"]),
+        ("command-t2",[sys.executable,"hack/command-t2.py"]),
         ("backend-t2",[sys.executable,"hack/backend-t2.py"]),
         ("publication-t2",[sys.executable,"hack/publication-t2.py"]),
         ("backend-consumers",[sys.executable,"hack/backend_postgres_consumer.py"]),

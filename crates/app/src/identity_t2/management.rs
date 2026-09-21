@@ -1,4 +1,10 @@
 use super::*;
+struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 async fn call(
     browser: &mut Browser,
     router: &Router,
@@ -18,7 +24,6 @@ pub(super) async fn matrix(
     reader: Arc<InventoryReader>,
     session: &Browser,
 ) -> Result<()> {
-    let cfg = base.clone();
     let initial = app(base, reader.clone()).await?;
     let member = browser_subject(session, &initial).await?;
     set_management_grants(
@@ -38,17 +43,11 @@ pub(super) async fn matrix(
         ]),
     )
     .await?;
-    let router = app(&cfg, reader.clone()).await?;
+    let router = initial;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let hosted = router.clone();
     let task = tokio::spawn(async move { axum::serve(listener, hosted).await });
-    struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
-    impl Drop for Server {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
     let _server = Server(task);
     let mut browser = Browser {
         network: Some((
@@ -315,8 +314,8 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     let mut cfg = base.clone();
     let source_config = |ring: &str| json!({"Winget":{"base":format!("{}{ring}/",server.base),"addresses":[server.address],"private_ca":server.ca,"credential_reference":"source-key","credential_file":server.secret}});
     cfg["management"]["sources"] = json!([{"name":server.logical,"rings":{"test":source_config("test"),"pilot":source_config("pilot"),"production":source_config("production")},"artifacts":[{"base":format!("{}artifacts/",server.base),"addresses":[server.address],"private_ca":server.ca}],"max_artifact_bytes":1048576}]);
-    let baseline = app(base, reader.clone()).await?;
-    let member = browser_subject(session, &baseline).await?;
+    let initial = app(&cfg, reader.clone()).await?;
+    let member = browser_subject(session, &initial).await?;
     let publisher_grants = json!([
         "resource_read",
         "resource_write",
@@ -328,7 +327,6 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         "release_withdraw"
     ]);
     set_management_grants(&member, publisher_grants.clone()).await?;
-    let initial = app(&cfg, reader.clone()).await?;
     let mut approver = Browser::default();
     approver.login(&initial, "admin").await?;
     let subject = approver
@@ -353,12 +351,6 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     let address = listener.local_addr()?;
     let hosted = router.clone();
     let task = tokio::spawn(async move { axum::serve(listener, hosted).await });
-    struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
-    impl Drop for Server {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
     let _server = Server(task);
     let transport = Client::builder()
         .no_proxy()
@@ -808,27 +800,29 @@ async fn permission_matrix(
             "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.operations),(SELECT count(*) FROM mdm_management.scope_versions),(SELECT count(*) FROM mdm_management.previews),(SELECT count(*) FROM mdm_management.plan_references),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
         )
     };
+    // Exercise every permission change against the same running service. Rebuilding
+    // full applications per grant needlessly multiplies component connection pools.
+    let router = app(base, reader).await?;
+    let member = browser_subject(session, &router).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let hosted = router.clone();
+    let _server = Server(tokio::spawn(
+        async move { axum::serve(listener, hosted).await },
+    ));
+    let mut browser = Browser {
+        network: Some((
+            Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
+            format!("http://{address}"),
+        )),
+        ..session.clone()
+    };
     for grant in &grants {
-        let config = base.clone();
-        let initial = app(base, reader.clone()).await?;
-        let member = browser_subject(session, &initial).await?;
         set_management_grants(&member, json!([grant])).await?;
         set_management_grants(ADMIN, json!(["release_publish"])).await?;
-        let router = app(&config, reader.clone()).await?;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
-        let hosted = router.clone();
-        let task = tokio::spawn(async move { axum::serve(listener, hosted).await });
-        let mut browser = Browser {
-            network: Some((
-                Client::builder()
-                    .no_proxy()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()?,
-                format!("http://{address}"),
-            )),
-            ..session.clone()
-        };
         let before = counts()?;
         for (needed, method, path, body) in &cases {
             if grant == needed {
@@ -876,7 +870,6 @@ async fn permission_matrix(
                 );
             }
         }
-        task.abort();
     }
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE target='{id}' AND result='denied' AND action IN ('management_read','management_write','plan_preview','plan_save') AND actor IS NOT NULL AND instance='{INSTANCE}'"))?.trim()==expected_denied.to_string(),"denied action/target/actor audit incomplete");
     Ok(())

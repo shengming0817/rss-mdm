@@ -184,6 +184,7 @@ pub struct DeviceIdentity {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Missing {
+    Operation,
     Device,
     Group,
     Scope,
@@ -197,6 +198,7 @@ pub enum Missing {
 impl Missing {
     pub(crate) fn code(self) -> &'static str {
         match self {
+            Self::Operation => "operation_not_found",
             Self::Device => "management_device_not_found",
             Self::Group => "group_not_found",
             Self::Scope => "scope_not_found",

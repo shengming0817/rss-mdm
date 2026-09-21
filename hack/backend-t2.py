@@ -34,11 +34,11 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
                 require(time.monotonic()<until,'backend PG startup deadline');time.sleep(.2)
             port=int(run(['docker','port',name,'5432'],capture_output=True,timeout=5).stdout.strip().rsplit(':',1)[1])
             sql("CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE backend TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;")
-            sql(((source/'crates/app/schema/software-publication-roles.sql').read_text()+(source/'crates/app/schema/management-roles.sql').read_text()))
+            sql(((source/'crates/app/schema/software-publication-roles.sql').read_text()+(source/'crates/app/schema/management-roles.sql').read_text()+(source/'crates/app/schema/commands-roles.sql').read_text()))
             for schema in SCHEMAS:sql(f"ALTER ROLE {schema}_runtime LOGIN PASSWORD 'backend-fixture';")
             if app:
                 sql((source/'crates/app/schema/identity-roles.sql').read_text())
-                sql("ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'backend-fixture';")
+                sql("ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'backend-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'backend-fixture';")
                 sql("ALTER ROLE mdm_software_driver LOGIN PASSWORD 'backend-fixture'; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS;")
                 password=root/'owner-password';password.write_text('owner-fixture');password.chmod(0o600)
                 config=root/'migration.json';config.write_text(json.dumps({'installation':{'instance_id':'33333333-3333-4333-8333-333333333333','target':[1]*16,'lineage':[2]*16,'epoch':1,'tenants':['11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222']},'database':{'host':'localhost','port':port,'name':'backend','user':'mdm_owner','password_file':str(password),'ca_file':str(root/'ca.crt')}}));config.chmod(0o600)
