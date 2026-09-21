@@ -30,8 +30,8 @@ def run(source,base,kind,head,pin,out,defaults):
     env=isolated_env(base)
     log=[]
     def command(args,extra=None):
-        result=subprocess.run(args,cwd=root,env={**env,**(extra or {})},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-        log.append('$ '+' '.join(args)+'\n'+result.stdout)
+        result=subprocess.run(args,cwd=root,env={**env,**(extra or {})},text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        log.append('$ '+' '.join(args)+'\n'+result.stdout+result.stderr)
         (out/f'{kind}-{defaults}.log').write_text('\n'.join(log))
         ci.require(result.returncode==0,f'{product} command failed')
         return result.stdout

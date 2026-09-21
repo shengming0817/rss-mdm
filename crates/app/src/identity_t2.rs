@@ -411,12 +411,12 @@ async fn enrollment_matrix(
             == StatusCode::CONFLICT
     );
     // Audit is mandatory for both reads and denied requests; never disclose assets on failure.
-    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
+    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access,mdm_management_runtime")?;
     let read = browser.call(router, Method::GET, query, None).await?;
     let mut anonymous = Browser::default();
     let denied = anonymous.call(router, Method::GET, query, None).await?;
-    pg("GRANT INSERT ON mdm_access.audit TO mdm_access")?;
-    ensure!(read.0 == StatusCode::SERVICE_UNAVAILABLE && read.1.get("fields").is_none());
+    pg("GRANT INSERT ON mdm_access.audit TO mdm_access,mdm_management_runtime")?;
+    ensure!(read.0 == StatusCode::SERVICE_UNAVAILABLE && read.1.get("asset").is_none());
     ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE);
     browser.operation = None;
     ensure!(browser.call(router, Method::GET, query, None).await?.0 == StatusCode::OK);
@@ -916,7 +916,7 @@ async fn native_accounts(
     );
     // The component owns its atomic security event; a second product audit cannot
     // overwrite a committed account mutation or discard the native response.
-    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
+    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access,mdm_management_runtime")?;
     let created = admin
         .call(
             admin_router,
@@ -925,7 +925,7 @@ async fn native_accounts(
             Some(json!({"login":"managed-user","password":PASSWORD})),
         )
         .await;
-    pg("GRANT INSERT ON mdm_access.audit TO mdm_access")?;
+    pg("GRANT INSERT ON mdm_access.audit TO mdm_access,mdm_management_runtime")?;
     let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();
