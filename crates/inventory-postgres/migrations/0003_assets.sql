@@ -3,7 +3,7 @@ BEGIN;
 DO $$ BEGIN IF EXISTS(SELECT 1 FROM mdm.inventory) THEN
  RAISE EXCEPTION 'fresh inventory installation required'; END IF; END $$;
 ALTER TABLE mdm.inventory ALTER COLUMN value DROP NOT NULL;
-ALTER TABLE mdm.inventory ADD COLUMN state text NOT NULL CHECK(state IN ('known','deleted'));
+ALTER TABLE mdm.inventory ADD COLUMN state text NOT NULL CHECK(state IN ('known','deleted','unsupported'));
 ALTER TABLE mdm.inventory ADD COLUMN last_known text;
 ALTER TABLE mdm.inventory ADD COLUMN last_known_batch text;
 ALTER TABLE mdm.inventory ADD COLUMN last_known_observed bigint;

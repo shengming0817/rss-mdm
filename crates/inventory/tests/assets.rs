@@ -4,7 +4,7 @@ fn fact(value: &str, source: &str) -> SourceFact {
         state: State::Known(Scalar::String(value.into())),
         last_known: None,
         evidence: Evidence {
-            source: source.into(),
+            source: rss_mdm_inventory::Source::parse(source).unwrap(),
             registration: Some("registration".into()),
             registration_generation: Some(1),
             epoch: Some("epoch".into()),
@@ -30,6 +30,36 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
     assert!(!FieldKey::Model.definition().manual);
     assert!(FieldKey::AssetTag.definition().manual);
     assert_eq!(FieldKey::observed().count(), 2);
+    let encoded = rss_mdm_inventory::CollectedValue::Unsupported
+        .encode(FieldKey::Model)
+        .unwrap();
+    assert_eq!(
+        rss_mdm_inventory::CollectedValue::decode(FieldKey::Model, &encoded).unwrap(),
+        rss_mdm_inventory::CollectedValue::Unsupported
+    );
+    assert!(rss_mdm_inventory::CollectedValue::decode(FieldKey::Model, b"legacy").is_err());
+    assert!(
+        rss_mdm_inventory::CollectedValue::Known("".into())
+            .encode(FieldKey::Model)
+            .is_err()
+    );
+    for source in [
+        rss_mdm_inventory::ReportSource::MdmWindows,
+        rss_mdm_inventory::ReportSource::AgentBuiltin,
+    ] {
+        assert_eq!(
+            rss_mdm_inventory::ReportSource::parse(source.as_str()).unwrap(),
+            source
+        );
+        assert!(
+            FieldKey::Model
+                .definition()
+                .sources
+                .contains(&source.into())
+        );
+    }
+    assert!(rss_mdm_inventory::ReportSource::parse("manual").is_err());
+    assert!(rss_mdm_inventory::Source::parse("other").is_err());
     let mut manual = fact("tag", "manual");
     manual.evidence.registration = None;
     manual.evidence.registration_generation = None;
@@ -46,7 +76,7 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
     });
     manual.last_known.as_mut().unwrap().evidence.actor = Some("bob".into());
     assert!(resolve(FieldKey::AssetTag, vec![manual.clone()]).is_ok());
-    manual.last_known.as_mut().unwrap().evidence.source = "mdm.windows".into();
+    manual.last_known.as_mut().unwrap().evidence.source = rss_mdm_inventory::Source::MdmWindows;
     assert!(resolve(FieldKey::AssetTag, vec![manual]).is_err());
 }
 #[test]

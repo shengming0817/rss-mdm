@@ -80,7 +80,7 @@ pub struct FieldDefinition {
     /// Only these fields accept management assignments.
     pub manual: bool,
     /// Allowed producer identities; Manual is never a device channel.
-    pub sources: &'static [&'static str],
+    pub sources: &'static [crate::Source],
     /// Allowed operations, checked again by Group.
     pub operations: Vec<Operator>,
 }
@@ -157,9 +157,9 @@ impl FieldKey {
             nullable: manual,
             manual,
             sources: if manual {
-                &["manual"]
+                &[crate::Source::Manual]
             } else {
-                &["mdm.windows", "agent.builtin"]
+                &[crate::Source::MdmWindows, crate::Source::AgentBuiltin]
             },
             operations,
         }

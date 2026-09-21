@@ -24,7 +24,7 @@ pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScop
 pub fn definition() -> DefinitionIdentity {
     let mut digest = Sha256::new();
     digest.update(GENERATION);
-    digest.update(":device-basics:1:model-os:utf8-v1:exact-scope:observed-received:");
+    digest.update(":device-basics:2:model-os:typed-v2:exact-scope:observed-received:");
     digest.update(include_str!("../migrations/0001_inventory.sql"));
     digest.update(include_str!("../migrations/0003_assets.sql"));
     DefinitionIdentity::new(digest.finalize().into())
@@ -97,8 +97,9 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
                     .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(&batch).bind(observed).bind(received).execute(&mut *conn).await?;
             }
             for change in body.changes() {
-                let value=change.value().map(|v|std::str::from_utf8(v).expect("validated utf8"));
-                let state=if value.is_some(){"known"}else{"deleted"};
+                let field=model::FieldKey::parse(change.key().as_str()).expect("validated field");
+                let outcome=change.value().map(|v|model::CollectedValue::decode(field,v).expect("validated collected outcome"));
+                let (state,value)=match &outcome {Some(model::CollectedValue::Known(s))=>("known",Some(s.as_str())),Some(model::CollectedValue::Unsupported)=>("unsupported",None),None=>("deleted",None)};
                 sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $7 IS NOT NULL THEN $8 END,CASE WHEN $7 IS NOT NULL THEN $9 END,CASE WHEN $7 IS NOT NULL THEN $10 END,$12,$13,$14) ON CONFLICT(tenant_id,journal,generation,scope,coverage,field) DO UPDATE SET value=excluded.value,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=coalesce(excluded.value,mdm.inventory.last_known),last_known_batch=CASE WHEN excluded.value IS NOT NULL THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.value IS NOT NULL THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.value IS NOT NULL THEN excluded.received_at ELSE mdm.inventory.last_known_received END")
                     .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).execute(&mut *conn).await?;
             }

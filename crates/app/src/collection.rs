@@ -71,6 +71,7 @@ pub(crate) enum Quality {
     #[default]
     Pending,
     Success,
+    Unsupported,
     Failed,
     Invalid,
     Missing,
@@ -123,7 +124,9 @@ impl Attempts {
     }
     fn refresh(&mut self, index: usize) {
         let field = &mut self.fields[index];
-        field.quality = if field.status.is_some_and(|code| !(200..300).contains(&code)) {
+        field.quality = if field.status == Some(501) {
+            Quality::Unsupported
+        } else if field.status.is_some_and(|code| !(200..300).contains(&code)) {
             Quality::Failed
         } else if field.value_digest.is_some() && field.value.is_none() {
             Quality::Invalid
@@ -156,10 +159,18 @@ impl Attempts {
             .iter()
             .zip(FieldKey::observed())
             .filter_map(|(field, key)| {
-                field.value.as_ref().map(|value| {
+                let outcome = if field.quality == Quality::Unsupported {
+                    Some(rss_mdm_inventory::CollectedValue::Unsupported)
+                } else {
+                    field
+                        .value
+                        .as_ref()
+                        .map(|value| rss_mdm_inventory::CollectedValue::Known(value.clone()))
+                };
+                outcome.map(|value| {
                     Change::upsert(
                         Id::new(key.as_str()).expect("static field"),
-                        value.as_bytes().to_vec(),
+                        value.encode(key).expect("validated collection outcome"),
                     )
                 })
             })
@@ -168,7 +179,7 @@ impl Attempts {
             if self
                 .fields
                 .iter()
-                .all(|field| field.quality == Quality::Success)
+                .all(|field| matches!(field.quality, Quality::Success | Quality::Unsupported))
             {
                 Body::Snapshot(changes)
             } else if changes.is_empty() {

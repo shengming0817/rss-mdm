@@ -38,8 +38,18 @@ fn batch(id: &str, sequence: u64, body: Body) -> Batch {
 }
 fn facts(value: &str) -> Vec<Change> {
     vec![
-        Change::upsert(Id::new("device.model").unwrap(), value.as_bytes().to_vec()),
-        Change::upsert(Id::new("device.os.version").unwrap(), b"1".to_vec()),
+        Change::upsert(
+            Id::new("device.model").unwrap(),
+            rss_mdm_inventory::CollectedValue::Known(value.into())
+                .encode(rss_mdm_inventory::FieldKey::Model)
+                .unwrap(),
+        ),
+        Change::upsert(
+            Id::new("device.os.version").unwrap(),
+            rss_mdm_inventory::CollectedValue::Known("1".into())
+                .encode(rss_mdm_inventory::FieldKey::OsVersion)
+                .unwrap(),
+        ),
     ]
 }
 fn url(name: &str) -> Result<PgConnectOptions> {

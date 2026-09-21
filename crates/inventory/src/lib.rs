@@ -11,9 +11,13 @@ use rss_observation::{Batch, Coverage, Error, ErrorKind, Id};
 pub const DATASET: &str = "inventory";
 
 mod assets;
+mod collected;
+pub use collected::CollectedValue;
 mod catalog;
+mod source;
 pub use assets::{Evidence, KnownValue, ResolvedField, Scalar, SourceFact, State, resolve};
 pub use catalog::{DICTIONARY, FieldDefinition, FieldKey, Kind, Operator};
+pub use source::{Channel, ReportSource, Source};
 /// Closed, value-free diagnostic for malformed asset input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Invalid;
@@ -26,15 +30,15 @@ impl std::error::Error for Invalid {}
 /// Product asset policy result.
 pub type Result<T> = std::result::Result<T, Invalid>;
 
-/// Return fixed `device-basics` / `1` / `model-os` / `utf8-v1` coverage identities.
+/// Return fixed `device-basics` / `2` / `model-os` / `typed-v2` coverage identities.
 /// Construction performs no I/O and makes no assertion about a particular report.
 pub fn coverage() -> Coverage {
     let id = |s| Id::new(s).expect("static valid identity");
-    Coverage::new(id("device-basics"), id("1"), id("model-os"), id("utf8-v1"))
+    Coverage::new(id("device-basics"), id("2"), id("model-os"), id("typed-v2"))
 }
 
-/// Validate the fixed coverage, known field keys and present UTF-8 values.
-/// Rejects unknown keys, mismatched coverage, invalid UTF-8 or values failing
+/// Validate the fixed coverage, known field keys and closed typed outcomes.
+/// Rejects unknown keys, mismatched coverage, legacy text, malformed payloads or values failing
 /// [`FieldKey::validate`] with `rss_observation::ErrorKind::InvalidInput`.
 /// Deletions carry no value to validate. Does not mutate or authenticate the batch.
 pub fn validate(batch: &Batch) -> std::result::Result<(), Error> {
@@ -46,11 +50,8 @@ pub fn validate(batch: &Batch) -> std::result::Result<(), Error> {
             .find(|key| key.as_str() == change.key().as_str())
             .ok_or_else(|| Error::from(ErrorKind::InvalidInput))?;
         if let Some(value) = change.value() {
-            let text =
-                std::str::from_utf8(value).map_err(|_| Error::from(ErrorKind::InvalidInput))?;
-            if !field.validate(text) {
-                return Err(ErrorKind::InvalidInput.into());
-            }
+            CollectedValue::decode(field, value)
+                .map_err(|_| Error::from(ErrorKind::InvalidInput))?;
         }
     }
     Ok(())

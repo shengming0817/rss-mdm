@@ -53,7 +53,7 @@ SELECT
  AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_value_state' AND convalidated
  AND pg_get_constraintdef(oid)='CHECK (((state = ''known''::text) = (value IS NOT NULL)))')
  AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_state_check' AND convalidated
- AND pg_get_constraintdef(oid)='CHECK ((state = ANY (ARRAY[''known''::text, ''deleted''::text])))')
+ AND pg_get_constraintdef(oid)='CHECK ((state = ANY (ARRAY[''known''::text, ''deleted''::text, ''unsupported''::text])))')
  AND EXISTS(SELECT 1 FROM pg_index i JOIN pg_class idx ON idx.oid=i.indexrelid WHERE i.indrelid=t.oid AND idx.relname='inventory_source'
  AND i.indisvalid AND i.indisready AND i.indislive AND pg_get_indexdef(i.indexrelid)='CREATE INDEX inventory_source ON mdm.inventory USING btree (tenant_id, registration, source, epoch)') AS assets
 FROM target t

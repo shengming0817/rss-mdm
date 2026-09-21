@@ -44,6 +44,22 @@ pub(crate) async fn report(
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
 ) -> Result<Run> {
+    report_statuses(
+        service,
+        access,
+        credential,
+        values,
+        values.map(|value| if value.is_some() { 200 } else { 404 }),
+    )
+    .await
+}
+pub(crate) async fn report_statuses(
+    service: &DeviceService,
+    access: &AccessStore,
+    credential: &VerifiedChannelCredential,
+    values: [Option<&str>; 2],
+    statuses: [u16; 2],
+) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
     let mut tx = access.begin(&principal.tenant().to_string()).await?;
     let scope = collection::revalidate(&mut tx, &principal).await?;
@@ -79,7 +95,7 @@ pub(crate) async fn report(
             index as u32 + 2,
             *get,
             CommandName::Get,
-            if value.is_some() { 200 } else { 404 },
+            statuses[index],
         ));
         if let Some(value) = value {
             response.commands.push(Command::Results(syncml::Results {

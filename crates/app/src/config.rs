@@ -206,9 +206,9 @@ mod tests {
         for (pointer, value, field) in [
             ("/listen", serde_json::json!("0.0.0.0:8080"), "Listen"),
             (
-                "/database/user",
+                "/access_database/user",
                 serde_json::json!("postgres"),
-                "DatabaseRole",
+                "AccessDatabase",
             ),
             (
                 "/product_origin",

@@ -80,10 +80,11 @@ pub async fn read_in(
             let state = match r.try_get::<&str, _>("state")? {
                 "known" => State::Known(Scalar::String(r.try_get("value")?)),
                 "deleted" => State::Deleted,
+                "unsupported" => State::Unsupported,
                 _ => anyhow::bail!("invalid asset state"),
             };
             let evidence = Evidence {
-                source: r.try_get("source")?,
+                source: rss_mdm_inventory::Source::parse(r.try_get("source")?)?,
                 registration: Some(r.try_get("registration")?),
                 registration_generation: None,
                 epoch: Some(r.try_get("epoch")?),
@@ -96,7 +97,7 @@ pub async fn read_in(
             ensure!(
                 scope.registration().as_str()
                     == evidence.registration.as_deref().unwrap_or_default()
-                    && scope.source().as_str() == evidence.source
+                    && scope.source().as_str() == evidence.source.as_str()
                     && scope.epoch().as_str() == evidence.epoch.as_deref().unwrap_or_default(),
                 "inventory provenance mismatch"
             );

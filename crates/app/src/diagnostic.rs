@@ -43,7 +43,6 @@ impl rss_observation::Clock for Monotonic {
 pub enum ConfigIssue {
     Management,
     Listen,
-    DatabaseRole,
     AccessDatabase,
     RuntimeDatabase,
     DatabaseAddress,

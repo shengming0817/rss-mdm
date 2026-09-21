@@ -198,6 +198,68 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             ok(browser, router, Method::GET, &group, None).await?["members"] == json!(["tie-a"])
         );
     }
+    let unsupported = crate::inventory_runtime::tests::report_statuses(
+        &service,
+        &access,
+        &proof,
+        [None, Some("11")],
+        [501, 200],
+    )
+    .await?;
+    wait_ready_projection(&runtime, &unsupported).await?;
+    let detail = ok(
+        browser,
+        router,
+        Method::GET,
+        "/api/v1/devices/tie-a/inventory",
+        None,
+    )
+    .await?;
+    let field = &detail["asset"]["device"]["fields"]["device.model"];
+    ensure!(field["state"]["kind"] == "unsupported");
+    ensure!(field["sources"][0]["lastKnown"]["value"]["value"] == "Collected");
+    let query = ok(
+        browser,
+        router,
+        Method::POST,
+        "/api/v1/devices/search",
+        Some(json!({"criteria":criteria})),
+    )
+    .await?;
+    ensure!(
+        query["asset"]["summary"]["matched"] == 0
+            && query["asset"]["summary"]["unknown"].as_u64().unwrap() > 0
+    );
+    let group = format!("/api/v1/groups/{}", Uuid::new_v4());
+    ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":"unsupported","description":"explicit source status","criteria":criteria})))).await?;
+    let preview = ok(
+        browser,
+        router,
+        Method::GET,
+        &format!("{group}/preview?expectedRevision=1"),
+        None,
+    )
+    .await?;
+    ensure!(preview["members"] == json!([]));
+    ensure!(
+        preview["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["explanations"][0]["outcome"]["reason"] == "unsupported")
+    );
+    ok(
+        browser,
+        router,
+        Method::POST,
+        &group,
+        Some(request(
+            1,
+            json!({"action":"recompute","snapshot":preview["snapshot"]}),
+        )),
+    )
+    .await?;
+    ensure!(ok(browser, router, Method::GET, &group, None).await?["members"] == json!([]));
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
     access.close().await;

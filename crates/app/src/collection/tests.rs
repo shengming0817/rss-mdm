@@ -91,3 +91,26 @@ fn command_range_covers_catalog_and_rejects_outside_without_overflow() {
     assert_eq!(field_index(first - 1, first), None);
     assert_eq!(field_index(1024 + FIELD_COUNT as u32, 1024), None);
 }
+
+#[test]
+fn explicit_unsupported_is_definitive_but_other_failures_are_not() {
+    let mut attempt = Attempts::default();
+    attempt.status(0, 501).unwrap();
+    attempt.status(1, 200).unwrap();
+    attempt.value(1, "11".into()).unwrap();
+    assert_eq!(attempt.fields[0].quality, Quality::Unsupported);
+    let body = attempt.body().unwrap();
+    assert!(matches!(body, Body::Snapshot(_)));
+    assert_eq!(
+        rss_mdm_inventory::CollectedValue::decode(
+            FieldKey::Model,
+            body.changes()[0].value().unwrap()
+        )
+        .unwrap(),
+        rss_mdm_inventory::CollectedValue::Unsupported
+    );
+    let mut partial = Attempts::default();
+    partial.status(0, 501).unwrap();
+    partial.status(1, 500).unwrap();
+    assert!(matches!(partial.body(), Some(Body::Partial(_))));
+}

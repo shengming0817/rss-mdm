@@ -62,7 +62,7 @@ def enterprise(stack):
 
 def seed_inventory(stack):
     registration='99999999-9999-4999-8999-999999999991';epoch='99999999-9999-4999-8999-999999999992'
-    coverage=json.dumps(dict(id='device-basics',version='1',definition='model-os',format='utf8-v1'),separators=(',',':'))
+    coverage=json.dumps(dict(id='device-basics',version='2',definition='model-os',format='typed-v2'),separators=(',',':'))
     scope=json.dumps(dict(tenant=TENANT,object=registration,registration=registration,source='mdm.windows',dataset='inventory',epoch=epoch),separators=(',',':'))
     stack.sql(f"""
     INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','2364-synthetic-read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');

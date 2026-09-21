@@ -51,21 +51,17 @@ impl Management {
         let mut generations = BTreeMap::new();
         for row in rows {
             let device: String = row.try_get("device")?;
-            let source: String = row.try_get("source")?;
-            if !matches!(source.as_str(), "mdm.windows" | "agent.builtin") {
-                return Err(Error::Unavailable(Failure::InventoryQuery).into());
-            }
-            let channel: String = row.try_get("channel")?;
-            if !matches!(
-                (source.as_str(), channel.as_str()),
-                ("mdm.windows", "mdm") | ("agent.builtin", "agent")
-            ) {
+            let source = stored(rss_mdm_inventory::ReportSource::parse(
+                row.try_get("source")?,
+            ))?;
+            let channel: &str = row.try_get("channel")?;
+            if channel != source.channel().as_str() {
                 return Err(Error::Unavailable(Failure::InventoryQuery).into());
             }
             let scope = crate::device::scope(
                 self.tenant,
                 input(Uuid::parse_str(row.try_get("registration")?))?,
-                &source,
+                source.as_str(),
                 input(Uuid::parse_str(row.try_get("epoch")?))?,
             )?;
             devices
@@ -216,7 +212,7 @@ impl Management {
             ManualChange::Delete {} => State::Deleted,
         };
         let evidence = Evidence {
-            source: "manual".into(),
+            source: rss_mdm_inventory::Source::Manual,
             registration: None,
             registration_generation: None,
             epoch: None,

@@ -69,7 +69,7 @@ pub enum State {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Evidence {
     /// Closed source selected by the product adapter.
-    pub source: String,
+    pub source: crate::Source,
     /// Current device registration; absent for Manual.
     pub registration: Option<String>,
     /// Registration generation resolved by the host; absent on Manual and raw provider reads.
@@ -153,7 +153,7 @@ pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<Resolved
             }
         }
     }
-    sources.sort_by(|a, b| a.evidence.source.cmp(&b.evidence.source));
+    sources.sort_by_key(|a| a.evidence.source);
     if sources
         .windows(2)
         .any(|s| s[0].evidence.source == s[1].evidence.source)
@@ -181,7 +181,7 @@ pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<Resolved
 
 fn validate_evidence(field: FieldKey, e: &Evidence) -> Result<()> {
     let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
-    if !field.definition().sources.contains(&e.source.as_str())
+    if !field.definition().sources.contains(&e.source)
         || !bounded(&e.snapshot_id)
         || rss_contract::Timepoint::try_from(e.observed_at).is_err()
         || rss_contract::Timepoint::try_from(e.received_at).is_err()
