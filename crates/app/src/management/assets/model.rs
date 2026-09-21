@@ -129,7 +129,7 @@ pub(crate) struct Summary {
     pub total: usize,
     pub os_versions: BTreeMap<String, usize>,
     pub channels: BTreeMap<String, usize>,
-    pub states: BTreeMap<String, usize>,
+    pub asset_states: BTreeMap<String, usize>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
@@ -216,6 +216,11 @@ impl Command {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct QualityRun {
+    pub source: rss_mdm_inventory::ReportSource,
+    pub channel: rss_mdm_inventory::Channel,
+    pub registration: Uuid,
+    pub registration_generation: u64,
+    pub epoch: Uuid,
     pub run_id: Uuid,
     pub sequence: i64,
     pub result: crate::collection::RunResult,

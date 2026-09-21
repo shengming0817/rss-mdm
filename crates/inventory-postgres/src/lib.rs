@@ -24,5 +24,3 @@ pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/0002_inventor
 pub const ASSETS_MIGRATION_SQL: &str = include_str!("../migrations/0003_assets.sql");
 mod manual;
 pub use manual::{Assignment, assign_in, manual_in};
-/// Canonical Inventory values used by this adapter's public signatures.
-pub use rss_mdm_inventory as core;

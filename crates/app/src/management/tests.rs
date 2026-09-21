@@ -868,3 +868,50 @@ async fn asset_commit_unknown_recovers_original_receipts() {
     );
     m.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn asset_storage_stages_and_capacity_are_not_malformed() {
+    let m = management(tenant()).await;
+    let command = Command::Asset {
+        command: assets::Command::Search {
+            query: assets::Query::default(),
+            scope: assets::ReadScope {
+                subject: "fixture-operator".into(),
+                devices: None,
+            },
+        },
+    };
+    for (table, expected) in [
+        ("mdm.inventory", "inventory_query"),
+        ("mdm.manual_assignments", "manual_query"),
+        ("mdm_access.collection_runs", "collection_query"),
+    ] {
+        sql(&format!(
+            "REVOKE SELECT ON {table} FROM mdm_management_runtime"
+        ));
+        let error = execute(&m, &command).await.unwrap_err();
+        sql(&format!(
+            "GRANT SELECT ON {table} TO mdm_management_runtime"
+        ));
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({"kind":"unavailable","reason":expected})
+        );
+    }
+    let prefix = format!("asset-limit-{}-", Uuid::new_v4());
+    sql(&format!(
+        "INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{}','{prefix}'||i FROM generate_series(1,10001) i",
+        tenant()
+    ));
+    let error = execute(&m, &command).await.unwrap_err();
+    sql(&format!(
+        "DELETE FROM mdm_access.devices WHERE tenant_id='{}' AND id LIKE '{prefix}%'",
+        tenant()
+    ));
+    assert!(matches!(
+        error,
+        Error::Unavailable(Failure::AssetObjectLimit)
+    ));
+    m.runtime.close().await;
+}

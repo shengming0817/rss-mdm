@@ -2,7 +2,7 @@
   "tenant": "00000000-0000-0000-0000-000000000001",
   "object": "device-1",
   "registration": "reg-1",
-  "source": "fixture",
+  "source": "agent.builtin",
   "dataset": "inventory",
   "epoch": "epoch-1"
 }

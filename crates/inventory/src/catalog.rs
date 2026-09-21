@@ -110,27 +110,19 @@ impl FieldKey {
         Self::ALL
             .into_iter()
             .find(|f| f.as_str() == key)
-            .ok_or(crate::Invalid)
+            .ok_or(crate::Invalid::UnknownField)
     }
     /// Whether this key is assigned by a management principal.
     pub const fn is_manual(self) -> bool {
         !matches!(self, Self::Model | Self::OsVersion)
     }
-    /// Number of fields in the existing collector coverage, derived from the catalog.
-    pub const OBSERVED_COUNT: usize = {
-        let mut n = 0;
-        let mut i = 0;
-        while i < Self::ALL.len() {
-            if !Self::ALL[i].is_manual() {
-                n += 1;
-            }
-            i += 1;
-        }
-        n
-    };
-    /// Fields produced by the existing device-basics coverage.
+    /// Stable persisted collection slots. Reordering requires a new collection encoding.
+    pub const OBSERVED: [Self; 2] = [Self::Model, Self::OsVersion];
+    /// Number of persisted collection slots, independent of display catalog order.
+    pub const OBSERVED_COUNT: usize = Self::OBSERVED.len();
+    /// The fixed collector slot order, never the display catalog order.
     pub fn observed() -> impl Iterator<Item = Self> {
-        Self::ALL.into_iter().filter(|f| !f.is_manual())
+        Self::OBSERVED.into_iter()
     }
     /// Fixed type and operation policy.
     pub fn definition(self) -> FieldDefinition {
@@ -167,7 +159,7 @@ impl FieldKey {
     /// Validate the declared type and bounded scalar without coercion.
     pub fn validate_scalar(self, value: &Scalar) -> Result<()> {
         if self.definition().kind != value.kind() {
-            return Err(crate::Invalid);
+            return Err(crate::Invalid::TypeMismatch);
         }
         value.validate()?;
         Ok(())

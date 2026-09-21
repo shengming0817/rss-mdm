@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fixed-HEAD Inventory/core and PG adapter consumers, outside both workspaces."""
-import importlib.util,json,hashlib,subprocess,tempfile
+import importlib.util,json,hashlib,subprocess,tempfile,tomllib
 from pathlib import Path
 import ci
 from core_consumer import isolated_env,check_ancestors,prepare_output
@@ -17,8 +17,8 @@ def run(source,base,kind,head,pin,out,defaults):
     package=f'git = "{source.as_uri()}", rev = "{head}", default-features = {str(defaults).lower()}'
     deps=f'{product} = {{ {package} }}\n'
     if kind=='pg':
+        deps+=f'rss-mdm-inventory = {{ {package} }}\n'
         deps+=f'rss-request-context = {{ git="{pin[0]}", rev="{pin[1]}", default-features=false }}\n'
-        import tomllib
         shared=tomllib.loads((source/'Cargo.toml').read_text())['workspace']['dependencies']
         deps+='sqlx = '+json.dumps(shared['sqlx']).replace(': ', ' = ')+'\n'
         # TOML inline tables use bare quoted keys and commas; explicit necessary async/JSON test support.
@@ -35,7 +35,9 @@ def run(source,base,kind,head,pin,out,defaults):
         (out/f'{kind}-{defaults}.log').write_text('\n'.join(log))
         ci.require(result.returncode==0,f'{product} command failed')
         return result.stdout
-    data=json.loads(command(['cargo','metadata','--format-version','1']))
+    command(['cargo','metadata','--format-version','1'])  # prepare the isolated lock
+    frozen=(root/'Cargo.lock').read_bytes()
+    data=json.loads(command(['cargo','metadata','--locked','--format-version','1']))
     packages={p['id']:p for p in data['packages']};nodes={n['id']:n for n in data['resolve']['nodes']};ident=data['resolve']['root']
     allowed={product,'rss-mdm-inventory'}
     for key,p in packages.items():
@@ -46,7 +48,7 @@ def run(source,base,kind,head,pin,out,defaults):
             ci.require(p['source']==f'git+{pin[0]}?rev={pin[1]}#{pin[1]}','RSS pin differs')
         else:ci.require(p['source']=='registry+https://github.com/rust-lang/crates.io-index','unexpected dependency source')
     direct={packages[d['pkg']]['name'] for d in nodes[ident]['deps']}
-    ci.require(direct==({product,'rss-request-context','sqlx','tokio','serde_json'} if kind=='pg' else {product}),'consumer supplements product dependency')
+    ci.require(direct==({product,'rss-mdm-inventory','rss-request-context','sqlx','tokio','serde_json'} if kind=='pg' else {product}),'consumer supplements product dependency')
     tree=command(['cargo','tree','--locked','-e','features']);(out/f'{kind}-{defaults}-tree.txt').write_text(tree)
     (out/f'{kind}-{defaults}-metadata.json').write_text(json.dumps(data))
     command(['cargo','check','--locked'])
@@ -57,6 +59,8 @@ def run(source,base,kind,head,pin,out,defaults):
     else:
         result=command(['cargo','test','--locked','--test','consumer'])
         ci.require('test result: ok. 3 passed; 0 failed; 0 ignored;' in result,'inventory behavior proof missing')
+    ci.require((root/'Cargo.lock').read_bytes()==frozen,'consumer changed frozen lock')
+    (out/f'{kind}-{defaults}.lock').write_bytes(frozen)
     return {'head':head,'package':product,'defaultFeatures':defaults,'rssRevision':pin[1],'lockSha256':hashlib.sha256((root/'Cargo.lock').read_bytes()).hexdigest(),'status':'passed'}
 def main():
     out=ci.OUT/'inventory-consumers';prepare_output(out)
@@ -68,7 +72,9 @@ def main():
         subprocess.run(['/usr/bin/git','-C',str(source),'checkout','--quiet','--detach',head],check=True,env=ci.noninteractive())
         pin=ci.workspace_pin(source)
         for kind in ('core','pg'):
-            for defaults in (True,False):
+            manifest=source/('crates/inventory-postgres/Cargo.toml' if kind=='pg' else 'crates/inventory/Cargo.toml')
+            features=tomllib.loads(manifest.read_text()).get('features',{})
+            for defaults in ((True,False) if features else (False,)):
                 try:result=run(source,base,kind,head,pin,out,defaults)
                 except Exception as error:result={'head':head,'kind':kind,'defaultFeatures':defaults,'status':'failed','error':str(error)}
                 results.append(result);print(json.dumps(result),flush=True)

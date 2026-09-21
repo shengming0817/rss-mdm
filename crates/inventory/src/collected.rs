@@ -19,19 +19,21 @@ impl CollectedValue {
     /// Encode the current closed payload after validating its catalog field.
     pub fn encode(&self, field: FieldKey) -> Result<Vec<u8>> {
         self.validate(field)?;
-        serde_json::to_vec(self).map_err(|_| Invalid)
+        serde_json::to_vec(self).map_err(|_| Invalid::Encoding)
     }
     /// Decode only the current payload; no legacy text fallback.
     pub fn decode(field: FieldKey, bytes: &[u8]) -> Result<Self> {
-        let value: Self = serde_json::from_slice(bytes).map_err(|_| Invalid)?;
+        let value: Self = serde_json::from_slice(bytes).map_err(|_| Invalid::Encoding)?;
         value.validate(field)?;
         Ok(value)
     }
     fn validate(&self, field: FieldKey) -> Result<()> {
-        if field.is_manual() || matches!(self,Self::Known(s) if !field.validate(s)) {
-            Err(Invalid)
-        } else {
-            Ok(())
+        if field.is_manual() {
+            return Err(Invalid::SourceNotAllowed);
         }
+        if let Self::Known(s) = self {
+            field.validate_scalar(&crate::Scalar::String(s.clone()))?;
+        }
+        Ok(())
     }
 }

@@ -2,7 +2,7 @@ use rss_mdm_examples::fixture::FixtureAuthority;
 use rss_mdm_inventory::{coverage, validate};
 use rss_observation::{Access, Authority, Batch, Id, Scope};
 fn scope() -> Scope {
-    serde_json::from_str(r#"{"tenant":"00000000-0000-0000-0000-000000000001","object":"device-1","registration":"reg-1","source":"fixture","dataset":"inventory","epoch":"epoch-1"}"#).unwrap()
+    serde_json::from_str(r#"{"tenant":"00000000-0000-0000-0000-000000000001","object":"device-1","registration":"reg-1","source":"agent.builtin","dataset":"inventory","epoch":"epoch-1"}"#).unwrap()
 }
 #[test]
 fn explicit_authority_rejects_foreign_scope_and_coverage() {

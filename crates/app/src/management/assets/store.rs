@@ -18,9 +18,9 @@ impl Management {
         let ids:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_scalar("SELECT id FROM mdm_access.devices WHERE tenant_id=$1::uuid AND ($2 OR id=ANY($3)) ORDER BY id COLLATE \"C\" LIMIT 10001")
                 .bind(tenant).bind(all).bind(allowed).fetch_all(c).await
-        })).await?;
+        })).await.map_err(|_| Error::Unavailable(Failure::AssetCandidates))?;
         if ids.len() > rss_mdm_group_postgres::core::limits::OBJECTS {
-            return Err(Error::Malformed.into());
+            return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
         }
         let mut devices: BTreeMap<_, _> = ids
             .iter()
@@ -42,9 +42,9 @@ impl Management {
         let rows=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT r.device,r.id::text AS registration,r.generation,r.channel,s.source,s.epoch::text FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=ANY($2) AND r.state='active' AND s.enabled AND c.state='active' ORDER BY r.device,s.source")
                 .bind(tenant).bind(selected).fetch_all(c).await
-        })).await?;
+        })).await.map_err(|_| Error::Unavailable(Failure::AssetSources))?;
         if rows.len() > 20_000 {
-            return Err(Error::Malformed.into());
+            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
         let mut scopes = Vec::new();
         let mut subjects = BTreeMap::new();
@@ -85,7 +85,8 @@ impl Management {
                         .map_err(|_| sqlx::Error::Protocol("asset facts unavailable".into()))
                 })
             })
-            .await?;
+            .await
+            .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
         let mut facts: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
         for mut row in source_facts {
             row.fact.evidence.registration_generation =
@@ -109,7 +110,8 @@ impl Management {
                         .map_err(|_| sqlx::Error::Protocol("manual facts unavailable".into()))
                 })
             })
-            .await?;
+            .await
+            .map_err(|_| Error::Unavailable(Failure::ManualQuery))?;
         for row in assignments {
             devices
                 .get_mut(&row.device)
@@ -126,7 +128,7 @@ impl Management {
         let quality=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT DISTINCT ON(scope) scope,id::text,sequence,result,attempts,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) ORDER BY scope,sequence DESC")
                 .bind(tenant).bind(keys).fetch_all(c).await
-        })).await?;
+        })).await.map_err(|_| Error::Unavailable(Failure::CollectionQuery))?;
         for row in quality {
             let attempts: crate::collection::Attempts =
                 stored(serde_json::from_str(row.try_get("attempts")?))?;
@@ -141,11 +143,22 @@ impl Management {
                 .collect();
             let scope: String = row.try_get("scope")?;
             let device = subjects.get(&scope).ok_or(Error::Malformed)?;
+            let coordinate: rss_observation::Scope = stored(serde_json::from_str(&scope))?;
+            let source = stored(rss_mdm_inventory::ReportSource::parse(
+                coordinate.source().as_str(),
+            ))?;
             devices
                 .get_mut(device)
                 .ok_or(Error::Malformed)?
                 .quality
                 .push(QualityRun {
+                    source,
+                    channel: source.channel(),
+                    registration: stored(Uuid::parse_str(coordinate.registration().as_str()))?,
+                    epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,
+                    registration_generation: *generations
+                        .get(&scope)
+                        .ok_or(Error::Unavailable(Failure::CollectionQuery))?,
                     run_id: stored(Uuid::parse_str(row.try_get("id")?))?,
                     sequence: row.try_get("sequence")?,
                     result: crate::collection::RunResult::parse(row.try_get("result")?)?,
@@ -168,7 +181,7 @@ impl Management {
         if input(serde_json::to_vec(&devices))?.len()
             > rss_mdm_group_postgres::core::limits::BATCH_BYTES
         {
-            return Err(Error::Malformed.into());
+            return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         Ok(devices)
     }
@@ -201,7 +214,8 @@ impl Management {
                         .map_err(|_| sqlx::Error::Protocol("manual read failed".into()))
                 })
             })
-            .await?;
+            .await
+            .map_err(|_| Error::Unavailable(Failure::ManualQuery))?;
         let old = prior.into_iter().find(|a| a.field == field);
         let state = match &change.input {
             ManualChange::Set { value } => {

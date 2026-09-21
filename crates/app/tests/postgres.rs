@@ -24,7 +24,11 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     let mut writer = PgConnection::connect_with(&options("mdm_runtime")?).await?;
     let a = "77777777-7777-4777-8777-777777777777";
     let b = "88888888-8888-4888-8888-888888888888";
-    for (tenant, source, value) in [(a, "one", "A"), (b, "one", "B"), (a, "two", "C")] {
+    for (tenant, source, value) in [
+        (a, "mdm.windows", "A"),
+        (b, "mdm.windows", "B"),
+        (a, "agent.builtin", "C"),
+    ] {
         let mut tx = writer.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant)
@@ -45,7 +49,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     for _ in 0..5 {
         assert_eq!(
             reader
-                .read(scope(a, "one").tenant(), &[scope(a, "one")])
+                .read(scope(a, "mdm.windows").tenant(), &[scope(a, "mdm.windows")])
                 .await?[0]
                 .fact
                 .state,
@@ -53,7 +57,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         );
         assert_eq!(
             reader
-                .read(scope(b, "one").tenant(), &[scope(b, "one")])
+                .read(scope(b, "mdm.windows").tenant(), &[scope(b, "mdm.windows")])
                 .await?[0]
                 .fact
                 .state,
@@ -61,7 +65,10 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         );
         assert_eq!(
             reader
-                .read(scope(a, "two").tenant(), &[scope(a, "two")])
+                .read(
+                    scope(a, "agent.builtin").tenant(),
+                    &[scope(a, "agent.builtin")]
+                )
                 .await?[0]
                 .fact
                 .state,
@@ -71,8 +78,8 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     assert!(
         reader
             .read(scope(a, "absent").tenant(), &[scope(a, "absent")])
-            .await?
-            .is_empty()
+            .await
+            .is_err()
     );
     let mut api = PgConnection::connect_with(&options("mdm_api")?).await?;
     assert_eq!(

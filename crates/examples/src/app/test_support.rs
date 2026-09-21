@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 fn scope(tenant: u8, device: &str) -> Scope {
-    serde_json::from_value(serde_json::json!({"tenant":format!("00000000-0000-0000-0000-{tenant:012}"),"object":device,"registration":"reg-1","source":"fixture","dataset":"inventory","epoch":"epoch-1"})).unwrap()
+    serde_json::from_value(serde_json::json!({"tenant":format!("00000000-0000-0000-0000-{tenant:012}"),"object":device,"registration":"reg-1","source":"agent.builtin","dataset":"inventory","epoch":"epoch-1"})).unwrap()
 }
 #[allow(
     clippy::disallowed_methods,

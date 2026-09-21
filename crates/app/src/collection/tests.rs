@@ -83,6 +83,16 @@ fn persisted_fragments_reject_changed_facts() {
 
 #[test]
 fn command_range_covers_catalog_and_rejects_outside_without_overflow() {
+    assert_eq!(
+        FieldKey::observed()
+            .map(FieldKey::as_str)
+            .collect::<Vec<_>>(),
+        ["device.model", "device.os.version"]
+    );
+    let persisted:Attempts=serde_json::from_str(r#"{"fields":[{"status":200,"quality":"success","received_at":1,"value":"model","value_digest":null},{"status":200,"quality":"success","received_at":2,"value":"os","value_digest":null}]}"#).unwrap();
+    let changes = persisted.body().unwrap();
+    assert_eq!(changes.changes()[0].key().as_str(), "device.model");
+    assert_eq!(changes.changes()[1].key().as_str(), "device.os.version");
     let first = u32::MAX - FIELD_COUNT as u32 + 1;
     for (index, key) in FieldKey::observed().enumerate() {
         assert_eq!(field_index(first + index as u32, first), Some(index));

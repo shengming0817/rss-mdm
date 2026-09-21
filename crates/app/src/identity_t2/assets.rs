@@ -160,6 +160,13 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
                 == "Collected"
         );
         ensure!(detail["asset"]["device"]["quality"][0]["result"] == result);
+        let quality = &detail["asset"]["device"]["quality"][0];
+        ensure!(quality["source"] == "mdm.windows" && quality["channel"] == "mdm");
+        ensure!(
+            quality["registration"] == registration.to_string()
+                && quality["registrationGeneration"] == 1
+        );
+        ensure!(quality["epoch"].as_str().is_some());
         let search = ok(
             browser,
             router,

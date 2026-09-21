@@ -73,6 +73,8 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         if record.scope().dataset().as_str() != model::DATASET {
             return Ok(PgEffectOutcome::Filtered);
         }
+        model::ReportSource::parse(record.scope().source().as_str())
+            .map_err(|error| rejected(event.position(), error))?;
         model::validate(record.batch()).map_err(|error| rejected(event.position(), error))?;
         let scope = record
             .scope()

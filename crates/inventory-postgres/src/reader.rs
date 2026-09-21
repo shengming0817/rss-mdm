@@ -61,9 +61,9 @@ pub async fn read_in(
 ) -> Result<Vec<InventoryField>> {
     ensure!(scopes.len() <= 20_000, "asset scope budget exceeded");
     ensure!(
-        scopes
-            .iter()
-            .all(|s| s.tenant() == tenant && s.dataset().as_str() == rss_mdm_inventory::DATASET),
+        scopes.iter().all(|s| s.tenant() == tenant
+            && s.dataset().as_str() == rss_mdm_inventory::DATASET
+            && rss_mdm_inventory::ReportSource::parse(s.source().as_str()).is_ok()),
         "asset scope mismatch"
     );
     assert_tenant(connection, tenant).await?;

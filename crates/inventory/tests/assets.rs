@@ -29,7 +29,34 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
     );
     assert!(!FieldKey::Model.definition().manual);
     assert!(FieldKey::AssetTag.definition().manual);
+    assert_eq!(
+        FieldKey::observed().collect::<Vec<_>>(),
+        vec![FieldKey::Model, FieldKey::OsVersion]
+    );
     assert_eq!(FieldKey::observed().count(), 2);
+    assert_eq!(
+        FieldKey::parse("unknown"),
+        Err(rss_mdm_inventory::Invalid::UnknownField)
+    );
+    assert_eq!(
+        FieldKey::OfficeFloor.validate_scalar(&Scalar::String("secret-value".into())),
+        Err(rss_mdm_inventory::Invalid::TypeMismatch)
+    );
+    assert_eq!(
+        Scalar::String("".into()).validate(),
+        Err(rss_mdm_inventory::Invalid::Value)
+    );
+    assert_eq!(
+        rss_mdm_inventory::Source::parse("unknown"),
+        Err(rss_mdm_inventory::Invalid::UnknownSource)
+    );
+    assert_eq!(
+        resolve(
+            FieldKey::Model,
+            vec![fact("x", "mdm.windows"), fact("x", "mdm.windows")]
+        ),
+        Err(rss_mdm_inventory::Invalid::DuplicateSource)
+    );
     let encoded = rss_mdm_inventory::CollectedValue::Unsupported
         .encode(FieldKey::Model)
         .unwrap();
@@ -58,6 +85,13 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
                 .contains(&source.into())
         );
     }
+    assert!(
+        rss_mdm_inventory::CollectedValue::decode(
+            FieldKey::Model,
+            br#"{"kind":"unsupported","validUntil":5}"#
+        )
+        .is_err()
+    );
     assert!(rss_mdm_inventory::ReportSource::parse("manual").is_err());
     assert!(rss_mdm_inventory::Source::parse("other").is_err());
     let mut manual = fact("tag", "manual");

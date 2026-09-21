@@ -1,8 +1,6 @@
 //! Independently executable public adapter proof. The host supplies the tenant transaction.
-use rss_mdm_inventory_postgres::{
-    self as pg,
-    core::{Evidence, FieldKey, KnownValue, Scalar, SourceFact, State},
-};
+use rss_mdm_inventory::{Evidence, FieldKey, KnownValue, Scalar, Source, SourceFact, State};
+use rss_mdm_inventory_postgres as pg;
 use sqlx::{
     Connection,
     postgres::{PgConnectOptions, PgSslMode},
@@ -25,7 +23,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
     let tenant = rss_request_context::TenantId::parse("11111111-1111-1111-1111-111111111111")?;
     let foreign = rss_request_context::TenantId::parse("22222222-2222-2222-2222-222222222222")?;
     let evidence = Evidence {
-        source: pg::core::Source::Manual,
+        source: Source::Manual,
         registration: None,
         registration_generation: None,
         epoch: None,

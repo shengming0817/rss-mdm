@@ -732,6 +732,11 @@ mod tests {
             Failure::IdentityStorage,
             Failure::InventoryPool,
             Failure::InventoryQuery,
+            Failure::ManualQuery,
+            Failure::CollectionQuery,
+            Failure::AssetObjectLimit,
+            Failure::AssetSourceLimit,
+            Failure::AssetBytesLimit,
             Failure::Clock,
             Failure::Capacity,
         ] {

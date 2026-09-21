@@ -94,7 +94,7 @@ impl Management {
             total,
             os_versions: BTreeMap::new(),
             channels: BTreeMap::new(),
-            states: BTreeMap::new(),
+            asset_states: BTreeMap::new(),
         };
         for device in &matches {
             for channel in &device.channels {
@@ -105,7 +105,7 @@ impl Management {
             }
             for fact in device.fields.values() {
                 *summary
-                    .states
+                    .asset_states
                     .entry(state_name(&fact.state).into())
                     .or_default() += 1;
             }

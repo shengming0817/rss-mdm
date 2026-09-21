@@ -35,9 +35,9 @@ impl Scalar {
             Self::String(s)
                 if s.trim().is_empty() || s.len() > 256 || s.chars().any(char::is_control) =>
             {
-                Err(Invalid)
+                Err(Invalid::Value)
             }
-            Self::Time(t) if rss_contract::Timepoint::try_from(*t).is_err() => Err(Invalid),
+            Self::Time(t) if rss_contract::Timepoint::try_from(*t).is_err() => Err(Invalid::Time),
             _ => Ok(()),
         }
     }
@@ -120,16 +120,16 @@ pub struct ResolvedField {
 /// Tombstones never erase another source; equal values coalesce and unequal values conflict.
 pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<ResolvedField> {
     if sources.len() > 2 {
-        return Err(Invalid);
+        return Err(Invalid::SourceLimit);
     }
     let manual = field.definition().manual;
     for fact in &sources {
         validate_evidence(field, &fact.evidence)?;
         match &fact.state {
             State::Known(v) => field.validate_scalar(v)?,
-            State::Null if !manual => return Err(Invalid),
-            State::Missing | State::Conflict => return Err(Invalid),
-            State::Unsupported if manual => return Err(Invalid),
+            State::Null if !manual => return Err(Invalid::State),
+            State::Missing | State::Conflict => return Err(Invalid::State),
+            State::Unsupported if manual => return Err(Invalid::State),
             _ => {}
         }
         if let Some(v) = &fact.last_known {
@@ -149,7 +149,7 @@ pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<Resolved
                 old.registration_generation,
                 &old.epoch,
             ) {
-                return Err(Invalid);
+                return Err(Invalid::Evidence);
             }
         }
     }
@@ -158,7 +158,7 @@ pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<Resolved
         .windows(2)
         .any(|s| s[0].evidence.source == s[1].evidence.source)
     {
-        return Err(Invalid);
+        return Err(Invalid::DuplicateSource);
     }
     let values: Vec<_> = sources
         .iter()
@@ -181,8 +181,10 @@ pub fn resolve(field: FieldKey, mut sources: Vec<SourceFact>) -> Result<Resolved
 
 fn validate_evidence(field: FieldKey, e: &Evidence) -> Result<()> {
     let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
-    if !field.definition().sources.contains(&e.source)
-        || !bounded(&e.snapshot_id)
+    if !field.definition().sources.contains(&e.source) {
+        return Err(Invalid::SourceNotAllowed);
+    }
+    if !bounded(&e.snapshot_id)
         || rss_contract::Timepoint::try_from(e.observed_at).is_err()
         || rss_contract::Timepoint::try_from(e.received_at).is_err()
         || if field.is_manual() {
@@ -197,7 +199,7 @@ fn validate_evidence(field: FieldKey, e: &Evidence) -> Result<()> {
                 || e.registration_generation == Some(0)
         }
     {
-        return Err(Invalid);
+        return Err(Invalid::Evidence);
     }
     Ok(())
 }

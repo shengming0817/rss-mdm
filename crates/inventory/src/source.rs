@@ -35,7 +35,7 @@ impl ReportSource {
         match s {
             "mdm.windows" => Ok(Self::MdmWindows),
             "agent.builtin" => Ok(Self::AgentBuiltin),
-            _ => Err(Invalid),
+            _ => Err(Invalid::UnknownSource),
         }
     }
     /// Canonical storage identifier.
