@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 26] {
+fn units() -> [(&'static str, &'static str); 29] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -169,6 +169,15 @@ fn units() -> [(&'static str, &'static str); 26] {
         (
             "authorization-v1",
             include_str!("../migrations/0010_authorization.sql"),
+        ),
+        (
+            "device-command-v1",
+            rss_device_command_postgres::MIGRATION_SQL,
+        ),
+        ("reconcile-v1", rss_reconcile_postgres::MIGRATION_SQL),
+        (
+            "commands-v1",
+            include_str!("../migrations/0011_commands.sql"),
         ),
         (
             "inventory-v2",

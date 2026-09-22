@@ -5,7 +5,7 @@ use rss_mdm_windows_mdm::{
     syncml::{self, Command, Item},
 };
 use rss_observation::{Batch, Scope};
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::{Row, postgres::PgRow};
 use uuid::Uuid;
 
 // All restore paths use this shape before minting a Run or recovery capability.
@@ -17,22 +17,29 @@ macro_rules! selection {
 
 /// Recheck the principal inside the transaction accepting device input. Lock order matches revoke.
 pub(crate) async fn revalidate(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
 ) -> Result<Scope, Error> {
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
-    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel='mdm' AND state='active' FOR SHARE")
-        .bind(&tenant).bind(&registration).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    crate::device::store::lock_channel(
+        tx,
+        &tenant,
+        principal.device(),
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
+    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel='mdm' AND state='active'")
+        .bind(&tenant).bind(&registration).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if live.try_get::<String, _>("device").map_err(db)? != principal.device()
         || live.try_get::<i64, _>("generation").map_err(db)? != principal.generation()
     {
         return Err(Error::Unauthorized);
     }
-    sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active' FOR SHARE")
-        .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
+        .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND enabled AND coverage=$3 FOR UPDATE")
-        .bind(&tenant).bind(&registration).bind(crate::device::coverage_key()).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+        .bind(&tenant).bind(&registration).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     crate::device::scope(
         principal.tenant(),
         principal.registration(),
@@ -134,14 +141,14 @@ fn fingerprint(batch: &Batch, scope: &Scope) -> Result<String, Error> {
 }
 
 pub(crate) async fn create(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     scope: &Scope,
     response: &mut syncml::Message,
 ) -> Result<Uuid, Error> {
     let row = sqlx::query("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1,next_command=next_command+$4 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND epoch=$3::uuid AND enabled AND next_sequence<9223372036854775807 AND next_command<=$5 RETURNING next_sequence-1 AS sequence,next_command-$4 AS command")
         .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.epoch().as_str())
         .bind(FIELD_COUNT as i64).bind(i64::from(u32::MAX) - FIELD_COUNT as i64 + 1)
-        .fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Conflict)?;
+        .fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
     let first: i64 = row.try_get("command").map_err(db)?;
     for (index, key) in FieldKey::observed().enumerate() {
         response.commands.push(Command::Get {
@@ -161,11 +168,11 @@ pub(crate) async fn create(
     sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm.windows',$4::uuid,$5,$6,$7,$8,$9,$10,floor(extract(epoch FROM clock_timestamp()))::bigint,$11,'pending')")
         .bind(scope.tenant().to_string()).bind(id.to_string()).bind(scope.registration().as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_| corrupt())?)
         .bind(row.try_get::<i64,_>("sequence").map_err(db)?).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(first).bind(request)
-        .bind(serde_json::to_string(&Attempts::default()).expect("closed attempts")).execute(&mut **tx).await.map_err(db)?;
+        .bind(serde_json::to_string(&Attempts::default()).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
     Ok(id)
 }
 pub(crate) async fn accept(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
     message: &syncml::Message,
@@ -174,7 +181,7 @@ pub(crate) async fn accept(
     let row = sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE"))
         .bind(tenant)
         .bind(id.to_string())
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
     let mut run = Run::from_row(row)?;
@@ -194,7 +201,7 @@ pub(crate) async fn accept(
     let correlated = syncml::correlate(&expected, message, &limits).map_err(|_| Error::Conflict)?;
     let received_at: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-            .fetch_one(&mut **tx)
+            .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
     run.attempts.apply(
@@ -213,19 +220,15 @@ pub(crate) async fn accept(
         seal(tx, &mut run, reason).await?;
     } else {
         sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL")
-            .bind(tenant).bind(id.to_string()).bind(serde_json::to_string(&run.attempts).expect("closed attempts")).execute(&mut **tx).await.map_err(db)?;
+            .bind(tenant).bind(id.to_string()).bind(serde_json::to_string(&run.attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
     }
     Ok(terminal)
 }
-async fn seal(
-    tx: &mut Transaction<'_, Postgres>,
-    run: &mut Run,
-    reason: &str,
-) -> Result<(), Error> {
+async fn seal(tx: &mut sqlx::PgConnection, run: &mut Run, reason: &str) -> Result<(), Error> {
     run.attempts.finish();
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-            .fetch_one(&mut **tx)
+            .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
     let body = run.attempts.body();
@@ -260,13 +263,13 @@ async fn seal(
         .transpose()?;
     sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result=$4,reason=$5,batch=$6,digest=$7,sealed_at=$8,delivery_pending=$9 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL")
         .bind(run.scope.tenant().to_string()).bind(run.id.to_string()).bind(serde_json::to_string(&run.attempts).expect("closed attempts")).bind(result).bind(reason)
-        .bind(batch.as_ref().map(|b| b.encode())).bind(digest).bind(now).bind(batch.is_some()).execute(&mut **tx).await.map_err(db)?;
+        .bind(batch.as_ref().map(|b| b.encode())).bind(digest).bind(now).bind(batch.is_some()).execute(&mut *tx).await.map_err(db)?;
     // The terminal fact is audited in the caller's transaction. Its owner records commit
     // uncertainty (HTTP envelope or retention task); this helper never commits independently.
     let audit = crate::audit::Audit::new(run.scope.tenant().to_string(), "collection_finish");
     audit.operation(run.id, "collection_finish");
     audit.registration(Uuid::parse_str(run.scope.registration().as_str()).map_err(|_| corrupt())?);
-    let result = crate::access_store::append(tx, &audit, 200, "success", None).await;
+    let result = crate::access_store::append_on_connection(tx, &audit, 200, "success", None).await;
     audit.finalize(
         result
             .as_ref()
@@ -277,7 +280,7 @@ async fn seal(
 }
 /// Terminalize accepted facts before disposing protocol state. Never accepts new device input.
 pub(crate) async fn terminate(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: &str,
     reason: &str,
@@ -285,14 +288,14 @@ pub(crate) async fn terminate(
     terminate_session(tx, tenant, registration, None, reason).await
 }
 pub(crate) async fn terminate_session(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: &str,
     session: Option<&str>,
     reason: &str,
 ) -> Result<(), Error> {
     let rows = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL AND ($3::text IS NULL OR session_id=$3) ORDER BY sequence FOR UPDATE"))
-        .bind(tenant).bind(registration).bind(session).fetch_all(&mut **tx).await.map_err(db)?;
+        .bind(tenant).bind(registration).bind(session).fetch_all(&mut *tx).await.map_err(db)?;
     for row in rows {
         seal(tx, &mut Run::from_row(row)?, reason).await?;
     }
@@ -352,4 +355,19 @@ impl AccessStore {
         tx.commit().await.map_err(db)?;
         Ok(run)
     }
+}
+
+/// Restore exact product evidence without using the mutable Inventory projection.
+pub(crate) async fn load_run(
+    conn: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<Run, Error> {
+    let row = sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid"))
+        .bind(tenant)
+        .bind(id.to_string())
+        .fetch_one(conn)
+        .await
+        .map_err(db)?;
+    Run::from_row(row)
 }

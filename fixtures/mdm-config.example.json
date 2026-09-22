@@ -105,5 +105,13 @@
     }
   },
   "trusted_gateway": "127.0.0.1",
-  "identity_management": []
+  "identity_management": [],
+  "command_database": {
+    "host": "postgres.example.test",
+    "port": 5432,
+    "name": "mdm",
+    "user": "mdm_command_runtime",
+    "password_file": "/run/secrets/command-password",
+    "ca_file": "/run/mdm/database-ca.pem"
+  }
 }

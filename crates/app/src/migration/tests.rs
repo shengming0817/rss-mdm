@@ -74,6 +74,31 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             .execute(&mut owner)
             .await?;
     }
+    // An otherwise complete pre-assets ledger must not regain prefix-upgrade support.
+    owner.execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v2','assets-management-v1')").await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    ensure!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_migrations")
+            .fetch_one(&mut owner)
+            .await?
+            == before.len() as i64 - 2
+    );
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT value FROM public.installation_evidence")
+            .fetch_one(&mut owner)
+            .await?
+            == "preserve"
+    );
+    for (name, digest, complete) in &before {
+        if name == "inventory-v2" || name == "assets-management-v1" {
+            sqlx::query("INSERT INTO public.mdm_migrations VALUES($1,$2,$3)")
+                .bind(name)
+                .bind(digest)
+                .bind(complete)
+                .execute(&mut owner)
+                .await?;
+        }
+    }
     owner.execute("INSERT INTO public.mdm_migrations VALUES('unrecognized-installation',repeat('a',64),true)").await?;
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
     ensure!(

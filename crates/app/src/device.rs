@@ -46,6 +46,7 @@ impl VerifiedChannelCredential {
 /// ```compile_fail
 /// let proof: rss_mdm_app::device::DevicePrincipal = serde_json::from_str("{}").unwrap();
 /// ```
+#[derive(Clone)]
 pub struct DevicePrincipal {
     tenant: TenantId,
     device: String,

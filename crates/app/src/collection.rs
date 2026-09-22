@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 mod store;
 pub(crate) use store::{
-    DurableReport, Run, accept, create, revalidate, terminate, terminate_session,
+    DurableReport, Run, accept, create, load_run, revalidate, terminate, terminate_session,
 };
 
 const FIELD_COUNT: usize = FieldKey::OBSERVED_COUNT;
@@ -82,7 +82,7 @@ pub(crate) struct FieldAttempt {
     pub status: Option<u16>,
     pub quality: Quality,
     pub received_at: Option<i64>,
-    value: Option<String>,
+    pub(crate) value: Option<String>,
     value_digest: Option<String>,
 }
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -10,6 +10,9 @@ pub enum Permission {
     Enrollment,
     Credentials,
     DeviceWipe,
+    StateVerify,
+    OperationRead,
+    OperationCancel,
     AuthorizationRead,
     AuthorizationWrite,
     UserGroupRead,
@@ -42,7 +45,10 @@ impl Permission {
             | Self::InventoryAssign
             | Self::Enrollment
             | Self::Credentials
-            | Self::DeviceWipe => true,
+            | Self::DeviceWipe
+            | Self::StateVerify
+            | Self::OperationRead
+            | Self::OperationCancel => true,
             Self::AuthorizationRead
             | Self::AuthorizationWrite
             | Self::UserGroupRead

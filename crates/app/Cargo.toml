@@ -60,6 +60,11 @@ rss-mdm-brew-source.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
 
+rss-device-command.workspace = true
+rss-device-command-postgres.workspace = true
+rss-reconcile.workspace = true
+rss-reconcile-postgres.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true

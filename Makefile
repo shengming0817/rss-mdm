@@ -16,6 +16,7 @@ t2:
 	python3 hack/publication-t2.py
 	python3 hack/management-t2.py
 	python3 hack/asset-t2.py
+	python3 hack/command-t2.py
 
 .PHONY: source-t2 source-consumers
 source-t2:
@@ -47,3 +48,6 @@ t3-auth:
 .PHONY: t2-assets
 t2-assets:
 	python3 hack/asset-t2.py
+.PHONY: command-catalog
+command-catalog:
+	python3 hack/command_catalog.py --check

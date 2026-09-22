@@ -26,6 +26,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub(crate) struct App {
+    pub(crate) commands: Arc<crate::commands::Commands>,
     pub(crate) management: Arc<crate::management::Management>,
     pub(crate) identity: Identity,
     pub(crate) credentials: Credentials,
@@ -34,7 +35,7 @@ pub(crate) struct App {
     pub(crate) collection: CollectionService,
     pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
-    pub(crate) windows: crate::windows::Windows,
+    pub(crate) windows: Arc<crate::windows::Windows>,
     pub(crate) access: Arc<AccessStore>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
@@ -124,6 +125,7 @@ pub(crate) async fn application(
             |_| {},
         )
         .await?;
+    let commands = crate::commands::Commands::open(&config).await?;
     let compiled = config.compile()?;
     let identity = match identity {
         Some(identity) => identity,
@@ -139,6 +141,7 @@ pub(crate) async fn application(
     Ok(from_compiled(
         compiled,
         AssemblyDependencies {
+            commands,
             clock,
             monotonic,
             access,
@@ -150,6 +153,7 @@ pub(crate) async fn application(
     .browser)
 }
 pub(crate) struct AssemblyDependencies {
+    pub(crate) commands: Arc<crate::commands::Commands>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<AccessStore>,
@@ -166,6 +170,7 @@ pub(crate) fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
+        commands,
         clock,
         monotonic,
         access,
@@ -177,13 +182,11 @@ pub(crate) fn from_compiled(
         access.clone(),
         config.identity.tenant_id.clone(),
     ));
-    let authentication = identity.routes();
     let host = config
         .product_origin
         .strip_prefix("https://")
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
-    let audit_tenant = config.identity.tenant_id.clone();
     let windows = crate::windows::Windows::load(
         config.windows,
         clock
@@ -191,8 +194,9 @@ pub(crate) fn from_compiled(
             .map_err(|_| Error::Unavailable(Failure::Clock))?,
     )?;
     let state = Arc::new(App {
+        commands,
         management,
-        windows,
+        windows: Arc::new(windows),
         access: access.clone(),
         identity,
         credentials: Credentials::new(monotonic.clone(), 10000),
@@ -203,8 +207,20 @@ pub(crate) fn from_compiled(
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
+    Ok(from_state(state, host, monotonic))
+}
+
+pub(crate) fn from_state(
+    state: Arc<App>,
+    host: String,
+    monotonic: Arc<dyn rss_observation::Clock>,
+) -> crate::windows::Routers {
+    let authentication = state.identity.routes();
+    let audit_tenant = state.identity.tenant.to_string();
+    let access = state.access.clone();
     let protected = Router::new()
         .merge(crate::management::routes())
+        .merge(crate::commands::routes())
         .merge(crate::authorization::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
@@ -242,11 +258,11 @@ pub(crate) fn from_compiled(
             },
             envelope,
         ));
-    Ok(crate::windows::Routers {
+    crate::windows::Routers {
         browser,
         enrollment,
         management,
-    })
+    }
 }
 
 #[derive(Clone)]

@@ -1709,7 +1709,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -2286,6 +2286,31 @@ version = "0.1.0"
 source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
 
 [[package]]
+name = "rss-device-command"
+version = "0.1.0"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+dependencies = [
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "rss-device-command-postgres"
+version = "0.1.0"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+dependencies = [
+ "rss-device-command",
+ "rss-redact",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
 name = "rss-diag-context"
 version = "0.1.0"
 source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
@@ -2393,6 +2418,8 @@ dependencies = [
  "ring",
  "rss-axum",
  "rss-contract",
+ "rss-device-command",
+ "rss-device-command-postgres",
  "rss-identity-core",
  "rss-identity-http-axum",
  "rss-identity-oidc",
@@ -2414,6 +2441,8 @@ dependencies = [
  "rss-observation-postgres",
  "rss-projection",
  "rss-projection-postgres",
+ "rss-reconcile",
+ "rss-reconcile-postgres",
  "rss-request-context",
  "rss-runtime",
  "rss-transactional-messaging",
@@ -2707,6 +2736,35 @@ dependencies = [
  "futures",
  "rss-projection",
  "rss-request-context",
+ "sqlx",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "rss-reconcile"
+version = "0.1.0"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+dependencies = [
+ "futures",
+ "rss-redact",
+ "rss-request-context",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "rss-reconcile-postgres"
+version = "0.1.0"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=ec67bd142d70cb8f0d56feae636ac9471e7471fc#ec67bd142d70cb8f0d56feae636ac9471e7471fc"
+dependencies = [
+ "futures",
+ "rss-reconcile",
+ "rss-redact",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
  "sqlx",
  "thiserror 2.0.20",
  "uuid",

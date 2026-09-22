@@ -41,6 +41,7 @@ impl rss_observation::Clock for Monotonic {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigIssue {
+    Commands,
     Management,
     Listen,
     AccessDatabase,
@@ -68,6 +69,8 @@ pub enum ConfigIssue {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
+    CommandStorage,
+    CommandInvariant,
     ManagementAdmission,
     ManagementConnection,
     ManagementSource,

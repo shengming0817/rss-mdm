@@ -1,0 +1,1 @@
+{"contract":"mdm.state-verify","version":1,"payload":["device","request(operationId,field,expectedValue,deadline)","generation","epoch"],"fields":["model","os_version"],"deadlineUnit":"unix-seconds","stateEncoding":"mdm.state-verify/v1,field-key,exact-utf8"}
