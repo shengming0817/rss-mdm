@@ -18,6 +18,50 @@ fn member_difference_is_a_stable_tenant_scoped_set_operation() {
     assert!(again.added.is_empty() && again.removed.is_empty());
 }
 
+#[test]
+fn page_evaluation_requires_ordered_partial_universe_and_complete_field_coverage() {
+    let rule = Rule::new(
+        tenant(),
+        "r",
+        "d",
+        vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
+        leaf(Op::Eq, Some(string("a"))),
+    )
+    .unwrap();
+    let mut page = snapshot(FactState::Known(string("a")));
+    page.dictionary_version = "d".into();
+    page.complete = false;
+    let expected = rule.evaluate(&page, time(1)).unwrap();
+    let input = |objects, coverage, after| PageInput {
+        tenant: page.tenant,
+        id: &page.id,
+        version: &page.version,
+        dictionary_version: &page.dictionary_version,
+        coverage,
+        objects,
+        after,
+    };
+    assert_eq!(
+        rule.evaluate_page(&input(&page.objects, &page.coverage, None), time(1))
+            .unwrap(),
+        expected
+    );
+    let last = page.objects[0].key.clone();
+    assert!(
+        rule.evaluate_page(&input(&page.objects, &page.coverage, Some(&last)), time(1))
+            .is_err()
+    );
+    let duplicated = vec![page.objects[0].clone(), page.objects[0].clone()];
+    assert!(
+        rule.evaluate_page(&input(&duplicated, &page.coverage, None), time(1))
+            .is_err()
+    );
+    assert_eq!(
+        rule.evaluate_page(&input(&page.objects, &BTreeSet::new(), None), time(1)),
+        Err(Error::IncompleteSnapshot)
+    );
+}
+
 use rss_contract::Timepoint;
 use rss_mdm_group::*;
 use std::collections::{BTreeMap, BTreeSet};

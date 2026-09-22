@@ -1,96 +1,1216 @@
 {
   "columns": [
-    ["deltas", "tenant_id", "uuid", true, null, "", ""],
-    ["deltas", "operation_id", "uuid", true, null, "", ""],
-    ["deltas", "object_id", "text", true, null, "", ""],
-    ["deltas", "object_digest", "bytea", true, null, "", ""],
-    ["deltas", "added", "boolean", true, null, "", ""],
-    ["groups", "tenant_id", "uuid", true, null, "", ""],
-    ["groups", "id", "uuid", true, null, "", ""],
-    ["groups", "kind", "text", true, null, "", ""],
-    ["groups", "name", "text", true, null, "", ""],
-    ["groups", "description", "text", true, null, "", ""],
-    ["groups", "revision", "bigint", true, null, "", ""],
-    ["groups", "member_version", "bigint", true, null, "", ""],
-    ["groups", "member_count", "bigint", true, null, "", ""],
-    ["groups", "rule_version", "text", false, null, "", ""],
-    ["groups", "deleted", "boolean", true, "false", "", ""],
-    ["members", "tenant_id", "uuid", true, null, "", ""],
-    ["members", "group_id", "uuid", true, null, "", ""],
-    ["members", "object_id", "text", true, null, "", ""],
-    ["members", "object_digest", "bytea", true, null, "", ""],
-    ["operations", "tenant_id", "uuid", true, null, "", ""],
-    ["operations", "id", "uuid", true, null, "", ""],
-    ["operations", "group_id", "uuid", true, null, "", ""],
-    ["operations", "kind", "text", true, null, "", ""],
-    ["operations", "digest", "bytea", true, null, "", ""],
-    ["operations", "request", "bytea", true, null, "", ""],
-    ["operations", "trigger", "bytea", false, null, "", ""],
-    ["operations", "state", "text", true, null, "", ""],
-    ["operations", "receipt", "bytea", false, null, "", ""],
-    ["operations", "result", "bytea", false, null, "", ""],
-    ["operations", "result_digest", "bytea", false, null, "", ""],
-    ["operations", "failure", "text", false, null, "", ""],
-    ["operations", "base_revision", "bigint", true, null, "", ""],
-    ["operations", "rule_version", "text", false, null, "", ""],
-    ["operations", "as_of", "bigint", true, null, "", ""],
-    ["operations", "created_at", "timestamp with time zone", true, "clock_timestamp()", "", ""],
-    ["operations", "completed_at", "timestamp with time zone", false, null, "", ""],
-    ["rules", "tenant_id", "uuid", true, null, "", ""],
-    ["rules", "group_id", "uuid", true, null, "", ""],
-    ["rules", "version", "text", true, null, "", ""],
-    ["rules", "document", "bytea", true, null, "", ""],
-    ["rules", "digest", "bytea", true, null, "", ""]
+    [
+      "deltas",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "deltas",
+      "operation_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "deltas",
+      "object_id",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "deltas",
+      "object_digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "deltas",
+      "added",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "name",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "description",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "member_version",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "member_count",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "rule_version",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "deleted",
+      "boolean",
+      true,
+      "false",
+      "",
+      ""
+    ],
+    [
+      "groups",
+      "member_set",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_changes",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_changes",
+      "run_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_changes",
+      "object_id",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_changes",
+      "added",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_pages",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_pages",
+      "run_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_pages",
+      "first_id",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_pages",
+      "last_id",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_pages",
+      "fingerprint",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_rows",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_rows",
+      "run_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_rows",
+      "object_id",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_rows",
+      "matched",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_rows",
+      "evidence",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "group_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "base_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "rule_version",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "input_version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "fingerprint",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "input",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "phase",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "cursor",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "diff_cursor",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "object_count",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "member_count",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "added",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "removed",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "as_of",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "receipt",
+      "bytea",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "members",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "members",
+      "group_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "members",
+      "object_id",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "members",
+      "object_digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "group_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "request",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "trigger",
+      "bytea",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "state",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "receipt",
+      "bytea",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "result",
+      "bytea",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "result_digest",
+      "bytea",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "failure",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "base_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "rule_version",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "as_of",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "created_at",
+      "timestamp with time zone",
+      true,
+      "clock_timestamp()",
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "completed_at",
+      "timestamp with time zone",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "rules",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "rules",
+      "group_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "rules",
+      "version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "rules",
+      "document",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "rules",
+      "digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ]
   ],
   "indexes": [
-    ["deltas", "deltas_pkey", "CREATE UNIQUE INDEX deltas_pkey ON mdm_group.deltas USING btree (tenant_id, operation_id, object_digest)", true, true, true],
-    ["groups", "groups_pkey", "CREATE UNIQUE INDEX groups_pkey ON mdm_group.groups USING btree (tenant_id, id)", true, true, true],
-    ["members", "members_pkey", "CREATE UNIQUE INDEX members_pkey ON mdm_group.members USING btree (tenant_id, group_id, object_digest)", true, true, true],
-    ["operations", "operations_pkey", "CREATE UNIQUE INDEX operations_pkey ON mdm_group.operations USING btree (tenant_id, id)", true, true, true],
-    ["operations", "recoverable", "CREATE INDEX recoverable ON mdm_group.operations USING btree (tenant_id, id) WHERE (state = 'pending'::text)", true, true, true],
-    ["rules", "rules_pkey", "CREATE UNIQUE INDEX rules_pkey ON mdm_group.rules USING btree (tenant_id, group_id, version)", true, true, true]
+    [
+      "deltas",
+      "deltas_pkey",
+      "CREATE UNIQUE INDEX deltas_pkey ON mdm_group.deltas USING btree (tenant_id, operation_id, object_digest)",
+      true,
+      true,
+      true
+    ],
+    [
+      "groups",
+      "groups_pkey",
+      "CREATE UNIQUE INDEX groups_pkey ON mdm_group.groups USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_changes",
+      "member_changes_pkey",
+      "CREATE UNIQUE INDEX member_changes_pkey ON mdm_group.member_changes USING btree (tenant_id, run_id, object_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_pages",
+      "member_pages_pkey",
+      "CREATE UNIQUE INDEX member_pages_pkey ON mdm_group.member_pages USING btree (tenant_id, run_id, first_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_matched",
+      "CREATE INDEX member_rows_matched ON mdm_group.member_rows USING btree (tenant_id, run_id, object_id) WHERE matched",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_pkey",
+      "CREATE UNIQUE INDEX member_rows_pkey ON mdm_group.member_rows USING btree (tenant_id, run_id, object_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_pkey",
+      "CREATE UNIQUE INDEX member_runs_pkey ON mdm_group.member_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_tenant_id_group_id_id_key",
+      "CREATE UNIQUE INDEX member_runs_tenant_id_group_id_id_key ON mdm_group.member_runs USING btree (tenant_id, group_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "members",
+      "members_pkey",
+      "CREATE UNIQUE INDEX members_pkey ON mdm_group.members USING btree (tenant_id, group_id, object_digest)",
+      true,
+      true,
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_group.operations USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "operations",
+      "recoverable",
+      "CREATE INDEX recoverable ON mdm_group.operations USING btree (tenant_id, id) WHERE (state = 'pending'::text)",
+      true,
+      true,
+      true
+    ],
+    [
+      "rules",
+      "rules_pkey",
+      "CREATE UNIQUE INDEX rules_pkey ON mdm_group.rules USING btree (tenant_id, group_id, version)",
+      true,
+      true,
+      true
+    ]
   ],
   "constraints": [
-    ["deltas", "deltas_object_digest_check", "c", "CHECK ((octet_length(object_digest) = 32))", true],
-    ["deltas", "deltas_object_id_check", "c", "CHECK (((octet_length(object_id) >= 1) AND (octet_length(object_id) <= 4096)))", true],
-    ["deltas", "deltas_pkey", "p", "PRIMARY KEY (tenant_id, operation_id, object_digest)", true],
-    ["deltas", "deltas_tenant_id_operation_id_fkey", "f", "FOREIGN KEY (tenant_id, operation_id) REFERENCES mdm_group.operations(tenant_id, id)", true],
-    ["groups", "groups_check", "c", "CHECK (((member_version >= 0) AND (member_version <= revision)))", true],
-    ["groups", "groups_check1", "c", "CHECK ((((kind = 'static'::text) AND (rule_version IS NULL)) OR ((kind = 'dynamic'::text) AND (rule_version IS NOT NULL))))", true],
-    ["groups", "groups_description_check", "c", "CHECK ((octet_length(description) <= 4096))", true],
-    ["groups", "groups_id_check", "c", "CHECK ((id <> '00000000-0000-0000-0000-000000000000'::uuid))", true],
-    ["groups", "groups_kind_check", "c", "CHECK ((kind = ANY (ARRAY['static'::text, 'dynamic'::text])))", true],
-    ["groups", "groups_member_count_check", "c", "CHECK (((member_count >= 0) AND (member_count <= 10000)))", true],
-    ["groups", "groups_name_check", "c", "CHECK (((octet_length(name) >= 1) AND (octet_length(name) <= 4096)))", true],
-    ["groups", "groups_pkey", "p", "PRIMARY KEY (tenant_id, id)", true],
-    ["groups", "groups_revision_check", "c", "CHECK ((revision > 0))", true],
-    ["groups", "groups_rule_version_check", "c", "CHECK (((octet_length(rule_version) >= 1) AND (octet_length(rule_version) <= 256)))", true],
-    ["groups", "groups_tenant_id_id_rule_version_fkey", "f", "FOREIGN KEY (tenant_id, id, rule_version) REFERENCES mdm_group.rules(tenant_id, group_id, version) DEFERRABLE INITIALLY DEFERRED", true],
-    ["members", "members_object_digest_check", "c", "CHECK ((octet_length(object_digest) = 32))", true],
-    ["members", "members_object_id_check", "c", "CHECK (((octet_length(object_id) >= 1) AND (octet_length(object_id) <= 4096)))", true],
-    ["members", "members_pkey", "p", "PRIMARY KEY (tenant_id, group_id, object_digest)", true],
-    ["members", "members_tenant_id_group_id_fkey", "f", "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)", true],
-    ["operations", "operations_as_of_check", "c", "CHECK ((as_of >= 0))", true],
-    ["operations", "operations_base_revision_check", "c", "CHECK ((base_revision >= 0))", true],
-    ["operations", "operations_check", "c", "CHECK ((((state = 'pending'::text) AND (receipt IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (receipt IS NOT NULL) AND (failure IS NULL) AND (completed_at IS NOT NULL)) OR ((state = 'rejected'::text) AND (receipt IS NULL) AND (failure IS NOT NULL) AND (completed_at IS NOT NULL))))", true],
-    ["operations", "operations_check1", "c", "CHECK (((result IS NULL) = (result_digest IS NULL)))", true],
-    ["operations", "operations_check2", "c", "CHECK ((((kind = 'command'::text) AND (state = 'completed'::text) AND (trigger IS NULL) AND (result IS NULL)) OR ((kind = 'recalculation'::text) AND (trigger IS NOT NULL) AND (rule_version IS NOT NULL) AND (base_revision > 0) AND (((state = 'completed'::text) AND (result IS NOT NULL)) OR ((state <> 'completed'::text) AND (result IS NULL))))))", true],
-    ["operations", "operations_digest_check", "c", "CHECK ((octet_length(digest) = 32))", true],
-    ["operations", "operations_id_check", "c", "CHECK ((id <> '00000000-0000-0000-0000-000000000000'::uuid))", true],
-    ["operations", "operations_kind_check", "c", "CHECK ((kind = ANY (ARRAY['command'::text, 'recalculation'::text])))", true],
-    ["operations", "operations_pkey", "p", "PRIMARY KEY (tenant_id, id)", true],
-    ["operations", "operations_receipt_check", "c", "CHECK (((octet_length(receipt) >= 1) AND (octet_length(receipt) <= 65536)))", true],
-    ["operations", "operations_request_check", "c", "CHECK (((octet_length(request) >= 1) AND (octet_length(request) <= 67108864)))", true],
-    ["operations", "operations_result_check", "c", "CHECK ((octet_length(result) <= 67108864))", true],
-    ["operations", "operations_result_digest_check", "c", "CHECK ((octet_length(result_digest) = 32))", true],
-    ["operations", "operations_state_check", "c", "CHECK ((state = ANY (ARRAY['pending'::text, 'completed'::text, 'rejected'::text])))", true],
-    ["operations", "operations_tenant_id_group_id_fkey", "f", "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)", true],
-    ["operations", "operations_tenant_id_group_id_rule_version_fkey", "f", "FOREIGN KEY (tenant_id, group_id, rule_version) REFERENCES mdm_group.rules(tenant_id, group_id, version)", true],
-    ["operations", "operations_trigger_check", "c", "CHECK (((octet_length(trigger) >= 1) AND (octet_length(trigger) <= 16384)))", true],
-    ["rules", "rules_digest_check", "c", "CHECK ((octet_length(digest) = 32))", true],
-    ["rules", "rules_document_check", "c", "CHECK (((octet_length(document) >= 1) AND (octet_length(document) <= 67108864)))", true],
-    ["rules", "rules_pkey", "p", "PRIMARY KEY (tenant_id, group_id, version)", true],
-    ["rules", "rules_tenant_id_group_id_fkey", "f", "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)", true],
-    ["rules", "rules_version_check", "c", "CHECK (((octet_length(version) >= 1) AND (octet_length(version) <= 256)))", true]
+    [
+      "deltas",
+      "deltas_object_digest_check",
+      "c",
+      "CHECK ((octet_length(object_digest) = 32))",
+      true
+    ],
+    [
+      "deltas",
+      "deltas_object_id_check",
+      "c",
+      "CHECK (((octet_length(object_id) >= 1) AND (octet_length(object_id) <= 4096)))",
+      true
+    ],
+    [
+      "deltas",
+      "deltas_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, operation_id, object_digest)",
+      true
+    ],
+    [
+      "deltas",
+      "deltas_tenant_id_operation_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, operation_id) REFERENCES mdm_group.operations(tenant_id, id)",
+      true
+    ],
+    [
+      "groups",
+      "groups_check",
+      "c",
+      "CHECK (((member_version >= 0) AND (member_version <= revision)))",
+      true
+    ],
+    [
+      "groups",
+      "groups_check1",
+      "c",
+      "CHECK ((((kind = 'static'::text) AND (rule_version IS NULL)) OR ((kind = 'dynamic'::text) AND (rule_version IS NOT NULL))))",
+      true
+    ],
+    [
+      "groups",
+      "groups_description_check",
+      "c",
+      "CHECK ((octet_length(description) <= 4096))",
+      true
+    ],
+    [
+      "groups",
+      "groups_id_check",
+      "c",
+      "CHECK ((id <> '00000000-0000-0000-0000-000000000000'::uuid))",
+      true
+    ],
+    [
+      "groups",
+      "groups_kind_check",
+      "c",
+      "CHECK ((kind = ANY (ARRAY['static'::text, 'dynamic'::text])))",
+      true
+    ],
+    [
+      "groups",
+      "groups_member_count_check",
+      "c",
+      "CHECK (((member_count >= 0) AND (member_count <= 1000000)))",
+      true
+    ],
+    [
+      "groups",
+      "groups_name_check",
+      "c",
+      "CHECK (((octet_length(name) >= 1) AND (octet_length(name) <= 4096)))",
+      true
+    ],
+    [
+      "groups",
+      "groups_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "groups",
+      "groups_revision_check",
+      "c",
+      "CHECK ((revision > 0))",
+      true
+    ],
+    [
+      "groups",
+      "groups_rule_version_check",
+      "c",
+      "CHECK (((octet_length(rule_version) >= 1) AND (octet_length(rule_version) <= 256)))",
+      true
+    ],
+    [
+      "groups",
+      "groups_tenant_id_id_member_set_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, id, member_set) REFERENCES mdm_group.member_runs(tenant_id, group_id, id) DEFERRABLE INITIALLY DEFERRED",
+      true
+    ],
+    [
+      "groups",
+      "groups_tenant_id_id_rule_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, id, rule_version) REFERENCES mdm_group.rules(tenant_id, group_id, version) DEFERRABLE INITIALLY DEFERRED",
+      true
+    ],
+    [
+      "member_changes",
+      "member_changes_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run_id, object_id)",
+      true
+    ],
+    [
+      "member_changes",
+      "member_changes_tenant_id_run_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run_id) REFERENCES mdm_group.member_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "member_pages",
+      "member_pages_fingerprint_check",
+      "c",
+      "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "member_pages",
+      "member_pages_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run_id, first_id)",
+      true
+    ],
+    [
+      "member_pages",
+      "member_pages_tenant_id_run_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run_id) REFERENCES mdm_group.member_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_evidence_check",
+      "c",
+      "CHECK ((octet_length(evidence) <= 1048576))",
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_object_id_check",
+      "c",
+      "CHECK (((octet_length(object_id) >= 1) AND (octet_length(object_id) <= 256)))",
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run_id, object_id)",
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_tenant_id_run_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run_id) REFERENCES mdm_group.member_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_added_check",
+      "c",
+      "CHECK ((added >= 0))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_as_of_check",
+      "c",
+      "CHECK ((as_of >= 0))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_base_revision_check",
+      "c",
+      "CHECK ((base_revision > 0))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_check",
+      "c",
+      "CHECK (((member_count >= 0) AND (member_count <= object_count)))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_check1",
+      "c",
+      "CHECK (((phase = 'published'::text) = (receipt IS NOT NULL)))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_fingerprint_check",
+      "c",
+      "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_input_check",
+      "c",
+      "CHECK ((octet_length(input) <= 16777216))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_input_version_check",
+      "c",
+      "CHECK (((octet_length(input_version) >= 1) AND (octet_length(input_version) <= 4096)))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_object_count_check",
+      "c",
+      "CHECK (((object_count >= 0) AND (object_count <= 1000000)))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_phase_check",
+      "c",
+      "CHECK ((phase = ANY (ARRAY['reading'::text, 'diff'::text, 'ready'::text, 'published'::text, 'superseded'::text])))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_removed_check",
+      "c",
+      "CHECK ((removed >= 0))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_tenant_id_group_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_tenant_id_group_id_id_key",
+      "u",
+      "UNIQUE (tenant_id, group_id, id)",
+      true
+    ],
+    [
+      "members",
+      "members_object_digest_check",
+      "c",
+      "CHECK ((octet_length(object_digest) = 32))",
+      true
+    ],
+    [
+      "members",
+      "members_object_id_check",
+      "c",
+      "CHECK (((octet_length(object_id) >= 1) AND (octet_length(object_id) <= 4096)))",
+      true
+    ],
+    [
+      "members",
+      "members_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, group_id, object_digest)",
+      true
+    ],
+    [
+      "members",
+      "members_tenant_id_group_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)",
+      true
+    ],
+    [
+      "operations",
+      "operations_as_of_check",
+      "c",
+      "CHECK ((as_of >= 0))",
+      true
+    ],
+    [
+      "operations",
+      "operations_base_revision_check",
+      "c",
+      "CHECK ((base_revision >= 0))",
+      true
+    ],
+    [
+      "operations",
+      "operations_check",
+      "c",
+      "CHECK ((((state = 'pending'::text) AND (receipt IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR ((state = 'completed'::text) AND (receipt IS NOT NULL) AND (failure IS NULL) AND (completed_at IS NOT NULL)) OR ((state = 'rejected'::text) AND (receipt IS NULL) AND (failure IS NOT NULL) AND (completed_at IS NOT NULL))))",
+      true
+    ],
+    [
+      "operations",
+      "operations_check1",
+      "c",
+      "CHECK (((result IS NULL) = (result_digest IS NULL)))",
+      true
+    ],
+    [
+      "operations",
+      "operations_check2",
+      "c",
+      "CHECK ((((kind = 'command'::text) AND (state = 'completed'::text) AND (trigger IS NULL) AND (result IS NULL)) OR ((kind = 'recalculation'::text) AND (trigger IS NOT NULL) AND (rule_version IS NOT NULL) AND (base_revision > 0) AND (((state = 'completed'::text) AND (result IS NOT NULL)) OR ((state <> 'completed'::text) AND (result IS NULL))))))",
+      true
+    ],
+    [
+      "operations",
+      "operations_digest_check",
+      "c",
+      "CHECK ((octet_length(digest) = 32))",
+      true
+    ],
+    [
+      "operations",
+      "operations_id_check",
+      "c",
+      "CHECK ((id <> '00000000-0000-0000-0000-000000000000'::uuid))",
+      true
+    ],
+    [
+      "operations",
+      "operations_kind_check",
+      "c",
+      "CHECK ((kind = ANY (ARRAY['command'::text, 'recalculation'::text])))",
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "operations",
+      "operations_receipt_check",
+      "c",
+      "CHECK (((octet_length(receipt) >= 1) AND (octet_length(receipt) <= 65536)))",
+      true
+    ],
+    [
+      "operations",
+      "operations_request_check",
+      "c",
+      "CHECK (((octet_length(request) >= 1) AND (octet_length(request) <= 67108864)))",
+      true
+    ],
+    [
+      "operations",
+      "operations_result_check",
+      "c",
+      "CHECK ((octet_length(result) <= 67108864))",
+      true
+    ],
+    [
+      "operations",
+      "operations_result_digest_check",
+      "c",
+      "CHECK ((octet_length(result_digest) = 32))",
+      true
+    ],
+    [
+      "operations",
+      "operations_state_check",
+      "c",
+      "CHECK ((state = ANY (ARRAY['pending'::text, 'completed'::text, 'rejected'::text])))",
+      true
+    ],
+    [
+      "operations",
+      "operations_tenant_id_group_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)",
+      true
+    ],
+    [
+      "operations",
+      "operations_tenant_id_group_id_rule_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, group_id, rule_version) REFERENCES mdm_group.rules(tenant_id, group_id, version)",
+      true
+    ],
+    [
+      "operations",
+      "operations_trigger_check",
+      "c",
+      "CHECK (((octet_length(trigger) >= 1) AND (octet_length(trigger) <= 16384)))",
+      true
+    ],
+    [
+      "rules",
+      "rules_digest_check",
+      "c",
+      "CHECK ((octet_length(digest) = 32))",
+      true
+    ],
+    [
+      "rules",
+      "rules_document_check",
+      "c",
+      "CHECK (((octet_length(document) >= 1) AND (octet_length(document) <= 67108864)))",
+      true
+    ],
+    [
+      "rules",
+      "rules_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, group_id, version)",
+      true
+    ],
+    [
+      "rules",
+      "rules_tenant_id_group_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)",
+      true
+    ],
+    [
+      "rules",
+      "rules_version_check",
+      "c",
+      "CHECK (((octet_length(version) >= 1) AND (octet_length(version) <= 256)))",
+      true
+    ]
   ]
 }

@@ -70,6 +70,40 @@ async fn setup(s: &PolicyStore, p: &PolicyId) -> u64 {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL: backend-t2"]
+async fn saving_intents_does_not_create_execution_facts() {
+    let runtime = runtime().await;
+    let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let policy = pid();
+    let revision = setup(&store, &policy).await;
+    let request = req(
+        &policy,
+        revision,
+        Command::Replan {
+            policy: policy.clone(),
+        },
+    );
+    let receipt = store.execute(&request, deadline()).await.unwrap();
+    assert_eq!(store.execute(&request, deadline()).await.unwrap(), receipt);
+    let facts = store
+        .execution_facts(&policy, None, 1000, deadline())
+        .await
+        .unwrap();
+    assert!(
+        facts.records.is_empty(),
+        "saving an intent is not execution admission"
+    );
+    let plan = store
+        .plan(&policy, &request.id, deadline())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(plan.intents(), [Intent::Add(_)]));
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
 async fn persistence_replay_aba_and_old_facts() {
     let runtime = runtime().await;
     let s = PolicyStore::new(runtime.clone(), tenant(), deadline())

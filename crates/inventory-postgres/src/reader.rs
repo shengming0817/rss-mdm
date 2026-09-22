@@ -74,6 +74,10 @@ pub async fn read_in(
     let projection = super::projection_scope(tenant);
     let rows=sqlx::query("SELECT scope,field,value,state,last_known,last_known_batch,last_known_observed,last_known_received,batch_id,observed_at,received_at,registration,source,epoch FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND coverage=$4 AND scope=ANY($5) ORDER BY scope,field")
         .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(keys).fetch_all(connection).await?;
+    decode_rows(rows)
+}
+
+pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<InventoryField>> {
     rows.into_iter()
         .map(|r| {
             let field = FieldKey::parse(r.try_get::<&str, _>("field")?)?;

@@ -129,6 +129,9 @@ pub struct ScopeResolution {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 /// Source validation failure; [`crate::resolve`] returns no partial membership set.
 pub enum ScopeError {
+    #[error("too many source memberships in a device input")]
+    /// One device references more than the bounded target/limitation/exclusion set.
+    SourceLimit,
     #[error("invalid object key")]
     /// A role or device identity violates its constructor's length/character rules.
     InvalidKey,

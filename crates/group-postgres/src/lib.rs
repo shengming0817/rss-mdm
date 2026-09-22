@@ -31,8 +31,10 @@
 mod admission;
 mod codec;
 mod event;
+mod generations;
 mod model;
 mod runs;
+pub use generations::{BuildRequest, MAX_MEMBERS, MemberBuild, MemberPatch};
 mod storage;
 mod store;
 pub use event::EVENT_SCHEMA;
@@ -47,3 +49,6 @@ mod codec_tests;
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.
 pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");
+/// Immutable paged member results and atomic current-set publication.
+pub const GENERATIONS_MIGRATION_SQL: &str =
+    include_str!("../migrations/0003_member_generations.sql");

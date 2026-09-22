@@ -240,6 +240,75 @@ pub fn reconcile(input: PlanInput<'_>) -> Result<Plan, PolicyError> {
     })
 }
 type Facts = BTreeMap<ExecutionKey, ExecutionRecord>;
+/// Summary obtained by streaming one device's immutable execution history.
+/// Current takes precedence over Previous; any current progress suppresses re-addition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionPresence {
+    /// No execution record exists for this device and policy.
+    Absent,
+    /// Only earlier policy versions have execution records.
+    Previous,
+    /// An execution for the current version already exists.
+    Current,
+}
+/// A desired action without materializing all prior execution keys. A Supersede
+/// links to the frozen history; consumers enumerate those links through pages.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DesiredIntent {
+    /// First desired execution for this device.
+    Add(DesiredExecution),
+    /// Replacement desired execution with historical predecessors.
+    Supersede(DesiredExecution),
+}
+/// Decide one target using bounded history evidence. Produces intentions only;
+/// saving them does not create execution facts or grant execution authority.
+pub fn desired_for_device(
+    policy: &Policy,
+    device: &DeviceId,
+    targeted: bool,
+    history: ExecutionPresence,
+) -> Result<Option<DesiredIntent>, PolicyError> {
+    if device.tenant() != policy.key().tenant() {
+        return Err(PolicyError::TenantMismatch);
+    }
+    if !targeted || policy.status() != Status::Active || history == ExecutionPresence::Current {
+        return Ok(None);
+    }
+    let Some(version) = policy.version() else {
+        return Ok(None);
+    };
+    let desired = DesiredExecution::new(version, device.clone());
+    Ok(Some(match history {
+        ExecutionPresence::Previous => DesiredIntent::Supersede(desired),
+        _ => DesiredIntent::Add(desired),
+    }))
+}
+/// Validate and classify one execution fact. The persistence owner additionally
+/// enforces cross-record immutable version/payload consistency using its canonical
+/// version records; no unbounded in-memory history map is required here.
+pub fn classify_record(
+    policy: &Policy,
+    targeted: bool,
+    fact: &ExecutionRecord,
+) -> Result<Intent, PolicyError> {
+    let mut versions = BTreeMap::new();
+    let mut payloads = BTreeMap::new();
+    if let Some(version) = policy.version() {
+        versions.insert(version.number(), version.clone());
+        let payload = version.payload();
+        payloads.insert(
+            (payload.object().clone(), payload.revision()),
+            payload.clone(),
+        );
+    }
+    validate_execution(policy, fact, &mut versions, &mut payloads).map_err(|reason| {
+        PolicyError::InvalidExecution {
+            execution: Box::new(fact.key()),
+            reason,
+        }
+    })?;
+    Ok(classify_validated(policy, targeted, fact))
+}
 fn validate(input: &PlanInput<'_>) -> Result<Facts, PolicyError> {
     let tenant = input.policy.key().tenant();
     if input.request.tenant() != tenant || input.targets.key.tenant() != tenant {
@@ -338,9 +407,16 @@ fn classify_existing(
     fact: &ExecutionRecord,
     intents: &mut Vec<Intent>,
 ) {
+    intents.push(classify_validated(
+        policy,
+        targets.members.contains(fact.device()),
+        fact,
+    ));
+}
+fn classify_validated(policy: &Policy, targeted: bool, fact: &ExecutionRecord) -> Intent {
     let reason = if policy.status() == Status::Archived {
         Some(CancelReason::Archived)
-    } else if !targets.members.contains(fact.device()) {
+    } else if !targeted {
         Some(CancelReason::ScopeExit)
     } else if policy
         .version()
@@ -353,12 +429,12 @@ fn classify_existing(
     let execution = fact.clone();
     if let Some(reason) = reason {
         if !fact.progress().is_terminal() {
-            intents.push(Intent::Cancel { execution, reason });
+            Intent::Cancel { execution, reason }
         } else {
-            intents.push(Intent::Retain {
+            Intent::Retain {
                 execution,
                 reason: RetainReason::Historical,
-            });
+            }
         }
     } else {
         let reason = if policy.status() == Status::Paused {
@@ -366,6 +442,6 @@ fn classify_existing(
         } else {
             RetainReason::Current
         };
-        intents.push(Intent::Retain { execution, reason });
+        Intent::Retain { execution, reason }
     }
 }

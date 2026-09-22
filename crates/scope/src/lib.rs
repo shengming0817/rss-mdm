@@ -24,6 +24,8 @@ mod identity;
 pub use identity::{DeviceId, GroupId};
 mod model;
 pub use model::*;
+mod device;
+pub use device::{DeviceInput, SourceMembership, resolve_device};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Resolve in memory: an invalid source never yields a partial member set.
@@ -50,23 +52,17 @@ pub fn resolve(input: &ScopeInput) -> Result<ScopeResolution, ScopeError> {
     for (object, hits) in targets {
         let limit_hits = limitations.get(&object).cloned().unwrap_or_default();
         let excluded = exclusions.get(&object).cloned().unwrap_or_default();
-        let mut reasons = Vec::new();
-        if matches!(input.limitations, Limitations::Restricted(_)) && limit_hits.is_empty() {
-            reasons.push(ExclusionReason::MissingLimitationMatch);
+        let explanation = device::explanation(
+            object.clone(),
+            hits,
+            limit_hits,
+            excluded,
+            matches!(input.limitations, Limitations::Restricted(_)),
+        );
+        if explanation.reasons.is_empty() {
+            members.push(object);
         }
-        if !excluded.is_empty() {
-            reasons.push(ExclusionReason::ExplicitExclusion);
-        }
-        if reasons.is_empty() {
-            members.push(object.clone());
-        }
-        explanations.push(MemberExplanation {
-            object,
-            targets: hits.into_iter().collect(),
-            limitations: limit_hits.into_iter().collect(),
-            exclusions: excluded.into_iter().collect(),
-            reasons,
-        });
+        explanations.push(explanation);
     }
     Ok(ScopeResolution {
         target_sources: references(&input.targets),

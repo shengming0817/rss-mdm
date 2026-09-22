@@ -28,6 +28,52 @@ fn input() -> ScopeInput {
     }
 }
 #[test]
+fn device_resolution_matches_set_algebra_without_materializing_universe() {
+    let mut full = input();
+    full.limitations = Limitations::Restricted(vec![source("limit", &["d1"])]);
+    full.exclusions = vec![source("exclude", &["d2"])];
+    let expected = resolve(&full).unwrap();
+    for id in ["d1", "d2", "absent"] {
+        let device = key(id);
+        let hits = |sources: &[ResolvedSource]| {
+            sources
+                .iter()
+                .map(|s| {
+                    let Resolution::Complete(members) = &s.resolution else {
+                        unreachable!()
+                    };
+                    SourceMembership {
+                        source: s.source.clone(),
+                        contains: Some(members.contains(&device)),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let Limitations::Restricted(limits) = &full.limitations else {
+            unreachable!()
+        };
+        let mut page = DeviceInput {
+            device: device.clone(),
+            targets: hits(&full.targets),
+            limitations: Some(hits(limits)),
+            exclusions: hits(&full.exclusions),
+        };
+        assert_eq!(
+            resolve_device(&page).unwrap(),
+            expected
+                .explanations
+                .iter()
+                .find(|e| e.object == device)
+                .cloned()
+        );
+        page.targets[0].contains = None;
+        assert!(matches!(
+            resolve_device(&page),
+            Err(ScopeError::IncompleteSource(_))
+        ));
+    }
+}
+#[test]
 fn unconfigured_and_configured_empty_are_different() {
     let mut i = input();
     assert_eq!(resolve(&i).unwrap().members, vec![key("d1"), key("d2")]);

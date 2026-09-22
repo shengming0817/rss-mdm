@@ -115,6 +115,44 @@ pub struct Recalculation {
     pub unknown: Vec<ObjectKey>,
 }
 impl Rule {
+    /// Evaluate one strictly ordered page of a frozen universe, without claiming
+    /// that this page is the complete universe. The caller persists snapshot
+    /// identity, coverage and the exclusive cursor, and seals completeness only
+    /// after every page has been stored. Missing rule coverage is rejected;
+    /// explicit Missing/Deleted/Conflict facts retain the usual Unknown semantics.
+    /// Existing byte, visit and explanation budgets still apply to each page.
+    pub fn evaluate_page(
+        &self,
+        snapshot: &crate::PageInput<'_>,
+        as_of: Timepoint,
+    ) -> Result<Evaluation> {
+        if snapshot.objects.len() > 1000 {
+            return Err(Error::InvalidStructure);
+        }
+        if !self.required.is_subset(&snapshot.coverage) {
+            return Err(Error::IncompleteSnapshot);
+        }
+        if snapshot
+            .after
+            .is_some_and(|key| key.tenant() != self.tenant)
+        {
+            return Err(Error::TenantMismatch);
+        }
+        let mut previous = snapshot.after;
+        for object in snapshot.objects {
+            if previous.is_some_and(|key| key >= &object.key) {
+                return Err(Error::InvalidStructure);
+            }
+            previous = Some(&object.key);
+        }
+        self.evaluate_input(
+            snapshot,
+            false,
+            as_of,
+            &mut Budget::new(LimitKind::BatchBytes),
+        )
+    }
+
     /// Preview accepts partial coverage. Uncovered referenced fields produce Unknown(Missing).
     /// Every input is validated before any result is returned, including unused fields.
     /// Tenant/dictionary mismatches, denied facts, invalid structures/types and
@@ -168,6 +206,28 @@ impl Rule {
         as_of: Timepoint,
         budget: &mut Budget,
     ) -> Result<Evaluation> {
+        self.evaluate_input(
+            &crate::PageInput {
+                tenant: s.tenant,
+                id: &s.id,
+                version: &s.version,
+                dictionary_version: &s.dictionary_version,
+                coverage: &s.coverage,
+                objects: &s.objects,
+                after: None,
+            },
+            s.complete,
+            as_of,
+            budget,
+        )
+    }
+    fn evaluate_input(
+        &self,
+        s: &crate::PageInput<'_>,
+        complete: bool,
+        as_of: Timepoint,
+        budget: &mut Budget,
+    ) -> Result<Evaluation> {
         if self.tenant != s.tenant {
             return Err(Error::TenantMismatch);
         }
@@ -178,19 +238,19 @@ impl Rule {
             return Err(Error::VersionMismatch);
         }
         LimitKind::Fields.check(s.coverage.len())?;
-        for key in &s.coverage {
+        for key in s.coverage {
             budget.identity(key)?;
             if !self.fields.contains_key(key) {
                 return Err(Error::UnknownField);
             }
         }
-        if s.complete && !self.required.is_subset(&s.coverage) {
+        if complete && !self.required.is_subset(&s.coverage) {
             return Err(Error::IncompleteSnapshot);
         }
         LimitKind::Objects.check(s.objects.len())?;
         LimitKind::Visits.product(s.objects.len(), self.criteria.count)?;
         let mut objects = BTreeMap::new();
-        for object in &s.objects {
+        for object in s.objects {
             if object.key.tenant() != s.tenant {
                 return Err(Error::TenantMismatch);
             }
@@ -263,13 +323,13 @@ impl Rule {
             })
             .collect();
         Ok(Evaluation {
-            complete: s.complete,
+            complete: complete,
             coverage: s.coverage.clone(),
             tenant: s.tenant,
             rule_version: self.version.clone(),
             dictionary_version: self.dictionary_version.clone(),
-            snapshot_id: s.id.clone(),
-            snapshot_version: s.version.clone(),
+            snapshot_id: s.id.to_owned(),
+            snapshot_version: s.version.to_owned(),
             as_of,
             objects,
         })

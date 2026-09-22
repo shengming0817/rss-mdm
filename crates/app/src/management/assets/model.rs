@@ -85,7 +85,7 @@ pub(crate) struct ReadScope {
     pub devices: Option<BTreeSet<String>>,
 }
 impl ReadScope {
-    pub(super) fn all() -> Self {
+    pub(in crate::management) fn all() -> Self {
         Self {
             subject: "group".into(),
             devices: None,

@@ -13,6 +13,91 @@ fn fixture() -> Value {
     serde_json::from_slice(&std::fs::read(std::env::var("BACKEND_PG_CONFIG").unwrap()).unwrap())
         .unwrap()
 }
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn asset_history_rollback_replay_and_frozen_watermark() {
+    let t = tenant();
+    let device = format!("history-{}", Uuid::new_v4());
+    let read = || {
+        sql(&format!(
+            "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id='{t}'"
+        ))
+        .parse::<i64>()
+        .unwrap()
+    };
+    let before = read();
+    sql(&format!(
+        "BEGIN; SET LOCAL rss.tenant_id='{t}'; INSERT INTO mdm_access.devices VALUES('{t}','{device}'); ROLLBACK;"
+    ));
+    assert_eq!(read(), before, "rollback cannot leave a durable trigger");
+    sql(&format!(
+        "BEGIN; SET LOCAL rss.tenant_id='{t}'; INSERT INTO mdm_access.devices VALUES('{t}','{device}'); COMMIT;"
+    ));
+    let created = read();
+    assert!(created > before);
+    sql(&format!(
+        "BEGIN; SET LOCAL rss.tenant_id='{t}'; INSERT INTO mdm_access.devices VALUES('{t}','{device}') ON CONFLICT DO NOTHING; COMMIT;"
+    ));
+    assert_eq!(
+        read(),
+        created,
+        "idempotent writes cannot manufacture a new input version"
+    );
+    sql(&format!(
+        "BEGIN; SET LOCAL rss.tenant_id='{t}'; DELETE FROM mdm_access.devices WHERE tenant_id='{t}' AND id='{device}'; COMMIT;"
+    ));
+    assert!(read() > created);
+    assert_eq!(
+        sql(&format!(
+            "SELECT document->>'id' FROM mdm_access.asset_authority_history WHERE tenant_id='{t}' AND kind='device' AND identity='{device}' AND revision<={created} ORDER BY revision DESC LIMIT 1"
+        )),
+        device
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT document IS NULL FROM mdm_access.asset_authority_history WHERE tenant_id='{t}' AND kind='device' AND identity='{device}' ORDER BY revision DESC LIMIT 1"
+        )),
+        "t"
+    );
+    let service = management(t).await;
+    let frozen = service
+        .runtime
+        .local_tx_with_context(t, deadline(), &service, move |s, tx| {
+            Box::pin(async move {
+                s.asset_page_in(tx, created, None, 1, &assets::ReadScope::all())
+                    .await
+                    .map_err(|_| sqlx::Error::Protocol("frozen page rejected".into()).into())
+            })
+        })
+        .await
+        .fold(
+            |p| p,
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    assert_eq!(frozen.devices.len(), 1);
+    assert_eq!(frozen.devices[0].device, device);
+    assert!(frozen.next.is_none());
+    assert_eq!(service.forward_asset_changes().await.unwrap(), 2);
+    assert_eq!(service.forward_asset_changes().await.unwrap(), 0);
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM rss_reconcile.targets WHERE tenant_id='{t}' AND reconciler='mdm.assets' AND entity='changes'"
+        )),
+        "1"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm.asset_changes WHERE tenant_id='{t}' AND revision>{before}"
+        )),
+        "2",
+        "forwarding must retain the durable input"
+    );
+    service.runtime.close().await;
+}
 fn sql(statement: &str) -> String {
     use std::io::Write;
     let config = fixture();

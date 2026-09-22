@@ -57,7 +57,7 @@ pub use evaluation::{
 };
 pub use model::{
     Difference, Fact, FactState, Field, FieldType, ObjectKey, ObjectSnapshot, Op, Operand,
-    Predicate, Scalar, ScalarType, Snapshot, Value, diff,
+    PageInput, Predicate, Scalar, ScalarType, Snapshot, Value, diff,
 };
 pub use rule::{Criteria, CriteriaView, Rule, RuleView};
 

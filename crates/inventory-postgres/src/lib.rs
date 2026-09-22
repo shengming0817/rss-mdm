@@ -22,5 +22,9 @@ pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/0002_inventor
 
 /// Fresh-install asset schema, applied after the original Inventory units.
 pub const ASSETS_MIGRATION_SQL: &str = include_str!("../migrations/0003_assets.sql");
+/// Atomic asset history and durable input records; no scheduling or lease ownership.
+pub const HISTORY_MIGRATION_SQL: &str = include_str!("../migrations/0004_history.sql");
 mod manual;
 pub use manual::{Assignment, assign_in, manual_in};
+mod history;
+pub use history::{manual_at_in, read_at_in, watermark_in};

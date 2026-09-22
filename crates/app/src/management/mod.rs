@@ -1,5 +1,6 @@
 //! Product management composition. Core decisions and component storage retain their owners.
 pub(crate) mod assets;
+mod automation;
 mod config;
 mod groups;
 mod http;

@@ -48,6 +48,53 @@ fn compute(p: &Policy, t: &TargetSnapshot, f: &[ExecutionRecord]) -> Result<Plan
     })
 }
 #[test]
+fn streamed_decisions_preserve_lifecycle_and_do_not_require_history_vectors() {
+    let policy = active(2);
+    let prior = record(1, Progress::Running);
+    let current = record(2, Progress::Unknown);
+    assert!(matches!(
+        desired_for_device(&policy, &key("d1"), true, ExecutionPresence::Previous).unwrap(),
+        Some(DesiredIntent::Supersede(_))
+    ));
+    assert!(
+        desired_for_device(&policy, &key("d1"), true, ExecutionPresence::Current)
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        classify_record(&policy, true, &prior).unwrap(),
+        Intent::Cancel {
+            reason: CancelReason::Superseded,
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_record(&policy, true, &current).unwrap(),
+        Intent::Retain {
+            reason: RetainReason::Current,
+            ..
+        }
+    ));
+    let paused = policy
+        .transition(policy.revision(), Transition::Pause)
+        .unwrap();
+    assert!(
+        desired_for_device(&paused, &key("d1"), true, ExecutionPresence::Absent)
+            .unwrap()
+            .is_none()
+    );
+    let archived = policy
+        .transition(policy.revision(), Transition::Archive)
+        .unwrap();
+    assert!(matches!(
+        classify_record(&archived, true, &current).unwrap(),
+        Intent::Cancel {
+            reason: CancelReason::Archived,
+            ..
+        }
+    ));
+}
+#[test]
 fn lifecycle_and_revision_conflicts() {
     let p = active(1);
     assert!(matches!(

@@ -249,31 +249,6 @@ impl PolicyStore {
                     codec::targets(targets),
                     records.iter().map(codec::fact).collect::<Vec<_>>()
                 ]))?;
-                for intent in plan.intents() {
-                    let desired = match intent {
-                        Intent::Add(d) | Intent::Supersede { replacement: d, .. } => Some(d),
-                        _ => None,
-                    };
-                    if let Some(d) = desired {
-                        let v = aggregate
-                            .policy
-                            .version()
-                            .ok_or_else(|| STORAGE.fault("store::execute_in"))?;
-                        let f = crate::error::decode_domain(
-                            "store::execute_in",
-                            ExecutionRecord::new(
-                                v.clone(),
-                                d.key().device().clone(),
-                                Progress::Planned,
-                                Effect::Unverified,
-                            ),
-                        )?;
-                        facts.entry(codec::key(&f)).or_insert(f);
-                    }
-                }
-                if facts.len() > MAX_FACTS {
-                    return Ok(Err(Rejection::BudgetExceeded));
-                }
                 aggregate.plan = Some(plan.id());
                 plan_document = Some((codec::hex(plan.id().bytes()), document));
                 changed

@@ -6,7 +6,7 @@ WITH tables AS (
  OR pg_has_role(current_user,oid,'MEMBER')
 )
 SELECT
- (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['deltas','groups','members','operations','rules'] FROM tables)
+ (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['deltas','groups','member_changes','member_pages','member_rows','member_runs','members','operations','rules'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_group' AND c.relkind NOT IN('r','i'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
@@ -29,7 +29,8 @@ SELECT
  WHERE n.nspname='mdm_group' AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
-  (t.relname='groups' AND a.attname IN('name','description','revision','member_version','member_count','rule_version','deleted')
+  (t.relname='groups' AND a.attname IN('name','description','revision','member_version','member_count','rule_version','deleted','member_set')
+  OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','member_count','added','removed','receipt')
   OR t.relname='operations' AND a.attname IN('state','receipt','result','result_digest','failure','completed_at'))
  OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,

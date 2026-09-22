@@ -10,6 +10,7 @@ mod criteria;
 mod http;
 mod model;
 mod query;
+mod snapshot;
 mod store;
 pub(in crate::management) use criteria::{criteria_view, rule};
 pub(crate) use http::routes;

@@ -234,6 +234,25 @@ pub struct ObjectSnapshot {
     /// Explicit facts for every covered field, including missing-value markers.
     pub facts: BTreeMap<String, Fact>,
 }
+/// One bounded range of a frozen input. A page never asserts universe completeness.
+/// The persistence owner binds all pages to the same input identity and seals the
+/// result only after it has verified the complete source enumeration.
+pub struct PageInput<'a> {
+    /// Tenant shared by the rule, cursor and objects.
+    pub tenant: TenantId,
+    /// Frozen source identity.
+    pub id: &'a str,
+    /// Immutable source revision.
+    pub version: &'a str,
+    /// Dictionary identity used by all pages.
+    pub dictionary_version: &'a str,
+    /// Fields explicitly represented on every object, including Missing facts.
+    pub coverage: &'a BTreeSet<String>,
+    /// Strictly increasing objects; at most 1,000, further limited by work budgets.
+    pub objects: &'a [ObjectSnapshot],
+    /// Exclusive cursor confirmed by the previous durable page, if any.
+    pub after: Option<&'a ObjectKey>,
+}
 /// Completeness describes the candidate universe, not whether all values are known.
 /// In covered fields a missing value must be represented explicitly by FactState::Missing.
 #[derive(Clone, Debug, PartialEq, Eq)]
