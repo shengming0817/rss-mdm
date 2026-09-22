@@ -68,6 +68,7 @@ pub(crate) fn decode_domain<T>(
 ) -> Result<T, PgError> {
     result.map_err(|error| {
         let category = match error {
+            crate::core::PolicyError::InputCountOverflow => "InputCountOverflow",
             crate::core::PolicyError::InvalidKey => "InvalidKey",
             crate::core::PolicyError::InvalidRevision => "InvalidRevision",
             crate::core::PolicyError::TenantMismatch => "TenantMismatch",

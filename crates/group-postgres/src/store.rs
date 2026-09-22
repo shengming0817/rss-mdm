@@ -5,7 +5,7 @@ use crate::{
     storage::{self as db, *},
 };
 use rss_contract::Timepoint;
-use rss_mdm_group::{Evaluation, ObjectKey, Rule, Snapshot, diff};
+use rss_mdm_group::{Evaluation, ObjectKey, Rule, Snapshot};
 use rss_request_context::TenantId;
 use rss_transactional_messaging::{
     outbox::{AppendOutcome, OutboxWriter},
@@ -216,29 +216,38 @@ impl GroupStore {
             return replay_command(old, command.group(), &hash);
         }
         let (mut group, create) = input!(command_group(command, existing));
-        let old = if create {
-            Vec::new()
-        } else {
-            db::members(tx, group.id).await?
-        };
-        if old.len() != group.member_count {
-            return Err(StorageFault::RowCount.error());
+        if matches!(command, Command::Members { .. }) {
+            return Ok(Err(Rejection::InvalidInput));
         }
         if let Command::SetRule { rule, .. } = command {
             input!(self.check_rule_identity(tx, group.id, rule).await?);
         }
-        let (new, kind, rule_to_write) =
-            input!(apply_command(self.tenant, command, &mut group, &old));
-        let delta = input!(diff(self.tenant, &old, &new).map_err(|_| Rejection::InvalidInput));
-        let (receipt, kind) = input!(command_receipt(operation, group, kind, create, &delta));
+        let previous_count = group.member_count;
+        let (_, kind, rule_to_write) = input!(apply_command(self.tenant, command, &mut group, &[]));
+        if kind.is_some() && !create {
+            group.revision = input!(group.revision.next());
+        }
+        let removed = if matches!(command, Command::Delete { .. }) {
+            group.member_count = 0;
+            group.member_version = group.revision.get();
+            previous_count
+        } else {
+            0
+        };
+        let receipt = Receipt {
+            operation,
+            group,
+            added: 0,
+            removed,
+        };
         if let Some(kind) = kind {
             self.append(tx, as_of, kind, &receipt).await?;
         }
         if create || kind.is_some() {
             db::save_group(tx, &receipt.group, create).await?;
         }
-        if let Some(r) = rule_to_write {
-            db::write_rule(tx, receipt.group.id, r).await?;
+        if let Some(rule) = rule_to_write {
+            db::write_rule(tx, receipt.group.id, rule).await?;
         }
         db::insert_operation(
             tx,
@@ -253,14 +262,6 @@ impl GroupStore {
                 as_of: as_of.unix_seconds(),
                 receipt: Some(receipt.clone()),
             },
-        )
-        .await?;
-        db::apply_delta(
-            tx,
-            receipt.group.id,
-            operation,
-            &delta.added,
-            &delta.removed,
         )
         .await?;
         Ok(Ok(receipt))
@@ -577,33 +578,6 @@ fn apply_command<'a>(
         }
     }
     Ok((new, kind, rule_to_write))
-}
-
-fn command_receipt(
-    operation: OperationId,
-    mut group: Group,
-    mut kind: Option<ChangeKind>,
-    create: bool,
-    delta: &rss_mdm_group::Difference,
-) -> CommandOutcome<(Receipt, Option<ChangeKind>)> {
-    let changed = !delta.added.is_empty() || !delta.removed.is_empty();
-    if changed && kind.is_none() {
-        kind = Some(ChangeKind::MembersChanged);
-    }
-    if kind.is_some() && !create {
-        group.revision = group.revision.next()?;
-    }
-    if changed {
-        group.member_version = group.revision.get();
-    }
-    group.member_count = delta.added.len() + delta.unchanged.len();
-    let receipt = Receipt {
-        operation,
-        group,
-        added: delta.added.len(),
-        removed: delta.removed.len(),
-    };
-    Ok((receipt, kind))
 }
 
 #[cfg(test)]

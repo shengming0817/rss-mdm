@@ -271,6 +271,15 @@
       ""
     ],
     [
+      "member_rows",
+      "evidence_digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "member_runs",
       "tenant_id",
       "uuid",
@@ -909,6 +918,13 @@
       "member_rows_evidence_check",
       "c",
       "CHECK ((octet_length(evidence) <= 1048576))",
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_evidence_digest_check",
+      "c",
+      "CHECK ((octet_length(evidence_digest) = 32))",
       true
     ],
     [

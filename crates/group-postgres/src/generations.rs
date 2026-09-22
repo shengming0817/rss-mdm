@@ -66,6 +66,8 @@ pub struct MemberBuild {
     pub request: BuildRequest,
     /// Last input object atomically persisted with its page.
     pub cursor: Option<String>,
+    /// Last key whose membership difference has been durably examined.
+    pub difference_cursor: Option<String>,
     /// Number of input objects already persisted.
     pub objects: usize,
     /// Number of matches already persisted.
@@ -79,6 +81,21 @@ pub struct MemberBuild {
 }
 
 impl GroupStore {
+    /// Read the immutable current member-set handle; None means the initial empty set.
+    pub async fn current_member_set_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        group: GroupId,
+    ) -> InTransaction<Option<OperationId>> {
+        input!(self.check_transaction(tx)?);
+        input!(self.lock_reference_target_in(tx, group).await?);
+        let tenant = self.tenant.to_string();
+        let raw:Option<String>=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar("SELECT member_set::text FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant).bind(group.to_string()).fetch_one(c).await
+        })).await?;
+        Ok(Ok(raw.map(|s| data(OperationId::parse(&s))).transpose()?))
+    }
     /// Admit immutable metadata, not a whole-tenant blob. The host supplies pages
     /// from one frozen source and protects each mutation with its RSS claim.
     pub async fn begin_build_in(
@@ -146,7 +163,7 @@ impl GroupStore {
         input!(self.check_transaction(tx)?);
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT input,fingerprint,phase,cursor,object_count,member_count,receipt FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
+            sqlx::query("SELECT input,fingerprint,phase,cursor,diff_cursor,object_count,member_count,receipt FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
         })).await?;
         let row = input!(row.ok_or(Rejection::NotFound));
@@ -166,6 +183,7 @@ impl GroupStore {
         Ok(Ok(MemberBuild {
             request,
             cursor: row.try_get("cursor")?,
+            difference_cursor: row.try_get("diff_cursor")?,
             objects: data(usize::try_from(row.try_get::<i64, _>("object_count")?))?,
             members: data(usize::try_from(row.try_get::<i64, _>("member_count")?))?,
             input_sealed: phase != "reading",
@@ -262,11 +280,9 @@ impl GroupStore {
             }
             ids.push(object.key.id().to_owned());
             matches.push(object.decision == Decision::Match);
-            let explanations:Vec<_>=object.explanations.iter().map(|e|serde_json::json!({"path":e.path,"outcome":match e.outcome {
-                rss_mdm_group::Outcome::Match=>"match",rss_mdm_group::Outcome::NoMatch=>"no_match",
-                rss_mdm_group::Outcome::Unknown(reason)=>match reason {rss_mdm_group::UnknownReason::Null=>"null",rss_mdm_group::UnknownReason::Missing=>"missing",rss_mdm_group::UnknownReason::Deleted=>"deleted",rss_mdm_group::UnknownReason::Unsupported=>"unsupported",rss_mdm_group::UnknownReason::Conflict=>"conflict"}
-            }})).collect();
-            evidence.push(data(serde_json::to_vec(&serde_json::json!({"decision":match object.decision {Decision::Match=>"match",Decision::NoMatch=>"no_match",Decision::Unknown=>"unknown"},"explanations":explanations})))?);
+            evidence.push(data(serde_json::to_vec(&crate::decisions::evaluated(
+                object,
+            )))?);
         }
         self.store_page_in(tx, id, ids, matches, evidence, fingerprint)
             .await
@@ -280,14 +296,24 @@ impl GroupStore {
         evidence: Vec<Vec<u8>>,
         fingerprint: Vec<u8>,
     ) -> InTransaction<MemberBuild> {
+        if evidence.iter().any(|bytes| bytes.len() > 1024 * 1024)
+            || evidence
+                .iter()
+                .map(|bytes| bytes.len() + 1024)
+                .sum::<usize>()
+                > 16 * 1024 * 1024
+        {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let hashes: Vec<_> = evidence.iter().map(|bytes| digest(bytes)).collect();
         let count = ids.len() as i64;
         let members = matches.iter().filter(|v| **v).count() as i64;
         let tenant = self.tenant.to_string();
         let first = ids.first().ok_or_else(stored_shape)?.clone();
         let last = ids.last().ok_or_else(stored_shape)?.clone();
         tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_group.member_rows SELECT $1::uuid,$2::uuid,* FROM unnest($3::text[],$4::boolean[],$5::bytea[])")
-                .bind(&tenant).bind(id.to_string()).bind(ids).bind(matches).bind(evidence).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_group.member_rows SELECT $1::uuid,$2::uuid,* FROM unnest($3::text[],$4::boolean[],$5::bytea[],$6::bytea[])")
+                .bind(&tenant).bind(id.to_string()).bind(ids).bind(matches).bind(evidence).bind(hashes).execute(&mut *c).await?;
             sqlx::query("INSERT INTO mdm_group.member_pages VALUES($1::uuid,$2::uuid,$3,$4,$5)")
                 .bind(&tenant).bind(id.to_string()).bind(first).bind(&last).bind(fingerprint).execute(&mut *c).await?;
             sqlx::query("UPDATE mdm_group.member_runs SET cursor=$3,object_count=object_count+$4,member_count=member_count+$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
@@ -340,7 +366,10 @@ impl GroupStore {
             build
         } else {
             let fingerprint = digest(&data(serde_json::to_vec(&ids))?);
-            let evidence = vec![b"{\"origin\":\"manual\"}".to_vec(); ids.len()];
+            let evidence = ids
+                .iter()
+                .map(|id| data(serde_json::to_vec(&crate::decisions::manual(id.clone()))))
+                .collect::<Result<Vec<_>, _>>()?;
             input!(
                 self.store_page_in(
                     tx,

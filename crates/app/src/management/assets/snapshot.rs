@@ -8,6 +8,45 @@ pub(in crate::management) struct AssetPage {
     pub next: Option<String>,
 }
 impl Management {
+    pub(in crate::management) async fn live_devices_at_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        watermark: i64,
+        devices: &[String],
+    ) -> Result<BTreeSet<String>> {
+        if devices.len() > 1000 {
+            return Err(Error::Malformed.into());
+        }
+        let tenant = self.tenant.to_string();
+        let devices = devices.to_vec();
+        let rows: Vec<String> = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        r#"
+                WITH latest AS (
+                    SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
+                    FROM mdm_access.asset_authority_history
+                    WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
+                      AND kind IN('registration','credential','source')
+                    ORDER BY kind,identity,revision DESC
+                ) SELECT DISTINCT r.device FROM latest r
+                  JOIN latest c ON c.registration=r.registration AND c.kind='credential'
+                  JOIN latest s ON s.registration=r.registration AND s.kind='source'
+                  WHERE r.kind='registration' AND r.document->>'state'='active'
+                    AND c.document->>'state'='active' AND s.document->>'enabled'='true'
+            "#,
+                    )
+                    .bind(tenant)
+                    .bind(devices)
+                    .bind(watermark)
+                    .fetch_all(c)
+                    .await
+                })
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
     pub(in crate::management) async fn asset_page_in(
         &self,
         tx: &mut PgTransaction<'_>,

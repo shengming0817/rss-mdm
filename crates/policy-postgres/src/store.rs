@@ -10,9 +10,9 @@ use sqlx::Row;
 use std::{collections::BTreeMap, sync::Arc};
 /// Tenant-bound Policy persistence using the host-owned RSS PostgreSQL runtime.
 pub struct PolicyStore {
-    runtime: Arc<PgRuntime>,
-    tenant: TenantId,
-    writer: PgOutboxWriter,
+    pub(crate) runtime: Arc<PgRuntime>,
+    pub(crate) tenant: TenantId,
+    pub(crate) writer: PgOutboxWriter,
 }
 impl PolicyStore {
     /// Identify this tenant's ordered event partition for a canonical aggregate ID.
@@ -56,7 +56,7 @@ impl PolicyStore {
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+    pub(crate) fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
         Ok(if tx.tenant_id() == self.tenant {
             Ok(())
@@ -90,7 +90,7 @@ impl PolicyStore {
             return Ok(Err(Rejection::TenantMismatch));
         }
         let row = STORAGE.read(tx, id.value()).await?;
-        let result = row
+        let mut result = row
             .map(
                 |AggregateRecord {
                      revision: rev,
@@ -104,7 +104,13 @@ impl PolicyStore {
                 },
             )
             .transpose()?;
-        if let Some(aggregate) = &result {
+        if let Some(aggregate) = &mut result {
+            if aggregate.plan.is_some() {
+                aggregate.references_current = self
+                    .installed_references_current(tx, id)
+                    .await?
+                    .unwrap_or(false);
+            }
             if let Some(v) = aggregate.policy.version() {
                 for (owner, kind, key, expected) in version_documents(v)? {
                     if STORAGE.immutable(tx, &owner, kind, &key).await?.as_ref() != Some(&expected)
@@ -192,7 +198,13 @@ impl PolicyStore {
             return Ok(Err(Rejection::Conflict));
         }
         let previous = aggregate.revision;
-        let mut facts = load_facts(tx, r.policy()).await?;
+        let mut facts = match &r.command {
+            Command::Replan { .. } => load_facts(tx, r.policy()).await?,
+            Command::RecordExecutions { facts: updates, .. } => {
+                load_selected_facts(tx, r.policy(), updates).await?
+            }
+            _ => BTreeMap::new(),
+        };
         let mut plan_document = None;
         let changed = match &r.command {
             Command::Create { .. } => true,
@@ -216,15 +228,32 @@ impl PolicyStore {
                 aggregate.references = references.clone();
                 changed
             }
-            Command::ReplaceFacts { facts: updates, .. } => {
+            Command::RecordExecutions { facts: updates, .. } => {
                 let mut changed = false;
                 for f in updates {
                     let k = codec::key(f);
-                    let existing = input!(facts.get(&k).ok_or(Rejection::NotFound));
-                    if existing.version() != f.version() {
+                    input!(compatible_version(tx, f.version()).await?);
+                    if STORAGE
+                        .immutable(
+                            tx,
+                            r.policy().value(),
+                            "version",
+                            &f.version().number().to_string(),
+                        )
+                        .await?
+                        .is_none()
+                    {
+                        return Ok(Err(Rejection::NotFound));
+                    }
+                    input!(
+                        classify_record(aggregate.policy(), false, f)
+                            .map_err(|_| Rejection::InvalidInput)
+                    );
+                    let existing = facts.get(&k);
+                    if existing.is_some_and(|old| old.version() != f.version()) {
                         return Ok(Err(Rejection::IdentityConflict));
                     }
-                    changed |= existing != f;
+                    changed |= existing != Some(f);
                     facts.insert(k, f.clone());
                 }
                 changed
@@ -560,8 +589,8 @@ fn validate_request(r: &Request) -> Result<(), Rejection> {
                 }
             }
         }
-        Command::ReplaceFacts { facts, .. } => {
-            if facts.len() > MAX_FACTS {
+        Command::RecordExecutions { facts, .. } => {
+            if facts.len() > 1000 {
                 return Err(Rejection::BudgetExceeded);
             }
             let mut keys = std::collections::BTreeSet::new();
@@ -658,6 +687,21 @@ async fn load_facts(
         facts.insert(codec::key(&f), f);
     }
     Ok(facts)
+}
+async fn load_selected_facts(
+    tx: &mut PgTransaction<'_>,
+    policy: &PolicyId,
+    updates: &[ExecutionRecord],
+) -> Result<BTreeMap<String, ExecutionRecord>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    let owner = policy.value().to_owned();
+    let keys: Vec<_> = updates.iter().map(codec::key).collect();
+    let rows=tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND key=ANY($3)")
+            .bind(tenant).bind(owner).bind(keys).fetch_all(c).await
+    })).await?;
+    let records = decode_fact_page(rows, tx.tenant_id(), policy.value())?;
+    Ok(records.into_iter().map(|f| (codec::key(&f), f)).collect())
 }
 async fn save_facts(
     tx: &mut PgTransaction<'_>,

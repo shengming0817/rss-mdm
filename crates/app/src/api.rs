@@ -244,6 +244,11 @@ pub(crate) fn from_state(
     let browser = Router::new()
         .merge(host_context)
         .nest("/api/v1", protected)
+        .nest(
+            "/api/v2",
+            crate::management::routes_v2()
+                .route_layer(middleware::from_fn_with_state(state.clone(), protect)),
+        )
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready))
         .with_state(state)
@@ -634,7 +639,13 @@ async fn revoke_registration(
 }
 
 async fn ready(State(app): State<Arc<App>>) -> Response {
-    if app.readiness.ready() {
+    if app.readiness.ready()
+        && app
+            .management
+            .automation_task
+            .get()
+            .is_some_and(rss_runtime::TaskStatus::is_running)
+    {
         Json(json!({"ready":true})).into_response()
     } else {
         (

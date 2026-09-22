@@ -240,6 +240,9 @@ pub enum ExecutionFailure {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 /// Closed rejection of policy lifecycle or planning input; no external effects are performed.
 pub enum PolicyError {
+    #[error("stream input count overflow")]
+    /// An input stream exceeded the representable record count; never wraps.
+    InputCountOverflow,
     #[error("invalid object key")]
     /// A role/device identifier violates its constructor's character or byte-length limits.
     InvalidKey,

@@ -30,8 +30,12 @@
 
 mod admission;
 mod codec;
+mod decisions;
 mod event;
 mod generations;
+pub use decisions::{
+    DecisionOrigin, DecisionRecord, DecisionValue, FieldEvidence, PredicateDecision,
+};
 mod model;
 mod runs;
 pub use generations::{BuildRequest, MAX_MEMBERS, MemberBuild, MemberPatch};

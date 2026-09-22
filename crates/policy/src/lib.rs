@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::cognitive_complexity)]
 mod fingerprint;
+pub use fingerprint::{ExecutionDigest, TargetDigest, stream_plan_id};
 mod identity;
 mod lifecycle;
 pub use identity::{DeviceId, PayloadId, PolicyId, RequestId, TargetSnapshotId};

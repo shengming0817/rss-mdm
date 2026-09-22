@@ -6,18 +6,19 @@ WITH tables AS (
 )
 SELECT
  current_setting('transaction_isolation')='serializable'
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['operations','plan_references','previews','resource_references','saved_queries','scope_versions','scopes'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['asset_dispatch','automation_jobs','candidate_heads','group_fields','operations','plan_references','policy_assignments','previews','resource_references','saved_queries','scope_results','scope_runs','scope_source_members','scope_sources','scope_versions','scopes'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN(SELECT relowner FROM tables))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity
  OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT')
- OR has_table_privilege(current_user,t.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR has_table_privilege(current_user,t.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
+ OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname IN('group_fields','scope_sources'))
  OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
- AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <> ((t.relname='scopes' AND a.attname IN('revision','deleted')) OR (t.relname='saved_queries' AND a.attname IN('revision','document'))) OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
+ AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <> ((t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision')) OR (t.relname='saved_queries' AND a.attname IN('revision','document')) OR (t.relname='automation_jobs' AND a.attname IN('forwarded','completed','failure','cursor','authority_revision')) OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','group_cursor','phase')) OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count','identity_revision','result_fingerprint')) OR (t.relname='policy_assignments' AND a.attname IN('scope','revision')) OR (t.relname='candidate_heads' AND a.attname IN('desired','candidate'))) OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND has_schema_privilege(current_user,n.oid,'CREATE'))
  AND has_schema_privilege(current_user,'mdm_management','USAGE')
  AND has_table_privilege(current_user,'mdm_access.audit','INSERT')

@@ -95,6 +95,45 @@ fn streamed_decisions_preserve_lifecycle_and_do_not_require_history_vectors() {
     ));
 }
 #[test]
+fn streamed_plan_identity_survives_page_boundaries_and_restart() {
+    let policy = active(2);
+    let mut targets = TargetDigest::empty(tenant());
+    for id in ["a", "b", "c"] {
+        targets.push(&key(id)).unwrap();
+    }
+    let mut restored = TargetDigest::empty(tenant());
+    restored.push(&key("a")).unwrap();
+    restored = TargetDigest::restore(tenant(), restored.state(), restored.count());
+    for id in ["b", "c"] {
+        restored.push(&key(id)).unwrap();
+    }
+    assert_eq!(targets.state(), restored.state());
+    let mut executions = ExecutionDigest::empty(policy.key().clone());
+    executions.push(&record(1, Progress::Running)).unwrap();
+    let id = TargetSnapshotId::new(tenant(), "frozen").unwrap();
+    let first = stream_plan_id(&policy, &id, 1, &targets, &executions).unwrap();
+    assert_eq!(
+        first,
+        stream_plan_id(&policy, &id, 1, &restored, &executions).unwrap()
+    );
+    executions.push(&record(2, Progress::Unknown)).unwrap();
+    assert_ne!(
+        first,
+        stream_plan_id(&policy, &id, 1, &restored, &executions).unwrap()
+    );
+    assert_ne!(
+        first,
+        stream_plan_id(
+            &policy,
+            &id,
+            2,
+            &restored,
+            &ExecutionDigest::empty(policy.key().clone())
+        )
+        .unwrap()
+    );
+}
+#[test]
 fn lifecycle_and_revision_conflicts() {
     let p = active(1);
     assert!(matches!(

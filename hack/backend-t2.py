@@ -70,7 +70,9 @@ def main():
         if args.write_catalogs:return
         failed=[]
         for name in NAMES:
-            for target,expected in [('consumer',CONSUMERS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]:
+            suites=[('consumer',CONSUMERS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]
+            if name=='policy': suites.append(('candidates',{'paged_candidate_save_preserves_execution_facts_and_source_invalidation'}))
+            for target,expected in suites:
                 result=subprocess.run(['cargo','test','--locked','-p',f'rss-mdm-{name}-postgres','--features','integration','--test',target,'--','--ignored','--test-threads=1'],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 try:

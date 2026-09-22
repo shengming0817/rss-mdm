@@ -216,7 +216,7 @@ async fn persistence_replay_aba_and_old_facts() {
                 &req(
                     &p,
                     rev,
-                    Command::ReplaceFacts {
+                    Command::RecordExecutions {
                         policy: p.clone(),
                         facts: vec![fact],
                     },
@@ -287,7 +287,7 @@ async fn persistence_replay_aba_and_old_facts() {
         &req(
             &p,
             rev,
-            Command::ReplaceFacts {
+            Command::RecordExecutions {
                 policy: p.clone(),
                 facts: vec![late],
             },

@@ -9,6 +9,7 @@ CREATE TABLE mdm_access.asset_authority_history (
 );
 CREATE INDEX asset_authority_by_device ON mdm_access.asset_authority_history(tenant_id,device,kind,identity,revision);
 CREATE INDEX asset_authority_by_registration ON mdm_access.asset_authority_history(tenant_id,registration,kind,identity,revision);
+CREATE INDEX asset_authority_device_watermark ON mdm_access.asset_authority_history(tenant_id,device,revision DESC);
 ALTER TABLE mdm_access.asset_authority_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.asset_authority_history FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_access.asset_authority_history

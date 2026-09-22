@@ -4,20 +4,33 @@ use crate::api::{App, RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
         .merge(publications::routes())
-        .merge(assets::routes())
         .route("/resources/{id}", get(resource_read).post(resource_write))
+}
+pub(crate) fn routes_v2() -> Router<Arc<App>> {
+    Router::new()
+        .merge(assets::routes())
         .route("/groups/{id}", get(group_read).post(group_write))
-        .route("/groups/{id}/preview", get(group_preview))
+        .route("/groups/{id}/previews", post(group_preview))
+        .route("/groups/{group}/results/{result}/{kind}", get(group_page))
+        .route("/scopes/{scope}/results/{result}/{kind}", get(scope_page))
+        .route(
+            "/policies/{policy}/results/{result}/{kind}",
+            get(policy_page),
+        )
         .route("/scopes/{id}", get(scope_read).post(scope_write))
         .route("/policies/{id}", get(policy_read).post(policy_write))
         .route("/policies/{id}/previews", post(preview))
         .route("/policies/{id}/plans", post(save))
         .route("/plan-previews/{id}", get(plan_read))
+        .route("/groups/{group}/tasks/{task}", get(group_task))
+        .route("/scopes/{scope}/tasks/{task}", get(scope_task))
 }
 async fn run(
     app: &App,
@@ -25,13 +38,13 @@ async fn run(
     audit: &Audit,
     permission: Permission,
     command: Command,
-) -> std::result::Result<Json<wire::Response>, Error> {
+) -> std::result::Result<Response, Error> {
     if matches!(
         &command,
         Command::GroupPreview { .. }
             | Command::Group {
                 change: Operation {
-                    input: GroupChange::Recompute { .. },
+                    input: GroupChange::Recompute,
                     ..
                 },
                 ..
@@ -47,6 +60,10 @@ async fn run(
         | Command::Scope { id, .. }
         | Command::ScopeRead { id }
         | Command::PlanRead { id } => audit.target(&id.to_string()),
+        Command::TaskRead { id, .. } => audit.target(&id.to_string()),
+        Command::GroupPage { group, .. } => audit.target(&group.to_string()),
+        Command::ScopePage { scope, .. } => audit.target(&scope.to_string()),
+        Command::PolicyPage { policy, .. } => audit.target(policy),
         Command::Policy { id, .. }
         | Command::PolicyRead { id }
         | Command::Preview { id, .. }
@@ -59,7 +76,11 @@ async fn run(
     audit.set_action(match command {
         Command::Preview { .. } => "plan_preview",
         Command::Save { .. } => "plan_save",
-        Command::GroupRead { .. }
+        Command::ScopePage { .. }
+        | Command::PolicyPage { .. }
+        | Command::GroupPage { .. }
+        | Command::TaskRead { .. }
+        | Command::GroupRead { .. }
         | Command::ScopeRead { .. }
         | Command::PolicyRead { .. }
         | Command::PlanRead { .. }
@@ -78,7 +99,7 @@ async fn run(
             Command::GroupPreview { .. }
                 | Command::Group {
                     change: Operation {
-                        input: GroupChange::Recompute { .. },
+                        input: GroupChange::Recompute,
                         ..
                     },
                     ..
@@ -89,7 +110,14 @@ async fn run(
         Ok(())
     };
     authorize()?;
-    wire::Response::decode(app.management.execute(&command, audit, &authorize).await?).map(Json)
+    let response =
+        wire::Response::decode(app.management.execute(&command, audit, &authorize).await?)?;
+    let status = if matches!(response, wire::Response::JobAccepted(_)) {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(response)).into_response())
 }
 macro_rules! read {
     ($handler:ident,$id:ty,$permission:ident,$command:ident) => {
@@ -98,7 +126,7 @@ macro_rules! read {
             Extension(auth): Extension<RequestAuth>,
             Extension(audit): Extension<Audit>,
             Path(id): Path<$id>,
-        ) -> std::result::Result<Json<wire::Response>, Error> {
+        ) -> std::result::Result<Response, Error> {
             run(
                 &app,
                 &auth,
@@ -121,8 +149,8 @@ async fn group_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
     Json(change): Json<Operation<GroupChange>>,
-) -> std::result::Result<Json<wire::Response>, Error> {
-    let permission = if matches!(change.input, GroupChange::Recompute { .. }) {
+) -> std::result::Result<Response, Error> {
+    let permission = if matches!(change.input, GroupChange::Recompute) {
         Permission::GroupRecompute
     } else {
         Permission::GroupWrite
@@ -142,7 +170,7 @@ async fn scope_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
     Json(change): Json<Operation<ScopeChange>>,
-) -> std::result::Result<Json<wire::Response>, Error> {
+) -> std::result::Result<Response, Error> {
     run(
         &app,
         &auth,
@@ -158,7 +186,7 @@ async fn policy_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(change): Json<Operation<PolicyChange>>,
-) -> std::result::Result<Json<wire::Response>, Error> {
+) -> std::result::Result<Response, Error> {
     run(
         &app,
         &auth,
@@ -174,7 +202,7 @@ async fn preview(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(request): Json<Operation<PreviewInput>>,
-) -> std::result::Result<Json<wire::Response>, Error> {
+) -> std::result::Result<Response, Error> {
     if request.expected_revision != request.input.expected_revision {
         return Err(Error::Malformed);
     }
@@ -193,7 +221,7 @@ async fn save(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(request): Json<Operation<SavePlan>>,
-) -> std::result::Result<Json<wire::Response>, Error> {
+) -> std::result::Result<Response, Error> {
     run(
         &app,
         &auth,
@@ -203,18 +231,13 @@ async fn save(
     )
     .await
 }
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Revision {
-    expected_revision: u64,
-}
 async fn group_preview(
     State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
-    Query(revision): Query<Revision>,
-) -> std::result::Result<Json<wire::Response>, Error> {
+    Json(request): Json<Operation<EmptyInput>>,
+) -> std::result::Result<Response, Error> {
     run(
         &app,
         &auth,
@@ -222,7 +245,8 @@ async fn group_preview(
         Permission::GroupRead,
         Command::GroupPreview {
             id,
-            expected_revision: revision.expected_revision,
+            operation: request.operation_id,
+            expected_revision: request.expected_revision,
         },
     )
     .await
@@ -234,13 +258,117 @@ async fn resource_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
     Json(change): Json<Operation<resources::Change>>,
-) -> std::result::Result<Json<wire::Response>, Error> {
+) -> std::result::Result<Response, Error> {
     run(
         &app,
         &auth,
         &audit,
         Permission::ResourceWrite,
         Command::Resource { id, change },
+    )
+    .await
+}
+
+async fn group_task(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((group, task)): Path<(Uuid, Uuid)>,
+) -> std::result::Result<Response, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Permission::GroupRead,
+        Command::TaskRead {
+            id: task,
+            target: group.to_string(),
+            family: automation::TaskKind::Group,
+        },
+    )
+    .await
+}
+async fn scope_task(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((scope, task)): Path<(Uuid, Uuid)>,
+) -> std::result::Result<Response, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Permission::ScopeRead,
+        Command::TaskRead {
+            id: task,
+            target: scope.to_string(),
+            family: automation::TaskKind::Scope,
+        },
+    )
+    .await
+}
+
+async fn group_page(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((group, result, kind)): Path<(Uuid, Uuid, pages::GroupPageKind)>,
+    Query(query): Query<pages::PageQuery>,
+) -> std::result::Result<Response, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Permission::GroupRead,
+        Command::GroupPage {
+            group,
+            result,
+            projection: kind,
+            query,
+        },
+    )
+    .await
+}
+
+async fn scope_page(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((scope, result, projection)): Path<(Uuid, Uuid, pages::ScopePageKind)>,
+    Query(query): Query<pages::PageQuery>,
+) -> std::result::Result<Response, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Permission::ScopeRead,
+        Command::ScopePage {
+            scope,
+            result,
+            projection,
+            query,
+        },
+    )
+    .await
+}
+async fn policy_page(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((policy, result, projection)): Path<(String, Uuid, pages::PolicyPageKind)>,
+    Query(query): Query<pages::PageQuery>,
+) -> std::result::Result<Response, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Permission::PolicyRead,
+        Command::PolicyPage {
+            policy,
+            result,
+            projection,
+            query,
+        },
     )
     .await
 }

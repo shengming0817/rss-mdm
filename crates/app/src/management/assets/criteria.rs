@@ -148,7 +148,10 @@ pub(in crate::management) fn criteria_view(c: &g::Criteria) -> Result<Criteria> 
         }
     })
 }
-pub(super) fn snapshot(tenant: TenantId, devices: &[DeviceView]) -> Result<g::Snapshot> {
+pub(in crate::management) fn snapshot(
+    tenant: TenantId,
+    devices: &[DeviceView],
+) -> Result<g::Snapshot> {
     let version = digest(devices)?;
     let objects = devices
         .iter()

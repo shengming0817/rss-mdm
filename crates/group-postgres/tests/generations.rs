@@ -158,6 +158,31 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
             .await,
     );
     assert_eq!(page, vec!["device-0001000"]);
+    let evidence = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move {
+                    s.build_decisions_in(tx, request.id, Some("device-0000999".into()), 1000)
+                        .await
+                })
+            })
+            .await,
+    );
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].device, "device-0001000");
+    assert_eq!(evidence[0].origin, DecisionOrigin::Rule);
+    assert_eq!(evidence[0].decision, DecisionValue::Match);
+    let changes = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.build_changes_in(tx, request.id, None, 1000).await })
+            })
+            .await,
+    );
+    assert_eq!(changes.added.len(), 1000);
+    assert!(changes.removed.is_empty());
+    assert_eq!(changes.next.as_deref(), Some("device-0000999"));
+
     runtime.close().await;
 }
 

@@ -35,8 +35,8 @@ pub enum Command {
         /// Caller-owned assignment identities and revisions.
         references: Vec<AssignmentReference>,
     },
-    /// Replace caller-confirmed facts for existing execution keys; does not synthesize cancellation results.
-    ReplaceFacts {
+    /// Record caller-confirmed execution admissions or progress. The host owns their authority; saving a plan never calls this command.
+    RecordExecutions {
         /// Policy to mutate in this tenant.
         policy: PolicyId,
         /// Caller-confirmed snapshots for existing full execution keys.
@@ -67,7 +67,7 @@ impl Request {
             Command::Create { policy }
             | Command::Transition { policy, .. }
             | Command::SelectTargets { policy, .. }
-            | Command::ReplaceFacts { policy, .. }
+            | Command::RecordExecutions { policy, .. }
             | Command::Replan { policy } => policy,
         }
     }
@@ -85,7 +85,7 @@ impl Request {
                 references,
                 ..
             } => json!([5, codec::targets(snapshot), references]),
-            Command::ReplaceFacts { facts, .. } => {
+            Command::RecordExecutions { facts, .. } => {
                 json!([6, facts.iter().map(codec::fact).collect::<Vec<_>>()])
             }
             Command::Replan { .. } => json!([7]),
@@ -112,6 +112,7 @@ pub struct Aggregate {
     pub(crate) installed: Option<u64>,
     pub(crate) installed_request: Option<RequestId>,
     pub(crate) at: Option<Timepoint>,
+    pub(crate) references_current: bool,
 }
 impl Aggregate {
     /// Construct an unpersisted empty aggregate. Persist it through a Create request.
@@ -125,6 +126,7 @@ impl Aggregate {
             installed: None,
             installed_request: None,
             at: None,
+            references_current: true,
         }
     }
     /// Return the policy identity or lifecycle represented by this value.
@@ -153,7 +155,7 @@ impl Aggregate {
     }
     /// Whether the last explicit installation still matches the current storage revision.
     pub fn plan_is_fresh(&self) -> bool {
-        self.plan.is_some() && self.installed == Some(self.revision)
+        self.plan.is_some() && self.installed == Some(self.revision) && self.references_current
     }
     pub(crate) fn advance(&mut self) -> Result<(), Rejection> {
         self.revision = self
@@ -243,6 +245,7 @@ impl Aggregate {
             installed,
             installed_request,
             at,
+            references_current: true,
         })
     }
 }

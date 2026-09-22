@@ -24,6 +24,7 @@ CREATE TABLE mdm_group.member_rows (
  tenant_id uuid NOT NULL, run_id uuid NOT NULL,
  object_id text COLLATE "C" NOT NULL CHECK(octet_length(object_id) BETWEEN 1 AND 256),
  matched boolean NOT NULL, evidence bytea NOT NULL CHECK(octet_length(evidence)<=1048576),
+ evidence_digest bytea NOT NULL CHECK(octet_length(evidence_digest)=32),
  PRIMARY KEY(tenant_id,run_id,object_id),
  FOREIGN KEY(tenant_id,run_id) REFERENCES mdm_group.member_runs(tenant_id,id)
 );

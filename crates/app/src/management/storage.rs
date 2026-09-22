@@ -22,6 +22,7 @@ pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>
         Command::PublicationIntent { request, .. } => Some(request.operation_id),
         Command::Resource { change, .. } => Some(change.operation_id),
         Command::Group { change, .. } => Some(change.operation_id),
+        Command::GroupPreview { operation, .. } => Some(*operation),
         Command::Scope { change, .. } => Some(change.operation_id),
         Command::Policy { change, .. } => Some(change.operation_id),
         Command::Preview { request, .. } => Some(request.operation_id),
@@ -114,14 +115,6 @@ pub(super) async fn receipt(
     })
     .await?;
     Ok(())
-}
-pub(super) async fn preview(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Preview>> {
-    let tenant = tx.tenant_id().to_string();
-    let raw=tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar::<_,String>("SELECT document::text FROM mdm_management.previews WHERE tenant_id=$1::uuid AND id=$2::uuid")
-            .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-    })).await?;
-    raw.map(|v| stored(serde_json::from_str(&v))).transpose()
 }
 pub(super) async fn device(tx: &mut PgTransaction<'_>, id: &str) -> Result<DeviceIdentity> {
     input(rss_mdm_scope::DeviceId::new(tx.tenant_id(), id))?;

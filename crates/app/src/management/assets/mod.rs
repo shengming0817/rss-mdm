@@ -6,7 +6,7 @@ use super::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-mod criteria;
+pub(in crate::management) mod criteria;
 mod http;
 mod model;
 mod query;
@@ -84,15 +84,6 @@ impl Management {
             tenant_id: self.tenant.to_string(),
             asset: response,
         })
-    }
-    pub(super) async fn assets(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        _at: Timepoint,
-    ) -> Result<(rss_mdm_group_postgres::core::Snapshot, Value)> {
-        let devices = self.load_assets(tx, &ReadScope::all()).await?;
-        let snapshot = criteria::snapshot(self.tenant, &devices)?;
-        Ok((snapshot, json(&devices)?))
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
