@@ -218,6 +218,7 @@ pub(crate) fn from_state(
     let authentication = state.identity.routes();
     let audit_tenant = state.identity.tenant.to_string();
     let access = state.access.clone();
+    let requests = state.requests.clone();
     let protected_v1 = Router::new()
         .merge(crate::management::routes())
         .merge(crate::commands::routes())
@@ -258,6 +259,7 @@ pub(crate) fn from_state(
                 host,
                 clock: monotonic,
                 access,
+                requests,
                 tenant: audit_tenant,
             },
             envelope,
@@ -274,6 +276,7 @@ pub(crate) struct Envelope {
     pub(crate) host: String,
     pub(crate) clock: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<AccessStore>,
+    pub(crate) requests: Arc<tokio::sync::Semaphore>,
     pub(crate) tenant: String,
 }
 pub(crate) async fn envelope(
@@ -317,6 +320,7 @@ pub(crate) async fn envelope(
         _ => "protected_request",
     };
     let soap = route.starts_with("/EnrollmentServer/");
+    let agent_route = route.starts_with("/api/agent/v1/");
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
@@ -334,7 +338,7 @@ pub(crate) async fn envelope(
     {
         Error::Malformed.into_response()
     } else {
-        bounded_body(request, next).await
+        bounded_body(request, next, agent_route, envelope.requests.clone()).await
     };
     let snapshot = audit.snapshot();
     if matches!(
@@ -403,13 +407,37 @@ pub(crate) fn secure_response(mut response: Response, request_id: uuid::Uuid) ->
     );
     response
 }
-async fn bounded_body(request: Request, next: Next) -> Response {
+async fn bounded_body(
+    request: Request,
+    next: Next,
+    agent: bool,
+    requests: Arc<tokio::sync::Semaphore>,
+) -> Response {
     // Bound ingress before starting any transaction. Component operations then settle
     // within their own budgets; product operations are bounded after authentication.
+    let _agent_permit = if agent {
+        match requests.try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return crate::agent::ingress_error(
+                    rss_mdm_agent_wire::ErrorCode::ServiceUnavailable,
+                );
+            }
+        }
+    } else {
+        None
+    };
     let (parts, body) = request.into_parts();
     match tokio::time::timeout(
         Duration::from_secs(8),
-        axum::body::to_bytes(body, 2 * 1024 * 1024),
+        axum::body::to_bytes(
+            body,
+            if agent {
+                rss_mdm_agent_wire::MAX_REQUEST_BYTES
+            } else {
+                2 * 1024 * 1024
+            },
+        ),
     )
     .await
     {
@@ -417,7 +445,13 @@ async fn bounded_body(request: Request, next: Next) -> Response {
             next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
                 .await
         }
+        Ok(Err(_)) if agent => {
+            crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::MalformedRequest)
+        }
         Ok(Err(_)) => axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) if agent => {
+            crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable)
+        }
         Err(_) => Error::Unavailable(Failure::RequestDeadline).into_response(),
     }
 }
@@ -699,6 +733,7 @@ mod tests {
                         host: "mdm.example.test".into(),
                         clock: monotonic(),
                         access,
+                        requests: Arc::new(tokio::sync::Semaphore::new(4)),
                         tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },
                     envelope,
@@ -780,6 +815,7 @@ mod tests {
                         host: "mdm.example.test".to_owned(),
                         clock: monotonic(),
                         access: Arc::new(AccessStore::unconnected()),
+                        requests: Arc::new(tokio::sync::Semaphore::new(4)),
                         tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },
                     envelope,

@@ -26,7 +26,6 @@ use sqlx::Row;
 use std::{future::Future, sync::Arc, time::Duration};
 use uuid::Uuid;
 const MAX_PENDING_REPORTS_PER_REGISTRATION: i64 = 32;
-const RETAINED_DELIVERED_REPORTS_PER_REGISTRATION: i64 = 224;
 
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -89,17 +88,16 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
 }
 
 async fn bounded<T>(
-    app: &Arc<App>,
+    _app: &Arc<App>,
     work: impl Future<Output = Result<T, AgentError>>,
 ) -> Result<T, AgentError> {
-    let _permit = app
-        .requests
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Error::Unavailable(Failure::Capacity))?;
     tokio::time::timeout(Duration::from_secs(8), work)
         .await
         .map_err(|_| AgentError::App(Error::Unavailable(Failure::RequestDeadline)))?
+}
+
+pub(crate) fn ingress_error(code: wire::ErrorCode) -> Response {
+    AgentError::Wire(code).into_response()
 }
 
 async fn register(
@@ -253,31 +251,52 @@ async fn report_inner(
     if live_scope != scope {
         return Err(Error::Unauthorized.into());
     }
-    if let Some(row) = sqlx::query("SELECT digest,received_at FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND id=$4::uuid FOR SHARE")
-        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(input.report_id().to_string()).fetch_optional(&mut *tx).await.map_err(db)? {
-        if row.try_get::<String, _>("digest").map_err(db)? != digest {
+    // V1 report ids are tenant-global. This lock covers the absent-row case across registrations;
+    // revalidate_source already holds the channel lock that serializes capacity and retention.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2467))")
+        .bind(format!("{}:{}", principal.tenant(), input.report_id()))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    if let Some(row) = sqlx::query("SELECT registration::text,source,epoch::text,digest,sealed_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR SHARE")
+        .bind(principal.tenant().to_string()).bind(input.report_id().to_string()).fetch_optional(&mut *tx).await.map_err(db)? {
+        if row.try_get::<String, _>("registration").map_err(db)? != principal.registration().to_string()
+            || row.try_get::<String, _>("source").map_err(db)? != InventorySource::AgentBuiltin.as_str()
+            || row.try_get::<String, _>("epoch").map_err(db)? != scope.epoch().as_str()
+            || row.try_get::<String, _>("digest").map_err(db)? != digest {
             return Err(Error::Conflict.into());
         }
-        let ack = ack(input.report_id(), row.try_get("received_at").map_err(db)?);
+        let ack = ack(input.report_id(), row.try_get("sealed_at").map_err(db)?);
         tx.rollback().await.map_err(db)?;
         return Ok((StatusCode::ACCEPTED, Json(ack)));
     }
-    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND delivery_pending")
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND delivery_pending")
         .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
     if pending >= MAX_PENDING_REPORTS_PER_REGISTRATION {
         return Err(Error::Unavailable(Failure::Capacity).into());
     }
-    sqlx::query("DELETE FROM mdm_access.agent_reports r WHERE r.tenant_id=$1::uuid AND r.registration=$2::uuid AND r.source='agent.builtin' AND r.epoch=$3::uuid AND NOT r.delivery_pending AND r.id IN (SELECT id FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND NOT delivery_pending ORDER BY received_at DESC,id DESC OFFSET $4)")
-        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(RETAINED_DELIVERED_REPORTS_PER_REGISTRATION).execute(&mut *tx).await.map_err(db)?;
+    let _: i64 = sqlx::query_scalar("SELECT mdm_access.prune_agent_collections($1::uuid,$2::uuid)")
+        .bind(principal.registration().to_string())
+        .bind(scope.epoch().as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
     let received_at: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.agent_reports(tenant_id,registration,source,epoch,id,sequence,scope,batch,digest,received_at) VALUES($1::uuid,$2::uuid,'agent.builtin',$3::uuid,$4::uuid,$5,$6,$7,$8,$9)")
+    let result = match input.body() {
+        wire::ReportBody::Snapshot(_) => "snapshot",
+        wire::ReportBody::Partial(_) => "partial",
+        wire::ReportBody::Failed { .. } => "failed",
+    };
+    let attempts = crate::collection::Attempts::agent(input.body(), received_at)?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,NULL,NULL,NULL,NULL,$9,$11,$10,'complete',$7,$8,$9,true)")
         .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(input.report_id().to_string())
         .bind(i64::try_from(input.sequence()).map_err(|_| Error::Malformed)?).bind(scope.encode().map_err(|_| Error::Malformed)?)
-        .bind(batch.encode()).bind(&digest).bind(received_at).execute(&mut *tx).await.map_err(db)?;
+        .bind(batch.encode()).bind(&digest).bind(received_at).bind(result)
+        .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
     app.access
         .commit_audited_status(tx, audit, None, 202)
         .await?;
@@ -325,8 +344,8 @@ async fn status_inner(
     let (report, received_at) = AccessStore::agent_report_in(&mut tx, &scope, id)
         .await?
         .ok_or(AgentError::Wire(wire::ErrorCode::ReportNotFound))?;
-    let delivery = app.collection.inspect_agent(&report).await?;
     tx.commit().await.map_err(db)?;
+    let delivery = app.collection.inspect_agent(&report).await?;
     let observation = match delivery.receipt.as_ref().map(|r| r.decision.outcome()) {
         None => wire::ObservationStatus::Pending,
         Some(rss_observation::SyncOutcome::Snapshot) => wire::ObservationStatus::Snapshot,

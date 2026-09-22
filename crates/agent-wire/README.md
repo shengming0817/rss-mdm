@@ -10,3 +10,8 @@ crate and binds the archive SHA-256; neither proof is a registry publication.
 
 V1 rejects unknown fields, enum values, capabilities and versions. A semantic extension requires
 a new wire version and fixtures rather than an in-place fallback.
+
+`schema/agent-v1.schema-manifest.json` is the complete versioned surface: registration request and
+receipt, report request/ack/status, and the closed error body. `SCHEMA_FINGERPRINT` binds those
+ordered schema bytes, and source/candidate consumers deserialize representative server outputs in
+addition to constructing requests.

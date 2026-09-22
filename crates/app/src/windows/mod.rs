@@ -141,6 +141,7 @@ pub(crate) fn routers(
                     host: origin.trim_start_matches("https://").into(),
                     clock: clock.clone(),
                     access: app.access.clone(),
+                    requests: app.requests.clone(),
                     tenant: app.identity.tenant.to_string(),
                 },
                 envelope,

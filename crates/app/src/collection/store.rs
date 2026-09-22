@@ -312,21 +312,8 @@ pub(crate) async fn terminate_session(
 pub(crate) struct DurableReport {
     scope: Scope,
     batch: Batch,
-    owner: ReportOwner,
-}
-#[derive(Clone, Copy)]
-enum ReportOwner {
-    Collection,
-    Agent,
 }
 impl DurableReport {
-    pub(crate) fn agent(scope: Scope, batch: Batch) -> Self {
-        Self {
-            scope,
-            batch,
-            owner: ReportOwner::Agent,
-        }
-    }
     pub(crate) fn scope(&self) -> &Scope {
         &self.scope
     }
@@ -337,27 +324,12 @@ impl DurableReport {
 impl AccessStore {
     pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
         let mut tx = self.begin(tenant).await?;
-        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence LIMIT 32"))
+        let rows = sqlx::query("SELECT scope,batch,digest FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32")
             .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
-        let mut reports: Vec<DurableReport> = rows
+        let reports: Vec<DurableReport> = rows
             .into_iter()
-            .map(|row| {
-                let run = Run::from_row(row)?;
-                if run.sealed_at.is_none() {
-                    return Err(corrupt());
-                }
-                Ok(DurableReport {
-                    scope: run.scope,
-                    batch: run.batch.ok_or_else(corrupt)?,
-                    owner: ReportOwner::Collection,
-                })
-            })
+            .map(durable_report)
             .collect::<Result<_, Error>>()?;
-        let agent_rows = sqlx::query("SELECT scope,batch,digest FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32")
-            .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
-        for row in agent_rows {
-            reports.push(agent_report(row)?);
-        }
         tx.commit().await.map_err(db)?;
         Ok(reports)
     }
@@ -367,26 +339,18 @@ impl AccessStore {
         scope: &Scope,
         id: Uuid,
     ) -> Result<Option<(DurableReport, i64)>, Error> {
-        let row = sqlx::query("SELECT scope,batch,digest,received_at FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid")
+        let row = sqlx::query("SELECT scope,batch,digest,sealed_at AS received_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid")
             .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.to_string())
             .fetch_optional(connection).await.map_err(db)?;
         row.map(|row| {
             let received_at = row.try_get("received_at").map_err(db)?;
-            Ok((agent_report(row)?, received_at))
+            Ok((durable_report(row)?, received_at))
         })
         .transpose()
     }
     pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
         let mut tx = self.begin(&report.scope.tenant().to_string()).await?;
-        let query = match report.owner {
-            ReportOwner::Collection => {
-                "UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending"
-            }
-            ReportOwner::Agent => {
-                "UPDATE mdm_access.agent_reports SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending"
-            }
-        };
-        sqlx::query(query)
+        sqlx::query("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending")
             .bind(report.scope.tenant().to_string())
             .bind(report.batch.id().as_str())
             .bind(fingerprint(&report.batch, &report.scope)?)
@@ -410,7 +374,7 @@ impl AccessStore {
     }
 }
 
-fn agent_report(row: PgRow) -> Result<DurableReport, Error> {
+fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
     let scope: Scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
         .map_err(|_| corrupt())?;
     let bytes: Vec<u8> = row.try_get("batch").map_err(db)?;
@@ -421,7 +385,7 @@ fn agent_report(row: PgRow) -> Result<DurableReport, Error> {
         return Err(corrupt());
     }
     rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
-    Ok(DurableReport::agent(scope, batch))
+    Ok(DurableReport { scope, batch })
 }
 
 /// Restore exact product evidence without using the mutable Inventory projection.

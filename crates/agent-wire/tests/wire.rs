@@ -1,8 +1,11 @@
 use rss_mdm_agent_wire::{
-    Capability, CollectedValue, ErrorCode, FailureCode, Field, RegistrationRequest, ReportBody,
-    ReportRequest, Secret, WireError,
+    Capability, CollectedValue, ErrorBody, ErrorCode, FailureCode, Field, IntakeStatus,
+    ObservationStatus, ProjectionStatus, RegistrationReceipt, RegistrationRequest, ReportAck,
+    ReportBody, ReportRequest, ReportSource, ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST,
+    Secret, WireError,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 fn secret() -> String {
@@ -109,6 +112,16 @@ fn published_schemas_match_wire_rejections() {
     assert!(registration_validator.is_valid(&valid_registration));
     assert!(serde_json::from_value::<RegistrationRequest>(valid_registration).is_ok());
 
+    for operation in [
+        "8CC2FB40-21A1-4390-B4EC-702087C284B5",
+        "8cc2fb4021a14390b4ec702087c284b5",
+    ] {
+        let mut invalid = registration();
+        invalid["operationId"] = json!(operation);
+        assert!(!registration_validator.is_valid(&invalid));
+        assert!(serde_json::from_value::<RegistrationRequest>(invalid).is_err());
+    }
+
     let valid_report = json!({
         "wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,
         "body":{"kind":"snapshot","values":[
@@ -118,6 +131,7 @@ fn published_schemas_match_wire_rejections() {
     for invalid in [
         json!({"wireVersion":1,"reportId":Uuid::nil(),"sequence":1,"observedAt":1,"body":{"kind":"snapshot","values":[]}}),
         json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":9223372036854775808_u64,"observedAt":1,"body":{"kind":"snapshot","values":[]}}),
+        json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":9223372036854775808_u64,"body":{"kind":"snapshot","values":[]}}),
         json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"body":{"kind":"partial","values":[
             {"field":"device.model","value":{"kind":"known","value":"A"}},
             {"field":"device.model","value":{"kind":"known","value":"B"}}
@@ -140,6 +154,108 @@ fn published_schemas_match_wire_rejections() {
     }
     assert!(report_validator.is_valid(&valid_report));
     assert!(serde_json::from_value::<ReportRequest>(valid_report).is_ok());
+}
+
+#[test]
+fn manifest_covers_and_fingerprints_every_public_shape() {
+    let manifest: Value = serde_json::from_str(SCHEMA_MANIFEST).unwrap();
+    assert_eq!(manifest["wireVersion"], 1);
+    assert_eq!(
+        manifest["schemas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "RegistrationRequest",
+            "RegistrationReceipt",
+            "ReportRequest",
+            "ReportAck",
+            "ReportStatus",
+            "ErrorBody"
+        ]
+    );
+    let schemas = [
+        include_bytes!("../schema/registration-request-v1.schema.json").as_slice(),
+        include_bytes!("../schema/registration-receipt-v1.schema.json").as_slice(),
+        include_bytes!("../schema/report-request-v1.schema.json").as_slice(),
+        include_bytes!("../schema/report-ack-v1.schema.json").as_slice(),
+        include_bytes!("../schema/report-status-v1.schema.json").as_slice(),
+        include_bytes!("../schema/error-body-v1.schema.json").as_slice(),
+    ];
+    let mut digest = Sha256::new();
+    for schema in schemas {
+        digest.update(schema);
+    }
+    assert_eq!(format!("{:x}", digest.finalize()), SCHEMA_FINGERPRINT);
+}
+
+#[test]
+fn response_and_error_schemas_match_strict_consumers() {
+    let operation = Uuid::new_v4();
+    let registration = Uuid::new_v4();
+    let epoch = Uuid::new_v4();
+    let report = Uuid::new_v4();
+    let receipt = RegistrationReceipt {
+        wire_version: 1,
+        operation_id: operation,
+        device_id: "device-1".into(),
+        registration_id: registration,
+        generation: 1,
+        source: ReportSource::AgentBuiltin,
+        epoch,
+        capabilities: vec![Capability::InventoryBasicV1],
+    };
+    let ack = ReportAck {
+        wire_version: 1,
+        report_id: report,
+        received_at: 1,
+        intake: IntakeStatus::Durable,
+    };
+    let status = ReportStatus {
+        ack: ack.clone(),
+        observation: ObservationStatus::Pending,
+        projection: ProjectionStatus::Pending,
+    };
+    let values: [(Value, &str); 4] = [
+        (
+            serde_json::to_value(receipt).unwrap(),
+            include_str!("../schema/registration-receipt-v1.schema.json"),
+        ),
+        (
+            serde_json::to_value(ack).unwrap(),
+            include_str!("../schema/report-ack-v1.schema.json"),
+        ),
+        (
+            serde_json::to_value(status).unwrap(),
+            include_str!("../schema/report-status-v1.schema.json"),
+        ),
+        (
+            serde_json::to_value(ErrorBody {
+                code: ErrorCode::OperationUnknown,
+            })
+            .unwrap(),
+            include_str!("../schema/error-body-v1.schema.json"),
+        ),
+    ];
+    for (value, schema) in values {
+        let schema: Value = serde_json::from_str(schema).unwrap();
+        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
+    }
+
+    let uppercase = json!({
+        "wireVersion":1,"reportId":report.to_string().to_uppercase(),
+        "receivedAt":1,"intake":"durable"
+    });
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/report-ack-v1.schema.json")).unwrap();
+    assert!(
+        !jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&uppercase)
+    );
+    assert!(serde_json::from_value::<ReportAck>(uppercase).is_err());
 }
 
 #[test]

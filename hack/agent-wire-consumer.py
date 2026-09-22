@@ -14,6 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "agent-wire-consumer"
 PACKAGE = "rss-mdm-agent-wire"
 VERSION = "1.0.0"
+SCHEMAS = [
+    "registration-request-v1.schema.json", "registration-receipt-v1.schema.json",
+    "report-request-v1.schema.json", "report-ack-v1.schema.json",
+    "report-status-v1.schema.json", "error-body-v1.schema.json",
+]
 
 def require(condition, message):
     if not condition:
@@ -35,7 +40,8 @@ rss-mdm-agent-wire = {{ {dependency} }}
 serde_json = "1"
 uuid = {{ version = "1", features = ["v4"] }}
 ''')
-    (base / "tests" / "contract.rs").write_text(r'''use rss_mdm_agent_wire::{Capability, RegistrationRequest, ReportBody, ReportRequest, Secret};
+    (base / "tests" / "contract.rs").write_text(r'''use rss_mdm_agent_wire::{Capability, ErrorBody, RegistrationReceipt, RegistrationRequest, ReportAck, ReportBody, ReportRequest, ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST, Secret};
+use serde_json::json;
 use uuid::Uuid;
 
 #[test]
@@ -50,6 +56,23 @@ fn independent_agent_consumes_exact_v1() {
     ).unwrap();
     assert!(matches!(report.body(), ReportBody::Snapshot(_)));
     assert_eq!(serde_json::to_value(&registration).unwrap()["wireVersion"], 1);
+    let operation = Uuid::new_v4();
+    let registration_id = Uuid::new_v4();
+    let epoch = Uuid::new_v4();
+    let report_id = Uuid::new_v4();
+    let _: RegistrationReceipt = serde_json::from_value(json!({
+        "wireVersion":1,"operationId":operation,"deviceId":"device-1",
+        "registrationId":registration_id,"generation":1,"source":"agent.builtin",
+        "epoch":epoch,"capabilities":["inventory.basic.v1"]
+    })).unwrap();
+    let ack = json!({"wireVersion":1,"reportId":report_id,"receivedAt":1,"intake":"durable"});
+    let _: ReportAck = serde_json::from_value(ack.clone()).unwrap();
+    let _: ReportStatus = serde_json::from_value(json!({
+        "ack":ack,"observation":"pending","projection":"pending"
+    })).unwrap();
+    let _: ErrorBody = serde_json::from_value(json!({"code":"operation_unknown"})).unwrap();
+    assert!(SCHEMA_MANIFEST.contains("RegistrationReceipt"));
+    assert_eq!(SCHEMA_FINGERPRINT.len(), 64);
 }
 ''')
     logs = []
@@ -73,6 +96,7 @@ def main():
         if path.is_file(): path.unlink()
     require(not subprocess.check_output(["/usr/bin/git", "status", "--porcelain"], cwd=ROOT, text=True).strip(), "commit proof inputs before consumption")
     head = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    schema_fingerprint = hashlib.sha256(b"".join((ROOT / "crates" / "agent-wire" / "schema" / name).read_bytes() for name in SCHEMAS)).hexdigest()
     clean_env = {k:v for k,v in os.environ.items() if not k.startswith("CARGO_") and k not in ("RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
     clean_env.update(GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never", GIT_ASKPASS="/usr/bin/false")
     with tempfile.TemporaryDirectory(prefix="agent-wire-consumer-", dir="/tmp") as directory:
@@ -95,7 +119,7 @@ def main():
         candidate_result = consumer(base / "candidate-consumer", f'path = "{candidate_path}"', None, clean_env)
         (OUT / "git.log").write_text(source_result.pop("log"))
         (OUT / "candidate.log").write_text(packaged.stdout + packaged.stderr + candidate_result.pop("log"))
-    result = {"status":"passed","head":head,"package":PACKAGE,"version":VERSION,"archiveSha256":archive_sha,"source":source_result,"candidate":candidate_result}
+    result = {"status":"passed","head":head,"package":PACKAGE,"version":VERSION,"schemaFingerprint":schema_fingerprint,"archiveSha256":archive_sha,"source":source_result,"candidate":candidate_result}
     (OUT / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     return 0

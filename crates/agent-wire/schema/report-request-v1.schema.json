@@ -6,9 +6,9 @@
   "required": ["wireVersion", "reportId", "sequence", "observedAt", "body"],
   "properties": {
     "wireVersion": { "const": 1 },
-    "reportId": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", "not": { "const": "00000000-0000-0000-0000-000000000000" } },
+    "reportId": { "type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": { "const": "00000000-0000-0000-0000-000000000000" } },
     "sequence": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 },
-    "observedAt": { "type": "integer", "minimum": 0 },
+    "observedAt": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 },
     "body": {
       "oneOf": [
         { "$ref": "#/$defs/valuesBody", "properties": { "kind": { "const": "snapshot" } } },

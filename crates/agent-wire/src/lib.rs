@@ -14,6 +14,11 @@ use zeroize::Zeroizing;
 pub const WIRE_VERSION: u8 = 1;
 /// Maximum complete JSON request accepted by the product adapter.
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
+/// Canonical manifest for every public Agent V1 JSON shape.
+pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v1.schema-manifest.json");
+/// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
+pub const SCHEMA_FINGERPRINT: &str =
+    "838dd0c2695c112c18b59022e579bb18b9f41601d2bbfe57a632fdd616f7bf9b";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +32,29 @@ impl std::fmt::Display for WireError {
     }
 }
 impl std::error::Error for WireError {}
+
+mod strict_uuid {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &Uuid, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.hyphenated().to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Uuid, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let bytes = value.as_bytes();
+        let lexical = bytes.len() == 36
+            && bytes.iter().enumerate().all(|(index, byte)| match index {
+                8 | 13 | 18 | 23 => *byte == b'-',
+                _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(byte),
+            });
+        lexical
+            .then(|| Uuid::parse_str(&value).ok())
+            .flatten()
+            .filter(|uuid| !uuid.is_nil())
+            .ok_or_else(|| D::Error::custom(WireError::InvalidValue))
+    }
+}
 
 /// Canonical 256-bit base64url secret. Debug output is always redacted.
 #[derive(Clone, PartialEq, Eq)]
@@ -78,7 +106,9 @@ pub enum Capability {
 #[serde(rename_all = "camelCase")]
 pub struct RegistrationRequest {
     wire_version: u8,
+    #[serde(with = "strict_uuid")]
     operation_id: Uuid,
+    #[serde(with = "strict_uuid")]
     enrollment_id: Uuid,
     password: Secret,
     credential: Secret,
@@ -88,7 +118,9 @@ pub struct RegistrationRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRegistrationRequest {
     wire_version: u8,
+    #[serde(with = "strict_uuid")]
     operation_id: Uuid,
+    #[serde(with = "strict_uuid")]
     enrollment_id: Uuid,
     password: Secret,
     credential: Secret,
@@ -160,25 +192,68 @@ pub enum ReportSource {
 }
 
 /// Durable registration result. It never contains the submitted credential.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegistrationReceipt {
     /// Exact wire major.
     pub wire_version: u8,
     /// Registration operation replay identity.
+    #[serde(with = "strict_uuid")]
     pub operation_id: Uuid,
     /// Server-owned product device identity.
     pub device_id: String,
     /// Immutable registration identity.
+    #[serde(with = "strict_uuid")]
     pub registration_id: Uuid,
     /// Channel-local registration generation.
     pub generation: u64,
     /// Authorized report source.
     pub source: ReportSource,
     /// Observation epoch for this registration.
+    #[serde(with = "strict_uuid")]
     pub epoch: Uuid,
     /// Exact accepted capability set.
     pub capabilities: Vec<Capability>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRegistrationReceipt {
+    wire_version: u8,
+    #[serde(with = "strict_uuid")]
+    operation_id: Uuid,
+    device_id: String,
+    #[serde(with = "strict_uuid")]
+    registration_id: Uuid,
+    generation: u64,
+    source: ReportSource,
+    #[serde(with = "strict_uuid")]
+    epoch: Uuid,
+    capabilities: Vec<Capability>,
+}
+impl<'de> Deserialize<'de> for RegistrationReceipt {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawRegistrationReceipt::deserialize(deserializer)?;
+        if raw.wire_version != WIRE_VERSION
+            || raw.generation == 0
+            || raw.generation > i64::MAX as u64
+            || raw.capabilities != [Capability::InventoryBasicV1]
+            || raw.device_id.trim().is_empty()
+            || raw.device_id.chars().count() > 256
+            || raw.device_id.chars().any(char::is_control)
+        {
+            return Err(D::Error::custom(WireError::InvalidValue));
+        }
+        Ok(Self {
+            wire_version: raw.wire_version,
+            operation_id: raw.operation_id,
+            device_id: raw.device_id,
+            registration_id: raw.registration_id,
+            generation: raw.generation,
+            source: raw.source,
+            epoch: raw.epoch,
+            capabilities: raw.capabilities,
+        })
+    }
 }
 
 /// Closed basic inventory field set.
@@ -287,6 +362,7 @@ impl<'de> Deserialize<'de> for ReportBody {
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
     wire_version: u8,
+    #[serde(with = "strict_uuid")]
     report_id: Uuid,
     sequence: u64,
     observed_at: i64,
@@ -296,6 +372,7 @@ pub struct ReportRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawReportRequest {
     wire_version: u8,
+    #[serde(with = "strict_uuid")]
     report_id: Uuid,
     sequence: u64,
     observed_at: i64,
@@ -399,17 +476,41 @@ pub enum IntakeStatus {
     Durable,
 }
 /// Immutable durable-intake acknowledgement.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReportAck {
     /// Exact wire major.
     pub wire_version: u8,
     /// Report identity.
+    #[serde(with = "strict_uuid")]
     pub report_id: Uuid,
     /// Authoritative server receipt time as Unix seconds.
     pub received_at: i64,
     /// Durable intake status.
     pub intake: IntakeStatus,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawReportAck {
+    wire_version: u8,
+    #[serde(with = "strict_uuid")]
+    report_id: Uuid,
+    received_at: i64,
+    intake: IntakeStatus,
+}
+impl<'de> Deserialize<'de> for ReportAck {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawReportAck::deserialize(deserializer)?;
+        if raw.wire_version != WIRE_VERSION || raw.received_at < 0 {
+            return Err(D::Error::custom(WireError::InvalidValue));
+        }
+        Ok(Self {
+            wire_version: raw.wire_version,
+            report_id: raw.report_id,
+            received_at: raw.received_at,
+            intake: raw.intake,
+        })
+    }
 }
 /// Observation processing status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

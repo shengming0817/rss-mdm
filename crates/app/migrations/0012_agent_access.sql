@@ -11,44 +11,64 @@ CREATE TABLE mdm_access.agent_bindings (
  PRIMARY KEY(tenant_id,registration),
  FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id)
 );
-CREATE TABLE mdm_access.agent_reports (
- tenant_id uuid NOT NULL, registration uuid NOT NULL,
- source text NOT NULL CHECK(source='agent.builtin'), epoch uuid NOT NULL,
- id uuid NOT NULL, sequence bigint NOT NULL CHECK(sequence>=0),
- scope text NOT NULL CHECK(octet_length(scope)<=4096),
- batch bytea NOT NULL CHECK(octet_length(batch) BETWEEN 1 AND 8192),
- digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
- received_at bigint NOT NULL CHECK(received_at>=0),
- delivery_pending boolean NOT NULL DEFAULT true,
- PRIMARY KEY(tenant_id,registration,source,epoch,id),
- FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id)
+ALTER TABLE mdm_access.agent_bindings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_access.agent_bindings FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_access.agent_bindings
+ USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON mdm_access.agent_bindings TO mdm_access;
+
+-- CollectionRun remains the only durable report and delivery owner. Agent input is already a
+-- complete sealed report, so protocol-only columns are absent rather than represented by a
+-- second queue. The wire report id is tenant-global in V1 and is the CollectionRun identity.
+ALTER TABLE mdm_access.collection_runs DROP CONSTRAINT collection_runs_source_check;
+DO $$ DECLARE constraint_name name; BEGIN
+ SELECT conname INTO constraint_name FROM pg_constraint
+ WHERE conrelid='mdm_access.collection_runs'::regclass AND contype='u'
+   AND pg_get_constraintdef(oid)='UNIQUE (tenant_id, registration, source, epoch, sequence)';
+ IF constraint_name IS NULL THEN RAISE EXCEPTION 'collection sequence constraint missing'; END IF;
+ EXECUTE format('ALTER TABLE mdm_access.collection_runs DROP CONSTRAINT %I',constraint_name);
+END $$;
+ALTER TABLE mdm_access.collection_runs
+ ALTER COLUMN session_id DROP NOT NULL,
+ ALTER COLUMN request_message DROP NOT NULL,
+ ALTER COLUMN first_command DROP NOT NULL,
+ ALTER COLUMN request DROP NOT NULL;
+ALTER TABLE mdm_access.collection_runs ADD CONSTRAINT collection_source_profile CHECK(
+ (source='mdm.windows' AND session_id IS NOT NULL AND request_message IS NOT NULL
+  AND first_command IS NOT NULL AND request IS NOT NULL)
+ OR
+ (source='agent.builtin' AND session_id IS NULL AND request_message IS NULL
+  AND first_command IS NULL AND request IS NULL AND sealed_at IS NOT NULL
+  AND result<>'pending' AND reason='complete' AND batch IS NOT NULL)
 );
-CREATE INDEX agent_report_delivery ON mdm_access.agent_reports
- (tenant_id,registration,source,epoch,sequence,id) WHERE delivery_pending;
-CREATE INDEX agent_report_retention ON mdm_access.agent_reports
- (tenant_id,registration,source,epoch,received_at DESC,id DESC) WHERE NOT delivery_pending;
+CREATE UNIQUE INDEX collection_windows_sequence ON mdm_access.collection_runs
+ (tenant_id,registration,source,epoch,sequence) WHERE source='mdm.windows';
+CREATE INDEX collection_agent_retention ON mdm_access.collection_runs
+ (tenant_id,registration,source,epoch,sealed_at DESC,id DESC)
+ WHERE source='agent.builtin' AND NOT delivery_pending;
 
-DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['agent_bindings','agent_reports'] LOOP
-  EXECUTE format('ALTER TABLE mdm_access.%I ENABLE ROW LEVEL SECURITY',t);
-  EXECUTE format('ALTER TABLE mdm_access.%I FORCE ROW LEVEL SECURITY',t);
-  EXECUTE format('CREATE POLICY tenant ON mdm_access.%I USING (tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK (tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
- END LOOP;
-END $$;
-GRANT SELECT,INSERT ON mdm_access.agent_bindings,mdm_access.agent_reports TO mdm_access;
-GRANT DELETE ON mdm_access.agent_reports TO mdm_access;
-GRANT UPDATE(delivery_pending) ON mdm_access.agent_reports TO mdm_access;
-
-CREATE FUNCTION mdm_access.immutable_agent_report() RETURNS trigger LANGUAGE plpgsql AS $$
+-- Runtime cannot DELETE rows. This owner function can only prune delivered Agent reports beyond
+-- the fixed retention window in the caller's tenant and exact registration epoch.
+CREATE FUNCTION mdm_access.prune_agent_collections(p_registration uuid,p_epoch uuid)
+RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $$
+DECLARE removed bigint;
 BEGIN
- IF (to_jsonb(OLD)-'delivery_pending') IS DISTINCT FROM (to_jsonb(NEW)-'delivery_pending') THEN
-  RAISE EXCEPTION 'sealed Agent report is immutable' USING ERRCODE='23514';
- END IF;
- RETURN NEW;
+ DELETE FROM mdm_access.collection_runs r
+ WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+   AND r.registration=p_registration AND r.source='agent.builtin' AND r.epoch=p_epoch
+   AND NOT r.delivery_pending AND r.id IN (
+    SELECT id FROM mdm_access.collection_runs
+    WHERE tenant_id=r.tenant_id AND registration=p_registration
+      AND source='agent.builtin' AND epoch=p_epoch AND NOT delivery_pending
+    ORDER BY sealed_at DESC,id DESC OFFSET 224
+   );
+ GET DIAGNOSTICS removed = ROW_COUNT;
+ RETURN removed;
 END $$;
-REVOKE ALL ON FUNCTION mdm_access.immutable_agent_report() FROM PUBLIC;
-CREATE TRIGGER immutable_agent_report BEFORE UPDATE ON mdm_access.agent_reports
- FOR EACH ROW EXECUTE FUNCTION mdm_access.immutable_agent_report();
+REVOKE ALL ON FUNCTION mdm_access.prune_agent_collections(uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_access.prune_agent_collections(uuid,uuid) TO mdm_access;
 
 ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
 ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN

@@ -44,7 +44,11 @@ fn command(args: &[&str], input: Option<&str>) -> Result<String> {
         child.stdin.take().unwrap().write_all(input.as_bytes())?;
     }
     let result = child.wait_with_output()?;
-    ensure!(result.status.success(), "owned fixture command failed");
+    ensure!(
+        result.status.success(),
+        "owned fixture command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     Ok(String::from_utf8(result.stdout)?)
 }
 fn pg(sql: &str) -> Result<String> {
@@ -234,12 +238,15 @@ async fn access_store(value: &Value) -> Result<Arc<crate::AccessStore>> {
     ))
 }
 async fn app(value: &Value, _reader: Arc<InventoryReader>) -> Result<Router> {
+    app_with_access(value, access_store(value).await?).await
+}
+async fn app_with_access(value: &Value, access: Arc<crate::AccessStore>) -> Result<Router> {
     let c: Config = serde_json::from_value(value.clone())?;
     Ok(crate::api::application(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
-        access_store(value).await?,
+        access,
         None,
     )
     .await
@@ -464,15 +471,30 @@ async fn agent_call(
     };
     let response = tokio::spawn(router.clone().oneshot(request.body(body)?)).await??;
     let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let bytes = response.into_body().collect().await?.to_bytes();
-    Ok((
-        status,
-        if bytes.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&bytes)?
-        },
-    ))
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)?
+    };
+    if status.is_client_error() || status.is_server_error() {
+        ensure!(
+            content_type.as_deref() == Some("application/json"),
+            "Agent error escaped JSON content type: {status} {content_type:?}"
+        );
+        ensure!(
+            value
+                .as_object()
+                .is_some_and(|body| body.len() == 1 && body["code"].is_string()),
+            "Agent error escaped closed ErrorBody: {status} {value}"
+        );
+    }
+    Ok((status, value))
 }
 
 async fn wait_agent_status(
@@ -482,7 +504,8 @@ async fn wait_agent_status(
     observation: &str,
     projection: &str,
 ) -> Result<Value> {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    let mut last = Value::Null;
+    let settled = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             let (status, body) = agent_call(
                 router,
@@ -499,10 +522,16 @@ async fn wait_agent_status(
             if body["observation"] == observation && body["projection"] == projection {
                 return Ok::<_, anyhow::Error>(body);
             }
+            last = body;
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await?
+    .await;
+    settled.map_err(|_| {
+        anyhow::anyhow!(
+            "Agent report {report_id} did not settle at {observation}/{projection}; last={last}"
+        )
+    })?
 }
 
 async fn agent_runtime(config: &Value) -> Result<Arc<crate::inventory_runtime::InventoryRuntime>> {
@@ -517,7 +546,12 @@ async fn agent_runtime(config: &Value) -> Result<Arc<crate::inventory_runtime::I
     .await?)
 }
 
-async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) -> Result<()> {
+async fn agent_matrix(
+    router: &Router,
+    config: &Value,
+    access: &Arc<crate::AccessStore>,
+    browser: &mut Browser,
+) -> Result<()> {
     let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     let credential = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
     browser.operation = Some(uuid::Uuid::new_v4());
@@ -586,6 +620,46 @@ async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) ->
         status == StatusCode::BAD_REQUEST && error["code"] == "malformed_request",
         "oversized body escaped the wire error contract: {status} {error}"
     );
+    let (status, error) = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/reports",
+        Some(credential),
+        Some(json!({"oversized":"x".repeat(2 * 1024 * 1024 + 1)})),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::BAD_REQUEST && error["code"] == "malformed_request",
+        ">2 MiB body escaped the Agent wire boundary: {status} {error}"
+    );
+    let mut unsupported_wire = registration_request.clone();
+    unsupported_wire["wireVersion"] = json!(2);
+    let response = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/registrations",
+        None,
+        Some(unsupported_wire),
+    )
+    .await?;
+    ensure!(response == (StatusCode::BAD_REQUEST, json!({"code":"unsupported_wire"})));
+    let mut unsupported_capability = registration_request.clone();
+    unsupported_capability["capabilities"] = json!(["future"]);
+    let response = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/registrations",
+        None,
+        Some(unsupported_capability),
+    )
+    .await?;
+    ensure!(
+        response
+            == (
+                StatusCode::BAD_REQUEST,
+                json!({"code":"unsupported_capability"})
+            )
+    );
     ensure!(
         agent_call(
             router,
@@ -597,6 +671,29 @@ async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) ->
         .await?
         .0 == StatusCode::OK,
         "registration replay was not recovered"
+    );
+    let missing = uuid::Uuid::new_v4();
+    ensure!(
+        agent_call(
+            router,
+            Method::GET,
+            &format!("/api/agent/v1/reports/{missing}"),
+            Some(credential),
+            None
+        )
+        .await?
+            == (StatusCode::NOT_FOUND, json!({"code":"report_not_found"}))
+    );
+    ensure!(
+        agent_call(
+            router,
+            Method::GET,
+            &format!("/api/agent/v1/reports/{missing}"),
+            Some(password),
+            None
+        )
+        .await?
+            == (StatusCode::UNAUTHORIZED, json!({"code":"invalid_identity"}))
     );
     let report_id = uuid::Uuid::new_v4();
     let report = json!({
@@ -633,6 +730,40 @@ async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) ->
         .1 == ack,
         "report replay changed acknowledgement"
     );
+    let concurrent_id = uuid::Uuid::new_v4();
+    let concurrent = json!({"wireVersion":1,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+    let mut same_id = tokio::task::JoinSet::new();
+    for _ in 0..4 {
+        let router = router.clone();
+        let body = concurrent.clone();
+        same_id.spawn(async move {
+            agent_call(
+                &router,
+                Method::POST,
+                "/api/agent/v1/reports",
+                Some(credential),
+                Some(body),
+            )
+            .await
+        });
+    }
+    let mut concurrent_ack = None;
+    while let Some(result) = same_id.join_next().await {
+        let result = result??;
+        ensure!(result.0 == StatusCode::ACCEPTED);
+        if let Some(expected) = &concurrent_ack {
+            ensure!(
+                &result.1 == expected,
+                "concurrent replay changed acknowledgement"
+            );
+        } else {
+            concurrent_ack = Some(result.1);
+        }
+    }
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'"))?.trim() == "1", "concurrent replay duplicated durable intake");
+    pg(&format!(
+        "UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'"
+    ))?;
     let mut changed = report;
     changed["sequence"] = json!(1);
     ensure!(
@@ -661,17 +792,17 @@ async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) ->
             && current["projection"] == "pending",
         "unexpected pre-worker status: {status} {current}"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_reports WHERE tenant_id='{TENANT}' AND id='{report_id}' AND delivery_pending"))?.trim() == "1");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND delivery_pending"))?.trim() == "1");
     let runtime = agent_runtime(config).await?;
     let owner = crate::inventory_runtime::tests::start(runtime.clone()).await?;
     wait_agent_status(router, credential, report_id, "snapshot", "applied").await?;
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_reports WHERE tenant_id='{TENANT}' AND id='{report_id}' AND NOT delivery_pending"))?.trim() == "1");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND NOT delivery_pending"))?.trim() == "1");
     ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value,''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'"))?.trim() == "device.model=Agent Model,device.os.version=1.0");
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
 
     pg(&format!(
-        "INSERT INTO mdm_access.agent_reports(tenant_id,registration,source,epoch,id,sequence,scope,batch,digest,received_at,delivery_pending) SELECT tenant_id,registration,source,epoch,gen_random_uuid(),g,scope,batch,digest,received_at-g,false FROM mdm_access.agent_reports CROSS JOIN generate_series(1,230) g WHERE tenant_id='{TENANT}' AND id='{report_id}'"
+        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,g,NULL,NULL,NULL,NULL,started_at-g,attempts,result,reason,batch,digest,sealed_at-g,false FROM mdm_access.collection_runs CROSS JOIN generate_series(1,230) g WHERE tenant_id='{TENANT}' AND id='{report_id}'"
     ))?;
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
@@ -691,17 +822,47 @@ async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) ->
             .0 == StatusCode::ACCEPTED
         );
     }
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_reports WHERE tenant_id='{TENANT}' AND registration='{}' AND NOT delivery_pending", registration["registrationId"].as_str().unwrap()))?.trim().parse::<i64>()? <= 224, "delivered Agent retention was not enforced");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND NOT delivery_pending", registration["registrationId"].as_str().unwrap()))?.trim().parse::<i64>()? <= 224, "delivered Agent retention was not enforced");
     pg(&format!(
-        "INSERT INTO mdm_access.agent_reports(tenant_id,registration,source,epoch,id,sequence,scope,batch,digest,received_at,delivery_pending) SELECT tenant_id,registration,source,epoch,gen_random_uuid(),1000+g,scope,batch,digest,received_at,true FROM mdm_access.agent_reports CROSS JOIN generate_series(1,30) g WHERE tenant_id='{TENANT}' AND id='{partial_id}'"
+        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,1000+g,NULL,NULL,NULL,NULL,started_at,attempts,result,reason,batch,digest,sealed_at,true FROM mdm_access.collection_runs CROSS JOIN generate_series(1,29) g WHERE tenant_id='{TENANT}' AND id='{partial_id}'"
     ))?;
-    let (status, error) = agent_call(router, Method::POST, "/api/agent/v1/reports", Some(credential), Some(json!({"wireVersion":1,"reportId":uuid::Uuid::new_v4(),"sequence":3,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}}))).await?;
+    let mut capacity = tokio::task::JoinSet::new();
+    for sequence in [3, 4] {
+        let router = router.clone();
+        let body = json!({"wireVersion":1,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        capacity.spawn(async move {
+            agent_call(
+                &router,
+                Method::POST,
+                "/api/agent/v1/reports",
+                Some(credential),
+                Some(body),
+            )
+            .await
+        });
+    }
+    let mut capacity_statuses = Vec::new();
+    while let Some(result) = capacity.join_next().await {
+        capacity_statuses.push(result??);
+    }
     ensure!(
-        status == StatusCode::SERVICE_UNAVAILABLE && error["code"] == "service_unavailable",
-        "pending Agent capacity was not closed: {status} {error}"
+        capacity_statuses
+            .iter()
+            .filter(|result| result.0 == StatusCode::ACCEPTED)
+            .count()
+            == 1
+    );
+    ensure!(
+        capacity_statuses
+            .iter()
+            .filter(|result| result.0 == StatusCode::SERVICE_UNAVAILABLE
+                && result.1["code"] == "service_unavailable")
+            .count()
+            == 1,
+        "concurrent capacity boundary was not linearized: {capacity_statuses:?}"
     );
     pg(&format!(
-        "DELETE FROM mdm_access.agent_reports WHERE tenant_id='{TENANT}' AND registration='{}' AND sequence>=1000",
+        "DELETE FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND sequence>=1000",
         registration["registrationId"].as_str().unwrap()
     ))?;
     let runtime = agent_runtime(config).await?;
@@ -738,17 +899,49 @@ async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) ->
         )
         .await?;
     ensure!(status == StatusCode::OK);
-    let next_registration = json!({"wireVersion":1,"operationId":uuid::Uuid::new_v4(),"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"capabilities":["inventory.basic.v1"]});
+    let next_operation = uuid::Uuid::new_v4();
+    let next_registration = json!({"wireVersion":1,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"capabilities":["inventory.basic.v1"]});
+    access.fail_next(1);
+    let rolled_back = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/registrations",
+        None,
+        Some(next_registration.clone()),
+    )
+    .await?;
     ensure!(
-        agent_call(
-            router,
-            Method::POST,
-            "/api/agent/v1/registrations",
-            None,
-            Some(next_registration)
-        )
-        .await?
-        .0 == StatusCode::CREATED
+        rolled_back.0 == StatusCode::SERVICE_UNAVAILABLE
+            && rolled_back.1["code"] == "service_unavailable"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'"))?.trim() == "0", "rolled-back registration persisted");
+    access.fail_next(2);
+    let unknown = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/registrations",
+        None,
+        Some(next_registration.clone()),
+    )
+    .await?;
+    ensure!(
+        unknown.0 == StatusCode::SERVICE_UNAVAILABLE && unknown.1["code"] == "operation_unknown"
+    );
+    let recovered = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/registrations",
+        None,
+        Some(next_registration),
+    )
+    .await?;
+    ensure!(recovered.0 == StatusCode::OK);
+    let stored_receipt: Value = serde_json::from_str(&pg(&format!(
+        "SELECT result FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'"
+    ))?)?;
+    ensure!(
+        recovered.1 == stored_receipt,
+        "registration ACK-loss retry did not recover the committed receipt"
     );
     ensure!(agent_call(router, Method::POST, "/api/agent/v1/reports", Some(credential), Some(json!({"wireVersion":1,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
     ensure!(
@@ -762,6 +955,45 @@ async fn agent_matrix(router: &Router, config: &Value, browser: &mut Browser) ->
         .await?
         .0 == StatusCode::UNAUTHORIZED
     );
+    for (fault, expected) in [(1, "service_unavailable"), (2, "operation_unknown")] {
+        let fault_report = uuid::Uuid::new_v4();
+        let body = json!({"wireVersion":1,"reportId":fault_report,"sequence":100+fault,"observedAt":100+fault,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        access.fail_next(fault);
+        let failed = agent_call(
+            router,
+            Method::POST,
+            "/api/agent/v1/reports",
+            Some(next_credential),
+            Some(body.clone()),
+        )
+        .await?;
+        ensure!(failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == expected);
+        let persisted = pg(&format!(
+            "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'"
+        ))?;
+        ensure!(persisted.trim() == if fault == 1 { "0" } else { "1" });
+        let retry = agent_call(
+            router,
+            Method::POST,
+            "/api/agent/v1/reports",
+            Some(next_credential),
+            Some(body.clone()),
+        )
+        .await?;
+        ensure!(retry.0 == StatusCode::ACCEPTED && retry.1["reportId"] == fault_report.to_string());
+        ensure!(
+            agent_call(
+                router,
+                Method::POST,
+                "/api/agent/v1/reports",
+                Some(next_credential),
+                Some(body)
+            )
+            .await?
+                == retry
+        );
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'"))?.trim() == "1", "report recovery duplicated durable intake");
+    }
     Ok(())
 }
 
@@ -987,7 +1219,8 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         )?,
     )
     .await?;
-    let authorized = app(&allowed, reader.clone()).await?;
+    let agent_access = access_store(&allowed).await?;
+    let authorized = app_with_access(&allowed, agent_access.clone()).await?;
     // Restarting the host preserves only the component credential, whose PG state is checked again.
     ensure!(
         browser
@@ -996,7 +1229,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::OK
     );
-    agent_matrix(&authorized, &allowed, &mut browser).await?;
+    agent_matrix(&authorized, &allowed, &agent_access, &mut browser).await?;
     let scope = serde_json::to_string(
         &json!({"tenant":TENANT,"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
     )?;
