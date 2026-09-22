@@ -20,17 +20,23 @@ pub(crate) async fn revalidate(
     tx: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
 ) -> Result<Scope, Error> {
+    revalidate_source(tx, principal, rss_mdm_inventory::ReportSource::MdmWindows).await
+}
+
+pub(crate) async fn revalidate_source(
+    tx: &mut sqlx::PgConnection,
+    principal: &DevicePrincipal,
+    source: rss_mdm_inventory::ReportSource,
+) -> Result<Scope, Error> {
+    if principal.channel() != source.channel() {
+        return Err(Error::Forbidden);
+    }
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
-    crate::device::store::lock_channel(
-        tx,
-        &tenant,
-        principal.device(),
-        rss_mdm_inventory::Channel::Mdm,
-    )
-    .await?;
-    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel='mdm' AND state='active'")
-        .bind(&tenant).bind(&registration).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
+        .await?;
+    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active'")
+        .bind(&tenant).bind(&registration).bind(principal.channel().as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if live.try_get::<String, _>("device").map_err(db)? != principal.device()
         || live.try_get::<i64, _>("generation").map_err(db)? != principal.generation()
     {
@@ -38,12 +44,12 @@ pub(crate) async fn revalidate(
     }
     sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
         .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND enabled AND coverage=$3 FOR UPDATE")
-        .bind(&tenant).bind(&registration).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND coverage=$4 FOR UPDATE")
+        .bind(&tenant).bind(&registration).bind(source.as_str()).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     crate::device::scope(
         principal.tenant(),
         principal.registration(),
-        "mdm.windows",
+        source.as_str(),
         Uuid::parse_str(&row.try_get::<String, _>("epoch").map_err(db)?).map_err(|_| corrupt())?,
     )
 }
@@ -306,8 +312,21 @@ pub(crate) async fn terminate_session(
 pub(crate) struct DurableReport {
     scope: Scope,
     batch: Batch,
+    owner: ReportOwner,
+}
+#[derive(Clone, Copy)]
+enum ReportOwner {
+    Collection,
+    Agent,
 }
 impl DurableReport {
+    pub(crate) fn agent(scope: Scope, batch: Batch) -> Self {
+        Self {
+            scope,
+            batch,
+            owner: ReportOwner::Agent,
+        }
+    }
     pub(crate) fn scope(&self) -> &Scope {
         &self.scope
     }
@@ -320,7 +339,7 @@ impl AccessStore {
         let mut tx = self.begin(tenant).await?;
         let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence LIMIT 32"))
             .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
-        let reports = rows
+        let mut reports: Vec<DurableReport> = rows
             .into_iter()
             .map(|row| {
                 let run = Run::from_row(row)?;
@@ -330,16 +349,49 @@ impl AccessStore {
                 Ok(DurableReport {
                     scope: run.scope,
                     batch: run.batch.ok_or_else(corrupt)?,
+                    owner: ReportOwner::Collection,
                 })
             })
             .collect::<Result<_, Error>>()?;
+        let agent_rows = sqlx::query("SELECT scope,batch,digest FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32")
+            .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
+        for row in agent_rows {
+            reports.push(agent_report(row)?);
+        }
         tx.commit().await.map_err(db)?;
         Ok(reports)
     }
+
+    pub(crate) async fn agent_report(
+        &self,
+        scope: &Scope,
+        id: Uuid,
+    ) -> Result<Option<DurableReport>, Error> {
+        let mut tx = self.begin(&scope.tenant().to_string()).await?;
+        let row = sqlx::query("SELECT scope,batch,digest FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid")
+            .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.to_string())
+            .fetch_optional(&mut *tx).await.map_err(db)?;
+        let report = row.map(agent_report).transpose()?;
+        tx.commit().await.map_err(db)?;
+        Ok(report)
+    }
     pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
         let mut tx = self.begin(&report.scope.tenant().to_string()).await?;
-        sqlx::query("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending")
-            .bind(report.scope.tenant().to_string()).bind(report.batch.id().as_str()).bind(fingerprint(&report.batch, &report.scope)?).execute(&mut *tx).await.map_err(db)?;
+        let query = match report.owner {
+            ReportOwner::Collection => {
+                "UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending"
+            }
+            ReportOwner::Agent => {
+                "UPDATE mdm_access.agent_reports SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending"
+            }
+        };
+        sqlx::query(query)
+            .bind(report.scope.tenant().to_string())
+            .bind(report.batch.id().as_str())
+            .bind(fingerprint(&report.batch, &report.scope)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)
     }
     pub(crate) async fn collection(
@@ -355,6 +407,20 @@ impl AccessStore {
         tx.commit().await.map_err(db)?;
         Ok(run)
     }
+}
+
+fn agent_report(row: PgRow) -> Result<DurableReport, Error> {
+    let scope: Scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
+        .map_err(|_| corrupt())?;
+    let bytes: Vec<u8> = row.try_get("batch").map_err(db)?;
+    let batch = Batch::decode(&bytes).map_err(|_| corrupt())?;
+    if batch.encode() != bytes
+        || fingerprint(&batch, &scope)? != row.try_get::<String, _>("digest").map_err(db)?
+    {
+        return Err(corrupt());
+    }
+    rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
+    Ok(DurableReport::agent(scope, batch))
 }
 
 /// Restore exact product evidence without using the mutable Inventory projection.

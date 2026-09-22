@@ -2,6 +2,7 @@
 pub(crate) mod read;
 pub(crate) mod store;
 use crate::Error;
+use rss_mdm_inventory::Channel;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -12,6 +13,7 @@ use zeroize::Zeroizing;
 pub(crate) struct Create {
     pub device_id: String,
     pub password: Password,
+    pub channel: Channel,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,6 +58,7 @@ pub(crate) struct Receipt {
     pub expires_at: i64,
     #[serde(rename = "registrationId")]
     pub registration: Option<Uuid>,
+    pub channel: Channel,
 }
 /// All fields originate in PG, never in device claims.
 pub(crate) struct Authorization {
@@ -68,6 +71,7 @@ pub(crate) struct Authorization {
     pub expected_generation: i64,
     pub operation: Uuid,
     pub state: String,
+    pub channel: Channel,
 }
 
 /// Enrollment password generation, independent of browser authentication.
@@ -119,5 +123,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn enrollment_channel_is_explicit_and_closed() {
+        let password = random();
+        assert!(
+            serde_json::from_value::<Create>(serde_json::json!({
+                "deviceId":"device-a","password":password,"channel":"agent"
+            }))
+            .is_ok()
+        );
+        for value in [
+            serde_json::json!({"deviceId":"device-a","password":random()}),
+            serde_json::json!({"deviceId":"device-a","password":random(),"channel":"legacy"}),
+        ] {
+            assert!(serde_json::from_value::<Create>(value).is_err());
+        }
     }
 }

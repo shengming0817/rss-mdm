@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 mod store;
 pub(crate) use store::{
-    DurableReport, Run, accept, create, load_run, revalidate, terminate, terminate_session,
+    DurableReport, Run, accept, create, load_run, revalidate, revalidate_source, terminate,
+    terminate_session,
 };
 
 const FIELD_COUNT: usize = FieldKey::OBSERVED_COUNT;

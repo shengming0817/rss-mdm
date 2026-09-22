@@ -218,10 +218,14 @@ pub(crate) fn from_state(
     let authentication = state.identity.routes();
     let audit_tenant = state.identity.tenant.to_string();
     let access = state.access.clone();
-    let protected = Router::new()
+    let protected_v1 = Router::new()
         .merge(crate::management::routes())
         .merge(crate::commands::routes())
         .merge(crate::authorization::routes())
+        .route("/devices/{id}/collection-runs/{run}", get(collection_run))
+        .route("/devices/{id}/actions", post(action))
+        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
+    let protected_v2 = Router::new()
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))
@@ -231,8 +235,6 @@ pub(crate) fn from_state(
             "/devices/{device}/registrations/{registration}/revoke",
             post(revoke_registration),
         )
-        .route("/devices/{id}/collection-runs/{run}", get(collection_run))
-        .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     let (enrollment, management) = crate::windows::routers(state.clone(), monotonic.clone());
     let host_context = Router::new()
@@ -243,7 +245,9 @@ pub(crate) fn from_state(
         .route_layer(middleware::from_fn_with_state(state.clone(), identity_only));
     let browser = Router::new()
         .merge(host_context)
-        .nest("/api/v1", protected)
+        .nest("/api/agent/v1", crate::agent::routes())
+        .nest("/api/v1", protected_v1)
+        .nest("/api/v2", protected_v2)
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready))
         .with_state(state)
@@ -293,16 +297,19 @@ pub(crate) async fn envelope(
         "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
             "authorization_write"
         }
-        "/api/v1/enrollments" => "enrollment_create",
-        "/api/v1/enrollments/{id}" => "enrollment_read",
-        "/api/v1/devices/{device}/registrations" => "registration_read",
-        "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
-        "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
+        "/api/v2/enrollments" => "enrollment_create",
+        "/api/v2/enrollments/{id}" => "enrollment_read",
+        "/api/v2/devices/{device}/registrations" => "registration_read",
+        "/api/v2/enrollments/{id}/resume" => "enrollment_resume",
+        "/api/v2/enrollments/{id}/cancel" => "enrollment_cancel",
+        "/api/v2/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
+        "/api/agent/v1/registrations" => "agent_registration",
+        "/api/agent/v1/reports" => "agent_report",
+        "/api/agent/v1/reports/{id}" => "agent_report_read",
         "/api/v1/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
-        path if path.starts_with("/api/v2/") => "authentication",
+        path if path.starts_with("/api/v2/authentication") => "authentication",
         "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
@@ -534,7 +541,14 @@ async fn create_enrollment(
         SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
     )?;
     app.access
-        .create_enrollment(permission, &input.password, reference, key, &audit)
+        .create_enrollment(
+            permission,
+            &input.password,
+            input.channel,
+            reference,
+            key,
+            &audit,
+        )
         .await
         .map(Json)
 }

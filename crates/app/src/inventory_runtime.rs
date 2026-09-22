@@ -38,9 +38,9 @@ pub(crate) enum ProjectionStatus {
 }
 #[derive(serde::Serialize)]
 pub(crate) struct ReceiptStatus {
-    batch_id: String,
-    received_at: u64,
-    decision: rss_observation::Decision,
+    pub(crate) batch_id: String,
+    pub(crate) received_at: u64,
+    pub(crate) decision: rss_observation::Decision,
 }
 #[derive(serde::Serialize)]
 pub(crate) struct DeliveryStatus {
@@ -448,15 +448,26 @@ impl InventoryRuntime {
                 projection: ProjectionStatus::NotApplicable,
             });
         };
-        let grant = ReadGrant::verify(&ReadAuthority(&run.scope), run.scope.clone())
-            .map_err(|_| unavailable())?;
+        self.inspect_report(&run.scope, batch).await
+    }
+
+    pub(crate) async fn inspect_report(
+        &self,
+        scope: &Scope,
+        batch: &rss_observation::Batch,
+    ) -> Result<DeliveryStatus, Error> {
+        if scope.tenant() != self.tenant {
+            return Err(Error::Forbidden);
+        }
+        let grant =
+            ReadGrant::verify(&ReadAuthority(scope), scope.clone()).map_err(|_| unavailable())?;
         let receipt = self
             .observation
             .lookup(&grant, batch.id(), self.clock.deadline())
             .await
             .map_err(|_| unavailable())?;
         let event = batch
-            .fingerprint(&run.scope)
+            .fingerprint(scope)
             .map_err(|_| unavailable())?
             .iter()
             .map(|b| format!("{b:02x}"))

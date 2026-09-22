@@ -263,7 +263,7 @@ async fn enrollment_matrix(
     browser: &mut Browser,
     query: &str,
 ) -> Result<()> {
-    let issue = "/api/v1/enrollments";
+    let issue = "/api/v2/enrollments";
     let enrollment_only = config.clone();
     set_device_grants(
         browser,
@@ -294,7 +294,7 @@ async fn enrollment_matrix(
                 &enrollment_router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))
             )
             .await?
             .0
@@ -307,7 +307,7 @@ async fn enrollment_matrix(
             router,
             Method::POST,
             issue,
-            Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})),
+            Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"})),
         )
         .await?;
     ensure!(
@@ -320,7 +320,7 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))
             )
             .await?
             .1
@@ -328,7 +328,7 @@ async fn enrollment_matrix(
         "issue replay changed result"
     );
     let enrollment = grant["enrollmentId"].as_str().unwrap();
-    let status_path = format!("/api/v1/enrollments/{enrollment}");
+    let status_path = format!("/api/v2/enrollments/{enrollment}");
     let current = browser
         .call(router, Method::GET, &status_path, None)
         .await?;
@@ -337,7 +337,7 @@ async fn enrollment_matrix(
             && current.1["status"] == "pending"
             && current.1["registrationId"].is_null()
     );
-    let resume = format!("/api/v1/enrollments/{enrollment}/resume");
+    let resume = format!("/api/v2/enrollments/{enrollment}/resume");
     browser.operation = Some(uuid::Uuid::new_v4());
     let (_, resumed) = browser
         .call(
@@ -361,7 +361,7 @@ async fn enrollment_matrix(
             == resumed
     );
     browser.operation = Some(uuid::Uuid::new_v4());
-    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))).await?.0 == StatusCode::FORBIDDEN);
     let no_permission = config.clone();
     set_device_grants(browser, router, "device-1", &["inventory_read"]).await?;
     let restarted = app(&no_permission, reader.clone()).await?;
@@ -388,7 +388,7 @@ async fn enrollment_matrix(
         &["inventory_read", "enrollment"],
     )
     .await?;
-    let cancel = format!("/api/v1/enrollments/{enrollment}/cancel");
+    let cancel = format!("/api/v2/enrollments/{enrollment}/cancel");
     let (status, cancelled) = browser
         .call(router, Method::POST, &cancel, Some(json!({})))
         .await?;
@@ -430,7 +430,7 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))
             )
             .await?
             .0
@@ -439,6 +439,189 @@ async fn enrollment_matrix(
     ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='enrollment_create' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
     revoke_http_matrix(config, reader, browser).await?;
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
+    Ok(())
+}
+
+async fn agent_call(
+    router: &Router,
+    method: Method,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+) -> Result<(StatusCode, Value)> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "mdm.example.test");
+    if let Some(secret) = bearer {
+        request = request.header("authorization", format!("Bearer {secret}"));
+    }
+    let body = if let Some(value) = body {
+        request = request.header("content-type", "application/json");
+        Body::from(serde_json::to_vec(&value)?)
+    } else {
+        Body::empty()
+    };
+    let response = tokio::spawn(router.clone().oneshot(request.body(body)?)).await??;
+    let status = response.status();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok((
+        status,
+        if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes)?
+        },
+    ))
+}
+
+async fn agent_matrix(router: &Router, browser: &mut Browser) -> Result<()> {
+    let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let credential = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let (status, enrollment) = browser
+        .call(
+            router,
+            Method::POST,
+            "/api/v2/enrollments",
+            Some(json!({"deviceId":"device-1","password":password,"channel":"agent"})),
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK && enrollment["channel"] == "agent",
+        "Agent enrollment failed: {status} {enrollment}"
+    );
+    ensure!(
+        browser
+            .call(router, Method::POST, "/api/v1/enrollments", Some(json!({})))
+            .await?
+            .0
+            == StatusCode::NOT_FOUND,
+        "removed enrollment V1 remained reachable"
+    );
+    let operation = uuid::Uuid::new_v4();
+    let registration_request = json!({
+        "wireVersion":1,
+        "operationId":operation,
+        "enrollmentId":enrollment["enrollmentId"],
+        "password":password,
+        "credential":credential,
+        "capabilities":["inventory.basic.v1"]
+    });
+    let (status, registration) = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/registrations",
+        None,
+        Some(registration_request.clone()),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::CREATED && registration["source"] == "agent.builtin",
+        "Agent registration failed: {status} {registration}"
+    );
+    ensure!(
+        agent_call(
+            router,
+            Method::POST,
+            "/api/agent/v1/registrations",
+            None,
+            Some(registration_request)
+        )
+        .await?
+        .0 == StatusCode::OK,
+        "registration replay was not recovered"
+    );
+    let report_id = uuid::Uuid::new_v4();
+    let report = json!({
+        "wireVersion":1,
+        "reportId":report_id,
+        "sequence":0,
+        "observedAt":1,
+        "body":{"kind":"snapshot","values":[
+            {"field":"device.model","value":{"kind":"known","value":"Agent Model"}},
+            {"field":"device.os.version","value":{"kind":"known","value":"1.0"}}
+        ]}
+    });
+    let (status, ack) = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v1/reports",
+        Some(credential),
+        Some(report.clone()),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::ACCEPTED && ack["intake"] == "durable",
+        "Agent report failed: {status} {ack}"
+    );
+    ensure!(
+        agent_call(
+            router,
+            Method::POST,
+            "/api/agent/v1/reports",
+            Some(credential),
+            Some(report.clone())
+        )
+        .await?
+        .1 == ack,
+        "report replay changed acknowledgement"
+    );
+    let mut changed = report;
+    changed["sequence"] = json!(1);
+    ensure!(
+        agent_call(
+            router,
+            Method::POST,
+            "/api/agent/v1/reports",
+            Some(credential),
+            Some(changed)
+        )
+        .await?
+        .0 == StatusCode::CONFLICT,
+        "changed report identity was accepted"
+    );
+    let (status, current) = agent_call(
+        router,
+        Method::GET,
+        &format!("/api/agent/v1/reports/{report_id}"),
+        Some(credential),
+        None,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK
+            && current["observation"] == "pending"
+            && current["projection"] == "pending",
+        "unexpected pre-worker status: {status} {current}"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_reports WHERE tenant_id='{TENANT}' AND id='{report_id}' AND delivery_pending"))?.trim() == "1");
+    ensure!(!pg(&format!("SELECT locator FROM mdm_access.credentials WHERE tenant_id='{TENANT}' AND registration='{}'", registration["registrationId"].as_str().unwrap()))?.contains(credential), "raw Agent credential persisted");
+    let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
+    let next_credential = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let (status, next_enrollment) = browser
+        .call(
+            router,
+            Method::POST,
+            "/api/v2/enrollments",
+            Some(json!({"deviceId":"device-1","password":next_password,"channel":"agent"})),
+        )
+        .await?;
+    ensure!(status == StatusCode::OK);
+    let next_registration = json!({"wireVersion":1,"operationId":uuid::Uuid::new_v4(),"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"capabilities":["inventory.basic.v1"]});
+    ensure!(
+        agent_call(
+            router,
+            Method::POST,
+            "/api/agent/v1/registrations",
+            None,
+            Some(next_registration)
+        )
+        .await?
+        .0 == StatusCode::CREATED
+    );
+    ensure!(agent_call(router, Method::POST, "/api/agent/v1/reports", Some(credential), Some(json!({"wireVersion":1,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
     Ok(())
 }
 
@@ -456,13 +639,13 @@ async fn revoke_http_matrix(
     );
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
     pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','{INSTANCE}','revoke-device','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-        INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','{request}','{grant}');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES('{TENANT}','{request}','{grant}','mdm');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','revoke-device');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','revoke-device','mdm',1,'{request}','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
-    let path = format!("/api/v1/devices/revoke-device/registrations/{registration}/revoke");
-    let listing = "/api/v1/devices/revoke-device/registrations";
+    let path = format!("/api/v2/devices/revoke-device/registrations/{registration}/revoke");
+    let listing = "/api/v2/devices/revoke-device/registrations";
     let cfg = config.clone();
     let initial = app(&cfg, reader.clone()).await?;
     set_device_grants(
@@ -498,7 +681,7 @@ async fn revoke_http_matrix(
             .call(
                 &allowed,
                 Method::GET,
-                "/api/v1/devices/outside/registrations",
+                "/api/v2/devices/outside/registrations",
                 None
             )
             .await?
@@ -531,9 +714,9 @@ async fn revoke_http_matrix(
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     for bad in [
-        "/api/v1/enrollments/not-a-uuid/resume",
-        "/api/v1/enrollments/not-a-uuid/cancel",
-        "/api/v1/devices/revoke-device/registrations/not-a-uuid/revoke",
+        "/api/v2/enrollments/not-a-uuid/resume",
+        "/api/v2/enrollments/not-a-uuid/cancel",
+        "/api/v2/devices/revoke-device/registrations/not-a-uuid/revoke",
     ] {
         let response = browser
             .call(&allowed, Method::POST, bad, Some(json!({})))
@@ -622,7 +805,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     for (method, path) in [
         (Method::GET, "/api/v1/authorization".to_owned()),
         (Method::GET, format!("/api/v2/tenants/{TENANT}/session")),
-        (Method::POST, "/api/v1/enrollments".to_owned()),
+        (Method::POST, "/api/v2/enrollments".to_owned()),
     ] {
         for cookie in [
             format!("__Host-identity-session={credential}; broken"),
@@ -673,6 +856,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::OK
     );
+    agent_matrix(&authorized, &mut browser).await?;
     let scope = serde_json::to_string(
         &json!({"tenant":TENANT,"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
     )?;
@@ -687,7 +871,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     pg(&format!(
         r#"
         INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-        INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');

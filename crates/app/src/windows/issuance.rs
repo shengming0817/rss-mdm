@@ -153,7 +153,7 @@ impl crate::AccessStore {
         let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
         current(&row, auth, proof)?;
         if old.is_some() {
-            self.active_enrollment(&mut tx, proof.tenant_id(), auth.id)
+            self.active_windows_enrollment(&mut tx, proof.tenant_id(), auth.id)
                 .await?;
             let old: Vec<u8> = sqlx::query_scalar("SELECT certificate FROM mdm_access.enrollment_certificates WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
                 .bind(proof.tenant_id()).bind(auth.id.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
@@ -208,7 +208,8 @@ fn current(
     proof: &Principal,
 ) -> Result<(), Error> {
     proof.enrollment(&auth.device)?;
-    if row.try_get::<String, _>("state").map_err(db)? == "cancelled"
+    if auth.channel != rss_mdm_inventory::Channel::Mdm
+        || row.try_get::<String, _>("state").map_err(db)? == "cancelled"
         || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
         || uuid(row, "credential_ref")? != auth.credential_ref
         || !row.try_get::<bool, _>("live").map_err(db)?

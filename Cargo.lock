@@ -2435,6 +2435,7 @@ dependencies = [
  "rss-identity-http-axum",
  "rss-identity-oidc",
  "rss-identity-postgres",
+ "rss-mdm-agent-wire",
  "rss-mdm-brew-source",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",

@@ -11,6 +11,7 @@ pub(crate) struct Status {
     status: String,
     expires_at: i64,
     registration_id: Option<String>,
+    channel: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,13 +40,14 @@ impl AccessStore {
         id: Uuid,
     ) -> Result<Status, Error> {
         let mut tx = self.begin(permission.proof().tenant_id()).await?;
-        let row = sqlx::query("SELECT q.state,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,r.id::text AS registration FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2::uuid AND g.device=$3 AND q.issuance_operation IS NOT NULL")
+        let row = sqlx::query("SELECT q.state,q.channel,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,r.id::text AS registration FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2::uuid AND g.device=$3 AND q.issuance_operation IS NOT NULL")
             .bind(permission.proof().tenant_id()).bind(id.to_string()).bind(permission.device()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
         Ok(Status {
             enrollment_id: id,
             status: row.try_get("state").map_err(db)?,
             expires_at: row.try_get("expires_at").map_err(db)?,
             registration_id: row.try_get("registration").map_err(db)?,
+            channel: row.try_get("channel").map_err(db)?,
         })
     }
     pub(crate) async fn registration_list(

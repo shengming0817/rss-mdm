@@ -333,6 +333,9 @@ async fn enrollment(
             .access
             .enrollment_authorization(&app.identity.tenant.to_string(), id, &password)
             .await?;
+        if auth.channel != rss_mdm_inventory::Channel::Mdm {
+            return Err(Error::Unauthorized);
+        }
         let credential = app.credentials.get(auth.credential_ref)?;
         let _global = app
             .requests
