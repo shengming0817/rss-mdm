@@ -348,6 +348,7 @@ def main():
         ("source-t2-oracle",[sys.executable,"hack/test_source_t2.py"]),
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
+        ("agent-wire-consumer",[sys.executable,"hack/agent-wire-consumer.py"]),
 
         ("gateway-t2",[sys.executable,"hack/login_gateway_t2.py"]),
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
