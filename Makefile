@@ -2,9 +2,19 @@ REPOSITORY_ROOT := $(shell /usr/bin/dirname "$$(/usr/bin/git rev-parse --path-fo
 CARGO_TARGET_DIR ?= $(REPOSITORY_ROOT)/target
 export CARGO_TARGET_DIR
 
-.PHONY: ci test t2
+.PHONY: ci ci-full ci-plan test t2
+CI_BASE ?= origin/develop
+CI_FULL ?= 0
+CI_PLAN ?= 0
+export CI_BASE CI_FULL CI_PLAN
 ci:
 	python3 hack/ci.py
+
+ci-full:
+	CI_FULL=1 python3 hack/ci.py
+
+ci-plan:
+	CI_PLAN=1 python3 hack/ci.py
 
 test:
 	cargo test --locked --workspace --lib --bins --tests

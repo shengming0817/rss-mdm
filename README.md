@@ -35,7 +35,7 @@ app → inventory-postgres/inventory/Identity 四个公开组件；examples → 
 本仓成员使用 workspace 内部 path，RSS 上游公共库继续固定 Git revision；两者不混同。
 
 根目录 `cargo run --locked -p rss-mdm-examples -- ...` 运行名为 `rss-mdm-fixture` 的示例 CLI。
-`make test` 验证全部成员的 T1，`make t2` 运行真实 PostgreSQL 组合，`make ci` 完成全部本地验证。
+`make test` 验证全部成员的 T1，`make t2` 运行真实 PostgreSQL 组合，`make ci` 按影响范围完成本地验证，`make ci-full` 执行全量，`make ci-plan` 查看选择计划；规则见 [验证范围](docs/rules/verification-scope.md)。
 故障注入矩阵留在 examples 的 `integration` feature 下以访问示例内部状态，不编译进普通示例或产品能力库。
 
 ## 独立资源与软件源

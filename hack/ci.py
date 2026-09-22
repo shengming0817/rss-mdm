@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Full local CI. Run all gates, then fail once with the complete failure list."""
+"""Impact-selected local CI. Run all gates, then fail once with the complete failure list."""
 import sys
 if sys.version_info < (3, 11):
     raise SystemExit("Python >= 3.11 is required for local CI")
@@ -318,10 +318,75 @@ def group_consumer(head):
             "features": "Group defaults enabled; empty declared/resolved feature sets verified", "source": "local committed Git revision", "T3": "not run"}, indent=2) + "\n")
 
 
+# Scripts consume public packages and sometimes fixture/source files outside Cargo
+# edges. Keep these extra inputs explicit; unclassified new gates run conservatively.
+APP_INPUTS = {"rss-mdm-app", "rss-mdm-examples"}
+GATE_PACKAGES = {
+    "core-consumers": {"rss-mdm-scope", "rss-mdm-policy", "rss-mdm-software-release"},
+    "inventory-consumers": APP_INPUTS | {"rss-mdm-inventory", "rss-mdm-inventory-postgres"},
+    "group-consumer": {"rss-mdm-group"},
+    "group-postgres-consumers": {"rss-mdm-group-postgres"},
+    "backend-consumers": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
+    "source-consumers": {"rss-mdm-resource", "rss-mdm-winget-source", "rss-mdm-brew-source"},
+    "source-t2": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
+    "source-t2-oracle": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
+    "group-t2": APP_INPUTS | {"rss-mdm-group-postgres"},
+    "backend-t2": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
+    "t2": APP_INPUTS | {"inventory-postgres-integration"},
+    **{name: APP_INPUTS for name in ("management-t2", "asset-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
+}
+CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
+
+
+def select_impact(head):
+    base = os.environ.get("CI_BASE", "origin/develop")
+    selection = {"full": True, "packages": [], "reasons": [], "base": base, "head": head}
+    try:
+        branch = command(["/usr/bin/git", "branch", "--show-current"])
+        if os.environ.get("CI_FULL", "0") != "0":
+            selection["reasons"] = ["explicit-full"]
+        elif branch.returncode != 0:
+            selection["reasons"] = ["branch-unavailable"]
+        elif branch.stdout.strip() == "develop":
+            selection["reasons"] = ["develop"]
+        else:
+            merge = command(["/usr/bin/git", "merge-base", base, head])
+            require(merge.returncode == 0, "base-unavailable")
+            selection["mergeBase"] = merge.stdout.strip()
+            result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"], "--head", head])
+            require(result.returncode == 0, "selector-failed")
+            decision = json.loads(result.stdout)
+            require(type(decision["full"]) is bool and isinstance(decision["packages"], list)
+                    and set(decision["packages"]) <= set(LOCAL_PACKAGES)
+                    and isinstance(decision["reasons"], list), "invalid-selection")
+            selection.update(decision)
+        status = command(["/usr/bin/git", "status", "--porcelain"])
+        if status.returncode != 0 or status.stdout.strip():
+            selection.update(full=True, packages=[], reasons=["dirty-input"])
+    except Exception as error:
+        selection.update(full=True, packages=[], reasons=["selection-unavailable: " + str(error)])
+    return selection
+
+
+def selected_gate(name, selection):
+    if selection["full"] or name in {"script-tests", "fmt"}:
+        return True
+    packages = set(selection["packages"])
+    if name == "advisories":
+        return False
+    return bool(packages & GATE_PACKAGES.get(name, packages))
+
+
+def gate_command(name, args, selection):
+    if name in CARGO_GATES and not selection["full"]:
+        flags = [arg for package in selection["packages"] for arg in ("-p", package)]
+        index = args.index("--workspace")
+        return args[:index] + flags + args[index + 1:]
+    return args
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    for stale in ["isolation-error.txt", "group-consumer-error.txt", "group-consumer.log", "group-consumer.json", "group-consumer.lock", "group-metadata.json", "group-tree.txt", "result.json"]:
-        (OUT / stale).unlink(missing_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     require(head.returncode == 0, "cannot resolve tested HEAD")
     start_head = head.stdout.strip()
@@ -352,6 +417,18 @@ def main():
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
+    selection = select_impact(start_head)
+    plan = {"selection": selection, "gates": {
+        name: {"selected": selected_gate(name, selection), "command": gate_command(name, args, selection)}
+        for name, args in gates
+    }, "isolation": selected_gate("isolation", selection),
+        "group-consumer": selected_gate("group-consumer", selection)}
+    (OUT / "selection.json").write_text(json.dumps(plan, indent=2) + "\n")
+    print(json.dumps(plan, indent=2), flush=True)
+    if os.environ.get("CI_PLAN", "0") == "1":
+        return 0
+    for stale in ["isolation-error.txt", "group-consumer-error.txt", "group-consumer.log", "group-consumer.json", "group-consumer.lock", "group-metadata.json", "group-tree.txt", "result.json"]:
+        (OUT / stale).unlink(missing_ok=True)
     results = {}
     pin = None
     try:
@@ -361,6 +438,11 @@ def main():
         (OUT / "pin.log").write_text(str(error))
         results["pin"] = "failed"
     for name,args in gates:
+        (OUT / f"{name}.log").unlink(missing_ok=True)
+        if not selected_gate(name, selection):
+            results[name] = "skipped"
+            continue
+        args = gate_command(name, args, selection)
         print(f"local CI: {name}", flush=True)
         try:
             result = command(args)
@@ -372,26 +454,32 @@ def main():
         print(f"{name}: {results[name]}", flush=True)
     try:
         print("local CI: isolated Git consumer", flush=True)
-        isolate()
-        results["isolation"] = "passed"
+        if selected_gate("isolation", selection):
+            isolate()
+            results["isolation"] = "passed"
+        else:
+            results["isolation"] = "skipped"
     except Exception as error:
         (OUT / "isolation-error.txt").write_text(str(error))
         results["isolation"] = "failed"
     try:
         print("local CI: Group public API consumer", flush=True)
-        group_consumer(start_head)
-        results["group-consumer"] = "passed"
+        if selected_gate("group-consumer", selection):
+            group_consumer(start_head)
+            results["group-consumer"] = "passed"
+        else:
+            results["group-consumer"] = "skipped"
     except Exception as error:
         (OUT / "group-consumer-error.txt").write_text(str(error))
         results["group-consumer"] = "failed"
     end_head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     status = command(["/usr/bin/git", "status", "--porcelain"])
     results["identity"] = "passed" if end_head.returncode == 0 and end_head.stdout.strip() == start_head and status.returncode == 0 and not status.stdout.strip() else "failed"
-    evidence = {"head":start_head, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
+    evidence = {"selection":selection, "head":start_head, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")
     print(json.dumps(evidence, indent=2))
-    return int(any(value != "passed" for value in results.values()))
+    return int(any(value == "failed" for value in results.values()))
 
 if __name__ == "__main__": sys.exit(main())
