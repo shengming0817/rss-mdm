@@ -14,6 +14,7 @@ use rss_request_context::{Deadline, TenantId};
 use rss_runtime::{
     ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError, TaskStatus,
 };
+use sha2::{Digest, Sha256};
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -408,6 +409,7 @@ impl InventoryRuntime {
             .await
             .map_err(|_| WorkerFailure::PendingReports)?
             .map_err(|_| WorkerFailure::PendingReports)?;
+            let pending_count = reports.len();
             for report in reports {
                 if deadline.remaining(self.clock.now.now()).is_none() {
                     break;
@@ -415,7 +417,20 @@ impl InventoryRuntime {
                 if token.is_cancelled() {
                     return Ok(());
                 }
-                self.deliver(&report, deadline).await?;
+                if let Err(phase) = self.deliver(&report, deadline).await {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "event":"mdm_inventory_delivery_failure",
+                            "phase":phase,
+                            "reportId":report.batch().id().as_str(),
+                            "source":report.scope().source().as_str(),
+                            "stream":stream_correlation(report.scope()),
+                            "pendingCount":pending_count,
+                        })
+                    );
+                    return Err(phase);
+                }
             }
             let control = Control::new(&self.clock, self.clock.cutoff(), token);
             let report = rss_projection::run(
@@ -507,6 +522,14 @@ impl InventoryRuntime {
             },
         })
     }
+}
+
+fn stream_correlation(scope: &Scope) -> String {
+    let encoded = scope.encode().unwrap_or_else(|_| "invalid-scope".into());
+    Sha256::digest(encoded.as_bytes())[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]

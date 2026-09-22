@@ -2408,6 +2408,7 @@ name = "rss-mdm-agent-wire"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "jsonschema",
  "serde",
  "serde_json",
  "uuid",

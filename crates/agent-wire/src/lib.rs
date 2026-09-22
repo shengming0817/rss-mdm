@@ -97,24 +97,38 @@ struct RawRegistrationRequest {
 impl<'de> Deserialize<'de> for RegistrationRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawRegistrationRequest::deserialize(deserializer)?;
-        if raw.wire_version != WIRE_VERSION
-            || raw.operation_id.is_nil()
-            || raw.enrollment_id.is_nil()
-            || raw.capabilities != [Capability::InventoryBasicV1]
-        {
+        if raw.wire_version != WIRE_VERSION || raw.capabilities != [Capability::InventoryBasicV1] {
             return Err(D::Error::custom(WireError::InvalidValue));
         }
-        Ok(Self {
-            wire_version: raw.wire_version,
-            operation_id: raw.operation_id,
-            enrollment_id: raw.enrollment_id,
-            password: raw.password,
-            credential: raw.credential,
-            capabilities: raw.capabilities,
-        })
+        Self::new(
+            raw.operation_id,
+            raw.enrollment_id,
+            raw.password,
+            raw.credential,
+        )
+        .map_err(D::Error::custom)
     }
 }
 impl RegistrationRequest {
+    /// Construct the only V1 registration shape and inject its fixed version and capability.
+    pub fn new(
+        operation_id: Uuid,
+        enrollment_id: Uuid,
+        password: Secret,
+        credential: Secret,
+    ) -> Result<Self, WireError> {
+        if operation_id.is_nil() || enrollment_id.is_nil() {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self {
+            wire_version: WIRE_VERSION,
+            operation_id,
+            enrollment_id,
+            password,
+            credential,
+            capabilities: vec![Capability::InventoryBasicV1],
+        })
+    }
     /// Stable retry identity selected by the Agent.
     pub const fn operation_id(&self) -> Uuid {
         self.operation_id
@@ -187,7 +201,7 @@ pub enum Field {
     deny_unknown_fields
 )]
 pub enum CollectedValue {
-    /// Valid nonblank text of at most 256 UTF-8 bytes.
+    /// Valid nonblank text of at most 256 Unicode scalar values.
     Known(String),
     /// The collector explicitly cannot produce the field.
     Unsupported,
@@ -289,47 +303,61 @@ struct RawReportRequest {
 }
 impl<'de> Deserialize<'de> for ReportRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut raw = RawReportRequest::deserialize(deserializer)?;
-        if raw.wire_version != WIRE_VERSION || raw.report_id.is_nil() || raw.observed_at < 0 {
+        let raw = RawReportRequest::deserialize(deserializer)?;
+        if raw.wire_version != WIRE_VERSION {
             return Err(D::Error::custom(WireError::InvalidValue));
         }
-        let values = match &mut raw.body {
-            ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
-            ReportBody::Failed { .. } => {
-                return Ok(Self {
-                    wire_version: raw.wire_version,
-                    report_id: raw.report_id,
-                    sequence: raw.sequence,
-                    observed_at: raw.observed_at,
-                    body: raw.body,
-                });
-            }
-        };
-        if values.len() > 2 || values.iter().any(|value| !valid_value(value)) {
-            return Err(D::Error::custom(WireError::InvalidValue));
-        }
-        values.sort_by_key(|value| value.field);
-        if values.windows(2).any(|pair| pair[0].field == pair[1].field) {
-            return Err(D::Error::custom(WireError::InvalidValue));
-        }
-        Ok(Self {
-            wire_version: raw.wire_version,
-            report_id: raw.report_id,
-            sequence: raw.sequence,
-            observed_at: raw.observed_at,
-            body: raw.body,
-        })
-    }
-}
-fn valid_value(value: &FieldValue) -> bool {
-    match &value.value {
-        CollectedValue::Known(text) => {
-            !text.trim().is_empty() && text.len() <= 256 && !text.chars().any(char::is_control)
-        }
-        CollectedValue::Unsupported => true,
+        Self::new(raw.report_id, raw.sequence, raw.observed_at, raw.body).map_err(D::Error::custom)
     }
 }
 impl ReportRequest {
+    /// Construct and canonicalize one strict V1 report.
+    pub fn new(
+        report_id: Uuid,
+        sequence: u64,
+        observed_at: i64,
+        mut body: ReportBody,
+    ) -> Result<Self, WireError> {
+        if report_id.is_nil() || sequence > i64::MAX as u64 || observed_at < 0 {
+            return Err(WireError::InvalidValue);
+        }
+        let values = match &mut body {
+            ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
+            ReportBody::Failed { .. } => {
+                return Ok(Self {
+                    wire_version: WIRE_VERSION,
+                    report_id,
+                    sequence,
+                    observed_at,
+                    body,
+                });
+            }
+        };
+        if values.len() > 2 || values.iter().any(|value| !Self::valid_value(value)) {
+            return Err(WireError::InvalidValue);
+        }
+        values.sort_by_key(|value| value.field);
+        if values.windows(2).any(|pair| pair[0].field == pair[1].field) {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self {
+            wire_version: WIRE_VERSION,
+            report_id,
+            sequence,
+            observed_at,
+            body,
+        })
+    }
+    fn valid_value(value: &FieldValue) -> bool {
+        match &value.value {
+            CollectedValue::Known(text) => {
+                !text.trim().is_empty()
+                    && text.chars().count() <= 256
+                    && !text.chars().any(char::is_control)
+            }
+            CollectedValue::Unsupported => true,
+        }
+    }
     /// Immutable report identity within the authenticated registration.
     pub const fn report_id(&self) -> Uuid {
         self.report_id

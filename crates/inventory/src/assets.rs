@@ -33,7 +33,9 @@ impl Scalar {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::String(s)
-                if s.trim().is_empty() || s.len() > 256 || s.chars().any(char::is_control) =>
+                if s.trim().is_empty()
+                    || s.chars().count() > 256
+                    || s.chars().any(char::is_control) =>
             {
                 Err(Invalid::Value)
             }

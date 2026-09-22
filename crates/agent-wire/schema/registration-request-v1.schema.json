@@ -6,10 +6,22 @@
   "required": ["wireVersion", "operationId", "enrollmentId", "password", "credential", "capabilities"],
   "properties": {
     "wireVersion": { "const": 1 },
-    "operationId": { "type": "string", "format": "uuid" },
-    "enrollmentId": { "type": "string", "format": "uuid" },
-    "password": { "type": "string", "minLength": 43, "maxLength": 43 },
-    "credential": { "type": "string", "minLength": 43, "maxLength": 43 },
+    "operationId": { "$ref": "#/$defs/nonNilUuid" },
+    "enrollmentId": { "$ref": "#/$defs/nonNilUuid" },
+    "password": { "$ref": "#/$defs/secret" },
+    "credential": { "$ref": "#/$defs/secret" },
     "capabilities": { "const": ["inventory.basic.v1"] }
+  },
+  "$defs": {
+    "nonNilUuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "not": { "const": "00000000-0000-0000-0000-000000000000" }
+    },
+    "secret": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    }
   }
 }

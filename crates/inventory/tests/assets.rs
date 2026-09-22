@@ -46,6 +46,11 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
         Scalar::String("".into()).validate(),
         Err(rss_mdm_inventory::Invalid::Value)
     );
+    assert!(Scalar::String("型".repeat(256)).validate().is_ok());
+    assert_eq!(
+        Scalar::String("型".repeat(257)).validate(),
+        Err(rss_mdm_inventory::Invalid::Value)
+    );
     assert_eq!(
         rss_mdm_inventory::Source::parse("unknown"),
         Err(rss_mdm_inventory::Invalid::UnknownSource)

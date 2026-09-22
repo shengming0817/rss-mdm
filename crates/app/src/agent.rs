@@ -11,7 +11,7 @@ use crate::{
 use axum::{
     Extension, Json, Router,
     body::Bytes,
-    extract::{Path, State},
+    extract::{Path, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -25,6 +25,8 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::{future::Future, sync::Arc, time::Duration};
 use uuid::Uuid;
+const MAX_PENDING_REPORTS_PER_REGISTRATION: i64 = 32;
+const RETAINED_DELIVERED_REPORTS_PER_REGISTRATION: i64 = 224;
 
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -104,9 +106,10 @@ async fn register(
     State(app): State<Arc<App>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::RegistrationReceipt>), AgentError> {
     json_content_type(&headers)?;
+    let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     bounded(&app, register_inner(&app, &audit, body)).await
 }
 async fn register_inner(
@@ -219,9 +222,10 @@ async fn report(
     State(app): State<Arc<App>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
     json_content_type(&headers)?;
+    let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     bounded(&app, report_inner(&app, &audit, &headers, body)).await
 }
 async fn report_inner(
@@ -258,6 +262,13 @@ async fn report_inner(
         tx.rollback().await.map_err(db)?;
         return Ok((StatusCode::ACCEPTED, Json(ack)));
     }
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND delivery_pending")
+        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
+    if pending >= MAX_PENDING_REPORTS_PER_REGISTRATION {
+        return Err(Error::Unavailable(Failure::Capacity).into());
+    }
+    sqlx::query("DELETE FROM mdm_access.agent_reports r WHERE r.tenant_id=$1::uuid AND r.registration=$2::uuid AND r.source='agent.builtin' AND r.epoch=$3::uuid AND NOT r.delivery_pending AND r.id IN (SELECT id FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND NOT delivery_pending ORDER BY received_at DESC,id DESC OFFSET $4)")
+        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(RETAINED_DELIVERED_REPORTS_PER_REGISTRATION).execute(&mut *tx).await.map_err(db)?;
     let received_at: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *tx)
@@ -280,8 +291,10 @@ async fn status(
     State(app): State<Arc<App>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
+    let id =
+        Uuid::parse_str(&id).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     bounded(&app, status_inner(&app, &audit, &headers, id)).await
 }
 async fn status_inner(
@@ -302,19 +315,18 @@ async fn status_inner(
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
-    let report = app
-        .access
-        .agent_report(&scope, id)
+    let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
+    let live_scope =
+        crate::collection::revalidate_source(&mut tx, &principal, InventorySource::AgentBuiltin)
+            .await?;
+    if live_scope != scope {
+        return Err(Error::Unauthorized.into());
+    }
+    let (report, received_at) = AccessStore::agent_report_in(&mut tx, &scope, id)
         .await?
         .ok_or(AgentError::Wire(wire::ErrorCode::ReportNotFound))?;
-    let received_at: i64 = {
-        let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
-        let value = sqlx::query_scalar("SELECT received_at FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND id=$4::uuid")
-            .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(id.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
-        tx.commit().await.map_err(db)?;
-        value
-    };
     let delivery = app.collection.inspect_agent(&report).await?;
+    tx.commit().await.map_err(db)?;
     let observation = match delivery.receipt.as_ref().map(|r| r.decision.outcome()) {
         None => wire::ObservationStatus::Pending,
         Some(rss_observation::SyncOutcome::Snapshot) => wire::ObservationStatus::Snapshot,

@@ -35,23 +35,21 @@ rss-mdm-agent-wire = {{ {dependency} }}
 serde_json = "1"
 uuid = {{ version = "1", features = ["v4"] }}
 ''')
-    (base / "tests" / "contract.rs").write_text(r'''use rss_mdm_agent_wire::{Capability, RegistrationRequest, ReportBody, ReportRequest};
-use serde_json::json;
+    (base / "tests" / "contract.rs").write_text(r'''use rss_mdm_agent_wire::{Capability, RegistrationRequest, ReportBody, ReportRequest, Secret};
 use uuid::Uuid;
 
 #[test]
 fn independent_agent_consumes_exact_v1() {
-    let secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    let registration: RegistrationRequest = serde_json::from_value(json!({
-        "wireVersion":1,"operationId":Uuid::new_v4(),"enrollmentId":Uuid::new_v4(),
-        "password":secret,"credential":secret,"capabilities":["inventory.basic.v1"]
-    })).unwrap();
+    let secret = || Secret::parse("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
+    let registration = RegistrationRequest::new(
+        Uuid::new_v4(), Uuid::new_v4(), secret(), secret()
+    ).unwrap();
     assert_eq!(registration.capabilities(), &[Capability::InventoryBasicV1]);
-    let report: ReportRequest = serde_json::from_value(json!({
-        "wireVersion":1,"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,
-        "body":{"kind":"snapshot","values":[]}
-    })).unwrap();
+    let report = ReportRequest::new(
+        Uuid::new_v4(), 0, 1, ReportBody::Snapshot(vec![])
+    ).unwrap();
     assert!(matches!(report.body(), ReportBody::Snapshot(_)));
+    assert_eq!(serde_json::to_value(&registration).unwrap()["wireVersion"], 1);
 }
 ''')
     logs = []

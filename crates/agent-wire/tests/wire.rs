@@ -41,6 +41,108 @@ fn registration_is_strict_and_secrets_are_redacted() {
 }
 
 #[test]
+fn producers_construct_the_only_supported_shape() {
+    let request = RegistrationRequest::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Secret::parse(&secret()).unwrap(),
+        Secret::parse(&secret()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap()["wireVersion"], 1);
+    assert!(matches!(
+        RegistrationRequest::new(
+            Uuid::nil(),
+            Uuid::new_v4(),
+            Secret::parse(&secret()).unwrap(),
+            Secret::parse(&secret()).unwrap(),
+        ),
+        Err(WireError::InvalidValue)
+    ));
+    assert!(ReportRequest::new(Uuid::new_v4(), 1, 1, ReportBody::Snapshot(vec![])).is_ok());
+    assert_eq!(
+        ReportRequest::new(
+            Uuid::new_v4(),
+            i64::MAX as u64 + 1,
+            1,
+            ReportBody::Snapshot(vec![])
+        )
+        .unwrap_err(),
+        WireError::InvalidValue
+    );
+}
+
+#[test]
+fn published_schemas_match_wire_rejections() {
+    let registration_schema: Value = serde_json::from_str(include_str!(
+        "../schema/registration-request-v1.schema.json"
+    ))
+    .unwrap();
+    let registration_validator = jsonschema::validator_for(&registration_schema).unwrap();
+    let report_schema: Value =
+        serde_json::from_str(include_str!("../schema/report-request-v1.schema.json")).unwrap();
+    let report_validator = jsonschema::validator_for(&report_schema).unwrap();
+
+    let mut valid_registration = registration();
+    valid_registration["operationId"] = json!(Uuid::new_v4());
+    for invalid in [
+        registration(),
+        {
+            let mut value = valid_registration.clone();
+            value["operationId"] = json!("not-a-uuid");
+            value
+        },
+        {
+            let mut value = valid_registration.clone();
+            value["credential"] = json!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+            value
+        },
+        {
+            let mut value = valid_registration.clone();
+            value["unknown"] = json!(true);
+            value
+        },
+    ] {
+        assert!(!registration_validator.is_valid(&invalid));
+        assert!(serde_json::from_value::<RegistrationRequest>(invalid).is_err());
+    }
+    assert!(registration_validator.is_valid(&valid_registration));
+    assert!(serde_json::from_value::<RegistrationRequest>(valid_registration).is_ok());
+
+    let valid_report = json!({
+        "wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,
+        "body":{"kind":"snapshot","values":[
+            {"field":"device.model","value":{"kind":"known","value":"设备型号"}}
+        ]}
+    });
+    for invalid in [
+        json!({"wireVersion":1,"reportId":Uuid::nil(),"sequence":1,"observedAt":1,"body":{"kind":"snapshot","values":[]}}),
+        json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":9223372036854775808_u64,"observedAt":1,"body":{"kind":"snapshot","values":[]}}),
+        json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"body":{"kind":"partial","values":[
+            {"field":"device.model","value":{"kind":"known","value":"A"}},
+            {"field":"device.model","value":{"kind":"known","value":"B"}}
+        ]}}),
+        json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"body":{"kind":"snapshot","values":[
+            {"field":"device.model","value":{"kind":"known","value":" \t"}}
+        ]}}),
+        json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"body":{"kind":"snapshot","values":[
+            {"field":"device.model","value":{"kind":"known","value":"bad\u{0007}"}}
+        ]}}),
+    ] {
+        assert!(
+            !report_validator.is_valid(&invalid),
+            "schema accepted {invalid}"
+        );
+        assert!(
+            serde_json::from_value::<ReportRequest>(invalid.clone()).is_err(),
+            "wire accepted {invalid}"
+        );
+    }
+    assert!(report_validator.is_valid(&valid_report));
+    assert!(serde_json::from_value::<ReportRequest>(valid_report).is_ok());
+}
+
+#[test]
 fn canonical_secrets_are_exactly_256_bits() {
     assert!(Secret::parse(&secret()).is_ok());
     for invalid in ["", "bad", &"A".repeat(42), &"A".repeat(44)] {

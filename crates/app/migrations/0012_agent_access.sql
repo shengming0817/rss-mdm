@@ -25,6 +25,8 @@ CREATE TABLE mdm_access.agent_reports (
 );
 CREATE INDEX agent_report_delivery ON mdm_access.agent_reports
  (tenant_id,registration,source,epoch,sequence,id) WHERE delivery_pending;
+CREATE INDEX agent_report_retention ON mdm_access.agent_reports
+ (tenant_id,registration,source,epoch,received_at DESC,id DESC) WHERE NOT delivery_pending;
 
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['agent_bindings','agent_reports'] LOOP
@@ -34,6 +36,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 GRANT SELECT,INSERT ON mdm_access.agent_bindings,mdm_access.agent_reports TO mdm_access;
+GRANT DELETE ON mdm_access.agent_reports TO mdm_access;
 GRANT UPDATE(delivery_pending) ON mdm_access.agent_reports TO mdm_access;
 
 CREATE FUNCTION mdm_access.immutable_agent_report() RETURNS trigger LANGUAGE plpgsql AS $$

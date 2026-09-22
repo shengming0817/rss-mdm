@@ -362,18 +362,19 @@ impl AccessStore {
         Ok(reports)
     }
 
-    pub(crate) async fn agent_report(
-        &self,
+    pub(crate) async fn agent_report_in(
+        connection: &mut sqlx::PgConnection,
         scope: &Scope,
         id: Uuid,
-    ) -> Result<Option<DurableReport>, Error> {
-        let mut tx = self.begin(&scope.tenant().to_string()).await?;
-        let row = sqlx::query("SELECT scope,batch,digest FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid")
+    ) -> Result<Option<(DurableReport, i64)>, Error> {
+        let row = sqlx::query("SELECT scope,batch,digest,received_at FROM mdm_access.agent_reports WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid")
             .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.to_string())
-            .fetch_optional(&mut *tx).await.map_err(db)?;
-        let report = row.map(agent_report).transpose()?;
-        tx.commit().await.map_err(db)?;
-        Ok(report)
+            .fetch_optional(connection).await.map_err(db)?;
+        row.map(|row| {
+            let received_at = row.try_get("received_at").map_err(db)?;
+            Ok((agent_report(row)?, received_at))
+        })
+        .transpose()
     }
     pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
         let mut tx = self.begin(&report.scope.tenant().to_string()).await?;
