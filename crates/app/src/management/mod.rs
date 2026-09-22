@@ -85,9 +85,7 @@ impl Management {
             rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, deadline())
                 .await
                 .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
-        let mut key = [0; 32];
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut key)
-            .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
+        let key = storage::cursor_key(&runtime, tenant).await?;
         Ok(Self {
             automation_task: std::sync::OnceLock::new(),
             asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),

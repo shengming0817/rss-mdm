@@ -1,6 +1,8 @@
 use super::*;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
 use std::sync::Mutex;
+#[path = "completion.rs"]
+mod completion;
 
 pub(crate) struct Automation {
     service: Arc<Management>,
@@ -33,6 +35,14 @@ impl Automation {
                 return Err(Error::Unavailable(Failure::ManagementAdmission));
             }
         };
+        // Startup retries retained input without discarding its failure diagnosis.
+        if rss_reconcile::DurableStore::wake(&store, &asset_target(service.tenant), &control)
+            .await
+            .is_err()
+        {
+            let _ = store.close(&control).await;
+            return Err(Error::Unavailable(Failure::ManagementStorage));
+        }
         Ok(Arc::new(Self { service, store }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
@@ -46,7 +56,7 @@ impl Automation {
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.assets").expect("constant domain");
-            let runner=async {rss_reconcile::run(&self.store,self.as_ref(),&scope,policy,&control,|event| {
+            let runner=async {rss_reconcile::run(self.as_ref(),self.as_ref(),&scope,policy,&control,|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
             let bridge=async {
@@ -179,7 +189,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     Box::pin(async move {
                         let result: Result<()> = async {
                             if ctx.1 == "changes" {
-                                return ctx.0.dispatch_assets_in(tx).await;
+                                ctx.0.dispatch_assets_in(tx).await?;
+                                return ctx.0.clear_ingress_failure_in(tx).await;
                             }
                             let id = input(
                                 ctx.1
@@ -223,7 +234,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                 .fold(
                     |_| Ok(None),
                     |_| Err(Error::Unavailable(Failure::ManagementStorage)),
-                    |_| {
+                    |error| {
+                        eprintln!("{}",serde_json::json!({"event":"mdm_automation_rollback","target":claim.target().entity(),"diagnostic":format!("{error:?}")}));
                         failure
                             .lock()
                             .expect("failure slot")

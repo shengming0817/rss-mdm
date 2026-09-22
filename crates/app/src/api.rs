@@ -690,6 +690,7 @@ async fn ready(State(app): State<Arc<App>>) -> Response {
             .automation_task
             .get()
             .is_some_and(rss_runtime::TaskStatus::is_running)
+        && app.management.ingress_ready().await
     {
         Json(json!({"ready":true})).into_response()
     } else {

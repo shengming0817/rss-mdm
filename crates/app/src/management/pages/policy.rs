@@ -95,7 +95,13 @@ impl Management {
             .map(|token| decode(&self.asset_cursor_key, token, &tenant, result, &binding))
             .transpose()?;
         let id = input(p::RequestId::new(self.tenant, result.to_string()))?;
-        let candidate = checked(self.policies.candidate_in(tx, &id).await?)?;
+        let candidate = match self.policies.candidate_in(tx, &id).await? {
+            Ok(candidate) => candidate,
+            Err(pg::Rejection::NotFound) => {
+                return Err(Error::ManagementNotFound(Missing::Preview).into());
+            }
+            Err(_) => return Err(Error::Conflict.into()),
+        };
         if candidate.request.policy.value() != policy {
             return Err(Error::NotFound.into());
         }

@@ -16,7 +16,17 @@ impl Management {
         target: Option<&str>,
         kind: TaskKind,
     ) -> Result<Value> {
-        let (job, done, failure, _, forwarded) = self.job_in(tx, id).await?;
+        let missing = || match kind {
+            TaskKind::Group => Error::ManagementNotFound(Missing::Group),
+            TaskKind::Scope => Error::ManagementNotFound(Missing::Scope),
+            TaskKind::Policy => Error::ManagementNotFound(Missing::Preview),
+            TaskKind::AssetQuery => Error::NotFound,
+        };
+        let (job, done, failure, _, forwarded) =
+            self.job_in(tx, id).await.map_err(|error| match error {
+                Fault::Request(Error::NotFound) => Fault::Request(missing()),
+                error => error,
+            })?;
         if target.is_some_and(|t| t != job.target())
             || !matches!(
                 (kind, &job),
@@ -26,7 +36,7 @@ impl Management {
                     | (TaskKind::Policy, JobInput::Policy { .. })
             )
         {
-            return Err(Error::NotFound.into());
+            return Err(missing().into());
         }
         let mut processed = 0u64;
         let mut members = 0u64;
@@ -128,7 +138,7 @@ impl Management {
         )
     }
 
-    pub(super) async fn forward_jobs(&self) -> std::result::Result<usize, Error> {
+    pub(in crate::management) async fn forward_jobs(&self) -> std::result::Result<usize, Error> {
         let ids=self.runtime.local_tx(self.tenant,deadline(),|tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
@@ -193,6 +203,16 @@ impl Management {
             sqlx::query_scalar("UPDATE mdm_management.automation_jobs SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT completed RETURNING target")
                 .bind(tenant).bind(id.to_string()).bind(failure).fetch_optional(c).await
         })).await?;
+        if target.is_none() {
+            let tenant = self.tenant.to_string();
+            let exists=tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_management.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid AND completed)")
+                    .bind(tenant).bind(id.to_string()).fetch_one(c).await
+            })).await?;
+            if !exists {
+                return Err(Error::NotFound.into());
+            }
+        }
         if let Some(target) = target {
             let audit = Audit::new(self.tenant.to_string(), action);
             audit.identify_service("service:asset-automation");

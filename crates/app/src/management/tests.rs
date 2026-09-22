@@ -9,6 +9,8 @@ use serde_json::json;
 use std::collections::BTreeSet;
 #[path = "capacity.rs"]
 mod capacity;
+#[path = "recovery_tests.rs"]
+mod recovery;
 fn tenant() -> TenantId {
     TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
 }

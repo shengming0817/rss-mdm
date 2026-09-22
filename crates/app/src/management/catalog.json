@@ -38,6 +38,15 @@
     ],
     [
       "asset_dispatch",
+      "failure",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
       "phase",
       "text",
       true,
@@ -311,6 +320,24 @@
       "candidate",
       "uuid",
       false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "cursor_keys",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "cursor_keys",
+      "secret",
+      "bytea",
+      true,
       null,
       "",
       ""
@@ -913,6 +940,14 @@
       true
     ],
     [
+      "cursor_keys",
+      "cursor_keys_pkey",
+      "CREATE UNIQUE INDEX cursor_keys_pkey ON mdm_management.cursor_keys USING btree (tenant_id)",
+      true,
+      true,
+      true
+    ],
+    [
       "group_fields",
       "group_fields_field",
       "CREATE INDEX group_fields_field ON mdm_management.group_fields USING btree (tenant_id, field, group_id)",
@@ -1047,6 +1082,13 @@
       "asset_dispatch_check",
       "c",
       "CHECK (((consumed >= 0) AND (watermark >= consumed)))",
+      true
+    ],
+    [
+      "asset_dispatch",
+      "asset_dispatch_failure_check",
+      "c",
+      "CHECK ((failure = 'automation_suspended'::text))",
       true
     ],
     [
@@ -1186,7 +1228,7 @@
       "automation_jobs",
       "automation_jobs_failure_check",
       "c",
-      "CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text])))",
+      "CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text])))",
       true
     ],
     [
@@ -1243,6 +1285,20 @@
       "candidate_heads_tenant_id_policy_fkey",
       "f",
       "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
+      true
+    ],
+    [
+      "cursor_keys",
+      "cursor_keys_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id)",
+      true
+    ],
+    [
+      "cursor_keys",
+      "cursor_keys_secret_check",
+      "c",
+      "CHECK ((octet_length(secret) = 32))",
       true
     ],
     [

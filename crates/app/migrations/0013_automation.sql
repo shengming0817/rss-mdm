@@ -2,6 +2,9 @@ BEGIN;
 DROP TABLE mdm_management.plan_references;
 DROP TABLE mdm_management.previews;
 CREATE INDEX asset_authority_changes ON mdm_access.asset_authority_history(tenant_id,revision,device);
+CREATE TABLE mdm_management.cursor_keys (
+ tenant_id uuid PRIMARY KEY, secret bytea NOT NULL CHECK(octet_length(secret)=32)
+);
 CREATE TABLE mdm_management.automation_jobs (
  tenant_id uuid NOT NULL, id uuid NOT NULL,
  kind text NOT NULL CHECK(kind IN('group','group_preview','scope','policy','asset_query')),
@@ -10,7 +13,7 @@ CREATE TABLE mdm_management.automation_jobs (
  forwarded boolean NOT NULL DEFAULT false, completed boolean NOT NULL DEFAULT false,
  cursor text,
  authority_revision bigint NOT NULL DEFAULT 0 CHECK(authority_revision>=0),
- failure text CHECK(failure IN('superseded','capacity_exceeded','source_unavailable','invalid_input','storage_invariant')),
+ failure text CHECK(failure IN('superseded','capacity_exceeded','source_unavailable','invalid_input','storage_invariant','automation_suspended')),
  PRIMARY KEY(tenant_id,id)
 );
 CREATE INDEX automation_jobs_pending ON mdm_management.automation_jobs(tenant_id,id) WHERE NOT forwarded;
@@ -23,6 +26,7 @@ CREATE INDEX group_fields_field ON mdm_management.group_fields(tenant_id,field,g
 CREATE TABLE mdm_management.asset_dispatch (
  tenant_id uuid PRIMARY KEY, consumed bigint NOT NULL DEFAULT 0,
  watermark bigint NOT NULL DEFAULT 0, group_cursor uuid,
+ failure text CHECK(failure='automation_suspended'),
  phase text NOT NULL DEFAULT 'groups' CHECK(phase IN('groups','devices')),
  CHECK(consumed>=0 AND watermark>=consumed)
 );
@@ -91,7 +95,7 @@ CREATE TABLE mdm_management.asset_query_facets (
  PRIMARY KEY(tenant_id,run,kind,label),FOREIGN KEY(tenant_id,run) REFERENCES mdm_management.asset_query_runs(tenant_id,id)
 );
 DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['automation_jobs','group_fields','asset_dispatch','scope_sources','scope_runs','scope_source_members','scope_results','policy_assignments','candidate_heads','asset_query_runs','asset_query_results','asset_query_facets'] LOOP
+ FOREACH t IN ARRAY ARRAY['cursor_keys','automation_jobs','group_fields','asset_dispatch','scope_sources','scope_runs','scope_source_members','scope_results','policy_assignments','candidate_heads','asset_query_runs','asset_query_results','asset_query_facets'] LOOP
   EXECUTE format('ALTER TABLE mdm_management.%I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE mdm_management.%I FORCE ROW LEVEL SECURITY',t);
   EXECUTE format('CREATE POLICY tenant ON mdm_management.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
@@ -100,7 +104,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 GRANT UPDATE(forwarded,completed,failure,cursor,authority_revision) ON mdm_management.automation_jobs TO mdm_management_runtime;
-GRANT UPDATE(consumed,watermark,group_cursor,phase) ON mdm_management.asset_dispatch TO mdm_management_runtime;
+GRANT UPDATE(consumed,watermark,group_cursor,phase,failure) ON mdm_management.asset_dispatch TO mdm_management_runtime;
 GRANT UPDATE(phase,source_index,source_cursor,evaluation_cursor,object_count,member_count,identity_revision,result_fingerprint) ON mdm_management.scope_runs TO mdm_management_runtime;
 GRANT UPDATE(resolution,resolution_revision) ON mdm_management.scopes TO mdm_management_runtime;
 GRANT UPDATE(scope,revision) ON mdm_management.policy_assignments TO mdm_management_runtime;
@@ -111,5 +115,5 @@ GRANT UPDATE(total) ON mdm_management.asset_query_facets TO mdm_management_runti
 ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
 ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
 ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
-'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save','authorization_write','authorization_initialize','authorization_effective_read','authorization_rules_read','authorization_groups_read','authorization_members_read','authorization_departments_read','command_accept','command_read','command_cancel','command_approve','command_dispatch','automation_completed','automation_superseded','automation_failed'));
+'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save','authorization_write','authorization_initialize','authorization_effective_read','authorization_rules_read','authorization_groups_read','authorization_members_read','authorization_departments_read','command_accept','command_read','command_cancel','command_approve','command_dispatch','agent_registration','agent_report','agent_report_read','automation_completed','automation_superseded','automation_failed'));
 COMMIT;

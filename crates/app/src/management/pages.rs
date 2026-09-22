@@ -103,7 +103,6 @@ impl Management {
             .map(|token| decode(&self.asset_cursor_key, token, &tenant, result, &binding))
             .transpose()?;
         let owner = input(pg::GroupId::parse(&group.to_string()))?;
-        group_checked(self.groups.lock_reference_target_in(tx, owner).await?)?;
         let id = input(pg::OperationId::parse(&result.to_string()))?;
         let build = group_checked(self.groups.build_in(tx, id).await?)?;
         if build.request.group != owner {
@@ -163,7 +162,11 @@ impl Management {
                 )
             })
             .transpose()?;
-        let current = checked(self.groups.current_member_set_in(tx, owner).await?)? == Some(id);
+        let current = match self.groups.current_member_set_in(tx, owner).await? {
+            Ok(current) => current == Some(id),
+            Err(pg::Rejection::NotFound | pg::Rejection::Deleted) => false,
+            Err(error) => return group_checked(Err(error)),
+        };
         json(&GroupPage {
             result,
             group,

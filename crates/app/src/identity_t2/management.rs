@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
 impl Drop for Server {
     fn drop(&mut self) {
@@ -12,7 +13,19 @@ async fn call(
     revision: u64,
     input: Value,
 ) -> Result<Value> {
-    let (status,result)=browser.call(router,Method::POST,path,Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":revision,"input":input}))).await?;
+    let (status, result) = settled_write(
+        browser,
+        router,
+        path,
+        json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":revision,"input":input}),
+    )
+    .await?;
+    if status == StatusCode::CONFLICT && path.starts_with("/api/v2/groups/") {
+        let current = browser.call(router, Method::GET, path, None).await?;
+        anyhow::bail!(
+            "group write at expected revision {revision}: {status} {result}; observed {current:?}"
+        );
+    }
     ensure!(
         status == StatusCode::OK || status == StatusCode::ACCEPTED,
         "management request {path}: {status} {result}"
@@ -26,12 +39,35 @@ async fn call(
     }
     Ok(result)
 }
+// Normal writes can collide with the live automation worker's serializable
+// transaction. Retry the exact identity/body; injected failures bypass this helper.
+async fn settled_write(
+    browser: &mut Browser,
+    router: &Router,
+    path: &str,
+    body: Value,
+) -> Result<(StatusCode, Value)> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let result = browser
+                .call(router, Method::POST, path, Some(body.clone()))
+                .await?;
+            if result.0 != StatusCode::SERVICE_UNAVAILABLE {
+                return Ok(result);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .context("management write did not settle")?
+}
 pub(super) async fn matrix(
     base: &Value,
     reader: Arc<InventoryReader>,
     session: &Browser,
 ) -> Result<()> {
     let automation = start_automation(base).await?;
+    await_ingress().await?;
     let initial = app(base, reader.clone()).await?;
     let member = browser_subject(session, &initial).await?;
     set_management_grants(
@@ -117,6 +153,7 @@ pub(super) async fn matrix(
         "trusted inventory mapping: {preview}"
     );
     pg("UPDATE mdm.inventory SET value='Model-B' WHERE field='device.model'")?;
+    await_ingress().await?;
     // Immutable previews retain their fixed input even after a fact writer advances it.
     ensure!(
         browser
@@ -152,6 +189,7 @@ pub(super) async fn matrix(
         "new watermark did not observe the changed fact: {members}"
     );
     pg("UPDATE mdm.inventory SET value='Model-A' WHERE field='device.model'")?;
+    await_ingress().await?;
     // The old synchronous endpoint and snapshot request shape are gone.
     ensure!(
         browser
@@ -178,6 +216,7 @@ pub(super) async fn matrix(
     for device in [&second, &third] {
         seed_management_device(device)?;
     }
+    await_ingress().await?;
     let target_group = uuid::Uuid::new_v4();
     let limit_group = uuid::Uuid::new_v4();
     for (id, members) in [
@@ -340,7 +379,7 @@ pub(super) async fn matrix(
         json!({"action":"members","add":[],"remove":["device-1"]}),
     )
     .await?;
-    ensure!(browser.call(&router,Method::POST,&format!("{policy_path}/plans"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":current_revision,"input":{"preview":stale["task"]}}))).await?.0==StatusCode::CONFLICT);
+    ensure!(settled_write(&mut browser,&router,&format!("{policy_path}/plans"),json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":current_revision,"input":{"preview":stale["task"]}})).await?.0==StatusCode::CONFLICT);
     scale_preview(&mut browser, &router, &policy_path, current_revision).await?;
     // Revocation is persistent and visible to every existing router/session.
     software(base, reader.clone(), session).await?;
@@ -620,6 +659,25 @@ fn seed_management_device(device: &str) -> Result<()> {
     ))?;
     Ok(())
 }
+// Establish a settled fixture boundary before introducing definitions: prior
+// enrollment/report writes legitimately supersede a concurrent preview.
+async fn await_ingress() -> Result<()> {
+    let settled=tokio::time::timeout(Duration::from_secs(90),async {
+        loop {
+            let ready=pg(&format!("SELECT coalesce((SELECT consumed FROM mdm_management.asset_dispatch WHERE tenant_id='{TENANT}'),0)=coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),0) AND NOT EXISTS(SELECT 1 FROM mdm_management.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed)"))?;
+            if ready.trim()=="t" { return Ok::<_,anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }).await;
+    if let Ok(outcome) = settled {
+        return outcome;
+    }
+    let progress = pg(&format!(
+        "SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),'checkpoint',(SELECT to_jsonb(d)-'group_cursor' FROM mdm_management.asset_dispatch d WHERE tenant_id='{TENANT}'),'jobs',(SELECT jsonb_agg(p) FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase,r.object_count FROM mdm_management.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p))"
+    ))?;
+    anyhow::bail!("fixture ingress did not settle: {progress}")
+}
+
 async fn scale_preview(
     browser: &mut Browser,
     router: &Router,
@@ -630,6 +688,7 @@ async fn scale_preview(
     pg(&format!(
         "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,1001) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) SELECT '{TENANT}',request,grant_id,'mdm' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations SELECT '{TENANT}',registration,device,'mdm',1,request,'active' FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777','device-basics/2/model-os/typed-v2',true FROM scale_devices;"
     ))?;
+    await_ingress().await?;
     let group = uuid::Uuid::new_v4();
     let scope = uuid::Uuid::new_v4();
     let group_path = format!("/api/v2/groups/{group}");
