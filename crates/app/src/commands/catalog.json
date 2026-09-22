@@ -173,6 +173,15 @@
     ],
     [
       "attempts",
+      "receipt_accepted",
+      "boolean",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
       "request",
       "bytea",
       true,
@@ -415,6 +424,60 @@
       ""
     ],
     [
+      "firewall_owners",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "node",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "policy",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "version",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "operation",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "operations",
       "tenant_id",
       "uuid",
@@ -569,17 +632,8 @@
     ],
     [
       "plan_executions",
-      "fingerprint",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_executions",
-      "response",
-      "jsonb",
+      "request",
+      "uuid",
       true,
       null,
       "",
@@ -607,7 +661,7 @@
       "requests",
       "operation",
       "uuid",
-      true,
+      false,
       null,
       "",
       ""
@@ -626,6 +680,15 @@
       "response",
       "jsonb",
       true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "requests",
+      "plan",
+      "uuid",
+      false,
       null,
       "",
       ""
@@ -794,6 +857,41 @@
       true
     ],
     [
+      "firewall_owners",
+      "firewall_owners_node_check",
+      "c",
+      "CHECK ((node = './Vendor/MSFT/Firewall/MdmStore/DomainProfile/EnableFirewall'::text))",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, device, node)",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_tenant_id_operation_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_tenant_id_policy_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_version_check",
+      "c",
+      "CHECK ((version > 0))",
+      true
+    ],
+    [
       "operations",
       "operations_approval_check",
       "c",
@@ -878,6 +976,27 @@
       true
     ],
     [
+      "plan_executions",
+      "plan_executions_tenant_id_request_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, request) REFERENCES mdm_commands.requests(tenant_id, id)",
+      true
+    ],
+    [
+      "plan_executions",
+      "plan_executions_tenant_id_request_key",
+      "u",
+      "UNIQUE (tenant_id, request)",
+      true
+    ],
+    [
+      "requests",
+      "requests_check",
+      "c",
+      "CHECK (((operation IS NULL) <> (plan IS NULL)))",
+      true
+    ],
+    [
       "requests",
       "requests_fingerprint_check",
       "c",
@@ -896,6 +1015,13 @@
       "requests_tenant_id_operation_fkey",
       "f",
       "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
+      true
+    ],
+    [
+      "requests",
+      "requests_tenant_id_plan_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_management.previews(tenant_id, id)",
       true
     ]
   ],
@@ -941,6 +1067,14 @@
       true
     ],
     [
+      "attempts",
+      "native_session_receipts",
+      "CREATE INDEX native_session_receipts ON mdm_commands.attempts USING btree (tenant_id, session, operation) WHERE receipt_accepted",
+      true,
+      true,
+      true
+    ],
+    [
       "capabilities",
       "capabilities_pkey",
       "CREATE UNIQUE INDEX capabilities_pkey ON mdm_commands.capabilities USING btree (tenant_id, registration)",
@@ -973,6 +1107,14 @@
       true
     ],
     [
+      "firewall_owners",
+      "firewall_owners_pkey",
+      "CREATE UNIQUE INDEX firewall_owners_pkey ON mdm_commands.firewall_owners USING btree (tenant_id, device, node)",
+      true,
+      true,
+      true
+    ],
+    [
       "operations",
       "operations_pkey",
       "CREATE UNIQUE INDEX operations_pkey ON mdm_commands.operations USING btree (tenant_id, id)",
@@ -984,6 +1126,14 @@
       "plan_executions",
       "plan_executions_pkey",
       "CREATE UNIQUE INDEX plan_executions_pkey ON mdm_commands.plan_executions USING btree (tenant_id, plan)",
+      true,
+      true,
+      true
+    ],
+    [
+      "plan_executions",
+      "plan_executions_tenant_id_request_key",
+      "CREATE UNIQUE INDEX plan_executions_tenant_id_request_key ON mdm_commands.plan_executions USING btree (tenant_id, request)",
       true,
       true,
       true

@@ -52,7 +52,7 @@ impl Commands {
                             })
                         })
                         .await??;
-                    settle_reports(s, tx, p).await?;
+                    settle_reports(s, tx, p, m.header.session_id).await?;
                     storage::audit(tx, a, 200).await?;
                     Ok(reply.into_bytes())
                 })
@@ -65,11 +65,12 @@ async fn settle_reports(
     s: &Commands,
     tx: &mut PgTransaction<'_>,
     p: &DevicePrincipal,
+    session: u32,
 ) -> Result<()> {
     let tenant = s.tenant.to_string();
     let registration = p.registration().to_string();
     let generation = p.generation();
-    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND registration=$2::uuid AND registration_generation=$3 ORDER BY id").bind(tenant).bind(registration).bind(generation).fetch_all(c).await})).await?;
+    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT DISTINCT o.id::text FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.session=$4 AND a.phase='execute' AND a.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id::text LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).fetch_all(c).await})).await?;
     for id in ids {
         settle_one(s, tx, &id).await?;
     }
@@ -87,8 +88,11 @@ async fn settle_one(s: &Commands, tx: &mut PgTransaction<'_>, id: &str) -> Resul
         return Ok(());
     }
     let tenant = s.tenant.to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT status,value FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid AND phase='execute' ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT status,value,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid AND phase='execute' ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).fetch_optional(c).await})).await?;
     let Some(row) = row else { return Ok(()) };
+    if row.try_get::<Option<bool>, _>("receipt_accepted")? != Some(true) {
+        return Ok(());
+    }
     let status: Option<i32> = row.try_get("status")?;
     let value: Option<String> = row.try_get("value")?;
     let event = match status {
@@ -124,10 +128,11 @@ async fn settle_one(s: &Commands, tx: &mut PgTransaction<'_>, id: &str) -> Resul
 pub(super) async fn observation(
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
+    command_status: dc::Status,
 ) -> Result<Value> {
     let tenant = tx.tenant_id().to_string();
     let id = op.id.to_string();
-    let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT DISTINCT ON(phase) id::text,ordinal,phase,status,value,received_at FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY phase,ordinal DESC").bind(tenant).bind(id).fetch_all(c).await})).await?;
+    let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT DISTINCT ON(phase) id::text,ordinal,phase,status,value,received_at,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY phase,ordinal DESC").bind(tenant).bind(id).fetch_all(c).await})).await?;
     let execute = rows
         .iter()
         .find(|r| r.try_get::<String, _>("phase").ok().as_deref() == Some("execute"));
@@ -137,11 +142,17 @@ pub(super) async fn observation(
             .iter()
             .find(|r| r.try_get::<String, _>("phase").ok().as_deref() == Some("observe")),
     };
+    let expired = storage::now(tx).await? >= op.request.deadline;
     let write_status = execute
         .map(|r| r.try_get::<Option<i32>, _>("status"))
         .transpose()?
         .flatten();
-    let progress = match write_status {
+    let accepted = execute
+        .map(|r| r.try_get::<Option<bool>, _>("receipt_accepted"))
+        .transpose()?
+        .flatten()
+        == Some(true);
+    let progress = match write_status.filter(|_| accepted) {
         Some(200) => "succeeded",
         Some(n) if n >= 400 => "failed",
         _ => "unknown",
@@ -154,23 +165,43 @@ pub(super) async fn observation(
             (Some(200), Some(_)) => "success",
             (Some(404 | 405 | 501), _) => "unsupported",
             (Some(n), _) if n >= 400 => "failed",
+            _ if expired => "missing",
             _ => "pending",
         };
-        let verdict = match &op.request.task {
-            Task::StateVerify { expected_value, .. } if quality == "success" => {
-                if value.as_ref() == Some(expected_value) {
-                    "matched"
-                } else {
-                    "mismatched"
-                }
-            }
-            _ => "unknown",
-        };
+        let verdict = observation_verdict(
+            &op.request.task,
+            quality,
+            value.as_deref(),
+            accepted,
+            command_status,
+        );
         result = json!({"attemptId":r.try_get::<String,_>("id")?,"attempt":r.try_get::<i64,_>("ordinal")?,"result":verdict,"effect":if verdict=="matched"{"verified_present"}else{"unknown"},"progress":progress,"writeStatus":write_status,"nativeStatus":status,"value":value,"quality":quality,"receivedAt":r.try_get::<Option<i64>,_>("received_at")?});
     }
     if matches!(op.request.task, Task::Firewall { .. }) {
         result["cleanup"] = json!("unsupported");
         result["observationScope"] = json!("device_firewall");
     }
+    result["receiptAccepted"] = json!(accepted);
     Ok(result)
+}
+
+fn observation_verdict(
+    task: &Task,
+    quality: &str,
+    value: Option<&str>,
+    accepted: bool,
+    status: dc::Status,
+) -> &'static str {
+    match task {
+        Task::StateVerify { expected_value, .. } if quality == "success" && accepted => {
+            if value != Some(expected_value) {
+                "mismatched"
+            } else if status == dc::Status::Applied {
+                "matched"
+            } else {
+                "unknown"
+            }
+        }
+        _ => "unknown",
+    }
 }

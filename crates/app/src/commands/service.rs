@@ -122,7 +122,7 @@ impl Commands {
             if op.device!=device{return Err(Error::Forbidden.into());}
             let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(tx,&op,now).await?;
-            let observation=protocol::observation(tx,&op).await?;
+            let observation=protocol::observation(tx,&op,command.status()).await?;
             storage::audit(tx,audit,200).await?;
             Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
         })).await
@@ -191,7 +191,7 @@ async fn receipt(
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO mdm_commands.requests VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb)",
+                "INSERT INTO mdm_commands.requests(tenant_id,id,operation,fingerprint,response) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb)",
             )
             .bind(tenant)
             .bind(id.to_string())
@@ -213,12 +213,12 @@ fn dispatch(
     coordinate: dc::Coordinate,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
-    let payload = invalid(serde_json::to_vec(&(
-        device,
-        input,
-        coordinate.generation(),
-        coordinate.epoch(),
-    )))?;
+    let payload = invalid(serde_json::to_vec(&DispatchV1 {
+        device: device.into(),
+        request: input.clone(),
+        generation: coordinate.generation(),
+        epoch: coordinate.epoch(),
+    }))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         invalid(MessageId::parse(&format!(
             "dispatch.{}",

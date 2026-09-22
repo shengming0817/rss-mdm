@@ -226,6 +226,9 @@ def main(identity_only=False, asset_only=False, command_only=False, catalog_mode
                 require(result.returncode==0 and 'test identity_t2::assets::asset_write_query_group_and_isolation ... ok' in result.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'asset Router/PG T2 failed')
                 return
             if command_only:
+                # The composed authoring/native/recovery fixture nests large debug async frames.
+                # This is the Rust test thread's stack, not the production runtime configuration.
+                env.setdefault('RUST_MIN_STACK', str(8 * 1024 * 1024))
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')

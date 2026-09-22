@@ -635,10 +635,17 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
 pub(super) fn monotonic() -> Arc<dyn rss_observation::Clock> {
     Arc::new(crate::Monotonic(std::time::Instant::now))
 }
-struct IngressClock(std::sync::Mutex<std::time::Instant>);
+struct IngressClock(std::sync::Mutex<Option<std::time::Instant>>);
 impl rss_observation::Clock for IngressClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T2 ingress clock uses real time until the deterministic burst test"
+    )]
     fn now(&self) -> std::time::Instant {
-        *self.0.lock().unwrap()
+        self.0
+            .lock()
+            .unwrap()
+            .unwrap_or_else(std::time::Instant::now)
     }
 }
 impl IngressClock {
@@ -647,10 +654,11 @@ impl IngressClock {
         reason = "T2 composition root controls only ingress refill time, while TLS/HTTP/PG remain real"
     )]
     fn new() -> Arc<Self> {
-        Arc::new(Self(std::sync::Mutex::new(std::time::Instant::now())))
+        Arc::new(Self(std::sync::Mutex::new(None)))
     }
     fn advance(&self) {
-        *self.0.lock().unwrap() += Duration::from_secs(60);
+        let now = rss_observation::Clock::now(self);
+        *self.0.lock().unwrap() = Some(now + Duration::from_secs(60));
     }
 }
 
@@ -672,6 +680,8 @@ async fn ingress_burst(
     let bytes = soap::encode(&request, &CodecLimits::default())?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
     let before:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='windows_discovery'").bind(TENANT).fetch_one(&mut pg).await?;
+    // Freeze refill time only for the deterministic burst assertions.
+    clock.advance();
     let mut accepted = 0i64;
     let mut refused = 0;
     for index in 0..128 {

@@ -200,6 +200,11 @@ impl Management {
         {
             return Err(Error::Conflict.into());
         }
+        if preview.configuration.is_some()
+            && preview.devices.len() > super::configuration::MAX_TARGETS
+        {
+            return Err(Error::ConfigurationTargetLimit.into());
+        }
         if let Some(configuration) = &preview.configuration {
             for (device, expected) in &configuration.devices {
                 if super::configuration::evidence(tx, device).await? != *expected {

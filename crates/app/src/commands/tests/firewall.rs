@@ -1,5 +1,6 @@
 //! Real authenticated product authoring -> frozen plan -> native Replace -> independent Get.
 use super::*;
+mod boundaries;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 impl Client {
     async fn product(&mut self, path: &str, body: Value) -> anyhow::Result<Value> {
@@ -22,7 +23,7 @@ impl Client {
         initial: &s::Message,
         ack: &s::Message,
     ) -> anyhow::Result<()> {
-        let cap = native::begin(peer, url, initial, ack, 950).await?;
+        let cap = native::begin(peer, url, initial, ack, 950, None).await?;
         let message = native::report(&cap.first, &cap.gets, "10.0.19045.0", 200);
         peer_reply(peer, url, &message).await?;
         let rule = Uuid::new_v4();
@@ -96,6 +97,19 @@ impl Client {
         );
         grants.push(json!({"operation":"firewall_write","scope":{"kind":"device","id":DEVICE}}));
         ensure!(self.browser.call(&self.router,Method::PUT,&format!("/api/v1/authorization/rules/{rule}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":{"subject":subject,"grants":grants}}))).await?.0==StatusCode::OK);
+        #[cfg(feature = "integration")]
+        {
+            self.app.commands.inject_fault(
+                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+            );
+            ensure!(
+                self.browser
+                    .call(&self.router, Method::POST, &path, Some(request.clone()))
+                    .await?
+                    .0
+                    == StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
         let accepted = self
             .browser
             .call(&self.router, Method::POST, &path, Some(request.clone()))
@@ -106,20 +120,24 @@ impl Client {
         );
         ensure!(
             self.browser
-                .call(&self.router, Method::POST, &path, Some(request))
+                .call(&self.router, Method::POST, &path, Some(request.clone()))
                 .await?
                 == accepted
         );
         let operation =
             Uuid::parse_str(accepted.1["operations"][0]["operationId"].as_str().unwrap())?;
         self.publish_operation(operation).await?;
-        let write = native::begin(peer, url, initial, ack, 951).await?;
+        let write = native::begin(peer, url, initial, ack, 951, None).await?;
         let response = peer_reply(
             peer,
             url,
             &native::report(&write.first, &write.gets, "10.0.19045.0", 200),
         )
         .await?;
+        assert_work(
+            &response,
+            &[("replace", rss_mdm_windows_mdm::configuration::FIREWALL_URI)],
+        )?;
         let replace = response
             .commands
             .iter()
@@ -156,6 +174,10 @@ impl Client {
             final_message: true,
         };
         let observation = peer_reply(peer, url, &received).await?;
+        assert_work(
+            &observation,
+            &[("get", rss_mdm_windows_mdm::configuration::STATUS_URI)],
+        )?;
         let (get, uri) = observation
             .commands
             .iter()
@@ -235,7 +257,7 @@ impl Client {
         );
         // A new frozen version cancels the old command, without claiming cleanup.
         let next = self
-            .next_firewall_plan(&resource, &policy, scope, false)
+            .next_firewall_plan(&resource, &policy, scope, false, 2, None)
             .await?;
         let old = self
             .call(Method::GET, &format!("/{operation}"), None)
@@ -250,13 +272,17 @@ impl Client {
             "late v1 observation changed v2"
         );
         self.publish_operation(next).await?;
-        let second = native::begin(peer, url, initial, ack, 952).await?;
+        let second = native::begin(peer, url, initial, ack, 952, None).await?;
         let response = peer_reply(
             peer,
             url,
             &native::report(&second.first, &second.gets, "10.0.19045.0", 200),
         )
         .await?;
+        assert_work(
+            &response,
+            &[("replace", rss_mdm_windows_mdm::configuration::FIREWALL_URI)],
+        )?;
         let replace = response
             .commands
             .iter()
@@ -272,6 +298,10 @@ impl Client {
             s.command_ref = replace.0;
         }
         let observation = peer_reply(peer, url, &receipt).await?;
+        assert_work(
+            &observation,
+            &[("get", rss_mdm_windows_mdm::configuration::STATUS_URI)],
+        )?;
         let get = observation
             .commands
             .iter()
@@ -309,6 +339,16 @@ impl Client {
             state.1["commandStatus"] == "cancelled"
                 && state.1["observation"]["effect"] == "unknown"
         );
+        Box::pin(self.boundary_tests(boundaries::Fixture {
+            peer,
+            url,
+            initial,
+            ack,
+            resource: &resource,
+            policy: &policy,
+            scope,
+        }))
+        .await?;
         Ok(())
     }
     async fn next_firewall_plan(
@@ -317,6 +357,8 @@ impl Client {
         policy: &str,
         scope: Uuid,
         enabled: bool,
+        version: u64,
+        deadline: Option<i64>,
     ) -> anyhow::Result<Uuid> {
         let op = |revision, input| json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input});
         let r = self
@@ -333,7 +375,7 @@ impl Client {
             &format!("resources/{resource}"),
             op(
                 r.1["revision"].as_u64().unwrap(),
-                json!({"action":"firewall_version","version":"v2","enabled":enabled}),
+                json!({"action":"firewall_version","version":format!("v{version}"),"enabled":enabled}),
             ),
         )
         .await?;
@@ -347,7 +389,7 @@ impl Client {
             )
             .await?;
         ensure!(p.0 == StatusCode::OK);
-        let p=self.product(&format!("policies/{policy}"),op(p.1["storageRevision"].as_u64().unwrap(),json!({"action":"activate","version":2,"resource":resource,"resourceVersion":"v2"}))).await?;
+        let p=self.product(&format!("policies/{policy}"),op(p.1["storageRevision"].as_u64().unwrap(),json!({"action":"activate","version":version,"resource":resource,"resourceVersion":format!("v{version}")}))).await?;
         let revision = p["storageRevision"].as_u64().unwrap();
         let preview = Uuid::new_v4();
         self.product(&format!("policies/{policy}/previews"),json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}})).await?;
@@ -357,9 +399,16 @@ impl Client {
                 op(revision, json!({"preview":preview})),
             )
             .await?;
-        let result=self.product(&format!("policies/{policy}/plans/{preview}/execute"),json!({"operationId":Uuid::new_v4(),"expectedRevision":saved["receipt"]["storageRevision"],"deadline":self.app.clock.unix_seconds()?+300})).await?;
+        let result=self.product(&format!("policies/{policy}/plans/{preview}/execute"),json!({"operationId":Uuid::new_v4(),"expectedRevision":saved["receipt"]["storageRevision"],"deadline":deadline.unwrap_or(self.app.clock.unix_seconds()?+300)})).await?;
         Ok(Uuid::parse_str(
-            result["operations"][0]["operationId"].as_str().unwrap(),
+            result["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["accepted"] == true)
+                .unwrap()["operationId"]
+                .as_str()
+                .unwrap(),
         )?)
     }
 }
@@ -368,6 +417,8 @@ async fn peer_reply(
     url: &str,
     message: &s::Message,
 ) -> anyhow::Result<s::Message> {
+    // Respect the production per-peer admission rate across the expanded exchanges.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let response = peer
         .post(url)
         .header("content-type", "application/vnd.syncml.dm+xml")
@@ -382,4 +433,29 @@ async fn peer_reply(
         String::from_utf8_lossy(&bytes)
     );
     Ok(s::decode(&bytes, &CodecLimits::default())?)
+}
+
+fn assert_work(message: &s::Message, expected: &[(&str, &str)]) -> anyhow::Result<()> {
+    ensure!(
+        message
+            .commands
+            .iter()
+            .map(s::Command::id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            == message.commands.len()
+    );
+    let work = message
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            s::Command::Get { items, .. } => Some(("get", items[0].target.as_deref().unwrap())),
+            s::Command::Replace { .. } => {
+                Some(("replace", rss_mdm_windows_mdm::configuration::FIREWALL_URI))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ensure!(work == expected, "unexpected native work: {work:?}");
+    Ok(())
 }

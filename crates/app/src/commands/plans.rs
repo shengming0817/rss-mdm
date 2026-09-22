@@ -85,32 +85,20 @@ impl Commands {
             input,
         )))?)
         .to_vec();
-        let tenant = s.tenant.to_string();
-        let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT fingerprint,response FROM mdm_commands.plan_executions WHERE tenant_id=$1::uuid AND plan=$2::uuid").bind(tenant).bind(plan.to_string()).fetch_optional(c).await})).await?;
-        if let Some(row) = row {
-            if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint {
-                return Err(Error::Conflict.into());
-            }
-            audit.management_result(crate::audit::ManagementResult::Replayed);
-            storage::audit(tx, audit, 200).await?;
-            return Ok(row.try_get("response")?);
-        }
-        let tenant = s.tenant.to_string();
-        let key = policy.to_owned();
-        let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT p.document,r.saved_revision FROM mdm_management.previews p JOIN mdm_management.plan_references r ON(r.tenant_id,r.preview)=(p.tenant_id,p.id) JOIN mdm_policy.aggregates a ON(a.tenant_id,a.id,a.revision)=(r.tenant_id,r.policy,r.saved_revision) JOIN mdm_management.scopes sc ON(sc.tenant_id,sc.id,sc.revision)=(p.tenant_id,p.scope,p.scope_revision) WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND r.policy=$3 AND NOT sc.deleted").bind(tenant).bind(plan.to_string()).bind(key).fetch_optional(c).await})).await?.ok_or(Error::Conflict)?;
-        if row.try_get::<i64, _>("saved_revision")? != input.expected_revision {
-            return Err(Error::Conflict.into());
-        }
-        let preview: Preview = corrupt(serde_json::from_value(row.try_get("document")?))?;
-        let frozen = preview.configuration.as_ref().ok_or(Error::Malformed)?;
-        if frozen.ddf != rss_mdm_windows_mdm::configuration::REVISION
-            || preview.policy != policy
-            || preview.plan["scheduling_open"] != true
+        storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
+        if let Some(response) =
+            replay_execution(tx, proof, input.operation_id, &fingerprint, audit).await?
         {
+            return Ok(response);
+        }
+        let tenant = s.tenant.to_string();
+        let executed=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.plan_executions WHERE tenant_id=$1::uuid AND plan=$2::uuid)").bind(tenant).bind(plan.to_string()).fetch_one(c).await})).await?;
+        if executed {
             return Err(Error::Conflict.into());
         }
+        let preview = load_saved_plan(tx, policy, plan, input.expected_revision).await?;
         validate_sources(tx, &preview.sources).await?;
-        let mut results = Vec::new();
+        let mut results = self.cancel_intents(tx, proof, &preview).await?;
         for device in &preview.devices {
             let actionable = preview.plan["intents"]
                 .as_array()
@@ -120,7 +108,7 @@ impl Commands {
                     i["device"] == device.as_str()
                         && matches!(i["kind"].as_str(), Some("add" | "supersede"))
                 });
-            if !actionable {
+            if !actionable || preview.plan["scheduling_open"] != true {
                 continue;
             }
             results.push(
@@ -133,9 +121,66 @@ impl Commands {
         let key = policy.to_owned();
         let value = response.clone();
         let rev = input.expected_revision;
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.plan_executions VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)").bind(tenant).bind(plan.to_string()).bind(key).bind(rev).bind(fingerprint).bind(value).execute(c).await?;Ok(())})).await?;
+        let request = input.operation_id;
+        tx.with_connection(move|c|Box::pin(async move{
+            sqlx::query("INSERT INTO mdm_commands.requests(tenant_id,id,plan,fingerprint,response) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5)").bind(&tenant).bind(request.to_string()).bind(plan.to_string()).bind(fingerprint).bind(value).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_commands.plan_executions VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid)").bind(tenant).bind(plan.to_string()).bind(key).bind(rev).bind(request.to_string()).execute(c).await?;Ok(())
+        })).await?;
         proof.check_live()?;
         Ok(response)
+    }
+    async fn cancel_intents(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        proof: &Principal,
+        preview: &Preview,
+    ) -> Result<Vec<Value>> {
+        let mut results = Vec::new();
+        for intent in preview.plan["intents"].as_array().ok_or(Error::Conflict)? {
+            let cancelled = intent["kind"] == "cancel";
+            let retired = intent["kind"] == "retain"
+                && intent["reason"] == "historical"
+                && (preview
+                    .configuration
+                    .as_ref()
+                    .is_some_and(|c| c.policy_status == "archived")
+                    || !preview
+                        .devices
+                        .iter()
+                        .any(|d| intent["device"] == d.as_str()));
+            if !cancelled && !retired {
+                continue;
+            }
+            let device = intent["device"].as_str().ok_or(Error::Conflict)?;
+            let version = intent["version"].as_u64().ok_or(Error::Conflict)?;
+            storage::authorized(tx, proof, device, Permission::OperationCancel).await?;
+            storage::lock(tx, device).await?;
+            let tenant = self.tenant.to_string();
+            let name = device.to_owned();
+            let policy = preview.policy.clone();
+            tx.with_connection(move|c|Box::pin(async move{sqlx::query("DELETE FROM mdm_commands.firewall_owners WHERE tenant_id=$1::uuid AND device=$2 AND policy=$3 AND version=$4").bind(tenant).bind(name).bind(policy).bind(version as i64).execute(c).await?;Ok(())})).await?;
+            let tenant = self.tenant.to_string();
+            let device = device.to_owned();
+            let policy = preview.policy.clone();
+            let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND request->'task'->>'policy'=$3 AND request->'task'->>'kind'='firewall' AND (request->'task'->>'version')::bigint=$4 ORDER BY id").bind(tenant).bind(device).bind(policy).bind(version as i64).fetch_all(c).await})).await?;
+            for id in ids {
+                let op = storage::load(tx, corrupt(Uuid::parse_str(&id))?).await?;
+                let command = self.required_command(tx, &op).await?;
+                if !command.status().is_terminal()
+                    && self
+                        .store
+                        .cancel(tx, op.scope, &op.command_id()?, op.coordinate)
+                        .await?
+                        .outcome
+                        == dc::Outcome::OutOfOrder
+                {
+                    return Err(Error::Conflict.into());
+                }
+                let command = self.required_command(tx, &op).await?;
+                results.push(json!({"operationId":op.id,"commandId":op.id,"action":"cancel","commandStatus":service::status(command.status())}));
+            }
+        }
+        Ok(results)
     }
     async fn admit_target(
         &self,
@@ -172,33 +217,26 @@ impl Commands {
         storage::lock(tx, device).await?;
         let tenant = s.tenant.to_string();
         let name = device.to_owned();
-        let old=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT id::text,request FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND request->'task'->>'kind'='firewall' ORDER BY id").bind(tenant).bind(name).fetch_all(c).await})).await?;
-        for row in old {
+        let owner=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT policy,version,operation::text FROM mdm_commands.firewall_owners WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(name).fetch_optional(c).await})).await?;
+        if let Some(owner) = owner {
+            if owner.try_get::<String, _>("policy")? != policy
+                || owner.try_get::<i64, _>("version")? as u64 >= frozen.version
+            {
+                return Err(Error::Conflict.into());
+            }
             let old = storage::load(
                 tx,
-                corrupt(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
+                corrupt(Uuid::parse_str(&owner.try_get::<String, _>("operation")?))?,
             )
             .await?;
-            if let Task::Firewall {
-                policy: other,
-                version,
-                ..
-            } = &old.request.task
+            if !s.required_command(tx, &old).await?.status().is_terminal()
+                && s.store
+                    .cancel(tx, old.scope, &old.command_id()?, old.coordinate)
+                    .await?
+                    .outcome
+                    == dc::Outcome::OutOfOrder
             {
-                let command = s.required_command(tx, &old).await?;
-                if !command.status().is_terminal() {
-                    if other != policy || *version >= frozen.version {
-                        return Err(Error::Conflict.into());
-                    }
-                    if s.store
-                        .cancel(tx, old.scope, &old.command_id()?, old.coordinate)
-                        .await?
-                        .outcome
-                        == dc::Outcome::OutOfOrder
-                    {
-                        return Err(Error::Conflict.into());
-                    }
-                }
+                return Err(Error::Conflict.into());
             }
         }
         let digest = Sha256::digest(format!("{plan}:{device}"));
@@ -216,6 +254,14 @@ impl Commands {
             },
         };
         let result = s.create_in(tx, proof, device, &create, audit).await?;
+        let tenant = s.tenant.to_string();
+        let name = device.to_owned();
+        let policy = policy.to_owned();
+        let version = frozen.version as i64;
+        let claimed=tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.firewall_owners VALUES($1::uuid,$2,'./Vendor/MSFT/Firewall/MdmStore/DomainProfile/EnableFirewall',$3,$4,$5::uuid) ON CONFLICT(tenant_id,device,node) DO UPDATE SET version=excluded.version,operation=excluded.operation WHERE mdm_commands.firewall_owners.policy=excluded.policy AND mdm_commands.firewall_owners.version<excluded.version").bind(tenant).bind(name).bind(policy).bind(version).bind(id.to_string()).execute(c).await.map(|r|r.rows_affected())})).await?;
+        if claimed != 1 {
+            return Err(Error::Conflict.into());
+        }
 
         let target = service::target(s.tenant, device);
         let tenant = s.tenant.to_string();
@@ -274,4 +320,85 @@ async fn validate_sources(
         }
     }
     Ok(())
+}
+
+async fn authorize_replay(
+    tx: &mut PgTransaction<'_>,
+    proof: &Principal,
+    response: &Value,
+) -> Result<()> {
+    for item in response["operations"]
+        .as_array()
+        .ok_or(Error::Unavailable(Failure::CommandInvariant))?
+    {
+        let operation = storage::load(
+            tx,
+            corrupt(Uuid::parse_str(
+                item["operationId"]
+                    .as_str()
+                    .ok_or(Error::Unavailable(Failure::CommandInvariant))?,
+            ))?,
+        )
+        .await?;
+        storage::authorized(
+            tx,
+            proof,
+            &operation.device,
+            if item["action"] == "cancel" {
+                Permission::OperationCancel
+            } else {
+                Permission::FirewallWrite
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn load_saved_plan(
+    tx: &mut PgTransaction<'_>,
+    policy: &str,
+    plan: Uuid,
+    expected_revision: i64,
+) -> Result<Preview> {
+    let tenant = tx.tenant_id().to_string();
+    let key = policy.to_owned();
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT p.document,r.saved_revision FROM mdm_management.previews p JOIN mdm_management.plan_references r ON(r.tenant_id,r.preview)=(p.tenant_id,p.id) JOIN mdm_policy.aggregates a ON(a.tenant_id,a.id,a.revision)=(r.tenant_id,r.policy,r.saved_revision) JOIN mdm_management.scopes sc ON(sc.tenant_id,sc.id,sc.revision)=(p.tenant_id,p.scope,p.scope_revision) WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND r.policy=$3 AND NOT sc.deleted").bind(tenant).bind(plan.to_string()).bind(key).fetch_optional(c).await})).await?.ok_or(Error::Conflict)?;
+    if row.try_get::<i64, _>("saved_revision")? != expected_revision {
+        return Err(Error::Conflict.into());
+    }
+    let preview: Preview = corrupt(serde_json::from_value(row.try_get("document")?))?;
+    if preview.devices.len() > crate::management::configuration::MAX_TARGETS {
+        return Err(Error::ConfigurationTargetLimit.into());
+    }
+    let frozen = preview.configuration.as_ref().ok_or(Error::Malformed)?;
+    if frozen.ddf != rss_mdm_windows_mdm::configuration::REVISION || preview.policy != policy {
+        return Err(Error::Conflict.into());
+    }
+    Ok(preview)
+}
+
+async fn replay_execution(
+    tx: &mut PgTransaction<'_>,
+    proof: &Principal,
+    request: Uuid,
+    fingerprint: &[u8],
+    audit: &Audit,
+) -> Result<Option<Value>> {
+    let tenant = tx.tenant_id().to_string();
+    let replay = tx
+        .with_connection(move |c| {
+            Box::pin(async move { storage::read_on(c, &tenant, request).await })
+        })
+        .await?;
+    let Some((old, response)) = replay else {
+        return Ok(None);
+    };
+    if old != fingerprint {
+        return Err(Error::Conflict.into());
+    }
+    authorize_replay(tx, proof, &response).await?;
+    audit.management_result(crate::audit::ManagementResult::Replayed);
+    storage::audit(tx, audit, 200).await?;
+    Ok(Some(response))
 }

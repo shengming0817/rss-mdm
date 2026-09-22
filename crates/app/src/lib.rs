@@ -44,6 +44,8 @@ pub enum Error {
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
+    #[error("firewall plans support at most 32 devices")]
+    ConfigurationTargetLimit,
     #[error("certificate request rejected")]
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
@@ -68,6 +70,9 @@ impl IntoResponse for Error {
         let (status, code) = match self {
             Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
+            Self::ConfigurationTargetLimit => {
+                (StatusCode::BAD_REQUEST, "configuration_target_limit")
+            }
             Self::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
             Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),

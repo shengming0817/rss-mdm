@@ -100,6 +100,15 @@ impl Create {
         Ok(())
     }
 }
+/// Canonical dispatch payload; the fixed schema and golden consumer guard this wire.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DispatchV1 {
+    pub device: String,
+    pub request: Create,
+    pub generation: i64,
+    pub epoch: i64,
+}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Change {
@@ -159,5 +168,59 @@ mod tests {
             verify.permission(),
             crate::authorization::Permission::StateVerify
         );
+    }
+    #[test]
+    fn dispatch_wire_matches_schema_and_independent_consumer() {
+        let validator = jsonschema::validator_for(
+            &serde_json::from_str(include_str!("dispatch-v1.json")).unwrap(),
+        )
+        .unwrap();
+        let id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        for task in [
+            Task::StateVerify {
+                field: Field::Model,
+                expected_value: "Surface".into(),
+            },
+            Task::Firewall {
+                enabled: false,
+                plan: id,
+                policy: "domain".into(),
+                version: 1,
+                os_version: "10.0.19045.0".into(),
+                edition: 48,
+            },
+        ] {
+            let expected_task = match &task {
+                Task::StateVerify { .. } => {
+                    serde_json::json!({"kind":"state_verify","field":"model","expectedValue":"Surface"})
+                }
+                _ => {
+                    serde_json::json!({"kind":"firewall","enabled":false,"plan":id,"policy":"domain","version":1,"osVersion":"10.0.19045.0","edition":48})
+                }
+            };
+            let dto = DispatchV1 {
+                device: "device-1".into(),
+                request: Create {
+                    operation_id: id,
+                    task,
+                    deadline: 100,
+                },
+                generation: 2,
+                epoch: 3,
+            };
+            let wire = serde_json::to_value(&dto).unwrap();
+            assert_eq!(
+                wire,
+                serde_json::json!({"device":"device-1","request":{"operationId":id,"task":expected_task,"deadline":100},"generation":2,"epoch":3})
+            );
+            assert!(validator.is_valid(&wire));
+            assert!(serde_json::from_value::<DispatchV1>(wire.clone()).is_ok());
+            let mut invalid = wire.clone();
+            invalid["request"]["task"]["unknown"] = true.into();
+            assert!(!validator.is_valid(&invalid));
+            let mut invalid = wire;
+            invalid.as_object_mut().unwrap().remove("epoch");
+            assert!(!validator.is_valid(&invalid));
+        }
     }
 }

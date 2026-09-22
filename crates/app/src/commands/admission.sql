@@ -1,7 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
- ('mdm_commands.attempts','status'),
+ ('mdm_commands.firewall_owners','version'),('mdm_commands.firewall_owners','operation'),('mdm_commands.attempts','receipt_accepted'),('mdm_commands.attempts','status'),
  ('mdm_commands.attempts','value'),
  ('mdm_commands.attempts','received_at'),
  ('mdm_commands.capabilities','generation'),
@@ -19,7 +19,7 @@ WITH tables AS (
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','correlation'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
 ), allowed(relation,sel,ins,del) AS (VALUES
-('mdm_commands.attempt_history',true,false,false),
+('mdm_commands.firewall_owners',true,true,true),('mdm_commands.attempt_history',true,false,false),
 ('mdm_commands.capabilities',true,true,false),
 ('mdm_commands.capability_queries',true,true,false),
 ('mdm_commands.plan_executions',true,true,false),
@@ -44,7 +44,7 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR roleid=(SELECT oid FROM pg_roles WHERE rolname=current_user))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempt_history','attempts','capabilities','capability_queries','devices','operations','plan_executions','requests'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempt_history','attempts','capabilities','capability_queries','devices','firewall_owners','operations','plan_executions','requests'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind<>'r' OR relpersistence<>'p' OR NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]

@@ -3,6 +3,7 @@ use super::*;
 use rss_mdm_resource as r;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+pub(crate) const MAX_TARGETS: usize = 32;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Evidence {
@@ -15,6 +16,7 @@ pub(crate) struct Evidence {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Frozen {
     pub enabled: bool,
+    pub policy_status: String,
     pub version: u64,
     pub resource_digest: Vec<u8>,
     pub ddf: String,
@@ -77,12 +79,18 @@ impl Management {
         let number = version.number();
         let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT r.enabled,r.digest FROM mdm_management.firewall_versions v JOIN mdm_management.firewall_resources r ON(r.tenant_id,r.resource,r.version)=(v.tenant_id,v.resource,v.resource_version) WHERE v.tenant_id=$1::uuid AND v.policy=$2 AND v.version=$3").bind(tenant).bind(key).bind(number as i64).fetch_optional(c).await})).await?;
         let Some(row) = row else { return Ok(None) };
+        if devices.len() > MAX_TARGETS {
+            return Err(Error::ConfigurationTargetLimit.into());
+        }
         let enabled: bool = row.try_get("enabled")?;
         use sha2::{Digest, Sha256};
         let compiled_digest =
             Sha256::digest(rss_mdm_windows_mdm::configuration::identity(enabled)).into();
         let mut evidence_map = std::collections::BTreeMap::new();
-        for device in devices {
+        for device in devices
+            .iter()
+            .filter(|_| policy.status() == rss_mdm_policy::Status::Active)
+        {
             let e = evidence(tx, device).await?;
             let p = input(rss_mdm_windows_mdm::configuration::Platform::new(
                 &e.os_version,
@@ -95,6 +103,13 @@ impl Management {
         }
         Ok(Some(Frozen {
             enabled,
+            policy_status: match policy.status() {
+                rss_mdm_policy::Status::Draft => "draft",
+                rss_mdm_policy::Status::Active => "active",
+                rss_mdm_policy::Status::Paused => "paused",
+                rss_mdm_policy::Status::Archived => "archived",
+            }
+            .into(),
             compiled_digest,
             version: number,
             resource_digest: row.try_get("digest")?,

@@ -11,6 +11,13 @@ NS = '{http://schemas.microsoft.com/MobileDevice/DM}'
 class DdfSource(unittest.TestCase):
     def test_exact_sources_and_inherited_registry(self):
         provenance = json.loads((ROOT / 'provenance.json').read_text())
+        approved = {
+            'url':'https://download.microsoft.com/download/015bd9f5-9cca-4821-8a85-a4c5f9a5d0f2/DDFv2Feb2026.zip',
+            'archiveSha256':'bf667d895af4a8c8ab5a31065ce0e28ea2f8b649c4dc416f452f62fd1c42ff14',
+            'files':{'Firewall.xml':'faf31f44e9c26eaff75adce1b98f4eca38c2c5035b23d02f374cfff9bc4438ca',
+                     'DeviceStatus.xml':'9e33280b8593bf6ed0efcacfb96d6ff7fa3924ab7d60b4d01b65819cb167199b'},
+            'selectedSha256':'2ac1869325a6c398ed7cd8232f3089a11bfb537a752f3d76d49e23cd3d709230'}
+        self.assertEqual(provenance, approved)
         result = ET.Element('Registry', version='DDFv2Feb2026')
         for name, path in [('Firewall', ['MdmStore', 'DomainProfile', 'EnableFirewall']), ('DeviceStatus', ['Firewall', 'Status'])]:
             raw = (ROOT / (name + '.xml')).read_bytes()

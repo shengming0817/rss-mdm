@@ -90,7 +90,7 @@ pub(crate) async fn receive_on(
     let reg = p.registration().to_string();
     let session = i64::from(message.header.session_id);
     let previous=sqlx::query_scalar::<_,String>("SELECT correlation FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3").bind(&tenant).bind(&reg).bind(session.to_string()).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or_default();
-    let rows=sqlx::query("SELECT a.id::text,a.command,a.message,a.status,a.value,a.request,a.uri FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.credential=$4::uuid AND a.session=$5 ORDER BY a.ordinal")
+    let rows=sqlx::query("SELECT a.id::text,a.command,a.message,a.status,a.value,a.request,a.uri,a.receipt_accepted,o.request::text AS task_request,o.approval::text,d.status AS command_status,(o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_commands.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.credential=$4::uuid AND a.session=$5 ORDER BY a.ordinal")
  .bind(&tenant).bind(&reg).bind(p.generation()).bind(p.credential().to_string()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
@@ -139,8 +139,9 @@ pub(crate) async fn receive_on(
         if status.is_some_and(|s| s >= 400) && value.is_some() {
             return Err(Error::Conflict);
         }
-        sqlx::query("UPDATE mdm_commands.attempts SET status=$3,value=$4,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND id=$2::uuid")
-  .bind(&tenant).bind(row.try_get::<String,_>("id").map_err(db)?).bind(status).bind(value).execute(&mut *c).await.map_err(db)?;
+        let accepted = receipt_acceptance(c, p, &row, status).await?;
+        sqlx::query("UPDATE mdm_commands.attempts SET status=$3,value=$4,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,receipt_accepted=$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+  .bind(&tenant).bind(row.try_get::<String,_>("id").map_err(db)?).bind(status).bind(value).bind(accepted).execute(&mut *c).await.map_err(db)?;
         consumed.insert((msg, id));
     }
     receive_capabilities(c, p, message, &mut consumed, previous.as_bytes()).await?;
@@ -275,7 +276,7 @@ pub(crate) async fn send_on(
             continue;
         }
         let id: String = row.try_get("id").map_err(db)?;
-        let old=sqlx::query("SELECT ordinal,phase,status,value,session FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal DESC LIMIT 1").bind(&tenant).bind(&id).fetch_optional(&mut *c).await.map_err(db)?;
+        let old=sqlx::query("SELECT ordinal,phase,status,value,session,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal DESC LIMIT 1").bind(&tenant).bind(&id).fetch_optional(&mut *c).await.map_err(db)?;
         let (next, waiting) = next_phase(old.as_ref(), &op.task, session)?;
         pending |= waiting;
         let Some((ordinal, phase)) = next else {
@@ -299,7 +300,7 @@ pub(crate) async fn send_on(
         pending = true;
         break;
     }
-    let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (a.status IS NULL OR (a.status=200 AND a.value IS NULL AND (a.phase='observe' OR o.request->'task'->>'kind'='state_verify'))))")
+    let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND (a.status IS NULL OR (a.status=200 AND a.value IS NULL AND (a.phase='observe' OR o.request->'task'->>'kind'='state_verify'))))")
     .bind(&tenant).bind(&reg).bind(session).fetch_one(c).await.map_err(db)?;
     Ok(pending || outstanding)
 }
@@ -321,7 +322,14 @@ fn next_phase(
     let status: Option<i32> = old.try_get("status").map_err(db)?;
     let same = old.try_get::<i64, _>("session").map_err(db)? == session;
     match task {
-        Task::Firewall { .. } if phase == "execute" && status == Some(200) => {
+        Task::Firewall { .. }
+            if phase == "execute"
+                && status == Some(200)
+                && old
+                    .try_get::<Option<bool>, _>("receipt_accepted")
+                    .map_err(db)?
+                    == Some(true) =>
+        {
             Ok((Some((ordinal, "observe")), false))
         }
         Task::StateVerify { .. } if !same => Ok((Some((ordinal, "execute")), false)),
@@ -363,7 +371,7 @@ async fn command_for(
         } => {
             let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capabilities c JOIN mdm_commands.plan_executions e ON e.tenant_id=c.tenant_id AND e.plan=$6::uuid JOIN mdm_policy.aggregates a ON a.tenant_id=e.tenant_id AND a.id=e.policy AND a.revision=e.policy_revision WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.generation=$3 AND c.os_version=$4 AND c.edition=$5 AND c.session=$7)")
     .bind(&tenant).bind(&reg).bind(p.generation()).bind(os_version).bind(*edition as i32).bind(plan.to_string()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
-            if !eligible {
+            if !eligible || !current_plan_on(c, &tenant, *plan).await? {
                 return Ok(None);
             }
             let firewall = Firewall::compile(
@@ -402,6 +410,11 @@ pub(crate) async fn replay_on(
         let approval: Approval =
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
+        if let Task::Firewall { plan, .. } = request.task
+            && !current_plan_on(c, &p.tenant().to_string(), plan).await?
+        {
+            return Err(Error::Forbidden);
+        }
         if request.deadline <= now
             || !matches!(
                 row.try_get::<String, _>("status").map_err(db)?.as_str(),
@@ -426,4 +439,39 @@ pub(super) async fn current_plan_on(
         .fetch_one(c)
         .await
         .map_err(db)
+}
+
+async fn receipt_acceptance(
+    c: &mut PgConnection,
+    p: &DevicePrincipal,
+    row: &sqlx::postgres::PgRow,
+    status: Option<i32>,
+) -> std::result::Result<Option<bool>, Error> {
+    let old: Option<bool> = row.try_get("receipt_accepted").map_err(db)?;
+    if old.is_some() || !status.is_some_and(|s| s >= 200 && s != 202) {
+        return Ok(old);
+    }
+    if !row.try_get::<bool, _>("within_deadline").map_err(db)?
+        || !row.try_get::<bool, _>("latest").map_err(db)?
+        || !matches!(
+            row.try_get::<String, _>("command_status")
+                .map_err(db)?
+                .as_str(),
+            "published" | "received"
+        )
+    {
+        return Ok(Some(false));
+    }
+    let request: Create =
+        serde_json::from_str(&row.try_get::<String, _>("task_request").map_err(db)?)
+            .map_err(|_| protocol())?;
+    let approval: Approval =
+        serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
+            .map_err(|_| protocol())?;
+    let at = now(c).await?;
+    let mut valid = approval.valid(c, request.task.permission(), at).await?;
+    if let Task::Firewall { plan, .. } = request.task {
+        valid &= current_plan_on(c, &p.tenant().to_string(), plan).await?;
+    }
+    Ok(Some(valid))
 }

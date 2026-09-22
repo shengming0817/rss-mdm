@@ -30,23 +30,25 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
-    owner.execute("ROLLBACK").await?;
-    ensure!(
-        sqlx::query_scalar::<_, bool>(
-            "SELECT NOT complete FROM public.mdm_migrations WHERE name='windows-configuration-v1'"
-        )
-        .fetch_one(&mut owner)
-        .await?
-    );
-    // Test-only repair of our injected active fixture. Production never repairs an incomplete ledger.
-    owner
-        .execute("DELETE FROM public.mdm_migrations WHERE name='windows-configuration-v1'")
-        .await?;
+    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(&installation.tenants[0])
         .execute(&mut owner)
         .await?;
     owner.execute("UPDATE rss_device_command.commands SET status='cancelled',terminal_at=2 WHERE command_id='upgrade-evidence'").await?;
+    owner.execute(include_str!("legacy-fixture.sql")).await?;
+    let historical: serde_json::Value =
+        sqlx::query_scalar("SELECT to_jsonb(a) FROM mdm_commands.attempts a")
+            .fetch_one(&mut owner)
+            .await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
+    owner.execute("UPDATE rss_transactional_messaging.outbox SET status='published' WHERE domain='mdm.commands.v1'").await?;
+    // Terminal commands and settled Outbox still cannot allow old live response replay.
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
+    owner.execute("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second'").await?;
+
     owner
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;
@@ -64,6 +66,29 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             == "cancelled"
     );
 
+    ensure!(
+        sqlx::query_scalar::<_, serde_json::Value>(
+            "SELECT to_jsonb(a) FROM mdm_commands.attempt_history a"
+        )
+        .fetch_one(&mut owner)
+        .await?
+            == historical
+    );
+    let converted:(String,String,String)=sqlx::query_as("SELECT request->'task'->>'kind',request->'task'->>'expectedValue',approval->>'permission' FROM mdm_commands.operations WHERE id='33333333-3333-4333-8333-333333333333'").fetch_one(&mut owner).await?;
+    ensure!(
+        converted
+            == (
+                "state_verify".into(),
+                "Historical Model".into(),
+                "state_verify".into()
+            )
+    );
+    ensure!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mdm_commands.attempts")
+            .fetch_one(&mut owner)
+            .await?
+            == 0
+    );
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
             .fetch_all(&mut owner)

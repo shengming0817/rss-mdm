@@ -91,6 +91,15 @@ impl Client {
     }
     pub(crate) async fn accept(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
+        let old_id = Uuid::new_v4();
+        let old = json!({"operationId":old_id,"field":"model","expectedValue":"old-wire","deadline":self.app.clock.unix_seconds()?+300});
+        let denied = self.call(Method::POST, "", Some(old)).await?;
+        ensure!(denied.0 == StatusCode::BAD_REQUEST && denied.1["code"] == "malformed_request");
+        let mut check =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let effects:(i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2),(SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND result='success')").bind(old_id.to_string()).bind(format!("dispatch.{old_id}")).fetch_one(&mut check).await?;
+        ensure!(effects == (0, 0, 0, 0));
+        check.close().await?;
         let request = json!({"operationId":self.operation,"task":{"kind":"state_verify","field":"model","expectedValue":"Final-Model"},"deadline":self.app.clock.unix_seconds()?+300});
         let mut malformed = request.clone();
         malformed["unexpected"] = true.into();

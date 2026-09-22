@@ -2,11 +2,13 @@
 use super::*;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 
-async fn post(
+pub(super) async fn post(
     peer: &reqwest::Client,
     url: &str,
     message: &s::Message,
 ) -> anyhow::Result<reqwest::Response> {
+    // Respect the production per-peer admission rate across the expanded exchanges.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     Ok(peer
         .post(url)
         .header("content-type", "application/vnd.syncml.dm+xml")
@@ -25,6 +27,7 @@ pub(super) async fn begin(
     initial: &s::Message,
     ack: &s::Message,
     session: u32,
+    task_uri: Option<&str>,
 ) -> anyhow::Result<ReadExchange> {
     use base64::Engine;
     let mut first = initial.clone();
@@ -48,7 +51,24 @@ pub(super) async fn begin(
             _ => None,
         })
         .collect::<Vec<_>>();
-    ensure!(gets.len() >= 4 && gets[1].1.ends_with("/SwV"));
+    let mut expected = vec![
+        "./DevInfo/Mod",
+        "./DevDetail/SwV",
+        "./DevDetail/SwV",
+        "./Vendor/MSFT/DeviceStatus/OS/Edition",
+    ];
+    expected.extend(task_uri);
+    ensure!(gets.iter().map(|(_, uri)| uri.as_str()).collect::<Vec<_>>() == expected);
+    ensure!(message.commands.len() == gets.len() + 1);
+    ensure!(
+        message
+            .commands
+            .iter()
+            .map(s::Command::id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            == message.commands.len()
+    );
     Ok(ReadExchange { first, gets, ack })
 }
 pub(super) fn report(
@@ -146,7 +166,7 @@ impl Client {
         ack: &s::Message,
     ) -> anyhow::Result<()> {
         // This ordinary Inventory Get was issued before the new operation exists.
-        let historic = begin(peer, url, initial, ack, 901).await?;
+        let historic = begin(peer, url, initial, ack, 901, None).await?;
         let os = Uuid::new_v4();
         ensure!(self.call(Method::POST,"",Some(json!({"operationId":os,"task":{"kind":"state_verify","field":"os_version","expectedValue":"11.0.10000"},"deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
         self.publish_operation(os).await?;
@@ -177,7 +197,7 @@ impl Client {
             (902, "10.0.26100", "mismatched"),
             (903, "11.0.10000", "matched"),
         ] {
-            let exchange = begin(peer, url, initial, ack, session).await?;
+            let exchange = begin(peer, url, initial, ack, session, Some("./DevDetail/SwV")).await?;
             ensure!(
                 post(
                     peer,
@@ -209,7 +229,7 @@ impl Client {
         let rejected = Uuid::new_v4();
         ensure!(self.call(Method::POST,"",Some(json!({"operationId":rejected,"task":{"kind":"state_verify","field":"model","expectedValue":"never"},"deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
         self.publish_operation(rejected).await?;
-        let exchange = begin(peer, url, initial, ack, 904).await?;
+        let exchange = begin(peer, url, initial, ack, 904, Some("./DevInfo/Mod")).await?;
         let packet = report(&exchange.first, &exchange.gets, "unused", 500);
         #[cfg(feature = "integration")]
         {
@@ -252,7 +272,7 @@ impl Client {
             "rejection outcome {read:?}"
         );
         pg.close().await?;
-        self.firewall_cycle(peer, url, initial, ack).await?;
+        Box::pin(self.firewall_cycle(peer, url, initial, ack)).await?;
         Ok(())
     }
 }

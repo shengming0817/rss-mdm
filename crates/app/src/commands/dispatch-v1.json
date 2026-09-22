@@ -1,1 +1,116 @@
-{"contract":"mdm.command-dispatch","version":1,"route":"windows.command","payload":["device","typed task request","generation","epoch"],"tasks":["state_verify","firewall"],"effects":"write receipt does not verify configuration"}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mdm.command-dispatch/v1",
+  "type": "object",
+  "required": [
+    "device",
+    "request",
+    "generation",
+    "epoch"
+  ],
+  "properties": {
+    "device": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "deadline",
+        "task"
+      ],
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "deadline": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854
+        },
+        "task": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "field",
+                "expectedValue"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "state_verify"
+                },
+                "field": {
+                  "enum": [
+                    "model",
+                    "os_version"
+                  ]
+                },
+                "expectedValue": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "enabled",
+                "plan",
+                "policy",
+                "version",
+                "osVersion",
+                "edition"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "firewall"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "plan": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "policy": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "osVersion": {
+                  "type": "string",
+                  "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$"
+                },
+                "edition": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}
