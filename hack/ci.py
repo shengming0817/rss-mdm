@@ -123,8 +123,8 @@ def noninteractive(env=None):
     value.update(GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never", GIT_ASKPASS="/usr/bin/false")
     return value
 
-def command(args, cwd=ROOT, env=None):
-    return subprocess.run(args, cwd=cwd, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def command(args, cwd=ROOT, env=None, *, separate_stderr=False):
+    return subprocess.run(args, cwd=cwd, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE if separate_stderr else subprocess.STDOUT)
 
 def verify_backend_support(data):
     support = "rss-mdm-backend-postgres-support"
@@ -355,13 +355,15 @@ def select_impact(head):
             merge = command(["/usr/bin/git", "merge-base", base, head])
             require(merge.returncode == 0, "base-unavailable")
             selection["mergeBase"] = merge.stdout.strip()
-            result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"], "--head", head])
+            result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"], "--head", head], separate_stderr=True)
             require(result.returncode == 0, "selector-failed")
             decision = json.loads(result.stdout)
             require(type(decision["full"]) is bool and isinstance(decision["packages"], list)
                     and set(decision["packages"]) <= set(LOCAL_PACKAGES)
                     and isinstance(decision["reasons"], list), "invalid-selection")
             selection.update(decision)
+            if getattr(result, "stderr", "").strip():
+                selection["diagnostic"] = result.stderr.strip()
         status = command(["/usr/bin/git", "status", "--porcelain"])
         if status.returncode != 0 or status.stdout.strip():
             selection.update(full=True, packages=[], reasons=["dirty-input"])

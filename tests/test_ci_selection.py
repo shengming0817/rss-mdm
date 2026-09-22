@@ -128,3 +128,53 @@ class Selection(unittest.TestCase):
             self.assertTrue(all(gate['selected'] for gate in plan['gates'].values()))
             for name in ('pin', 'identity', 'isolation', 'group-consumer'):
                 self.assertTrue(plan['gates'][name]['check'])
+
+
+class EntryModes(unittest.TestCase):
+    def test_named_targets_override_inherited_or_command_line_preview(self):
+        import os
+        import shutil
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copyfile(ci.ROOT / 'Makefile', root / 'Makefile')
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
+            python = root / 'python3'
+            python.write_text('#!/bin/sh\nprintf "%s:%s" "$CI_PLAN" "$CI_FULL"\n')
+            python.chmod(0o755)
+            env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'], 'CI_PLAN': '1', 'CI_FULL': '0'}
+            for target, expected in [('ci','0:0'), ('ci-full','0:1'), ('ci-plan','1:0')]:
+                for override in ([], ['CI_PLAN=1']):
+                    with self.subTest(target=target, override=override):
+                        result = subprocess.run(['make','-s',target,*override], cwd=root, env=env, text=True, capture_output=True)
+                        self.assertEqual(result.returncode,0,result.stderr)
+                        self.assertEqual(result.stdout,expected)
+
+    def test_unexpected_selector_error_has_safe_internal_diagnostic(self):
+        spec = importlib.util.spec_from_file_location('impact_failure', ci.ROOT / 'hack/ci-impact.py')
+        impact = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(impact)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(impact.sys,'argv',['ci-impact.py','--base','base','--head','HEAD']), patch.object(impact,'run',return_value=SimpleNamespace(returncode=0,stdout=str(ci.ROOT).encode())), patch.object(impact,'select',side_effect=RuntimeError('private-error-text')), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            impact.main()
+        self.assertEqual(json.loads(stdout.getvalue()),{'full':True,'packages':[],'reasons':['selector-internal']})
+        self.assertIn('phase=selection',stderr.getvalue())
+        self.assertIn('RuntimeError',stderr.getvalue())
+        self.assertNotIn('private-error-text',stderr.getvalue())
+
+
+    def test_runner_keeps_stderr_diagnostic_out_of_json(self):
+        import sys
+        original = ci.command
+        def command(args, **kwargs):
+            if 'branch' in args: return result('topic')
+            if 'merge-base' in args: return result('base')
+            if 'status' in args: return result()
+            self.assertTrue(kwargs.get('separate_stderr'))
+            payload = json.dumps({'full':True, 'packages':[], 'reasons':['selector-internal']})
+            script = f"import sys; print({payload!r}); print('selector-internal phase=selection exception=RuntimeError', file=sys.stderr)"
+            return original([sys.executable, '-c', script], **kwargs)
+        with patch.dict(ci.os.environ, {'CI_FULL':'0'}), patch.object(ci,'command',side_effect=command):
+            selection = ci.select_impact('head')
+        self.assertEqual(selection['reasons'],['selector-internal'])
+        self.assertIn('phase=selection',selection['diagnostic'])

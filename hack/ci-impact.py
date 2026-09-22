@@ -265,8 +265,10 @@ def select(root: Path, base: str, head: str) -> tuple[bool, set[str], set[str]]:
 
 
 def main() -> None:
+    phase = "arguments"
     try:
         base, head = parse_args(sys.argv[1:])
+        phase = "repository"
         root_result = run(["/usr/bin/git", "rev-parse", "--show-toplevel"], cwd=Path.cwd())
         if root_result.returncode != 0:
             raise SelectionError("diff-unavailable")
@@ -274,12 +276,14 @@ def main() -> None:
             root = Path(os.fsdecode(root_result.stdout.rstrip(b"\n"))).resolve()
         except (OSError, ValueError) as error:
             raise SelectionError("invalid-path") from error
+        phase = "selection"
         full, packages, reasons = select(root, base, head)
         emit(full, packages, reasons)
     except SelectionError as error:
         emit(True, set(), {error.reason})
-    except Exception:
-        emit(True, set(), {"metadata-invalid"})
+    except Exception as error:
+        print(f"selector-internal phase={phase} exception={type(error).__name__}", file=sys.stderr)
+        emit(True, set(), {"selector-internal"})
 
 
 if __name__ == "__main__":

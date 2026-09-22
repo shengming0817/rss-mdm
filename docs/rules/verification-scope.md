@@ -27,6 +27,7 @@ sccache 失败最多直接重试一次，最终保留 rustc 退出码，编译�
 `make ci` 默认比较 `CI_BASE=origin/develop` 与受测 HEAD 的 merge-base，在任务分支按影响范围
 运行；`develop` 分支、`make ci-full` 或 `CI_FULL=1` 执行全部 gate。缺失基线、rename/copy、
 Cargo manifest/lock、工具链、CI 脚本/配置、未知路径、未知删除或分析异常保守回退全量。
+正式 `make ci`/`make ci-full` 会关闭继承的 `CI_PLAN`，只有 `make ci-plan` 启用预览。
 `make ci CI_BASE=<ref>` 可指定基线；`make ci-plan` 只输出计划，不运行 gate，也不产生通过证明。
 应先提交受测源码；脏工作区计划回退全量，正式执行的 HEAD/clean identity gate 仍会失败。
 
@@ -43,3 +44,6 @@ check/clippy/T1/doc-test 使用选中包；T2 与独立消费者按 `hack/ci.py`
 metadata/tree 和消费者目录（包括 `artifacts/source-consumers/`），即使本轮跳过也不残留旧成功回执；
 `result.json` 的 gates 区分 passed/failed/skipped，skipped 不代表通过。完整入口始终收集所有
 选中 gate 的失败后再返回非零；不得把 affected 结果描述为全量验证或产品 T3。
+
+选择器未知内部异常使用 `selector-internal` 原因，并在 stderr 记录阶段和异常类型，不记录异常原文。
+runner 分离读取 stdout JSON 与 stderr 诊断，将诊断保存在选择记录的 diagnostic 字段；已知错误原因保持不变。

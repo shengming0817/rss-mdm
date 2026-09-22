@@ -8,10 +8,10 @@ CI_FULL ?= 0
 CI_PLAN ?= 0
 export CI_BASE CI_FULL CI_PLAN
 ci:
-	python3 hack/ci.py
+	CI_PLAN=0 python3 hack/ci.py
 
 ci-full:
-	CI_FULL=1 python3 hack/ci.py
+	CI_FULL=1 CI_PLAN=0 python3 hack/ci.py
 
 ci-plan:
 	CI_PLAN=1 python3 hack/ci.py
