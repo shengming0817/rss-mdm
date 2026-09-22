@@ -325,6 +325,7 @@ def group_consumer(head):
 # edges. Keep these extra inputs explicit; unclassified new gates run conservatively.
 APP_INPUTS = {"rss-mdm-app", "rss-mdm-examples"}
 GATE_PACKAGES = {
+    "agent-wire-compat": {"rss-mdm-agent-wire"},
     "core-consumers": {"rss-mdm-scope", "rss-mdm-policy", "rss-mdm-software-release"},
     "inventory-consumers": APP_INPUTS | {"rss-mdm-inventory", "rss-mdm-inventory-postgres"},
     "group-consumer": {"rss-mdm-group"},
@@ -443,6 +444,7 @@ def main():
         ("source-t2-oracle",[sys.executable,"hack/test_source_t2.py"]),
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
+        ("agent-wire-compat",[sys.executable,"hack/agent_wire_compat.py"]),
         ("agent-wire-consumer",[sys.executable,"hack/agent-wire-consumer.py"]),
 
         ("gateway-t2",[sys.executable,"hack/login_gateway_t2.py"]),
