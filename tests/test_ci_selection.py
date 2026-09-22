@@ -77,8 +77,9 @@ class Selection(unittest.TestCase):
                 'metadata-normal.stderr.log', 'metadata-integration.stderr.log',
                 'tree-normal.txt', 'tree-integration.txt', 'pin.log')]
             source_out = out / 'separate-source-consumers'
-            manual_paths = [out / 'core-consumers/result.json', out / 'group-consumer.log', source_out / 'result.json']
-            for path in stale_paths + manual_paths:
+            legacy_paths = [out / 'core-consumers/result.json', out / 'group-consumer.log']
+            manual_paths = [source_out / 'result.json']
+            for path in stale_paths + legacy_paths + manual_paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('old-head passed')
             output = io.StringIO()
@@ -98,7 +99,7 @@ class Selection(unittest.TestCase):
             self.assertEqual(evidence['gates']['t1'], 'skipped')
             self.assertEqual(evidence['gates']['identity'], 'passed')
             self.assertFalse((out / 't1.log').exists())
-            for path in stale_paths:
+            for path in stale_paths + legacy_paths:
                 self.assertFalse(path.exists(), str(path))
             for path in manual_paths:
                 self.assertEqual(path.read_text(), 'old-head passed')
@@ -132,7 +133,7 @@ class Selection(unittest.TestCase):
             self.assertTrue(retained.exists())
             self.assertEqual((external / 'result.json').read_text(), 'external proof')
             self.assertFalse((out / 'isolated-build.log').is_symlink())
-            self.assertTrue((manual / 'result.json').exists())
+            self.assertFalse(manual.exists())
             self.assertTrue((source / 'result.json').exists())
 
     def test_plan_does_not_execute_or_erase_previous_result(self):

@@ -294,10 +294,21 @@ EXTRA_EVIDENCE = {
                   "metadata-integration.stderr.log", "tree-normal.txt", "tree-integration.txt"),
 }
 
+# Old CI-owned consumer receipts must not survive as apparent current CI proof.
+# Explicit consumer acceptance now writes outside artifacts/local-ci.
+LEGACY_CONSUMER_EVIDENCE = (
+    "core-consumers", "inventory-consumers", "backend-consumers", "group-postgres-consumers",
+    "group-consumer-error.txt", "group-consumer.log", "group-consumer.json",
+    "group-consumer.lock", "group-metadata.json", "group-tree.txt",
+    "core-consumers.log", "inventory-consumers.log", "backend-consumers.log",
+    "group-postgres-consumers.log", "source-consumers.log", "agent-wire-consumer.log",
+)
+
 
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
     paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
+    paths.update(OUT / name for name in LEGACY_CONSUMER_EVIDENCE)
     paths.update({OUT / "result.json", OUT / "selection.json"})
     for path in paths:
         if path.is_dir() and not path.is_symlink():

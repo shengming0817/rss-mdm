@@ -40,7 +40,7 @@ check/clippy/T1/doc-test 使用选中包；T2 按 `hack/ci.py` 的 gate 映射�
 模拟独立消费者不属于 `make ci`、`make ci-full` 或 `make ci-plan`，仅在明确的消费者验收任务中显式运行。纯文档或无变更跳过 Rust/T2 和产品隔离构建，但保留脚本测试、fmt、pin 与 HEAD 身份检查。
 
 `artifacts/local-ci/selection.json` 记录正式执行的基线、merge-base、HEAD、选择原因、包和所有 gate 的命令或内部检查说明；
-计划模式仅写 `plan.json`，不覆盖正式执行的 selection/result。正式执行开始时只清理 CI gate 自有的旧日志与 metadata/tree；
+计划模式仅写 `plan.json`，不覆盖正式执行的 selection/result。正式执行开始时清理 CI gate 自有的旧日志、metadata/tree 和旧版 CI 留下的模拟消费者记录；
 手动消费者的验收产物不归 CI 清理，CI 结果也不记录消费者的 passed/skipped；
 `result.json` 的 gates 区分 passed/failed/skipped，skipped 不代表通过。完整入口始终收集所有
 选中 gate 的失败后再返回非零；不得把 affected 结果描述为全量验证或产品 T3。

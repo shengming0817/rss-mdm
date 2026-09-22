@@ -350,6 +350,21 @@ class CoreConsumerGate(unittest.TestCase):
             core.prepare_output(out)
             self.assertEqual(list(out.iterdir()),[])
 class GroupEvidence(unittest.TestCase):
+    def test_manual_entry_prepares_workspace_before_cargo_failure(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        def command(args, **kwargs):
+            if 'rust-toolchain.toml' in args[-1]:
+                return SimpleNamespace(returncode=0, stdout='[toolchain]\nchannel="1.96.0"\n')
+            return SimpleNamespace(returncode=0, stdout='')
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            failed_cargo = SimpleNamespace(returncode=1, stdout='', stderr='fixture failure')
+            with mock.patch.object(group, 'OUT', out), mock.patch.object(group, 'command', side_effect=command), mock.patch.object(group, 'workspace_pin', return_value=('https://example.invalid/rss', 'a' * 40)), mock.patch.object(group.subprocess, 'run', return_value=failed_cargo):
+                with self.assertRaisesRegex(RuntimeError, 'Group consumer command failed'):
+                    group.group_consumer('b' * 40)
+            self.assertIn('fixture failure', (out / 'group-consumer.log').read_text())
+
     def test_early_failure_cannot_leave_an_old_success_log(self):
         from unittest import mock
         from types import SimpleNamespace
