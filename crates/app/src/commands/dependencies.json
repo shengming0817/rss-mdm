@@ -1,7 +1,7 @@
 {
   "mdm_access.audit": "bc51fa981228c67be71828d3e8c14b1dce218fb9278ea5035ff458eb0f93030a",
   "mdm_access.authorization_rules": "f2f5fdb64239ce56d7686f0b22d5d7a818d17fc79253ca893204b17e1cf8df00",
-  "mdm_access.collection_runs": "ede0fc6d8121bf2de194a9a25f6b51fe791d0f5b1060ac17a18c3cf5f9efd9bd",
+  "mdm_access.collection_runs": "c15d8251819e2eb37908a66482359edb8456a67435b601bdaa0f8a76ea6229b4",
   "mdm_access.credentials": "36b7b9e63c143f41ab37a95fe2b3115fd27a5fe850b786b9874d75460694604e",
   "mdm_access.devices": "23b6d5c6d787ca233c96090743af6a4e68dca60ca0731bb571417d471081979f",
   "mdm_access.enrollment_certificates": "af18dd656a4b1e9db6636700e52184dea4373d27fbfbdab0999d6648686813d7",

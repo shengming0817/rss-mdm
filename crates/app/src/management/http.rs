@@ -8,6 +8,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
+fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
+    value.map(|v| v.0).map_err(|_| Error::Malformed)
+}
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
         .merge(publications::routes())
@@ -148,8 +152,9 @@ async fn group_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
-    Json(change): Json<Operation<GroupChange>>,
+    payload: BodyInput<Operation<GroupChange>>,
 ) -> std::result::Result<Response, Error> {
+    let change = body(payload)?;
     let permission = if matches!(change.input, GroupChange::Recompute {}) {
         Permission::GroupRecompute
     } else {
@@ -169,8 +174,9 @@ async fn scope_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
-    Json(change): Json<Operation<ScopeChange>>,
+    payload: BodyInput<Operation<ScopeChange>>,
 ) -> std::result::Result<Response, Error> {
+    let change = body(payload)?;
     run(
         &app,
         &auth,
@@ -185,8 +191,9 @@ async fn policy_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
-    Json(change): Json<Operation<PolicyChange>>,
+    payload: BodyInput<Operation<PolicyChange>>,
 ) -> std::result::Result<Response, Error> {
+    let change = body(payload)?;
     run(
         &app,
         &auth,
@@ -201,8 +208,9 @@ async fn preview(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
-    Json(request): Json<Operation<PreviewInput>>,
+    payload: BodyInput<Operation<PreviewInput>>,
 ) -> std::result::Result<Response, Error> {
+    let request = body(payload)?;
     if request.expected_revision != request.input.expected_revision {
         return Err(Error::Malformed);
     }
@@ -220,8 +228,9 @@ async fn save(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
-    Json(request): Json<Operation<SavePlan>>,
+    payload: BodyInput<Operation<SavePlan>>,
 ) -> std::result::Result<Response, Error> {
+    let request = body(payload)?;
     run(
         &app,
         &auth,
@@ -236,8 +245,9 @@ async fn group_preview(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
-    Json(request): Json<Operation<EmptyInput>>,
+    payload: BodyInput<Operation<EmptyInput>>,
 ) -> std::result::Result<Response, Error> {
+    let request = body(payload)?;
     run(
         &app,
         &auth,
@@ -257,8 +267,9 @@ async fn resource_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
-    Json(change): Json<Operation<resources::Change>>,
+    payload: BodyInput<Operation<resources::Change>>,
 ) -> std::result::Result<Response, Error> {
+    let change = body(payload)?;
     run(
         &app,
         &auth,

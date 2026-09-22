@@ -4,11 +4,12 @@ ALTER TABLE mdm.asset_changes DROP CONSTRAINT asset_changes_kind_check;
 ALTER TABLE mdm.asset_changes ADD CONSTRAINT asset_changes_kind_check
  CHECK(kind IN ('inventory','manual','device','registration','source','credential','collection'));
 CREATE TABLE mdm_access.collection_history (
- tenant_id uuid NOT NULL, scope text NOT NULL, sequence bigint NOT NULL,
+ tenant_id uuid NOT NULL, run uuid NOT NULL, scope text NOT NULL, sequence bigint NOT NULL,
  revision bigint NOT NULL, document jsonb CHECK(document IS NULL OR octet_length(document::text)<=16384),
- PRIMARY KEY(tenant_id,scope,sequence,revision),
+ PRIMARY KEY(tenant_id,run,revision),
  FOREIGN KEY(tenant_id,revision) REFERENCES mdm.asset_changes(tenant_id,revision)
 );
+CREATE INDEX collection_history_scope ON mdm_access.collection_history(tenant_id,scope,run,revision DESC);
 ALTER TABLE mdm_access.collection_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.collection_history FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_access.collection_history
@@ -27,7 +28,7 @@ BEGIN
  IF TG_OP<>'DELETE' THEN
   d=jsonb_build_object('id',r->>'id','result',r->>'result','attempts',r->>'attempts','delivery_pending',r->'delivery_pending');
  END IF;
- INSERT INTO mdm_access.collection_history VALUES(t,r->>'scope',(r->>'sequence')::bigint,v,d);
+ INSERT INTO mdm_access.collection_history VALUES(t,(r->>'id')::uuid,r->>'scope',(r->>'sequence')::bigint,v,d);
  RETURN NULL;
 END $$;
 REVOKE ALL ON FUNCTION mdm_access.capture_collection_history() FROM PUBLIC;

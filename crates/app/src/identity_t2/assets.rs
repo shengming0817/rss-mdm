@@ -122,7 +122,7 @@ fn seed_source(device: &str, channel: &str, source: &str, value: &str) -> Result
     let encoded = scope.encode()?.replace('\'', "''");
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','{request}','{grant}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v2','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');"
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES('{TENANT}','{request}','{grant}','{channel}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v2','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');"
     ))?;
     Ok((registration, epoch))
 }
@@ -207,7 +207,20 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
     ] {
-        report(&service, &access, &proof, values).await?;
+        let incomplete = report(&service, &access, &proof, values).await?;
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let delivery = runtime.inspect(&incomplete).await?;
+                if delivery.receipt.is_some()
+                    && delivery.projection
+                        == crate::inventory_runtime::ProjectionStatus::NotApplicable
+                {
+                    return Ok::<_, crate::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await??;
         let detail = ok(
             browser,
             router,
@@ -299,6 +312,55 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
     access.close().await;
+    Ok(())
+}
+// Read projection fixture: two retained Agent runs may reuse a sequence.
+async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> Result<()> {
+    let (registration, epoch) = seed_source("tie-b", "agent", "agent.builtin", "quality-sequence")?;
+    let scope = crate::device::scope(
+        rss_request_context::TenantId::parse(TENANT)?,
+        registration,
+        "agent.builtin",
+        epoch,
+    )?
+    .encode()?
+    .replace('\'', "''");
+    let older = "80000000-0000-4000-8000-000000000001";
+    let newer = "80000000-0000-4000-8000-000000000002";
+    for id in [older, newer] {
+        pg(&format!(
+            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,'{id}','{registration}','agent.builtin','{epoch}','{scope}',7,started_at,attempts,result,reason,batch,digest,sealed_at,false FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='mdm.windows' AND reason='complete' AND batch IS NOT NULL ORDER BY sequence DESC LIMIT 1"
+        ))?;
+    }
+    let query = json!({"criteria":predicate("device.model","string",json!("quality-sequence"))});
+    for expected in [newer, older] {
+        let detail = ok(
+            browser,
+            router,
+            Method::GET,
+            "/api/v2/devices/tie-b/inventory",
+            None,
+        )
+        .await?;
+        ensure!(detail["asset"]["device"]["quality"][0]["runId"] == expected);
+        let page = ok(
+            browser,
+            router,
+            Method::POST,
+            "/api/v2/device-queries",
+            Some(query.clone()),
+        )
+        .await?;
+        ensure!(
+            page["asset"]["items"][0]["quality"] == detail["asset"]["device"]["quality"],
+            "retaining one run must not erase another with the same sequence"
+        );
+        if expected == newer {
+            pg(&format!(
+                "DELETE FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{newer}'"
+            ))?;
+        }
+    }
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -751,6 +813,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         ensure!(seen == ["tie-a", "tie-b", "tie-c"]);
     }
     collection_matrix(&mut browser, &router, &base).await?;
+    retained_collection_quality(&mut browser, &router).await?;
     ensure!(automation.shutdown().join().await?.is_clean());
     reader.close().await;
     Ok(())

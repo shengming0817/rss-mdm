@@ -222,14 +222,14 @@ impl Management {
                     sqlx::query(
                         r#"
                 WITH latest AS (
-                  SELECT DISTINCT ON(scope,sequence) scope,sequence,document
+                  SELECT DISTINCT ON(scope,run) scope,sequence,run,document
                   FROM mdm_access.collection_history
                   WHERE tenant_id=$1::uuid AND scope=ANY($2) AND revision<=$3
-                  ORDER BY scope,sequence,revision DESC
-                ) SELECT DISTINCT ON(scope) scope,sequence,document->>'id' AS id,
+                  ORDER BY scope,run,revision DESC
+                ) SELECT DISTINCT ON(scope) scope,sequence,run::text AS id,
                     document->>'result' AS result,document->>'attempts' AS attempts,
                     (document->>'delivery_pending')::boolean AS delivery_pending
-                  FROM latest WHERE document IS NOT NULL ORDER BY scope,sequence DESC
+                  FROM latest WHERE document IS NOT NULL ORDER BY scope,sequence DESC,run DESC
             "#,
                     )
                     .bind(tenant)

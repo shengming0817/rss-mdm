@@ -16,6 +16,7 @@ pub use access_store::AccessStore;
 pub use management::Missing as ManagementObject;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
+mod agent;
 mod api;
 mod clock;
 pub mod config;

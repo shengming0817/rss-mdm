@@ -202,6 +202,14 @@ impl CollectionService {
             delivery: self.runtime.inspect(&run).await?,
         })
     }
+    pub(crate) async fn inspect_agent(
+        &self,
+        report: &crate::collection::DurableReport,
+    ) -> Result<crate::inventory_runtime::DeliveryStatus, Error> {
+        self.runtime
+            .inspect_report(report.scope(), report.batch())
+            .await
+    }
 }
 fn run_summary(run: &crate::collection::Run) -> RunSummary {
     RunSummary {

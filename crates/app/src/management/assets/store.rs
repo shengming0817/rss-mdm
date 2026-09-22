@@ -128,7 +128,7 @@ impl Management {
         let tenant = self.tenant.to_string();
         let keys: Vec<_> = subjects.keys().cloned().collect();
         let quality=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT DISTINCT ON(scope) scope,id::text,sequence,result,attempts,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) ORDER BY scope,sequence DESC")
+            sqlx::query("SELECT DISTINCT ON(scope) scope,id::text,sequence,result,attempts,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) ORDER BY scope,sequence DESC,id DESC")
                 .bind(tenant).bind(keys).fetch_all(c).await
         })).await.map_err(|_| Error::Unavailable(Failure::CollectionQuery))?;
         for row in quality {

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 mod store;
 pub(crate) use store::{
-    DurableReport, Run, accept, create, load_run, revalidate, terminate, terminate_session,
+    DurableReport, Run, accept, create, load_run, revalidate, revalidate_source, terminate,
+    terminate_session,
 };
 
 const FIELD_COUNT: usize = FieldKey::OBSERVED_COUNT;
@@ -91,6 +92,43 @@ pub(crate) struct Attempts {
     pub fields: [FieldAttempt; FIELD_COUNT],
 }
 impl Attempts {
+    pub(crate) fn agent(
+        body: &rss_mdm_agent_wire::ReportBody,
+        received_at: i64,
+    ) -> Result<Self, Error> {
+        let mut attempts = Self::default();
+        match body {
+            rss_mdm_agent_wire::ReportBody::Snapshot(values)
+            | rss_mdm_agent_wire::ReportBody::Partial(values) => {
+                for value in values {
+                    let index = match value.field {
+                        rss_mdm_agent_wire::Field::Model => 0,
+                        rss_mdm_agent_wire::Field::OsVersion => 1,
+                    };
+                    match &value.value {
+                        rss_mdm_agent_wire::CollectedValue::Known(value) => {
+                            attempts.status(index, 200)?;
+                            attempts.value(index, value.clone())?;
+                        }
+                        rss_mdm_agent_wire::CollectedValue::Unsupported => {
+                            attempts.status(index, 501)?;
+                        }
+                    }
+                    attempts.fields[index].received_at = Some(received_at);
+                }
+            }
+            rss_mdm_agent_wire::ReportBody::Failed { .. } => {
+                for field in &mut attempts.fields {
+                    field.status = Some(500);
+                    field.quality = Quality::Failed;
+                    field.received_at = Some(received_at);
+                }
+            }
+        }
+        attempts.finish();
+        Ok(attempts)
+    }
+
     fn status(&mut self, index: usize, code: u16) -> Result<(), Error> {
         let field = &mut self.fields[index];
         if field.status.is_some_and(|old| old != code)

@@ -14,6 +14,7 @@ use rss_request_context::{Deadline, TenantId};
 use rss_runtime::{
     ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError, TaskStatus,
 };
+use sha2::{Digest, Sha256};
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -38,9 +39,9 @@ pub(crate) enum ProjectionStatus {
 }
 #[derive(serde::Serialize)]
 pub(crate) struct ReceiptStatus {
-    batch_id: String,
-    received_at: u64,
-    decision: rss_observation::Decision,
+    pub(crate) batch_id: String,
+    pub(crate) received_at: u64,
+    pub(crate) decision: rss_observation::Decision,
 }
 #[derive(serde::Serialize)]
 pub(crate) struct DeliveryStatus {
@@ -408,6 +409,7 @@ impl InventoryRuntime {
             .await
             .map_err(|_| WorkerFailure::PendingReports)?
             .map_err(|_| WorkerFailure::PendingReports)?;
+            let pending_count = reports.len();
             for report in reports {
                 if deadline.remaining(self.clock.now.now()).is_none() {
                     break;
@@ -415,7 +417,20 @@ impl InventoryRuntime {
                 if token.is_cancelled() {
                     return Ok(());
                 }
-                self.deliver(&report, deadline).await?;
+                if let Err(phase) = self.deliver(&report, deadline).await {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "event":"mdm_inventory_delivery_failure",
+                            "phase":phase,
+                            "reportId":report.batch().id().as_str(),
+                            "source":report.scope().source().as_str(),
+                            "stream":stream_correlation(report.scope()),
+                            "pendingCount":pending_count,
+                        })
+                    );
+                    return Err(phase);
+                }
             }
             let control = Control::new(&self.clock, self.clock.cutoff(), token);
             let report = rss_projection::run(
@@ -448,15 +463,26 @@ impl InventoryRuntime {
                 projection: ProjectionStatus::NotApplicable,
             });
         };
-        let grant = ReadGrant::verify(&ReadAuthority(&run.scope), run.scope.clone())
-            .map_err(|_| unavailable())?;
+        self.inspect_report(&run.scope, batch).await
+    }
+
+    pub(crate) async fn inspect_report(
+        &self,
+        scope: &Scope,
+        batch: &rss_observation::Batch,
+    ) -> Result<DeliveryStatus, Error> {
+        if scope.tenant() != self.tenant {
+            return Err(Error::Forbidden);
+        }
+        let grant =
+            ReadGrant::verify(&ReadAuthority(scope), scope.clone()).map_err(|_| unavailable())?;
         let receipt = self
             .observation
             .lookup(&grant, batch.id(), self.clock.deadline())
             .await
             .map_err(|_| unavailable())?;
         let event = batch
-            .fingerprint(&run.scope)
+            .fingerprint(scope)
             .map_err(|_| unavailable())?
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -478,6 +504,7 @@ impl InventoryRuntime {
         let applicable = receipt
             .as_ref()
             .is_some_and(|r| r.decision().outcome().is_applicable());
+        let received = receipt.is_some();
         Ok(DeliveryStatus {
             receipt: receipt.map(|r| ReceiptStatus {
                 batch_id: r.batch().id().as_str().to_owned(),
@@ -488,13 +515,21 @@ impl InventoryRuntime {
                 ProjectionStatus::Projected
             } else if applicable {
                 ProjectionStatus::Pending
-            } else if matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
+            } else if !received && matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
                 ProjectionStatus::PendingReceipt
             } else {
                 ProjectionStatus::NotApplicable
             },
         })
     }
+}
+
+fn stream_correlation(scope: &Scope) -> String {
+    let encoded = scope.encode().unwrap_or_else(|_| "invalid-scope".into());
+    Sha256::digest(encoded.as_bytes())[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]

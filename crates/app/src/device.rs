@@ -31,6 +31,19 @@ pub struct VerifiedChannelCredential {
     locator: [u8; 32],
 }
 impl VerifiedChannelCredential {
+    pub(crate) fn agent(tenant: TenantId, secret: &rss_mdm_agent_wire::Secret) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"rss-mdm.agent.credential.v1\0");
+        hash.update(tenant.to_string().as_bytes());
+        hash.update(b"\0");
+        hash.update(secret.expose().as_bytes());
+        Self {
+            tenant,
+            channel: Channel::Agent,
+            locator: hash.finalize().into(),
+        }
+    }
     pub(crate) fn windows(
         tenant: TenantId,
         checked: &crate::windows::certificate::CheckedLeaf,
