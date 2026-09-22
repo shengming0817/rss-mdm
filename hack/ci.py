@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
+SOURCE_CONSUMER_OUT = ROOT / "artifacts" / "source-consumers"
 
 LOCAL_PACKAGES = {
     "rss-mdm-backend-postgres-support": "crates/backend-postgres-support",
@@ -385,6 +387,32 @@ def gate_command(name, args, selection):
     return args
 
 
+# Gate-owned, regenerable evidence only; retain unrelated archives and T3 results.
+EXTRA_EVIDENCE = {
+    "pin": ("pin.log",),
+    "core-consumers": ("core-consumers",),
+    "inventory-consumers": ("inventory-consumers",),
+    "backend-consumers": ("backend-consumers",),
+    "group-postgres-consumers": ("group-postgres-consumers",),
+    "isolation": ("isolation-error.txt", "isolated-build.log", "metadata-normal.json",
+                  "metadata-integration.json", "metadata-normal.stderr.log",
+                  "metadata-integration.stderr.log", "tree-normal.txt", "tree-integration.txt"),
+    "group-consumer": ("group-consumer-error.txt", "group-consumer.log", "group-consumer.json",
+                       "group-consumer.lock", "group-metadata.json", "group-tree.txt"),
+}
+
+
+def clear_execution_evidence(gate_names):
+    paths = {OUT / f"{name}.log" for name in gate_names}
+    paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
+    paths.update({SOURCE_CONSUMER_OUT, OUT / "result.json", OUT / "selection.json"})
+    for path in paths:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
@@ -421,14 +449,21 @@ def main():
     plan = {"selection": selection, "gates": {
         name: {"selected": selected_gate(name, selection), "command": gate_command(name, args, selection)}
         for name, args in gates
-    }, "isolation": selected_gate("isolation", selection),
-        "group-consumer": selected_gate("group-consumer", selection)}
-    (OUT / "selection.json").write_text(json.dumps(plan, indent=2) + "\n")
+    }}
+    for name, description in {
+        "pin": "Check workspace RSS/Identity pins and dependency source policy",
+        "identity": "Verify final HEAD equals starting HEAD and Git status is clean",
+        "isolation": "Clean Git clone, fresh Cargo home/target, locked clippy and both feature graphs",
+        "group-consumer": "Consume Group public API from the tested Git revision in isolation",
+    }.items():
+        plan["gates"][name] = {"selected": name in {"pin", "identity"} or selected_gate(name, selection),
+                               "check": description}
     print(json.dumps(plan, indent=2), flush=True)
     if os.environ.get("CI_PLAN", "0") == "1":
+        (OUT / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
         return 0
-    for stale in ["isolation-error.txt", "group-consumer-error.txt", "group-consumer.log", "group-consumer.json", "group-consumer.lock", "group-metadata.json", "group-tree.txt", "result.json"]:
-        (OUT / stale).unlink(missing_ok=True)
+    clear_execution_evidence(plan["gates"])
+    (OUT / "selection.json").write_text(json.dumps(plan, indent=2) + "\n")
     results = {}
     pin = None
     try:
@@ -438,9 +473,9 @@ def main():
         (OUT / "pin.log").write_text(str(error))
         results["pin"] = "failed"
     for name,args in gates:
-        (OUT / f"{name}.log").unlink(missing_ok=True)
         if not selected_gate(name, selection):
             results[name] = "skipped"
+            print(f"{name}: skipped", flush=True)
             continue
         args = gate_command(name, args, selection)
         print(f"local CI: {name}", flush=True)
@@ -453,8 +488,8 @@ def main():
             results[name] = "failed"
         print(f"{name}: {results[name]}", flush=True)
     try:
-        print("local CI: isolated Git consumer", flush=True)
         if selected_gate("isolation", selection):
+            print("local CI: isolated Git consumer", flush=True)
             isolate()
             results["isolation"] = "passed"
         else:
@@ -463,8 +498,8 @@ def main():
         (OUT / "isolation-error.txt").write_text(str(error))
         results["isolation"] = "failed"
     try:
-        print("local CI: Group public API consumer", flush=True)
         if selected_gate("group-consumer", selection):
+            print("local CI: Group public API consumer", flush=True)
             group_consumer(start_head)
             results["group-consumer"] = "passed"
         else:
@@ -472,6 +507,8 @@ def main():
     except Exception as error:
         (OUT / "group-consumer-error.txt").write_text(str(error))
         results["group-consumer"] = "failed"
+    for name in ("pin", "isolation", "group-consumer"):
+        print(f"{name}: {results[name]}", flush=True)
     end_head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     status = command(["/usr/bin/git", "status", "--porcelain"])
     results["identity"] = "passed" if end_head.returncode == 0 and end_head.stdout.strip() == start_head and status.returncode == 0 and not status.stdout.strip() else "failed"
