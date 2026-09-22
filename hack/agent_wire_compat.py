@@ -32,7 +32,8 @@ def check(schema_dir):
     for name in [MANIFEST, *(entry["file"] for entry in manifest["schemas"])]:
         expected = manifest if name == MANIFEST else baseline_file(name)
         actual = json.loads((schema_dir / name).read_text())
-        if actual != expected:
+        # JSON types remain distinct (Python otherwise equates True and 1).
+        if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise ValueError(
                 f"{name}: frozen V1 contract changed; introduce a new wire major "
                 "and its explicit baseline instead of updating SCHEMA_FINGERPRINT"

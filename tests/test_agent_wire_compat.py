@@ -20,6 +20,7 @@ class WireCompatibilityTests(unittest.TestCase):
 
     def test_breaking_mutations_fail_even_without_fingerprint_check(self):
         mutations = [
+            ("report-ack", lambda s: s["properties"]["wireVersion"].update(const=True)),
             ("report-request", lambda s: s["properties"]["sequence"].update(minimum=1)),
             ("report-request", lambda s: s["required"].append("newField")),
             ("report-request", lambda s: s["$defs"]["valuesBody"]["properties"]["values"].update(maxItems=1)),

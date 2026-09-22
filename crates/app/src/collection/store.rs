@@ -69,41 +69,50 @@ pub(crate) struct Run {
     request_message: u32,
     first_command: u32,
 }
+fn restored_scope(row: &PgRow) -> Result<Scope, Error> {
+    let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
+        .map_err(|_| corrupt())?;
+    if scope.tenant().to_string() != row.try_get::<String, _>("tenant_id").map_err(db)?
+        || scope.registration().as_str() != row.try_get::<String, _>("registration").map_err(db)?
+        || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
+        || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
+        || scope.dataset().as_str() != rss_mdm_inventory::DATASET
+    {
+        return Err(corrupt());
+    }
+    Ok(scope)
+}
+
+fn restored_batch(row: &PgRow, scope: &Scope) -> Result<(Uuid, u64, Option<Batch>), Error> {
+    let id =
+        Uuid::parse_str(&row.try_get::<String, _>("id").map_err(db)?).map_err(|_| corrupt())?;
+    let sequence =
+        u64::try_from(row.try_get::<i64, _>("sequence").map_err(db)?).map_err(|_| corrupt())?;
+    let batch = row
+        .try_get::<Option<Vec<u8>>, _>("batch")
+        .map_err(db)?
+        .map(|b| {
+            let batch = Batch::decode(&b).map_err(|_| corrupt())?;
+            let digest = fingerprint(&batch, scope)?;
+            if batch.encode() != b
+                || batch.id().as_str() != id.to_string()
+                || batch.sequence() != sequence
+                || batch.coverage() != &rss_mdm_inventory::coverage()
+                || Some(digest) != row.try_get::<Option<String>, _>("digest").map_err(db)?
+            {
+                return Err(corrupt());
+            }
+            rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
+            Ok(batch)
+        })
+        .transpose()?;
+    Ok((id, sequence, batch))
+}
+
 impl Run {
     fn from_row(row: PgRow) -> Result<Self, Error> {
-        let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
-            .map_err(|_| corrupt())?;
-        if scope.tenant().to_string() != row.try_get::<String, _>("tenant_id").map_err(db)?
-            || scope.registration().as_str()
-                != row.try_get::<String, _>("registration").map_err(db)?
-            || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
-            || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
-            || scope.dataset().as_str() != rss_mdm_inventory::DATASET
-        {
-            return Err(corrupt());
-        }
-        let id =
-            Uuid::parse_str(&row.try_get::<String, _>("id").map_err(db)?).map_err(|_| corrupt())?;
-        let sequence =
-            u64::try_from(row.try_get::<i64, _>("sequence").map_err(db)?).map_err(|_| corrupt())?;
-        let batch = row
-            .try_get::<Option<Vec<u8>>, _>("batch")
-            .map_err(db)?
-            .map(|b| {
-                let batch = Batch::decode(&b).map_err(|_| corrupt())?;
-                let digest = fingerprint(&batch, &scope)?;
-                if batch.encode() != b
-                    || batch.id().as_str() != id.to_string()
-                    || batch.sequence() != sequence
-                    || batch.coverage() != &rss_mdm_inventory::coverage()
-                    || Some(digest) != row.try_get::<Option<String>, _>("digest").map_err(db)?
-                {
-                    return Err(corrupt());
-                }
-                rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
-                Ok(batch)
-            })
-            .transpose()?;
+        let scope = restored_scope(&row)?;
+        let (id, sequence, batch) = restored_batch(&row, &scope)?;
         Ok(Self {
             id,
             scope,
@@ -324,7 +333,7 @@ impl DurableReport {
 impl AccessStore {
     pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
         let mut tx = self.begin(tenant).await?;
-        let rows = sqlx::query("SELECT scope,batch,digest FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32")
+        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
             .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
         let reports: Vec<DurableReport> = rows
             .into_iter()
@@ -339,11 +348,11 @@ impl AccessStore {
         scope: &Scope,
         id: Uuid,
     ) -> Result<Option<(DurableReport, i64)>, Error> {
-        let row = sqlx::query("SELECT scope,batch,digest,sealed_at AS received_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid")
+        let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid"))
             .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.to_string())
             .fetch_optional(connection).await.map_err(db)?;
         row.map(|row| {
-            let received_at = row.try_get("received_at").map_err(db)?;
+            let received_at = row.try_get("sealed_at").map_err(db)?;
             Ok((durable_report(row)?, received_at))
         })
         .transpose()
@@ -375,16 +384,16 @@ impl AccessStore {
 }
 
 fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
-    let scope: Scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
-        .map_err(|_| corrupt())?;
-    let bytes: Vec<u8> = row.try_get("batch").map_err(db)?;
-    let batch = Batch::decode(&bytes).map_err(|_| corrupt())?;
-    if batch.encode() != bytes
-        || fingerprint(&batch, &scope)? != row.try_get::<String, _>("digest").map_err(db)?
+    let scope = restored_scope(&row)?;
+    let (_, _, batch) = restored_batch(&row, &scope)?;
+    if row
+        .try_get::<Option<i64>, _>("sealed_at")
+        .map_err(db)?
+        .is_none()
     {
         return Err(corrupt());
     }
-    rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
+    let batch = batch.ok_or_else(corrupt)?;
     Ok(DurableReport { scope, batch })
 }
 
