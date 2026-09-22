@@ -14,8 +14,13 @@ async fn ok(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value> {
+    let diagnostic = body.clone();
+    let method_name = method.as_str().to_owned();
     let (s, v) = browser.call(router, method, path, body).await?;
-    ensure!(s == StatusCode::OK, "asset request {path}: {s} {v}");
+    ensure!(
+        s == StatusCode::OK,
+        "asset request {method_name} {path} with {diagnostic:?}: {s} {v}"
+    );
     Ok(v)
 }
 async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result<()> {
@@ -54,7 +59,7 @@ fn seed_source(device: &str, channel: &str, source: &str, value: &str) -> Result
     let encoded = scope.encode()?.replace('\'', "''");
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','{request}','{grant}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v2','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');"
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES('{TENANT}','{request}','{grant}','{channel}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v2','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');"
     ))?;
     Ok((registration, epoch))
 }
@@ -146,7 +151,20 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
     ] {
-        report(&service, &access, &proof, values).await?;
+        let incomplete = report(&service, &access, &proof, values).await?;
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let delivery = runtime.inspect(&incomplete).await?;
+                if delivery.receipt.is_some()
+                    && delivery.projection
+                        == crate::inventory_runtime::ProjectionStatus::NotApplicable
+                {
+                    return Ok::<_, crate::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await??;
         let detail = ok(
             browser,
             router,

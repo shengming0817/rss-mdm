@@ -124,3 +124,46 @@ fn explicit_unsupported_is_definitive_but_other_failures_are_not() {
     partial.status(1, 500).unwrap();
     assert!(matches!(partial.body(), Some(Body::Partial(_))));
 }
+
+#[test]
+fn agent_reports_use_the_canonical_quality_model() {
+    use rss_mdm_agent_wire::{CollectedValue, Field, FieldValue, ReportBody};
+
+    let attempts = Attempts::agent(
+        &ReportBody::Snapshot(vec![
+            FieldValue {
+                field: Field::Model,
+                value: CollectedValue::Known("Model-A".into()),
+            },
+            FieldValue {
+                field: Field::OsVersion,
+                value: CollectedValue::Unsupported,
+            },
+        ]),
+        42,
+    )
+    .unwrap();
+    assert_eq!(attempts.fields[0].quality, Quality::Success);
+    assert_eq!(attempts.fields[1].quality, Quality::Unsupported);
+    assert!(
+        attempts
+            .fields
+            .iter()
+            .all(|field| field.received_at == Some(42))
+    );
+    assert!(serde_json::from_str::<Attempts>(&serde_json::to_string(&attempts).unwrap()).is_ok());
+
+    let failed = Attempts::agent(
+        &ReportBody::Failed {
+            code: rss_mdm_agent_wire::FailureCode::CollectionFailed,
+        },
+        43,
+    )
+    .unwrap();
+    assert!(
+        failed
+            .fields
+            .iter()
+            .all(|field| field.quality == Quality::Failed)
+    );
+}

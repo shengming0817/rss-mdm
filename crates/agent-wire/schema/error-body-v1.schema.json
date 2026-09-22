@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/mdm/agent/v1/error-body.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code"],
+  "properties": {
+    "code": {
+      "enum": ["malformed_request", "unsupported_wire", "unsupported_capability", "invalid_identity", "report_not_found", "operation_conflict", "operation_unknown", "service_unavailable"]
+    }
+  }
+}

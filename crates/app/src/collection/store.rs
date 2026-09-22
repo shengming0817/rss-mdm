@@ -20,17 +20,23 @@ pub(crate) async fn revalidate(
     tx: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
 ) -> Result<Scope, Error> {
+    revalidate_source(tx, principal, rss_mdm_inventory::ReportSource::MdmWindows).await
+}
+
+pub(crate) async fn revalidate_source(
+    tx: &mut sqlx::PgConnection,
+    principal: &DevicePrincipal,
+    source: rss_mdm_inventory::ReportSource,
+) -> Result<Scope, Error> {
+    if principal.channel() != source.channel() {
+        return Err(Error::Forbidden);
+    }
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
-    crate::device::store::lock_channel(
-        tx,
-        &tenant,
-        principal.device(),
-        rss_mdm_inventory::Channel::Mdm,
-    )
-    .await?;
-    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel='mdm' AND state='active'")
-        .bind(&tenant).bind(&registration).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
+        .await?;
+    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active'")
+        .bind(&tenant).bind(&registration).bind(principal.channel().as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if live.try_get::<String, _>("device").map_err(db)? != principal.device()
         || live.try_get::<i64, _>("generation").map_err(db)? != principal.generation()
     {
@@ -38,12 +44,12 @@ pub(crate) async fn revalidate(
     }
     sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
         .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND enabled AND coverage=$3 FOR UPDATE")
-        .bind(&tenant).bind(&registration).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND coverage=$4 FOR UPDATE")
+        .bind(&tenant).bind(&registration).bind(source.as_str()).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     crate::device::scope(
         principal.tenant(),
         principal.registration(),
-        "mdm.windows",
+        source.as_str(),
         Uuid::parse_str(&row.try_get::<String, _>("epoch").map_err(db)?).map_err(|_| corrupt())?,
     )
 }
@@ -63,41 +69,50 @@ pub(crate) struct Run {
     request_message: u32,
     first_command: u32,
 }
+fn restored_scope(row: &PgRow) -> Result<Scope, Error> {
+    let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
+        .map_err(|_| corrupt())?;
+    if scope.tenant().to_string() != row.try_get::<String, _>("tenant_id").map_err(db)?
+        || scope.registration().as_str() != row.try_get::<String, _>("registration").map_err(db)?
+        || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
+        || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
+        || scope.dataset().as_str() != rss_mdm_inventory::DATASET
+    {
+        return Err(corrupt());
+    }
+    Ok(scope)
+}
+
+fn restored_batch(row: &PgRow, scope: &Scope) -> Result<(Uuid, u64, Option<Batch>), Error> {
+    let id =
+        Uuid::parse_str(&row.try_get::<String, _>("id").map_err(db)?).map_err(|_| corrupt())?;
+    let sequence =
+        u64::try_from(row.try_get::<i64, _>("sequence").map_err(db)?).map_err(|_| corrupt())?;
+    let batch = row
+        .try_get::<Option<Vec<u8>>, _>("batch")
+        .map_err(db)?
+        .map(|b| {
+            let batch = Batch::decode(&b).map_err(|_| corrupt())?;
+            let digest = fingerprint(&batch, scope)?;
+            if batch.encode() != b
+                || batch.id().as_str() != id.to_string()
+                || batch.sequence() != sequence
+                || batch.coverage() != &rss_mdm_inventory::coverage()
+                || Some(digest) != row.try_get::<Option<String>, _>("digest").map_err(db)?
+            {
+                return Err(corrupt());
+            }
+            rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
+            Ok(batch)
+        })
+        .transpose()?;
+    Ok((id, sequence, batch))
+}
+
 impl Run {
     fn from_row(row: PgRow) -> Result<Self, Error> {
-        let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
-            .map_err(|_| corrupt())?;
-        if scope.tenant().to_string() != row.try_get::<String, _>("tenant_id").map_err(db)?
-            || scope.registration().as_str()
-                != row.try_get::<String, _>("registration").map_err(db)?
-            || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
-            || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
-            || scope.dataset().as_str() != rss_mdm_inventory::DATASET
-        {
-            return Err(corrupt());
-        }
-        let id =
-            Uuid::parse_str(&row.try_get::<String, _>("id").map_err(db)?).map_err(|_| corrupt())?;
-        let sequence =
-            u64::try_from(row.try_get::<i64, _>("sequence").map_err(db)?).map_err(|_| corrupt())?;
-        let batch = row
-            .try_get::<Option<Vec<u8>>, _>("batch")
-            .map_err(db)?
-            .map(|b| {
-                let batch = Batch::decode(&b).map_err(|_| corrupt())?;
-                let digest = fingerprint(&batch, &scope)?;
-                if batch.encode() != b
-                    || batch.id().as_str() != id.to_string()
-                    || batch.sequence() != sequence
-                    || batch.coverage() != &rss_mdm_inventory::coverage()
-                    || Some(digest) != row.try_get::<Option<String>, _>("digest").map_err(db)?
-                {
-                    return Err(corrupt());
-                }
-                rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
-                Ok(batch)
-            })
-            .transpose()?;
+        let scope = restored_scope(&row)?;
+        let (id, sequence, batch) = restored_batch(&row, &scope)?;
         Ok(Self {
             id,
             scope,
@@ -318,28 +333,39 @@ impl DurableReport {
 impl AccessStore {
     pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
         let mut tx = self.begin(tenant).await?;
-        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence LIMIT 32"))
+        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
             .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
-        let reports = rows
+        let reports: Vec<DurableReport> = rows
             .into_iter()
-            .map(|row| {
-                let run = Run::from_row(row)?;
-                if run.sealed_at.is_none() {
-                    return Err(corrupt());
-                }
-                Ok(DurableReport {
-                    scope: run.scope,
-                    batch: run.batch.ok_or_else(corrupt)?,
-                })
-            })
+            .map(durable_report)
             .collect::<Result<_, Error>>()?;
         tx.commit().await.map_err(db)?;
         Ok(reports)
     }
+
+    pub(crate) async fn agent_report_in(
+        connection: &mut sqlx::PgConnection,
+        scope: &Scope,
+        id: Uuid,
+    ) -> Result<Option<(DurableReport, i64)>, Error> {
+        let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid"))
+            .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.to_string())
+            .fetch_optional(connection).await.map_err(db)?;
+        row.map(|row| {
+            let received_at = row.try_get("sealed_at").map_err(db)?;
+            Ok((durable_report(row)?, received_at))
+        })
+        .transpose()
+    }
     pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
         let mut tx = self.begin(&report.scope.tenant().to_string()).await?;
         sqlx::query("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending")
-            .bind(report.scope.tenant().to_string()).bind(report.batch.id().as_str()).bind(fingerprint(&report.batch, &report.scope)?).execute(&mut *tx).await.map_err(db)?;
+            .bind(report.scope.tenant().to_string())
+            .bind(report.batch.id().as_str())
+            .bind(fingerprint(&report.batch, &report.scope)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)
     }
     pub(crate) async fn collection(
@@ -355,6 +381,20 @@ impl AccessStore {
         tx.commit().await.map_err(db)?;
         Ok(run)
     }
+}
+
+fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
+    let scope = restored_scope(&row)?;
+    let (_, _, batch) = restored_batch(&row, &scope)?;
+    if row
+        .try_get::<Option<i64>, _>("sealed_at")
+        .map_err(db)?
+        .is_none()
+    {
+        return Err(corrupt());
+    }
+    let batch = batch.ok_or_else(corrupt)?;
+    Ok(DurableReport { scope, batch })
 }
 
 /// Restore exact product evidence without using the mutable Inventory projection.

@@ -60,7 +60,12 @@ pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
     .ssl_mode(PgSslMode::VerifyFull)
     .ssl_root_cert(std::env::var("PG_CA_FILE")?))
 }
-async fn request(store: &AccessStore, admin: &Principal, device: &str) -> anyhow::Result<Uuid> {
+async fn request(
+    store: &AccessStore,
+    admin: &Principal,
+    device: &str,
+    channel: Channel,
+) -> anyhow::Result<Uuid> {
     let audit = Audit::new(admin.tenant_id().into(), "enrollment_create");
     audit.identify(admin);
     audit.target(device);
@@ -70,6 +75,7 @@ async fn request(store: &AccessStore, admin: &Principal, device: &str) -> anyhow
         .create_enrollment(
             admin.enrollment(device)?,
             &Password::new(crate::enrollment::random())?,
+            channel,
             Uuid::new_v4(),
             key,
             &audit,
@@ -87,7 +93,7 @@ pub(crate) async fn bind(
 ) -> anyhow::Result<(BindRegistration, RegistrationReceipt)> {
     let command = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&service.access, admin, device).await?,
+        request_id: request(&service.access, admin, device, proof.channel).await?,
         expected_generation: generation,
         source: match proof.channel {
             Channel::Mdm => ReportSource::MdmWindows,
@@ -274,7 +280,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     let third_proof = proof(A, Channel::Mdm, 3);
     let pending = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &admin_a, "same-serial").await?,
+        request_id: request(&access, &admin_a, "same-serial", Channel::Mdm).await?,
         expected_generation: 2,
         source: ReportSource::MdmWindows,
     };
@@ -335,7 +341,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     // Failed replacement must leave the existing generation/credential/source fully active.
     let replace = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &admin_a, "same-serial").await?,
+        request_id: request(&access, &admin_a, "same-serial", Channel::Mdm).await?,
         expected_generation: 3,
         source: ReportSource::MdmWindows,
     };
@@ -408,7 +414,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     for retired in [&mdm, &newer] {
         let retry = BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&access, &admin_a, "same-serial").await?,
+            request_id: request(&access, &admin_a, "same-serial", Channel::Mdm).await?,
             expected_generation: 4,
             source: ReportSource::MdmWindows,
         };
@@ -429,13 +435,13 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     // Two accepted requests racing for the same expected generation cannot silently overwrite.
     let left = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &admin_a, "concurrent").await?,
+        request_id: request(&access, &admin_a, "concurrent", Channel::Mdm).await?,
         expected_generation: 0,
         source: ReportSource::MdmWindows,
     };
     let right = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &admin_a, "concurrent").await?,
+        request_id: request(&access, &admin_a, "concurrent", Channel::Mdm).await?,
         expected_generation: 0,
         source: ReportSource::MdmWindows,
     };
@@ -493,7 +499,7 @@ async fn credential_race(
     for device in [&a.device, &b.device] {
         commands.push(BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&service.access, admin, device).await?,
+            request_id: request(&service.access, admin, device, Channel::Mdm).await?,
             expected_generation: 1,
             source: ReportSource::MdmWindows,
         });
@@ -553,7 +559,7 @@ async fn credential_race(
         .await?;
     let retry = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&service.access, admin, &loser.device).await?,
+        request_id: request(&service.access, admin, &loser.device, loser.channel).await?,
         expected_generation: 1,
         source: ReportSource::MdmWindows,
     };
@@ -583,7 +589,7 @@ async fn commit_deadlines(
         let credential = proof(A, Channel::Mdm, 100 + fault);
         let command = BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&service.access, admin, &device).await?,
+            request_id: request(&service.access, admin, &device, Channel::Mdm).await?,
             expected_generation: 0,
             source: ReportSource::MdmWindows,
         };

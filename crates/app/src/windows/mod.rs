@@ -141,6 +141,7 @@ pub(crate) fn routers(
                     host: origin.trim_start_matches("https://").into(),
                     clock: clock.clone(),
                     access: app.access.clone(),
+                    requests: app.requests.clone(),
                     tenant: app.identity.tenant.to_string(),
                 },
                 envelope,
@@ -333,6 +334,9 @@ async fn enrollment(
             .access
             .enrollment_authorization(&app.identity.tenant.to_string(), id, &password)
             .await?;
+        if auth.channel != rss_mdm_inventory::Channel::Mdm {
+            return Err(Error::Unauthorized);
+        }
         let credential = app.credentials.get(auth.credential_ref)?;
         let _global = app
             .requests
