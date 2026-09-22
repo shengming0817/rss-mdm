@@ -36,6 +36,22 @@ pub(crate) fn routes_v2() -> Router<Arc<App>> {
         .route("/groups/{group}/tasks/{task}", get(group_task))
         .route("/scopes/{scope}/tasks/{task}", get(scope_task))
 }
+// Group receipts/read models include derived membership counts. Every result
+// projection and task summary uses the full tenant input, so grant changes must
+// be checked again even when reading an immutable result with an old cursor.
+fn exposes_inventory(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Group { .. }
+            | Command::GroupRead { .. }
+            | Command::GroupPreview { .. }
+            | Command::GroupPage { .. }
+            | Command::ScopePage { .. }
+            | Command::PolicyPage { .. }
+            | Command::TaskRead { .. }
+            | Command::PlanRead { .. }
+    )
+}
 async fn run(
     app: &App,
     auth: &RequestAuth,
@@ -43,19 +59,6 @@ async fn run(
     permission: Permission,
     command: Command,
 ) -> std::result::Result<Response, Error> {
-    if matches!(
-        &command,
-        Command::GroupPreview { .. }
-            | Command::Group {
-                change: Operation {
-                    input: GroupChange::Recompute {},
-                    ..
-                },
-                ..
-            }
-    ) {
-        assets::ReadScope::from_proof(&auth.proof)?.full()?;
-    }
     match &command {
         Command::Asset { .. } => return Err(Error::Malformed),
         Command::Group { id, .. }
@@ -98,17 +101,7 @@ async fn run(
     }
     let authorize = || {
         auth.proof.manage(permission)?;
-        if matches!(
-            &command,
-            Command::GroupPreview { .. }
-                | Command::Group {
-                    change: Operation {
-                        input: GroupChange::Recompute {},
-                        ..
-                    },
-                    ..
-                }
-        ) {
+        if exposes_inventory(&command) {
             assets::ReadScope::from_proof(&auth.proof)?.full()?;
         }
         Ok(())

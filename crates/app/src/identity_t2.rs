@@ -1336,7 +1336,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    management::matrix(&allowed, reader.clone(), &browser).await?;
+    Box::pin(management::matrix(&allowed, reader.clone(), &browser)).await?;
     enrollment_matrix(&authorized, &allowed, reader.clone(), &mut browser, &query).await?;
     native_accounts(&initial, &authorized, &mut browser, subject).await?;
     reader.close().await;

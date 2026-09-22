@@ -182,6 +182,52 @@ async fn paged_candidate_save_preserves_execution_facts_and_source_invalidation(
             .is_none()
     );
     let operation = RequestId::new(tenant(), unique()).unwrap();
+    // Source deletion and first save serialize even when no saved reference
+    // existed when the source owner entered its transaction.
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let source =
+        runtime.local_tx_with_context(tenant(), deadline(), (&s, &reference), |ctx, tx| {
+            Box::pin(async move {
+                assert!(!ctx.0.has_saved_reference_in(tx, ctx.1).await?.unwrap());
+                locked_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(Ok(()))
+            })
+        });
+    let save = async {
+        locked_rx.await.unwrap();
+        let mut saving = Box::pin(runtime.local_tx_with_context(
+            tenant(),
+            deadline(),
+            (&s, &request.id, &operation, &policy),
+            |ctx, tx| {
+                Box::pin(async move {
+                    tx.prepare_outbox_partitions(&[ctx.0.partition(ctx.3.value())?])
+                        .await?;
+                    ctx.0.save_candidate_in(tx, ctx.2, ctx.1, 2, at(4)).await
+                })
+            },
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut saving)
+                .await
+                .is_err(),
+            "save bypassed source owner's reference lock"
+        );
+        release_tx.send(()).unwrap();
+        committed(saving.await)
+    };
+    let (source, saved) = tokio::join!(source, save);
+    committed(source);
+    assert_eq!(saved.storage_revision, 3);
+    assert!(committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &reference), |ctx, tx| Box::pin(
+                async move { ctx.0.has_saved_reference_in(tx, ctx.1).await }
+            ))
+            .await
+    ));
     for _ in 0..2 {
         let saved = committed(
             runtime

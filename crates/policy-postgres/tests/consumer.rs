@@ -230,6 +230,19 @@ async fn saving_intents_does_not_create_execution_facts() {
     let p = pid();
     let rev = setup(&s, &p).await;
     let candidate = planning::prepare(&runtime, &s, &p, rev, &["a"]).await;
+    let reference = planning::settle(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &candidate), |ctx, tx| {
+                Box::pin(async move {
+                    let candidate = ctx.0.candidate_in(tx, ctx.1).await?.unwrap();
+                    let reference = candidate.request.references[0].id.clone();
+                    assert!(!ctx.0.has_saved_reference_in(tx, &reference).await?.unwrap());
+                    Ok(Ok(reference))
+                })
+            })
+            .await,
+    )
+    .unwrap();
     let operation = RequestId::new(tenant(), unique()).unwrap();
     let saved = planning::save(&runtime, &s, &p, &operation, &candidate, rev, deadline())
         .await
@@ -239,6 +252,16 @@ async fn saving_intents_does_not_create_execution_facts() {
         planning::save(&runtime, &s, &p, &operation, &candidate, rev, deadline())
             .await
             .unwrap()
+    );
+    assert!(
+        planning::settle(
+            runtime
+                .local_tx_with_context(tenant(), deadline(), (&s, &reference), |ctx, tx| Box::pin(
+                    async move { ctx.0.has_saved_reference_in(tx, ctx.1).await }
+                ))
+                .await
+        )
+        .unwrap()
     );
     assert_event(p.value(), operation.value(), saved.storage_revision, 10);
     assert!(

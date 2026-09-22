@@ -32,3 +32,7 @@ pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_w
 /// Immutable paged member results and atomic current-set publication.
 pub const GENERATIONS_MIGRATION_SQL: &str =
     include_str!("../migrations/0003_member_generations.sql");
+
+/// Reverse lookup of affected groups without host access to private membership tables.
+pub const REVERSE_INDEX_MIGRATION_SQL: &str =
+    include_str!("../migrations/0004_member_reverse_index.sql");

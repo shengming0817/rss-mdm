@@ -89,9 +89,16 @@ impl Management {
                 if current != op.expected_revision {
                     return Err(Error::Conflict.into());
                 }
+                if checked(
+                    self.policies
+                        .has_saved_reference_in(tx, &format!("scope-definition.{id}"))
+                        .await?,
+                )? {
+                    return Err(Error::Conflict.into());
+                }
                 let tenant = self.tenant.to_string();
                 let changed=tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query("UPDATE mdm_management.scopes SET deleted=true,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT EXISTS(SELECT 1 FROM mdm_policy.candidates c JOIN mdm_management.automation_jobs j ON j.tenant_id=c.tenant_id AND j.id::text=c.id WHERE c.tenant_id=$1::uuid AND c.phase='saved' AND j.input->>'scope'=$2::text)")
+                    sqlx::query("UPDATE mdm_management.scopes SET deleted=true,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid")
                         .bind(tenant).bind(id.to_string()).execute(c).await.map(|r|r.rows_affected())
                 })).await?;
                 if changed != 1 {
@@ -144,10 +151,16 @@ impl Management {
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
         let used:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_management.scope_sources WHERE tenant_id=$1::uuid AND kind='group' AND target=$2) OR EXISTS(SELECT 1 FROM mdm_policy.candidate_references r JOIN mdm_policy.candidates p ON (p.tenant_id,p.id)=(r.tenant_id,r.candidate) WHERE r.tenant_id=$1::uuid AND p.phase='saved' AND r.reference='group-members.'||$2)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_management.scope_sources WHERE tenant_id=$1::uuid AND kind='group' AND target=$2)")
                 .bind(tenant).bind(id.to_string()).fetch_one(c).await
         })).await?;
-        if used {
+        if used
+            || checked(
+                self.policies
+                    .has_saved_reference_in(tx, &format!("group-members.{id}"))
+                    .await?,
+            )?
+        {
             return Err(Error::Conflict.into());
         }
         Ok(())

@@ -26,13 +26,22 @@ pub async fn prepare(
         expected_revision: expected,
         targets: TargetSnapshotId::new(tenant(), unique()).unwrap(),
         target_revision: 1,
-        references: vec![],
+        references: vec![AssignmentReference {
+            id: format!("source.{}", unique()),
+            revision: 1,
+        }],
         as_of: at(10),
     };
     settle(
         runtime
             .local_tx_with_context(tenant(), deadline(), (store, &request), |ctx, tx| {
-                Box::pin(async move { ctx.0.begin_candidate_in(tx, ctx.1).await })
+                Box::pin(async move {
+                    ctx.0
+                        .advance_reference_in(tx, &ctx.1.references[0].id, 1)
+                        .await?
+                        .unwrap();
+                    ctx.0.begin_candidate_in(tx, ctx.1).await
+                })
             })
             .await,
     )

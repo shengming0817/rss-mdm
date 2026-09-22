@@ -20,6 +20,7 @@ pub(in crate::management) enum JobInput {
     },
     Group {
         group: Uuid,
+        base_revision: i64,
         watermark: i64,
         publish: bool,
         automatic: bool,

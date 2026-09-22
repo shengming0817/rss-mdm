@@ -300,6 +300,18 @@ pub(super) async fn matrix(
             && intents["page"]["items"][0]["kind"] == "add",
         "policy result: {targets} {intents}"
     );
+    Box::pin(derived_result_authorization(
+        &mut browser,
+        &router,
+        &member,
+        &group_path,
+        accepted["task"].as_str().unwrap(),
+        scope,
+        scope_receipt["task"].as_str().unwrap(),
+        &policy_path,
+        planned_id,
+    ))
+    .await?;
     let (_, decisions) = browser
         .call(
             &router,
@@ -1008,5 +1020,124 @@ async fn permission_matrix(
         }
     }
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE target='{id}' AND result='denied' AND action IN ('management_read','management_write','plan_preview','plan_save') AND actor IS NOT NULL AND instance='{INSTANCE}'"))?.trim()==expected_denied.to_string(),"denied action/target/actor audit incomplete");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn derived_result_authorization(
+    browser: &mut Browser,
+    router: &Router,
+    member: &str,
+    group: &str,
+    group_result: &str,
+    scope: uuid::Uuid,
+    scope_result: &str,
+    policy: &str,
+    policy_result: &str,
+) -> Result<()> {
+    let permissions = json!([
+        "group_read",
+        "group_write",
+        "group_recompute",
+        "scope_read",
+        "scope_write",
+        "policy_read",
+        "policy_write",
+        "plan_preview",
+        "plan_save",
+        "resource_read",
+        "resource_write"
+    ]);
+    let mut paths = vec![
+        format!("{group}/tasks/{group_result}"),
+        format!("/api/v2/scopes/{scope}/tasks/{scope_result}"),
+        format!("/api/v2/plan-previews/{policy_result}"),
+    ];
+    for kind in ["members", "changes", "decisions"] {
+        paths.push(format!("{group}/results/{group_result}/{kind}?limit=1"));
+    }
+    for kind in ["members", "decisions"] {
+        paths.push(format!(
+            "/api/v2/scopes/{scope}/results/{scope_result}/{kind}?limit=1"
+        ));
+    }
+    for kind in [
+        "targets",
+        "add",
+        "supersede",
+        "retain",
+        "cancel",
+        "predecessors",
+    ] {
+        paths.push(format!("{policy}/results/{policy_result}/{kind}?limit=1"));
+    }
+    // Keep an actually issued cursor, then shrink the subject's device access.
+    let (status, page) = Box::pin(browser.call(router, Method::GET, &paths[3], None)).await?;
+    ensure!(status == StatusCode::OK, "authorized derived page: {page}");
+    let cursor = page["nextCursor"].as_str().unwrap();
+    paths.push(format!("{}&cursor={cursor}", paths[3]));
+    let criteria = json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}});
+    for limited in [false, true] {
+        let mut grants = permissions
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                Ok(crate::authorization::Grant {
+                    operation: serde_json::from_value(p.clone())?,
+                    scope: crate::authorization::Scope::Tenant,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if limited {
+            grants.extend(crate::identity_fixture::device_grants(
+                Some("device-1"),
+                &["inventory_read"],
+            )?);
+        }
+        Box::pin(crate::identity_fixture::set_grants(TENANT, member, grants)).await?;
+        let before = pg(
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.automation_jobs))",
+        )?;
+        for (path, revision, input) in [
+            (
+                format!("/api/v2/groups/{}", uuid::Uuid::new_v4()),
+                0,
+                json!({"action":"create","name":"denied-dynamic","description":"","criteria":criteria}),
+            ),
+            (
+                group.to_owned(),
+                0,
+                json!({"action":"rule","criteria":criteria}),
+            ),
+        ] {
+            let (status,body)=browser.call(router,Method::POST,&path,Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":revision,"input":input}))).await?;
+            ensure!(
+                status == StatusCode::FORBIDDEN,
+                "derived writer accepted absent/full-inventory gap: {status} {body}"
+            );
+        }
+        for path in &paths {
+            let (status, body) = Box::pin(browser.call(router, Method::GET, path, None)).await?;
+            ensure!(
+                status == StatusCode::FORBIDDEN,
+                "derived page leaked after inventory grant shrink at {path}: {status} {body}"
+            );
+        }
+        ensure!(
+            pg(
+                "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.automation_jobs))"
+            )? == before,
+            "denied dynamic write enqueued work"
+        );
+    }
+    Box::pin(set_management_grants(member, permissions)).await?;
+    for path in &paths {
+        let (status, body) = Box::pin(browser.call(router, Method::GET, path, None)).await?;
+        ensure!(
+            status == StatusCode::OK,
+            "restored full inventory grant: {path} {status} {body}"
+        );
+    }
     Ok(())
 }

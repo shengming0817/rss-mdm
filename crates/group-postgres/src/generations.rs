@@ -90,6 +90,78 @@ pub struct DifferenceStep {
 }
 
 impl GroupStore {
+    /// Find live static groups containing any supplied device in their latest
+    /// published membership, optionally including every live dynamic group.
+    /// Device input is bounded to 1,000 and result pages to 33; `after`
+    /// is an exclusive group cursor. Unpublished changes never affect this view.
+    pub async fn affected_groups_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        devices: &[String],
+        include_dynamic: bool,
+        after: Option<GroupId>,
+        limit: usize,
+    ) -> InTransaction<Vec<GroupId>> {
+        input!(self.check_transaction(tx)?);
+        if devices.len() > 1000 || !(1..=33).contains(&limit) {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        for device in devices {
+            if device.len() > 256 {
+                return Ok(Err(Rejection::InvalidInput));
+            }
+            input!(
+                rss_mdm_group::ObjectKey::new(self.tenant, device)
+                    .map_err(crate::store::core_rejection)
+            );
+        }
+        let tenant = self.tenant.to_string();
+        let devices = devices.to_vec();
+        let after = after.map(|id| id.to_string());
+        let rows: Vec<String> = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        r#"
+                SELECT id::text FROM (
+                    SELECT hit.group_id AS id FROM unnest($2::text[]) device
+                    CROSS JOIN LATERAL (
+                        SELECT latest.group_id FROM (
+                            SELECT DISTINCT ON(m.group_id) m.group_id,m.added
+                            FROM mdm_group.member_changes m
+                            WHERE m.tenant_id=$1::uuid AND m.object_id=device
+                                AND ($4::uuid IS NULL OR m.group_id>$4::uuid)
+                                AND EXISTS(SELECT 1 FROM mdm_group.member_runs r
+                                    WHERE r.tenant_id=m.tenant_id AND r.id=m.run_id AND r.phase='published')
+                            ORDER BY m.group_id,m.revision DESC
+                        ) latest JOIN mdm_group.groups g ON g.tenant_id=$1::uuid AND g.id=latest.group_id
+                        WHERE latest.added AND g.kind='static' AND NOT g.deleted
+                        ORDER BY latest.group_id LIMIT $5
+                    ) hit
+                    UNION
+                    (SELECT id FROM mdm_group.groups WHERE tenant_id=$1::uuid
+                        AND $3 AND kind='dynamic' AND NOT deleted
+                        AND ($4::uuid IS NULL OR id>$4::uuid)
+                     ORDER BY id LIMIT $5)
+                ) affected ORDER BY id LIMIT $5
+            "#,
+                    )
+                    .bind(tenant)
+                    .bind(devices)
+                    .bind(include_dynamic)
+                    .bind(after)
+                    .bind(limit as i64)
+                    .fetch_all(c)
+                    .await
+                })
+            })
+            .await?;
+        Ok(Ok(rows
+            .iter()
+            .map(|id| data(GroupId::parse(id)))
+            .collect::<Result<_, _>>()?))
+    }
+
     /// Read the immutable current member-set handle; None means the initial empty set.
     pub async fn current_member_set_in(
         &self,

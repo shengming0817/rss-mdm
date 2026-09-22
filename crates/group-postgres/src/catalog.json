@@ -526,6 +526,14 @@
   "indexes": [
     [
       "groups",
+      "groups_dynamic",
+      "CREATE INDEX groups_dynamic ON mdm_group.groups USING btree (tenant_id, id) WHERE ((kind = 'dynamic'::text) AND (NOT deleted))",
+      true,
+      true,
+      true
+    ],
+    [
+      "groups",
       "groups_pkey",
       "CREATE UNIQUE INDEX groups_pkey ON mdm_group.groups USING btree (tenant_id, id)",
       true,
@@ -536,6 +544,14 @@
       "member_changes",
       "member_changes_history",
       "CREATE INDEX member_changes_history ON mdm_group.member_changes USING btree (tenant_id, group_id, object_id, revision DESC)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_changes",
+      "member_changes_object",
+      "CREATE INDEX member_changes_object ON mdm_group.member_changes USING btree (tenant_id, object_id, group_id, revision DESC)",
       true,
       true,
       true

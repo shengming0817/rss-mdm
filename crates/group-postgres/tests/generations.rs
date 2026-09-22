@@ -244,6 +244,12 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
                 .await,
         );
         assert!(ready.build.ready);
+        let before = affected(&runtime, &s, vec!["a".into()], None, 33).await;
+        assert_eq!(
+            before.contains(&group),
+            previous.is_some(),
+            "unpublished changes leaked"
+        );
         current = committed(
             runtime
                 .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
@@ -276,6 +282,18 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             );
             assert_eq!(members, vec!["b", "c"]);
         }
+        let after = affected(&runtime, &s, vec!["a".into()], None, 33).await;
+        assert_eq!(
+            after.contains(&group),
+            previous.is_none(),
+            "latest published removal ignored"
+        );
+        assert!(
+            affected(&runtime, &s, vec!["b".into()], Some(group), 33)
+                .await
+                .iter()
+                .all(|id| *id > group)
+        );
         let stored_rows = runtime.local_tx_with_context(tenant(), deadline(), &s, |_, tx|Box::pin(async move {
             tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid")
@@ -288,5 +306,64 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
         );
         previous = Some(request.id);
     }
+    execute_companion(
+        &runtime,
+        &s,
+        op(),
+        &Command::Delete {
+            group,
+            expected: current.group.revision,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !affected(&runtime, &s, vec!["b".into()], None, 33)
+            .await
+            .contains(&group)
+    );
+    let foreign_store = store(runtime.clone(), foreign()).await;
+    assert!(
+        affected(&runtime, &foreign_store, vec!["b".into()], None, 33)
+            .await
+            .is_empty()
+    );
+    for (devices, limit) in [(vec!["b".into(); 1001], 1), (vec![], 0), (vec![], 1001)] {
+        let result = runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(
+                    async move { s.affected_groups_in(tx, &devices, false, None, limit).await },
+                )
+            })
+            .await
+            .fold(
+                |v| v,
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        assert_eq!(result, Err(Rejection::InvalidInput));
+    }
     runtime.close().await;
+}
+
+async fn affected(
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    store: &GroupStore,
+    devices: Vec<String>,
+    after: Option<GroupId>,
+    limit: usize,
+) -> Vec<GroupId> {
+    committed(
+        runtime
+            .local_tx_with_context(store.tenant(), deadline(), store, |s, tx| {
+                Box::pin(async move {
+                    s.affected_groups_in(tx, &devices, false, after, limit)
+                        .await
+                })
+            })
+            .await,
+    )
 }

@@ -52,6 +52,23 @@ async fn static_commands_replay_and_borrowed_rollback() {
             .unwrap()
             .is_none()
     );
+    let affected = runtime
+        .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+            Box::pin(async move {
+                s.affected_groups_in(tx, &["a".into()], false, None, 33)
+                    .await
+            })
+        })
+        .await
+        .fold(
+            |v| v.unwrap(),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    assert!(affected.contains(&id));
     let delete = Command::Delete {
         group: id,
         expected: applied.group.revision,

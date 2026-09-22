@@ -15,7 +15,7 @@ impl Management {
         devices: &[String],
     ) -> Result<BTreeSet<String>> {
         if devices.len() > 1000 {
-            return Err(Error::Malformed.into());
+            return Err(Error::Unavailable(Failure::ManagementStorage).into());
         }
         let tenant = self.tenant.to_string();
         let devices = devices.to_vec();
@@ -57,7 +57,7 @@ impl Management {
         scope: &ReadScope,
     ) -> Result<AssetPage> {
         if watermark < 0 || !(1..=1000).contains(&limit) {
-            return Err(Error::Malformed.into());
+            return Err(Error::Unavailable(Failure::ManagementStorage).into());
         }
         let tenant = self.tenant.to_string();
         let all = scope.devices.is_none();
@@ -164,10 +164,10 @@ impl Management {
             let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
             devices
                 .get_mut(&device)
-                .ok_or(Error::Malformed)?
+                .ok_or(Error::Unavailable(Failure::ManagementStorage))?
                 .channels
                 .insert(channel.to_owned());
-            subjects.insert(input(scope.encode())?, (device, generation));
+            subjects.insert(stored(scope.encode())?, (device, generation));
             scopes.push(scope);
         }
         let tenant = self.tenant;
@@ -193,7 +193,9 @@ impl Management {
             .await?;
         let mut facts: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
         for mut row in observed {
-            let (device, generation) = subjects.get(&row.scope).ok_or(Error::Malformed)?;
+            let (device, generation) = subjects
+                .get(&row.scope)
+                .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
             row.fact.evidence.registration_generation = Some(*generation);
             if let Some(old) = &mut row.fact.last_known {
                 old.evidence.registration_generation = Some(*generation);
@@ -206,7 +208,7 @@ impl Management {
         for row in manual {
             devices
                 .get_mut(&row.device)
-                .ok_or(Error::Malformed)?
+                .ok_or(Error::Unavailable(Failure::ManagementStorage))?
                 .revisions
                 .insert(row.field, row.revision);
             facts
@@ -247,7 +249,7 @@ impl Management {
                 .ok_or(Error::Unavailable(Failure::CollectionQuery))?;
             devices
                 .get_mut(device)
-                .ok_or(Error::Malformed)?
+                .ok_or(Error::Unavailable(Failure::ManagementStorage))?
                 .quality
                 .push(quality::decode(&row, *generation)?);
         }
@@ -263,7 +265,7 @@ impl Management {
             }
         }
         let result: Vec<_> = devices.into_values().collect();
-        if input(serde_json::to_vec(&result))?.len() > 16 * 1024 * 1024 {
+        if stored(serde_json::to_vec(&result))?.len() > 16 * 1024 * 1024 {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         Ok(result)

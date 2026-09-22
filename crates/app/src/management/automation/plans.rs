@@ -129,7 +129,7 @@ impl Management {
                     targets: input(p::TargetSnapshotId::new(self.tenant, scope.to_string()))?,
                     target_revision: version,
                     references,
-                    as_of: input(Timepoint::try_from(*as_of))?,
+                    as_of: stored(Timepoint::try_from(*as_of))?,
                 };
                 checked(self.policies.begin_candidate_in(tx, &request).await?)?
             }

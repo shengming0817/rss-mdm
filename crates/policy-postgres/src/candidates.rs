@@ -97,6 +97,29 @@ impl PolicyStore {
             .map(|r| STORAGE.integer("reference::revision", u64::try_from(r)))
             .transpose()?))
     }
+    /// Lock an existing source token and test whether any saved plan retains it.
+    /// The source owner must compose deletion and token advancement in this same
+    /// transaction. This lock serializes with candidate saving, including when
+    /// no saved reference exists yet; missing source identities are rejected.
+    pub async fn has_saved_reference_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: &str,
+    ) -> InTransaction<bool> {
+        input!(self.check(tx)?);
+        input!(RequestId::new(self.tenant, id).map_err(|_| Rejection::InvalidInput));
+        let tenant = self.tenant.to_string();
+        let id = id.to_owned();
+        let found = tx.with_connection(move |c| Box::pin(async move {
+            let head: Option<i64> = sqlx::query_scalar("SELECT revision FROM mdm_policy.reference_heads WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+                .bind(&tenant).bind(&id).fetch_optional(&mut *c).await?;
+            if head.is_none() { return Ok(None); }
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.candidate_references r JOIN mdm_policy.candidates p ON (p.tenant_id,p.id)=(r.tenant_id,r.candidate) WHERE r.tenant_id=$1::uuid AND r.reference=$2 AND p.phase='saved')")
+                .bind(tenant).bind(id).fetch_one(c).await.map(Some)
+        })).await?;
+        Ok(found.ok_or(Rejection::NotFound))
+    }
+
     /// Advance one opaque source token in the source owner's publication transaction.
     /// This invalidates all referencing plans without a per-policy fanout transaction.
     pub async fn advance_reference_in(

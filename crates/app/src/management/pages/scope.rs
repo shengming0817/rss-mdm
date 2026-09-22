@@ -58,7 +58,7 @@ impl Management {
             .map(|token| decode(&self.asset_cursor_key, token, &tenant, result, &binding))
             .transpose()?;
         let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT r.phase,r.object_count,r.member_count,r.input::text,(s.resolution=r.id) AS current FROM mdm_management.scope_runs r JOIN mdm_management.scopes s ON (s.tenant_id,s.id)=(r.tenant_id,r.scope) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.scope=$3::uuid AND NOT s.deleted")
+            sqlx::query("SELECT r.phase,r.object_count,r.member_count,r.input::text,(NOT s.deleted AND s.resolution=r.id) AS current FROM mdm_management.scope_runs r JOIN mdm_management.scopes s ON (s.tenant_id,s.id)=(r.tenant_id,r.scope) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.scope=$3::uuid")
                 .bind(tenant).bind(result.to_string()).bind(scope.to_string()).fetch_optional(c).await
         })).await?.ok_or(Error::NotFound)?;
         if row.try_get::<&str, _>("phase")? != "published" {

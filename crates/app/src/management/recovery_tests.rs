@@ -541,3 +541,382 @@ async fn policy_waits_for_scope_and_inherits_failure() {
         .unwrap();
     service.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn scope_history_survives_deletion() {
+    let service = Arc::new(management(tenant()).await);
+    let devices: Vec<_> = (0..2).map(|n| format!("scope-history-{n}")).collect();
+    for d in &devices {
+        seed_device(d);
+    }
+    let running = RunningAutomation::start(service.clone()).await;
+    let scope = Uuid::new_v4();
+    let accepted = execute(
+        &service,
+        &Command::Scope {
+            id: scope,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: devices.iter().cloned().map(Reference::Device).collect(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let result = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
+    wait_task(
+        &service,
+        result,
+        automation::TaskKind::Scope,
+        &scope.to_string(),
+    )
+    .await;
+    running.stop().await;
+    for projection in [
+        pages::ScopePageKind::Members,
+        pages::ScopePageKind::Decisions,
+    ] {
+        let query = |cursor| Command::ScopePage {
+            scope,
+            result,
+            projection,
+            query: pages::PageQuery { limit: 1, cursor },
+        };
+        let before = execute(&service, &query(None)).await.unwrap();
+        if projection == pages::ScopePageKind::Members {
+            execute(
+                &service,
+                &Command::Scope {
+                    id: scope,
+                    change: operation(1, ScopeChange::Delete),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let first = execute(&service, &query(None)).await.unwrap();
+        assert_eq!(first["current"], false);
+        assert_eq!(first["page"], before["page"]);
+        let mut next = first["nextCursor"].as_str().map(str::to_owned);
+        let mut count = first["page"]["items"].as_array().unwrap().len();
+        while let Some(cursor) = next {
+            let page = execute(&service, &query(Some(cursor))).await.unwrap();
+            assert_eq!(page["current"], false);
+            count += page["page"]["items"].as_array().unwrap().len();
+            next = page["nextCursor"].as_str().map(str::to_owned);
+        }
+        assert_eq!(count, 2);
+    }
+    service.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn corrupt_background_query_is_not_client_input() {
+    use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
+    let service = Arc::new(management(tenant()).await);
+    let task = query_job(&service, 1).await;
+    let original = sql(&format!(
+        "SELECT input FROM mdm_management.automation_jobs WHERE id='{task}'"
+    ));
+    let worker = automation::Automation::connect(service.clone(), options())
+        .await
+        .unwrap();
+    let claim = claim_job(&worker, task, Duration::from_secs(30)).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
+    for (value, cursor) in [
+        ("jsonb_set(input,'{as_of}','-1')", "NULL"),
+        ("input", "''"),
+        (
+            "jsonb_set(input,'{query,criteria}','{\"kind\":\"and\",\"children\":[]}'::jsonb)",
+            "NULL",
+        ),
+    ] {
+        sql(&format!(
+            "UPDATE mdm_management.automation_jobs SET input='{original}',cursor=NULL WHERE id='{task}'; UPDATE mdm_management.automation_jobs SET input={value},cursor={cursor} WHERE id='{task}'"
+        ));
+        let result = worker
+            .apply(
+                &claim,
+                ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
+                &control,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "corrupt durable input was accepted or permanently classified as client input"
+        );
+        assert_eq!(
+            sql(&format!(
+                "SELECT NOT completed AND failure IS NULL FROM mdm_management.automation_jobs WHERE id='{task}'"
+            )),
+            "t"
+        );
+        assert_eq!(
+            sql(&format!(
+                "SELECT total FROM mdm_management.asset_query_runs WHERE id='{task}'"
+            )),
+            "0"
+        );
+    }
+    rss_runtime::ManagedResource::shutdown(&automation::Resource(worker))
+        .await
+        .unwrap();
+    service.runtime.close().await;
+}
+
+async fn frozen_device(service: &Management, device: &str, watermark: i64) -> Value {
+    let device = device.to_owned();
+    service
+        .runtime
+        .local_tx_with_context(tenant(), deadline(), service, move |m, tx| {
+            Box::pin(async move {
+                let page = m
+                    .asset_page_in(
+                        tx,
+                        watermark,
+                        None,
+                        1,
+                        &assets::ReadScope {
+                            subject: "history-evidence".into(),
+                            devices: Some([device].into()),
+                        },
+                    )
+                    .await
+                    .map_err(|_| sqlx::Error::Protocol("history fixture read failed".into()))?;
+                Ok(serde_json::to_value(&page.devices[0]).unwrap())
+            })
+        })
+        .await
+        .fold(
+            |v| v,
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        )
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback() {
+    let t = tenant();
+    let device = "all-histories";
+    let registration = seed_device(device);
+    let epoch = sql(&format!(
+        "SELECT epoch FROM mdm_access.report_sources WHERE registration='{registration}'"
+    ));
+    let scope = crate::device::scope(
+        t,
+        Uuid::parse_str(&registration).unwrap(),
+        "mdm.windows",
+        Uuid::parse_str(&epoch).unwrap(),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage()).unwrap();
+    let collection = Uuid::new_v4();
+    let attempts = serde_json::to_string(&crate::collection::Attempts::default()).unwrap();
+    sql(&format!(
+        "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{t}','mdm.observation.v1','inventory-v2','{scope}','{coverage}','device.model','Old','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}'); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,'history',1,1024,decode('01','hex'),1,'{attempts}','pending')"
+    ));
+    let service = management(t).await;
+    let manual = |revision, input| Command::Asset {
+        command: assets::Command::Manual {
+            device: device.into(),
+            field: assets::FieldKey::IsLoaner,
+            owner: assets::Owner {
+                instance: "history".into(),
+                principal: "operator".into(),
+            },
+            change: operation(revision, input),
+        },
+    };
+    execute(
+        &service,
+        &manual(
+            0,
+            assets::ManualChange::Set {
+                value: rss_mdm_inventory::Scalar::Boolean(true),
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    let watermark = || {
+        sql(&format!(
+            "SELECT revision FROM mdm.asset_clock WHERE tenant_id='{t}'"
+        ))
+        .parse::<i64>()
+        .unwrap()
+    };
+    let old_watermark = watermark();
+    let before = frozen_device(&service, device, old_watermark).await;
+    assert_eq!(
+        before["fields"]["device.model"]["state"]["value"]["value"],
+        "Old"
+    );
+    assert_eq!(
+        before["fields"]["custom.is_loaner"]["state"]["value"]["value"],
+        true
+    );
+    assert_eq!(before["quality"][0]["result"], "pending");
+    let mut failed = crate::collection::Attempts::default();
+    failed.fields[0].quality = crate::collection::Quality::Failed;
+    failed.fields[0].status = Some(500);
+    failed.fields[0].received_at = Some(4);
+    let failed = serde_json::to_string(&failed).unwrap();
+    let changes = format!(
+        "UPDATE mdm.inventory SET value='New',batch_id='new-batch',observed_at=3,received_at=4 WHERE registration='{registration}'; UPDATE mdm.manual_assignments SET revision=revision+1,fact=jsonb_set(fact,'{{state}}','{{\"kind\":\"null\"}}') WHERE device='{device}'; UPDATE mdm_access.collection_runs SET attempts='{failed}',result='failed',reason='timeout',sealed_at=4 WHERE id='{collection}';"
+    );
+    sql(&format!("BEGIN; {changes} ROLLBACK;"));
+    assert_eq!(
+        watermark(),
+        old_watermark,
+        "rollback advanced committed watermarks"
+    );
+    assert_eq!(frozen_device(&service, device, watermark()).await, before);
+    sql(&changes);
+    let new_watermark = watermark();
+    let changed = frozen_device(&service, device, new_watermark).await;
+    assert_eq!(
+        changed["fields"]["device.model"]["state"]["value"]["value"],
+        "New"
+    );
+    assert_eq!(
+        changed["fields"]["custom.is_loaner"]["state"]["kind"],
+        "null"
+    );
+    assert_eq!(changed["quality"][0]["result"], "failed");
+    assert_eq!(changed["quality"][0]["fields"][0]["quality"], "failed");
+    assert_eq!(changed["quality"][0]["fields"][0]["status"], 500);
+    assert_eq!(frozen_device(&service, device, old_watermark).await, before);
+    execute(&service, &manual(2, assets::ManualChange::Delete {}))
+        .await
+        .unwrap();
+    sql(&format!(
+        "DELETE FROM mdm.inventory WHERE registration='{registration}'; DELETE FROM mdm_access.collection_runs WHERE id='{collection}'"
+    ));
+    let deleted = frozen_device(&service, device, watermark()).await;
+    assert_eq!(
+        deleted["fields"]["device.model"]["state"]["kind"],
+        "missing"
+    );
+    assert_eq!(
+        deleted["fields"]["custom.is_loaner"]["state"]["kind"],
+        "deleted"
+    );
+    assert_eq!(deleted["quality"], json!([]));
+    assert_eq!(
+        frozen_device(&service, device, new_watermark).await,
+        changed
+    );
+    assert_eq!(frozen_device(&service, device, old_watermark).await, before);
+    service.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn ingress_batches_reuse_published_group_coverage() {
+    use rss_reconcile::{DurableStore, Reconciler};
+    let service = Arc::new(management(tenant()).await);
+    let worker = automation::Automation::connect(service.clone(), options())
+        .await
+        .unwrap();
+    sql(&format!(
+        "INSERT INTO mdm_access.devices SELECT '{}','batch-'||lpad(n::text,4,'0') FROM generate_series(1,1001) n",
+        tenant()
+    ));
+    let group = Uuid::new_v4();
+    let accepted = execute(
+        &service,
+        &Command::Group {
+            id: group,
+            change: operation(
+                0,
+                GroupChange::Create {
+                    name: "bounded-ingress".into(),
+                    description: String::new(),
+                    criteria: Some(assets::Criteria::Predicate {
+                        field: assets::FieldKey::IsLoaner,
+                        op: assets::Operator::Eq,
+                        value: Some(assets::Scalar::Boolean(true)),
+                        values: None,
+                    }),
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let task = accepted["task"].as_str().unwrap();
+    service.forward_jobs().await.unwrap();
+    while service.forward_asset_changes().await.unwrap() > 0 {}
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
+    let scope = rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap();
+    let mut claims = worker
+        .claim_due(&scope, 64, Duration::from_secs(30), &control)
+        .await
+        .unwrap();
+    let pos = claims
+        .iter()
+        .position(|c| c.target().entity() == format!("job:{task}"))
+        .unwrap();
+    let claim = claims.remove(pos);
+    for _ in 0..12 {
+        let diff = worker.observe(&claim, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        worker.apply(&claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        worker.observe(&claim, &control).await.unwrap().drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    worker
+        .finish(&claim, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    assert_eq!(
+        sql("SELECT count(*) FROM mdm_management.automation_jobs"),
+        "1"
+    );
+    let claim = claims
+        .into_iter()
+        .find(|c| c.target().entity() == "changes")
+        .unwrap();
+    for (consumed, watermark) in [(0, 1000), (1000, 1000), (1000, 1001), (1001, 1001)] {
+        let diff = worker.observe(&claim, &control).await.unwrap();
+        worker.apply(&claim, diff, &control).await.unwrap();
+        assert_eq!(
+            sql("SELECT consumed||','||watermark FROM mdm_management.asset_dispatch"),
+            format!("{consumed},{watermark}")
+        );
+        assert_eq!(
+            sql("SELECT count(*) FROM mdm_management.automation_jobs"),
+            "1",
+            "covered batches recreated the million-device calculation"
+        );
+    }
+    worker
+        .finish(&claim, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    rss_runtime::ManagedResource::shutdown(&automation::Resource(worker))
+        .await
+        .unwrap();
+    service.runtime.close().await;
+}

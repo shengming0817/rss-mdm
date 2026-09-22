@@ -356,7 +356,7 @@ async fn admission_rejects_catalog_and_security_drift() {
         let result = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
         // Restore before asserting so a failing case cannot contaminate later tests.
         admin(&format!(
-            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL} {GENERATIONS_MIGRATION_SQL}"
+            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL} {GENERATIONS_MIGRATION_SQL} {REVERSE_INDEX_MIGRATION_SQL}"
         ));
         assert!(result.is_err(), "accepted drift: {mutation}");
     }
@@ -754,7 +754,7 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
     let s = store(runtime.clone(), tenant()).await;
     let (id, created, page) = dynamic_group(&s).await;
     let request = builds::request(&created, None);
-    for entry in 0..11 {
+    for entry in 0..12 {
         let result = other
             .local_tx_with_context(tenant(), deadline(), (&s, &request, &page), |ctx, tx| {
                 Box::pin(async move {
@@ -811,6 +811,11 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
                         9 => ctx
                             .0
                             .current_member_set_in(tx, id)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        10 => ctx
+                            .0
+                            .affected_groups_in(tx, &[], true, None, 1)
                             .await
                             .map(|v| v.map(|_| ())),
                         _ => ctx

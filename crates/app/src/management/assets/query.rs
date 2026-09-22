@@ -71,11 +71,11 @@ impl Management {
             return Err(Error::Unavailable(Failure::ManagementStorage).into());
         };
         let watermark = *watermark;
-        let at = input(Timepoint::try_from(*as_of))?;
+        let at = stored(Timepoint::try_from(*as_of))?;
         let rule = q
             .criteria
             .as_ref()
-            .map(|c| rule(self.tenant, task, c))
+            .map(|c| stored(rule(self.tenant, task, c)))
             .transpose()?;
         let mut limit = 128;
         let (page, decisions) = loop {
@@ -91,10 +91,10 @@ impl Management {
                 }
                 result => result?,
             };
-            let snapshot = criteria::page(self.tenant, &page.devices)?;
+            let snapshot = stored(criteria::page(self.tenant, &page.devices))?;
             let key = after
                 .as_ref()
-                .map(|s| input(g::ObjectKey::new(self.tenant, s)))
+                .map(|s| stored(g::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
             let decisions = if let Some(rule) = &rule {
                 match rule.evaluate_page(
@@ -121,7 +121,7 @@ impl Management {
                     Err(g::Error::LimitExceeded(_)) => {
                         return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
                     }
-                    Err(_) => return Err(Error::Malformed.into()),
+                    Err(_) => return Err(Error::Unavailable(Failure::ManagementStorage).into()),
                 }
             } else {
                 vec![g::Decision::Match; page.devices.len()]
@@ -165,7 +165,7 @@ impl Management {
                 device.fields.retain(|f, _| q.select.contains(f));
                 device.revisions.retain(|f, _| q.select.contains(f));
             }
-            let bytes = input(serde_json::to_vec(&device))?;
+            let bytes = stored(serde_json::to_vec(&device))?;
             if bytes.len() > 1024 * 1024 {
                 return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
             }

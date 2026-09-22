@@ -13,6 +13,7 @@ impl Management {
             watermark,
             publish: true,
             automatic: true,
+            ..
         } = job
         else {
             return Ok(());
@@ -23,22 +24,13 @@ impl Management {
             Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
             Err(_) => return Err(Error::Conflict.into()),
         };
-        if let Some(run) = checked(self.groups.current_member_set_in(tx, group).await?)? {
-            let built = checked(self.groups.build_in(tx, run).await?)?;
-            let observed = built
-                .request
-                .input_version
-                .strip_prefix("assets:")
-                .and_then(|v| v.parse::<i64>().ok())
-                .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
-            if observed >= watermark && built.request.rule_version == current.rule_version {
-                return Ok(());
-            }
+        if self.group_covers_in(tx, &current, watermark).await? {
+            return Ok(());
         }
         let tenant = self.tenant.to_string();
         let revision = current.revision.get();
         let exists:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_management.automation_jobs j JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) WHERE j.tenant_id=$1::uuid AND j.target=$2 AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND r.base_revision=$4 AND j.input->>'automatic'='true')")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_management.automation_jobs j WHERE j.tenant_id=$1::uuid AND j.target=$2 AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND (j.input->>'base_revision')::bigint=$4 AND j.input->>'automatic'='true')")
                 .bind(tenant).bind(id.to_string()).bind(task.to_string()).bind(revision).fetch_one(c).await
         })).await?;
         if !exists {
@@ -70,6 +62,25 @@ impl Management {
         }
         Ok(())
     }
+    pub(super) async fn group_covers_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        current: &g::Group,
+        watermark: i64,
+    ) -> Result<bool> {
+        let Some(run) = checked(self.groups.current_member_set_in(tx, current.id).await?)? else {
+            return Ok(false);
+        };
+        let built = checked(self.groups.build_in(tx, run).await?)?;
+        let observed = built
+            .request
+            .input_version
+            .strip_prefix("assets:")
+            .and_then(|v| v.parse::<i64>().ok())
+            .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+        Ok(observed >= watermark && built.request.rule_version == current.rule_version)
+    }
+
     pub(in crate::management) async fn start_group_job_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -125,6 +136,7 @@ impl Management {
             task,
             &JobInput::Group {
                 group: id,
+                base_revision: current.revision.get(),
                 watermark,
                 publish,
                 automatic,
@@ -146,7 +158,7 @@ impl Management {
             let after = build
                 .cursor
                 .as_ref()
-                .map(|s| input(g::core::ObjectKey::new(self.tenant, s)))
+                .map(|s| stored(g::core::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
             let mut limit = 1000;
             loop {
@@ -172,7 +184,7 @@ impl Management {
                 if total > g::MAX_MEMBERS {
                     return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
                 }
-                let data = assets::criteria::page(self.tenant, &page.devices)?;
+                let data = stored(assets::criteria::page(self.tenant, &page.devices))?;
                 if !data.objects.is_empty() {
                     let page_input = g::core::PageInput {
                         tenant: self.tenant,
@@ -237,6 +249,7 @@ impl Management {
             watermark,
             publish,
             automatic,
+            ..
         } = *job
         else {
             return Err(Error::Unavailable(Failure::ManagementStorage).into());
