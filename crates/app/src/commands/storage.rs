@@ -121,7 +121,10 @@ pub(super) async fn current_registration(
     let d = device.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(crate::device::store::lock_channel(c, &t, &d, crate::device::Channel::Mdm).await)
+            Ok(
+                crate::device::store::lock_channel(c, &t, &d, rss_mdm_inventory::Channel::Mdm)
+                    .await,
+            )
         })
     })
     .await??;

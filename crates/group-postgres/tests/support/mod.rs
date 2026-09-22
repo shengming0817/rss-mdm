@@ -120,7 +120,6 @@ pub fn inputs() -> (Rule, Snapshot) {
                     source: "fixture".into(),
                     snapshot_id: "capture".into(),
                     observed_at: at(),
-                    valid_until: None,
                 },
             )]),
         }],

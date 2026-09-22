@@ -24,7 +24,11 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     let mut writer = PgConnection::connect_with(&options("mdm_runtime")?).await?;
     let a = "77777777-7777-4777-8777-777777777777";
     let b = "88888888-8888-4888-8888-888888888888";
-    for (tenant, source, value) in [(a, "one", "A"), (b, "one", "B"), (a, "two", "C")] {
+    for (tenant, source, value) in [
+        (a, "mdm.windows", "A"),
+        (b, "mdm.windows", "B"),
+        (a, "agent.builtin", "C"),
+    ] {
         let mut tx = writer.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant)
@@ -32,8 +36,8 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .await?;
         let projection =
             rss_mdm_inventory_postgres::projection_scope(scope(tenant, source).tenant());
-        sqlx::query("INSERT INTO mdm.inventory VALUES($1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2) ON CONFLICT DO NOTHING")
-            .bind(tenant).bind(scope(tenant,source).encode()?).bind(value).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES($1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2,'known','reg',$7,'one') ON CONFLICT DO NOTHING")
+            .bind(tenant).bind(scope(tenant,source).encode()?).bind(value).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).bind(source).execute(&mut *tx).await?;
         tx.commit().await?;
     }
     assert!(
@@ -43,11 +47,40 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     );
     let reader = InventoryReader::connect(options("mdm_api")?).await?;
     for _ in 0..5 {
-        assert_eq!(reader.read(&scope(a, "one")).await?[0].value, "A");
-        assert_eq!(reader.read(&scope(b, "one")).await?[0].value, "B");
-        assert_eq!(reader.read(&scope(a, "two")).await?[0].value, "C");
+        assert_eq!(
+            reader
+                .read(scope(a, "mdm.windows").tenant(), &[scope(a, "mdm.windows")])
+                .await?[0]
+                .fact
+                .state,
+            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("A".into()))
+        );
+        assert_eq!(
+            reader
+                .read(scope(b, "mdm.windows").tenant(), &[scope(b, "mdm.windows")])
+                .await?[0]
+                .fact
+                .state,
+            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("B".into()))
+        );
+        assert_eq!(
+            reader
+                .read(
+                    scope(a, "agent.builtin").tenant(),
+                    &[scope(a, "agent.builtin")]
+                )
+                .await?[0]
+                .fact
+                .state,
+            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("C".into()))
+        );
     }
-    assert!(reader.read(&scope(a, "absent")).await?.is_empty());
+    assert!(
+        reader
+            .read(scope(a, "absent").tenant(), &[scope(a, "absent")])
+            .await
+            .is_err()
+    );
     let mut api = PgConnection::connect_with(&options("mdm_api")?).await?;
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mdm.inventory")
@@ -86,6 +119,18 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         (
             "GRANT SELECT(scope) ON rss_observation.batches TO mdm_api",
             "REVOKE SELECT(scope) ON rss_observation.batches FROM mdm_api",
+        ),
+        (
+            "DROP INDEX mdm.inventory_source",
+            "CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch)",
+        ),
+        (
+            "ALTER TABLE mdm.inventory ALTER COLUMN epoch DROP NOT NULL",
+            "ALTER TABLE mdm.inventory ALTER COLUMN epoch SET NOT NULL",
+        ),
+        (
+            "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK(true)",
+            "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK((state='known')=(value IS NOT NULL))",
         ),
         (
             "ALTER TABLE mdm.inventory NO FORCE ROW LEVEL SECURITY",

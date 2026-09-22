@@ -94,6 +94,40 @@ impl Snapshot {
         }
         Err(Error::Forbidden)
     }
+    pub(crate) fn inventory_devices(
+        &self,
+        proof: &Principal,
+    ) -> Result<Option<std::collections::BTreeSet<String>>, Error> {
+        proof.check_live()?;
+        let mut devices = std::collections::BTreeSet::new();
+        let mut all = false;
+        for record in &self.rules {
+            let Some(rule) = &record.value else { continue };
+            if self.matches(proof, &rule.subject)?.is_none() {
+                continue;
+            }
+            for grant in &rule.grants {
+                if grant.operation != Permission::InventoryRead {
+                    continue;
+                }
+                match &grant.scope {
+                    Scope::AllDevices => all = true,
+                    Scope::Device { id } => {
+                        devices.insert(id.clone());
+                    }
+                    Scope::Tenant => return Err(Error::Forbidden),
+                }
+            }
+        }
+        proof.check_live()?;
+        if all {
+            Ok(None)
+        } else if devices.is_empty() {
+            Err(Error::Forbidden)
+        } else {
+            Ok(Some(devices))
+        }
+    }
     pub(crate) fn publisher(&self, user: &User) -> Result<(), Error> {
         if self.rules.iter().filter_map(|r| r.value.as_ref()).any(|r| {
             matches!(&r.subject, Subject::User { user: candidate } if candidate == user)

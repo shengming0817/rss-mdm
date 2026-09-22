@@ -18,6 +18,29 @@ fn user_group_requires_an_explicit_enabled_state() {
 
 #[test]
 fn grants_keep_each_operation_with_its_scope() {
+    for operation in [
+        Permission::InventoryAssign,
+        Permission::StateVerify,
+        Permission::OperationRead,
+        Permission::OperationCancel,
+    ] {
+        let grant = Grant {
+            operation,
+            scope: Scope::Device { id: "a".into() },
+        };
+        assert!(grant.validate().is_ok());
+        assert!(grant.covers(operation, Some("a")));
+        assert!(!grant.covers(operation, Some("b")));
+        assert!(
+            Grant {
+                operation,
+                scope: Scope::Tenant
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
     let read = Grant {
         operation: Permission::InventoryRead,
         scope: Scope::Device { id: "a".into() },

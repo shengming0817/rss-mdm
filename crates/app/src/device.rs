@@ -16,42 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Channel {
-    Agent,
-    Mdm,
-}
-impl Channel {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Mdm => "mdm",
-        }
-    }
-}
-/// Explicit V1 producers. New adapters add their real source here, never a third channel.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub enum ReportSource {
-    #[serde(rename = "mdm.windows")]
-    MdmWindows,
-    #[serde(rename = "agent.builtin")]
-    AgentBuiltin,
-}
-impl ReportSource {
-    pub(crate) fn channel(self) -> Channel {
-        match self {
-            Self::MdmWindows => Channel::Mdm,
-            Self::AgentBuiltin => Channel::Agent,
-        }
-    }
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::MdmWindows => "mdm.windows",
-            Self::AgentBuiltin => "agent.builtin",
-        }
-    }
-}
+use rss_mdm_inventory::{Channel, ReportSource};
 /// Evidence from a trusted channel verifier, not a credential ID submitted by a device.
 /// I01 has no production constructor. F04 must verify the actual channel credential first.
 /// ```compile_fail

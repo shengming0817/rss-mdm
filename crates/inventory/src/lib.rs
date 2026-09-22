@@ -10,57 +10,84 @@ use rss_observation::{Batch, Coverage, Error, ErrorKind, Id};
 /// Observation dataset name selected by the Inventory projection.
 pub const DATASET: &str = "inventory";
 
-/// The product field catalog. Protocol adapters map URIs to these keys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldKey {
-    /// Product model text, mapped to `device.model`.
-    Model,
-    /// Operating-system version text, mapped to `device.os.version`.
-    OsVersion,
+mod assets;
+mod collected;
+pub use collected::CollectedValue;
+mod catalog;
+mod source;
+pub use assets::{Evidence, KnownValue, ResolvedField, Scalar, SourceFact, State, resolve};
+pub use catalog::{DICTIONARY, FieldDefinition, FieldKey, Kind, Operator};
+pub use source::{Channel, ReportSource, Source};
+/// Closed value-free validation categories; no field values or provider text are retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Invalid {
+    /// Field identifier is outside the fixed catalog.
+    UnknownField,
+    /// Source identifier is outside the trusted vocabulary.
+    UnknownSource,
+    /// Scalar and catalog kinds differ.
+    TypeMismatch,
+    /// A scalar violates its bounded value rules.
+    Value,
+    /// A scalar timestamp is outside the canonical UTC range.
+    Time,
+    /// State is not accepted from this kind of producer.
+    State,
+    /// Provenance is malformed or not bound to the same source coordinates.
+    Evidence,
+    /// The catalog does not permit this producer for the field.
+    SourceNotAllowed,
+    /// More than one fact uses the same source.
+    DuplicateSource,
+    /// Source count exceeds the fixed catalog budget.
+    SourceLimit,
+    /// The closed payload cannot be encoded or decoded.
+    Encoding,
 }
-impl FieldKey {
-    /// Complete supported field catalog in model/OS-version order.
-    pub const ALL: [Self; 2] = [Self::Model, Self::OsVersion];
-    /// Return the canonical Observation key for this field.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Model => "device.model",
-            Self::OsVersion => "device.os.version",
-        }
-    }
-    /// Accept nonblank text of at most 256 UTF-8 bytes without control characters.
-    /// Does not trim or normalize the stored value; both fields use the same rules.
-    pub fn validate(self, value: &str) -> bool {
-        !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+impl std::fmt::Display for Invalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let category = match self {
+            Self::UnknownField => "unknown field",
+            Self::UnknownSource => "unknown source",
+            Self::TypeMismatch => "type mismatch",
+            Self::Value => "invalid value",
+            Self::Time => "invalid time",
+            Self::State => "invalid state",
+            Self::Evidence => "invalid evidence",
+            Self::SourceNotAllowed => "source not allowed",
+            Self::DuplicateSource => "duplicate source",
+            Self::SourceLimit => "source limit",
+            Self::Encoding => "invalid encoding",
+        };
+        f.write_str(category)
     }
 }
+impl std::error::Error for Invalid {}
+/// Product asset policy result.
+pub type Result<T> = std::result::Result<T, Invalid>;
 
-/// Return fixed `device-basics` / `1` / `model-os` / `utf8-v1` coverage identities.
+/// Return fixed `device-basics` / `2` / `model-os` / `typed-v2` coverage identities.
 /// Construction performs no I/O and makes no assertion about a particular report.
 pub fn coverage() -> Coverage {
     let id = |s| Id::new(s).expect("static valid identity");
-    Coverage::new(id("device-basics"), id("1"), id("model-os"), id("utf8-v1"))
+    Coverage::new(id("device-basics"), id("2"), id("model-os"), id("typed-v2"))
 }
 
-/// Validate the fixed coverage, known field keys and present UTF-8 values.
-/// Rejects unknown keys, mismatched coverage, invalid UTF-8 or values failing
+/// Validate the fixed coverage, known field keys and closed typed outcomes.
+/// Rejects unknown keys, mismatched coverage, legacy text, malformed payloads or values failing
 /// [`FieldKey::validate`] with `rss_observation::ErrorKind::InvalidInput`.
 /// Deletions carry no value to validate. Does not mutate or authenticate the batch.
-pub fn validate(batch: &Batch) -> Result<(), Error> {
+pub fn validate(batch: &Batch) -> std::result::Result<(), Error> {
     if batch.coverage() != &coverage() {
         return Err(ErrorKind::InvalidInput.into());
     }
     for change in batch.body().changes() {
-        let field = FieldKey::ALL
-            .into_iter()
+        let field = FieldKey::observed()
             .find(|key| key.as_str() == change.key().as_str())
             .ok_or_else(|| Error::from(ErrorKind::InvalidInput))?;
         if let Some(value) = change.value() {
-            let text =
-                std::str::from_utf8(value).map_err(|_| Error::from(ErrorKind::InvalidInput))?;
-            if !field.validate(text) {
-                return Err(ErrorKind::InvalidInput.into());
-            }
+            CollectedValue::decode(field, value)
+                .map_err(|_| Error::from(ErrorKind::InvalidInput))?;
         }
     }
     Ok(())

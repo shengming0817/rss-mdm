@@ -9,11 +9,12 @@ pub(crate) use store::{
     DurableReport, Run, accept, create, load_run, revalidate, terminate, terminate_session,
 };
 
-const FIELD_COUNT: usize = FieldKey::ALL.len();
+const FIELD_COUNT: usize = FieldKey::OBSERVED_COUNT;
 fn uri(key: FieldKey) -> &'static str {
     match key {
         FieldKey::Model => "./DevInfo/Mod",
         FieldKey::OsVersion => "./DevDetail/SwV",
+        _ => unreachable!("collection only uses observed catalog entries"),
     }
 }
 fn field_index(command: u32, first: u32) -> Option<usize> {
@@ -23,7 +24,7 @@ fn field_index(command: u32, first: u32) -> Option<usize> {
         .filter(|index| *index < FIELD_COUNT)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RunResult {
     Pending,
@@ -32,7 +33,7 @@ pub(crate) enum RunResult {
     Failed,
 }
 impl RunResult {
-    fn parse(value: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(value: &str) -> Result<Self, Error> {
         match value {
             "pending" => Ok(Self::Pending),
             "snapshot" => Ok(Self::Snapshot),
@@ -42,7 +43,7 @@ impl RunResult {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FinishReason {
     Complete,
@@ -52,7 +53,7 @@ pub(crate) enum FinishReason {
     Revoked,
 }
 impl FinishReason {
-    fn parse(value: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(value: &str) -> Result<Self, Error> {
         match value {
             "complete" => Ok(Self::Complete),
             "message_budget" => Ok(Self::MessageBudget),
@@ -70,6 +71,7 @@ pub(crate) enum Quality {
     #[default]
     Pending,
     Success,
+    Unsupported,
     Failed,
     Invalid,
     Missing,
@@ -112,13 +114,19 @@ impl Attempts {
             return Err(Error::Conflict);
         }
         field.value_digest = Some(digest);
-        field.value = FieldKey::ALL[index].validate(&value).then_some(value);
+        field.value = FieldKey::observed()
+            .nth(index)
+            .expect("collection field index")
+            .validate(&value)
+            .then_some(value);
         self.refresh(index);
         Ok(())
     }
     fn refresh(&mut self, index: usize) {
         let field = &mut self.fields[index];
-        field.quality = if field.status.is_some_and(|code| !(200..300).contains(&code)) {
+        field.quality = if field.status == Some(501) {
+            Quality::Unsupported
+        } else if field.status.is_some_and(|code| !(200..300).contains(&code)) {
             Quality::Failed
         } else if field.value_digest.is_some() && field.value.is_none() {
             Quality::Invalid
@@ -149,12 +157,20 @@ impl Attempts {
         let changes: Vec<_> = self
             .fields
             .iter()
-            .zip(FieldKey::ALL)
+            .zip(FieldKey::observed())
             .filter_map(|(field, key)| {
-                field.value.as_ref().map(|value| {
+                let outcome = if field.quality == Quality::Unsupported {
+                    Some(rss_mdm_inventory::CollectedValue::Unsupported)
+                } else {
+                    field
+                        .value
+                        .as_ref()
+                        .map(|value| rss_mdm_inventory::CollectedValue::Known(value.clone()))
+                };
+                outcome.map(|value| {
                     Change::upsert(
                         Id::new(key.as_str()).expect("static field"),
-                        value.as_bytes().to_vec(),
+                        value.encode(key).expect("validated collection outcome"),
                     )
                 })
             })
@@ -163,7 +179,7 @@ impl Attempts {
             if self
                 .fields
                 .iter()
-                .all(|field| field.quality == Quality::Success)
+                .all(|field| matches!(field.quality, Quality::Success | Quality::Unsupported))
             {
                 Body::Snapshot(changes)
             } else if changes.is_empty() {
@@ -202,7 +218,11 @@ impl Attempts {
                 return Err(Error::Conflict);
             }
             let index = field_index(result.reference.command_id, first).ok_or(Error::Conflict)?;
-            if result.reference.uri != uri(FieldKey::ALL[index]) {
+            if result.reference.uri
+                != uri(FieldKey::observed()
+                    .nth(index)
+                    .expect("collection field index"))
+            {
                 return Err(Error::Conflict);
             }
             self.value(index, result.value.0.clone())?;

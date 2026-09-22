@@ -1,7 +1,6 @@
 //! Product process lifetime, driven by the existing RSS managed listener.
 use crate::{ConfigIssue, Failure};
 use crate::{Error, ProcessError, config::Config};
-use rss_mdm_inventory_postgres::InventoryReader;
 use rss_runtime::{
     DynManagedResource, LifecycleScope, ManagedResource, ScopeExit, ShutdownError, TotalDrainBudget,
 };
@@ -52,19 +51,6 @@ impl ManagedResource for AccessResource {
         Duration::from_secs(5)
     }
 }
-struct ReaderResource(Arc<InventoryReader>);
-impl ManagedResource for ReaderResource {
-    fn name(&self) -> &str {
-        "inventory-reader"
-    }
-    async fn shutdown(&self) -> Result<(), ShutdownError> {
-        self.0.close().await;
-        Ok(())
-    }
-    fn shutdown_timeout(&self) -> Duration {
-        Duration::from_secs(5)
-    }
-}
 pub async fn serve(
     config: Config,
     stop: impl std::future::Future<Output = Result<(), std::io::Error>>,
@@ -104,21 +90,6 @@ pub async fn serve(
                         runtime,
                         commands,
                     ) = tokio::time::timeout(compiled.config.management.startup_budget(), async {
-                        let reader = Arc::new(
-                            InventoryReader::connect(compiled.config.database.options().map_err(
-                                |e| ProcessError::at("startup.database_configuration", e),
-                            )?)
-                            .await
-                            .map_err(|_| {
-                                ProcessError::at(
-                                    "startup.reader_connection_or_admission",
-                                    Error::Unavailable(Failure::InventoryPool),
-                                )
-                            })?,
-                        );
-                        startup.stage_resource(DynManagedResource::new_box(ReaderResource(
-                            reader.clone(),
-                        )));
                         let access = Arc::new(
                             crate::AccessStore::connect(
                                 compiled.config.access_database.options().map_err(|e| {
@@ -205,7 +176,6 @@ pub async fn serve(
                             crate::api::AssemblyDependencies {
                                 clock: Arc::new(crate::clock::SystemClock),
                                 monotonic,
-                                reader,
                                 access: access.clone(),
                                 runtime: runtime.clone(),
                                 management,

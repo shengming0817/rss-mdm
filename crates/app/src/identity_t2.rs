@@ -3,6 +3,7 @@
     reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
 )]
 //! Real MDM Router with its own PG authority and native component HTTP routes.
+mod assets;
 mod authorization;
 mod management;
 #[allow(dead_code)]
@@ -232,13 +233,12 @@ async fn access_store(value: &Value) -> Result<Arc<crate::AccessStore>> {
         crate::AccessStore::connect(config.access_database.options()?).await?,
     ))
 }
-async fn app(value: &Value, reader: Arc<InventoryReader>) -> Result<Router> {
+async fn app(value: &Value, _reader: Arc<InventoryReader>) -> Result<Router> {
     let c: Config = serde_json::from_value(value.clone())?;
     Ok(crate::api::application(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
-        reader,
         access_store(value).await?,
         None,
     )
@@ -414,12 +414,12 @@ async fn enrollment_matrix(
             == StatusCode::CONFLICT
     );
     // Audit is mandatory for both reads and denied requests; never disclose assets on failure.
-    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
+    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access,mdm_management_runtime")?;
     let read = browser.call(router, Method::GET, query, None).await?;
     let mut anonymous = Browser::default();
     let denied = anonymous.call(router, Method::GET, query, None).await?;
-    pg("GRANT INSERT ON mdm_access.audit TO mdm_access")?;
-    ensure!(read.0 == StatusCode::SERVICE_UNAVAILABLE && read.1.get("fields").is_none());
+    pg("GRANT INSERT ON mdm_access.audit TO mdm_access,mdm_management_runtime")?;
+    ensure!(read.0 == StatusCode::SERVICE_UNAVAILABLE && read.1.get("asset").is_none());
     ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE);
     browser.operation = None;
     ensure!(browser.call(router, Method::GET, query, None).await?.0 == StatusCode::OK);
@@ -605,7 +605,16 @@ async fn revoke_http_matrix(
 async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let config: Config = serde_json::from_value(base.clone())?;
-    let reader = Arc::new(InventoryReader::connect(config.database.options()?).await?);
+    let reader = Arc::new(
+        InventoryReader::connect(
+            config
+                .access_database
+                .options()?
+                .username("mdm_api")
+                .password("api-fixture"),
+        )
+        .await?,
+    );
     let initial = app(&base, reader.clone()).await?;
     let mut browser = Browser::default();
     ensure!(browser.login(&initial, "other").await? == StatusCode::OK);
@@ -643,7 +652,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     ensure!(me["instanceId"] == INSTANCE && me["tenantId"] == TENANT && me["grants"] == json!([]));
     let subject = me["principalId"].as_str().unwrap();
     host_context_matrix(&base, reader.clone(), &browser, subject).await?;
-    let query = format!("{DEVICE}/inventory?source=mdm.windows");
+    let query = format!("{DEVICE}/inventory");
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
     let allowed = base.clone();
     crate::identity_fixture::set_grants(
@@ -683,14 +692,18 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);
-        INSERT INTO mdm.inventory VALUES('{TENANT}','{journal}','{generation}','{encoded}','{coverage}','device.model','Model-A','fixture',1,2);
+        INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','{journal}','{generation}','{encoded}','{coverage}','device.model','Model-A','fixture',1,2,'known','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992');
     "#
     ))?;
 
     let (status, assets) = browser.call(&authorized, Method::GET, &query, None).await?;
-    ensure!(status == StatusCode::OK && assets["fields"][0]["last_good"]["value"] == "Model-A");
-    ensure!(assets["tenant_id"] == TENANT && assets["device_id"] == "device-1");
-    let outside = "/api/v1/devices/outside/inventory?source=mdm.windows";
+    ensure!(
+        status == StatusCode::OK
+            && assets["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
+                == "Model-A"
+    );
+    ensure!(assets["tenantId"] == TENANT && assets["asset"]["device"]["device"] == "device-1");
+    let outside = "/api/v1/devices/outside/inventory";
     ensure!(
         browser
             .call(&authorized, Method::GET, outside, None)
@@ -906,7 +919,7 @@ async fn native_accounts(
     );
     // The component owns its atomic security event; a second product audit cannot
     // overwrite a committed account mutation or discard the native response.
-    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
+    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access,mdm_management_runtime")?;
     let created = admin
         .call(
             admin_router,
@@ -915,7 +928,7 @@ async fn native_accounts(
             Some(json!({"login":"managed-user","password":PASSWORD})),
         )
         .await;
-    pg("GRANT INSERT ON mdm_access.audit TO mdm_access")?;
+    pg("GRANT INSERT ON mdm_access.audit TO mdm_access,mdm_management_runtime")?;
     let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();
@@ -1068,7 +1081,7 @@ async fn set_device_grants(
     .await
 }
 async fn set_management_grants(subject: &str, permissions: Value) -> Result<()> {
-    let grants = permissions
+    let mut grants = permissions
         .as_array()
         .unwrap()
         .iter()
@@ -1079,5 +1092,9 @@ async fn set_management_grants(subject: &str, permissions: Value) -> Result<()> 
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    grants.extend(crate::identity_fixture::device_grants(
+        None,
+        &["inventory_read"],
+    )?);
     crate::identity_fixture::set_grants(TENANT, subject, grants).await
 }

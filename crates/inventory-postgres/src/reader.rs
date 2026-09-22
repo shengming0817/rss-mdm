@@ -1,37 +1,28 @@
-//! Exact-scope read model access. The product owns resource authorization.
+//! Batched current-generation facts; the host owns current registration and resource authorization.
 use anyhow::{Result, ensure};
+use rss_mdm_inventory::{Evidence, FieldKey, Scalar, SourceFact, State};
 use rss_observation::Scope;
-use serde::Serialize;
 use sqlx::{
     PgPool, Row,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 use std::time::Duration;
-
-#[derive(Debug, PartialEq, Eq, Serialize)]
-/// One exact-scope projected field with source-batch and timing provenance.
-/// The projection writer validates Inventory content; readers only decode stored
-/// rows and do not repeat domain validation or authenticate their contents.
+/// A typed source fact, addressed by its exact authenticated stream.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct InventoryField {
-    /// Persisted Inventory field key, without read-time domain validation.
-    pub field: String,
-    /// Persisted text value, potentially sensitive and subject to the consumer's trust boundary.
-    pub value: String,
-    /// Observation batch identity that last wrote this field.
-    pub batch_id: String,
-    /// Producer observation time in Unix seconds.
-    pub observed_at: i64,
-    /// Observation receiver time in Unix seconds.
-    pub received_at: i64,
+    /// Encoded complete stream scope.
+    pub scope: String,
+    /// Dictionary field.
+    pub field: FieldKey,
+    /// Current state, provenance, and last-known value.
+    pub fact: SourceFact,
 }
-/// Restricted reader owning a PostgreSQL pool; resource authorization remains with the caller.
+/// Restricted standalone reader; application composition can instead borrow a transaction.
 pub struct InventoryReader {
     pool: PgPool,
 }
 impl InventoryReader {
-    /// Open a pool of at most four connections with a 5s acquisition timeout and
-    /// verify the restricted reader role/catalog contract. Connection or admission errors
-    /// are returned; an opened pool is closed on admission failure. Applies no migrations.
+    /// Open and admit a SELECT-only pool. No schema or tasks are created.
     pub async fn connect(options: PgConnectOptions) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -44,71 +35,107 @@ impl InventoryReader {
         }
         Ok(Self { pool })
     }
-    /// Read fields in field-key order for the exact tenant/scope and canonical generation/coverage.
-    /// Rejects a non-Inventory dataset before I/O. Begins its own transaction, sets the
-    /// tenant and 5s statement timeout, reads rows and commits before returning. Encoding,
-    /// SQL, decoding or commit failures return an error without partial results. An empty
-    /// list does not prove that a collection is complete; caller authorization is required.
-    pub async fn read(&self, scope: &Scope) -> Result<Vec<InventoryField>> {
-        ensure!(
-            scope.dataset().as_str() == rss_mdm_inventory::DATASET,
-            "invalid inventory dataset"
-        );
-        let projection = super::projection_scope(scope.tenant());
-        let tenant = scope.tenant().to_string();
+    /// Read a bounded batch of complete stream coordinates in one transaction.
+    pub async fn read(
+        &self,
+        tenant: rss_request_context::TenantId,
+        scopes: &[Scope],
+    ) -> Result<Vec<InventoryField>> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true), set_config('statement_timeout','5000',true)")
-            .bind(&tenant).execute(&mut *tx).await?;
-        let rows = sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=$2 AND coverage=$3 ORDER BY field")
-            .bind(&tenant).bind(scope.encode()?).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).fetch_all(&mut *tx).await?;
-        let result = decode(rows)?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','5000',true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+        let rows = read_in(&mut tx, tenant, scopes).await?;
         tx.commit().await?;
-        Ok(result)
+        Ok(rows)
     }
-    /// Close the owned pool and await outstanding connections being returned.
-    /// The host should stop its readers first; this method adds no shutdown deadline.
+    /// Close the owned pool after its callers have stopped.
     pub async fn close(&self) {
         self.pool.close().await;
     }
 }
-
-/// Read an exact Inventory scope in the host's
-/// existing tenant transaction. The caller owns authorization, transaction
-/// lifetime and the bounded candidate universe; this method never commits.
-/// Requires SELECT only. The host selects a consistent transaction isolation level.
-/// A foreign or missing transaction tenant is rejected before reading facts.
+/// Read typed source facts in the caller's tenant transaction, without committing.
+/// Current registration/epoch and resource authorization must be resolved by the host first.
 pub async fn read_in(
     connection: &mut sqlx::PgConnection,
-    scope: &Scope,
+    tenant: rss_request_context::TenantId,
+    scopes: &[Scope],
 ) -> Result<Vec<InventoryField>> {
+    ensure!(scopes.len() <= 20_000, "asset scope budget exceeded");
     ensure!(
-        scope.dataset().as_str() == rss_mdm_inventory::DATASET,
-        "invalid inventory dataset"
+        scopes.iter().all(|s| s.tenant() == tenant
+            && s.dataset().as_str() == rss_mdm_inventory::DATASET
+            && rss_mdm_inventory::ReportSource::parse(s.source().as_str()).is_ok()),
+        "asset scope mismatch"
     );
-    let tenant = scope.tenant().to_string();
-    let current: Option<String> =
-        sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
-            .fetch_one(&mut *connection)
-            .await?;
-    ensure!(
-        current.as_deref() == Some(tenant.as_str()),
-        "inventory transaction tenant mismatch"
-    );
-    let projection = super::projection_scope(scope.tenant());
-    let rows=sqlx::query("SELECT field,value,batch_id,observed_at,received_at FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=$2 AND coverage=$3 ORDER BY field")
-        .bind(tenant).bind(scope.encode()?).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).fetch_all(connection).await?;
-    decode(rows)
-}
-fn decode(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<InventoryField>> {
+    assert_tenant(connection, tenant).await?;
+    let keys = scopes
+        .iter()
+        .map(Scope::encode)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let projection = super::projection_scope(tenant);
+    let rows=sqlx::query("SELECT scope,field,value,state,last_known,last_known_batch,last_known_observed,last_known_received,batch_id,observed_at,received_at,registration,source,epoch FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND coverage=$4 AND scope=ANY($5) ORDER BY scope,field")
+        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(keys).fetch_all(connection).await?;
     rows.into_iter()
-        .map(|row| {
+        .map(|r| {
+            let field = FieldKey::parse(r.try_get::<&str, _>("field")?)?;
+            let state = match r.try_get::<&str, _>("state")? {
+                "known" => State::Known(Scalar::String(r.try_get("value")?)),
+                "deleted" => State::Deleted,
+                "unsupported" => State::Unsupported,
+                _ => anyhow::bail!("invalid asset state"),
+            };
+            let evidence = Evidence {
+                source: rss_mdm_inventory::Source::parse(r.try_get("source")?)?,
+                registration: Some(r.try_get("registration")?),
+                registration_generation: None,
+                epoch: Some(r.try_get("epoch")?),
+                snapshot_id: r.try_get("batch_id")?,
+                observed_at: r.try_get("observed_at")?,
+                received_at: r.try_get("received_at")?,
+                actor: None,
+            };
+            let scope: Scope = serde_json::from_str(r.try_get("scope")?)?;
+            ensure!(
+                scope.registration().as_str()
+                    == evidence.registration.as_deref().unwrap_or_default()
+                    && scope.source().as_str() == evidence.source.as_str()
+                    && scope.epoch().as_str() == evidence.epoch.as_deref().unwrap_or_default(),
+                "inventory provenance mismatch"
+            );
+            let last_known = if let Some(value) = r.try_get::<Option<String>, _>("last_known")? {
+                let mut prior = evidence.clone();
+                prior.snapshot_id = r.try_get("last_known_batch")?;
+                prior.observed_at = r.try_get("last_known_observed")?;
+                prior.received_at = r.try_get("last_known_received")?;
+                Some(rss_mdm_inventory::KnownValue {
+                    value: Scalar::String(value),
+                    evidence: prior,
+                })
+            } else {
+                None
+            };
             Ok(InventoryField {
-                field: row.try_get("field")?,
-                value: row.try_get("value")?,
-                batch_id: row.try_get("batch_id")?,
-                observed_at: row.try_get("observed_at")?,
-                received_at: row.try_get("received_at")?,
+                scope: r.try_get("scope")?,
+                field,
+                fact: SourceFact {
+                    state,
+                    last_known,
+                    evidence,
+                },
             })
         })
-        .collect::<Result<Vec<_>>>()
+        .collect()
+}
+pub(crate) async fn assert_tenant(
+    connection: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+) -> Result<()> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
+            .fetch_one(connection)
+            .await?;
+    ensure!(
+        current.as_deref() == Some(tenant.to_string().as_str()),
+        "asset transaction tenant mismatch"
+    );
+    Ok(())
 }

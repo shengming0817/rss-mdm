@@ -18,12 +18,7 @@ view!(GroupReceipt {
     removed: usize
 });
 view!(GroupPreview { revision: i64, snapshot: String, members: Vec<String>, assets: Vec<Asset>, decisions: Vec<Decision> });
-type Asset = (
-    String,
-    String,
-    String,
-    Vec<(String, String, String, i64, i64)>,
-);
+type Asset = assets::DeviceView;
 view!(Decision { device: String, decision: String, explanations: Vec<Explanation> });
 view!(Explanation { path: Vec<usize>, outcome: Outcome });
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -97,6 +92,7 @@ view!(SavedPlan {
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum Response {
+    Asset(assets::AssetEnvelope),
     GroupRead(GroupRead),
     GroupReceipt(GroupReceipt),
     GroupPreview(GroupPreview),

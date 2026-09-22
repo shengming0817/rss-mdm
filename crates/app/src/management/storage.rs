@@ -18,6 +18,7 @@ pub(super) async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
 }
 pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>, Vec<u8>)> {
     let id = match command {
+        Command::Asset { command } => command.operation(),
         Command::PublicationIntent { request, .. } => Some(request.operation_id),
         Command::Resource { change, .. } => Some(change.operation_id),
         Command::Group { change, .. } => Some(change.operation_id),

@@ -410,6 +410,18 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
     let service = management(tenant()).await;
     for (change, restore) in [
         (
+            "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact DROP NOT NULL",
+            "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact SET NOT NULL",
+        ),
+        (
+            "ALTER TABLE mdm.manual_assignments DROP CONSTRAINT manual_assignments_revision_check; ALTER TABLE mdm.manual_assignments ADD CONSTRAINT manual_assignments_revision_check CHECK(true)",
+            "ALTER TABLE mdm.manual_assignments DROP CONSTRAINT manual_assignments_revision_check; ALTER TABLE mdm.manual_assignments ADD CONSTRAINT manual_assignments_revision_check CHECK(revision>0)",
+        ),
+        (
+            "GRANT SELECT ON mdm_access.credentials TO mdm_management_runtime",
+            "REVOKE SELECT ON mdm_access.credentials FROM mdm_management_runtime; GRANT SELECT(tenant_id,registration,state) ON mdm_access.credentials TO mdm_management_runtime",
+        ),
+        (
             "ALTER TABLE mdm_management.scopes DISABLE ROW LEVEL SECURITY",
             "ALTER TABLE mdm_management.scopes ENABLE ROW LEVEL SECURITY",
         ),
@@ -418,8 +430,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE DELETE ON mdm_management.previews FROM mdm_management_runtime",
         ),
         (
-            "GRANT SELECT ON mdm_access.credentials TO mdm_management_runtime",
-            "REVOKE SELECT ON mdm_access.credentials FROM mdm_management_runtime",
+            "GRANT SELECT ON mdm_access.authorization_rules TO mdm_management_runtime",
+            "REVOKE SELECT ON mdm_access.authorization_rules FROM mdm_management_runtime",
         ),
     ] {
         sql(change);
@@ -449,6 +461,31 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         assert!(rejected);
     }
     storage::admit(&service.runtime, tenant()).await.unwrap();
+    let denied = service
+        .runtime
+        .local_tx(tenant(), deadline(), |tx| {
+            Box::pin(async move {
+                tx.with_connection(|c| {
+                    Box::pin(async move {
+                        sqlx::query("SELECT locator FROM mdm_access.credentials")
+                            .execute(c)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .await?;
+                Ok(())
+            })
+        })
+        .await;
+    assert!(denied.fold(
+        |_| false,
+        |_| false,
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
     service.runtime.close().await;
 }
 
@@ -756,4 +793,125 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
         );
     }
     holder.close().await.unwrap();
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn asset_commit_unknown_recovers_original_receipts() {
+    use assets::{
+        Command as AssetCommand, FieldKey, ManualChange, Owner, Query, SavedChange,
+        SavedDefinition, Scalar,
+    };
+    let m = management(tenant()).await;
+    let device = format!("unknown-{}", Uuid::new_v4());
+    seed_device(&device);
+    let owner = Owner {
+        instance: Uuid::new_v4().to_string(),
+        principal: Uuid::new_v4().to_string(),
+    };
+    let id = Uuid::new_v4();
+    let commands = [
+        Command::Asset {
+            command: AssetCommand::Manual {
+                device: device.clone(),
+                field: FieldKey::AssetTag,
+                change: operation(
+                    0,
+                    ManualChange::Set {
+                        value: Scalar::String("retained".into()),
+                    },
+                ),
+                owner: owner.clone(),
+            },
+        },
+        Command::Asset {
+            command: AssetCommand::SavedWrite {
+                id,
+                owner,
+                change: operation(
+                    0,
+                    SavedChange::Put {
+                        definition: SavedDefinition {
+                            name: "mine".into(),
+                            query: Query::default(),
+                        },
+                    },
+                ),
+            },
+        },
+    ];
+    for command in commands {
+        m.runtime.inject_next_transaction_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+        );
+        assert!(matches!(
+            execute(&m, &command).await,
+            Err(Error::CommitUnknown)
+        ));
+        let recovered = execute(&m, &command).await.unwrap();
+        assert_eq!(execute(&m, &command).await.unwrap(), recovered);
+    }
+    assert_eq!(
+        sql(&format!(
+            "SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{}' AND device='{device}'",
+            tenant()
+        )),
+        "1"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT revision FROM mdm_management.saved_queries WHERE tenant_id='{}' AND id='{id}'",
+            tenant()
+        )),
+        "1"
+    );
+    m.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn asset_storage_stages_and_capacity_are_not_malformed() {
+    let m = management(tenant()).await;
+    let command = Command::Asset {
+        command: assets::Command::Search {
+            query: assets::Query::default(),
+            scope: assets::ReadScope {
+                subject: "fixture-operator".into(),
+                devices: None,
+            },
+        },
+    };
+    for (table, expected) in [
+        ("mdm.inventory", "inventory_query"),
+        ("mdm.manual_assignments", "manual_query"),
+        ("mdm_access.collection_runs", "collection_query"),
+    ] {
+        sql(&format!(
+            "REVOKE SELECT ON {table} FROM mdm_management_runtime"
+        ));
+        let error = execute(&m, &command).await.unwrap_err();
+        sql(&format!(
+            "GRANT SELECT ON {table} TO mdm_management_runtime"
+        ));
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({"kind":"unavailable","reason":expected})
+        );
+    }
+    let prefix = format!("asset-limit-{}-", Uuid::new_v4());
+    sql(&format!(
+        "INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{}','{prefix}'||i FROM generate_series(1,10001) i",
+        tenant()
+    ));
+    let error = execute(&m, &command).await.unwrap_err();
+    sql(&format!(
+        "DELETE FROM mdm_access.devices WHERE tenant_id='{}' AND id LIKE '{prefix}%'",
+        tenant()
+    ));
+    assert!(matches!(
+        error,
+        Error::Unavailable(Failure::AssetObjectLimit)
+    ));
+    m.runtime.close().await;
 }

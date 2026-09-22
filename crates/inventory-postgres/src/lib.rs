@@ -19,3 +19,8 @@ mod reader;
 pub use reader::{InventoryField, InventoryReader, read_in};
 /// Owner-executed migration defining the restricted Inventory API reader role.
 pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/0002_inventory_api_reader.sql");
+
+/// Fresh-install asset schema, applied after the original Inventory units.
+pub const ASSETS_MIGRATION_SQL: &str = include_str!("../migrations/0003_assets.sql");
+mod manual;
+pub use manual::{Assignment, assign_in, manual_in};

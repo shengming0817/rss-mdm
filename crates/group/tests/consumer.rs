@@ -135,7 +135,6 @@ fn snapshot(state: FactState) -> Snapshot {
                     source: "fixture-collector".into(),
                     snapshot_id: "collection-1".into(),
                     observed_at: time(10),
-                    valid_until: Some(time(20)),
                 },
             )]),
         }],
@@ -175,7 +174,7 @@ fn preview_and_recalculation_share_decisions_and_provenance() {
 }
 
 #[test]
-fn null_missing_expiry_and_unsupported_never_become_negative_matches() {
+fn unavailable_values_never_become_negative_matches() {
     let r = rule(
         FieldType::Scalar(ScalarType::String),
         Op::Ne,
@@ -185,26 +184,19 @@ fn null_missing_expiry_and_unsupported_never_become_negative_matches() {
         (FactState::Null, UnknownReason::Null),
         (FactState::Missing, UnknownReason::Missing),
         (FactState::Unsupported, UnknownReason::Unsupported),
+        (FactState::Deleted, UnknownReason::Deleted),
+        (FactState::Conflict, UnknownReason::Conflict),
     ] {
-        let e = evaluate(&r, &snapshot(state), 10);
-        assert_eq!(e.decision, Decision::Unknown);
-        assert_eq!(e.explanations[0].outcome, Outcome::Unknown(expected));
+        for at in [0, 10, 2_000_000_000] {
+            let e = evaluate(&r, &snapshot(state.clone()), at);
+            assert_eq!(e.decision, Decision::Unknown);
+            assert_eq!(e.explanations[0].outcome, Outcome::Unknown(expected));
+        }
     }
-    let s = snapshot(FactState::Known(string("")));
-    assert_eq!(evaluate(&r, &s, 10).decision, Decision::Match);
-    assert_eq!(evaluate(&r, &s, 19).decision, Decision::Match);
-    assert_eq!(
-        evaluate(&r, &s, 20).explanations[0].outcome,
-        Outcome::Unknown(UnknownReason::Stale)
-    );
-    assert_eq!(
-        evaluate(&r, &s, 9).explanations[0].outcome,
-        Outcome::Unknown(UnknownReason::Future)
-    );
     for op in [Op::IsNull, Op::IsNotNull] {
         let r = rule(FieldType::Scalar(ScalarType::String), op, None);
         assert_eq!(
-            evaluate(&r, &snapshot(FactState::Null), 10).decision,
+            evaluate(&r, &snapshot(FactState::Null), 20).decision,
             if op == Op::IsNull {
                 Decision::Match
             } else {
@@ -212,11 +204,7 @@ fn null_missing_expiry_and_unsupported_never_become_negative_matches() {
             }
         );
         assert_eq!(
-            evaluate(&r, &snapshot(FactState::Missing), 10).decision,
-            Decision::Unknown
-        );
-        assert_eq!(
-            evaluate(&r, &snapshot(FactState::Null), 20).decision,
+            evaluate(&r, &snapshot(FactState::Missing), 20).decision,
             Decision::Unknown
         );
     }
@@ -456,7 +444,6 @@ fn incomplete_and_malformed_inputs_never_return_a_difference() {
     for (mut s, error) in [
         (valid.clone(), Error::IncompleteSnapshot),
         (valid.clone(), Error::VersionMismatch),
-        (valid.clone(), Error::InvalidTime),
         (valid.clone(), Error::PermissionDenied),
         (valid.clone(), Error::InvalidType),
         (valid.clone(), Error::UnknownField),
@@ -466,13 +453,6 @@ fn incomplete_and_malformed_inputs_never_return_a_difference() {
                 s.objects[0].facts.clear();
             }
             Error::VersionMismatch => s.dictionary_version = "other".into(),
-            Error::InvalidTime => {
-                s.objects[0]
-                    .facts
-                    .get_mut("device.model")
-                    .unwrap()
-                    .valid_until = Some(time(10))
-            }
             Error::PermissionDenied => {
                 s.objects[0].facts.get_mut("device.model").unwrap().state = FactState::Denied
             }
@@ -1095,4 +1075,17 @@ fn limit_diagnostics_distinguish_categories_without_input_values() {
     assert_eq!(string_error, Error::LimitExceeded(LimitKind::StringBytes));
     assert_eq!(node_error, Error::LimitExceeded(LimitKind::Nodes));
     assert!(!string_error.to_string().contains(&secret));
+}
+
+#[test]
+fn asset_facts_do_not_expire_or_wait_for_observation_time() {
+    let r = rule(
+        FieldType::Scalar(ScalarType::String),
+        Op::Eq,
+        Some(string("x")),
+    );
+    let s = snapshot(FactState::Known(string("x")));
+    for at in [0, 10, 20, 2_000_000_000] {
+        assert_eq!(evaluate(&r, &s, at).decision, Decision::Match);
+    }
 }

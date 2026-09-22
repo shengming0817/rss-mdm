@@ -203,6 +203,10 @@ pub enum FactState {
     Known(Value),
     /// Explicit null on a nullable field; ordinary comparisons yield Unknown.
     Null,
+    /// The source explicitly removed the value.
+    Deleted,
+    /// Current sources have conflicting values.
+    Conflict,
     /// The field was covered but its value is missing.
     Missing,
     /// The source cannot provide this field.
@@ -211,7 +215,7 @@ pub enum FactState {
     Denied,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// One resolved source fact. Source selection is external; validity is [observed_at, valid_until).
+/// One resolved source fact. Source selection is external; times are provenance only.
 pub struct Fact {
     /// Known value or explicit absence/support/permission condition.
     pub state: FactState,
@@ -219,10 +223,8 @@ pub struct Fact {
     pub source: String,
     /// Source snapshot identity for provenance.
     pub snapshot_id: String,
-    /// Start of validity, inclusive; evaluation before this time yields Future.
+    /// Observation timestamp for provenance; never a validity window.
     pub observed_at: Timepoint,
-    /// Optional exclusive expiry, strictly after observation; `None` has no expiry.
-    pub valid_until: Option<Timepoint>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Facts for one complete tenant/device key. Each covered field must be present explicitly.

@@ -3,12 +3,13 @@ use crate::identity::Principal;
 use crate::{
     access_store::{Operation, db},
     audit::Audit,
-    device::{BindRegistration, ReportSource, VerifiedChannelCredential, store::bind_in},
+    device::{BindRegistration, VerifiedChannelCredential, store::bind_in},
     enrollment::{
         Authorization,
         store::{actor, request, uuid},
     },
 };
+use rss_mdm_inventory::ReportSource;
 use rss_mdm_windows_mdm::provisioning::EnrollmentType;
 use rss_request_context::TenantId;
 use sqlx::Row;

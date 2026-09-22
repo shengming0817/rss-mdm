@@ -64,7 +64,6 @@ pub struct Config {
     pub product_origin: String,
     pub trusted_gateway: std::net::IpAddr,
     pub identity: Identity,
-    pub database: Database,
     pub access_database: Database,
     pub runtime_database: Database,
     pub command_database: Database,
@@ -81,20 +80,13 @@ impl Config {
         if !self.listen.ip().is_loopback() {
             return Err(Error::Configuration(ConfigIssue::Listen));
         }
-        if self.database.user != "mdm_api" {
-            return Err(Error::Configuration(ConfigIssue::DatabaseRole));
-        }
-        if self.access_database.user != "mdm_access"
-            || self.access_database.host != self.database.host
-            || self.access_database.port != self.database.port
-            || self.access_database.name != self.database.name
-        {
+        if self.access_database.user != "mdm_access" {
             return Err(Error::Configuration(ConfigIssue::AccessDatabase));
         }
         if self.runtime_database.user != "mdm_runtime"
-            || self.runtime_database.host != self.database.host
-            || self.runtime_database.port != self.database.port
-            || self.runtime_database.name != self.database.name
+            || self.runtime_database.host != self.access_database.host
+            || self.runtime_database.port != self.access_database.port
+            || self.runtime_database.name != self.access_database.name
         {
             return Err(Error::Configuration(ConfigIssue::RuntimeDatabase));
         }
@@ -109,9 +101,9 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::Instance));
         }
         if self.identity.database.user != "mdm_identity_runtime"
-            || self.identity.database.host != self.database.host
-            || self.identity.database.port != self.database.port
-            || self.identity.database.name != self.database.name
+            || self.identity.database.host != self.access_database.host
+            || self.identity.database.port != self.access_database.port
+            || self.identity.database.name != self.access_database.name
         {
             return Err(Error::Configuration(ConfigIssue::IdentityDatabase));
         }
@@ -121,13 +113,13 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::Tenant));
         }
         if self.command_database.user != "mdm_command_runtime"
-            || self.command_database.host != self.database.host
-            || self.command_database.port != self.database.port
-            || self.command_database.name != self.database.name
+            || self.command_database.host != self.access_database.host
+            || self.command_database.port != self.access_database.port
+            || self.command_database.name != self.access_database.name
         {
             return Err(Error::Configuration(ConfigIssue::Commands));
         }
-        self.management.validate(&self.database)?;
+        self.management.validate(&self.access_database)?;
         self.windows.validate(self.listen)?;
         let identity_management = crate::access::IdentityManagementPolicy::new(
             &self.identity.tenant_id,
@@ -222,9 +214,29 @@ mod tests {
         for (pointer, value, field) in [
             ("/listen", serde_json::json!("0.0.0.0:8080"), "Listen"),
             (
-                "/database/user",
+                "/command_database/user",
+                serde_json::json!("mdm_access"),
+                "Commands",
+            ),
+            (
+                "/command_database/host",
+                serde_json::json!("other-host"),
+                "Commands",
+            ),
+            (
+                "/command_database/port",
+                serde_json::json!(5433),
+                "Commands",
+            ),
+            (
+                "/command_database/name",
+                serde_json::json!("other-db"),
+                "Commands",
+            ),
+            (
+                "/access_database/user",
                 serde_json::json!("postgres"),
-                "DatabaseRole",
+                "AccessDatabase",
             ),
             (
                 "/product_origin",

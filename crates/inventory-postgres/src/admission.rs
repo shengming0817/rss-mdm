@@ -46,10 +46,19 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema') AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  ELSE (SELECT bool_and(has_table_privilege(current_user,t.oid,p)) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p) END AS dml,
- EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, coverage, field)') AS identity
+ EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, coverage, field)') AS identity,
+ (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
+ FROM pg_attribute WHERE attrelid=t.oid AND attnum>0 AND NOT attisdropped) =
+ '[ ["tenant_id","uuid",true],["journal","text",true],["generation","text",true],["scope","text",true],["coverage","text",true],["field","text",true],["value","text",false],["batch_id","text",true],["observed_at","bigint",true],["received_at","bigint",true],["state","text",true],["last_known","text",false],["last_known_batch","text",false],["last_known_observed","bigint",false],["last_known_received","bigint",false],["registration","text",true],["source","text",true],["epoch","text",true] ]'::jsonb
+ AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_value_state' AND convalidated
+ AND pg_get_constraintdef(oid)='CHECK (((state = ''known''::text) = (value IS NOT NULL)))')
+ AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_state_check' AND convalidated
+ AND pg_get_constraintdef(oid)='CHECK ((state = ANY (ARRAY[''known''::text, ''deleted''::text, ''unsupported''::text])))')
+ AND EXISTS(SELECT 1 FROM pg_index i JOIN pg_class idx ON idx.oid=i.indexrelid WHERE i.indrelid=t.oid AND idx.relname='inventory_source'
+ AND i.indisvalid AND i.indisready AND i.indislive AND pg_get_indexdef(i.indexrelid)='CREATE INDEX inventory_source ON mdm.inventory USING btree (tenant_id, registration, source, epoch)') AS assets
 FROM target t
 "#).bind(reader).fetch_one(&mut *transaction).await?;
-    for field in ["rls", "policy", "roles", "acl", "dml", "identity"] {
+    for field in ["rls", "policy", "roles", "acl", "dml", "identity", "assets"] {
         ensure!(
             row.try_get::<bool, _>(field)?,
             "Inventory admission rejected: {field}"

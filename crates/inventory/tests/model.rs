@@ -24,9 +24,28 @@ fn rejects_unknown_fields_and_invalid_values() {
         coverage(),
         Body::Partial(vec![Change::upsert(
             Id::new("device.model").unwrap(),
-            b"Model".to_vec(),
+            rss_mdm_inventory::CollectedValue::Known("Model".into())
+                .encode(rss_mdm_inventory::FieldKey::Model)
+                .unwrap(),
         )]),
     )
     .unwrap();
     assert!(validate(&b).is_ok());
+    use rss_mdm_inventory::{CollectedValue, FieldKey};
+    let bytes = CollectedValue::Unsupported.encode(FieldKey::Model).unwrap();
+    assert_eq!(
+        CollectedValue::decode(FieldKey::Model, &bytes).unwrap(),
+        CollectedValue::Unsupported
+    );
+    assert!(CollectedValue::decode(FieldKey::Model, b"legacy").is_err());
+    assert!(
+        CollectedValue::Known("".into())
+            .encode(FieldKey::Model)
+            .is_err()
+    );
+    assert!(
+        CollectedValue::Unsupported
+            .encode(FieldKey::AssetTag)
+            .is_err()
+    );
 }

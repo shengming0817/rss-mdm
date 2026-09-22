@@ -331,6 +331,8 @@ enum State {
     Missing,
     Unsupported,
     Denied,
+    Deleted,
+    Conflict,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -339,7 +341,6 @@ struct FactDoc {
     source: String,
     snapshot_id: String,
     observed_at: i64,
-    valid_until: Option<i64>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -382,6 +383,8 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Result<Vec<u8>> {
                         FactState::Missing => State::Missing,
                         FactState::Unsupported => State::Unsupported,
                         FactState::Denied => State::Denied,
+                        FactState::Deleted => State::Deleted,
+                        FactState::Conflict => State::Conflict,
                     };
                     (
                         k.clone(),
@@ -390,7 +393,6 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Result<Vec<u8>> {
                             source: f.source.clone(),
                             snapshot_id: f.snapshot_id.clone(),
                             observed_at: f.observed_at.unix_seconds(),
-                            valid_until: f.valid_until.map(Timepoint::unix_seconds),
                         },
                     )
                 })
@@ -398,7 +400,7 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Result<Vec<u8>> {
         })
         .collect();
     encode(&SnapshotDoc {
-        v: 1,
+        v: 2,
         tenant: s.tenant.to_string(),
         id: s.id.clone(),
         version: s.version.clone(),
@@ -410,7 +412,7 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Result<Vec<u8>> {
 }
 pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
     let d: SnapshotDoc = decode(bytes)?;
-    check(d.v == 1 && d.objects.len() <= limits::OBJECTS && d.coverage.len() <= limits::FIELDS)?;
+    check(d.v == 2 && d.objects.len() <= limits::OBJECTS && d.coverage.len() <= limits::FIELDS)?;
     let tenant = tenant(&d.tenant)?;
     let objects = d
         .objects
@@ -427,6 +429,8 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
                         State::Missing => FactState::Missing,
                         State::Unsupported => FactState::Unsupported,
                         State::Denied => FactState::Denied,
+                        State::Deleted => FactState::Deleted,
+                        State::Conflict => FactState::Conflict,
                     };
                     Ok((
                         k,
@@ -435,7 +439,6 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
                             source: f.source,
                             snapshot_id: f.snapshot_id,
                             observed_at: time(f.observed_at)?,
-                            valid_until: f.valid_until.map(time).transpose()?,
                         },
                     ))
                 })
@@ -463,9 +466,9 @@ fn outcome(o: Outcome) -> &'static str {
         Outcome::Unknown(r) => match r {
             UnknownReason::Null => "null",
             UnknownReason::Missing => "missing",
-            UnknownReason::Stale => "stale",
+            UnknownReason::Deleted => "deleted",
             UnknownReason::Unsupported => "unsupported",
-            UnknownReason::Future => "future",
+            UnknownReason::Conflict => "conflict",
         },
     }
 }
@@ -475,9 +478,9 @@ fn read_outcome(s: &str) -> Result<Outcome> {
         "no_match" => Outcome::NoMatch,
         "null" => Outcome::Unknown(UnknownReason::Null),
         "missing" => Outcome::Unknown(UnknownReason::Missing),
-        "stale" => Outcome::Unknown(UnknownReason::Stale),
+        "deleted" => Outcome::Unknown(UnknownReason::Deleted),
         "unsupported" => Outcome::Unknown(UnknownReason::Unsupported),
-        "future" => Outcome::Unknown(UnknownReason::Future),
+        "conflict" => Outcome::Unknown(UnknownReason::Conflict),
         _ => return Err(Invalid),
     })
 }
@@ -517,7 +520,7 @@ pub(crate) fn encode_result(r: &Recalculation) -> Result<Vec<u8>> {
         })
         .collect();
     encode(&ResultDoc {
-        v: 1,
+        v: 2,
         objects,
         added: r.difference.added.iter().map(|o| o.id().into()).collect(),
         removed: r.difference.removed.iter().map(|o| o.id().into()).collect(),
@@ -531,7 +534,7 @@ pub(crate) fn decode_result(
     as_of: Timepoint,
 ) -> Result<Recalculation> {
     let d: ResultDoc = decode(bytes)?;
-    check(d.v == 1 && d.objects.len() <= limits::OBJECTS)?;
+    check(d.v == 2 && d.objects.len() <= limits::OBJECTS)?;
     let input: BTreeMap<_, _> = s.objects.iter().map(|o| (&o.key, o)).collect();
     let mut objects = Vec::new();
     let mut seen = BTreeSet::new();
@@ -556,7 +559,6 @@ pub(crate) fn decode_result(
                             source: f.source.clone(),
                             snapshot_id: f.snapshot_id.clone(),
                             observed_at: f.observed_at,
-                            valid_until: f.valid_until,
                         },
                     );
                 }

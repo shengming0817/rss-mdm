@@ -32,7 +32,16 @@ fn grant(operation: &str, scope: Value) -> Value {
 async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let config: Config = serde_json::from_value(base.clone())?;
-    let reader = Arc::new(InventoryReader::connect(config.database.options()?).await?);
+    let reader = Arc::new(
+        InventoryReader::connect(
+            config
+                .access_database
+                .options()?
+                .username("mdm_api")
+                .password("api-fixture"),
+        )
+        .await?,
+    );
     let router = app(&base, reader.clone()).await?;
     let mut admin = Browser::default();
     let mut member = Browser::default();
@@ -116,7 +125,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
                 .call(
                     &router,
                     Method::GET,
-                    &format!("/api/v1/devices/{device}/inventory?source=mdm.windows"),
+                    &format!("/api/v1/devices/{device}/inventory"),
                     None
                 )
                 .await?
@@ -518,6 +527,9 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             + Duration::from_millis(750);
         loop {
+            sqlx::query("SELECT pg_stat_clear_snapshot()")
+                .execute(&mut holder)
+                .await?;
             let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE 'WITH rules AS MATERIALIZED%')").fetch_one(&mut holder).await?;
             if waiting {
                 break;

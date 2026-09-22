@@ -45,7 +45,6 @@ fn inputs() -> (Rule, Snapshot, Timepoint) {
                     source: "fixture".into(),
                     snapshot_id: "s".into(),
                     observed_at: now,
-                    valid_until: None,
                 },
             )]),
         }],

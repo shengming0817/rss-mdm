@@ -28,7 +28,7 @@
 //!     objects: vec![ObjectSnapshot { key: key.clone(), facts: BTreeMap::from([
 //!         ("device.model".into(), Fact { state: FactState::Known(value),
 //!             source: "inventory".into(), snapshot_id: "collection-1".into(),
-//!             observed_at: now, valid_until: None })
+//!             observed_at: now })
 //!     ]) }],
 //! };
 //! assert_eq!(rule.evaluate(&snapshot, now)?.objects[0].decision, Decision::Match);
@@ -78,8 +78,6 @@ pub enum Error {
     InvalidOperation,
     /// An input explicitly contains a denied fact; the whole input is rejected.
     PermissionDenied,
-    /// A validity interval ends at or before its observation time.
-    InvalidTime,
     /// A rule, snapshot or member key belongs to another tenant.
     TenantMismatch,
     /// Required universe, coverage or explicit covered facts are missing.

@@ -3,11 +3,12 @@ use crate::{
     audit::Audit,
     collection,
     device::{
-        Channel, DeviceService, VerifiedChannelCredential,
+        DeviceService, VerifiedChannelCredential,
         tests::{admin, bind, options, proof},
     },
 };
 use anyhow::{Result, ensure};
+use rss_mdm_inventory::Channel;
 use rss_mdm_windows_mdm::{
     CodecLimits, Secret,
     syncml::{self, Command, CommandName, Header, Message, Status},
@@ -38,14 +39,30 @@ fn status(id: u32, command_ref: u32, command: CommandName, code: u16) -> Command
         credential: None,
     })
 }
-async fn report(
+pub(crate) async fn report(
     service: &DeviceService,
     access: &AccessStore,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
 ) -> Result<Run> {
+    report_statuses(
+        service,
+        access,
+        credential,
+        values,
+        values.map(|value| if value.is_some() { 200 } else { 404 }),
+    )
+    .await
+}
+pub(crate) async fn report_statuses(
+    service: &DeviceService,
+    access: &AccessStore,
+    credential: &VerifiedChannelCredential,
+    values: [Option<&str>; 2],
+    statuses: [u16; 2],
+) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
-    let mut tx = access.begin(A).await?;
+    let mut tx = access.begin(&principal.tenant().to_string()).await?;
     let scope = collection::revalidate(&mut tx, &principal).await?;
     let mut request = Message {
         header: Header {
@@ -79,7 +96,7 @@ async fn report(
             index as u32 + 2,
             *get,
             CommandName::Get,
-            if value.is_some() { 200 } else { 404 },
+            statuses[index],
         ));
         if let Some(value) = value {
             response.commands.push(Command::Results(syncml::Results {
@@ -97,8 +114,17 @@ async fn report(
             }));
         }
     }
-    ensure!(collection::accept(&mut tx, A, id, &response, &previous).await?);
-    let audit = Audit::new(A.into(), "windows_management");
+    ensure!(
+        collection::accept(
+            &mut tx,
+            &principal.tenant().to_string(),
+            id,
+            &response,
+            &previous
+        )
+        .await?
+    );
+    let audit = Audit::new(principal.tenant().to_string(), "windows_management");
     audit.operation(id, "windows_management");
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
@@ -107,7 +133,7 @@ async fn report(
     audit.finalize(None);
     Ok(access.collection(&scope, Some(id)).await?.unwrap())
 }
-async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownStack> {
+pub(crate) async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownStack> {
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -117,7 +143,7 @@ async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownSt
     launch.finish();
     Ok(owner)
 }
-async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
+pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             if runtime.readiness.ready()
@@ -335,7 +361,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(owner.shutdown().join().await?.is_clean());
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
-    ensure!(reader.read(&first.scope).await?[0].value == "First");
+    ensure!(
+        reader
+            .read(first.scope.tenant(), std::slice::from_ref(&first.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("First".into()))
+    );
     runtime.close_fixture().await?;
 
     // Fresh epoch; Partial/Failed receipts retain the last complete values.
@@ -359,33 +392,54 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         runtime.inspect(&failed).await?.projection
             == crate::inventory_runtime::ProjectionStatus::NotApplicable
     );
-    ensure!(reader.read(&full.scope).await?[0].value == "New");
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("New".into()))
+    );
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
 
-    // Deterministically commit/project a newer run between the constituent reads.
+    // A borrowed repeatable-read snapshot never mixes a concurrently committed projection.
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
-    let inventory = crate::access::InventoryService::new(
-        reader.clone(),
-        service.clone(),
-        access.clone(),
-        runtime.clone(),
-    );
-    let (latest, fields, _) = inventory
-        .read_state(&full.scope, async {
-            let newer_run = report(&service, &access, &newer, [Some("New"), Some("11")])
-                .await
-                .unwrap();
-            wait_ready_projection(&runtime, &newer_run).await.unwrap();
-        })
+    let mut connection = PgConnection::connect_with(&options("mdm_api")?).await?;
+    let mut snapshot = connection.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *snapshot)
         .await?;
-    let latest = latest.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(A)
+        .execute(&mut *snapshot)
+        .await?;
+    let before = rss_mdm_inventory_postgres::read_in(
+        &mut snapshot,
+        full.scope.tenant(),
+        std::slice::from_ref(&full.scope),
+    )
+    .await?;
+    let newer_run = report(&service, &access, &newer, [Some("Newer"), Some("12")]).await?;
+    wait_ready_projection(&runtime, &newer_run).await?;
     ensure!(
-        fields
+        before
+            == rss_mdm_inventory_postgres::read_in(
+                &mut snapshot,
+                full.scope.tenant(),
+                std::slice::from_ref(&full.scope)
+            )
+            .await?
+    );
+    snapshot.commit().await?;
+    connection.close().await?;
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?
             .iter()
-            .all(|field| field.batch_id == latest.id.to_string()),
-        "inventory mixed a new projection with an older run"
+            .all(|f| f.fact.evidence.snapshot_id == newer_run.id.to_string())
     );
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
@@ -413,7 +467,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         [Some("After-failure"), Some("12")],
     )
     .await?;
-    root.execute("CREATE FUNCTION mdm.reject_inventory_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; REVOKE ALL ON FUNCTION mdm.reject_inventory_test() FROM PUBLIC; CREATE TRIGGER reject_inventory_test AFTER INSERT ON mdm.inventory FOR EACH ROW EXECUTE FUNCTION mdm.reject_inventory_test()").await?;
+    root.execute("CREATE FUNCTION mdm.reject_inventory_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; REVOKE ALL ON FUNCTION mdm.reject_inventory_test() FROM PUBLIC; CREATE TRIGGER reject_inventory_test AFTER INSERT OR UPDATE ON mdm.inventory FOR EACH ROW EXECUTE FUNCTION mdm.reject_inventory_test()").await?;
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
     let stopped = tokio::time::timeout(
@@ -423,7 +477,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     .await?;
     ensure!(matches!(stopped, rss_runtime::TaskExit::Failed(_)) && !runtime.readiness.ready());
     ensure!(!owner.shutdown().join().await?.is_clean());
-    ensure!(reader.read(&full.scope).await?[0].value == "New");
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("Newer".into()))
+    );
     ensure!(
         runtime.inspect(&broken).await?.projection
             == crate::inventory_runtime::ProjectionStatus::Pending
@@ -433,7 +494,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_ready_projection(&runtime, &broken).await?;
-    ensure!(reader.read(&full.scope).await?[0].value == "After-failure");
+    ensure!(
+        reader
+            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .await?[0]
+            .fact
+            .state
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
+                "After-failure".into()
+            ))
+    );
     ensure!(owner.shutdown().join().await?.is_clean());
 
     // Explicit CmdID exhaustion fails without allocating a new run or wrapping to old IDs.

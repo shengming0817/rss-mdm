@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 fn scope(tenant: u8, device: &str) -> Scope {
-    serde_json::from_value(serde_json::json!({"tenant":format!("00000000-0000-0000-0000-{tenant:012}"),"object":device,"registration":"reg-1","source":"fixture","dataset":"inventory","epoch":"epoch-1"})).unwrap()
+    serde_json::from_value(serde_json::json!({"tenant":format!("00000000-0000-0000-0000-{tenant:012}"),"object":device,"registration":"reg-1","source":"agent.builtin","dataset":"inventory","epoch":"epoch-1"})).unwrap()
 }
 #[allow(
     clippy::disallowed_methods,
@@ -38,8 +38,18 @@ fn batch(id: &str, sequence: u64, body: Body) -> Batch {
 }
 fn facts(value: &str) -> Vec<Change> {
     vec![
-        Change::upsert(Id::new("device.model").unwrap(), value.as_bytes().to_vec()),
-        Change::upsert(Id::new("device.os.version").unwrap(), b"1".to_vec()),
+        Change::upsert(
+            Id::new("device.model").unwrap(),
+            rss_mdm_inventory::CollectedValue::Known(value.into())
+                .encode(rss_mdm_inventory::FieldKey::Model)
+                .unwrap(),
+        ),
+        Change::upsert(
+            Id::new("device.os.version").unwrap(),
+            rss_mdm_inventory::CollectedValue::Known("1".into())
+                .encode(rss_mdm_inventory::FieldKey::OsVersion)
+                .unwrap(),
+        ),
     ]
 }
 fn url(name: &str) -> Result<PgConnectOptions> {
@@ -127,7 +137,9 @@ pub async fn matrix(executable: &str) -> Result<()> {
         inspect(&a, "delta").await?["assets"]
             .as_array()
             .unwrap()
-            .len(),
+            .iter()
+            .filter(|a| a["fact"]["state"]["kind"] == "known")
+            .count(),
         1
     );
     let other = app(scope(2, "d1")).await?;
@@ -150,7 +162,8 @@ pub async fn matrix(executable: &str) -> Result<()> {
         inspect(&a, "empty").await?["assets"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .iter()
+            .all(|a| a["fact"]["state"]["kind"] == "deleted" && !a["fact"]["lastKnown"].is_null())
     );
     assert_eq!(
         inspect(&other, "first").await?["assets"]
@@ -685,7 +698,13 @@ async fn empty_and_delete() -> Result<()> {
     assert_eq!(inspect(&a, "delete").await?["projection"], "not_projected");
     a.project(&cancel).await?;
     let view = inspect(&a, "delete").await?;
-    assert!(view["assets"].as_array().unwrap().is_empty());
+    assert!(
+        view["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["fact"]["state"]["kind"] == "deleted" && !a["fact"]["lastKnown"].is_null())
+    );
     assert_eq!(view["projection"], "projected");
     a.close().await?;
     Ok(())
