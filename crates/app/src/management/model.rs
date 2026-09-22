@@ -117,6 +117,7 @@ pub struct Source {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Preview {
+    pub configuration: Option<super::configuration::Frozen>,
     pub id: Uuid,
     pub policy: String,
     pub policy_revision: u64,

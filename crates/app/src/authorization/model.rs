@@ -11,6 +11,7 @@ pub enum Permission {
     Credentials,
     DeviceWipe,
     StateVerify,
+    FirewallWrite,
     OperationRead,
     OperationCancel,
     AuthorizationRead,
@@ -28,6 +29,7 @@ pub enum Permission {
     PolicyWrite,
     PlanPreview,
     PlanSave,
+    PlanExecute,
     ResourceRead,
     ResourceWrite,
     ReleaseRead,
@@ -47,6 +49,7 @@ impl Permission {
             | Self::Credentials
             | Self::DeviceWipe
             | Self::StateVerify
+            | Self::FirewallWrite
             | Self::OperationRead
             | Self::OperationCancel => true,
             Self::AuthorizationRead
@@ -63,6 +66,7 @@ impl Permission {
             | Self::PolicyWrite
             | Self::PlanPreview
             | Self::PlanSave
+            | Self::PlanExecute
             | Self::ResourceRead
             | Self::ResourceWrite
             | Self::ReleaseRead

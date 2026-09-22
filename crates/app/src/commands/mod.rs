@@ -3,6 +3,8 @@
 mod config;
 mod http;
 mod model;
+pub(crate) mod native;
+mod plans;
 mod protocol;
 mod recovery;
 mod service;

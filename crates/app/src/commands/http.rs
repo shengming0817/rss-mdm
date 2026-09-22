@@ -9,6 +9,10 @@ use axum::{
 use serde_json::Value;
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
+        .route(
+            "/policies/{policy}/plans/{plan}/execute",
+            post(execute_plan),
+        )
         .route("/devices/{device}/operations", post(create))
         .route("/devices/{device}/operations/{id}", get(read))
         .route("/devices/{device}/operations/{id}/cancel", post(cancel))
@@ -22,6 +26,9 @@ async fn create(
     input: std::result::Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
+    if !matches!(input.task, Task::StateVerify { .. }) {
+        return Err(Error::Malformed);
+    }
     audit.operation(input.operation_id, "command_accept");
     audit.target(&device);
     app.commands
@@ -71,4 +78,20 @@ async fn approve(
         .change(&auth.proof, &device, id, &change, true, &audit)
         .await
         .map(Json)
+}
+
+async fn execute_plan(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((policy, plan)): Path<(String, Uuid)>,
+    body: std::result::Result<Json<super::plans::Execute>, axum::extract::rejection::JsonRejection>,
+) -> std::result::Result<(StatusCode, Json<Value>), Error> {
+    let body = body.map_err(|_| Error::Malformed)?.0;
+    audit.operation(body.operation_id, "command_accept");
+    audit.target(&policy);
+    app.commands
+        .execute_plan(&auth.proof, &policy, plan, &body, &audit)
+        .await
+        .map(|v| (StatusCode::ACCEPTED, Json(v)))
 }

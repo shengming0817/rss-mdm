@@ -293,6 +293,16 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
                 if matches!(registration,Err(Fault::Request(Error::Conflict))) {
                     for command in &page.commands {if !command.status().is_terminal(){let transition=service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?;if transition.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into());}}}
                 } else {registration?;}
+                for command in &page.commands {
+                    if !command.status().is_terminal(){
+                        let operation=storage::load(tx,corrupt(Uuid::parse_str(command.spec().id().as_str()))?).await?;
+                        if let Task::Firewall{plan,..}=operation.request.task {
+                            let tenant=service.tenant.to_string();
+                            let current=tx.with_connection(move|c|Box::pin(async move{Ok(super::native::current_plan_on(c,&tenant,plan).await)})).await??;
+                            if !current && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into())}
+                        }
+                    }
+                }
                 let cursor=page.after.map(|s|s.as_str().to_owned());let tenant=service.tenant.to_string();
                 tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
                 Ok(())

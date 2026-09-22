@@ -58,17 +58,30 @@ impl Commands {
                         storage::admit(tx).await.map_err(|_| {
                             PgError::from(sqlx::Error::Protocol("command admission".into()))
                         })?;
-                        rss_device_command_postgres::PgStore::new(tx, copy).await
+                        rss_device_command_postgres::PgStore::new(tx, copy)
+                            .await
+                            .inspect_err(|_| {
+                                eprintln!("command startup: device-command admission failed")
+                            })
                     })
                 })
                 .await
                 .fold(
                     Ok,
-                    |_| Err(bad()),
-                    |_| Err(bad()),
+                    |_| {
+                        eprintln!("command startup: transaction failed");
+                        Err(bad())
+                    },
+                    |_| {
+                        eprintln!("command startup: transaction failed");
+                        Err(bad())
+                    },
                     |_| Err(Error::CommitUnknown),
                     |_| Err(Error::CommitUnknown),
-                    |_| Err(bad()),
+                    |_| {
+                        eprintln!("command startup: transaction failed");
+                        Err(bad())
+                    },
                 )?;
             let pool = sqlx::postgres::PgPoolOptions::new()
                 .max_connections(2)
@@ -83,6 +96,7 @@ impl Commands {
             {
                 Ok(s) => s,
                 Err(_) => {
+                    eprintln!("command startup: reconcile admission failed");
                     pool.close().await;
                     return Err(bad());
                 }

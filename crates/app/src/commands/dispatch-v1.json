@@ -1,1 +1,1 @@
-{"contract":"mdm.state-verify","version":1,"payload":["device","request(operationId,field,expectedValue,deadline)","generation","epoch"],"fields":["model","os_version"],"deadlineUnit":"unix-seconds","stateEncoding":"mdm.state-verify/v1,field-key,exact-utf8"}
+{"contract":"mdm.command-dispatch","version":1,"route":"windows.command","payload":["device","typed task request","generation","epoch"],"tasks":["state_verify","firewall"],"effects":"write receipt does not verify configuration"}

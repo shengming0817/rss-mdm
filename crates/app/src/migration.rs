@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 29] {
+fn units() -> [(&'static str, &'static str); 30] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -187,6 +187,10 @@ fn units() -> [(&'static str, &'static str); 29] {
             "assets-management-v1",
             include_str!("../migrations/0011_assets.sql"),
         ),
+        (
+            "windows-configuration-v1",
+            include_str!("../migrations/0012_windows_configuration.sql"),
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -194,6 +198,13 @@ pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))}))})
 }
 async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
+    migrate_units(conn, installation, &units()).await
+}
+async fn migrate_units(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    current: &[(&'static str, &'static str)],
+) -> Result<()> {
     let instance = installation.validate()?;
     sqlx::raw_sql("SET statement_timeout='30s'; SET lock_timeout='10s';")
         .execute(&mut *conn)
@@ -223,14 +234,15 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             .fetch_all(&mut *conn)
             .await
             .map_err(|_| MigrationError::at("installation", "ledger read"))?;
-    let current = units();
     if !installed.is_empty()
-        && (installed.len() != current.len()
+        && ((installed.len() != current.len() && installed.len() != current.len() - 1)
             || installed.iter().any(|(name, digest, complete)| {
                 !complete
-                    || !current.iter().any(|(expected, sql)| {
-                        name == expected && digest == &format!("{:x}", Sha256::digest(sql))
-                    })
+                    || !current[..installed.len().min(current.len())].iter().any(
+                        |(expected, sql)| {
+                            name == expected && digest == &format!("{:x}", Sha256::digest(sql))
+                        },
+                    )
             }))
     {
         return Err(MigrationError::at(
@@ -238,7 +250,7 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             "fresh installation required; existing ledger differs or is incomplete",
         ));
     }
-    for (name, sql) in units() {
+    for &(name, sql) in current {
         let digest = format!("{:x}", Sha256::digest(sql));
         let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
             .bind(name)

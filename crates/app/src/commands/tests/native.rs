@@ -14,12 +14,12 @@ async fn post(
         .send()
         .await?)
 }
-struct ReadExchange {
-    first: s::Message,
-    gets: Vec<(u32, String)>,
-    ack: s::Message,
+pub(super) struct ReadExchange {
+    pub(super) first: s::Message,
+    pub(super) gets: Vec<(u32, String)>,
+    pub(super) ack: s::Message,
 }
-async fn begin(
+pub(super) async fn begin(
     peer: &reqwest::Client,
     url: &str,
     initial: &s::Message,
@@ -48,10 +48,15 @@ async fn begin(
             _ => None,
         })
         .collect::<Vec<_>>();
-    ensure!(gets.len() == 2 && gets[1].1.ends_with("/SwV"));
+    ensure!(gets.len() >= 4 && gets[1].1.ends_with("/SwV"));
     Ok(ReadExchange { first, gets, ack })
 }
-fn report(first: &s::Message, gets: &[(u32, String)], version: &str, status: u16) -> s::Message {
+pub(super) fn report(
+    first: &s::Message,
+    gets: &[(u32, String)],
+    version: &str,
+    status: u16,
+) -> s::Message {
     let native_status = |id, command_ref, code, command| {
         s::Command::Status(s::Status {
             id,
@@ -94,7 +99,14 @@ fn report(first: &s::Message, gets: &[(u32, String)], version: &str, status: u16
                     target: None,
                     meta: None,
                     data: Some(Secret(
-                        if index == 0 { "Model-extra" } else { version }.into(),
+                        if uri.ends_with("/Mod") {
+                            "Model-extra"
+                        } else if uri.ends_with("/Edition") {
+                            "48"
+                        } else {
+                            version
+                        }
+                        .into(),
                     )),
                 }],
             }));
@@ -103,7 +115,7 @@ fn report(first: &s::Message, gets: &[(u32, String)], version: &str, status: u16
     packet
 }
 impl Client {
-    async fn publish_operation(&self, id: Uuid) -> anyhow::Result<()> {
+    pub(super) async fn publish_operation(&self, id: Uuid) -> anyhow::Result<()> {
         for _ in 0..16 {
             self.app.commands.relay_once().await?;
         }
@@ -136,7 +148,7 @@ impl Client {
         // This ordinary Inventory Get was issued before the new operation exists.
         let historic = begin(peer, url, initial, ack, 901).await?;
         let os = Uuid::new_v4();
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":os,"field":"os_version","expectedValue":"11.0.10000","deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":os,"task":{"kind":"state_verify","field":"os_version","expectedValue":"11.0.10000"},"deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
         self.publish_operation(os).await?;
         ensure!(post(peer, url, &historic.ack).await?.status() == StatusCode::OK);
         let before = self.call(Method::GET, &format!("/{os}"), None).await?;
@@ -158,7 +170,7 @@ impl Client {
         let stale = self.call(Method::GET, &format!("/{os}"), None).await?;
         ensure!(
             stale.1["commandStatus"] == "published"
-                && stale.1["observation"] == json!({"result":"unknown"}),
+                && stale.1["observation"]["result"] == "unknown",
             "pre-acceptance reading completed a new task: {stale:?}"
         );
         for (session, value, expected) in [
@@ -179,7 +191,7 @@ impl Client {
             let read = self.call(Method::GET, &format!("/{os}"), None).await?;
             ensure!(
                 read.0 == StatusCode::OK
-                    && read.1["field"] == "os_version"
+                    && read.1["task"]["field"] == "os_version"
                     && read.1["observation"]["value"] == value
                     && read.1["observation"]["result"] == expected,
                 "OsVersion outcome {read:?}"
@@ -192,10 +204,10 @@ impl Client {
                         "received"
                     }
             );
-            ensure!(read.1["observation"]["attempt"] == session - 901);
+            ensure!(read.1["observation"]["attempt"] == session - 900);
         }
         let rejected = Uuid::new_v4();
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":rejected,"field":"model","expectedValue":"never","deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":rejected,"task":{"kind":"state_verify","field":"model","expectedValue":"never"},"deadline":self.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::ACCEPTED);
         self.publish_operation(rejected).await?;
         let exchange = begin(peer, url, initial, ack, 904).await?;
         let packet = report(&exchange.first, &exchange.gets, "unused", 500);
@@ -240,6 +252,7 @@ impl Client {
             "rejection outcome {read:?}"
         );
         pg.close().await?;
+        self.firewall_cycle(peer, url, initial, ack).await?;
         Ok(())
     }
 }

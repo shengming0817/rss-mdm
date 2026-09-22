@@ -186,7 +186,14 @@ pub(crate) async fn accept(
         .map_err(db)?;
     let mut run = Run::from_row(row)?;
     if run.sealed_at.is_some() {
-        return Err(Error::Conflict);
+        if message
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Results(_)))
+        {
+            return Err(Error::Conflict);
+        }
+        return Ok(true);
     }
     let limits = CodecLimits::default();
     let previous = syncml::decode(previous.as_bytes(), &limits).map_err(|_| corrupt())?;
@@ -355,19 +362,4 @@ impl AccessStore {
         tx.commit().await.map_err(db)?;
         Ok(run)
     }
-}
-
-/// Restore exact product evidence without using the mutable Inventory projection.
-pub(crate) async fn load_run(
-    conn: &mut sqlx::PgConnection,
-    tenant: &str,
-    id: Uuid,
-) -> Result<Run, Error> {
-    let row = sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid"))
-        .bind(tenant)
-        .bind(id.to_string())
-        .fetch_one(conn)
-        .await
-        .map_err(db)?;
-    Run::from_row(row)
 }

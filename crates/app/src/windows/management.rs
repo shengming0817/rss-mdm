@@ -86,12 +86,8 @@ pub(super) async fn manage(
 /// Response provenance belongs to the native adapter, independently of audit formatting.
 pub(crate) struct ManagementReply {
     bytes: Vec<u8>,
-    replayed: bool,
 }
 impl ManagementReply {
-    pub(crate) fn is_replay(&self) -> bool {
-        self.replayed
-    }
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
@@ -123,10 +119,7 @@ pub(crate) async fn management_on(
             .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
     let stored = match session_decision(tx, principal, message, &digest, audit).await? {
         SessionDecision::Replay(bytes) => {
-            return Ok(ManagementReply {
-                bytes,
-                replayed: true,
-            });
+            return Ok(ManagementReply { bytes });
         }
         SessionDecision::Continue(stored) => stored,
     };
@@ -168,21 +161,26 @@ pub(crate) async fn management_on(
         &server.nonce,
         initial,
     )?;
+    let filtered =
+        crate::commands::native::receive_on(tx, principal, message, authenticated_session).await?;
     let (run_id, complete) = collect(
         tx,
         &scope,
-        message,
+        &filtered,
         stored.as_ref(),
         &mut response,
         authenticated_session,
         audit,
     )
     .await?;
+    let pending =
+        crate::commands::native::send_on(tx, principal, &mut response, authenticated_session)
+            .await?;
     let response = syncml::encode(&response, &CodecLimits::default())
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
     let correlation =
         std::str::from_utf8(&response).map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let state = session_state(complete, run_id);
+    let state = session_state(complete && !pending, run_id);
     if stored.is_none() {
         sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
                 .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
@@ -195,10 +193,7 @@ pub(crate) async fn management_on(
     server.persist_nonce(tx, &tenant, request, message).await?;
     sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&response).execute(&mut *tx).await.map_err(db)?;
-    Ok(ManagementReply {
-        bytes: response,
-        replayed: false,
-    })
+    Ok(ManagementReply { bytes: response })
 }
 
 fn session_state(complete: bool, run_id: Option<Uuid>) -> &'static str {
@@ -538,6 +533,7 @@ async fn session_decision(
         if let Some(old)=sqlx::query("SELECT digest,response FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
+            crate::commands::native::replay_on(tx,principal,message).await?;
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
             audit.management_result(crate::audit::ManagementResult::Replayed);
             return old.try_get("response").map(SessionDecision::Replay).map_err(db);

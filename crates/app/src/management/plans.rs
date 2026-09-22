@@ -54,12 +54,18 @@ impl Management {
                     1,
                     v.digest().bytes(),
                 ))?;
+                let version_number = *version;
                 let version = input(p::Version::new(
                     id.clone(),
                     *version,
                     payload,
                     p::RemovalRule::CancelOutstandingRetainEffects,
                 ))?;
+                let tenant = self.tenant.to_string();
+                let policy_key = id.value().to_owned();
+                let r = resource.clone();
+                let v = resource_version.clone();
+                tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_management.firewall_versions SELECT $1::uuid,$2,$3,resource,version FROM mdm_management.firewall_resources WHERE tenant_id=$1::uuid AND resource=$4 AND version=$5 ON CONFLICT DO NOTHING").bind(tenant).bind(policy_key).bind(version_number as i64).bind(r).bind(v).execute(c).await?;Ok(())})).await?;
                 let tenant = self.tenant.to_string();
                 let resource = resource.clone();
                 let resource_version = resource_version.clone();
@@ -129,6 +135,10 @@ impl Management {
                 break;
             }
         }
+        for fact in self.firewall_facts(tx, &id).await? {
+            facts.retain(|f| f.key() != fact.key());
+            facts.push(fact);
+        }
         let plan = input(p::reconcile(p::PlanInput {
             policy: state.policy(),
             targets: &target,
@@ -137,7 +147,9 @@ impl Management {
             as_of: at,
         }))?;
         let registrations = self.device_identities(tx, &devices).await?;
+        let configuration = self.freeze_firewall(tx, state.policy(), &devices).await?;
         let result = Preview {
+            configuration,
             registrations,
             id: preview,
             policy: id.value().into(),
@@ -188,13 +200,44 @@ impl Management {
         {
             return Err(Error::Conflict.into());
         }
+        if let Some(configuration) = &preview.configuration {
+            for (device, expected) in &configuration.devices {
+                if super::configuration::evidence(tx, device).await? != *expected {
+                    return Err(Error::Conflict.into());
+                }
+            }
+        }
         let policy = input(p::PolicyId::new(self.tenant, id))?;
+        let mut selected_revision = preview.policy_revision;
+        let updates = self.firewall_facts(tx, &policy).await?;
+        if !updates.is_empty() {
+            selected_revision = checked(
+                self.policies
+                    .execute_in(
+                        tx,
+                        &pg::Request {
+                            id: input(p::RequestId::new(
+                                self.tenant,
+                                format!("{}-facts", request.operation_id),
+                            ))?,
+                            expected_storage_revision: selected_revision,
+                            as_of: at,
+                            command: pg::Command::ReplaceFacts {
+                                policy: policy.clone(),
+                                facts: updates,
+                            },
+                        },
+                    )
+                    .await?,
+            )?
+            .storage_revision;
+        }
         let select = pg::Request {
             id: input(p::RequestId::new(
                 self.tenant,
                 format!("{}-targets", request.operation_id),
             ))?,
-            expected_storage_revision: preview.policy_revision,
+            expected_storage_revision: selected_revision,
             as_of: at,
             command: pg::Command::SelectTargets {
                 policy: policy.clone(),
@@ -226,15 +269,17 @@ impl Management {
         let tenant = self.tenant.to_string();
         let policy = id.to_owned();
         let bytes = plan.bytes().to_vec();
+        let saved_revision = result.storage_revision as i64;
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(
-                    "INSERT INTO mdm_management.plan_references VALUES($1::uuid,$2::uuid,$3,$4)",
+                    "INSERT INTO mdm_management.plan_references VALUES($1::uuid,$2::uuid,$3,$4,$5)",
                 )
                 .bind(tenant)
                 .bind(preview.id.to_string())
                 .bind(policy)
                 .bind(bytes)
+                .bind(saved_revision)
                 .execute(c)
                 .await?;
                 Ok(())

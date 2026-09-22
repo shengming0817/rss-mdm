@@ -18,7 +18,52 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         tenants: vec!["11111111-1111-4111-8111-111111111111".into()],
     };
     let mut owner = PgConnection::connect_with(&options).await?;
+    let candidate = units();
+    migrate_units(&mut owner, &installation, &candidate[..candidate.len() - 1]).await?;
+    // A real previous ledger is installed; tenant RLS must not hide active work from upgrade.
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(&installation.tenants[0])
+        .execute(&mut owner)
+        .await?;
+    owner.execute("INSERT INTO rss_device_command.authorities VALUES('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222',1,1); INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint) VALUES('11111111-1111-4111-8111-111111111111','upgrade-evidence','22222222-2222-4222-8222-222222222222',1,1,decode(repeat('00',32),'hex'),1000,1,'mdm.commands.v1','upgrade-evidence',decode(repeat('00',32),'hex'))").await?;
+    owner
+        .execute("SELECT set_config('rss.tenant_id','',false)")
+        .await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    owner.execute("ROLLBACK").await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT NOT complete FROM public.mdm_migrations WHERE name='windows-configuration-v1'"
+        )
+        .fetch_one(&mut owner)
+        .await?
+    );
+    // Test-only repair of our injected active fixture. Production never repairs an incomplete ledger.
+    owner
+        .execute("DELETE FROM public.mdm_migrations WHERE name='windows-configuration-v1'")
+        .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(&installation.tenants[0])
+        .execute(&mut owner)
+        .await?;
+    owner.execute("UPDATE rss_device_command.commands SET status='cancelled',terminal_at=2 WHERE command_id='upgrade-evidence'").await?;
+    owner
+        .execute("SELECT set_config('rss.tenant_id','',false)")
+        .await?;
     migrate_on(&mut owner, &installation).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(&installation.tenants[0])
+        .execute(&mut owner)
+        .await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT status FROM rss_device_command.commands WHERE command_id='upgrade-evidence'"
+        )
+        .fetch_one(&mut owner)
+        .await?
+            == "cancelled"
+    );
+
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
             .fetch_all(&mut owner)

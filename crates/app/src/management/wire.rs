@@ -45,7 +45,7 @@ view!(ResourceReceipt {
     storage_revision: u64
 });
 view!(ResourceRead { id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
-view!(ResourceVersion { id: String, digest: [u8;32], state: String, variants: Vec<super::resources::Variant> });
+view!(ResourceVersion { configuration: Option<serde_json::Value>, id: String, digest: [u8;32], state: String, variants: Vec<super::resources::Variant> });
 view!(Source { reference: Reference, revision: u64, member_version: Option<i64>, members: Vec<String> });
 view!(SourceRef {
     reference: Reference,
@@ -83,7 +83,7 @@ pub(super) enum Intent {
     },
 }
 view!(Plan { id: String, scheduling_open: bool, intents: Vec<Intent>, dispatch: String });
-view!(Preview { id: Uuid, policy: String, policy_revision: u64, scope: Uuid, scope_revision: u64, as_of: i64, sources: Vec<Source>, devices: Vec<String>, registrations: std::collections::BTreeMap<String,DeviceIdentity>, explanation: ScopeExplanation, plan: Plan });
+view!(Preview { configuration: Option<super::configuration::Frozen>, id: Uuid, policy: String, policy_revision: u64, scope: Uuid, scope_revision: u64, as_of: i64, sources: Vec<Source>, devices: Vec<String>, registrations: std::collections::BTreeMap<String,DeviceIdentity>, explanation: ScopeExplanation, plan: Plan });
 view!(SavedPlan {
     receipt: PolicyReceipt,
     preview: Uuid,
@@ -102,7 +102,7 @@ pub(super) enum Response {
     PolicyReceipt(PolicyReceipt),
     ResourceRead(ResourceRead),
     ResourceReceipt(ResourceReceipt),
-    Preview(Preview),
+    Preview(Box<Preview>),
     SavedPlan(SavedPlan),
 }
 impl Response {

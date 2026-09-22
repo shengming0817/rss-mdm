@@ -1,6 +1,96 @@
 {
   "columns": [
     [
+      "firewall_resources",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_resources",
+      "resource",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_resources",
+      "version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_resources",
+      "enabled",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_resources",
+      "digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_versions",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_versions",
+      "policy",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_versions",
+      "version",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_versions",
+      "resource",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_versions",
+      "resource_version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "operations",
       "tenant_id",
       "uuid",
@@ -67,6 +157,15 @@
       "plan_references",
       "plan",
       "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "plan_references",
+      "saved_revision",
+      "bigint",
       true,
       null,
       "",
@@ -280,65 +379,35 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "operations",
-      "operations_pkey",
-      "CREATE UNIQUE INDEX operations_pkey ON mdm_management.operations USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "plan_references",
-      "plan_references_pkey",
-      "CREATE UNIQUE INDEX plan_references_pkey ON mdm_management.plan_references USING btree (tenant_id, preview)",
-      true,
-      true,
-      true
-    ],
-    [
-      "previews",
-      "previews_pkey",
-      "CREATE UNIQUE INDEX previews_pkey ON mdm_management.previews USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "resource_references",
-      "resource_references_pkey",
-      "CREATE UNIQUE INDEX resource_references_pkey ON mdm_management.resource_references USING btree (tenant_id, resource, version, policy)",
-      true,
-      true,
-      true
-    ],
-    [
-      "saved_queries",
-      "saved_queries_pkey",
-      "CREATE UNIQUE INDEX saved_queries_pkey ON mdm_management.saved_queries USING btree (tenant_id, instance, owner, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "scope_versions",
-      "scope_versions_pkey",
-      "CREATE UNIQUE INDEX scope_versions_pkey ON mdm_management.scope_versions USING btree (tenant_id, id, revision)",
-      true,
-      true,
-      true
-    ],
-    [
-      "scopes",
-      "scopes_pkey",
-      "CREATE UNIQUE INDEX scopes_pkey ON mdm_management.scopes USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
+    [
+      "firewall_resources",
+      "firewall_resources_digest_check",
+      "c",
+      "CHECK ((octet_length(digest) = 32))",
+      true
+    ],
+    [
+      "firewall_resources",
+      "firewall_resources_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, resource, version)",
+      true
+    ],
+    [
+      "firewall_versions",
+      "firewall_versions_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, policy, version)",
+      true
+    ],
+    [
+      "firewall_versions",
+      "firewall_versions_tenant_id_resource_resource_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, resource, resource_version) REFERENCES mdm_management.firewall_resources(tenant_id, resource, version)",
+      true
+    ],
     [
       "operations",
       "operations_fingerprint_check",
@@ -471,6 +540,88 @@
       "c",
       "CHECK ((revision > 0))",
       true
+    ]
+  ],
+  "indexes": [
+    [
+      "firewall_resources",
+      "firewall_resources_pkey",
+      "CREATE UNIQUE INDEX firewall_resources_pkey ON mdm_management.firewall_resources USING btree (tenant_id, resource, version)",
+      true,
+      true,
+      true
+    ],
+    [
+      "firewall_versions",
+      "firewall_versions_pkey",
+      "CREATE UNIQUE INDEX firewall_versions_pkey ON mdm_management.firewall_versions USING btree (tenant_id, policy, version)",
+      true,
+      true,
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_management.operations USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "plan_references",
+      "plan_references_pkey",
+      "CREATE UNIQUE INDEX plan_references_pkey ON mdm_management.plan_references USING btree (tenant_id, preview)",
+      true,
+      true,
+      true
+    ],
+    [
+      "previews",
+      "previews_pkey",
+      "CREATE UNIQUE INDEX previews_pkey ON mdm_management.previews USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "resource_references",
+      "resource_references_pkey",
+      "CREATE UNIQUE INDEX resource_references_pkey ON mdm_management.resource_references USING btree (tenant_id, resource, version, policy)",
+      true,
+      true,
+      true
+    ],
+    [
+      "saved_queries",
+      "saved_queries_pkey",
+      "CREATE UNIQUE INDEX saved_queries_pkey ON mdm_management.saved_queries USING btree (tenant_id, instance, owner, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_versions",
+      "scope_versions_pkey",
+      "CREATE UNIQUE INDEX scope_versions_pkey ON mdm_management.scope_versions USING btree (tenant_id, id, revision)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scopes",
+      "scopes_pkey",
+      "CREATE UNIQUE INDEX scopes_pkey ON mdm_management.scopes USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ]
+  ],
+  "policyFacts": [
+    "CREATE OR REPLACE FUNCTION mdm_commands.policy_facts(p_policy text)\n RETURNS TABLE(device text, version bigint, digest bytea, status text, write_status integer)\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog', 'mdm_commands'\nAS $function$\nSELECT o.device,(o.request->'task'->>'version')::bigint AS version,r.digest,d.status,(SELECT a.status FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' ORDER BY ordinal DESC LIMIT 1) AS write_status FROM mdm_commands.operations o JOIN mdm_management.firewall_versions v ON v.tenant_id=o.tenant_id AND v.policy=o.request->'task'->>'policy' AND v.version=(o.request->'task'->>'version')::bigint JOIN mdm_management.firewall_resources r ON(r.tenant_id,r.resource,r.version)=(v.tenant_id,v.resource,v.resource_version) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND o.request->'task'->>'kind'='firewall' AND o.request->'task'->>'policy'=p_policy ORDER BY o.id;\n$function$\n",
+    "mdm_owner",
+    true,
+    [
+      "search_path=pg_catalog, mdm_commands"
     ]
   ]
 }

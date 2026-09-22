@@ -1,9 +1,10 @@
 //! Product management composition. Core decisions and component storage retain their owners.
 pub(crate) mod assets;
 mod config;
+pub(crate) mod configuration;
 mod groups;
 mod http;
-mod model;
+pub(crate) mod model;
 mod plans;
 mod publications;
 mod resources;

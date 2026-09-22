@@ -2,13 +2,13 @@
 
 ## 范围与接口
 
-首个任务类型是 Windows 状态核实。已有注册设备在下一次通过 mTLS 和 SyncML 双向认证的签入中，以新的 CollectionRun 读取实际值。支持 `model` 与 `os_version`，值沿用 Inventory 的有界 UTF-8 校验且不裁剪或改写。每个任务核实一个字段；任务本身不修改设备。普通资产采集继续由既有通道负责。
+首个任务类型是 Windows 状态核实。已有注册设备在下一次通过 mTLS 和 SyncML 双向认证的签入中，由任务自身的 Get 读取实际值。支持 `model` 与 `os_version`，值沿用 Inventory 的有界 UTF-8 校验且不裁剪或改写。每个任务核实一个字段；任务本身不修改设备。普通资产采集继续由既有通道负责。
 
 管理请求使用现有 Identity 会话、Origin/CSRF 和设备范围授权。端点为：
 
 | 方法与路径（前缀 `/api/v1/devices/{device}`） | 权限 | 请求 |
 |---|---|---|
-| POST `/operations` | `state_verify` | `operationId`、`field`、`expectedValue`、`deadline`（Unix 秒） |
+| POST `/operations` | `state_verify` | `operationId`、`task: {kind:"state_verify",field,expectedValue}`、`deadline`（Unix 秒） |
 | GET `/operations/{id}` | `operation_read` | 无 |
 | POST `/operations/{id}/cancel` | `operation_cancel` | `requestId`、`expectedRevision` |
 | POST `/operations/{id}/approve` | `state_verify` | `requestId`、`expectedRevision` |
@@ -19,13 +19,13 @@
 
 ## 结果与恢复
 
-`queued` 是持久受理；`published` 是精确 Outbox 消息已由产品网关持久接纳；`received` 是关联的原生 Get 成功 Status；`applied` 仅在关联实际 Results 校验并匹配预期摘要后出现。查询中的观察结果另外区分 `unknown`、`mismatched` 和 `matched`，并提供 attempt、CollectionRun、原生状态与实际值。
+`queued` 是持久受理；`published` 是精确 Outbox 消息已由产品网关持久接纳；`received` 是关联的原生 Get 成功 Status；`applied` 仅在关联实际 Results 校验并匹配预期摘要后出现。查询中的观察结果另外区分 `unknown`、`mismatched` 和 `matched`，并提供 attempt、原生关联 ID、原生状态与实际值。
 
-不匹配继续等待后续签入。每个 command 至多一个未结束的 attempt；新尝试沿用 operation/command，分配新的 attempt 与 CollectionRun。提前到达的 Results 由 CollectionRun 保存，在对应 Status 到达前不标记匹配成功。旧尝试、错误注册或乱序消息不能覆盖当前结果。
+不匹配继续等待后续签入。每个 command 至多一个未结束的 attempt；新尝试沿用 operation/command，分配新的 attempt 与原生关联 ID。提前到达的 Results 由命令 attempt 保存，在对应 Status 到达前不标记匹配成功。旧尝试、错误注册或乱序消息不能覆盖当前结果。
 
-任务只在原生适配器生成新的 Get 响应时关联 CollectionRun。合法缓存重放沿用已有 attempt；不能把受理前或批准失效期间发出的普通 Inventory Get 事后绑定给新任务。旧读数仍可作为 Inventory 观察保留，但不完成新任务。
+任务在管理响应编码前生成自身 Get 并持久化关联。合法缓存重放沿用已有 attempt；不能把受理前或批准失效期间发出的普通 Inventory Get 事后绑定给新任务。旧读数仍可作为 Inventory 观察保留，但不完成新任务。
 
-取消、过期和撤权阻止后续任务投递；含失效任务的缓存响应也拒绝重放。已经发出的合法回执仍可保留；服务端终态不表示终端撤销、停止或效果回滚。会话缓存可清理，任务关联与 CollectionRun 证据保留。
+取消、过期和撤权阻止后续任务投递；含失效任务的缓存响应也拒绝重放。已经发出的合法回执仍可保留；服务端终态不表示终端撤销、停止或效果回滚。会话缓存可清理，任务关联与历史证据保留。
 
 503 `operation_unknown` 表示提交可能完成。保留原请求及 UUID，先 GET 查询并以完全相同的请求重试；暂时 404 也不构成回滚证明。不要生成替代 operation。后台恢复由 RSS reconcile 的持久唤醒/租约和 device-command 的有界恢复提供，组件状态没有产品副本。worker 生命周期可无限等待并由运行时取消；每次存储操作仍使用有限预算，不能把无限预算直接转换为平台无法表示的 Instant。
 
@@ -36,7 +36,7 @@
 创建请求示例（截止时间须替换为未来的 Unix 秒）：
 
 ```json
-{"operationId":"a2998159-d1b6-4e8a-87d1-6253367530e9","field":"model","expectedValue":"Surface Pro","deadline":1800000000}
+{"operationId":"a2998159-d1b6-4e8a-87d1-6253367530e9","task":{"kind":"state_verify","field":"model","expectedValue":"Surface Pro"},"deadline":1800000000}
 ```
 
 成功返回 `202`：
@@ -86,3 +86,5 @@ relay 对可恢复故障按 1–60 秒退避；提交未知保留原消息和身
 `python3 hack/command-t2.py` 使用真实 TLS PostgreSQL、真实产品 Router/Identity 管理 HTTP、真实注册证书和受控 SyncML 客户端；源码与受测 HEAD 由完整 `make ci` 绑定。它验证服务端接缝，不能代替真实 Windows T3，也不宣称 OS 状态或脚本效果已经在真机验证。
 
 参考：[Windows OMA DM](https://learn.microsoft.com/en-us/windows/client-management/oma-dm-protocol-support)、[SQLx v0.9.0 事务源码](https://github.com/launchbadge/sqlx/blob/v0.9.0/sqlx-core/src/transaction.rs)。
+
+#2466 的单向升级及防火墙消费者见[Windows 配置指南](202609220000-2466-windows-firewall.md)。旧平铺任务请求和事后绑定 Inventory 的执行路径已退出。

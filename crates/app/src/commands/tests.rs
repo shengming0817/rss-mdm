@@ -4,6 +4,7 @@
 )]
 //! Real product Router and embedded Identity; the native peer is supplied by Windows T2.
 use super::*;
+mod firewall;
 mod native;
 use crate::identity_t2::Browser;
 use anyhow::ensure;
@@ -90,7 +91,7 @@ impl Client {
     }
     pub(crate) async fn accept(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
-        let request = json!({"operationId":self.operation,"field":"model","expectedValue":"Final-Model","deadline":self.app.clock.unix_seconds()?+300});
+        let request = json!({"operationId":self.operation,"task":{"kind":"state_verify","field":"model","expectedValue":"Final-Model"},"deadline":self.app.clock.unix_seconds()?+300});
         let mut malformed = request.clone();
         malformed["unexpected"] = true.into();
         let rejected = self.call(Method::POST, "", Some(malformed)).await?;
@@ -118,7 +119,7 @@ impl Client {
         let replay = self.call(Method::POST, "", Some(request.clone())).await?;
         ensure!(replay == accepted);
         let mut conflict = request.clone();
-        conflict["expectedValue"] = "other".into();
+        conflict["task"]["expectedValue"] = "other".into();
         ensure!(self.call(Method::POST, "", Some(conflict)).await?.0 == StatusCode::CONFLICT);
         #[cfg(feature = "integration")]
         self.atomic_failure(&request).await?;
@@ -177,8 +178,8 @@ impl Client {
             .await?;
         ensure!(
             read.0 == StatusCode::OK
-                && read.1["field"] == "model"
-                && read.1["expectedValue"] == "Final-Model"
+                && read.1["task"]["field"] == "model"
+                && read.1["task"]["expectedValue"] == "Final-Model"
                 && read.1["commandStatus"] == "published"
                 && read.1["observation"]["result"] == "unknown",
             "published is not observed {:?}",
@@ -218,7 +219,7 @@ impl Client {
             first["operationId"] = id.to_string().into();
             let mut second = first.clone();
             if different {
-                second["expectedValue"] = "different-target".into();
+                second["task"]["expectedValue"] = "different-target".into();
             }
             let (a, b) = tokio::join!(
                 one.call(&self.router, Method::POST, &path, Some(first)),
@@ -578,7 +579,7 @@ impl Client {
                 _ => None,
             })
             .collect();
-        ensure!(gets.len() == 2);
+        ensure!(gets.len() == 5);
         let before = self
             .call(Method::GET, &format!("/{}", self.operation), None)
             .await?;
@@ -634,8 +635,10 @@ impl Client {
                     target: None,
                     meta: None,
                     data: Some(Secret(
-                        if index == 0 {
+                        if uri.ends_with("/Mod") {
                             "Final-Model"
+                        } else if uri.ends_with("/Edition") {
+                            "48"
                         } else {
                             "10.0.26100"
                         }
@@ -711,7 +714,7 @@ impl Client {
             "completed Get replayed"
         );
         let id = Uuid::new_v4();
-        let body = json!({"operationId":id,"field":"model","expectedValue":"never","deadline":self.app.clock.unix_seconds()?+60});
+        let body = json!({"operationId":id,"task":{"kind":"state_verify","field":"model","expectedValue":"never"},"deadline":self.app.clock.unix_seconds()?+60});
         ensure!(self.call(Method::POST, "", Some(body)).await?.0 == StatusCode::ACCEPTED);
         let request = json!({"requestId":Uuid::new_v4(),"expectedRevision":1});
         let cancel = self
@@ -743,7 +746,7 @@ impl Client {
         self.other_native_outcomes(peer, url, &initial, &ack)
             .await?;
         let expiry = Uuid::new_v4();
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"field":"model","expectedValue":"after-deadline","deadline":self.app.clock.unix_seconds()?+1}))).await?.0==StatusCode::ACCEPTED);
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"task":{"kind":"state_verify","field":"model","expectedValue":"after-deadline"},"deadline":self.app.clock.unix_seconds()?+1}))).await?.0==StatusCode::ACCEPTED);
         self.expiring = Some(expiry);
         Ok(())
     }
@@ -752,7 +755,7 @@ impl Client {
             .call(Method::GET, &format!("/{}", self.operation), None)
             .await?;
         self.operation = Uuid::new_v4();
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":self.operation,"field":"model","expectedValue":"new-registration","deadline":self.app.clock.unix_seconds()?+60}))).await?.0==StatusCode::ACCEPTED);
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":self.operation,"task":{"kind":"state_verify","field":"model","expectedValue":"new-registration"},"deadline":self.app.clock.unix_seconds()?+60}))).await?.0==StatusCode::ACCEPTED);
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         let generations: (i64, i64) = sqlx::query_as(

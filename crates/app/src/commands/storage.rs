@@ -107,8 +107,11 @@ pub(super) async fn approval_valid(
     now: i64,
 ) -> Result<bool> {
     let approval = operation.approval.clone();
+    let permission = operation.request.task.permission();
     Ok(tx
-        .with_connection(move |c| Box::pin(async move { Ok(approval.valid(c, now).await) }))
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(approval.valid(c, permission, now).await) })
+        })
         .await??)
 }
 pub(super) async fn current_registration(
@@ -222,6 +225,10 @@ pub(super) async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
     let expected_dependencies: serde_json::Value =
         serde_json::from_str(include_str!("dependencies.json")).expect("canonical dependencies");
     if !allowed || actual != expected || dependencies != expected_dependencies {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"command_admission_rejected","authority":allowed,"catalog":actual==expected,"dependencies":dependencies==expected_dependencies})
+        );
         return Err(Error::Unavailable(Failure::CommandInvariant).into());
     }
     Ok(())
