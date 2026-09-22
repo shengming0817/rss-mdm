@@ -309,7 +309,7 @@ pub(crate) async fn envelope(
         "/api/v1/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
-        path if path.starts_with("/api/v2/authentication") => "authentication",
+        path if path.starts_with("/api/v2/tenants/") => "authentication",
         "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
@@ -321,8 +321,8 @@ pub(crate) async fn envelope(
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
     // audit must not replace that settled response (including rotated credentials).
-    let audited =
-        !matches!(request.uri().path(), "/livez" | "/readyz") && !route.starts_with("/api/v2/");
+    let audited = !matches!(request.uri().path(), "/livez" | "/readyz")
+        && !request.uri().path().starts_with("/api/v2/tenants/");
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192

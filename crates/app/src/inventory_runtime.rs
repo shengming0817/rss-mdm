@@ -489,6 +489,7 @@ impl InventoryRuntime {
         let applicable = receipt
             .as_ref()
             .is_some_and(|r| r.decision().outcome().is_applicable());
+        let received = receipt.is_some();
         Ok(DeliveryStatus {
             receipt: receipt.map(|r| ReceiptStatus {
                 batch_id: r.batch().id().as_str().to_owned(),
@@ -499,7 +500,7 @@ impl InventoryRuntime {
                 ProjectionStatus::Projected
             } else if applicable {
                 ProjectionStatus::Pending
-            } else if matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
+            } else if !received && matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
                 ProjectionStatus::PendingReceipt
             } else {
                 ProjectionStatus::NotApplicable

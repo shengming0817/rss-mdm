@@ -140,9 +140,7 @@ async fn register_inner(
         TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
         input.credential(),
     );
-    let digest = hex(Sha256::digest(
-        serde_json::to_vec(&input).map_err(|_| Error::Malformed)?,
-    ));
+    let digest = registration_digest(&input);
     let operation = Operation {
         actor: Actor {
             tenant: proof.tenant_id(),
@@ -154,8 +152,16 @@ async fn register_inner(
     };
     let mut tx = app.access.begin(proof.tenant_id()).await?;
     if let Some(old) = AccessStore::replay(&mut tx, &operation).await? {
-        let receipt =
+        let receipt: wire::RegistrationReceipt =
             serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
+        if app
+            .access
+            .active_registration(&mut tx, proof.tenant_id(), auth.id)
+            .await?
+            != receipt.registration_id
+        {
+            return Err(Error::Conflict.into());
+        }
         tx.rollback().await.map_err(db)?;
         proof.enrollment(&auth.device)?;
         return Ok((StatusCode::OK, Json(receipt)));
@@ -343,10 +349,17 @@ async fn status_inner(
 fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentError> {
     let value: Value = serde_json::from_slice(body)
         .map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if value.get("wireVersion").and_then(Value::as_u64) != Some(u64::from(wire::WIRE_VERSION)) {
+    let version = value
+        .get("wireVersion")
+        .and_then(Value::as_u64)
+        .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
+    if version != u64::from(wire::WIRE_VERSION) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedWire));
     }
-    if value.get("capabilities") != Some(&serde_json::json!(["inventory.basic.v1"])) {
+    let capabilities = value
+        .get("capabilities")
+        .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
+    if capabilities != &serde_json::json!(["inventory.basic.v1"]) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedCapability));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
@@ -365,7 +378,11 @@ fn json_content_type(headers: &HeaderMap) -> Result<(), AgentError> {
 fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
     let value: Value = serde_json::from_slice(body)
         .map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if value.get("wireVersion").and_then(Value::as_u64) != Some(u64::from(wire::WIRE_VERSION)) {
+    let version = value
+        .get("wireVersion")
+        .and_then(Value::as_u64)
+        .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
+    if version != u64::from(wire::WIRE_VERSION) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedWire));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
@@ -441,11 +458,46 @@ fn fingerprint(batch: &Batch, scope: &rss_observation::Scope) -> Result<String, 
 fn hex(bytes: impl AsRef<[u8]>) -> String {
     bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
+fn registration_digest(input: &wire::RegistrationRequest) -> String {
+    let mut hash = Sha256::new();
+    for value in [
+        "rss-mdm.agent.registration.v1",
+        &input.operation_id().to_string(),
+        &input.enrollment_id().to_string(),
+        input.password().expose(),
+        input.credential().expose(),
+        "inventory.basic.v1",
+    ] {
+        hash.update(value.len().to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    hex(hash.finalize())
+}
 fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
     wire::ReportAck {
         wire_version: wire::WIRE_VERSION,
         report_id,
         received_at,
         intake: wire::IntakeStatus::Durable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_discriminators_distinguish_absent_from_unsupported() {
+        let error =
+            parse_report(br#"{"reportId":"00000000-0000-0000-0000-000000000001"}"#).unwrap_err();
+        assert!(matches!(
+            error,
+            AgentError::Wire(wire::ErrorCode::MalformedRequest)
+        ));
+        let error = parse_report(br#"{"wireVersion":2}"#).unwrap_err();
+        assert!(matches!(
+            error,
+            AgentError::Wire(wire::ErrorCode::UnsupportedWire)
+        ));
     }
 }
