@@ -219,6 +219,10 @@ impl Management {
         authorize()?;
         Ok(value)
     }
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "flat exhaustive command routing keeps the public operation set auditable"
+    )]
     async fn dispatch(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -375,6 +379,13 @@ fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>
         | rss_mdm_group_postgres::Rejection::Deleted => {
             Error::ManagementNotFound(Missing::Group).into()
         }
+        rss_mdm_group_postgres::Rejection::CapacityExceeded => {
+            Error::Unavailable(Failure::AssetObjectLimit).into()
+        }
+        rss_mdm_group_postgres::Rejection::PageBudgetExceeded => {
+            Error::Unavailable(Failure::AssetBytesLimit).into()
+        }
+        rss_mdm_group_postgres::Rejection::InvalidInput => Error::Malformed.into(),
         _ => Error::Conflict.into(),
     })
 }

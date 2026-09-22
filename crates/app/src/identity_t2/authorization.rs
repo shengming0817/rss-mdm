@@ -125,7 +125,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
                 .call(
                     &router,
                     Method::GET,
-                    &format!("/api/v1/devices/{device}/inventory"),
+                    &format!("/api/v2/devices/{device}/inventory"),
                     None
                 )
                 .await?
@@ -208,7 +208,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     ensure!(created_group.0 == StatusCode::OK);
     let group_rule_path = format!("/api/v1/authorization/rules/{}", Uuid::new_v4());
     ensure!(put(&mut admin, &router, &group_rule_path, Uuid::new_v4(), 0, json!({"subject":{"kind":"user_group","id":group_id},"grants":[grant("group_read",json!({"kind":"tenant"}))]})).await?.0 == StatusCode::OK);
-    let target = format!("/api/v1/groups/{}", Uuid::new_v4());
+    let target = format!("/api/v2/groups/{}", Uuid::new_v4());
     ensure!(member.call(&router, Method::GET, &target, None).await?.0 == StatusCode::NOT_FOUND);
     let mut disabled = group.clone();
     disabled["enabled"] = json!(false);

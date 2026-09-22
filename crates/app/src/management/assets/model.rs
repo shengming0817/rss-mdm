@@ -26,10 +26,7 @@ pub(crate) struct Sort {
     #[serde(default)]
     pub descending: bool,
 }
-fn page_size() -> usize {
-    50
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Query {
     #[serde(default)]
@@ -38,21 +35,6 @@ pub(crate) struct Query {
     pub select: Vec<FieldKey>,
     #[serde(default)]
     pub sort: Option<Sort>,
-    #[serde(default)]
-    pub cursor: Option<String>,
-    #[serde(default = "page_size")]
-    pub limit: usize,
-}
-impl Default for Query {
-    fn default() -> Self {
-        Self {
-            criteria: None,
-            select: vec![],
-            sort: None,
-            cursor: None,
-            limit: 50,
-        }
-    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -79,7 +61,8 @@ pub(crate) struct Owner {
     pub instance: String,
     pub principal: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ReadScope {
     pub subject: String,
     pub devices: Option<BTreeSet<String>>,
@@ -127,9 +110,6 @@ pub(crate) struct Summary {
     pub matched: usize,
     pub unknown: usize,
     pub total: usize,
-    pub os_versions: BTreeMap<String, usize>,
-    pub channels: BTreeMap<String, usize>,
-    pub asset_states: BTreeMap<String, usize>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
@@ -139,6 +119,23 @@ pub(crate) struct Summary {
     deny_unknown_fields
 )]
 pub(crate) enum Response {
+    QueryStatus {
+        task: Uuid,
+        status: String,
+        summary: Summary,
+        failure: Option<String>,
+        result_url: Option<String>,
+    },
+    Facets {
+        task: Uuid,
+        facet: Facet,
+        items: Vec<FacetCount>,
+        next_cursor: Option<String>,
+    },
+    Accepted {
+        task: Uuid,
+        status_url: String,
+    },
     Fields {
         dictionary: String,
         fields: Vec<serde_json::Value>,
@@ -168,13 +165,30 @@ pub(crate) enum Response {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Command {
+    QueryStatus {
+        task: Uuid,
+        scope: ReadScope,
+    },
+    QueryItems {
+        task: Uuid,
+        scope: ReadScope,
+        limit: usize,
+        cursor: Option<String>,
+    },
+    QueryFacets {
+        task: Uuid,
+        scope: ReadScope,
+        facet: Facet,
+        limit: usize,
+        cursor: Option<String>,
+    },
     Fields,
     Detail {
         device: String,
         scope: ReadScope,
     },
     Search {
-        query: Query,
+        request: Operation<Query>,
         scope: ReadScope,
     },
     Manual {
@@ -197,15 +211,18 @@ pub(crate) enum Command {
         change: Operation<SavedChange>,
     },
     SavedExecute {
+        operation: Uuid,
+        expected_revision: u64,
         owner: Owner,
         id: Uuid,
         scope: ReadScope,
-        cursor: Option<String>,
     },
 }
 impl Command {
     pub(crate) fn operation(&self) -> Option<Uuid> {
         match self {
+            Self::Search { request, .. } => Some(request.operation_id),
+            Self::SavedExecute { operation, .. } => Some(*operation),
             Self::Manual { change, .. } => Some(change.operation_id),
             Self::SavedWrite { change, .. } => Some(change.operation_id),
             _ => None,
@@ -234,4 +251,27 @@ pub(crate) struct QualityField {
     pub quality: crate::collection::Quality,
     pub status: Option<u16>,
     pub received_at: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Facet {
+    OsVersions,
+    Channels,
+    AssetStates,
+}
+impl Facet {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::OsVersions => "os_versions",
+            Self::Channels => "channels",
+            Self::AssetStates => "asset_states",
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FacetCount {
+    pub label: String,
+    pub total: u64,
 }

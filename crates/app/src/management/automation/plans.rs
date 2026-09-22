@@ -113,7 +113,7 @@ impl Management {
                 let run = *resolution;
                 let after = candidate.target_cursor.clone();
                 let mut devices:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query_scalar("SELECT device FROM mdm_management.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND matched AND ($3::text IS NULL OR device>$3 COLLATE \"C\") ORDER BY device LIMIT 1001")
+                    sqlx::query_scalar("SELECT device FROM mdm_management.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND matched AND device>coalesce($3::text,'') COLLATE \"C\" ORDER BY device LIMIT 1001")
                         .bind(tenant).bind(run.to_string()).bind(after).fetch_all(c).await
                 })).await?;
                 let more = devices.len() > 1000;
@@ -182,12 +182,16 @@ impl Management {
         let JobInput::Policy {
             policy: owner,
             scope,
+            resolution,
             ..
         } = job
         else {
             return Err(Error::Conflict.into());
         };
         if owner != policy || !complete || failure.is_some() {
+            return Err(Error::Conflict.into());
+        }
+        if !self.scope_authority_current_in(tx, resolution).await? {
             return Err(Error::Conflict.into());
         }
         let candidate = input(p::RequestId::new(

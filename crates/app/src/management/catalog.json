@@ -46,6 +46,150 @@
       ""
     ],
     [
+      "asset_query_facets",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "run",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "label",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "total",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "run",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "sort_key",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "document",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "total",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "matched",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "unknown",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
       "automation_jobs",
       "tenant_id",
       "uuid",
@@ -235,42 +379,6 @@
       ""
     ],
     [
-      "plan_references",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_references",
-      "preview",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_references",
-      "policy",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_references",
-      "plan",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
       "policy_assignments",
       "tenant_id",
       "uuid",
@@ -301,51 +409,6 @@
       "policy_assignments",
       "revision",
       "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "scope",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "scope_revision",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "document",
-      "jsonb",
       true,
       null,
       "",
@@ -794,6 +857,38 @@
       true
     ],
     [
+      "asset_query_facets",
+      "asset_query_facets_pkey",
+      "CREATE UNIQUE INDEX asset_query_facets_pkey ON mdm_management.asset_query_facets USING btree (tenant_id, run, kind, label)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_order",
+      "CREATE INDEX asset_query_results_order ON mdm_management.asset_query_results USING btree (tenant_id, run, sort_key, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_pkey",
+      "CREATE UNIQUE INDEX asset_query_results_pkey ON mdm_management.asset_query_results USING btree (tenant_id, run, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_pkey",
+      "CREATE UNIQUE INDEX asset_query_runs_pkey ON mdm_management.asset_query_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
       "automation_jobs",
       "automation_jobs_pending",
       "CREATE INDEX automation_jobs_pending ON mdm_management.automation_jobs USING btree (tenant_id, id) WHERE (NOT forwarded)",
@@ -842,14 +937,6 @@
       true
     ],
     [
-      "plan_references",
-      "plan_references_pkey",
-      "CREATE UNIQUE INDEX plan_references_pkey ON mdm_management.plan_references USING btree (tenant_id, preview)",
-      true,
-      true,
-      true
-    ],
-    [
       "policy_assignments",
       "policy_assignments_pkey",
       "CREATE UNIQUE INDEX policy_assignments_pkey ON mdm_management.policy_assignments USING btree (tenant_id, policy)",
@@ -861,14 +948,6 @@
       "policy_assignments",
       "policy_assignments_scope",
       "CREATE INDEX policy_assignments_scope ON mdm_management.policy_assignments USING btree (tenant_id, scope, policy)",
-      true,
-      true,
-      true
-    ],
-    [
-      "previews",
-      "previews_pkey",
-      "CREATE UNIQUE INDEX previews_pkey ON mdm_management.previews USING btree (tenant_id, id)",
       true,
       true,
       true
@@ -985,6 +1064,118 @@
       true
     ],
     [
+      "asset_query_facets",
+      "asset_query_facets_kind_check",
+      "c",
+      "CHECK ((kind = ANY (ARRAY['os_versions'::text, 'channels'::text, 'asset_states'::text])))",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_label_check",
+      "c",
+      "CHECK ((octet_length(label) <= 256))",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run, kind, label)",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_tenant_id_run_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_management.asset_query_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_total_check",
+      "c",
+      "CHECK ((total > 0))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_device_check",
+      "c",
+      "CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256)))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_digest_check",
+      "c",
+      "CHECK ((octet_length(digest) = 32))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_document_check",
+      "c",
+      "CHECK ((octet_length(document) <= 1048576))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run, device)",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_sort_key_check",
+      "c",
+      "CHECK ((octet_length(sort_key) <= 1024))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_tenant_id_run_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_management.asset_query_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_check",
+      "c",
+      "CHECK (((matched >= 0) AND (matched <= total)))",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_check1",
+      "c",
+      "CHECK (((unknown >= 0) AND (unknown <= total)))",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_tenant_id_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, id) REFERENCES mdm_management.automation_jobs(tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_total_check",
+      "c",
+      "CHECK (((total >= 0) AND (total <= 1000000)))",
+      true
+    ],
+    [
       "automation_jobs",
       "automation_jobs_authority_revision_check",
       "c",
@@ -1090,27 +1281,6 @@
       true
     ],
     [
-      "plan_references",
-      "plan_references_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, preview)",
-      true
-    ],
-    [
-      "plan_references",
-      "plan_references_plan_check",
-      "c",
-      "CHECK ((octet_length(plan) = 32))",
-      true
-    ],
-    [
-      "plan_references",
-      "plan_references_tenant_id_preview_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, preview) REFERENCES mdm_management.previews(tenant_id, id)",
-      true
-    ],
-    [
       "policy_assignments",
       "policy_assignments_pkey",
       "p",
@@ -1136,27 +1306,6 @@
       "policy_assignments_tenant_id_scope_fkey",
       "f",
       "FOREIGN KEY (tenant_id, scope) REFERENCES mdm_management.scopes(tenant_id, id)",
-      true
-    ],
-    [
-      "previews",
-      "previews_document_check",
-      "c",
-      "CHECK ((octet_length((document)::text) <= 8388608))",
-      true
-    ],
-    [
-      "previews",
-      "previews_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
-      true
-    ],
-    [
-      "previews",
-      "previews_tenant_id_scope_scope_revision_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, scope, scope_revision) REFERENCES mdm_management.scope_versions(tenant_id, id, revision)",
       true
     ],
     [

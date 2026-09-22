@@ -56,6 +56,20 @@ pub(super) fn references(
     refs
 }
 impl Management {
+    /// Revalidate the frozen source identities in the serializable publication/save
+    /// transaction. The ingress worker may not have forwarded a committed change yet.
+    pub(super) async fn scope_authority_current_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        run: Uuid,
+    ) -> Result<bool> {
+        let tenant = self.tenant.to_string();
+        Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=r.tenant_id AND h.revision>r.asset_watermark AND EXISTS(SELECT 1 FROM mdm_management.scope_source_members m WHERE m.tenant_id=r.tenant_id AND m.run=r.id AND m.device=h.device)) FROM mdm_management.scope_runs r WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
+                .bind(tenant).bind(run.to_string()).fetch_one(c).await
+        })).await?)
+    }
+
     async fn capture_scope_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -287,7 +301,7 @@ impl Management {
         let limit = 1000usize.min(16000 / frozen.sources.len().max(1));
         let tenant = self.tenant.to_string();
         let mut devices:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT DISTINCT device FROM mdm_management.scope_source_members WHERE tenant_id=$1::uuid AND run=$2::uuid AND source=ANY($3) AND ($4::text IS NULL OR device>$4 COLLATE \"C\") ORDER BY device LIMIT $5")
+            sqlx::query_scalar("SELECT DISTINCT device FROM mdm_management.scope_source_members WHERE tenant_id=$1::uuid AND run=$2::uuid AND source=ANY($3) AND device>coalesce($4::text,'') COLLATE \"C\" ORDER BY device LIMIT $5")
                 .bind(tenant).bind(id.to_string()).bind(targets).bind(after).bind((limit+1) as i64).fetch_all(c).await
         })).await?;
         let more = devices.len() > limit;
@@ -344,7 +358,7 @@ impl Management {
                         };
                         Ok(s::SourceMembership {
                             source: input(s::SourceRef::new(identity, version, at))?,
-                            contains: Some(source_hits.contains(&index)),
+                            contains: s::Membership::Known(source_hits.contains(&index)),
                         })
                     })
                     .collect()
@@ -386,7 +400,7 @@ impl Management {
         frozen: &ScopeInput,
     ) -> Result<()> {
         let (current, _) = self.scope_definition(tx, scope).await?;
-        if current != revision {
+        if current != revision || !self.scope_authority_current_in(tx, id).await? {
             return Err(Error::Conflict.into());
         }
         for reference in references(scope, revision, frozen) {

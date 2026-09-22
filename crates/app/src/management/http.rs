@@ -44,7 +44,7 @@ async fn run(
         Command::GroupPreview { .. }
             | Command::Group {
                 change: Operation {
-                    input: GroupChange::Recompute,
+                    input: GroupChange::Recompute {},
                     ..
                 },
                 ..
@@ -99,7 +99,7 @@ async fn run(
             Command::GroupPreview { .. }
                 | Command::Group {
                     change: Operation {
-                        input: GroupChange::Recompute,
+                        input: GroupChange::Recompute {},
                         ..
                     },
                     ..
@@ -150,7 +150,7 @@ async fn group_write(
     Path(id): Path<Uuid>,
     Json(change): Json<Operation<GroupChange>>,
 ) -> std::result::Result<Response, Error> {
-    let permission = if matches!(change.input, GroupChange::Recompute) {
+    let permission = if matches!(change.input, GroupChange::Recompute {}) {
         Permission::GroupRecompute
     } else {
         Permission::GroupWrite

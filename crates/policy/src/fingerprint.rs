@@ -1,12 +1,10 @@
-//! V1 plan identity encoding. Never hash Debug output, memory layout or request time.
+//! Canonical streamed plan identity encoding. Never hash Debug output, memory layout or request time.
 use crate::{DeviceId, PolicyError, PolicyId, TargetSnapshotId};
 use crate::{
-    Effect, ExecutionKey, ExecutionRecord, PayloadRef, PlanId, Policy, Progress, RemovalRule,
-    Status, TargetSnapshot, Version,
+    Effect, ExecutionRecord, PayloadRef, PlanId, Policy, Progress, RemovalRule, Status, Version,
 };
 use rss_request_context::TenantId;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 struct Chain {
@@ -181,7 +179,7 @@ impl Encoding {
     fn fact(&mut self, f: &ExecutionRecord) {
         self.version(f.version());
         self.object(f.device().tenant(), f.device().value());
-        self.number(0); // Apply action in V1.
+        self.number(0); // Apply action.
         self.number(match f.progress() {
             Progress::Planned => 0,
             Progress::Running => 1,
@@ -197,37 +195,4 @@ impl Encoding {
             Effect::VerifiedAbsent => 3,
         });
     }
-}
-pub(crate) fn plan_id(
-    policy: &Policy,
-    targets: &TargetSnapshot,
-    facts: &BTreeMap<ExecutionKey, ExecutionRecord>,
-) -> PlanId {
-    let mut e = Encoding(Sha256::new());
-    e.bytes(b"rss-mdm-policy/plan/v1");
-    e.object(policy.key().tenant(), policy.key().value());
-    e.number(policy.revision());
-    e.number(match policy.status() {
-        Status::Draft => 0,
-        Status::Active => 1,
-        Status::Paused => 2,
-        Status::Archived => 3,
-    });
-    if let Some(v) = policy.version() {
-        e.number(1);
-        e.version(v);
-    } else {
-        e.number(0);
-    }
-    e.object(targets.key().tenant(), targets.key().value());
-    e.number(targets.revision());
-    e.number(targets.members().len() as u64);
-    for target in targets.members() {
-        e.object(target.tenant(), target.value());
-    }
-    e.number(facts.len() as u64);
-    for fact in facts.values() {
-        e.fact(fact);
-    }
-    PlanId(e.0.finalize().into())
 }

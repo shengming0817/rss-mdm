@@ -80,9 +80,7 @@ pub(crate) fn decode_domain<T>(
             crate::core::PolicyError::StaleVersion { .. } => "StaleVersion",
             crate::core::PolicyError::VersionConflict { .. } => "VersionConflict",
             crate::core::PolicyError::PayloadConflict { .. } => "PayloadConflict",
-            crate::core::PolicyError::IncompleteTargets => "IncompleteTargets",
             crate::core::PolicyError::InvalidExecution { .. } => "InvalidExecution",
-            crate::core::PolicyError::ConflictingExecution { .. } => "ConflictingExecution",
         };
         crate::STORAGE.domain_error(
             stage,

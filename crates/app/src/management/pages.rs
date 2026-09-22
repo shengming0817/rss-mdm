@@ -206,6 +206,7 @@ pub(super) enum PolicyPageKind {
     Supersede,
     Retain,
     Cancel,
+    Predecessors,
 }
 #[cfg(test)]
 mod tests {

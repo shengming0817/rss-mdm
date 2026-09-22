@@ -6,6 +6,10 @@ use axum::{
     extract::{Path, Query as Params, State},
     routing::{get, post, put},
 };
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response as HttpResponse},
+};
 use serde::Deserialize;
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 type ParamInput<T> = std::result::Result<Params<T>, axum::extract::rejection::QueryRejection>;
@@ -19,8 +23,10 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
         .route("/asset-fields", get(fields))
-        .route("/devices", get(devices))
-        .route("/devices/search", post(search))
+        .route("/device-queries", post(search))
+        .route("/device-queries/{id}", get(query_status))
+        .route("/device-queries/{id}/items", get(query_items))
+        .route("/device-queries/{id}/facets/{facet}", get(query_facets))
         .route("/devices/{id}/inventory", get(detail))
         .route("/devices/{id}/manual-fields/{field}", put(manual))
         .route("/saved-queries", get(saved_list))
@@ -41,7 +47,11 @@ fn authorize(auth: &RequestAuth, command: &Command) -> std::result::Result<(), E
         Command::Detail { device, .. } => {
             auth.proof.require(Permission::InventoryRead, Some(device))
         }
-        Command::Search { scope, .. } | Command::SavedExecute { scope, .. } => {
+        Command::QueryStatus { scope, .. }
+        | Command::QueryItems { scope, .. }
+        | Command::QueryFacets { scope, .. }
+        | Command::Search { scope, .. }
+        | Command::SavedExecute { scope, .. } => {
             if &ReadScope::from_proof(&auth.proof)? == scope {
                 Ok(())
             } else {
@@ -56,7 +66,7 @@ async fn run(
     auth: &RequestAuth,
     audit: &Audit,
     command: Command,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
+) -> std::result::Result<HttpResponse, Error> {
     audit.set_action(if command.operation().is_some() {
         "management_write"
     } else {
@@ -64,6 +74,9 @@ async fn run(
     });
     match &command {
         Command::Manual { device, .. } | Command::Detail { device, .. } => audit.target(device),
+        Command::QueryStatus { task, .. }
+        | Command::QueryItems { task, .. }
+        | Command::QueryFacets { task, .. } => audit.target(&task.to_string()),
         Command::SavedRead { id, .. }
         | Command::SavedWrite { id, .. }
         | Command::SavedExecute { id, .. } => audit.target(&id.to_string()),
@@ -83,15 +96,20 @@ async fn run(
             &|| authorize(auth, &command),
         )
         .await?;
-    serde_json::from_value(value)
-        .map(Json)
-        .map_err(|_| Error::Unavailable(Failure::ManagementStorage))
+    let envelope: AssetEnvelope = serde_json::from_value(value)
+        .map_err(|_| Error::Unavailable(Failure::ManagementStorage))?;
+    let status = if matches!(&envelope.asset, Response::Accepted { .. }) {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(envelope)).into_response())
 }
 async fn fields(
     State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
+) -> std::result::Result<HttpResponse, Error> {
     run(&app, &auth, &audit, Command::Fields).await
 }
 #[derive(Deserialize, Default)]
@@ -100,38 +118,15 @@ struct Page {
     cursor: Option<String>,
     limit: Option<usize>,
 }
-async fn devices(
-    State(app): State<Arc<App>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
-    parameters: ParamInput<Page>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
-    let page = params(parameters)?;
-    let scope = ReadScope::from_proof(&auth.proof)?;
-    run(
-        &app,
-        &auth,
-        &audit,
-        Command::Search {
-            scope,
-            query: Query {
-                cursor: page.cursor,
-                limit: page.limit.unwrap_or(50),
-                ..Default::default()
-            },
-        },
-    )
-    .await
-}
 async fn search(
     State(app): State<Arc<App>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    payload: BodyInput<Query>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
-    let query = body(payload)?;
+    payload: BodyInput<Operation<Query>>,
+) -> std::result::Result<HttpResponse, Error> {
+    let request = body(payload)?;
     let scope = ReadScope::from_proof(&auth.proof)?;
-    run(&app, &auth, &audit, Command::Search { query, scope }).await
+    run(&app, &auth, &audit, Command::Search { request, scope }).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,7 +137,7 @@ async fn detail(
     Extension(audit): Extension<Audit>,
     Path(device): Path<String>,
     parameters: ParamInput<Empty>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
+) -> std::result::Result<HttpResponse, Error> {
     params(parameters)?;
     let scope = ReadScope::from_proof(&auth.proof)?;
     run(&app, &auth, &audit, Command::Detail { device, scope }).await
@@ -153,7 +148,7 @@ async fn manual(
     Extension(audit): Extension<Audit>,
     Path((device, key)): Path<(String, String)>,
     payload: BodyInput<Operation<ManualChange>>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
+) -> std::result::Result<HttpResponse, Error> {
     let change = body(payload)?;
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
     run(
@@ -179,7 +174,7 @@ async fn saved_list(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     parameters: ParamInput<After>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
+) -> std::result::Result<HttpResponse, Error> {
     let after = params(parameters)?;
     run(
         &app,
@@ -197,7 +192,7 @@ async fn saved_read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
+) -> std::result::Result<HttpResponse, Error> {
     run(
         &app,
         &auth,
@@ -215,7 +210,7 @@ async fn saved_write(
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<SavedChange>>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
+) -> std::result::Result<HttpResponse, Error> {
     let change = body(payload)?;
     run(
         &app,
@@ -234,20 +229,79 @@ async fn saved_execute(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
-    payload: BodyInput<Page>,
-) -> std::result::Result<Json<AssetEnvelope>, Error> {
-    let page = body(payload)?;
-    if page.limit.is_some() {
-        return Err(Error::Malformed);
-    }
+    payload: BodyInput<Operation<Empty>>,
+) -> std::result::Result<HttpResponse, Error> {
+    let request = body(payload)?;
     run(
         &app,
         &auth,
         &audit,
         Command::SavedExecute {
+            operation: request.operation_id,
+            expected_revision: request.expected_revision,
             owner: owner(&auth),
             id,
             scope: ReadScope::from_proof(&auth.proof)?,
+        },
+    )
+    .await
+}
+
+async fn query_status(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path(task): Path<Uuid>,
+) -> std::result::Result<HttpResponse, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::QueryStatus {
+            task,
+            scope: ReadScope::from_proof(&auth.proof)?,
+        },
+    )
+    .await
+}
+async fn query_items(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path(task): Path<Uuid>,
+    parameters: ParamInput<Page>,
+) -> std::result::Result<HttpResponse, Error> {
+    let page = params(parameters)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::QueryItems {
+            task,
+            scope: ReadScope::from_proof(&auth.proof)?,
+            limit: page.limit.unwrap_or(1000),
+            cursor: page.cursor,
+        },
+    )
+    .await
+}
+async fn query_facets(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((task, facet)): Path<(Uuid, Facet)>,
+    parameters: ParamInput<Page>,
+) -> std::result::Result<HttpResponse, Error> {
+    let page = params(parameters)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::QueryFacets {
+            task,
+            facet,
+            scope: ReadScope::from_proof(&auth.proof)?,
+            limit: page.limit.unwrap_or(1000),
             cursor: page.cursor,
         },
     )

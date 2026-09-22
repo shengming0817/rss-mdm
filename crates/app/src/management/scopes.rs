@@ -23,6 +23,33 @@ impl Management {
             ))?,
         ))
     }
+    async fn validate_scope_references_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        definition: &ScopeDefinition,
+    ) -> Result<()> {
+        if definition.references().len() > 1000 {
+            return Err(Error::Malformed.into());
+        }
+        for reference in definition.references() {
+            match reference {
+                Reference::Group(id) => {
+                    group_checked(
+                        self.groups
+                            .lock_reference_target_in(
+                                tx,
+                                input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?,
+                            )
+                            .await?,
+                    )?;
+                }
+                Reference::Device(id) => {
+                    storage::device(tx, &id).await?;
+                }
+            }
+        }
+        Ok(())
+    }
     pub(super) async fn scope_change(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -40,28 +67,7 @@ impl Management {
             .ok_or(Error::Conflict)?;
         match &op.input {
             ScopeChange::Put { definition } => {
-                if definition.references().len() > 1000 {
-                    return Err(Error::Malformed.into());
-                }
-                for reference in definition.references() {
-                    match reference {
-                        Reference::Group(id) => {
-                            group_checked(
-                                self.groups
-                                    .lock_reference_target_in(
-                                        tx,
-                                        input(rss_mdm_group_postgres::GroupId::parse(
-                                            &id.to_string(),
-                                        ))?,
-                                    )
-                                    .await?,
-                            )?;
-                        }
-                        Reference::Device(id) => {
-                            storage::device(tx, &id).await?;
-                        }
-                    }
-                }
+                self.validate_scope_references_in(tx, definition).await?;
                 let tenant = self.tenant.to_string();
                 let definition = input(serde_json::to_string(definition))?;
                 let expected = op.expected_revision as i64;

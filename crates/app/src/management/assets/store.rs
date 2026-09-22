@@ -2,26 +2,28 @@ use super::*;
 use rss_mdm_inventory::{Evidence, SourceFact, State};
 use sqlx::Row;
 impl Management {
-    pub(super) async fn load_assets(
+    pub(super) async fn asset_detail_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        scope: &ReadScope,
-    ) -> Result<Vec<DeviceView>> {
+        device: &str,
+    ) -> Result<DeviceView> {
         let tenant = self.tenant.to_string();
-        let all = scope.devices.is_none();
-        let allowed: Vec<_> = scope
-            .devices
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        let ids:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT id FROM mdm_access.devices WHERE tenant_id=$1::uuid AND ($2 OR id=ANY($3)) ORDER BY id COLLATE \"C\" LIMIT 10001")
-                .bind(tenant).bind(all).bind(allowed).fetch_all(c).await
-        })).await.map_err(|_| Error::Unavailable(Failure::AssetCandidates))?;
-        if ids.len() > rss_mdm_group_postgres::core::limits::OBJECTS {
-            return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
-        }
+        let requested = device.to_owned();
+        let id: Option<String> = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        "SELECT id FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
+                    )
+                    .bind(tenant)
+                    .bind(requested)
+                    .fetch_optional(c)
+                    .await
+                })
+            })
+            .await
+            .map_err(|_| Error::Unavailable(Failure::AssetCandidates))?;
+        let ids = vec![id.ok_or(Error::NotFound)?];
         let mut devices: BTreeMap<_, _> = ids
             .iter()
             .map(|id| {
@@ -130,41 +132,16 @@ impl Management {
                 .bind(tenant).bind(keys).fetch_all(c).await
         })).await.map_err(|_| Error::Unavailable(Failure::CollectionQuery))?;
         for row in quality {
-            let attempts: crate::collection::Attempts =
-                stored(serde_json::from_str(row.try_get("attempts")?))?;
-            let fields = FieldKey::observed()
-                .zip(attempts.fields)
-                .map(|(field, a)| QualityField {
-                    field,
-                    quality: a.quality,
-                    status: a.status,
-                    received_at: a.received_at,
-                })
-                .collect();
             let scope: String = row.try_get("scope")?;
             let device = subjects.get(&scope).ok_or(Error::Malformed)?;
-            let coordinate: rss_observation::Scope = stored(serde_json::from_str(&scope))?;
-            let source = stored(rss_mdm_inventory::ReportSource::parse(
-                coordinate.source().as_str(),
-            ))?;
+            let generation = *generations
+                .get(&scope)
+                .ok_or(Error::Unavailable(Failure::CollectionQuery))?;
             devices
                 .get_mut(device)
                 .ok_or(Error::Malformed)?
                 .quality
-                .push(QualityRun {
-                    source,
-                    channel: source.channel(),
-                    registration: stored(Uuid::parse_str(coordinate.registration().as_str()))?,
-                    epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,
-                    registration_generation: *generations
-                        .get(&scope)
-                        .ok_or(Error::Unavailable(Failure::CollectionQuery))?,
-                    run_id: stored(Uuid::parse_str(row.try_get("id")?))?,
-                    sequence: row.try_get("sequence")?,
-                    result: crate::collection::RunResult::parse(row.try_get("result")?)?,
-                    delivery_pending: row.try_get("delivery_pending")?,
-                    fields,
-                });
+                .push(quality::decode(&row, generation)?);
         }
         for (id, device) in &mut devices {
             for field in FieldKey::ALL {
@@ -183,7 +160,10 @@ impl Management {
         {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
-        Ok(devices)
+        devices
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::NotFound.into())
     }
     pub(super) async fn assign_asset(
         &self,
@@ -336,9 +316,6 @@ impl Management {
                 crate::authorization::exact_id(&definition.name)?;
                 self.validate_query(&definition.query)?;
                 if input(serde_json::to_vec(definition))?.len() > 16384 {
-                    return Err(Error::Malformed.into());
-                }
-                if definition.query.cursor.is_some() {
                     return Err(Error::Malformed.into());
                 }
                 Some(definition.clone())

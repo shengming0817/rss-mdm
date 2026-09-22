@@ -26,26 +26,12 @@ pub enum Command {
         /// Checked core lifecycle transition.
         transition: Transition,
     },
-    /// Select the complete immutable target snapshot and its assignment references.
-    SelectTargets {
-        /// Policy to mutate in this tenant.
-        policy: PolicyId,
-        /// Complete target set frozen under its own identity and revision.
-        snapshot: TargetSnapshot,
-        /// Caller-owned assignment identities and revisions.
-        references: Vec<AssignmentReference>,
-    },
     /// Record caller-confirmed execution admissions or progress. The host owns their authority; saving a plan never calls this command.
     RecordExecutions {
         /// Policy to mutate in this tenant.
         policy: PolicyId,
         /// Caller-confirmed snapshots for existing full execution keys.
         facts: Vec<ExecutionRecord>,
-    },
-    /// Explicitly compute and install a deterministic plan using current state, targets and facts.
-    Replan {
-        /// Policy whose current inputs are explicitly recomputed.
-        policy: PolicyId,
     },
 }
 /// Complete, immutable caller request. Preserve identity, time, expected revision and command during recovery.
@@ -66,9 +52,7 @@ impl Request {
         match &self.command {
             Command::Create { policy }
             | Command::Transition { policy, .. }
-            | Command::SelectTargets { policy, .. }
-            | Command::RecordExecutions { policy, .. }
-            | Command::Replan { policy } => policy,
+            | Command::RecordExecutions { policy, .. } => policy,
         }
     }
     pub(crate) fn document(&self) -> Result<Vec<u8>, PgError> {
@@ -80,15 +64,9 @@ impl Request {
                 Transition::Resume => json!([3]),
                 Transition::Archive => json!([4]),
             },
-            Command::SelectTargets {
-                snapshot,
-                references,
-                ..
-            } => json!([5, codec::targets(snapshot), references]),
             Command::RecordExecutions { facts, .. } => {
                 json!([6, facts.iter().map(codec::fact).collect::<Vec<_>>()])
             }
-            Command::Replan { .. } => json!([7]),
         };
         STORAGE.encode(&json!([
             1,
@@ -106,8 +84,6 @@ impl Request {
 pub struct Aggregate {
     pub(crate) policy: Policy,
     pub(crate) revision: u64,
-    pub(crate) targets: Option<TargetSnapshot>,
-    pub(crate) references: Vec<AssignmentReference>,
     pub(crate) plan: Option<PlanId>,
     pub(crate) installed: Option<u64>,
     pub(crate) installed_request: Option<RequestId>,
@@ -120,8 +96,6 @@ impl Aggregate {
         Self {
             policy: Policy::draft(policy),
             revision: 0,
-            targets: None,
-            references: vec![],
             plan: None,
             installed: None,
             installed_request: None,
@@ -136,14 +110,6 @@ impl Aggregate {
     /// Return the sole aggregate CAS token; it covers lifecycle, targets, facts and freshness.
     pub fn storage_revision(&self) -> u64 {
         self.revision
-    }
-    /// Return the selected complete target snapshot, if one has been supplied.
-    pub fn targets(&self) -> Option<&TargetSnapshot> {
-        self.targets.as_ref()
-    }
-    /// Return the caller-attested assignment references attached to the selected target snapshot.
-    pub fn references(&self) -> &[AssignmentReference] {
-        &self.references
     }
     /// Return the deterministic decision identity of the last explicit replan, even if stale.
     pub fn current_plan_id(&self) -> Option<PlanId> {
@@ -167,11 +133,9 @@ impl Aggregate {
     }
     pub(crate) fn document(&self) -> Result<Vec<u8>, PgError> {
         STORAGE.encode(&json!([
-            1,
+            3,
             codec::policy(&self.policy),
             self.revision,
-            self.targets.as_ref().map(codec::targets),
-            self.references,
             self.plan.map(|p| codec::hex(p.bytes())),
             self.installed,
             self.at.map(|t| t.unix_seconds()),
@@ -180,67 +144,47 @@ impl Aggregate {
     }
     pub(crate) fn restore(bytes: &[u8]) -> Result<Self, PgError> {
         let v: Value = STORAGE.decode(bytes)?;
-        let a = codec::array(&v, 9)?;
-        if codec::number(&a[0])? != 1 {
+        let a = codec::array(&v, 7)?;
+        if codec::number(&a[0])? != 3 {
             return Err(STORAGE.fault("model::restore"));
         }
         let policy = codec::read_policy(&a[1])?;
         let revision = codec::number(&a[2])?;
-        let targets = if a[3].is_null() {
+        let plan = if a[3].is_null() {
             None
         } else {
-            Some(codec::read_targets(&a[3])?)
-        };
-        let references: Vec<AssignmentReference> =
-            STORAGE.json("model::restore", serde_json::from_value(a[4].clone()))?;
-        let plan = if a[5].is_null() {
-            None
-        } else {
-            Some(codec::plan_id(codec::text(&a[5])?)?)
+            Some(codec::plan_id(codec::text(&a[3])?)?)
         };
         let installed = STORAGE.json(
             "model::restore",
-            serde_json::from_value::<Option<u64>>(a[6].clone()),
+            serde_json::from_value::<Option<u64>>(a[4].clone()),
         )?;
-        let at = if a[7].is_null() {
+        let at = if a[5].is_null() {
             None
         } else {
-            Some(codec::time(&a[7])?)
+            Some(codec::time(&a[5])?)
         };
-        let installed_request = if a[8].is_null() {
+        let installed_request = if a[6].is_null() {
             None
         } else {
             Some(crate::error::decode_domain(
                 "model::restore",
-                RequestId::new(policy.key().tenant(), codec::text(&a[8])?),
+                RequestId::new(policy.key().tenant(), codec::text(&a[6])?),
             )?)
         };
-        if targets
-            .as_ref()
-            .is_some_and(|t| t.key().tenant() != policy.key().tenant())
-            || plan.is_some() != installed.is_some()
+        if plan.is_some() != installed.is_some()
             || plan.is_some() != installed_request.is_some()
             || installed.is_some_and(|n| n > revision)
             || revision > i64::MAX as u64
         {
             return Err(STORAGE.fault("model::restore"));
         }
-        let mut reference_ids = std::collections::BTreeSet::new();
-        if policy.revision() > revision
-            || references.len() > 256
-            || references.iter().any(|r| {
-                r.revision == 0
-                    || RequestId::new(policy.key().tenant(), &r.id).is_err()
-                    || !reference_ids.insert(&r.id)
-            })
-        {
+        if policy.revision() > revision {
             return Err(STORAGE.fault("model::restore"));
         }
         Ok(Self {
             policy,
             revision,
-            targets,
-            references,
             plan,
             installed,
             installed_request,

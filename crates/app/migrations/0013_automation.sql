@@ -1,4 +1,7 @@
 BEGIN;
+DROP TABLE mdm_management.plan_references;
+DROP TABLE mdm_management.previews;
+CREATE INDEX asset_authority_changes ON mdm_access.asset_authority_history(tenant_id,revision,device);
 CREATE TABLE mdm_management.automation_jobs (
  tenant_id uuid NOT NULL, id uuid NOT NULL,
  kind text NOT NULL CHECK(kind IN('group','group_preview','scope','policy','asset_query')),
@@ -71,8 +74,24 @@ CREATE TABLE mdm_management.candidate_heads (
  FOREIGN KEY(tenant_id,desired) REFERENCES mdm_management.automation_jobs(tenant_id,id),
  FOREIGN KEY(tenant_id,candidate) REFERENCES mdm_management.automation_jobs(tenant_id,id)
 );
+CREATE TABLE mdm_management.asset_query_runs (
+ tenant_id uuid NOT NULL,id uuid NOT NULL,total bigint NOT NULL DEFAULT 0 CHECK(total BETWEEN 0 AND 1000000),
+ matched bigint NOT NULL DEFAULT 0 CHECK(matched BETWEEN 0 AND total),unknown bigint NOT NULL DEFAULT 0 CHECK(unknown BETWEEN 0 AND total),
+ PRIMARY KEY(tenant_id,id),FOREIGN KEY(tenant_id,id) REFERENCES mdm_management.automation_jobs(tenant_id,id)
+);
+CREATE TABLE mdm_management.asset_query_results (
+ tenant_id uuid NOT NULL,run uuid NOT NULL,device text COLLATE "C" NOT NULL CHECK(octet_length(device) BETWEEN 1 AND 256),
+ sort_key bytea NOT NULL CHECK(octet_length(sort_key)<=1024),document bytea NOT NULL CHECK(octet_length(document)<=1048576),digest bytea NOT NULL CHECK(octet_length(digest)=32),
+ PRIMARY KEY(tenant_id,run,device),FOREIGN KEY(tenant_id,run) REFERENCES mdm_management.asset_query_runs(tenant_id,id)
+);
+CREATE INDEX asset_query_results_order ON mdm_management.asset_query_results(tenant_id,run,sort_key,device);
+CREATE TABLE mdm_management.asset_query_facets (
+ tenant_id uuid NOT NULL,run uuid NOT NULL,kind text NOT NULL CHECK(kind IN('os_versions','channels','asset_states')),
+ label text COLLATE "C" NOT NULL CHECK(octet_length(label)<=256),total bigint NOT NULL CHECK(total>0),
+ PRIMARY KEY(tenant_id,run,kind,label),FOREIGN KEY(tenant_id,run) REFERENCES mdm_management.asset_query_runs(tenant_id,id)
+);
 DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['automation_jobs','group_fields','asset_dispatch','scope_sources','scope_runs','scope_source_members','scope_results','policy_assignments','candidate_heads'] LOOP
+ FOREACH t IN ARRAY ARRAY['automation_jobs','group_fields','asset_dispatch','scope_sources','scope_runs','scope_source_members','scope_results','policy_assignments','candidate_heads','asset_query_runs','asset_query_results','asset_query_facets'] LOOP
   EXECUTE format('ALTER TABLE mdm_management.%I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE mdm_management.%I FORCE ROW LEVEL SECURITY',t);
   EXECUTE format('CREATE POLICY tenant ON mdm_management.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
@@ -87,6 +106,8 @@ GRANT UPDATE(resolution,resolution_revision) ON mdm_management.scopes TO mdm_man
 GRANT UPDATE(scope,revision) ON mdm_management.policy_assignments TO mdm_management_runtime;
 GRANT UPDATE(desired,candidate) ON mdm_management.candidate_heads TO mdm_management_runtime;
 GRANT DELETE ON mdm_management.group_fields,mdm_management.scope_sources TO mdm_management_runtime;
+GRANT UPDATE(total,matched,unknown) ON mdm_management.asset_query_runs TO mdm_management_runtime;
+GRANT UPDATE(total) ON mdm_management.asset_query_facets TO mdm_management_runtime;
 ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
 ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
 ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',

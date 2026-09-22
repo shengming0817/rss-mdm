@@ -1,22 +1,7 @@
 #![warn(clippy::cognitive_complexity)]
 
-use rss_mdm_group::{ObjectKey, diff};
+use rss_mdm_group::ObjectKey;
 use rss_request_context::TenantId;
-
-#[test]
-fn member_difference_is_a_stable_tenant_scoped_set_operation() {
-    let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
-    let key = |s| ObjectKey::new(tenant, s).unwrap();
-    let old = vec![key("c"), key("a"), key("b"), key("b")];
-    let new = vec![key("d"), key("c"), key("b"), key("c")];
-    let result = diff(tenant, &old, &new).unwrap();
-    assert_eq!(result.added, vec![key("d")]);
-    assert_eq!(result.removed, vec![key("a")]);
-    assert_eq!(result.unchanged, vec![key("b"), key("c")]);
-    assert_eq!(result, diff(tenant, &old, &new).unwrap());
-    let again = diff(tenant, &new, &new).unwrap();
-    assert!(again.added.is_empty() && again.removed.is_empty());
-}
 
 #[test]
 fn page_evaluation_requires_ordered_partial_universe_and_complete_field_coverage() {
@@ -30,8 +15,7 @@ fn page_evaluation_requires_ordered_partial_universe_and_complete_field_coverage
     .unwrap();
     let mut page = snapshot(FactState::Known(string("a")));
     page.dictionary_version = "d".into();
-    page.complete = false;
-    let expected = rule.evaluate(&page, time(1)).unwrap();
+    let expected = rule.evaluate_page(&page.input(), time(1)).unwrap();
     let input = |objects, coverage, after| PageInput {
         tenant: page.tenant,
         id: &page.id,
@@ -108,8 +92,8 @@ fn borrowed_rule_views_preserve_structure_for_independent_persistence() {
     let mut s = snapshot(FactState::Known(string("a")));
     s.dictionary_version = "d".into();
     assert_eq!(
-        original.evaluate(&s, time(10)),
-        restored.evaluate(&s, time(10))
+        original.evaluate_page(&s.input(), time(10)),
+        restored.evaluate_page(&s.input(), time(10))
     );
     assert_eq!(
         original.predicate_at(&[1, 0]),
@@ -162,13 +146,12 @@ fn rule(kind: FieldType, op: Op, value: Option<Value>) -> Rule {
     )
     .unwrap()
 }
-fn snapshot(state: FactState) -> Snapshot {
-    Snapshot {
+fn snapshot(state: FactState) -> FixturePage {
+    FixturePage {
         tenant: tenant(),
         id: "resolved-assets".into(),
         version: "revision-1".into(),
         dictionary_version: "dictionary-1".into(),
-        complete: true,
         coverage: BTreeSet::from(["device.model".into()]),
         objects: vec![ObjectSnapshot {
             key: ObjectKey::new(tenant(), "device-a").unwrap(),
@@ -184,37 +167,11 @@ fn snapshot(state: FactState) -> Snapshot {
         }],
     }
 }
-fn evaluate(rule: &Rule, snapshot: &Snapshot, t: i64) -> ObjectEvaluation {
-    rule.evaluate(snapshot, time(t)).unwrap().objects.remove(0)
-}
-
-#[test]
-fn preview_and_recalculation_share_decisions_and_provenance() {
-    let r = rule(
-        FieldType::Scalar(ScalarType::String),
-        Op::Eq,
-        Some(string("主机-α😀")),
-    );
-    let mut s = snapshot(FactState::Known(string("主机-α😀")));
-    let mut unknown = s.objects[0].clone();
-    unknown.key = ObjectKey::new(tenant(), "device-b").unwrap();
-    unknown.facts.get_mut("device.model").unwrap().state = FactState::Missing;
-    s.objects.push(unknown);
-    let old = vec![s.objects[1].key.clone()];
-    let preview = r.evaluate(&s, time(10)).unwrap();
-    let result = r.recalculate(&s, time(10), &old).unwrap();
-    assert_eq!(preview, result.evaluation);
-    assert_eq!(result.difference.added, vec![s.objects[0].key.clone()]);
-    assert_eq!(result.difference.removed, old);
-    assert_eq!(result.unknown, old);
-    assert_eq!(
-        result.evaluation.objects[0].provenance["device.model"].snapshot_id,
-        "collection-1"
-    );
-    assert_eq!(result.evaluation.rule_version, "rule-1");
-    s.objects.reverse();
-    s.objects.push(s.objects[0].clone());
-    assert_eq!(result, r.recalculate(&s, time(10), &old).unwrap());
+fn evaluate(rule: &Rule, snapshot: &FixturePage, t: i64) -> ObjectEvaluation {
+    rule.evaluate_page(&snapshot.input(), time(t))
+        .unwrap()
+        .objects
+        .remove(0)
 }
 
 #[test]
@@ -450,7 +407,10 @@ fn nested_logic_collects_stable_explanations_and_checks_every_branch() {
             let r =
                 Rule::new(tenant(), "1", "dictionary-1", vec![f.clone(), g.clone()], c).unwrap();
             let mut s = snapshot(FactState::Known(string("yes")));
-            s.complete = false;
+            s.coverage.insert("unknown".into());
+            let mut missing = s.objects[0].facts["device.model"].clone();
+            missing.state = FactState::Missing;
+            s.objects[0].facts.insert("unknown".into(), missing);
             let e = evaluate(&r, &s, 10);
             assert_eq!(e.decision, expected);
             assert_eq!(e.explanations.len(), 2);
@@ -465,77 +425,6 @@ fn nested_logic_collects_stable_explanations_and_checks_every_branch() {
         Rule::new(tenant(), "1", "1", vec![f], nested),
         Err(Error::UnknownField)
     ));
-}
-
-#[test]
-fn incomplete_and_malformed_inputs_never_return_a_difference() {
-    let r = rule(
-        FieldType::Scalar(ScalarType::String),
-        Op::Eq,
-        Some(string("x")),
-    );
-    let valid = snapshot(FactState::Known(string("x")));
-    let old = vec![valid.objects[0].key.clone()];
-    let mut partial = valid.clone();
-    partial.complete = false;
-    partial.coverage.clear();
-    partial.objects[0].facts.clear();
-    assert_eq!(evaluate(&r, &partial, 10).decision, Decision::Unknown);
-    assert_eq!(
-        r.recalculate(&partial, time(10), &old),
-        Err(Error::IncompleteSnapshot)
-    );
-    for (mut s, error) in [
-        (valid.clone(), Error::IncompleteSnapshot),
-        (valid.clone(), Error::VersionMismatch),
-        (valid.clone(), Error::PermissionDenied),
-        (valid.clone(), Error::InvalidType),
-        (valid.clone(), Error::UnknownField),
-    ] {
-        match error {
-            Error::IncompleteSnapshot => {
-                s.objects[0].facts.clear();
-            }
-            Error::VersionMismatch => s.dictionary_version = "other".into(),
-            Error::PermissionDenied => {
-                s.objects[0].facts.get_mut("device.model").unwrap().state = FactState::Denied
-            }
-            Error::InvalidType => {
-                s.objects[0].facts.get_mut("device.model").unwrap().state =
-                    FactState::Known(integer(2))
-            }
-            Error::UnknownField => {
-                let fact = s.objects[0].facts["device.model"].clone();
-                s.objects[0].facts.insert("typo".into(), fact);
-            }
-            _ => unreachable!(),
-        }
-        assert_eq!(r.recalculate(&s, time(10), &old), Err(error));
-    }
-    let mut conflict = valid.clone();
-    let mut other = conflict.objects[0].clone();
-    other.facts.get_mut("device.model").unwrap().state = FactState::Missing;
-    conflict.objects.push(other);
-    assert_eq!(
-        r.recalculate(&conflict, time(10), &old),
-        Err(Error::ConflictingObject)
-    );
-    let foreign = ObjectKey::new(
-        TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap(),
-        "device-a",
-    )
-    .unwrap();
-    assert_eq!(
-        diff(tenant(), &old, std::slice::from_ref(&foreign)),
-        Err(Error::TenantMismatch)
-    );
-    assert_eq!(
-        r.recalculate(&valid, time(10), std::slice::from_ref(&foreign)),
-        Err(Error::TenantMismatch)
-    );
-    let mut s = valid;
-    s.objects[0].key = foreign;
-    assert_eq!(r.evaluate(&s, time(10)), Err(Error::TenantMismatch));
 }
 
 #[test]
@@ -619,7 +508,7 @@ fn rule_types_units_and_operations_fail_before_any_evaluation() {
     )
     .unwrap();
     assert_eq!(
-        r.evaluate(&snapshot(FactState::Null), time(10)),
+        r.evaluate_page(&snapshot(FactState::Null).input(), time(10)),
         Err(Error::InvalidType)
     );
 }
@@ -703,59 +592,6 @@ fn rule_byte_limit_accumulates_across_predicates() {
 }
 
 #[test]
-fn batch_work_and_size_limits_are_enforced_without_partial_results() {
-    let r = rule(
-        FieldType::Scalar(ScalarType::String),
-        Op::Eq,
-        Some(string("x")),
-    );
-    let mut s = snapshot(FactState::Known(string("x")));
-    s.objects = vec![s.objects[0].clone(); limits::OBJECTS];
-    assert_eq!(r.evaluate(&s, time(10)).unwrap().objects.len(), 1);
-    s.objects.push(s.objects[0].clone());
-    assert_eq!(
-        r.evaluate(&s, time(10)),
-        Err(Error::LimitExceeded(LimitKind::Objects))
-    );
-    let key = ObjectKey::new(tenant(), "a").unwrap();
-    assert!(diff(tenant(), &vec![key.clone(); limits::OBJECTS], &[]).is_ok());
-    assert_eq!(
-        diff(tenant(), &vec![key; limits::OBJECTS + 1], &[]),
-        Err(Error::LimitExceeded(LimitKind::Objects))
-    );
-    let key = ObjectKey::new(tenant(), "a".repeat(4096)).unwrap();
-    assert!(diff(tenant(), &vec![key.clone(); 4096], &[]).is_ok());
-    assert_eq!(
-        diff(tenant(), &vec![key; 4097], &[]),
-        Err(Error::LimitExceeded(LimitKind::BatchBytes))
-    );
-    let c = Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); 99]).unwrap();
-    let r = Rule::new(
-        tenant(),
-        "1",
-        "dictionary-1",
-        vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
-        c,
-    )
-    .unwrap();
-    s.objects.pop();
-    assert!(r.evaluate(&s, time(10)).is_ok()); // exactly 1,000,000 visits before deduplication
-    let c = Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); 100]).unwrap();
-    let r = Rule::new(
-        tenant(),
-        "1",
-        "dictionary-1",
-        vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
-        c,
-    )
-    .unwrap();
-    assert_eq!(
-        r.evaluate(&s, time(10)),
-        Err(Error::LimitExceeded(LimitKind::Visits))
-    );
-}
-
-#[test]
 fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
     let kind = FieldType::Scalar(ScalarType::String);
     let mut fields = vec![field(kind, &[Op::Eq])];
@@ -773,7 +609,10 @@ fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
     denied.state = FactState::Denied;
     s.coverage.insert("field-1".into());
     s.objects[0].facts.insert("field-1".into(), denied);
-    assert_eq!(r.evaluate(&s, time(10)), Err(Error::PermissionDenied));
+    assert_eq!(
+        r.evaluate_page(&s.input(), time(10)),
+        Err(Error::PermissionDenied)
+    );
     fields.push(fields[0].clone());
     assert!(matches!(
         Rule::new(tenant(), "1", "1", fields, c.clone()),
@@ -884,7 +723,7 @@ fn empty_results_keep_the_tenant_coordinate() {
     );
     let mut s = snapshot(FactState::Missing);
     s.objects.clear();
-    let first = r.evaluate(&s, time(10)).unwrap();
+    let first = r.evaluate_page(&s.input(), time(10)).unwrap();
     s.tenant = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
     let r = Rule::new(
         s.tenant,
@@ -894,7 +733,7 @@ fn empty_results_keep_the_tenant_coordinate() {
         leaf(Op::Eq, Some(string("x"))),
     )
     .unwrap();
-    let second = r.evaluate(&s, time(10)).unwrap();
+    let second = r.evaluate_page(&s.input(), time(10)).unwrap();
     assert_ne!(first, second);
 }
 
@@ -912,27 +751,11 @@ fn rules_cannot_be_applied_to_another_tenants_consistent_snapshot() {
         if empty {
             s.objects.clear();
         }
-        assert_eq!(r.evaluate(&s, time(10)), Err(Error::TenantMismatch));
-        assert_eq!(r.recalculate(&s, time(10), &[]), Err(Error::TenantMismatch));
+        assert_eq!(
+            r.evaluate_page(&s.input(), time(10)),
+            Err(Error::TenantMismatch)
+        );
     }
-}
-
-#[test]
-fn recalculation_shares_the_input_byte_budget_with_old_members() {
-    let r = rule(
-        FieldType::Scalar(ScalarType::String),
-        Op::Eq,
-        Some(string("x")),
-    );
-    let old = vec![ObjectKey::new(tenant(), "a".repeat(4096)).unwrap(); 2100];
-    let mut s = snapshot(FactState::Known(string(&"x".repeat(4096))));
-    s.objects = vec![s.objects[0].clone(); 2100];
-    assert!(diff(tenant(), &old, &[]).is_ok());
-    assert!(r.evaluate(&s, time(10)).is_ok());
-    assert_eq!(
-        r.recalculate(&s, time(10), &old),
-        Err(Error::LimitExceeded(LimitKind::BatchBytes))
-    );
 }
 
 #[test]
@@ -974,11 +797,11 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
     s.objects = (0..512)
         .map(|i| {
             let mut o = object.clone();
-            o.key = ObjectKey::new(tenant(), format!("device-{i}")).unwrap();
+            o.key = ObjectKey::new(tenant(), format!("device-{i:07}")).unwrap();
             o
         })
         .collect();
-    let result = r.evaluate(&s, time(10)).unwrap();
+    let result = r.evaluate_page(&s.input(), time(10)).unwrap();
     assert_eq!(
         result
             .objects
@@ -996,45 +819,15 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
         65_536
     );
     s.objects.push(s.objects[0].clone()); // duplicate inputs do not multiply output
-    assert_eq!(r.evaluate(&s, time(10)).unwrap(), result);
+    assert!(r.evaluate_page(&s.input(), time(10)).is_err());
+    s.objects.pop();
     let mut extra = object;
     extra.key = ObjectKey::new(tenant(), "extra").unwrap();
     s.objects.push(extra);
     assert_eq!(
-        r.evaluate(&s, time(10)),
+        r.evaluate_page(&s.input(), time(10)),
         Err(Error::LimitExceeded(LimitKind::Explanations))
     );
-    assert_eq!(
-        r.recalculate(&s, time(10), &[]),
-        Err(Error::LimitExceeded(LimitKind::Explanations))
-    );
-}
-
-#[test]
-fn empty_differences_preserve_tenant_identity() {
-    let other = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
-    assert_ne!(
-        diff(tenant(), &[], &[]).unwrap(),
-        diff(other, &[], &[]).unwrap()
-    );
-    assert_eq!(diff(tenant(), &[], &[]).unwrap().tenant, tenant());
-}
-
-#[test]
-fn preview_evidence_distinguishes_a_partial_universe() {
-    let r = rule(
-        FieldType::Scalar(ScalarType::String),
-        Op::Eq,
-        Some(string("x")),
-    );
-    let mut s = snapshot(FactState::Known(string("x")));
-    let complete = r.evaluate(&s, time(10)).unwrap();
-    s.complete = false;
-    let partial = r.evaluate(&s, time(10)).unwrap();
-    assert_eq!(complete.objects, partial.objects);
-    assert_ne!(complete, partial);
-    assert!(!partial.complete);
-    assert_eq!(partial.coverage, s.coverage);
 }
 
 #[test]
@@ -1062,7 +855,13 @@ fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
             .iter()
             .map(|f| (f.key.clone(), fact.clone()))
             .collect();
-        s.objects = vec![s.objects[0].clone(); 125]; // 125 * 32 * 250 = 1,000,000
+        s.objects = (0..125)
+            .map(|n| {
+                let mut o = s.objects[0].clone();
+                o.key = ObjectKey::new(tenant(), format!("d{n:07}")).unwrap();
+                o
+            })
+            .collect(); // 125 * 32 * 250 = 1,000,000
         let r = Rule::new(
             tenant(),
             "1",
@@ -1071,8 +870,8 @@ fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
             leaf(Op::ContainsAll, Some(value)),
         )
         .unwrap();
-        assert!(r.evaluate(&s, time(10)).is_ok());
-        assert!(r.recalculate(&s, time(10), &[]).is_ok());
+        assert!(r.evaluate_page(&s.input(), time(10)).is_ok());
+
         let final_fact = s
             .objects
             .last_mut()
@@ -1090,21 +889,17 @@ fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
             _ => Scalar::Integer(250),
         }); // exactly 1,000,001 items across the batch
         assert_eq!(
-            r.evaluate(&s, time(10)),
+            r.evaluate_page(&s.input(), time(10)),
             Err(Error::LimitExceeded(LimitKind::Items))
         );
-        assert_eq!(
-            r.recalculate(&s, time(10), &[]),
-            Err(Error::LimitExceeded(LimitKind::Items))
-        );
+
         *s.objects.last_mut().unwrap() = s.objects[0].clone();
-        s.objects.push(s.objects[0].clone()); // duplicates still consume input work
+        s.objects.push(s.objects[0].clone());
+        for (n, object) in s.objects.iter_mut().enumerate() {
+            object.key = ObjectKey::new(tenant(), format!("d{n:07}")).unwrap();
+        }
         assert_eq!(
-            r.evaluate(&s, time(10)),
-            Err(Error::LimitExceeded(LimitKind::Items))
-        );
-        assert_eq!(
-            r.recalculate(&s, time(10), &[]),
+            r.evaluate_page(&s.input(), time(10)),
             Err(Error::LimitExceeded(LimitKind::Items))
         );
     }
@@ -1132,4 +927,63 @@ fn asset_facts_do_not_expire_or_wait_for_observation_time() {
     for at in [0, 10, 20, 2_000_000_000] {
         assert_eq!(evaluate(&r, &s, at).decision, Decision::Match);
     }
+}
+
+#[derive(Clone)]
+struct FixturePage {
+    tenant: TenantId,
+    id: String,
+    version: String,
+    dictionary_version: String,
+    coverage: BTreeSet<String>,
+    objects: Vec<ObjectSnapshot>,
+}
+impl FixturePage {
+    fn input(&self) -> PageInput<'_> {
+        PageInput {
+            tenant: self.tenant,
+            id: &self.id,
+            version: &self.version,
+            dictionary_version: &self.dictionary_version,
+            coverage: &self.coverage,
+            objects: &self.objects,
+            after: None,
+        }
+    }
+}
+#[test]
+fn bounded_page_rejects_missing_coverage_foreign_cursor_and_oversized_universe() {
+    let r = rule(
+        FieldType::Scalar(ScalarType::String),
+        Op::Eq,
+        Some(string("x")),
+    );
+    let mut s = snapshot(FactState::Known(string("x")));
+    s.coverage.clear();
+    assert_eq!(
+        r.evaluate_page(&s.input(), time(10)),
+        Err(Error::IncompleteSnapshot)
+    );
+    s = snapshot(FactState::Known(string("x")));
+    let other = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    let cursor = ObjectKey::new(other, "a").unwrap();
+    let mut page = s.input();
+    page.after = Some(&cursor);
+    assert_eq!(r.evaluate_page(&page, time(10)), Err(Error::TenantMismatch));
+    s.objects = (0..1001)
+        .map(|n| {
+            let mut o = s.objects[0].clone();
+            o.key = ObjectKey::new(tenant(), format!("d{n:07}")).unwrap();
+            o
+        })
+        .collect();
+    assert_eq!(
+        r.evaluate_page(&s.input(), time(10)),
+        Err(Error::LimitExceeded(LimitKind::Objects))
+    );
+    s.objects.truncate(1000);
+    assert_eq!(
+        r.evaluate_page(&s.input(), time(10)).unwrap().objects.len(),
+        1000
+    );
 }

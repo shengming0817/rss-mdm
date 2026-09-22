@@ -28,326 +28,30 @@ fn version(p: &PolicyId, n: u64) -> Version {
     )
     .unwrap()
 }
-fn targets(p: &PolicyId, revision: u64, members: &[&str]) -> TargetSnapshot {
-    TargetSnapshot::new(
-        TargetSnapshotId::new(tenant(), p.value()).unwrap(),
-        revision,
-        SnapshotCompleteness::Complete,
-        members
-            .iter()
-            .map(|s| DeviceId::new(tenant(), *s).unwrap())
-            .collect(),
-    )
-    .unwrap()
-}
 async fn setup(s: &PolicyStore, p: &PolicyId) -> u64 {
-    let c = req(p, 0, Command::Create { policy: p.clone() });
-    s.execute(&c, deadline()).await.unwrap();
-    assert_event(p.value(), c.id.value(), 1, 10);
-    let a = req(
-        p,
-        1,
-        Command::Transition {
-            policy: p.clone(),
-            transition: Transition::Activate(version(p, 1)),
-        },
-    );
-    s.execute(&a, deadline()).await.unwrap();
-    let t = req(
-        p,
-        2,
-        Command::SelectTargets {
-            policy: p.clone(),
-            snapshot: targets(p, 1, &["a"]),
-            references: vec![AssignmentReference {
-                id: "assignment".into(),
-                revision: 1,
-            }],
-        },
-    );
-    s.execute(&t, deadline()).await.unwrap();
-    3
-}
-#[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
-async fn saving_intents_does_not_create_execution_facts() {
-    let runtime = runtime().await;
-    let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
-        .await
-        .unwrap();
-    let policy = pid();
-    let revision = setup(&store, &policy).await;
-    let request = req(
-        &policy,
-        revision,
-        Command::Replan {
-            policy: policy.clone(),
-        },
-    );
-    let receipt = store.execute(&request, deadline()).await.unwrap();
-    assert_eq!(store.execute(&request, deadline()).await.unwrap(), receipt);
-    let facts = store
-        .execution_facts(&policy, None, 1000, deadline())
-        .await
-        .unwrap();
-    assert!(
-        facts.records.is_empty(),
-        "saving an intent is not execution admission"
-    );
-    let plan = store
-        .plan(&policy, &request.id, deadline())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(plan.intents(), [Intent::Add(_)]));
-    runtime.close().await;
-}
-#[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
-async fn persistence_replay_aba_and_old_facts() {
-    let runtime = runtime().await;
-    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
-        .await
-        .unwrap();
-    let p = pid();
-    let mut rev = setup(&s, &p).await;
-    for _ in 0..2 {
-        rev = s
-            .execute(
-                &req(&p, rev, Command::Replan { policy: p.clone() }),
-                deadline(),
-            )
-            .await
-            .unwrap()
-            .storage_revision;
-    }
-    assert_eq!(
-        s.version(&p, 1, deadline()).await.unwrap(),
-        Some(version(&p, 1))
-    );
-    assert_eq!(
-        s.target_snapshot(
-            &TargetSnapshotId::new(tenant(), p.value()).unwrap(),
-            1,
-            deadline()
-        )
-        .await
-        .unwrap(),
-        Some(targets(&p, 1, &["a"]))
-    );
-    let before = s.get(&p, deadline()).await.unwrap().unwrap();
-    let old_id = before.current_plan_id().unwrap();
-    assert!(before.plan_is_fresh());
-    for (n, m) in [(2, vec!["b"]), (1, vec!["a"])] {
-        rev = s
-            .execute(
-                &req(
-                    &p,
-                    rev,
-                    Command::SelectTargets {
-                        policy: p.clone(),
-                        snapshot: targets(&p, n, &m),
-                        references: before.references().to_vec(),
-                    },
-                ),
-                deadline(),
-            )
-            .await
-            .unwrap()
-            .storage_revision;
-    }
-    assert!(
-        !s.get(&p, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .plan_is_fresh()
-    );
-    let r = req(&p, rev, Command::Replan { policy: p.clone() });
-    let receipt = s.execute(&r, deadline()).await.unwrap();
-    assert_eq!(receipt, s.execute(&r, deadline()).await.unwrap());
-    rev = receipt.storage_revision;
-    assert_eq!(
-        s.get(&p, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .current_plan_id(),
-        Some(old_id)
-    );
-    let mut wrong = r.clone();
-    wrong.as_of = at(11);
-    assert!(matches!(
-        s.execute(&wrong, deadline()).await,
-        Err(Error::Rejected(Rejection::IdentityConflict))
-    ));
-    assert_eq!(
-        s.execute(
-            &req(&p, rev, Command::Replan { policy: p.clone() }),
-            deadline()
-        )
-        .await
-        .unwrap()
-        .storage_revision,
-        rev
-    );
-    let plan = s.plan(&p, &r.id, deadline()).await.unwrap().unwrap();
-    assert_eq!(plan.request(), &r.id);
-    assert_eq!(plan.as_of(), r.as_of);
-    assert_eq!(
-        s.get(&p, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .current_plan_request(),
-        Some(&r.id)
-    );
-    assert_eq!(plan.id(), old_id);
-    for progress in [Progress::Running, Progress::Planned] {
-        let fact = ExecutionRecord::new(
-            version(&p, 1),
-            DeviceId::new(tenant(), "a").unwrap(),
-            progress,
-            Effect::Unverified,
-        )
-        .unwrap();
-        rev = s
-            .execute(
-                &req(
-                    &p,
-                    rev,
-                    Command::RecordExecutions {
-                        policy: p.clone(),
-                        facts: vec![fact],
-                    },
-                ),
-                deadline(),
-            )
-            .await
-            .unwrap()
-            .storage_revision;
-        assert!(
-            !s.get(&p, deadline())
-                .await
-                .unwrap()
-                .unwrap()
-                .plan_is_fresh()
-        );
-    }
-    let before_refresh = rev;
-    rev = s
-        .execute(
-            &req(&p, rev, Command::Replan { policy: p.clone() }),
-            deadline(),
-        )
-        .await
-        .unwrap()
-        .storage_revision;
-    let refreshed = s.get(&p, deadline()).await.unwrap().unwrap();
-    assert_eq!(refreshed.current_plan_id(), Some(old_id));
-    assert!(refreshed.plan_is_fresh());
-    assert_eq!(rev, before_refresh + 1);
-    rev = s
-        .execute(
-            &req(
-                &p,
-                rev,
-                Command::Transition {
-                    policy: p.clone(),
-                    transition: Transition::Activate(version(&p, 2)),
-                },
-            ),
-            deadline(),
-        )
-        .await
-        .unwrap()
-        .storage_revision;
-    rev = s
-        .execute(
-            &req(&p, rev, Command::Replan { policy: p.clone() }),
-            deadline(),
-        )
-        .await
-        .unwrap()
-        .storage_revision;
-    let current = s
-        .get(&p, deadline())
-        .await
-        .unwrap()
-        .unwrap()
-        .current_plan_id();
-    let late = ExecutionRecord::new(
-        version(&p, 1),
-        DeviceId::new(tenant(), "a").unwrap(),
-        Progress::Succeeded,
-        Effect::VerifiedPresent,
+    s.execute(
+        &req(p, 0, Command::Create { policy: p.clone() }),
+        deadline(),
     )
+    .await
     .unwrap();
     s.execute(
         &req(
-            &p,
-            rev,
-            Command::RecordExecutions {
+            p,
+            1,
+            Command::Transition {
                 policy: p.clone(),
-                facts: vec![late],
+                transition: Transition::Activate(version(p, 1)),
             },
         ),
         deadline(),
     )
     .await
-    .unwrap();
-    let after = s.get(&p, deadline()).await.unwrap().unwrap();
-    assert_eq!(after.current_plan_id(), current);
-    assert!(!after.plan_is_fresh());
-    let page = s.execution_facts(&p, None, 1, deadline()).await.unwrap();
-    assert_eq!(page.records.len(), 1);
-    let next = s
-        .execution_facts(&p, page.next.clone(), 1, deadline())
-        .await
-        .unwrap();
-    assert_eq!(next.records.len(), 1);
-    assert_ne!(page.records[0].key(), next.records[0].key());
-    let facts = s
-        .execution_facts(&p, None, 100, deadline())
-        .await
-        .unwrap()
-        .records;
-    assert_eq!(
-        facts
-            .iter()
-            .find(|f| f.version().number() == 2)
-            .unwrap()
-            .progress(),
-        Progress::Planned
-    );
-    let mut refresh = req(
-        &p,
-        after.storage_revision(),
-        Command::Replan { policy: p.clone() },
-    );
-    refresh.as_of = at(100);
-    s.execute(&refresh, deadline()).await.unwrap();
-    let installed = s.plan(&p, &refresh.id, deadline()).await.unwrap().unwrap();
-    assert_eq!(installed.request(), &refresh.id);
-    assert_eq!(installed.as_of(), at(100));
-    let restarted = PolicyStore::new(runtime.clone(), tenant(), deadline())
-        .await
-        .unwrap();
-    assert_eq!(
-        restarted.operation(&r.id, deadline()).await.unwrap(),
-        Some(receipt)
-    );
-    let foreign_store = PolicyStore::new(runtime, foreign(), deadline())
-        .await
-        .unwrap();
-    assert!(
-        foreign_store
-            .get(&PolicyId::new(foreign(), p.value()).unwrap(), deadline())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    .unwrap()
+    .storage_revision
 }
+#[path = "support/planning.rs"]
+mod planning;
 #[tokio::test]
 #[ignore = "real PostgreSQL: backend-t2"]
 async fn concurrent_cas_borrowed_rollback_and_runtime_owner() {
@@ -425,58 +129,6 @@ async fn concurrent_cas_borrowed_rollback_and_runtime_owner() {
         |_| false
     ));
 }
-#[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
-async fn outbox_failure_and_immutable_inputs() {
-    let runtime = runtime().await;
-    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
-        .await
-        .unwrap();
-    let p = pid();
-    let rev = setup(&s, &p).await;
-    let bad = req(
-        &p,
-        rev,
-        Command::SelectTargets {
-            policy: p.clone(),
-            snapshot: targets(&p, 1, &["different"]),
-            references: vec![],
-        },
-    );
-    assert!(matches!(
-        s.execute(&bad, deadline()).await,
-        Err(Error::Rejected(Rejection::IdentityConflict))
-    ));
-    sql(
-        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_policy_runtime",
-    );
-    let r = req(&p, rev, Command::Replan { policy: p.clone() });
-    let result = s.execute(&r, deadline()).await;
-    sql(
-        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_policy_runtime",
-    );
-    assert!(result.is_err());
-    assert!(s.operation(&r.id, deadline()).await.unwrap().is_none());
-    assert_eq!(
-        s.get(&p, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .storage_revision(),
-        rev
-    );
-    sql("ALTER TABLE mdm_policy.aggregates NO FORCE ROW LEVEL SECURITY");
-    let result = PolicyStore::new(runtime, tenant(), deadline()).await;
-    sql("ALTER TABLE mdm_policy.aggregates FORCE ROW LEVEL SECURITY");
-    assert!(result.is_err());
-    assert_eq!(
-        sql(
-            "SELECT count(*) FROM mdm_policy.aggregates WHERE tenant_id='22222222-2222-2222-2222-222222222222'"
-        ),
-        "0"
-    );
-}
-
 fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
     use sha2::{Digest, Sha256};
     let message_id = format!("policy.v1:{request}");
@@ -517,168 +169,6 @@ fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
             .map(String::as_str)
             .collect()
     );
-}
-
-#[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
-async fn fact_pages_preserve_boundaries_and_reject_foreign_documents() {
-    use sha2::{Digest, Sha256};
-    let runtime = runtime().await;
-    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
-        .await
-        .unwrap();
-    let p = pid();
-    s.execute(
-        &req(&p, 0, Command::Create { policy: p.clone() }),
-        deadline(),
-    )
-    .await
-    .unwrap();
-    let empty = s.execution_facts(&p, None, 2, deadline()).await.unwrap();
-    assert!(empty.records.is_empty() && empty.next.is_none());
-    s.execute(
-        &req(
-            &p,
-            1,
-            Command::Transition {
-                policy: p.clone(),
-                transition: Transition::Activate(version(&p, 1)),
-            },
-        ),
-        deadline(),
-    )
-    .await
-    .unwrap();
-    let mut rev = 2;
-    for count in 1..=3 {
-        let devices = (0..count).map(|n| format!("d{n}")).collect::<Vec<_>>();
-        let members = devices.iter().map(String::as_str).collect::<Vec<_>>();
-        rev = s
-            .execute(
-                &req(
-                    &p,
-                    rev,
-                    Command::SelectTargets {
-                        policy: p.clone(),
-                        snapshot: targets(&p, count as u64, &members),
-                        references: vec![],
-                    },
-                ),
-                deadline(),
-            )
-            .await
-            .unwrap()
-            .storage_revision;
-        rev = s
-            .execute(
-                &req(&p, rev, Command::Replan { policy: p.clone() }),
-                deadline(),
-            )
-            .await
-            .unwrap()
-            .storage_revision;
-        let page = s.execution_facts(&p, None, 2, deadline()).await.unwrap();
-        assert_eq!(page.records.len(), count.min(2));
-        assert_eq!(page.next.is_some(), count > 2);
-    }
-    let all = s.execution_facts(&p, None, 1000, deadline()).await.unwrap();
-    let mut next = None;
-    let mut keys = Vec::new();
-    loop {
-        let page = s.execution_facts(&p, next, 1, deadline()).await.unwrap();
-        keys.extend(page.records.iter().map(|r| r.key().clone()));
-        next = page.next;
-        if next.is_none() {
-            break;
-        }
-    }
-    assert_eq!(
-        keys,
-        all.records
-            .iter()
-            .map(|r| r.key().clone())
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        s.execution_facts(&p, Some("zzzz".into()), 2, deadline())
-            .await
-            .unwrap()
-            .records
-            .is_empty()
-    );
-    for limit in [0, 1001] {
-        assert!(matches!(
-            s.execution_facts(&p, None, limit, deadline()).await,
-            Err(Error::Rejected(Rejection::InvalidInput))
-        ));
-    }
-    assert!(
-        s.execution_facts(&p, Some("x".repeat(513)), 2, deadline())
-            .await
-            .is_err()
-    );
-    assert!(
-        s.execution_facts(
-            &PolicyId::new(foreign(), p.value()).unwrap(),
-            None,
-            2,
-            deadline()
-        )
-        .await
-        .is_err()
-    );
-    let foreign_store = PolicyStore::new(runtime, foreign(), deadline())
-        .await
-        .unwrap();
-    assert!(
-        foreign_store
-            .execution_facts(
-                &PolicyId::new(foreign(), p.value()).unwrap(),
-                None,
-                2,
-                deadline()
-            )
-            .await
-            .unwrap()
-            .records
-            .is_empty()
-    );
-    // Corrupt the lookahead record with valid JSON/core data and a matching digest.
-    // It must be checked before truncation, even though it is not returned on this page.
-    let original = sql(&format!(
-        "SELECT convert_from(document,'UTF8') FROM mdm_policy.facts WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
-        tenant(),
-        p.value()
-    ));
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-    for (field, value) in [(0, foreign().to_string()), (1, "other-policy".into())] {
-        let mut document: serde_json::Value = serde_json::from_str(&original).unwrap();
-        document[0][field] = serde_json::Value::String(value);
-        let bytes = serde_json::to_vec(&document).unwrap();
-        sql(&format!(
-            "UPDATE mdm_policy.facts SET document=decode('{}','hex'),digest=decode('{}','hex') WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
-            hex(&bytes),
-            hex(&Sha256::digest(&bytes)),
-            tenant(),
-            p.value()
-        ));
-        let result = s.execution_facts(&p, None, 2, deadline()).await;
-        sql(&format!(
-            "UPDATE mdm_policy.facts SET document=decode('{}','hex'),digest=decode('{}','hex') WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
-            hex(original.as_bytes()),
-            hex(&Sha256::digest(original.as_bytes())),
-            tenant(),
-            p.value()
-        ));
-        assert!(result.is_err());
-    }
-    // Policy-specific column grants must remain exact after sharing admission.
-    sql("REVOKE UPDATE(document) ON mdm_policy.facts FROM mdm_policy_runtime");
-    let bad = PolicyStore::new(support::runtime().await, tenant(), deadline()).await;
-    sql("GRANT UPDATE(document) ON mdm_policy.facts TO mdm_policy_runtime");
-    assert!(bad.is_err());
 }
 
 #[tokio::test]
@@ -728,4 +218,487 @@ async fn admission_rejects_noninherited_switchable_privileges() {
         "REVOKE {bridge} FROM mdm_policy_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
     ));
     dormant.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn saving_intents_does_not_create_execution_facts() {
+    let runtime = runtime().await;
+    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let p = pid();
+    let rev = setup(&s, &p).await;
+    let candidate = planning::prepare(&runtime, &s, &p, rev, &["a"]).await;
+    let operation = RequestId::new(tenant(), unique()).unwrap();
+    let saved = planning::save(&runtime, &s, &p, &operation, &candidate, rev, deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        saved,
+        planning::save(&runtime, &s, &p, &operation, &candidate, rev, deadline())
+            .await
+            .unwrap()
+    );
+    assert_event(p.value(), operation.value(), saved.storage_revision, 10);
+    assert!(
+        s.execution_facts(&p, None, 1000, deadline())
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+    let intents = planning::settle(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &candidate), |ctx, tx| {
+                Box::pin(async move {
+                    ctx.0
+                        .candidate_intents_in(tx, ctx.1, IntentKind::Add, None, 1000)
+                        .await
+                })
+            })
+            .await,
+    )
+    .unwrap();
+    assert_eq!(intents.len(), 1);
+    assert!(
+        matches!(&intents[0].intent,CandidateIntent::Desired {device,supersedes:false,version:1} if device.value()=="a")
+    );
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn persistence_replay_aba_and_old_facts() {
+    let runtime = runtime().await;
+    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let p = pid();
+    let mut rev = setup(&s, &p).await;
+    let old = ExecutionRecord::new(
+        version(&p, 1),
+        DeviceId::new(tenant(), "a").unwrap(),
+        Progress::Running,
+        Effect::VerifiedPresent,
+    )
+    .unwrap();
+    let request = req(
+        &p,
+        rev,
+        Command::RecordExecutions {
+            policy: p.clone(),
+            facts: vec![old.clone()],
+        },
+    );
+    let receipt = s.execute(&request, deadline()).await.unwrap();
+    rev = receipt.storage_revision;
+    assert_eq!(receipt, s.execute(&request, deadline()).await.unwrap());
+    rev = s
+        .execute(
+            &req(
+                &p,
+                rev,
+                Command::Transition {
+                    policy: p.clone(),
+                    transition: Transition::Activate(version(&p, 2)),
+                },
+            ),
+            deadline(),
+        )
+        .await
+        .unwrap()
+        .storage_revision;
+    let candidate = planning::prepare(&runtime, &s, &p, rev, &["a"]).await;
+    let intents = planning::settle(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &candidate), |ctx, tx| {
+                Box::pin(async move {
+                    ctx.0
+                        .candidate_intents_in(tx, ctx.1, IntentKind::Supersede, None, 1000)
+                        .await
+                })
+            })
+            .await,
+    )
+    .unwrap();
+    assert!(matches!(
+        intents[0].intent,
+        CandidateIntent::Desired {
+            version: 2,
+            supersedes: true,
+            ..
+        }
+    ));
+    let mut after = None;
+    for expected in [1, 0] {
+        let rows = planning::settle(
+            runtime
+                .local_tx_with_context(
+                    tenant(),
+                    deadline(),
+                    (&s, &candidate, after.clone()),
+                    |ctx, tx| {
+                        Box::pin(async move {
+                            ctx.0
+                                .candidate_intents_in(
+                                    tx,
+                                    ctx.1,
+                                    IntentKind::Predecessors,
+                                    ctx.2.clone(),
+                                    1,
+                                )
+                                .await
+                        })
+                    },
+                )
+                .await,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), expected);
+        if let Some(row) = rows.first() {
+            assert!(
+                matches!(&row.intent, CandidateIntent::Predecessor { execution, successor_version: 2 } if execution == &old)
+            );
+            after = Some(row.position.clone());
+        }
+    }
+    let operation = RequestId::new(tenant(), unique()).unwrap();
+    let saved = planning::save(&runtime, &s, &p, &operation, &candidate, rev, deadline())
+        .await
+        .unwrap();
+    rev = saved.storage_revision;
+    assert_eq!(
+        s.execution_facts(&p, None, 1000, deadline())
+            .await
+            .unwrap()
+            .records,
+        vec![old.clone()]
+    );
+    let stale = planning::prepare(&runtime, &s, &p, rev, &["a"]).await;
+    for transition in [Transition::Pause, Transition::Resume] {
+        rev = s
+            .execute(
+                &req(
+                    &p,
+                    rev,
+                    Command::Transition {
+                        policy: p.clone(),
+                        transition,
+                    },
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap()
+            .storage_revision;
+    }
+    assert!(
+        !s.get(&p, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .plan_is_fresh()
+    );
+    assert!(matches!(
+        planning::save(
+            &runtime,
+            &s,
+            &p,
+            &RequestId::new(tenant(), unique()).unwrap(),
+            &stale,
+            rev,
+            deadline()
+        )
+        .await,
+        Err(Error::Rejected(Rejection::Conflict))
+    ));
+    assert_eq!(
+        s.operation(&operation, deadline()).await.unwrap(),
+        Some(saved)
+    );
+    assert_eq!(
+        s.version(&p, 1, deadline()).await.unwrap(),
+        Some(version(&p, 1))
+    );
+    let incompatible = Version::new(
+        p.clone(),
+        1,
+        PayloadRef::new(
+            PayloadId::new(tenant(), "incompatible").unwrap(),
+            1,
+            [9; 32],
+        )
+        .unwrap(),
+        RemovalRule::CancelOutstandingRetainEffects,
+    )
+    .unwrap();
+    let bad = ExecutionRecord::new(
+        incompatible,
+        old.device().clone(),
+        Progress::Failed,
+        Effect::Unknown,
+    )
+    .unwrap();
+    assert!(
+        s.execute(
+            &req(
+                &p,
+                rev,
+                Command::RecordExecutions {
+                    policy: p.clone(),
+                    facts: vec![bad]
+                }
+            ),
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        s.execution_facts(&p, None, 1000, deadline())
+            .await
+            .unwrap()
+            .records,
+        vec![old]
+    );
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn outbox_failure_and_immutable_inputs() {
+    let runtime = runtime().await;
+    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let p = pid();
+    let rev = setup(&s, &p).await;
+    let candidate = planning::prepare(&runtime, &s, &p, rev, &["a"]).await;
+    let mut original = planning::settle(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &candidate), |ctx, tx| {
+                Box::pin(async move { ctx.0.candidate_in(tx, ctx.1).await })
+            })
+            .await,
+    )
+    .unwrap()
+    .request;
+    original.target_revision += 1;
+    let conflict = planning::settle(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &original), |ctx, tx| {
+                Box::pin(async move { ctx.0.begin_candidate_in(tx, ctx.1).await })
+            })
+            .await,
+    );
+    assert!(matches!(
+        conflict,
+        Err(Error::Rejected(Rejection::IdentityConflict))
+    ));
+    sql(
+        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_policy_runtime",
+    );
+    let operation = RequestId::new(tenant(), unique()).unwrap();
+    let failed = planning::save(&runtime, &s, &p, &operation, &candidate, rev, deadline()).await;
+    sql(
+        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_policy_runtime",
+    );
+    assert!(failed.is_err());
+    assert!(s.operation(&operation, deadline()).await.unwrap().is_none());
+    assert_eq!(
+        s.get(&p, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .storage_revision(),
+        rev
+    );
+    assert!(
+        s.get(&p, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .current_plan_id()
+            .is_none()
+    );
+    sql("ALTER TABLE mdm_policy.aggregates NO FORCE ROW LEVEL SECURITY");
+    let rejected = PolicyStore::new(runtime.clone(), tenant(), deadline()).await;
+    sql("ALTER TABLE mdm_policy.aggregates FORCE ROW LEVEL SECURITY");
+    assert!(rejected.is_err());
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn fact_pages_preserve_boundaries_and_reject_foreign_documents() {
+    use sha2::{Digest, Sha256};
+    let runtime = runtime().await;
+    let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let p = pid();
+    let rev = setup(&s, &p).await;
+    let facts = (0..5)
+        .map(|n| {
+            ExecutionRecord::new(
+                version(&p, 1),
+                DeviceId::new(tenant(), format!("d{n}")).unwrap(),
+                Progress::Running,
+                Effect::Unknown,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    s.execute(
+        &req(
+            &p,
+            rev,
+            Command::RecordExecutions {
+                policy: p.clone(),
+                facts: facts.clone(),
+            },
+        ),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let mut after = None;
+    let mut all = vec![];
+    loop {
+        let page = s.execution_facts(&p, after, 2, deadline()).await.unwrap();
+        all.extend(page.records);
+        after = page.next;
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(all, facts);
+    let mut revision = s
+        .get(&p, deadline())
+        .await
+        .unwrap()
+        .unwrap()
+        .storage_revision();
+    for number in [2, 10] {
+        revision = s
+            .execute(
+                &req(
+                    &p,
+                    revision,
+                    Command::Transition {
+                        policy: p.clone(),
+                        transition: Transition::Activate(version(&p, number)),
+                    },
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap()
+            .storage_revision;
+        revision = s
+            .execute(
+                &req(
+                    &p,
+                    revision,
+                    Command::RecordExecutions {
+                        policy: p.clone(),
+                        facts: vec![
+                            ExecutionRecord::new(
+                                version(&p, number),
+                                DeviceId::new(tenant(), "d0").unwrap(),
+                                Progress::Succeeded,
+                                Effect::VerifiedPresent,
+                            )
+                            .unwrap(),
+                        ],
+                    },
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap()
+            .storage_revision;
+    }
+    let page = s
+        .execution_facts(&p, Some("1/d4".into()), 1, deadline())
+        .await
+        .unwrap();
+    assert_eq!(page.records[0].version().number(), 2);
+    let page = s
+        .execution_facts(&p, page.next, 1, deadline())
+        .await
+        .unwrap();
+    assert_eq!(page.records[0].version().number(), 10);
+    assert!(page.next.is_none());
+    for invalid in ["zero", "0/d0", "01/d0", "1/"] {
+        assert!(
+            s.execution_facts(&p, Some(invalid.into()), 2, deadline())
+                .await
+                .is_err()
+        );
+    }
+
+    for limit in [0, 1001] {
+        assert!(
+            s.execution_facts(&p, None, limit, deadline())
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        s.execution_facts(
+            &PolicyId::new(foreign(), p.value()).unwrap(),
+            None,
+            2,
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    let foreign_store = PolicyStore::new(runtime.clone(), foreign(), deadline())
+        .await
+        .unwrap();
+    assert!(
+        foreign_store
+            .execution_facts(
+                &PolicyId::new(foreign(), p.value()).unwrap(),
+                None,
+                2,
+                deadline()
+            )
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+    let original = sql(&format!(
+        "SELECT convert_from(document,'UTF8') FROM mdm_policy.facts WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
+        tenant(),
+        p.value()
+    ));
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    for (field, value) in [(0, foreign().to_string()), (1, "other-policy".into())] {
+        let mut doc: serde_json::Value = serde_json::from_str(&original).unwrap();
+        doc[0][field] = value.into();
+        let bytes = serde_json::to_vec(&doc).unwrap();
+        sql(&format!(
+            "UPDATE mdm_policy.facts SET document=decode('{}','hex'),digest=decode('{}','hex') WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
+            hex(&bytes),
+            hex(&Sha256::digest(&bytes)),
+            tenant(),
+            p.value()
+        ));
+        let result = s.execution_facts(&p, None, 2, deadline()).await;
+        sql(&format!(
+            "UPDATE mdm_policy.facts SET document=decode('{}','hex'),digest=decode('{}','hex') WHERE tenant_id='{}' AND owner='{}' AND key='1/d2'",
+            hex(original.as_bytes()),
+            hex(&Sha256::digest(original.as_bytes())),
+            tenant(),
+            p.value()
+        ));
+        assert!(result.is_err());
+    }
+    sql("REVOKE UPDATE(document) ON mdm_policy.facts FROM mdm_policy_runtime");
+    let bad = PolicyStore::new(runtime.clone(), tenant(), deadline()).await;
+    sql("GRANT UPDATE(document) ON mdm_policy.facts TO mdm_policy_runtime");
+    assert!(bad.is_err());
+    runtime.close().await;
 }

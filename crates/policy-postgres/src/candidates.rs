@@ -421,9 +421,11 @@ impl PolicyStore {
         }
         if candidate.phase != CandidatePhase::Targets
             || candidate.target_cursor.as_deref() != after.map(DeviceId::value)
-            || candidate.target_count.saturating_add(devices.len() as u64) > 1_000_000
         {
             return Ok(Err(Rejection::Conflict));
+        }
+        if candidate.target_count.saturating_add(devices.len() as u64) > 1_000_000 {
+            return Ok(Err(Rejection::BudgetExceeded));
         }
         let tenant = self.tenant.to_string();
         let owner = candidate.request.policy.value().to_owned();
@@ -579,7 +581,6 @@ impl PolicyStore {
                         CancelReason::Superseded => "superseded",
                     },
                 ),
-                _ => return Err(STORAGE.fault("candidate::classification")),
             };
             intents.push((
                 kind.to_owned(),
@@ -709,8 +710,6 @@ impl PolicyStore {
         if !already {
             let previous = aggregate.revision;
             input!(aggregate.advance());
-            aggregate.targets = None;
-            aggregate.references = Vec::new();
             aggregate.plan = Some(plan);
             aggregate.installed = Some(aggregate.revision);
             aggregate.installed_request = Some(operation.clone());

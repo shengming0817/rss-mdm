@@ -1,8 +1,11 @@
 BEGIN;
+ALTER TABLE mdm_policy.immutable DROP CONSTRAINT immutable_kind_check;
+ALTER TABLE mdm_policy.immutable ADD CONSTRAINT immutable_kind_check CHECK(kind IN ('version','payload'));
 -- Relational keys allow bounded history-existence probes without loading all facts.
 ALTER TABLE mdm_policy.facts ADD COLUMN device text GENERATED ALWAYS AS (substring(key FROM strpos(key,'/')+1)) STORED;
 ALTER TABLE mdm_policy.facts ADD COLUMN version numeric(20,0) GENERATED ALWAYS AS (split_part(key,'/',1)::numeric) STORED;
 CREATE INDEX facts_device_version ON mdm_policy.facts(tenant_id,owner,device,version);
+CREATE INDEX facts_semantic_order ON mdm_policy.facts(tenant_id,owner,version,device COLLATE "C");
 CREATE TABLE mdm_policy.reference_heads (
  tenant_id uuid NOT NULL, id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128),
  revision bigint NOT NULL CHECK(revision>=0),

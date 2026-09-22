@@ -67,6 +67,7 @@ pub async fn runtime_at(port: Option<u16>) -> Arc<PgRuntime> {
         .unwrap(),
     )
 }
+#[allow(dead_code)]
 pub fn sql(statement: &str) -> String {
     use std::io::Write;
     let c = config();

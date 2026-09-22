@@ -69,7 +69,7 @@ impl Management {
         let members = kind == ScopePageKind::Members;
         let limit = query.limit as i64;
         let metadata=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT device,octet_length(explanation::text) AS bytes FROM mdm_management.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND (NOT $3 OR matched) AND ($4::text IS NULL OR device>$4 COLLATE \"C\") ORDER BY device LIMIT $5")
+            sqlx::query("SELECT device,octet_length(explanation::text) AS bytes FROM mdm_management.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND (NOT $3 OR matched) AND device>coalesce($4::text,'') COLLATE \"C\" ORDER BY device LIMIT $5")
                 .bind(tenant).bind(result.to_string()).bind(members).bind(after).bind(limit).fetch_all(c).await
         })).await?;
         let mut devices = Vec::new();

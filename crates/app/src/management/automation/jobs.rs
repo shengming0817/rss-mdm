@@ -20,7 +20,8 @@ impl Management {
         if target.is_some_and(|t| t != job.target())
             || !matches!(
                 (kind, &job),
-                (TaskKind::Group, JobInput::Group { .. })
+                (TaskKind::AssetQuery, JobInput::AssetQuery { .. })
+                    | (TaskKind::Group, JobInput::Group { .. })
                     | (TaskKind::Scope, JobInput::Scope { .. })
                     | (TaskKind::Policy, JobInput::Policy { .. })
             )
@@ -32,6 +33,7 @@ impl Management {
         let mut plan = None;
         if failure.is_none() {
             match &job {
+                JobInput::AssetQuery { .. } => {}
                 JobInput::Group { .. } => {
                     let build = checked(
                         self.groups
@@ -116,6 +118,7 @@ impl Management {
             })).await?;
         }
         let status_url = match input {
+            JobInput::AssetQuery { .. } => format!("/api/v2/device-queries/{id}"),
             JobInput::Group { group, .. } => format!("/api/v2/groups/{group}/tasks/{id}"),
             JobInput::Scope { scope } => format!("/api/v2/scopes/{scope}/tasks/{id}"),
             JobInput::Policy { .. } => format!("/api/v2/plan-previews/{id}"),
@@ -168,7 +171,7 @@ impl Management {
             row.try_get("forwarded")?,
         ))
     }
-    pub(super) async fn finish_job_in(
+    pub(in crate::management) async fn finish_job_in(
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,

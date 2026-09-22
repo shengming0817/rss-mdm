@@ -80,6 +80,15 @@ pub struct MemberBuild {
     pub receipt: Option<Receipt>,
 }
 
+/// One bounded difference step and the identities examined in that transaction.
+/// The host may resolve identity versions for these keys under its frozen input.
+pub struct DifferenceStep {
+    /// Durable progress after the step.
+    pub build: MemberBuild,
+    /// Sorted old-or-new member identities, at most 1,000.
+    pub devices: Vec<String>,
+}
+
 impl GroupStore {
     /// Read the immutable current member-set handle; None means the initial empty set.
     pub async fn current_member_set_in(
@@ -237,19 +246,8 @@ impl GroupStore {
             rule.evaluate_page(page, build.request.as_of)
                 .map_err(crate::store::core_rejection)
         );
-        // Encoding is bounded by a page. The legacy aggregate encoder is removed
-        // when the adapter's callers switch to the page storage format.
-        let source = rss_mdm_group::Snapshot {
-            tenant: page.tenant,
-            id: page.id.into(),
-            version: page.version.into(),
-            dictionary_version: page.dictionary_version.into(),
-            complete: false,
-            coverage: page.coverage.clone(),
-            objects: page.objects.to_vec(),
-        };
         let fingerprint = db::fingerprint(&[
-            &data(crate::codec::encode_snapshot(&source))?,
+            &input!(crate::codec::encode_page(page).map_err(|_| Rejection::PageBudgetExceeded)),
             page.after.map_or("", |k| k.id()).as_bytes(),
         ]);
         let tenant = self.tenant.to_string();
@@ -265,11 +263,11 @@ impl GroupStore {
                 Err(Rejection::IdentityConflict)
             });
         }
-        if build.input_sealed
-            || build.cursor.as_deref() != page.after.map(|k| k.id())
-            || build.objects.saturating_add(page.objects.len()) > MAX_MEMBERS
-        {
+        if build.input_sealed || build.cursor.as_deref() != page.after.map(|k| k.id()) {
             return Ok(Err(Rejection::InvalidInput));
+        }
+        if build.objects.saturating_add(page.objects.len()) > MAX_MEMBERS {
+            return Ok(Err(Rejection::CapacityExceeded));
         }
         let mut ids = Vec::new();
         let mut matches = Vec::new();
@@ -303,7 +301,7 @@ impl GroupStore {
                 .sum::<usize>()
                 > 16 * 1024 * 1024
         {
-            return Ok(Err(Rejection::InvalidInput));
+            return Ok(Err(Rejection::PageBudgetExceeded));
         }
         let hashes: Vec<_> = evidence.iter().map(|bytes| digest(bytes)).collect();
         let count = ids.len() as i64;
@@ -343,50 +341,49 @@ impl GroupStore {
         if build.input_sealed {
             return Ok(Ok(build));
         }
+        let wanted: std::collections::BTreeMap<String, bool> = patch
+            .remove
+            .into_iter()
+            .map(|id| (id, false))
+            .chain(patch.add.into_iter().map(|id| (id, true)))
+            .collect();
         let tenant = self.tenant.to_string();
-        let after = build.cursor.clone();
-        let remove = patch.remove.clone();
-        let mut ids:std::collections::BTreeSet<String>=tx.with_connection(move |c|Box::pin(async move {
-            let rows:Vec<String>=sqlx::query_scalar("SELECT m.object_id FROM mdm_group.member_rows m JOIN mdm_group.groups g ON (g.tenant_id,g.member_set)=(m.tenant_id,m.run_id) WHERE g.tenant_id=$1::uuid AND g.id=$2::uuid AND m.matched AND NOT(m.object_id=ANY($3)) AND ($4::text IS NULL OR m.object_id>$4 COLLATE \"C\") ORDER BY m.object_id LIMIT 1001")
-                .bind(tenant).bind(group.id.to_string()).bind(remove).bind(after).fetch_all(c).await?;
-            Ok(rows.into_iter().collect())
+        let group_id = group.id.to_string();
+        let selected: Vec<_> = wanted.keys().cloned().collect();
+        let old=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query("SELECT d,coalesce((SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND m.object_id=d AND r.phase='published' ORDER BY m.revision DESC LIMIT 1),false) AS present FROM unnest($3::text[]) d")
+                .bind(tenant).bind(group_id).bind(selected).fetch_all(c).await
         })).await?;
-        ids.extend(
-            patch
-                .add
-                .into_iter()
-                .filter(|id| build.cursor.as_ref().is_none_or(|after| id > after)),
+        let mut ids = Vec::new();
+        let mut values = Vec::new();
+        for row in old {
+            let key: String = row.try_get("d")?;
+            let new = *wanted.get(&key).ok_or_else(stored_shape)?;
+            if new != row.try_get::<bool, _>("present")? {
+                ids.push(key);
+                values.push(new);
+            }
+        }
+        let added = values.iter().filter(|v| **v).count();
+        let removed = values.len() - added;
+        let members = input!(
+            group
+                .member_count
+                .checked_add(added)
+                .and_then(|n| n.checked_sub(removed))
+                .filter(|n| *n <= MAX_MEMBERS)
+                .ok_or(Rejection::CapacityExceeded)
         );
-        let more = ids.len() > 1000;
-        let ids: Vec<_> = ids.into_iter().take(1000).collect();
-        if build.objects.saturating_add(ids.len()) > MAX_MEMBERS {
-            return Ok(Err(Rejection::InvalidInput));
-        }
-        let next = if ids.is_empty() {
-            build
-        } else {
-            let fingerprint = digest(&data(serde_json::to_vec(&ids))?);
-            let evidence = ids
-                .iter()
-                .map(|id| data(serde_json::to_vec(&crate::decisions::manual(id.clone()))))
-                .collect::<Result<Vec<_>, _>>()?;
-            input!(
-                self.store_page_in(
-                    tx,
-                    id,
-                    ids.clone(),
-                    vec![true; ids.len()],
-                    evidence,
-                    fingerprint
-                )
-                .await?
-            )
-        };
-        if more {
-            Ok(Ok(next))
-        } else {
-            self.seal_build_in(tx, id, next.objects).await
-        }
+        let tenant = self.tenant.to_string();
+        let group_id = group.id.to_string();
+        let revision = input!(group.revision.next()).get();
+        tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_id,group_id,revision,added) SELECT $1::uuid,$2::uuid,d,$3::uuid,$4,v FROM unnest($5::text[],$6::boolean[]) AS p(d,v)")
+                .bind(&tenant).bind(id.to_string()).bind(group_id).bind(revision).bind(ids).bind(values).execute(&mut *c).await?;
+            sqlx::query("UPDATE mdm_group.member_runs SET object_count=$3,member_count=$3,added=$4,removed=$5,phase='diff' WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='reading'")
+                .bind(tenant).bind(id.to_string()).bind(members as i64).bind(added as i64).bind(removed as i64).execute(c).await?;Ok(())
+        })).await?;
+        self.build_in(tx, id).await
     }
 
     /// Seal a host-confirmed complete enumeration. This transition is separate
@@ -425,7 +422,7 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-    ) -> InTransaction<MemberBuild> {
+    ) -> InTransaction<DifferenceStep> {
         input!(self.check_transaction(tx)?);
         let build = input!(self.build_in(tx, id).await?);
         let group = input!(
@@ -436,40 +433,99 @@ impl GroupStore {
         input!(check_build(&group, &build.request));
         let build = input!(self.build_in(tx, id).await?);
         if build.ready {
-            return Ok(Ok(build));
+            return Ok(Ok(DifferenceStep {
+                build,
+                devices: vec![],
+            }));
         }
         if !build.input_sealed {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
+        let previous = input!(self.current_member_set_in(tx, group.id).await?);
+        if let Some(step) = input!(self.static_difference_in(tx, id, &build, previous).await?) {
+            return Ok(Ok(step));
+        }
+        let after = build.difference_cursor.clone();
+        let old = if let Some(previous) = previous {
+            input!(
+                self.build_members_in(tx, previous, after.clone(), 1000)
+                    .await?
+            )
+        } else {
+            vec![]
+        };
+        let new = input!(self.build_members_in(tx, id, after.clone(), 1000).await?);
+        let full = old.len() == 1000 || new.len() == 1000;
+        let mut keys = std::collections::BTreeMap::<String, (bool, bool)>::new();
+        for key in old {
+            keys.entry(key).or_default().0 = true;
+        }
+        for key in new {
+            keys.entry(key).or_default().1 = true;
+        }
+        let more = full || keys.len() > 1000;
+        let mut devices = Vec::new();
+        let mut ids = Vec::new();
+        let mut changes = Vec::new();
+        for (key, (old, new)) in keys.into_iter().take(1000) {
+            devices.push(key.clone());
+            if old != new {
+                ids.push(key);
+                changes.push(new);
+            }
+        }
+        let last = devices.last().cloned().or(after);
+        let added = changes.iter().filter(|v| **v).count() as i64;
+        let removed = changes.len() as i64 - added;
         let tenant = self.tenant.to_string();
+        let dynamic = build.request.patch.is_none();
         tx.with_connection(move |c|Box::pin(async move {
-            let row=sqlx::query("SELECT r.diff_cursor,g.member_set::text FROM mdm_group.member_runs r JOIN mdm_group.groups g ON (g.tenant_id,g.id)=(r.tenant_id,r.group_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
-                .bind(&tenant).bind(id.to_string()).fetch_one(&mut *c).await?;
-            let cursor:Option<String>=row.try_get("diff_cursor")?;
-            let previous:Option<String>=row.try_get("member_set")?;
-            let mut keys=std::collections::BTreeMap::<String,(bool,bool)>::new();
-            for (version,old) in [(previous,true),(Some(id.to_string()),false)] {
-                if let Some(version)=version {
-                    let rows:Vec<String>=sqlx::query_scalar("SELECT object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND matched AND ($3::text IS NULL OR object_id>$3 COLLATE \"C\") ORDER BY object_id LIMIT 1001")
-                        .bind(&tenant).bind(version).bind(&cursor).fetch_all(&mut *c).await?;
-                    for key in rows {let pair=keys.entry(key).or_default();if old {pair.0=true;}else{pair.1=true;}}
-                }
+            if dynamic {
+                sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_id,group_id,revision,added) SELECT r.tenant_id,r.id,d,r.group_id,r.base_revision+1,v FROM mdm_group.member_runs r CROSS JOIN unnest($3::text[],$4::boolean[]) AS p(d,v) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
+                    .bind(&tenant).bind(id.to_string()).bind(ids).bind(changes).execute(&mut *c).await?;
             }
-            let more=keys.len()>1000;
-            let mut last=cursor;let mut ids=Vec::new();let mut changes=Vec::new();
-            for (key,(old,new)) in keys.into_iter().take(1000) {
-                last=Some(key.clone());
-                if old!=new {ids.push(key);changes.push(new);}
-            }
-            let added=changes.iter().filter(|v|**v).count() as i64;
-            let removed=changes.len() as i64-added;
-            sqlx::query("INSERT INTO mdm_group.member_changes SELECT $1::uuid,$2::uuid,* FROM unnest($3::text[],$4::boolean[])")
-                .bind(&tenant).bind(id.to_string()).bind(ids).bind(changes).execute(&mut *c).await?;
             sqlx::query("UPDATE mdm_group.member_runs SET diff_cursor=$3,added=added+$4,removed=removed+$5,phase=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).bind(last).bind(added).bind(removed).bind(if more {"diff"}else{"ready"}).execute(c).await?;
-            Ok(())
+                .bind(tenant).bind(id.to_string()).bind(last).bind(if dynamic {added}else{0}).bind(if dynamic {removed}else{0}).bind(if more {"diff"}else{"ready"}).execute(c).await?;Ok(())
         })).await?;
-        self.build_in(tx, id).await
+        let build = input!(self.build_in(tx, id).await?);
+        Ok(Ok(DifferenceStep { build, devices }))
+    }
+
+    async fn static_difference_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: OperationId,
+        build: &MemberBuild,
+        previous: Option<OperationId>,
+    ) -> InTransaction<Option<DifferenceStep>> {
+        // A static edit already has its complete difference. If the host's
+        // immutable input is unchanged, only edited identities need refreshing;
+        // prior identity authority remains valid for every unchanged member.
+        if build.request.patch.is_some() {
+            let same_input = match previous {
+                None => true,
+                Some(previous) => {
+                    input!(self.build_in(tx, previous).await?)
+                        .request
+                        .input_version
+                        == build.request.input_version
+                }
+            };
+            if same_input {
+                let tenant = self.tenant.to_string();
+                let devices=tx.with_connection(move |c|Box::pin(async move {
+                    let devices=sqlx::query_scalar::<_,String>("SELECT object_id FROM mdm_group.member_changes WHERE tenant_id=$1::uuid AND run_id=$2::uuid ORDER BY object_id LIMIT 1000")
+                        .bind(&tenant).bind(id.to_string()).fetch_all(&mut *c).await?;
+                    sqlx::query("UPDATE mdm_group.member_runs SET phase='ready',diff_cursor=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                        .bind(tenant).bind(id.to_string()).bind(devices.last()).execute(c).await?;Ok(devices)
+                })).await?;
+                return Ok(Ok(Some(DifferenceStep {
+                    build: input!(self.build_in(tx, id).await?),
+                    devices,
+                })));
+            }
+        }
+        Ok(Ok(None))
     }
 
     /// Publish only a sealed, fully compared set under group CAS. The host declares
@@ -552,9 +608,18 @@ impl GroupStore {
         if !build.input_sealed {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
+        if build.request.patch.is_some() {
+            let tenant = self.tenant.to_string();
+            let group = build.request.group.to_string();
+            let base = build.request.expected.get();
+            return Ok(Ok(tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query_scalar("SELECT object_id FROM (SELECT DISTINCT ON (m.object_id) m.object_id,m.added FROM mdm_group.member_changes m WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND ((m.revision<=$3 AND EXISTS(SELECT 1 FROM mdm_group.member_runs r WHERE r.tenant_id=m.tenant_id AND r.id=m.run_id AND r.phase='published' OFFSET 0)) OR m.run_id=$4::uuid) AND m.object_id>coalesce($5::text,'') COLLATE \"C\" ORDER BY m.object_id,m.revision DESC) latest WHERE added ORDER BY object_id LIMIT $6")
+                    .bind(tenant).bind(group).bind(base).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
+            })).await?));
+        }
         let tenant = self.tenant.to_string();
         Ok(Ok(tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND matched AND ($3::text IS NULL OR object_id>$3 COLLATE \"C\") ORDER BY object_id LIMIT $4")
+            sqlx::query_scalar("SELECT object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND matched AND object_id>coalesce($3::text,'') COLLATE \"C\" ORDER BY object_id LIMIT $4")
                 .bind(tenant).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
         })).await?))
     }

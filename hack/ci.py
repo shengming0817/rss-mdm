@@ -337,6 +337,7 @@ def main():
         ("t2",[sys.executable,"hack/t2.py"]),
         ("group-t2",[sys.executable,"hack/group-t2.py"]),
         ("management-t2",[sys.executable,"hack/management-t2.py"]),
+        ("capacity",[sys.executable,"hack/capacity.py"]),
         ("asset-t2",[sys.executable,"hack/asset-t2.py"]),
         ("command-catalog",[sys.executable,"hack/command_catalog.py","--check"]),
         ("command-t2",[sys.executable,"hack/command-t2.py"]),

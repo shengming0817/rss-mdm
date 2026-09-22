@@ -148,11 +148,7 @@ pub(in crate::management) fn criteria_view(c: &g::Criteria) -> Result<Criteria> 
         }
     })
 }
-pub(in crate::management) fn snapshot(
-    tenant: TenantId,
-    devices: &[DeviceView],
-) -> Result<g::Snapshot> {
-    let version = digest(devices)?;
+pub(in crate::management) fn page(tenant: TenantId, devices: &[DeviceView]) -> Result<FactPage> {
     let objects = devices
         .iter()
         .map(|device| {
@@ -193,16 +189,16 @@ pub(in crate::management) fn snapshot(
             })
         })
         .collect::<Result<_>>()?;
-    Ok(g::Snapshot {
-        tenant,
-        id: "assets".into(),
-        version,
-        dictionary_version: rss_mdm_inventory::DICTIONARY.into(),
-        complete: true,
+    Ok(FactPage {
         coverage: FieldKey::ALL
             .into_iter()
             .map(|k| k.as_str().into())
             .collect(),
         objects,
     })
+}
+
+pub(in crate::management) struct FactPage {
+    pub coverage: BTreeSet<String>,
+    pub objects: Vec<g::ObjectSnapshot>,
 }

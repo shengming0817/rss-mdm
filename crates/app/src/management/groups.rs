@@ -83,16 +83,18 @@ impl Management {
                 return self
                     .start_group_job_in(
                         tx,
-                        id,
-                        op.operation_id,
-                        op.expected_revision,
-                        Some(pg::MemberPatch {
-                            add: add.clone(),
-                            remove: remove.clone(),
-                        }),
-                        true,
-                        false,
-                        at,
+                        automation::GroupStart {
+                            id,
+                            task: op.operation_id,
+                            expected: op.expected_revision,
+                            patch: Some(pg::MemberPatch {
+                                add: add.clone(),
+                                remove: remove.clone(),
+                            }),
+                            publish: true,
+                            automatic: false,
+                            at,
+                        },
                     )
                     .await;
             }
@@ -104,17 +106,19 @@ impl Management {
                     expected: expected()?,
                 }
             }
-            GroupChange::Recompute => {
+            GroupChange::Recompute {} => {
                 return self
                     .start_group_job_in(
                         tx,
-                        id,
-                        op.operation_id,
-                        op.expected_revision,
-                        None,
-                        true,
-                        false,
-                        at,
+                        automation::GroupStart {
+                            id,
+                            task: op.operation_id,
+                            expected: op.expected_revision,
+                            patch: None,
+                            publish: true,
+                            automatic: false,
+                            at,
+                        },
                     )
                     .await;
             }
@@ -133,13 +137,15 @@ impl Management {
                 let task = Uuid::new_v4();
                 self.start_group_job_in(
                     tx,
-                    id,
-                    task,
-                    receipt.group.revision.get() as u64,
-                    None,
-                    true,
-                    true,
-                    at,
+                    automation::GroupStart {
+                        id,
+                        task,
+                        expected: receipt.group.revision.get() as u64,
+                        patch: None,
+                        publish: true,
+                        automatic: true,
+                        at,
+                    },
                 )
                 .await?;
                 response["task"] = serde_json::json!(task);
@@ -155,7 +161,18 @@ impl Management {
         revision: u64,
         at: Timepoint,
     ) -> Result<Value> {
-        self.start_group_job_in(tx, id, operation, revision, None, false, false, at)
-            .await
+        self.start_group_job_in(
+            tx,
+            automation::GroupStart {
+                id,
+                task: operation,
+                expected: revision,
+                patch: None,
+                publish: false,
+                automatic: false,
+                at,
+            },
+        )
+        .await
     }
 }

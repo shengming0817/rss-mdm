@@ -80,7 +80,7 @@ pub async fn store(r: Arc<PgRuntime>, t: TenantId) -> GroupStore {
 
 use rss_mdm_group_postgres::core::*;
 use std::collections::{BTreeMap, BTreeSet};
-pub fn inputs() -> (Rule, Snapshot) {
+pub fn inputs() -> (Rule, FixturePage) {
     let field = Field {
         key: "model".into(),
         kind: FieldType::Scalar(ScalarType::String),
@@ -104,12 +104,7 @@ pub fn inputs() -> (Rule, Snapshot) {
         .unwrap(),
     )
     .unwrap();
-    let snapshot = Snapshot {
-        tenant: tenant(),
-        id: "inventory".into(),
-        version: "v1".into(),
-        dictionary_version: "dictionary-1".into(),
-        complete: true,
+    let snapshot = FixturePage {
         coverage: BTreeSet::from(["model".into()]),
         objects: vec![ObjectSnapshot {
             key: ObjectKey::new(tenant(), "device-1").unwrap(),
@@ -128,6 +123,7 @@ pub fn inputs() -> (Rule, Snapshot) {
 }
 
 /// Controlled fixture host; production N12 additionally checks references and writes success audit.
+#[allow(dead_code)]
 pub async fn execute_companion(
     runtime: &PgRuntime,
     store: &GroupStore,
@@ -162,4 +158,9 @@ pub async fn execute_companion(
             },
             |e| Err(Error::Fenced(e)),
         )
+}
+
+pub struct FixturePage {
+    pub coverage: BTreeSet<String>,
+    pub objects: Vec<ObjectSnapshot>,
 }

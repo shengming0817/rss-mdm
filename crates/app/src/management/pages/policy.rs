@@ -21,6 +21,10 @@ enum PolicyItems {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Intent {
+    Predecessor {
+        execution: Execution,
+        successor_version: u64,
+    },
     Add {
         device: String,
         version: u64,
@@ -110,6 +114,7 @@ impl Management {
                 PolicyPageKind::Supersede => pg::IntentKind::Supersede,
                 PolicyPageKind::Retain => pg::IntentKind::Retain,
                 PolicyPageKind::Cancel => pg::IntentKind::Cancel,
+                PolicyPageKind::Predecessors => pg::IntentKind::Predecessors,
                 PolicyPageKind::Targets => unreachable!(),
             };
             let after = after
@@ -127,6 +132,13 @@ impl Management {
             let items = rows
                 .into_iter()
                 .map(|row| match row.intent {
+                    pg::CandidateIntent::Predecessor {
+                        execution: record,
+                        successor_version,
+                    } => Intent::Predecessor {
+                        execution: execution(record),
+                        successor_version,
+                    },
                     pg::CandidateIntent::Desired {
                         device,
                         version,

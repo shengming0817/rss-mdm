@@ -5,8 +5,18 @@ use crate::*;
 pub struct SourceMembership {
     /// Exact source identity/version/time.
     pub source: SourceRef,
-    /// Some(false) is confirmed absence; None is unresolved and rejects the result.
-    pub contains: Option<bool>,
+    /// A confirmed membership or an explicit source failure.
+    pub contains: Membership,
+}
+/// One source lookup, preserving confirmed absence versus incomplete or failed input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Membership {
+    /// Confirmed membership in a complete immutable source set.
+    Known(bool),
+    /// The source is not complete and cannot be used for publication.
+    Incomplete,
+    /// The source could not be resolved.
+    Failed,
 }
 /// A single-device slice of the scope algebra. No collection of devices is needed.
 pub struct DeviceInput {
@@ -20,7 +30,7 @@ pub struct DeviceInput {
     pub exclusions: Vec<SourceMembership>,
 }
 
-/// Resolve one device using the same algebra and explanation as complete-set resolution.
+/// Resolve one device using target union, optional limitation union and exclusions.
 /// Every supplied source is checked, including sources that do not match the device.
 /// The caller enumerates candidates from sealed target sets and owns page completeness.
 pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, ScopeError> {
@@ -43,9 +53,11 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
                 expected: input.device.tenant(),
             });
         }
-        let contains = membership
-            .contains
-            .ok_or_else(|| ScopeError::IncompleteSource(source.clone()))?;
+        let contains = match membership.contains {
+            Membership::Known(value) => value,
+            Membership::Incomplete => return Err(ScopeError::IncompleteSource(source.clone())),
+            Membership::Failed => return Err(ScopeError::SourceFailed(source.clone())),
+        };
         if let SourceId::Direct(id) = source.id()
             && contains != (id == &input.device)
         {
@@ -64,7 +76,7 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
     let matching = |sources: &[SourceMembership]| {
         sources
             .iter()
-            .filter(|s| s.contains == Some(true))
+            .filter(|s| s.contains == Membership::Known(true))
             .map(|s| s.source.clone())
             .collect::<BTreeSet<_>>()
     };

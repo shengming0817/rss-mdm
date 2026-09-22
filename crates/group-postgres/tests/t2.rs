@@ -104,85 +104,27 @@ fn assert_event(r: &Receipt, kind: &str) {
     );
 }
 
-#[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
-async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    let (id, created, snapshot) = dynamic_group(&s).await;
-    assert_event(&created, "created");
-    let mut a = request(id, &created, snapshot.clone());
-    a.trigger = Trigger::Periodic {
-        slot: "slot-1".into(),
-    };
-    let mut b = request(id, &created, snapshot);
-    b.snapshot.objects[0].key = ObjectKey::new(tenant(), "device-2").unwrap();
-    b.trigger = Trigger::Change {
-        source: "inventory".into(),
-        event: "event-1".into(),
-    };
-    let (first, second) = tokio::join!(
-        s.start_recalculation(&a, deadline()),
-        s.start_recalculation(&b, deadline())
-    );
-    first.unwrap();
-    second.unwrap();
-    let (first, second) = tokio::join!(s.resume(a.id, deadline()), s.resume(b.id, deadline()));
-    let states = [first.unwrap().state, second.unwrap().state];
-    assert_eq!(
-        states
-            .iter()
-            .filter(|s| matches!(s, RunState::Rejected(Rejection::VersionConflict)))
-            .count(),
-        1
-    );
-    let receipt = states
-        .iter()
-        .find_map(|s| {
-            if let RunState::Completed(r) = s {
-                Some(r)
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    assert_eq!(
-        receipt.group.revision.get(),
-        created.group.revision.get() + 1
-    );
-    assert_eq!(s.members(id, deadline()).await.unwrap().len(), 1);
-    assert_eq!(event_count(a.id) + event_count(b.id), 1);
-    assert_event(receipt, "members_changed");
-    let edited = s
+#[path = "support/builds.rs"]
+mod builds;
+async fn dynamic_group(s: &GroupStore) -> (GroupId, Receipt, FixturePage) {
+    let (rule, page) = inputs();
+    let group = group_id();
+    let receipt = s
         .execute(
             op(),
             at(),
-            &Command::Edit {
-                group: id,
-                expected: receipt.group.revision,
-                name: "renamed".into(),
-                description: "description".into(),
+            &Command::Create {
+                group,
+                name: "dynamic".into(),
+                description: String::new(),
+                definition: Definition::Dynamic(Box::new(rule)),
             },
             deadline(),
         )
         .await
         .unwrap();
-    assert_event(&edited, "edited");
-    let deleted = execute_companion(
-        &runtime,
-        &s,
-        op(),
-        &Command::Delete {
-            group: id,
-            expected: edited.group.revision,
-        },
-    )
-    .await
-    .unwrap();
-    assert_event(&deleted, "deleted");
-    runtime.close().await;
+    (group, receipt, page)
 }
-
 #[tokio::test]
 #[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
 async fn reference_target_lock_serializes_deletion() {
@@ -226,338 +168,6 @@ async fn reference_target_lock_serializes_deletion() {
     assert_event(&deleted, "deleted");
     runtime.close().await;
 }
-async fn dynamic_group(s: &GroupStore) -> (GroupId, Receipt, Snapshot) {
-    let (rule, snapshot) = inputs();
-    let id = group_id();
-    let r = s
-        .execute(
-            op(),
-            at(),
-            &Command::Create {
-                group: id,
-                name: "dynamic".into(),
-                description: "".into(),
-                definition: Definition::Dynamic(Box::new(rule)),
-            },
-            deadline(),
-        )
-        .await
-        .unwrap();
-    (id, r, snapshot)
-}
-fn request(id: GroupId, r: &Receipt, snapshot: Snapshot) -> RecalculationRequest {
-    RecalculationRequest {
-        id: op(),
-        group: id,
-        expected: r.group.revision,
-        rule_version: r.group.rule_version.clone().unwrap(),
-        trigger: Trigger::Manual,
-        snapshot,
-        as_of: at(),
-    }
-}
-#[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
-async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    let id = group_id();
-    let command = Command::Create {
-        group: id,
-        name: "same".into(),
-        description: "".into(),
-        definition: Definition::Static,
-    };
-    let operation = op();
-    let (a, b) = tokio::join!(
-        s.execute(operation, at(), &command, deadline()),
-        s.execute(operation, at(), &command, deadline())
-    );
-    assert_eq!(a.unwrap(), b.unwrap());
-    assert_eq!(event_count(operation), 1);
-    let (id, created, snapshot) = dynamic_group(&s).await;
-    let pending = request(id, &created, snapshot.clone());
-    for trigger in [
-        Trigger::Periodic { slot: " ".into() },
-        Trigger::Change {
-            source: "invalid\nsource".into(),
-            event: "e".into(),
-        },
-        Trigger::Periodic {
-            slot: "x".repeat(4097),
-        },
-    ] {
-        let invalid = RecalculationRequest {
-            id: op(),
-            trigger,
-            ..pending.clone()
-        };
-        assert!(matches!(
-            s.start_recalculation(&invalid, deadline()).await,
-            Err(rss_mdm_group_postgres::Error::Rejected(
-                Rejection::InvalidInput
-            ))
-        ));
-        assert!(s.get_run(invalid.id, deadline()).await.unwrap().is_none());
-    }
-    let (a, b) = tokio::join!(
-        s.start_recalculation(&pending, deadline()),
-        s.start_recalculation(&pending, deadline())
-    );
-    assert_eq!(a.unwrap(), b.unwrap());
-    let (a, b) = tokio::join!(
-        s.resume(pending.id, deadline()),
-        s.resume(pending.id, deadline())
-    );
-    assert_eq!(a.unwrap(), b.unwrap());
-    assert_eq!(event_count(pending.id), 1);
-    let current = s.get(id, deadline()).await.unwrap().unwrap();
-    let mut changed = pending.clone();
-    changed.snapshot.version = "changed".into();
-    assert!(matches!(
-        s.start_recalculation(&changed, deadline()).await,
-        Err(rss_mdm_group_postgres::Error::Rejected(
-            Rejection::IdentityConflict
-        ))
-    ));
-    let manual = Command::Members {
-        group: id,
-        expected: current.revision,
-        add: vec!["x".into()],
-        remove: vec![],
-    };
-    assert!(matches!(
-        s.execute(op(), at(), &manual, deadline()).await,
-        Err(rss_mdm_group_postgres::Error::Rejected(
-            Rejection::KindMismatch
-        ))
-    ));
-    let mut partial = pending.clone();
-    partial.id = op();
-    partial.expected = current.revision;
-    partial.snapshot.complete = false;
-    assert!(matches!(
-        s.start_recalculation(&partial, deadline()).await,
-        Err(rss_mdm_group_postgres::Error::Rejected(
-            Rejection::IncompleteSnapshot
-        ))
-    ));
-    assert!(
-        s.preview(id, current.revision, &partial.snapshot, at(), deadline())
-            .await
-            .is_ok()
-    );
-    let mut next = pending.clone();
-    next.id = op();
-    next.expected = current.revision;
-    s.start_recalculation(&next, deadline()).await.unwrap();
-    let (old, _) = inputs();
-    let v = old.view();
-    let new_rule = Rule::new(
-        tenant(),
-        "rule-2",
-        v.dictionary_version,
-        v.fields.values().cloned().collect(),
-        v.criteria.clone(),
-    )
-    .unwrap();
-    s.execute(
-        op(),
-        at(),
-        &Command::SetRule {
-            group: id,
-            expected: current.revision,
-            rule: new_rule,
-        },
-        deadline(),
-    )
-    .await
-    .unwrap();
-    assert!(matches!(
-        s.resume(next.id, deadline()).await.unwrap().state,
-        RunState::Rejected(Rejection::VersionConflict)
-    ));
-    assert_eq!(event_count(next.id), 0);
-    let current = s.get(id, deadline()).await.unwrap().unwrap();
-    let mut deleted = pending.clone();
-    deleted.id = op();
-    deleted.expected = current.revision;
-    deleted.rule_version = "rule-2".into();
-    s.start_recalculation(&deleted, deadline()).await.unwrap();
-    execute_companion(
-        &runtime,
-        &s,
-        op(),
-        &Command::Delete {
-            group: id,
-            expected: current.revision,
-        },
-    )
-    .await
-    .unwrap();
-    assert!(matches!(
-        s.resume(deleted.id, deadline()).await.unwrap().state,
-        RunState::Rejected(Rejection::Deleted)
-    ));
-    assert_eq!(
-        s.result(pending.id, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .evaluation
-            .objects[0]
-            .decision,
-        Decision::Match
-    );
-    runtime.close().await;
-}
-
-#[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
-async fn atomic_event_failure_rls_and_large_member_ids() {
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    let id = group_id();
-    let r = s
-        .execute(
-            op(),
-            at(),
-            &Command::Create {
-                group: id,
-                name: "static".into(),
-                description: "".into(),
-                definition: Definition::Static,
-            },
-            deadline(),
-        )
-        .await
-        .unwrap();
-    let operation = op();
-    let change = Command::Members {
-        group: id,
-        expected: r.group.revision,
-        add: vec!["设".repeat(1365), "b".into()],
-        remove: vec![],
-    };
-    admin(
-        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_group_runtime",
-    );
-    let failed = s.execute(operation, at(), &change, deadline()).await;
-    admin(
-        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_group_runtime",
-    );
-    assert!(failed.is_err());
-    assert_eq!(s.get(id, deadline()).await.unwrap().unwrap(), r.group);
-    assert_eq!(event_count(operation), 0);
-    let success = s
-        .execute(operation, at(), &change, deadline())
-        .await
-        .unwrap();
-    assert_eq!(success.added, 2);
-    let page = s.delta(operation, None, 1, deadline()).await.unwrap();
-    assert_eq!(page.added.len(), 1);
-    let next = s.delta(operation, page.next, 1, deadline()).await.unwrap();
-    assert_eq!(next.added[0].len(), 4095);
-    assert_eq!(
-        admin("SET ROLE mdm_group_runtime; SELECT count(*) FROM mdm_group.groups")
-            .lines()
-            .last()
-            .unwrap(),
-        "0"
-    );
-    assert_eq!(admin(&format!("SET ROLE mdm_group_runtime; SET rss.tenant_id='{}'; SELECT count(*) FROM mdm_group.groups WHERE id='{id}'",foreign())).lines().last().unwrap(),"0");
-    admin("ALTER TABLE mdm_group.members NO FORCE ROW LEVEL SECURITY");
-    let rejected = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
-    admin("ALTER TABLE mdm_group.members FORCE ROW LEVEL SECURITY");
-    assert!(rejected.is_err());
-    admin(
-        "CREATE FUNCTION mdm_group.role_drift() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'",
-    );
-    let rejected = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
-    admin("DROP FUNCTION mdm_group.role_drift()");
-    assert!(rejected.is_err(), "executable schema drift was admitted");
-    admin("CREATE VIEW mdm_group.extra_view AS SELECT 1 AS value");
-    let rejected = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
-    admin("DROP VIEW mdm_group.extra_view");
-    assert!(rejected.is_err(), "extra relation was admitted");
-    // Force an error AFTER the event and group update; neither may survive.
-    admin(&format!(
-        "CREATE FUNCTION public.reject_group_member() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.group_id='{id}'::uuid AND NEW.object_id='fail' THEN RAISE EXCEPTION 'fixture member rejection'; END IF; RETURN NEW; END $$; CREATE TRIGGER t2_fail BEFORE INSERT ON mdm_group.members FOR EACH ROW EXECUTE FUNCTION public.reject_group_member();"
-    ));
-    let bad = op();
-    let failed = s
-        .execute(
-            bad,
-            at(),
-            &Command::Members {
-                group: id,
-                expected: success.group.revision,
-                add: vec!["fail".into()],
-                remove: vec!["b".into()],
-            },
-            deadline(),
-        )
-        .await;
-    admin("DROP TRIGGER t2_fail ON mdm_group.members; DROP FUNCTION public.reject_group_member()");
-    assert!(failed.is_err());
-    assert_eq!(s.get(id, deadline()).await.unwrap().unwrap(), success.group);
-    assert_eq!(event_count(bad), 0);
-    runtime.close().await;
-}
-
-#[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
-async fn admitted_input_and_command_commit_unknown_recover_by_original_identity() {
-    use rss_transactional_messaging_postgres::PgTransactionFault;
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    let id = group_id();
-    let operation = op();
-    let command = Command::Create {
-        group: id,
-        name: "unknown".into(),
-        description: "".into(),
-        definition: Definition::Static,
-    };
-    runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    assert!(matches!(
-        s.execute(operation, at(), &command, deadline()).await,
-        Err(rss_mdm_group_postgres::Error::CommitUnknown { .. })
-    ));
-    let first = s
-        .execute(operation, at(), &command, deadline())
-        .await
-        .unwrap();
-    assert_eq!(event_count(operation), 1);
-    assert_eq!(first.group.id, id);
-    let (id, created, snapshot) = dynamic_group(&s).await;
-    let request = request(id, &created, snapshot);
-    runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    assert!(matches!(
-        s.start_recalculation(&request, deadline()).await,
-        Err(rss_mdm_group_postgres::Error::CommitUnknown { .. })
-    ));
-    runtime.close().await;
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    assert!(
-        s.recoverable(None, 1000, deadline())
-            .await
-            .unwrap()
-            .contains(&request.id)
-    );
-    assert!(matches!(
-        s.resume(request.id, deadline()).await.unwrap().state,
-        RunState::Completed(_)
-    ));
-    assert_eq!(event_count(request.id), 1);
-    assert!(matches!(
-        s.resume(op(), deadline()).await,
-        Err(rss_mdm_group_postgres::Error::Rejected(Rejection::NotFound))
-    ));
-    runtime.close().await;
-}
-
 struct ChildGuard(std::process::Child);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
@@ -566,78 +176,6 @@ impl Drop for ChildGuard {
     }
 }
 
-#[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
-async fn process_death_after_admission_recovers_without_caller_snapshot() {
-    if let Ok(path) = std::env::var("GROUP_RECOVERY_CHILD") {
-        let runtime = connect_runtime().await;
-        let s = store(runtime, tenant()).await;
-        let (id, created, snapshot) = dynamic_group(&s).await;
-        let request = request(id, &created, snapshot);
-        s.start_recalculation(&request, deadline()).await.unwrap();
-        std::fs::write(path, request.id.to_string()).unwrap();
-        // Parent kills this process after the admission acknowledgement. Bound the
-        // fixture lifetime even if its parent exits before killing it.
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        panic!("parent did not kill admitted process");
-    }
-    let path = std::path::PathBuf::from(std::env::var("GROUP_PG_CONFIG").unwrap())
-        .with_file_name(format!("recovery-{}", op()));
-    let mut child = ChildGuard(
-        std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--ignored",
-                "--exact",
-                "process_death_after_admission_recovers_without_caller_snapshot",
-            ])
-            .env("GROUP_RECOVERY_CHILD", &path)
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while !path.exists() {
-            assert!(
-                child.0.try_wait().unwrap().is_none(),
-                "admission child exited early"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    child.0.kill().unwrap();
-    assert!(!child.0.wait().unwrap().success());
-    let id = OperationId::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    std::fs::remove_file(path).unwrap();
-    let runtime = connect_runtime().await;
-    let s = store(runtime.clone(), tenant()).await;
-    assert!(
-        s.recoverable(None, 1000, deadline())
-            .await
-            .unwrap()
-            .contains(&id)
-    );
-    assert!(matches!(
-        s.resume(id, deadline()).await.unwrap().state,
-        RunState::Completed(_)
-    ));
-    assert_eq!(
-        s.result(id, deadline())
-            .await
-            .unwrap()
-            .unwrap()
-            .evaluation
-            .objects[0]
-            .decision,
-        Decision::Match
-    );
-    assert_eq!(event_count(id), 1);
-    runtime.close().await;
-}
-
-// TLS remains end-to-end. The fixture only discards server traffic after COMMIT
-// has entered a deferred database trigger; no SQL/protocol internals are mocked.
 struct AckProxy {
     port: u16,
     discard: Arc<std::sync::atomic::AtomicBool>,
@@ -699,11 +237,13 @@ async fn lost_commit_ack_replays_durable_result_once() {
     let proxy = AckProxy::start().await;
     let runtime = connect_runtime_at(Some(proxy.port)).await;
     let s = store(runtime.clone(), tenant()).await;
-    let (id, created, snapshot) = dynamic_group(&s).await;
-    let request = request(id, &created, snapshot);
-    s.start_recalculation(&request, deadline()).await.unwrap();
+    let (_id, created, snapshot) = dynamic_group(&s).await;
+    let request = builds::request(&created, None);
+    builds::prepare(&runtime, &s, &request, &snapshot)
+        .await
+        .unwrap();
     admin(&format!(
-        "CREATE FUNCTION public.hold_group_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(238701); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER t2_hold_commit AFTER UPDATE ON mdm_group.operations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.id='{}'::uuid AND NEW.state='completed') EXECUTE FUNCTION public.hold_group_commit();",
+        "CREATE FUNCTION public.hold_group_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(238701); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER t2_hold_commit AFTER UPDATE ON mdm_group.member_runs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.id='{}'::uuid AND NEW.phase='published') EXECUTE FUNCTION public.hold_group_commit();",
         request.id
     ));
     let config = fixture_config();
@@ -720,7 +260,7 @@ async fn lost_commit_ack_replays_durable_result_once() {
     })
     .await
     .unwrap();
-    let mut resume = Box::pin(s.resume(request.id, deadline()));
+    let mut resume = Box::pin(builds::publish(&runtime, &s, &request));
     let at_commit = async {
         loop {
             if admin(
@@ -744,7 +284,7 @@ async fn lost_commit_ack_replays_durable_result_once() {
     );
     let result = resume.await;
     admin(
-        "DROP TRIGGER t2_hold_commit ON mdm_group.operations; DROP FUNCTION public.hold_group_commit()",
+        "DROP TRIGGER t2_hold_commit ON mdm_group.member_runs; DROP FUNCTION public.hold_group_commit()",
     );
     assert!(
         matches!(
@@ -755,19 +295,28 @@ async fn lost_commit_ack_replays_durable_result_once() {
     );
     assert_eq!(
         admin(&format!(
-            "SELECT state FROM mdm_group.operations WHERE id='{}'",
+            "SELECT phase FROM mdm_group.member_runs WHERE id='{}'",
             request.id
         )),
-        "completed"
+        "published"
     );
     runtime.close().await;
     drop(proxy);
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
-    let first = s.resume(request.id, deadline()).await.unwrap();
-    assert!(matches!(first.state, RunState::Completed(_)));
-    assert_eq!(first, s.resume(request.id, deadline()).await.unwrap());
-    assert_eq!(s.members(id, deadline()).await.unwrap().len(), 1);
+    let first = builds::publish(&runtime, &s, &request).await.unwrap();
+    assert_eq!(first.group.member_count, 1);
+    assert_eq!(
+        first,
+        builds::publish(&runtime, &s, &request).await.unwrap()
+    );
+    assert_eq!(
+        builds::members(&runtime, &s, request.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(event_count(request.id), 1);
     runtime.close().await;
 }
@@ -786,19 +335,19 @@ async fn admission_rejects_catalog_and_security_drift() {
         "ALTER POLICY tenant ON mdm_group.groups WITH CHECK (true)",
         "CREATE POLICY extra ON mdm_group.groups USING (true)",
         "ALTER ROLE mdm_group_runtime BYPASSRLS",
-        "ALTER TABLE mdm_group.operations DROP COLUMN result_digest CASCADE",
+        "ALTER TABLE mdm_group.operations DROP COLUMN receipt_digest CASCADE",
         "ALTER TABLE mdm_group.groups ALTER COLUMN name TYPE varchar",
         "ALTER TABLE mdm_group.operations ALTER COLUMN request DROP NOT NULL",
         "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT true",
-        "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_state_check",
-        "ALTER TABLE mdm_group.members DROP CONSTRAINT members_tenant_id_group_id_fkey",
-        "ALTER TABLE mdm_group.deltas DROP CONSTRAINT deltas_pkey",
-        "DROP INDEX mdm_group.recoverable",
-        "DROP INDEX mdm_group.recoverable; CREATE INDEX recoverable ON mdm_group.operations(tenant_id,id) WHERE state='completed'",
+        "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_as_of_check",
+        "ALTER TABLE mdm_group.member_rows DROP CONSTRAINT member_rows_tenant_id_run_id_fkey",
+        "ALTER TABLE mdm_group.member_changes DROP CONSTRAINT member_changes_pkey",
+        "DROP INDEX mdm_group.member_changes_history",
+        "DROP INDEX mdm_group.member_changes_history; CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,object_id)",
         "ALTER TABLE mdm_group.operations ADD COLUMN unexpected text",
-        "UPDATE pg_index SET indisvalid=false WHERE indexrelid='mdm_group.recoverable'::regclass",
-        "UPDATE pg_index SET indisready=false WHERE indexrelid='mdm_group.recoverable'::regclass",
-        "UPDATE pg_index SET indislive=false WHERE indexrelid='mdm_group.recoverable'::regclass",
+        "UPDATE pg_index SET indisvalid=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+        "UPDATE pg_index SET indisready=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+        "UPDATE pg_index SET indislive=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
     ] {
         GroupStore::new(runtime.clone(), tenant(), deadline())
             .await
@@ -807,7 +356,7 @@ async fn admission_rejects_catalog_and_security_drift() {
         let result = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
         // Restore before asserting so a failing case cannot contaminate later tests.
         admin(&format!(
-            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.recoverable'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL}"
+            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL} {GENERATIONS_MIGRATION_SQL}"
         ));
         assert!(result.is_err(), "accepted drift: {mutation}");
     }
@@ -873,50 +422,416 @@ async fn standalone_delete_requires_companion_transaction() {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
-async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
-    use rss_transactional_messaging::error::MessagingErrorKind;
+async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
     let runtime = connect_runtime().await;
-    let foreign_runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
-    let (id, created, snapshot) = dynamic_group(&s).await;
-    let request = request(id, &created, snapshot);
-    let edit = Command::Edit {
-        group: id,
-        expected: created.group.revision,
-        name: created.group.name.clone(),
-        description: created.group.description.clone(),
-    };
-    let operation = op();
-    let edit_attempt = foreign_runtime
-        .local_tx_with_context(tenant(), deadline(), (&s, &edit), move |(s, c), tx| {
-            Box::pin(async move { s.execute_in(tx, operation, at(), c).await.map(|_| ()) })
-        })
+    let (id, created, page) = dynamic_group(&s).await;
+    assert_event(&created, "created");
+    let a = builds::request(&created, None);
+    let b = builds::request(&created, None);
+    builds::prepare(&runtime, &s, &a, &page).await.unwrap();
+    builds::prepare(&runtime, &s, &b, &page).await.unwrap();
+    let (first, second) = tokio::join!(
+        builds::publish(&runtime, &s, &a),
+        builds::publish(&runtime, &s, &b)
+    );
+    assert_ne!(first.is_ok(), second.is_ok());
+    let saved = first.or(second).unwrap();
+    assert_event(&saved, "members_changed");
+    assert_eq!(event_count(a.id) + event_count(b.id), 1);
+    let changed = s
+        .execute(
+            op(),
+            at(),
+            &Command::Edit {
+                group: id,
+                expected: saved.group.revision,
+                name: "edited".into(),
+                description: String::new(),
+            },
+            deadline(),
+        )
         .await
-        .fold(Ok, Err, Err, Err, Err, Err);
-    let run_attempt = foreign_runtime
-        .local_tx_with_context(tenant(), deadline(), (&s, &request), |(s, r), tx| {
-            Box::pin(async move { s.start_recalculation_in(tx, r).await.map(|_| ()) })
-        })
-        .await
-        .fold(Ok, Err, Err, Err, Err, Err);
-    let reference_attempt = foreign_runtime
-        .local_tx_with_context(tenant(), deadline(), &s, move |s, tx| {
-            Box::pin(async move { s.lock_reference_target_in(tx, id).await.map(|_| ()) })
-        })
-        .await
-        .fold(Ok, Err, Err, Err, Err, Err);
-    for result in [edit_attempt, run_attempt, reference_attempt] {
-        assert_eq!(
-            result
-                .expect_err("foreign runtime must be rejected even when no event is appended")
-                .kind(),
-            MessagingErrorKind::Invariant
-        );
+        .unwrap();
+    assert_event(&changed, "edited");
+    let deleted = execute_companion(
+        &runtime,
+        &s,
+        op(),
+        &Command::Delete {
+            group: id,
+            expected: changed.group.revision,
+        },
+    )
+    .await
+    .unwrap();
+    assert_event(&deleted, "deleted");
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let (id, created, page) = dynamic_group(&s).await;
+    let request = builds::request(&created, None);
+    let (a, b) = tokio::join!(
+        builds::begin(&runtime, &s, &request),
+        builds::begin(&runtime, &s, &request)
+    );
+    assert!(a.is_ok() || b.is_ok());
+    assert_eq!(
+        builds::begin(&runtime, &s, &request).await.unwrap().objects,
+        0
+    );
+    let mut different = request.clone();
+    different.input_version = "different".into();
+    assert!(matches!(
+        builds::begin(&runtime, &s, &different).await,
+        Err(rss_mdm_group_postgres::Error::Rejected(
+            Rejection::IdentityConflict
+        ))
+    ));
+    for invalid in [
+        BuildRequest {
+            id: op(),
+            input_version: String::new(),
+            ..request.clone()
+        },
+        BuildRequest {
+            id: op(),
+            patch: Some(MemberPatch {
+                add: vec![],
+                remove: vec![],
+            }),
+            ..request.clone()
+        },
+    ] {
+        assert!(builds::begin(&runtime, &s, &invalid).await.is_err());
     }
-    assert!(s.get_run(request.id, deadline()).await.unwrap().is_none());
-    assert_eq!(s.get(id, deadline()).await.unwrap(), Some(created.group));
-    assert_eq!(event_count(operation), 0);
+    builds::prepare(&runtime, &s, &request, &page)
+        .await
+        .unwrap();
+    let original = inputs().0;
+    let view = original.view();
+    let replacement = Rule::new(
+        tenant(),
+        "rule-2",
+        view.dictionary_version,
+        view.fields.values().cloned().collect(),
+        view.criteria.clone(),
+    )
+    .unwrap();
+    s.execute(
+        op(),
+        at(),
+        &Command::SetRule {
+            group: id,
+            expected: created.group.revision,
+            rule: replacement,
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        builds::publish(&runtime, &s, &request).await,
+        Err(rss_mdm_group_postgres::Error::Rejected(
+            Rejection::VersionConflict
+        ))
+    ));
     assert_eq!(event_count(request.id), 0);
-    foreign_runtime.close().await;
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn atomic_event_failure_rls_and_large_member_ids() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let id = group_id();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group: id,
+                name: "static".into(),
+                description: String::new(),
+                definition: Definition::Static,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let request = builds::request(
+        &created,
+        Some(MemberPatch {
+            add: vec!["x".repeat(256)],
+            remove: vec![],
+        }),
+    );
+    let (_, page) = inputs();
+    builds::prepare(&runtime, &s, &request, &page)
+        .await
+        .unwrap();
+    admin(
+        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_group_runtime",
+    );
+    let failed = builds::publish(&runtime, &s, &request).await;
+    admin(
+        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_group_runtime",
+    );
+    assert!(failed.is_err());
+    assert_eq!(
+        s.get(id, deadline()).await.unwrap().unwrap().member_count,
+        0
+    );
+    assert_eq!(event_count(request.id), 0);
+    let result = builds::publish(&runtime, &s, &request).await.unwrap();
+    assert_eq!(result.group.member_count, 1);
+    assert_eq!(
+        builds::members(&runtime, &s, request.id).await.unwrap(),
+        vec!["x".repeat(256)]
+    );
+    let invalid = builds::request(
+        &result,
+        Some(MemberPatch {
+            add: vec!["x".repeat(257)],
+            remove: vec![],
+        }),
+    );
+    assert!(matches!(
+        builds::begin(&runtime, &s, &invalid).await,
+        Err(rss_mdm_group_postgres::Error::Rejected(
+            Rejection::InvalidInput
+        ))
+    ));
+    let foreign_store = store(runtime.clone(), foreign()).await;
+    assert!(foreign_store.get(id, deadline()).await.unwrap().is_none());
+    let hidden = runtime
+        .local_tx_with_context(foreign(), deadline(), &foreign_store, |store, tx| {
+            Box::pin(async move { store.build_in(tx, request.id).await })
+        })
+        .await;
+    assert!(matches!(
+        hidden.fold(
+            |v| v,
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}")
+        ),
+        Err(Rejection::NotFound)
+    ));
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn admitted_input_and_command_commit_unknown_recover_by_original_identity() {
+    use rss_transactional_messaging_postgres::PgTransactionFault;
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let id = group_id();
+    let operation = op();
+    let command = Command::Create {
+        group: id,
+        name: "unknown".into(),
+        description: String::new(),
+        definition: Definition::Static,
+    };
+    runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
+    assert!(matches!(
+        s.execute(operation, at(), &command, deadline()).await,
+        Err(rss_mdm_group_postgres::Error::CommitUnknown { .. })
+    ));
+    let receipt = s
+        .execute(operation, at(), &command, deadline())
+        .await
+        .unwrap();
+    assert_eq!(event_count(operation), 1);
+    let request = builds::request(
+        &receipt,
+        Some(MemberPatch {
+            add: vec!["a".into()],
+            remove: vec![],
+        }),
+    );
+    runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
+    assert!(matches!(
+        builds::begin(&runtime, &s, &request).await,
+        Err(rss_mdm_group_postgres::Error::CommitUnknown { .. })
+    ));
+    runtime.close().await;
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let (_, page) = inputs();
+    builds::prepare(&runtime, &s, &request, &page)
+        .await
+        .unwrap();
+    let first = builds::publish(&runtime, &s, &request).await.unwrap();
+    assert_eq!(
+        first,
+        builds::publish(&runtime, &s, &request).await.unwrap()
+    );
+    assert_eq!(event_count(request.id), 1);
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn process_death_after_admission_recovers_without_caller_snapshot() {
+    if let Ok(raw) = std::env::var("GROUP_BUILD_CHILD") {
+        let request: BuildRequest = serde_json::from_str(&raw).unwrap();
+        let runtime = connect_runtime().await;
+        let s = store(runtime.clone(), tenant()).await;
+        builds::begin(&runtime, &s, &request).await.unwrap();
+        builds::settle(
+            runtime
+                .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                    Box::pin(async move { s.advance_static_in(tx, request.id).await })
+                })
+                .await,
+            request.id,
+        )
+        .unwrap();
+        std::process::exit(0);
+    }
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let id = group_id();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group: id,
+                name: "restart".into(),
+                description: String::new(),
+                definition: Definition::Static,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let request = builds::request(
+        &created,
+        Some(MemberPatch {
+            add: vec!["a".into(), "b".into()],
+            remove: vec![],
+        }),
+    );
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "process_death_after_admission_recovers_without_caller_snapshot",
+        ])
+        .env(
+            "GROUP_BUILD_CHILD",
+            serde_json::to_string(&request).unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let (_, page) = inputs();
+    builds::prepare(&runtime, &s, &request, &page)
+        .await
+        .unwrap();
+    let saved = builds::publish(&runtime, &s, &request).await.unwrap();
+    assert_eq!(saved.group.member_count, 2);
+    assert_eq!(event_count(request.id), 1);
+    runtime.close().await;
+}
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
+    let runtime = connect_runtime().await;
+    let other = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let (id, created, page) = dynamic_group(&s).await;
+    let request = builds::request(&created, None);
+    for entry in 0..11 {
+        let result = other
+            .local_tx_with_context(tenant(), deadline(), (&s, &request, &page), |ctx, tx| {
+                Box::pin(async move {
+                    match entry {
+                        0 => ctx.0.begin_build_in(tx, ctx.1).await.map(|v| v.map(|_| ())),
+                        1 => ctx.0.build_in(tx, ctx.1.id).await.map(|v| v.map(|_| ())),
+                        2 => ctx
+                            .0
+                            .append_build_page_in(
+                                tx,
+                                ctx.1.id,
+                                &PageInput {
+                                    tenant: tenant(),
+                                    id: "fixture",
+                                    version: &ctx.1.input_version,
+                                    dictionary_version: "dictionary-1",
+                                    coverage: &ctx.2.coverage,
+                                    objects: &ctx.2.objects,
+                                    after: None,
+                                },
+                            )
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        3 => ctx
+                            .0
+                            .seal_build_in(tx, ctx.1.id, 1)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        4 => ctx
+                            .0
+                            .advance_static_in(tx, ctx.1.id)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        5 => ctx
+                            .0
+                            .advance_difference_in(tx, ctx.1.id)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        6 => ctx
+                            .0
+                            .publish_build_in(tx, ctx.1.id)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        7 => ctx
+                            .0
+                            .build_decisions_in(tx, ctx.1.id, None, 1000)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        8 => ctx
+                            .0
+                            .build_changes_in(tx, ctx.1.id, None, 1000)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        9 => ctx
+                            .0
+                            .current_member_set_in(tx, id)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                        _ => ctx
+                            .0
+                            .lock_reference_target_in(tx, id)
+                            .await
+                            .map(|v| v.map(|_| ())),
+                    }
+                })
+            })
+            .await;
+        assert!(result.fold(
+            |_| false,
+            |_| false,
+            |_| true,
+            |_| false,
+            |_| false,
+            |_| false
+        ));
+    }
+    assert_eq!(event_count(request.id), 0);
+    other.close().await;
     runtime.close().await;
 }

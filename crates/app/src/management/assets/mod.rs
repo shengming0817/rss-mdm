@@ -9,7 +9,10 @@ use std::sync::Arc;
 pub(in crate::management) mod criteria;
 mod http;
 mod model;
+mod quality;
 mod query;
+mod query_read;
+mod query_sort;
 mod snapshot;
 mod store;
 pub(in crate::management) use criteria::{criteria_view, rule};
@@ -37,21 +40,46 @@ impl Management {
                     .collect::<Result<_>>()?,
             },
             Command::Detail { device, scope } => {
-                let mut filter = scope.clone();
-                if filter
+                if scope
                     .devices
                     .as_ref()
                     .is_some_and(|ids| !ids.contains(device))
                 {
                     return Err(Error::Forbidden.into());
                 }
-                filter.devices = Some(BTreeSet::from([device.clone()]));
-                let data = self.load_assets(tx, &filter).await?;
                 Response::Detail {
-                    device: data.into_iter().next().ok_or(Error::NotFound)?,
+                    device: self.asset_detail_in(tx, device).await?,
                 }
             }
-            Command::Search { query, scope } => self.asset_query(tx, scope, query, at).await?,
+            Command::Search { request, scope } => {
+                if request.expected_revision != 0 {
+                    return Err(Error::Malformed.into());
+                }
+                self.asset_query(tx, request.operation_id, scope, &request.input, at)
+                    .await?
+            }
+            Command::QueryStatus { task, scope } => {
+                self.asset_query_status(tx, *task, scope).await?
+            }
+            Command::QueryItems {
+                task,
+                scope,
+                limit,
+                cursor,
+            } => {
+                self.asset_query_items(tx, *task, scope, *limit, cursor.as_deref())
+                    .await?
+            }
+            Command::QueryFacets {
+                task,
+                scope,
+                facet,
+                limit,
+                cursor,
+            } => {
+                self.asset_query_facets(tx, *task, scope, *facet, *limit, cursor.as_deref())
+                    .await?
+            }
             Command::Manual {
                 device,
                 field,
@@ -69,15 +97,19 @@ impl Management {
                 self.saved_write(tx, owner, *id, change).await?
             }
             Command::SavedExecute {
+                operation,
+                expected_revision,
                 owner,
                 id,
                 scope,
-                cursor,
             } => {
                 let saved = self.saved_read(tx, owner, *id).await?;
-                let mut definition = saved.definition.ok_or(Error::NotFound)?;
-                definition.query.cursor = cursor.clone();
-                self.asset_query(tx, scope, &definition.query, at).await?
+                if saved.revision as u64 != *expected_revision {
+                    return Err(Error::Conflict.into());
+                }
+                let definition = saved.definition.ok_or(Error::NotFound)?;
+                self.asset_query(tx, *operation, scope, &definition.query, at)
+                    .await?
             }
         };
         json(&AssetEnvelope {

@@ -192,22 +192,16 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                 return Ok(());
                             }
                             match job {
-                                JobInput::Group {
-                                    group,
-                                    watermark,
-                                    publish,
-                                    automatic,
-                                } => {
+                                JobInput::AssetQuery { .. } => {
+                                    ctx.0.advance_asset_query_in(tx, id, &job, cursor).await
+                                }
+                                JobInput::Group { group, .. } => {
                                     tx.prepare_outbox_partitions(&[ctx
                                         .0
                                         .groups
                                         .partition(&group.to_string())?])
                                         .await?;
-                                    ctx.0
-                                        .advance_group_job_in(
-                                            tx, id, group, watermark, publish, automatic, cursor,
-                                        )
-                                        .await
+                                    ctx.0.advance_group_job_in(tx, id, &job, cursor).await
                                 }
                                 JobInput::Scope { scope } => {
                                     ctx.0.advance_scope_job_in(tx, id, scope, cursor).await
@@ -234,7 +228,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                             .lock()
                             .expect("failure slot")
                             .take()
-                            .map(|e| Some(e))
+                            .map(Some)
                             .ok_or(Error::Unavailable(Failure::ManagementStorage))
                     },
                     |_| Err(Error::CommitUnknown),
@@ -244,9 +238,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                 .map_err(reconcile_error)?;
             let terminal = match rejection {
                 Some(Error::Conflict) => Some("superseded"),
-                Some(Error::Unavailable(Failure::AssetObjectLimit | Failure::AssetBytesLimit)) => {
-                    Some("capacity_exceeded")
-                }
+                Some(Error::Unavailable(
+                    Failure::AssetObjectLimit
+                    | Failure::AssetBytesLimit
+                    | Failure::AssetSourceLimit,
+                )) => Some("capacity_exceeded"),
                 Some(Error::ManagementNotFound(_)) | Some(Error::NotFound) => {
                     Some("source_unavailable")
                 }

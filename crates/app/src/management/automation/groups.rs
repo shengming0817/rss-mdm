@@ -52,17 +52,19 @@ impl Management {
             };
             self.start_group_job_in(
                 tx,
-                id,
-                Uuid::new_v4(),
-                revision as u64,
-                patch,
-                true,
-                true,
-                input(Timepoint::try_from(
-                    self.clock
-                        .unix_seconds()
-                        .map_err(|_| Error::Unavailable(Failure::Clock))?,
-                ))?,
+                GroupStart {
+                    id,
+                    task: Uuid::new_v4(),
+                    expected: revision as u64,
+                    patch,
+                    publish: true,
+                    automatic: true,
+                    at: input(Timepoint::try_from(
+                        self.clock
+                            .unix_seconds()
+                            .map_err(|_| Error::Unavailable(Failure::Clock))?,
+                    ))?,
+                },
             )
             .await?;
         }
@@ -71,14 +73,17 @@ impl Management {
     pub(in crate::management) async fn start_group_job_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        task: Uuid,
-        expected: u64,
-        patch: Option<g::MemberPatch>,
-        publish: bool,
-        automatic: bool,
-        at: Timepoint,
+        start: GroupStart,
     ) -> Result<Value> {
+        let GroupStart {
+            id,
+            task,
+            expected,
+            patch,
+            publish,
+            automatic,
+            at,
+        } = start;
         let group = input(g::GroupId::parse(&id.to_string()))?;
         let current = group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
         if current.revision.get() as u64 != expected {
@@ -104,7 +109,7 @@ impl Management {
             as_of: at,
         };
         checked(self.groups.begin_build_in(tx, &request).await?)?;
-        if publish {
+        if publish && automatic {
             checked(
                 self.policies
                     .require_reference_input_in(
@@ -128,84 +133,128 @@ impl Management {
         .await
     }
 
+    async fn append_group_input_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        operation: g::OperationId,
+        build: &g::MemberBuild,
+        watermark: i64,
+    ) -> Result<()> {
+        if build.request.patch.is_some() {
+            group_checked(self.groups.advance_static_in(tx, operation).await?)?;
+        } else {
+            let after = build
+                .cursor
+                .as_ref()
+                .map(|s| input(g::core::ObjectKey::new(self.tenant, s)))
+                .transpose()?;
+            let mut limit = 1000;
+            loop {
+                let page = match self
+                    .asset_page_in(
+                        tx,
+                        watermark,
+                        build.cursor.clone(),
+                        limit,
+                        &assets::ReadScope::all(),
+                    )
+                    .await
+                {
+                    Err(Fault::Request(Error::Unavailable(
+                        Failure::AssetBytesLimit | Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
+                        limit = (limit / 2).max(1);
+                        continue;
+                    }
+                    result => result?,
+                };
+                let total = build.objects + page.devices.len();
+                if total > g::MAX_MEMBERS {
+                    return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
+                }
+                let data = assets::criteria::page(self.tenant, &page.devices)?;
+                if !data.objects.is_empty() {
+                    let page_input = g::core::PageInput {
+                        tenant: self.tenant,
+                        id: "assets",
+                        version: &build.request.input_version,
+                        dictionary_version: rss_mdm_inventory::DICTIONARY,
+                        coverage: &data.coverage,
+                        objects: &data.objects,
+                        after: after.as_ref(),
+                    };
+                    match self
+                        .groups
+                        .append_build_page_in(tx, operation, &page_input)
+                        .await?
+                    {
+                        Err(g::Rejection::PageBudgetExceeded) if limit > 1 => {
+                            limit = (limit / 2).max(1);
+                            continue;
+                        }
+                        result => {
+                            group_checked(result)?;
+                        }
+                    }
+                }
+                if page.next.is_none() {
+                    group_checked(self.groups.seal_build_in(tx, operation, total).await?)?;
+                }
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn advance_group_difference_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        operation: g::OperationId,
+        watermark: i64,
+    ) -> Result<()> {
+        let next = checked(self.groups.advance_difference_in(tx, operation).await?)?;
+        if !next.devices.is_empty() {
+            let tenant = self.tenant.to_string();
+            let devices = next.devices;
+            tx.with_connection(move |c|Box::pin(async move {
+                    sqlx::query("WITH latest AS (SELECT (SELECT revision FROM mdm_access.asset_authority_history h WHERE h.tenant_id=$1::uuid AND h.device=d AND h.revision<=$4 ORDER BY revision DESC LIMIT 1) AS revision FROM unnest($3::text[]) d) UPDATE mdm_management.automation_jobs SET authority_revision=greatest(authority_revision,coalesce((SELECT max(revision) FROM latest),0)) WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                        .bind(tenant).bind(task.to_string()).bind(devices).bind(watermark).execute(c).await?;Ok(())
+                })).await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn advance_group_job_in(
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
-        id: Uuid,
-        watermark: i64,
-        publish: bool,
-        automatic: bool,
+        job: &JobInput,
         cursor: Option<String>,
     ) -> Result<()> {
+        let JobInput::Group {
+            group: id,
+            watermark,
+            publish,
+            automatic,
+        } = *job
+        else {
+            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+        };
         let operation = input(g::OperationId::parse(&task.to_string()))?;
         let build = checked(self.groups.build_in(tx, operation).await?)?;
         if build.receipt.is_some() {
             return self.propagate_group_in(tx, task, id, cursor).await;
         }
         if !build.input_sealed {
-            if build.request.patch.is_some() {
-                checked(self.groups.advance_static_in(tx, operation).await?)?;
-            } else {
-                let page = self
-                    .asset_page_in(
-                        tx,
-                        watermark,
-                        build.cursor.clone(),
-                        256,
-                        &assets::ReadScope::all(),
-                    )
-                    .await?;
-                let input_page = assets::criteria::snapshot(self.tenant, &page.devices)?;
-                let after = build
-                    .cursor
-                    .as_ref()
-                    .map(|s| input(g::core::ObjectKey::new(self.tenant, s)))
-                    .transpose()?;
-                let total = build.objects + page.devices.len();
-                if total > g::MAX_MEMBERS {
-                    return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
-                }
-                if !input_page.objects.is_empty() {
-                    let input = g::core::PageInput {
-                        tenant: self.tenant,
-                        id: "assets",
-                        version: &build.request.input_version,
-                        dictionary_version: rss_mdm_inventory::DICTIONARY,
-                        coverage: &input_page.coverage,
-                        objects: &input_page.objects,
-                        after: after.as_ref(),
-                    };
-                    checked(
-                        self.groups
-                            .append_build_page_in(tx, operation, &input)
-                            .await?,
-                    )?;
-                }
-                if page.next.is_none() {
-                    checked(self.groups.seal_build_in(tx, operation, total).await?)?;
-                }
-            }
-            return Ok(());
+            return self
+                .append_group_input_in(tx, operation, &build, watermark)
+                .await;
         }
         if !build.ready {
-            let next = checked(self.groups.advance_difference_in(tx, operation).await?)?;
-            if let Some(last) = next.difference_cursor {
-                let tenant = self.tenant.to_string();
-                let after = build.difference_cursor;
-                tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query(r#"
-                      WITH members AS (
-                        SELECT DISTINCT m.object_id FROM mdm_group.member_rows m
-                        WHERE m.tenant_id=$1::uuid AND m.matched AND (m.run_id=$2::uuid OR m.run_id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$3::uuid))
-                          AND ($4::text IS NULL OR m.object_id>$4 COLLATE "C") AND m.object_id<=$5 COLLATE "C"
-                      ), latest AS (
-                        SELECT (SELECT revision FROM mdm_access.asset_authority_history h WHERE h.tenant_id=$1::uuid AND h.device=m.object_id AND h.revision<=$6 ORDER BY revision DESC LIMIT 1) AS revision FROM members m
-                      ) UPDATE mdm_management.automation_jobs SET authority_revision=greatest(authority_revision,coalesce((SELECT max(revision) FROM latest),0)) WHERE tenant_id=$1::uuid AND id=$2::uuid
-                    "#).bind(tenant).bind(task.to_string()).bind(id.to_string()).bind(after).bind(last).bind(watermark).execute(c).await?;Ok(())
-                })).await?;
-            }
-            return Ok(());
+            return self
+                .advance_group_difference_in(tx, task, operation, watermark)
+                .await;
         }
         if !publish {
             return self.finish_job_in(tx, task, None).await;
@@ -258,17 +307,19 @@ impl Management {
             });
             self.start_group_job_in(
                 tx,
-                id,
-                Uuid::new_v4(),
-                receipt.group.revision.get() as u64,
-                patch,
-                true,
-                true,
-                input(Timepoint::try_from(
-                    self.clock
-                        .unix_seconds()
-                        .map_err(|_| Error::Unavailable(Failure::Clock))?,
-                ))?,
+                GroupStart {
+                    id,
+                    task: Uuid::new_v4(),
+                    expected: receipt.group.revision.get() as u64,
+                    patch,
+                    publish: true,
+                    automatic: true,
+                    at: input(Timepoint::try_from(
+                        self.clock
+                            .unix_seconds()
+                            .map_err(|_| Error::Unavailable(Failure::Clock))?,
+                    ))?,
+                },
             )
             .await?;
         }

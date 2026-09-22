@@ -123,6 +123,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
                 })
                 .await,
         )
+        .build
         .ready;
     }
     assert!(ready);
@@ -242,7 +243,7 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
                 })
                 .await,
         );
-        assert!(ready.ready);
+        assert!(ready.build.ready);
         current = committed(
             runtime
                 .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
@@ -275,6 +276,16 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             );
             assert_eq!(members, vec!["b", "c"]);
         }
+        let stored_rows = runtime.local_tx_with_context(tenant(), deadline(), &s, |_, tx|Box::pin(async move {
+            tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid")
+                    .bind(tenant().to_string()).bind(request.id.to_string()).fetch_one(c).await
+            })).await
+        })).await.fold(|v|v,|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"));
+        assert_eq!(
+            stored_rows, 0,
+            "static membership must reuse immutable changes instead of copying unchanged devices"
+        );
         previous = Some(request.id);
     }
     runtime.close().await;

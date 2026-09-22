@@ -15,6 +15,8 @@ pub enum IntentKind {
     Retain,
     /// Express cancellation intent without dispatching.
     Cancel,
+    /// Frozen execution predecessors of superseding desired intents.
+    Predecessors,
 }
 impl IntentKind {
     fn name(self) -> &'static str {
@@ -23,6 +25,7 @@ impl IntentKind {
             Self::Supersede => "supersede",
             Self::Retain => "retain",
             Self::Cancel => "cancel",
+            Self::Predecessors => "predecessors",
         }
     }
 }
@@ -38,6 +41,13 @@ pub struct IntentPosition {
 /// A bounded desired or existing-execution decision.
 #[derive(Clone, Debug)]
 pub enum CandidateIntent {
+    /// A frozen predecessor and the version that would replace it.
+    Predecessor {
+        /// Original fact captured in this candidate.
+        execution: ExecutionRecord,
+        /// Desired replacement version; does not indicate execution acceptance.
+        successor_version: u64,
+    },
     /// Desired execution only; a superseding intent's history is separately read.
     Desired {
         /// Target device identity.
@@ -93,7 +103,7 @@ impl PolicyStore {
         let tenant = self.tenant.to_string();
         let key = id.value().to_owned();
         Ok(Ok(tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT device FROM mdm_policy.candidate_targets WHERE tenant_id=$1::uuid AND candidate=$2 AND ($3::text IS NULL OR device>$3 COLLATE \"C\") ORDER BY device LIMIT $4")
+            sqlx::query_scalar("SELECT device FROM mdm_policy.candidate_targets WHERE tenant_id=$1::uuid AND candidate=$2 AND device>coalesce($3::text,'') COLLATE \"C\" ORDER BY device LIMIT $4")
                 .bind(tenant).bind(key).bind(after).bind(limit as i64).fetch_all(c).await
         })).await?))
     }
@@ -120,10 +130,18 @@ impl PolicyStore {
         }
         let tenant = self.tenant.to_string();
         let key = id.value().to_owned();
-        // Only metadata is materialized before selecting the bounded payload.
-        let metadata=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT device,execution_key,octet_length(document) AS bytes FROM mdm_policy.candidate_intents WHERE tenant_id=$1::uuid AND candidate=$2 AND kind=$3 AND ($4::text IS NULL OR (device,execution_key)>($4 COLLATE \"C\",$5 COLLATE \"C\")) ORDER BY device,execution_key LIMIT $6")
-                .bind(tenant).bind(key).bind(kind.name()).bind(after.as_ref().map(|p|&p.device)).bind(after.as_ref().map(|p|&p.execution)).bind(limit as i64).fetch_all(c).await
+        // Seek each immutable partition before applying LIMIT. Combining kinds
+        // behind an optional-cursor OR can sort the full history on every page.
+        let metadata = tx.with_connection(move |c| Box::pin(async move {
+            let device = after.as_ref().map(|p| p.device.as_str()).unwrap_or("");
+            let execution = after.as_ref().map(|p| p.execution.as_str()).unwrap_or("");
+            if kind == IntentKind::Predecessors {
+                sqlx::query(PREDECESSORS_SQL)
+                    .bind(tenant).bind(key).bind(device).bind(execution).bind(limit as i64).fetch_all(c).await
+            } else {
+                sqlx::query("SELECT device,execution_key,octet_length(document) AS bytes FROM mdm_policy.candidate_intents WHERE tenant_id=$1::uuid AND candidate=$2 AND kind=$3 AND (device,execution_key)>($4 COLLATE \"C\",$5 COLLATE \"C\") ORDER BY device,execution_key LIMIT $6")
+                    .bind(tenant).bind(key).bind(kind.name()).bind(device).bind(execution).bind(limit as i64).fetch_all(c).await
+            }
         })).await?;
         let mut devices = Vec::new();
         let mut keys = Vec::new();
@@ -140,7 +158,7 @@ impl PolicyStore {
         let tenant = self.tenant.to_string();
         let key = id.value().to_owned();
         let rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT i.device,i.execution_key,i.document,i.digest FROM unnest($4::text[],$5::text[]) AS p(device,key) JOIN mdm_policy.candidate_intents i ON i.device=p.device AND i.execution_key=p.key WHERE i.tenant_id=$1::uuid AND i.candidate=$2 AND i.kind=$3 ORDER BY i.device,i.execution_key")
+            sqlx::query("SELECT i.device,i.execution_key,i.document,i.digest FROM unnest($4::text[],$5::text[]) AS p(device,key) JOIN mdm_policy.candidate_intents i ON i.device=p.device AND i.execution_key=p.key WHERE i.tenant_id=$1::uuid AND i.candidate=$2 AND (i.kind=$3 OR ($3='predecessors' AND i.kind IN('retain','cancel'))) ORDER BY i.device,i.execution_key")
                 .bind(tenant).bind(key).bind(kind.name()).bind(devices).bind(keys).fetch_all(c).await
         })).await?;
         let mut result = Vec::new();
@@ -151,10 +169,30 @@ impl PolicyStore {
             };
             let document = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
             let value: serde_json::Value = STORAGE.decode(&document)?;
-            if value["kind"].as_str() != Some(kind.name()) {
+            if kind != IntentKind::Predecessors && value["kind"].as_str() != Some(kind.name()) {
                 return Err(STORAGE.fault("intent::kind"));
             }
             let intent = match kind {
+                IntentKind::Predecessors => {
+                    let execution = codec::read_fact(&value["execution"])?;
+                    let successor_version = candidate
+                        .policy
+                        .version()
+                        .ok_or_else(|| STORAGE.fault("intent::successor"))?
+                        .number();
+                    if execution.device().value() != position.device
+                        || codec::key(&execution) != position.execution
+                        || execution.version().policy() != &candidate.request.policy
+                        || execution.version().number() >= successor_version
+                        || !matches!(value["kind"].as_str(), Some("retain" | "cancel"))
+                    {
+                        return Err(STORAGE.fault("intent::predecessor"));
+                    }
+                    CandidateIntent::Predecessor {
+                        execution,
+                        successor_version,
+                    }
+                }
                 IntentKind::Add | IntentKind::Supersede => {
                     let device = decode_domain(
                         "intent::device",
@@ -210,3 +248,27 @@ impl PolicyStore {
         Ok(Ok(result))
     }
 }
+
+// Each branch uses the existing (tenant,candidate,kind,device,execution) key.
+// The outer merge materializes at most two pages, regardless of history size.
+const PREDECESSORS_SQL: &str = r#"
+SELECT device,execution_key,bytes FROM (
+ (SELECT i.device,i.execution_key,octet_length(i.document) AS bytes
+  FROM mdm_policy.candidate_intents i
+  WHERE i.tenant_id=$1::uuid AND i.candidate=$2 AND i.kind='retain'
+    AND (i.device,i.execution_key)>($3 COLLATE "C",$4 COLLATE "C")
+    AND EXISTS(SELECT 1 FROM mdm_policy.candidate_intents d
+        WHERE d.tenant_id=i.tenant_id AND d.candidate=i.candidate
+          AND d.kind='supersede' AND d.device=i.device OFFSET 0)
+  ORDER BY i.device,i.execution_key LIMIT $5)
+ UNION ALL
+ (SELECT i.device,i.execution_key,octet_length(i.document) AS bytes
+  FROM mdm_policy.candidate_intents i
+  WHERE i.tenant_id=$1::uuid AND i.candidate=$2 AND i.kind='cancel'
+    AND (i.device,i.execution_key)>($3 COLLATE "C",$4 COLLATE "C")
+    AND EXISTS(SELECT 1 FROM mdm_policy.candidate_intents d
+        WHERE d.tenant_id=i.tenant_id AND d.candidate=i.candidate
+          AND d.kind='supersede' AND d.device=i.device OFFSET 0)
+  ORDER BY i.device,i.execution_key LIMIT $5)
+) history ORDER BY device,execution_key LIMIT $5
+"#;

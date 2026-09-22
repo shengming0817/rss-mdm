@@ -102,44 +102,6 @@ pub(crate) fn read_policy(v: &Value) -> Result<Policy, PgError> {
         ),
     )
 }
-pub(crate) fn targets(t: &TargetSnapshot) -> Value {
-    json!([
-        t.key().tenant().to_string(),
-        t.key().value(),
-        t.revision(),
-        t.members().iter().map(DeviceId::value).collect::<Vec<_>>()
-    ])
-}
-pub(crate) fn read_targets(v: &Value) -> Result<TargetSnapshot, PgError> {
-    let v = array(v, 4)?;
-    let t = tenant(&v[0])?;
-    let members = v[3]
-        .as_array()
-        .ok_or_else(|| STORAGE.fault("codec::read_targets"))?;
-    if members.len() > crate::MAX_FACTS {
-        return Err(STORAGE.fault("codec::read_targets"));
-    }
-    let values = members
-        .iter()
-        .map(|m| crate::error::decode_domain("codec::read_targets", DeviceId::new(t, text(m)?)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let result = crate::error::decode_domain(
-        "codec::read_targets",
-        TargetSnapshot::new(
-            crate::error::decode_domain(
-                "codec::read_targets",
-                TargetSnapshotId::new(t, text(&v[1])?),
-            )?,
-            number(&v[2])?,
-            SnapshotCompleteness::Complete,
-            values,
-        ),
-    )?;
-    if result.members().len() != members.len() {
-        return Err(STORAGE.fault("codec::read_targets"));
-    }
-    Ok(result)
-}
 pub(crate) fn fact(f: &ExecutionRecord) -> Value {
     json!([
         version(f.version()),

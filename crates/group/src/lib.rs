@@ -1,63 +1,19 @@
 #![deny(missing_docs)]
-//! Pure, tenant-scoped Group rules. Preview and recalculation share one evaluator.
-//! No legacy expression/JSON/SQL interpreter, group references, I/O or system clock.
-//! Snapshot completeness and authorization are caller assertions, not authentication.
-//!
-//! A minimal typed rule and complete snapshot, with caller-provided provenance and time:
-//!
-//! ```
-//! use std::collections::{BTreeMap, BTreeSet};
-//! use rss_mdm_group::*;
-//! use rss_request_context::TenantId;
-//! use rss_contract::Timepoint;
-//! let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111")?;
-//! let now = Timepoint::try_from(10)?;
-//! let field = Field {
-//!     key: "device.model".into(), kind: FieldType::Scalar(ScalarType::String),
-//!     unit: None, operations: BTreeSet::from([Op::Eq]), nullable: false,
-//! };
-//! let value = Value::Scalar(Scalar::String("Laptop".into()));
-//! let criteria = Criteria::predicate(Predicate { field: field.key.clone(), op: Op::Eq,
-//!     operand: Some(Operand { value: value.clone(), unit: None }) })?;
-//! let rule = Rule::new(tenant, "rule-1", "fields-1", vec![field], criteria)?;
-//! let key = ObjectKey::new(tenant, "device-1")?;
-//! let snapshot = Snapshot {
-//!     tenant, id: "assets".into(), version: "revision-1".into(),
-//!     dictionary_version: "fields-1".into(), complete: true,
-//!     coverage: BTreeSet::from(["device.model".into()]),
-//!     objects: vec![ObjectSnapshot { key: key.clone(), facts: BTreeMap::from([
-//!         ("device.model".into(), Fact { state: FactState::Known(value),
-//!             source: "inventory".into(), snapshot_id: "collection-1".into(),
-//!             observed_at: now })
-//!     ]) }],
-//! };
-//! assert_eq!(rule.evaluate(&snapshot, now)?.objects[0].decision, Decision::Match);
-//! let result = rule.recalculate(&snapshot, now, &[])?;
-//! assert_eq!(result.difference.added, vec![key]);
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
-//!
-//! Standalone set difference also works without any rule:
-//!
-//! ```
-//! use rss_mdm_group::{diff, ObjectKey};
-//! use rss_request_context::TenantId;
-//! let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111")?;
-//! let device = ObjectKey::new(tenant, "device-1")?;
-//! let change = diff(tenant, &[], std::slice::from_ref(&device))?;
-//! assert_eq!(change.added, vec![device]);
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! Pure, tenant-scoped rule evaluation over bounded immutable input pages.
+//! Only explicit facts participate in three-valued logic. Missing input pages
+//! cannot be represented as successful complete results; the host seals them.
+//! ```compile_fail
+//! use rss_mdm_group::{Snapshot, Recalculation, diff};
 //! ```
 mod evaluation;
 mod model;
 mod rule;
 pub use evaluation::{
-    Decision, Evaluation, Explanation, ObjectEvaluation, Outcome, Provenance, Recalculation,
-    UnknownReason,
+    Decision, Explanation, ObjectEvaluation, Outcome, PageEvaluation, Provenance, UnknownReason,
 };
 pub use model::{
-    Difference, Fact, FactState, Field, FieldType, ObjectKey, ObjectSnapshot, Op, Operand,
-    PageInput, Predicate, Scalar, ScalarType, Snapshot, Value, diff,
+    Fact, FactState, Field, FieldType, ObjectKey, ObjectSnapshot, Op, Operand, PageInput,
+    Predicate, Scalar, ScalarType, Value,
 };
 pub use rule::{Criteria, CriteriaView, Rule, RuleView};
 
@@ -113,7 +69,7 @@ pub mod limits {
     /// Maximum accumulated string bytes in a rule and dictionary validation.
     pub const RULE_BYTES: usize = 64 * 1024;
     /// Maximum entries in one snapshot or membership input list before deduplication.
-    pub const OBJECTS: usize = 10_000;
+    pub const OBJECTS: usize = 1_000;
     /// Maximum accumulated input string bytes in one evaluation/difference budget.
     pub const BATCH_BYTES: usize = 16 * 1024 * 1024;
     /// Maximum accumulated scalar items, including set elements and repeated inputs.

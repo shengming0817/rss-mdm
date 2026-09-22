@@ -1,7 +1,6 @@
-use crate::model::{difference, members};
 use crate::rule::{Criteria, Node};
 use crate::{
-    Budget, Error, Fact, FactState, LimitKind, ObjectKey, Op, Result, Rule, Scalar, Snapshot, Value,
+    Budget, Error, Fact, FactState, LimitKind, ObjectKey, Op, Result, Rule, Scalar, Value,
 };
 use rss_contract::Timepoint;
 use std::collections::{BTreeMap, BTreeSet};
@@ -83,10 +82,8 @@ pub struct ObjectEvaluation {
     pub provenance: BTreeMap<String, Provenance>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Evidence-bound preview, including completeness so partial results remain distinguishable.
-pub struct Evaluation {
-    /// Caller-declared universe completeness; this is not a verified asset receipt.
-    pub complete: bool,
+/// Evidence for one bounded page; it never represents a complete membership set.
+pub struct PageEvaluation {
     /// Coverage copied from the validated snapshot.
     pub coverage: BTreeSet<String>,
     /// Tenant common to the rule and snapshot.
@@ -104,16 +101,6 @@ pub struct Evaluation {
     /// One result per unique object, sorted by complete object key.
     pub objects: Vec<ObjectEvaluation>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Complete calculation, its stable difference and separately listed unknown objects.
-pub struct Recalculation {
-    /// Validated complete-universe evaluation underlying the difference.
-    pub evaluation: Evaluation,
-    /// Old membership versus only the objects whose decision is Match.
-    pub difference: crate::Difference,
-    /// Sorted objects with Unknown decisions, excluded from replacement membership.
-    pub unknown: Vec<ObjectKey>,
-}
 impl Rule {
     /// Evaluate one strictly ordered page of a frozen universe, without claiming
     /// that this page is the complete universe. The caller persists snapshot
@@ -125,11 +112,9 @@ impl Rule {
         &self,
         snapshot: &crate::PageInput<'_>,
         as_of: Timepoint,
-    ) -> Result<Evaluation> {
-        if snapshot.objects.len() > 1000 {
-            return Err(Error::InvalidStructure);
-        }
-        if !self.required.is_subset(&snapshot.coverage) {
+    ) -> Result<PageEvaluation> {
+        LimitKind::Objects.check(snapshot.objects.len())?;
+        if !self.required.is_subset(snapshot.coverage) {
             return Err(Error::IncompleteSnapshot);
         }
         if snapshot
@@ -145,95 +130,21 @@ impl Rule {
             }
             previous = Some(&object.key);
         }
-        self.evaluate_input(
-            snapshot,
-            false,
-            as_of,
-            &mut Budget::new(LimitKind::BatchBytes),
-        )
+        self.evaluate_input(snapshot, as_of, &mut Budget::new(LimitKind::BatchBytes))
     }
 
-    /// Preview accepts partial coverage. Uncovered referenced fields produce Unknown(Missing).
-    /// Every input is validated before any result is returned, including unused fields.
-    /// Tenant/dictionary mismatches, denied facts, invalid structures/types and
-    /// budget overflow return [`Error`], without a partial result. Unknown is a valid
-    /// decision, not a validation error. Evaluation performs no I/O or membership writes.
-    pub fn evaluate(&self, snapshot: &Snapshot, as_of: Timepoint) -> Result<Evaluation> {
-        self.evaluate_inner(snapshot, as_of, &mut Budget::new(LimitKind::BatchBytes))
-    }
-    /// Only a complete candidate universe may produce a replacement membership set.
-    /// An old member now Unknown is removed and is also listed in `unknown`.
-    /// Returns [`Error::IncompleteSnapshot`] unless the universe is complete and all
-    /// rule fields are covered, plus the validation errors of [`Self::evaluate`].
-    /// Old members must share the tenant and fit the same batch budget. The returned
-    /// difference is only a decision; the caller owns authorization and persistence.
-    pub fn recalculate(
-        &self,
-        snapshot: &Snapshot,
-        as_of: Timepoint,
-        old: &[ObjectKey],
-    ) -> Result<Recalculation> {
-        if self.tenant != snapshot.tenant {
-            return Err(Error::TenantMismatch);
-        }
-        if !snapshot.complete || !self.required.is_subset(&snapshot.coverage) {
-            return Err(Error::IncompleteSnapshot);
-        }
-        let mut budget = Budget::new(LimitKind::BatchBytes);
-        let old = members(snapshot.tenant, old, &mut budget)?;
-        let evaluation = self.evaluate_inner(snapshot, as_of, &mut budget)?;
-        let new: BTreeSet<_> = evaluation
-            .objects
-            .iter()
-            .filter(|o| o.decision == Decision::Match)
-            .map(|o| o.key.clone())
-            .collect();
-        let unknown = evaluation
-            .objects
-            .iter()
-            .filter(|o| o.decision == Decision::Unknown)
-            .map(|o| o.key.clone())
-            .collect();
-        Ok(Recalculation {
-            difference: difference(self.tenant, &old, &new),
-            evaluation,
-            unknown,
-        })
-    }
-    fn evaluate_inner(
-        &self,
-        s: &Snapshot,
-        as_of: Timepoint,
-        budget: &mut Budget,
-    ) -> Result<Evaluation> {
-        self.evaluate_input(
-            &crate::PageInput {
-                tenant: s.tenant,
-                id: &s.id,
-                version: &s.version,
-                dictionary_version: &s.dictionary_version,
-                coverage: &s.coverage,
-                objects: &s.objects,
-                after: None,
-            },
-            s.complete,
-            as_of,
-            budget,
-        )
-    }
     fn evaluate_input(
         &self,
         s: &crate::PageInput<'_>,
-        complete: bool,
         as_of: Timepoint,
         budget: &mut Budget,
-    ) -> Result<Evaluation> {
+    ) -> Result<PageEvaluation> {
         if self.tenant != s.tenant {
             return Err(Error::TenantMismatch);
         }
-        budget.identity(&s.id)?;
-        budget.identity(&s.version)?;
-        budget.identity(&s.dictionary_version)?;
+        budget.identity(s.id)?;
+        budget.identity(s.version)?;
+        budget.identity(s.dictionary_version)?;
         if s.dictionary_version != self.dictionary_version {
             return Err(Error::VersionMismatch);
         }
@@ -243,9 +154,6 @@ impl Rule {
             if !self.fields.contains_key(key) {
                 return Err(Error::UnknownField);
             }
-        }
-        if complete && !self.required.is_subset(&s.coverage) {
-            return Err(Error::IncompleteSnapshot);
         }
         LimitKind::Objects.check(s.objects.len())?;
         LimitKind::Visits.product(s.objects.len(), self.criteria.count)?;
@@ -322,8 +230,7 @@ impl Rule {
                 }
             })
             .collect();
-        Ok(Evaluation {
-            complete: complete,
+        Ok(PageEvaluation {
             coverage: s.coverage.clone(),
             tenant: s.tenant,
             rule_version: self.version.clone(),

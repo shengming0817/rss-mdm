@@ -15,7 +15,7 @@ def verify_tests(output,expected):
     actual=set(re.findall(r'^test (\S+) \.\.\. ok$',output,re.MULTILINE))
     require(actual==expected and f'test result: ok. {len(expected)} passed; 0 failed; 0 ignored;' in output, 'backend T2 missing required behavior')
 @contextlib.contextmanager
-def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
+def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None,metrics=False):
     with tempfile.TemporaryDirectory(prefix='mdm-backend-pg-') as directory:
         root=Path(directory);quiet=dict(stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Backend T2 CA','-keyout',str(root/'ca.key'),'-out',str(root/'ca.crt')],**quiet)
@@ -27,11 +27,12 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
         def sql(statement):
             return run(['docker','exec','-i',name,'psql','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','backend'],input=statement,capture_output=True,timeout=30).stdout.strip()
         try:
-            run(['docker','run','-d','--rm','--name',name,'-p','127.0.0.1::5432','-v',f'{root}:/certs:ro','-e','POSTGRES_PASSWORD=admin-fixture','-e','POSTGRES_DB=backend',IMAGE,'sh','-c','cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'],stdout=subprocess.DEVNULL,timeout=120)
+            run(['docker','run','-d','--rm','--name',name,'-p','127.0.0.1::5432','-v',f'{root}:/certs:ro','-e','POSTGRES_PASSWORD=admin-fixture','-e','POSTGRES_DB=backend',IMAGE,'sh','-c','cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'+(' -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all' if metrics else '')],stdout=subprocess.DEVNULL,timeout=120)
             until=time.monotonic()+45
             while True:
                 if subprocess.run(['docker','exec',name,'pg_isready','-h','127.0.0.1','-U','postgres','-d','backend'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode==0:break
                 require(time.monotonic()<until,'backend PG startup deadline');time.sleep(.2)
+            if metrics: sql('CREATE SCHEMA capacity_metrics; REVOKE ALL ON SCHEMA capacity_metrics FROM PUBLIC; CREATE EXTENSION pg_stat_statements WITH SCHEMA capacity_metrics; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA capacity_metrics FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA capacity_metrics FROM PUBLIC;')
             port=int(run(['docker','port',name,'5432'],capture_output=True,timeout=5).stdout.strip().rsplit(':',1)[1])
             sql("CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE backend TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;")
             sql(((source/'crates/app/schema/software-publication-roles.sql').read_text()+(source/'crates/app/schema/management-roles.sql').read_text()+(source/'crates/app/schema/commands-roles.sql').read_text()))

@@ -289,6 +289,8 @@ pub(crate) async fn envelope(
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
+    let native_identity =
+        route.starts_with("/api/v2/tenants/") || route.starts_with("/api/v2/oidc/");
     let action = match route {
         "/api/v1/authorization" => "authorization_effective_read",
         "/api/v1/authorization/rules" => "authorization_rules_read",
@@ -304,10 +306,10 @@ pub(crate) async fn envelope(
         "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
         "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
         "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/v1/devices/{id}/inventory" => "inventory_read",
+        "/api/v2/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
-        path if path.starts_with("/api/v2/") => "authentication",
+        _ if native_identity => "authentication",
         "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
@@ -319,8 +321,7 @@ pub(crate) async fn envelope(
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
     // audit must not replace that settled response (including rotated credentials).
-    let audited =
-        !matches!(request.uri().path(), "/livez" | "/readyz") && !route.starts_with("/api/v2/");
+    let audited = !matches!(request.uri().path(), "/livez" | "/readyz") && !native_identity;
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -682,7 +683,7 @@ mod tests {
             access.close().await;
             let router = Router::new()
                 .route(
-                    "/api/v1/devices/{id}/inventory",
+                    "/api/v2/devices/{id}/inventory",
                     get(move || async move {
                         if mode == "transaction" {
                             Error::Unavailable(Failure::Audit).into_response()
@@ -703,7 +704,7 @@ mod tests {
             let response = router
                 .oneshot(
                     Request::builder()
-                        .uri("/api/v1/devices/sensitive-target/inventory")
+                        .uri("/api/v2/devices/sensitive-target/inventory")
                         .header("host", "mdm.example.test")
                         .body(axum::body::Body::empty())
                         .unwrap(),

@@ -30,11 +30,12 @@ impl Management {
                     WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
                       AND kind IN('registration','credential','source')
                     ORDER BY kind,identity,revision DESC
-                ) SELECT DISTINCT r.device FROM latest r
-                  JOIN latest c ON c.registration=r.registration AND c.kind='credential'
-                  JOIN latest s ON s.registration=r.registration AND s.kind='source'
-                  WHERE r.kind='registration' AND r.document->>'state'='active'
-                    AND c.document->>'state'='active' AND s.document->>'enabled'='true'
+                ), live AS (
+                    SELECT device,registration FROM latest GROUP BY device,registration
+                    HAVING bool_or(kind='registration' AND document->>'state'='active')
+                       AND bool_or(kind='credential' AND document->>'state'='active')
+                       AND bool_or(kind='source' AND document->>'enabled'='true')
+                ) SELECT DISTINCT device FROM live
             "#,
                     )
                     .bind(tenant)
@@ -75,7 +76,7 @@ impl Management {
                 SELECT DISTINCT ON(identity COLLATE "C") identity,document
                 FROM mdm_access.asset_authority_history
                 WHERE tenant_id=$1::uuid AND kind='device' AND revision<=$2
-                  AND ($3::text IS NULL OR identity COLLATE "C">$3 COLLATE "C")
+                  AND identity COLLATE "C">coalesce($3::text,'') COLLATE "C"
                   AND ($4 OR identity=ANY($5))
                 ORDER BY identity COLLATE "C",revision DESC
               ) SELECT identity FROM latest WHERE document IS NOT NULL
@@ -212,6 +213,43 @@ impl Management {
                 .entry((row.device, row.field))
                 .or_default()
                 .push(row.fact);
+        }
+        let tenant = self.tenant.to_string();
+        let keys: Vec<_> = subjects.keys().cloned().collect();
+        let quality = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query(
+                        r#"
+                WITH latest AS (
+                  SELECT DISTINCT ON(scope,sequence) scope,sequence,document
+                  FROM mdm_access.collection_history
+                  WHERE tenant_id=$1::uuid AND scope=ANY($2) AND revision<=$3
+                  ORDER BY scope,sequence,revision DESC
+                ) SELECT DISTINCT ON(scope) scope,sequence,document->>'id' AS id,
+                    document->>'result' AS result,document->>'attempts' AS attempts,
+                    (document->>'delivery_pending')::boolean AS delivery_pending
+                  FROM latest WHERE document IS NOT NULL ORDER BY scope,sequence DESC
+            "#,
+                    )
+                    .bind(tenant)
+                    .bind(keys)
+                    .bind(watermark)
+                    .fetch_all(c)
+                    .await
+                })
+            })
+            .await?;
+        for row in quality {
+            let scope: String = row.try_get("scope")?;
+            let (device, generation) = subjects
+                .get(&scope)
+                .ok_or(Error::Unavailable(Failure::CollectionQuery))?;
+            devices
+                .get_mut(device)
+                .ok_or(Error::Malformed)?
+                .quality
+                .push(quality::decode(&row, *generation)?);
         }
         for (id, device) in &mut devices {
             for field in FieldKey::ALL {

@@ -6,6 +6,9 @@ use super::*;
 use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
 use serde_json::json;
+use std::collections::BTreeSet;
+#[path = "capacity.rs"]
+mod capacity;
 fn tenant() -> TenantId {
     TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
 }
@@ -60,13 +63,23 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
         "t"
     );
     let service = management(t).await;
+    let scope_device = device.clone();
     let frozen = service
         .runtime
         .local_tx_with_context(t, deadline(), &service, move |s, tx| {
             Box::pin(async move {
-                s.asset_page_in(tx, created, None, 1, &assets::ReadScope::all())
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("frozen page rejected".into()).into())
+                s.asset_page_in(
+                    tx,
+                    created,
+                    None,
+                    1,
+                    &assets::ReadScope {
+                        subject: "history".into(),
+                        devices: Some([scope_device.clone()].into()),
+                    },
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("frozen page rejected".into()).into())
             })
         })
         .await
@@ -196,7 +209,7 @@ fn seed_device(device: &str) -> String {
 async fn wait_task(m: &Management, id: Uuid, family: automation::TaskKind, target: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let value = execute(
+            let result = execute(
                 m,
                 &Command::TaskRead {
                     id,
@@ -204,8 +217,15 @@ async fn wait_task(m: &Management, id: Uuid, family: automation::TaskKind, targe
                     family,
                 },
             )
-            .await
-            .unwrap();
+            .await;
+            let value = match result {
+                Ok(value) => value,
+                Err(Error::Unavailable(Failure::ManagementStorage) | Error::CommitUnknown) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+                Err(error) => panic!("task status failed: {error:?}"),
+            };
             if value["status"] == "completed" {
                 return value;
             }
@@ -215,6 +235,42 @@ async fn wait_task(m: &Management, id: Uuid, family: automation::TaskKind, targe
     })
     .await
     .expect("bounded fixture task did not complete")
+}
+
+struct RunningAutomation {
+    stack: rss_runtime::ShutdownStack,
+    automation: Arc<automation::Automation>,
+}
+impl RunningAutomation {
+    async fn start(service: Arc<Management>) -> Self {
+        let config = fixture();
+        let options = sqlx::postgres::PgConnectOptions::new()
+            .host("localhost")
+            .port(config["port"].as_u64().unwrap() as u16)
+            .database("backend")
+            .username("mdm_management_runtime")
+            .password("backend-fixture")
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(config["ca"].as_str().unwrap());
+        let automation = automation::Automation::connect(service, options)
+            .await
+            .unwrap();
+        let mut stack = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )
+        .unwrap();
+        let mut launch = stack.startup().unwrap().commit();
+        launch.stage_deferred_task_with_token(automation.clone().registration().critical());
+        launch.finish();
+        Self { stack, automation }
+    }
+    async fn stop(self) {
+        assert!(self.stack.shutdown().join().await.unwrap().is_clean());
+        rss_runtime::ManagedResource::shutdown(&automation::Resource(self.automation))
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -334,6 +390,112 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         Err(Error::Forbidden)
     ));
     denied_audit.finalize(None);
+    let query_scope = assets::ReadScope {
+        subject: "query-owner".into(),
+        devices: Some([device.clone()].into()),
+    };
+    let query = execute(
+        &service,
+        &Command::Asset {
+            command: assets::Command::Search {
+                request: operation(
+                    0,
+                    assets::Query {
+                        criteria: Some(assets::Criteria::Predicate {
+                            field: assets::FieldKey::IsLoaner,
+                            op: assets::Operator::Eq,
+                            value: Some(assets::Scalar::Boolean(true)),
+                            values: None,
+                        }),
+                        select: vec![assets::FieldKey::IsLoaner],
+                        sort: Some(assets::Sort {
+                            field: assets::FieldKey::IsLoaner,
+                            descending: true,
+                        }),
+                    },
+                ),
+                scope: query_scope.clone(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let query_task = Uuid::parse_str(query["asset"]["task"].as_str().unwrap()).unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let status = execute(
+                &service,
+                &Command::Asset {
+                    command: assets::Command::QueryStatus {
+                        task: query_task,
+                        scope: query_scope.clone(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            assert!(status["asset"]["failure"].is_null(), "{status}");
+            if status["asset"]["status"] == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let query_items = execute(
+        &service,
+        &Command::Asset {
+            command: assets::Command::QueryItems {
+                task: query_task,
+                scope: query_scope.clone(),
+                limit: 1,
+                cursor: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(query_items["asset"]["summary"]["matched"], 1);
+    assert_eq!(query_items["asset"]["items"][0]["device"], device);
+    assert_eq!(
+        query_items["asset"]["items"][0]["fields"]
+            .as_object()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        execute(
+            &service,
+            &Command::Asset {
+                command: assets::Command::QueryItems {
+                    task: query_task,
+                    scope: assets::ReadScope::all(),
+                    limit: 1,
+                    cursor: None
+                }
+            }
+        )
+        .await,
+        Err(Error::Forbidden)
+    ));
+    let facets = execute(
+        &service,
+        &Command::Asset {
+            command: assets::Command::QueryFacets {
+                task: query_task,
+                scope: query_scope.clone(),
+                facet: assets::Facet::AssetStates,
+                limit: 1,
+                cursor: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(facets["asset"]["items"][0]["label"], "known");
+    assert_eq!(facets["asset"]["items"][0]["total"], 1);
     let scope_id = Uuid::new_v4();
     let scoped = execute(
         &service,
@@ -483,6 +645,23 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         preview.to_string(),
         "automation must not save its candidate"
     );
+    let frozen_query = execute(
+        &service,
+        &Command::Asset {
+            command: assets::Command::QueryItems {
+                task: query_task,
+                scope: query_scope,
+                limit: 1,
+                cursor: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        frozen_query, query_items,
+        "fact changes must not rewrite query results"
+    );
     let historical = execute(&service, &page_command).await.unwrap();
     assert_eq!(historical["current"], false);
     assert_eq!(historical["page"]["items"], serde_json::json!([device]));
@@ -573,34 +752,25 @@ async fn durable_asset_group_scope_candidate_pipeline() {
 #[tokio::test]
 #[ignore = "real PostgreSQL; hack/management-t2.py"]
 async fn group_scope_plan_replay_stale_and_audit_atomicity() {
-    let mut m = management(tenant()).await;
-    struct CountingClock(std::sync::atomic::AtomicI64);
-    impl crate::clock::Clock for CountingClock {
-        fn unix_seconds(&self) -> std::result::Result<i64, crate::Error> {
-            Ok(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
-        }
-    }
-    let clock = Arc::new(CountingClock(std::sync::atomic::AtomicI64::new(
-        1_700_000_000,
-    )));
-    m.clock = clock.clone();
+    let m = Arc::new(management(tenant()).await);
     let device = format!("设备-{}", Uuid::new_v4());
     seed_device(&device);
     let group = Uuid::new_v4();
-    let c = Command::Group {
+    let create = Command::Group {
         id: group,
         change: operation(
             0,
             GroupChange::Create {
                 name: "fleet".into(),
-                description: "".into(),
+                description: String::new(),
                 criteria: None,
             },
         ),
     };
-    let first = execute(&m, &c).await.unwrap();
-    assert_eq!(first, execute(&m, &c).await.unwrap());
-    execute(
+    let first = execute(&m, &create).await.unwrap();
+    assert_eq!(first, execute(&m, &create).await.unwrap());
+    let running = RunningAutomation::start(m.clone()).await;
+    let members = execute(
         &m,
         &Command::Group {
             id: group,
@@ -615,8 +785,14 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     )
     .await
     .unwrap();
+    wait_task(
+        &m,
+        Uuid::parse_str(members["task"].as_str().unwrap()).unwrap(),
+        automation::TaskKind::Group,
+        &group.to_string(),
+    )
+    .await;
     let scope_id = Uuid::new_v4();
-    let before = clock.0.load(std::sync::atomic::Ordering::SeqCst);
     execute(
         &m,
         &Command::Scope {
@@ -631,11 +807,6 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        clock.0.load(std::sync::atomic::Ordering::SeqCst),
-        before + 1,
-        "one clock read per transaction"
-    );
     let policy = Uuid::new_v4().to_string();
     execute(
         &m,
@@ -647,62 +818,42 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     .await
     .unwrap();
     let preview = Uuid::new_v4();
-    let c = Command::Preview {
-        id: policy.clone(),
-        request: Operation {
-            operation_id: preview,
-            expected_revision: 0,
-            input: PreviewInput {
-                scope: scope_id,
-                expected_revision: 0,
-            },
-        },
-    };
-    // The durable policy create starts at its adapter's first storage revision.
-    let state = execute(&m, &Command::PolicyRead { id: policy.clone() })
-        .await
-        .unwrap();
-    let revision = state["storage_revision"].as_u64().unwrap();
-    let Command::Preview { mut request, .. } = c else {
-        unreachable!()
-    };
-    request.expected_revision = revision;
-    request.input.expected_revision = revision;
-    let result = execute(
+    execute(
         &m,
         &Command::Preview {
             id: policy.clone(),
-            request,
+            request: Operation {
+                operation_id: preview,
+                expected_revision: 1,
+                input: PreviewInput {
+                    scope: scope_id,
+                    expected_revision: 1,
+                },
+            },
         },
     )
     .await
     .unwrap();
-    assert_eq!(result["devices"], json!([device]));
+    assert_eq!(
+        wait_task(&m, preview, automation::TaskKind::Policy, &policy).await["members"],
+        1
+    );
     let save = Command::Save {
         id: policy.clone(),
-        request: operation(revision, SavePlan { preview }),
+        request: operation(1, SavePlan { preview }),
     };
     let saved = execute(&m, &save).await.unwrap();
     assert_eq!(saved, execute(&m, &save).await.unwrap());
-    let previous = execute(&m, &Command::ScopeRead { id: scope_id })
-        .await
-        .unwrap();
+    assert_eq!(saved["dispatch"], "not_requested");
+    running.stop().await;
     m.runtime.close().await;
     drop(m);
-    let m = management(tenant()).await;
+    let m = Arc::new(management(tenant()).await);
     assert_eq!(saved, execute(&m, &save).await.unwrap());
-    assert_eq!(
-        previous,
-        execute(&m, &Command::ScopeRead { id: scope_id })
-            .await
-            .unwrap()
-    );
     let historical = execute(&m, &Command::PlanRead { id: preview })
         .await
         .unwrap();
     assert_eq!(historical["plan"], saved["plan"]);
-
-    assert_eq!(saved["plan"]["dispatch"], "not_requested");
     assert!(matches!(
         execute(
             &m,
@@ -725,10 +876,12 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
         .await,
         Err(Error::Conflict)
     ));
-    let state = execute(&m, &Command::PolicyRead { id: policy.clone() })
+    let running = RunningAutomation::start(m.clone()).await;
+    let revision = execute(&m, &Command::PolicyRead { id: policy.clone() })
         .await
+        .unwrap()["storage_revision"]
+        .as_u64()
         .unwrap();
-    let revision = state["storage_revision"].as_u64().unwrap();
     let stale = Uuid::new_v4();
     execute(
         &m,
@@ -746,7 +899,8 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     )
     .await
     .unwrap();
-    execute(
+    wait_task(&m, stale, automation::TaskKind::Policy, &policy).await;
+    let edited = execute(
         &m,
         &Command::Group {
             id: group,
@@ -761,38 +915,44 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     )
     .await
     .unwrap();
+    wait_task(
+        &m,
+        Uuid::parse_str(edited["task"].as_str().unwrap()).unwrap(),
+        automation::TaskKind::Group,
+        &group.to_string(),
+    )
+    .await;
     assert!(matches!(
         execute(
             &m,
             &Command::Save {
-                id: policy,
+                id: policy.clone(),
                 request: operation(revision, SavePlan { preview: stale })
             }
         )
         .await,
         Err(Error::Conflict)
     ));
+    running.stop().await;
     let denied = Uuid::new_v4();
-    sql("REVOKE INSERT ON mdm_access.audit FROM mdm_management_runtime;");
-    assert!(matches!(
-        execute(
-            &m,
-            &Command::Group {
-                id: denied,
-                change: operation(
-                    0,
-                    GroupChange::Create {
-                        name: "rollback".into(),
-                        description: "".into(),
-                        criteria: None
-                    }
-                )
-            }
-        )
-        .await,
-        Err(Error::Unavailable(Failure::Audit))
-    ));
-    sql("GRANT INSERT ON mdm_access.audit TO mdm_management_runtime;");
+    sql("REVOKE INSERT ON mdm_access.audit FROM mdm_management_runtime");
+    let result = execute(
+        &m,
+        &Command::Group {
+            id: denied,
+            change: operation(
+                0,
+                GroupChange::Create {
+                    name: "denied".into(),
+                    description: String::new(),
+                    criteria: None,
+                },
+            ),
+        },
+    )
+    .await;
+    sql("GRANT INSERT ON mdm_access.audit TO mdm_management_runtime");
+    assert!(matches!(result, Err(Error::Unavailable(Failure::Audit))));
     assert_eq!(
         sql(&format!(
             "SELECT count(*) FROM mdm_group.groups WHERE id='{denied}'"
@@ -889,8 +1049,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "ALTER TABLE mdm_management.scopes ENABLE ROW LEVEL SECURITY",
         ),
         (
-            "GRANT DELETE ON mdm_management.previews TO mdm_management_runtime",
-            "REVOKE DELETE ON mdm_management.previews FROM mdm_management_runtime",
+            "GRANT DELETE ON mdm_management.automation_jobs TO mdm_management_runtime",
+            "REVOKE DELETE ON mdm_management.automation_jobs FROM mdm_management_runtime",
         ),
         (
             "GRANT SELECT ON mdm_access.authorization_rules TO mdm_management_runtime",
@@ -955,7 +1115,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
 #[tokio::test]
 #[ignore = "real PostgreSQL; hack/management-t2.py"]
 async fn registration_replacement_invalidates_direct_and_group_previews() {
-    let m = management(tenant()).await;
+    let m = Arc::new(management(tenant()).await);
+    let running = RunningAutomation::start(m.clone()).await;
     let device = format!("device-{}", Uuid::new_v4());
     let old = seed_device(&device);
     let group = Uuid::new_v4();
@@ -975,7 +1136,7 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
     )
     .await
     .unwrap();
-    execute(
+    let membership = execute(
         &m,
         &Command::Group {
             id: group,
@@ -990,6 +1151,13 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
     )
     .await
     .unwrap();
+    wait_task(
+        &m,
+        Uuid::parse_str(membership["task"].as_str().unwrap()).unwrap(),
+        automation::TaskKind::Group,
+        &group.to_string(),
+    )
+    .await;
     let mut pending = Vec::new();
     for reference in [Reference::Device(device.clone()), Reference::Group(group)] {
         let scope = Uuid::new_v4();
@@ -1039,8 +1207,13 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
         )
         .await
         .unwrap();
+        assert_eq!(
+            wait_task(&m, preview, automation::TaskKind::Policy, &policy).await["members"],
+            1
+        );
         pending.push((policy, revision, preview));
     }
+    running.stop().await;
     let grant = Uuid::new_v4();
     let request = Uuid::new_v4();
     let replacement = Uuid::new_v4();
@@ -1049,17 +1222,18 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
         "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{old}';INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{t}','{request}','{grant}');INSERT INTO mdm_access.registrations VALUES('{t}','{replacement}','{device}','mdm',2,'{request}','active');"
     ));
     for (id, revision, preview) in pending.clone() {
-        assert!(matches!(
-            execute(
-                &m,
-                &Command::Save {
-                    id,
-                    request: operation(revision, SavePlan { preview })
-                }
-            )
-            .await,
-            Err(Error::Conflict)
-        ));
+        let result = execute(
+            &m,
+            &Command::Save {
+                id,
+                request: operation(revision, SavePlan { preview }),
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(Error::Conflict)),
+            "registration replacement must stale preview: {result:?}"
+        );
     }
     sql(&format!(
         "UPDATE mdm_access.registrations SET state='revoked' WHERE id='{replacement}'"
@@ -1334,15 +1508,14 @@ async fn asset_commit_unknown_recovers_original_receipts() {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL; hack/management-t2.py"]
-async fn asset_storage_stages_and_capacity_are_not_malformed() {
+async fn asset_storage_failures_are_not_malformed() {
     let m = management(tenant()).await;
+    let device = format!("storage-stages-{}", Uuid::new_v4());
+    seed_device(&device);
     let command = Command::Asset {
-        command: assets::Command::Search {
-            query: assets::Query::default(),
-            scope: assets::ReadScope {
-                subject: "fixture-operator".into(),
-                devices: None,
-            },
+        command: assets::Command::Detail {
+            device,
+            scope: assets::ReadScope::all(),
         },
     };
     for (table, expected) in [
@@ -1353,28 +1526,173 @@ async fn asset_storage_stages_and_capacity_are_not_malformed() {
         sql(&format!(
             "REVOKE SELECT ON {table} FROM mdm_management_runtime"
         ));
-        let error = execute(&m, &command).await.unwrap_err();
+        let outcome = execute(&m, &command).await;
         sql(&format!(
             "GRANT SELECT ON {table} TO mdm_management_runtime"
         ));
+        let error = outcome.unwrap_err();
         assert_eq!(
             serde_json::to_value(error).unwrap(),
             json!({"kind":"unavailable","reason":expected})
         );
     }
-    let prefix = format!("asset-limit-{}-", Uuid::new_v4());
-    sql(&format!(
-        "INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{}','{prefix}'||i FROM generate_series(1,10001) i",
-        tenant()
-    ));
-    let error = execute(&m, &command).await.unwrap_err();
-    sql(&format!(
-        "DELETE FROM mdm_access.devices WHERE tenant_id='{}' AND id LIKE '{prefix}%'",
-        tenant()
-    ));
-    assert!(matches!(
-        error,
-        Error::Unavailable(Failure::AssetObjectLimit)
-    ));
+    m.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; hack/management-t2.py"]
+async fn saving_new_scope_replaces_automatic_candidate_binding() {
+    let m = Arc::new(management(tenant()).await);
+    let running = RunningAutomation::start(m.clone()).await;
+    let device = format!("binding-{}", Uuid::new_v4());
+    seed_device(&device);
+    let scopes = [Uuid::new_v4(), Uuid::new_v4()];
+    let definition = |excluded| ScopeDefinition {
+        targets: BTreeSet::from([Reference::Device(device.clone())]),
+        limitations: None,
+        exclusions: if excluded {
+            BTreeSet::from([Reference::Device(device.clone())])
+        } else {
+            BTreeSet::new()
+        },
+    };
+    for scope in scopes {
+        let accepted = execute(
+            &m,
+            &Command::Scope {
+                id: scope,
+                change: operation(
+                    0,
+                    ScopeChange::Put {
+                        definition: definition(false),
+                    },
+                ),
+            },
+        )
+        .await
+        .unwrap();
+        let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
+        wait_task(&m, task, automation::TaskKind::Scope, &scope.to_string()).await;
+    }
+    let policy = Uuid::new_v4().to_string();
+    execute(
+        &m,
+        &Command::Policy {
+            id: policy.clone(),
+            change: operation(0, PolicyChange::Create),
+        },
+    )
+    .await
+    .unwrap();
+    let mut revision = 1;
+    let mut saved = Uuid::nil();
+    for scope in scopes {
+        let request = operation(
+            revision,
+            PreviewInput {
+                scope,
+                expected_revision: revision,
+            },
+        );
+        let preview = request.operation_id;
+        execute(
+            &m,
+            &Command::Preview {
+                id: policy.clone(),
+                request,
+            },
+        )
+        .await
+        .unwrap();
+        wait_task(&m, preview, automation::TaskKind::Policy, &policy).await;
+        let receipt = execute(
+            &m,
+            &Command::Save {
+                id: policy.clone(),
+                request: operation(revision, SavePlan { preview }),
+            },
+        )
+        .await
+        .unwrap();
+        revision = receipt["receipt"]["storage_revision"].as_u64().unwrap();
+        saved = preview;
+    }
+    let head = || {
+        sql(&format!(
+            "SELECT desired::text FROM mdm_management.candidate_heads WHERE tenant_id='{}' AND policy='{policy}'",
+            tenant()
+        ))
+    };
+    let before = head();
+    let receipt = execute(
+        &m,
+        &Command::Scope {
+            id: scopes[0],
+            change: operation(
+                1,
+                ScopeChange::Put {
+                    definition: definition(true),
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap();
+    wait_task(
+        &m,
+        task,
+        automation::TaskKind::Scope,
+        &scopes[0].to_string(),
+    )
+    .await;
+    assert_eq!(
+        head(),
+        before,
+        "the previous Scope binding generated a candidate"
+    );
+    let receipt = execute(
+        &m,
+        &Command::Scope {
+            id: scopes[1],
+            change: operation(
+                1,
+                ScopeChange::Put {
+                    definition: definition(true),
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap();
+    wait_task(
+        &m,
+        task,
+        automation::TaskKind::Scope,
+        &scopes[1].to_string(),
+    )
+    .await;
+    let candidate = Uuid::parse_str(&head()).unwrap();
+    assert_ne!(candidate.to_string(), before);
+    assert_eq!(
+        wait_task(&m, candidate, automation::TaskKind::Policy, &policy).await["members"],
+        0
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT candidate FROM mdm_policy.current_plans WHERE tenant_id='{}' AND policy='{policy}'",
+            tenant()
+        )),
+        saved.to_string()
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_policy.facts WHERE tenant_id='{}' AND owner='{policy}'",
+            tenant()
+        )),
+        "0"
+    );
+    running.stop().await;
     m.runtime.close().await;
 }

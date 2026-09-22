@@ -9,7 +9,7 @@ mod model;
 mod plans;
 mod runtime;
 mod scopes;
-pub(in crate::management) use model::{JobInput, ScopeInput, SourceSet, TaskKind};
+pub(in crate::management) use model::{GroupStart, JobInput, ScopeInput, SourceSet, TaskKind};
 pub(crate) use runtime::{Automation, Resource};
 fn device_reference(id: &str) -> String {
     use sha2::Digest;
@@ -27,6 +27,10 @@ impl Timer {
     }
 }
 impl rss_reconcile::Timer for Timer {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "monotonic clock injection boundary"
+    )]
     fn now(&self) -> Duration {
         self.0.elapsed()
     }

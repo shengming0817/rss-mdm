@@ -1,4 +1,18 @@
 BEGIN;
+DROP TABLE mdm_group.deltas;
+DROP TABLE mdm_group.members;
+DROP TABLE mdm_group.operations;
+CREATE TABLE mdm_group.operations (
+ tenant_id uuid NOT NULL,id uuid NOT NULL,group_id uuid NOT NULL,digest bytea NOT NULL CHECK(octet_length(digest)=32),
+ request bytea NOT NULL CHECK(octet_length(request)<=16777216),receipt bytea NOT NULL CHECK(octet_length(receipt)<=65536),
+ receipt_digest bytea NOT NULL CHECK(octet_length(receipt_digest)=32),as_of bigint NOT NULL CHECK(as_of>=0),
+ PRIMARY KEY(tenant_id,id),FOREIGN KEY(tenant_id,group_id) REFERENCES mdm_group.groups(tenant_id,id)
+);
+ALTER TABLE mdm_group.operations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_group.operations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_group.operations USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON mdm_group.operations TO mdm_group_runtime;
+
 ALTER TABLE mdm_group.groups DROP CONSTRAINT groups_member_count_check;
 ALTER TABLE mdm_group.groups ADD CONSTRAINT groups_member_count_check CHECK(member_count BETWEEN 0 AND 1000000);
 ALTER TABLE mdm_group.groups ADD COLUMN member_set uuid;
@@ -37,9 +51,11 @@ CREATE TABLE mdm_group.member_pages (
 );
 CREATE TABLE mdm_group.member_changes (
  tenant_id uuid NOT NULL, run_id uuid NOT NULL, object_id text COLLATE "C" NOT NULL,
+ group_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
  added boolean NOT NULL, PRIMARY KEY(tenant_id,run_id,object_id),
  FOREIGN KEY(tenant_id,run_id) REFERENCES mdm_group.member_runs(tenant_id,id)
 );
+CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,group_id,object_id,revision DESC);
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['member_runs','member_rows','member_pages','member_changes'] LOOP
   EXECUTE format('ALTER TABLE mdm_group.%I ENABLE ROW LEVEL SECURITY',t);

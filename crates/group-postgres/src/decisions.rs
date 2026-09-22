@@ -139,6 +139,10 @@ impl GroupStore {
         if !build.input_sealed {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
+        if build.request.patch.is_some() {
+            let devices = crate::store::input!(self.build_members_in(tx, id, after, limit).await?);
+            return Ok(Ok(devices.into_iter().map(manual).collect()));
+        }
         let tenant = self.tenant.to_string();
         let metadata=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT object_id,octet_length(evidence) AS bytes FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND ($3::text IS NULL OR object_id>$3 COLLATE \"C\") ORDER BY object_id LIMIT $4")

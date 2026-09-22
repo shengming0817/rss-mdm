@@ -668,6 +668,14 @@
       true
     ],
     [
+      "facts",
+      "facts_semantic_order",
+      "CREATE INDEX facts_semantic_order ON mdm_policy.facts USING btree (tenant_id, owner, version, device COLLATE \"C\")",
+      true,
+      true,
+      true
+    ],
+    [
       "immutable",
       "immutable_pkey",
       "CREATE UNIQUE INDEX immutable_pkey ON mdm_policy.immutable USING btree (tenant_id, owner, kind, key)",
@@ -1005,7 +1013,7 @@
       "immutable",
       "immutable_kind_check",
       "c",
-      "CHECK ((kind = ANY (ARRAY['version'::text, 'payload'::text, 'targets'::text, 'plan'::text])))",
+      "CHECK ((kind = ANY (ARRAY['version'::text, 'payload'::text])))",
       true
     ],
     [

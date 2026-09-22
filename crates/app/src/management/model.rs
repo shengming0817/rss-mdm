@@ -36,7 +36,7 @@ pub enum GroupChange {
         remove: Vec<String>,
     },
     Delete,
-    Recompute,
+    Recompute {},
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
