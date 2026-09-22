@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/mdm/agent/v1/registration-request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wireVersion", "operationId", "enrollmentId", "password", "credential", "capabilities"],
+  "properties": {
+    "wireVersion": { "const": 1 },
+    "operationId": { "type": "string", "format": "uuid" },
+    "enrollmentId": { "type": "string", "format": "uuid" },
+    "password": { "type": "string", "minLength": 43, "maxLength": 43 },
+    "credential": { "type": "string", "minLength": 43, "maxLength": 43 },
+    "capabilities": { "const": ["inventory.basic.v1"] }
+  }
+}
