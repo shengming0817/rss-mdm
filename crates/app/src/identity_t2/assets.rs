@@ -14,8 +14,13 @@ async fn ok(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value> {
+    let diagnostic = body.clone();
+    let method_name = method.as_str().to_owned();
     let (s, v) = browser.call(router, method, path, body).await?;
-    ensure!(s == StatusCode::OK, "asset request {path}: {s} {v}");
+    ensure!(
+        s == StatusCode::OK,
+        "asset request {method_name} {path} with {diagnostic:?}: {s} {v}"
+    );
     Ok(v)
 }
 async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result<()> {
@@ -146,7 +151,20 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
     ] {
-        report(&service, &access, &proof, values).await?;
+        let incomplete = report(&service, &access, &proof, values).await?;
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let delivery = runtime.inspect(&incomplete).await?;
+                if delivery.receipt.is_some()
+                    && delivery.projection
+                        == crate::inventory_runtime::ProjectionStatus::NotApplicable
+                {
+                    return Ok::<_, crate::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await??;
         let detail = ok(
             browser,
             router,
