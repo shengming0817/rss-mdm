@@ -38,6 +38,39 @@ impl Management {
         .await
     }
 
+    async fn scope_dependency_succeeded_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        resolution: Uuid,
+    ) -> Result<bool> {
+        let (job, complete, failure, _, _) = self.job_in(tx, resolution).await?;
+        if !complete || !matches!(job, JobInput::Scope { .. }) {
+            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+        }
+        Ok(failure.is_none())
+    }
+
+    async fn revalidate_assignment_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: &str,
+        scope: Uuid,
+        expected: Option<i64>,
+    ) -> Result<()> {
+        if let Some(expected) = expected {
+            let tenant = self.tenant.to_string();
+            let policy = policy.to_owned();
+            let current:Option<i64>=tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query_scalar("SELECT revision FROM mdm_management.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2 AND scope=$3::uuid")
+                    .bind(tenant).bind(policy).bind(scope.to_string()).fetch_optional(c).await
+            })).await?;
+            if current != Some(expected) {
+                return Err(Error::Conflict.into());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn advance_policy_job_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -55,18 +88,13 @@ impl Management {
         else {
             return Err(Error::Malformed.into());
         };
-        if let Some(expected) = assignment_revision {
-            let tenant = self.tenant.to_string();
-            let policy = policy.clone();
-            let scope = *scope;
-            let current:Option<i64>=tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar("SELECT revision FROM mdm_management.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2 AND scope=$3::uuid")
-                    .bind(tenant).bind(policy).bind(scope.to_string()).fetch_optional(c).await
-            })).await?;
-            if current != Some(*expected) {
-                return Err(Error::Conflict.into());
-            }
+        if !self.scope_dependency_succeeded_in(tx, *resolution).await? {
+            return self
+                .finish_job_in(tx, task, Some("source_unavailable"))
+                .await;
         }
+        self.revalidate_assignment_in(tx, policy, *scope, *assignment_revision)
+            .await?;
         let tenant = self.tenant.to_string();
         let id = *resolution;
         let resolved=tx.with_connection(move |c|Box::pin(async move {

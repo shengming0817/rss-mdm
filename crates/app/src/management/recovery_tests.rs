@@ -466,3 +466,78 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     peer_service.runtime.close().await;
     restarted.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn policy_waits_for_scope_and_inherits_failure() {
+    use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
+    let service = Arc::new(management(tenant()).await);
+    let scope = Uuid::new_v4();
+    let resolution = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    let policy = Uuid::new_v4().to_string();
+    let source = automation::JobInput::Scope { scope };
+    let dependent = automation::JobInput::Policy {
+        policy: policy.clone(),
+        scope,
+        resolution,
+        assignment_revision: None,
+        expected_revision: 1,
+        as_of: 1,
+    };
+    for (id, kind, target, input) in [
+        (resolution, "scope", scope.to_string(), source),
+        (task, "policy", policy, dependent),
+    ] {
+        let document = serde_json::to_string(&input).unwrap();
+        sql(&format!(
+            "INSERT INTO mdm_management.automation_jobs(tenant_id,id,kind,target,input) VALUES('{}','{id}','{}','{}','{document}')",
+            tenant(),
+            kind,
+            target
+        ));
+    }
+    assert_eq!(
+        service.forward_jobs().await.unwrap(),
+        1,
+        "dependent policy was scheduled before its Scope completed"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT forwarded FROM mdm_management.automation_jobs WHERE id='{task}'"
+        )),
+        "f"
+    );
+    assert_eq!(service.forward_jobs().await.unwrap(), 0);
+    // Model a prerequisite terminal rejection without producing a Scope result.
+    sql(&format!(
+        "UPDATE mdm_management.automation_jobs SET completed=true,failure='capacity_exceeded' WHERE id='{resolution}'"
+    ));
+    assert_eq!(service.forward_jobs().await.unwrap(), 1);
+    let worker = automation::Automation::connect(service.clone(), options())
+        .await
+        .unwrap();
+    let claim = claim_job(&worker, task, Duration::from_secs(6)).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    worker
+        .apply(
+            &claim,
+            ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
+            &control,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sql(&format!(
+            "SELECT completed AND failure='source_unavailable' FROM mdm_management.automation_jobs WHERE id='{task}'"
+        )),
+        "t"
+    );
+    assert_eq!(sql("SELECT count(*) FROM mdm_policy.facts"), "0");
+    rss_runtime::ManagedResource::shutdown(&automation::Resource(worker))
+        .await
+        .unwrap();
+    service.runtime.close().await;
+}

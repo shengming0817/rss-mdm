@@ -622,13 +622,15 @@ async fn durable_asset_group_scope_candidate_pipeline() {
     )
     .await
     .unwrap();
-    let next=tokio::time::timeout(Duration::from_secs(30),async {
+    // A failed RSS finish retains its 30s claim until lease recovery; the fixture
+    // must allow that recovery before asserting the eventual candidate.
+    let next=tokio::time::timeout(Duration::from_secs(90),async {
         loop {
             let raw=sql(&format!("SELECT candidate::text FROM mdm_management.candidate_heads WHERE tenant_id='{}' AND policy='{policy}' AND candidate<> '{preview}'::uuid",tenant()));
             if !raw.is_empty() {break Uuid::parse_str(&raw).unwrap();}
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.unwrap_or_else(|error| panic!("asset deletion did not produce a candidate: {error:?}; jobs={}", sql("SELECT jsonb_agg(jsonb_build_object('kind',kind,'task',id,'completed',completed,'failure',failure,'cursor',cursor)) FROM mdm_management.automation_jobs")));
+    }).await.unwrap_or_else(|error| panic!("asset deletion did not produce a candidate: {error:?}; jobs={}", sql("SELECT jsonb_agg(jsonb_build_object('kind',kind,'task',id,'completed',completed,'forwarded',forwarded,'input',input,'failure',failure,'cursor',cursor)) FROM mdm_management.automation_jobs")));
     assert_eq!(
         wait_task(&service, next, automation::TaskKind::Policy, &policy).await["members"],
         0

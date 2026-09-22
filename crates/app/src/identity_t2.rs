@@ -296,7 +296,8 @@ async fn start_automation(value: &Value) -> Result<rss_runtime::ShutdownStack> {
 }
 
 async fn await_task(browser: &mut Browser, router: &Router, path: &str) -> Result<Value> {
-    tokio::time::timeout(Duration::from_secs(60), async {
+    let mut last = Value::Null;
+    let settled = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let (status, value) = browser.call(router, Method::GET, path, None).await?;
             if status == StatusCode::SERVICE_UNAVAILABLE {
@@ -304,6 +305,7 @@ async fn await_task(browser: &mut Browser, router: &Router, path: &str) -> Resul
                 continue;
             }
             ensure!(status == StatusCode::OK, "task {path}: {status} {value}");
+            last = value.clone();
             let state = if value.get("asset").is_some() {
                 &value["asset"]
             } else {
@@ -316,7 +318,16 @@ async fn await_task(browser: &mut Browser, router: &Router, path: &str) -> Resul
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await?
+    .await;
+    match settled {
+        Ok(result) => result,
+        Err(_) => {
+            let progress = pg(&format!(
+                "SELECT coalesce(jsonb_agg(p),'[]') FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase AS group_phase,r.object_count,s.phase AS scope_phase FROM mdm_management.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) LEFT JOIN mdm_management.scope_runs s ON (s.tenant_id,s.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p"
+            ))?;
+            anyhow::bail!("task {path} exceeded fixture deadline; last {last}; pending {progress}")
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

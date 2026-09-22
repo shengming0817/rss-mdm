@@ -139,10 +139,12 @@ impl Management {
     }
 
     pub(in crate::management) async fn forward_jobs(&self) -> std::result::Result<usize, Error> {
+        // A policy cannot compute until its Scope is terminal. Keep the durable
+        // intent unforwarded instead of spending RSS retries on an unfinished input.
         let ids=self.runtime.local_tx(self.tenant,deadline(),|tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_management.automation_jobs WHERE tenant_id=$1::uuid AND NOT forwarded ORDER BY id LIMIT 64")
+                sqlx::query_scalar::<_,String>("SELECT j.id::text FROM mdm_management.automation_jobs j WHERE j.tenant_id=$1::uuid AND NOT j.forwarded AND (j.kind<>'policy' OR EXISTS(SELECT 1 FROM mdm_management.automation_jobs source WHERE source.tenant_id=j.tenant_id AND source.id=(j.input->>'resolution')::uuid AND source.kind='scope' AND source.completed)) ORDER BY j.id LIMIT 64")
                     .bind(tenant).fetch_all(c).await
             })).await
         })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::ManagementStorage)))?;
