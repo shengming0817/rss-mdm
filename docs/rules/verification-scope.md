@@ -34,14 +34,14 @@ Cargo manifest/lock、工具链、CI 脚本/配置、未知路径、未知删除
 `hack/ci-impact.py` 参考 RSS 同名选择器，以 Cargo all-features metadata 的 normal/dev/build/
 optional 反向依赖闭包选择包。已识别根文档、docs 与技能 Markdown 不贡献 package seed；混合
 文档与源码按源码闭包选择。crate 内 README 可能参与 rustdoc，仍作为所属包输入。
-check/clippy/T1/doc-test 使用选中包；T2 与独立消费者按 `hack/ci.py` 的 gate 映射选择，
+check/clippy/T1/doc-test 使用选中包；T2 按 `hack/ci.py` 的 gate 映射选择，
 包含 Cargo 图外的应用 schema、迁移和 fixture 输入。新 gate 未映射时，有包变更即保守执行。
-选中任何 Rust 包仍执行完整隔离构建与来源/feature 图验证；advisories 仅在全量模式运行。
-纯文档或无变更跳过 Rust/T2/独立消费者，但保留脚本测试、fmt、pin 与 HEAD 身份检查。
+选中任何 Rust 包仍执行真实产品的隔离构建与来源/feature 图验证；advisories 仅在全量模式运行。
+模拟独立消费者不属于 `make ci`、`make ci-full` 或 `make ci-plan`，仅在明确的消费者验收任务中显式运行。纯文档或无变更跳过 Rust/T2 和产品隔离构建，但保留脚本测试、fmt、pin 与 HEAD 身份检查。
 
 `artifacts/local-ci/selection.json` 记录正式执行的基线、merge-base、HEAD、选择原因、包和所有 gate 的命令或内部检查说明；
-计划模式仅写 `plan.json`，不覆盖正式执行的 selection/result。正式执行开始时清理各 gate 自有的旧日志、
-metadata/tree 和消费者目录（包括 `artifacts/source-consumers/`），即使本轮跳过也不残留旧成功回执；
+计划模式仅写 `plan.json`，不覆盖正式执行的 selection/result。正式执行开始时只清理 CI gate 自有的旧日志与 metadata/tree；
+手动消费者的验收产物不归 CI 清理，CI 结果也不记录消费者的 passed/skipped；
 `result.json` 的 gates 区分 passed/failed/skipped，skipped 不代表通过。完整入口始终收集所有
 选中 gate 的失败后再返回非零；不得把 affected 结果描述为全量验证或产品 T3。
 

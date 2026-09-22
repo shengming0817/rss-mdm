@@ -19,6 +19,25 @@ def result(stdout='', returncode=0):
 
 
 class Selection(unittest.TestCase):
+    def test_ci_plan_never_registers_manual_consumers(self):
+        manual = {
+            'core-consumers', 'inventory-consumers', 'backend-consumers',
+            'group-postgres-consumers', 'source-consumers', 'agent-wire-consumer',
+            'group-consumer',
+        }
+        for selection in (
+            {'full': True, 'packages': [], 'reasons': ['global-input']},
+            {'full': False, 'packages': ['rss-mdm-app'], 'reasons': ['package-change']},
+            {'full': False, 'packages': [], 'reasons': ['docs-only']},
+        ):
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as directory:
+                out = Path(directory)
+                with patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', return_value=result('head')), patch.dict(ci.os.environ, {'CI_PLAN': '1'}), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(ci.main(), 0)
+                gates = json.loads((out / 'plan.json').read_text())['gates']
+                self.assertFalse(manual & gates.keys())
+                self.assertEqual(gates['t2']['selected'], selection['full'] or 'rss-mdm-app' in selection['packages'])
+
     def test_merge_base_and_fallbacks(self):
         cases = [
             ('0', [result('develop'), result()], True, 'develop'),
@@ -41,12 +60,12 @@ class Selection(unittest.TestCase):
         selection = {'full': False, 'packages': ['rss-mdm-winget-source']}
         args = ['cargo', 'test', '--locked', '--workspace', '--lib']
         self.assertEqual(ci.gate_command('t1', args, selection), ['cargo', 'test', '--locked', '-p', 'rss-mdm-winget-source', '--lib'])
-        for name in ['source-t2', 'source-consumers', 'isolation', 'new-gate']:
+        for name in ['source-t2', 'isolation', 'new-gate']:
             self.assertTrue(ci.selected_gate(name, selection), name)
-        for name in ['group-t2', 'core-consumers', 'advisories']:
+        for name in ['group-t2', 'advisories']:
             self.assertFalse(ci.selected_gate(name, selection), name)
         for package in ci.APP_INPUTS:
-            for name in ['inventory-consumers', 'backend-consumers', 'backend-t2', 'asset-t2', 'command-t2']:
+            for name in ['backend-t2', 'asset-t2', 'command-t2']:
                 self.assertTrue(ci.selected_gate(name, {'full': False, 'packages': [package]}), (package, name))
 
     def test_docs_skip_rust_and_failure_collection_keeps_running(self):
@@ -56,12 +75,10 @@ class Selection(unittest.TestCase):
             stale_paths = [out / name for name in (
                 'isolated-build.log', 'metadata-normal.json', 'metadata-integration.json',
                 'metadata-normal.stderr.log', 'metadata-integration.stderr.log',
-                'tree-normal.txt', 'tree-integration.txt', 'pin.log',
-                'core-consumers/result.json', 'inventory-consumers/result.json',
-                'backend-consumers/policy/result.json', 'group-postgres-consumers/result.json')]
+                'tree-normal.txt', 'tree-integration.txt', 'pin.log')]
             source_out = out / 'separate-source-consumers'
-            stale_paths.append(source_out / 'result.json')
-            for path in stale_paths:
+            manual_paths = [out / 'core-consumers/result.json', out / 'group-consumer.log', source_out / 'result.json']
+            for path in stale_paths + manual_paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('old-head passed')
             output = io.StringIO()
@@ -73,7 +90,7 @@ class Selection(unittest.TestCase):
                 if '-m' in args: return result('failure', 1)
                 return result()
             selection = {'full': False, 'packages': [], 'reasons': ['docs-only']}
-            with patch.object(ci, 'OUT', out), patch.object(ci, 'SOURCE_CONSUMER_OUT', source_out, create=True), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'isolate') as isolation, patch.object(ci, 'group_consumer') as consumer, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
+            with patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'isolate') as isolation, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((out / 'result.json').read_text())
             self.assertEqual(evidence['gates']['script-tests'], 'failed')
@@ -83,13 +100,13 @@ class Selection(unittest.TestCase):
             self.assertFalse((out / 't1.log').exists())
             for path in stale_paths:
                 self.assertFalse(path.exists(), str(path))
+            for path in manual_paths:
+                self.assertEqual(path.read_text(), 'old-head passed')
             plan = json.loads((out / 'selection.json').read_text())
             self.assertEqual(set(plan['gates']), set(evidence['gates']))
             self.assertNotIn('local CI: isolated Git consumer', output.getvalue())
             self.assertIn('isolation: skipped', output.getvalue())
-            self.assertIn('group-consumer: skipped', output.getvalue())
             isolation.assert_not_called()
-            consumer.assert_not_called()
             self.assertFalse(any('test' in args for args in calls))
 
     def test_cleanup_preserves_unowned_evidence_and_does_not_follow_symlinks(self):
@@ -102,17 +119,21 @@ class Selection(unittest.TestCase):
             external = Path(directory) / 'external'
             external.mkdir()
             (external / 'result.json').write_text('external proof')
-            (out / 'core-consumers').symlink_to(external, target_is_directory=True)
+            (out / 'isolated-build.log').symlink_to(external / 'result.json')
+            manual = out / 'core-consumers'
+            manual.mkdir()
+            (manual / 'result.json').write_text('manual proof')
             source = Path(directory) / 'source-consumers'
             source.mkdir()
             (source / 'result.json').write_text('stale proof')
-            with patch.object(ci, 'OUT', out), patch.object(ci, 'SOURCE_CONSUMER_OUT', source):
-                ci.clear_execution_evidence(['core-consumers', 't1'])
-                ci.clear_execution_evidence(['core-consumers', 't1'])
+            with patch.object(ci, 'OUT', out):
+                ci.clear_execution_evidence(['t1'])
+                ci.clear_execution_evidence(['t1'])
             self.assertTrue(retained.exists())
             self.assertEqual((external / 'result.json').read_text(), 'external proof')
-            self.assertFalse((out / 'core-consumers').is_symlink())
-            self.assertFalse(source.exists())
+            self.assertFalse((out / 'isolated-build.log').is_symlink())
+            self.assertTrue((manual / 'result.json').exists())
+            self.assertTrue((source / 'result.json').exists())
 
     def test_plan_does_not_execute_or_erase_previous_result(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -126,7 +147,7 @@ class Selection(unittest.TestCase):
             self.assertEqual((out / 'selection.json').read_text(), 'previous selection')
             plan = json.loads((out / 'plan.json').read_text())
             self.assertTrue(all(gate['selected'] for gate in plan['gates'].values()))
-            for name in ('pin', 'identity', 'isolation', 'group-consumer'):
+            for name in ('pin', 'identity', 'isolation'):
                 self.assertTrue(plan['gates'][name]['check'])
 
 
