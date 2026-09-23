@@ -1,4 +1,5 @@
 use super::*;
+use sha2::Digest;
 pub(super) struct Fixture<'a> {
     pub peer: &'a reqwest::Client,
     pub url: &'a str,
@@ -194,8 +195,37 @@ impl Client {
         scope: Uuid,
         revision: u64,
     ) -> anyhow::Result<Value> {
-        let preview = Uuid::new_v4();
-        let frozen = self.product(&format!("policies/{policy}/previews"),json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}})).await?;
+        let mut revision = revision;
+        let mut preview = Uuid::new_v4();
+        let mut frozen = Value::Null;
+        for attempt in 0..3 {
+            let accepted = self.submit_product(&format!("policies/{policy}/previews"),json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}})).await?;
+            frozen = self
+                .wait_preview(accepted["statusUrl"].as_str().unwrap())
+                .await?;
+            if frozen["status"] != "superseded" || attempt == 2 {
+                break;
+            }
+            // Scope publication also schedules automatic candidates. Their first
+            // execution-fact import can legitimately supersede our accepted CAS.
+            // A new preview uses a fresh identity and the newly observed revision.
+            let current = self
+                .browser
+                .call(
+                    &self.router,
+                    Method::GET,
+                    &format!("/api/v2/policies/{policy}"),
+                    None,
+                )
+                .await?;
+            ensure!(current.0 == StatusCode::OK, "policy refresh: {current:?}");
+            revision = current.1["storageRevision"].as_u64().unwrap();
+            preview = Uuid::new_v4();
+        }
+        ensure!(
+            frozen["status"] == "completed",
+            "preview rejected: {frozen}"
+        );
         let revision = frozen["policyRevision"].as_u64().unwrap();
         let frozen = frozen["execution"].clone();
         let saved=self.product(&format!("policies/{policy}/plans"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"preview":preview}})).await?;
@@ -328,6 +358,7 @@ impl Client {
             .execute(&mut pg)
             .await?;
         let mut devices = Vec::new();
+        sqlx::query("BEGIN").execute(&mut pg).await?;
         for i in 0..33 {
             let device = format!("firewall-fleet-{i:02}");
             let registration = Uuid::new_v4();
@@ -341,9 +372,14 @@ impl Client {
             sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES($1::uuid,$2::uuid,'fixture','fixture',$3,'enrollment','consumed',clock_timestamp()+interval '60 seconds')").bind(TENANT).bind(grant.to_string()).bind(&device).execute(&mut pg).await?;
             sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm')").bind(TENANT).bind(request.to_string()).bind(grant.to_string()).execute(&mut pg).await?;
             sqlx::query("INSERT INTO mdm_access.registrations VALUES($1::uuid,$2::uuid,$3,'mdm',1,$4::uuid,'active')").bind(TENANT).bind(registration.to_string()).bind(&device).bind(request.to_string()).execute(&mut pg).await?;
+            sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')")
+                .bind(TENANT).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(format!("{:x}",sha2::Sha256::digest(registration.as_bytes()))).execute(&mut pg).await?;
+            sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES($1::uuid,$2::uuid,'mdm.windows',$3::uuid,'{}',true)")
+                .bind(TENANT).bind(registration.to_string()).bind(Uuid::new_v4().to_string()).execute(&mut pg).await?;
             sqlx::query("INSERT INTO mdm_commands.capabilities VALUES($1::uuid,$2::uuid,1,'10.0.19045.0',48,1,floor(extract(epoch FROM clock_timestamp()))::bigint)").bind(TENANT).bind(registration.to_string()).execute(&mut pg).await?;
             devices.push(device);
         }
+        sqlx::query("COMMIT").execute(&mut pg).await?;
         let grant = json!({"subject":{"kind":"user","user":crate::identity_fixture::user(TENANT,crate::identity_fixture::ADMIN)},"grants":[{"operation":"firewall_write","scope":{"kind":"all_devices"}},{"operation":"operation_cancel","scope":{"kind":"all_devices"}}]});
         ensure!(
             self.browser

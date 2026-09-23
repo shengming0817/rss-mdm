@@ -4,30 +4,46 @@ mod admission;
 mod boundaries;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 impl Client {
-    async fn product(&mut self, path: &str, body: Value) -> anyhow::Result<Value> {
+    async fn submit_product(&mut self, path: &str, body: Value) -> anyhow::Result<Value> {
+        let route = format!(
+            "/api/v{}/{path}",
+            if path.ends_with("/execute") || path.starts_with("resources/") {
+                1
+            } else {
+                2
+            }
+        );
         let mut reply = self
             .browser
-            .call(
-                &self.router,
-                Method::POST,
-                &format!(
-                    "/api/v{}/{path}",
-                    if path.ends_with("/execute") || path.starts_with("resources/") {
-                        1
-                    } else {
-                        2
-                    }
-                ),
-                Some(body),
-            )
+            .call(&self.router, Method::POST, &route, Some(body.clone()))
             .await?;
+        for _ in 0..20 {
+            if reply.0 != StatusCode::SERVICE_UNAVAILABLE {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Retain the original operation identity and body on uncertain settlement.
+            reply = self
+                .browser
+                .call(&self.router, Method::POST, &route, Some(body.clone()))
+                .await?;
+        }
         ensure!(reply.0.is_success(), "{path}: {reply:?}");
-        if let Some(status) = reply.1["statusUrl"].as_str() {
-            return self.wait_preview(status).await;
+        Ok(reply.1)
+    }
+    async fn product(&mut self, path: &str, body: Value) -> anyhow::Result<Value> {
+        let mut reply = self.submit_product(path, body).await?;
+        if let Some(status) = reply["statusUrl"].as_str() {
+            let task = self.wait_preview(status).await?;
+            ensure!(
+                task["status"] == "completed",
+                "preview {path} rejected: {task}"
+            );
+            return Ok(task);
         }
         if path.starts_with("policies/")
             && !path.contains("/plans")
-            && let Some(task) = reply.1["task"].as_str()
+            && let Some(task) = reply["task"].as_str()
         {
             self.wait_preview(&format!("/api/v2/plan-previews/{task}"))
                 .await?;
@@ -36,9 +52,9 @@ impl Client {
                 .call(&self.router, Method::GET, &format!("/api/v2/{path}"), None)
                 .await?;
             ensure!(current.0 == StatusCode::OK);
-            reply.1["storageRevision"] = current.1["storageRevision"].clone();
+            reply["storageRevision"] = current.1["storageRevision"].clone();
         }
-        Ok(reply.1)
+        Ok(reply)
     }
     async fn wait_preview(&mut self, path: &str) -> anyhow::Result<Value> {
         let mut last = Value::Null;
@@ -48,6 +64,10 @@ impl Client {
                     .browser
                     .call(&self.router, Method::GET, path, None)
                     .await?;
+                if reply.0 == StatusCode::SERVICE_UNAVAILABLE {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
                 ensure!(reply.0 == StatusCode::OK, "task read: {reply:?}");
                 last = reply.1.clone();
                 if matches!(
