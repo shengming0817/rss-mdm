@@ -3,7 +3,7 @@ use rss_contract::Timepoint;
 use rss_mdm_group::*;
 use rss_request_context::TenantId;
 use std::collections::{BTreeMap, BTreeSet};
-fn inputs() -> (Rule, Snapshot, Timepoint) {
+fn inputs() -> (Rule, FixturePage, Timepoint) {
     let t = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
     let now = Timepoint::try_from(10).unwrap();
     let field = Field {
@@ -29,12 +29,11 @@ fn inputs() -> (Rule, Snapshot, Timepoint) {
         .unwrap(),
     )
     .unwrap();
-    let snapshot = Snapshot {
+    let snapshot = FixturePage {
         tenant: t,
         id: "s".into(),
         version: "v1".into(),
         dictionary_version: "d1".into(),
-        complete: true,
         coverage: BTreeSet::from(["model".into()]),
         objects: vec![ObjectSnapshot {
             key: ObjectKey::new(t, "device").unwrap(),
@@ -52,36 +51,28 @@ fn inputs() -> (Rule, Snapshot, Timepoint) {
     (rule, snapshot, now)
 }
 #[test]
-fn stored_inputs_and_historical_decisions_round_trip_without_evaluation() {
-    let (r, s, t) = inputs();
-    let r2 = codec::decode_rule(&codec::encode_rule(&r).unwrap()).unwrap();
-    let s2 = codec::decode_snapshot(&codec::encode_snapshot(&s).unwrap()).unwrap();
-    assert_eq!(s, s2);
-    let old = vec![
-        ObjectKey::new(s.tenant, "device").unwrap(),
-        ObjectKey::new(s.tenant, "absent").unwrap(),
-    ];
-    let result = r.recalculate(&s, t, &old).unwrap();
-    assert_eq!(result, r2.recalculate(&s2, t, &old).unwrap());
-    let bytes = codec::encode_result(&result).unwrap();
-    assert_eq!(codec::decode_result(&bytes, &r2, &s2, t).unwrap(), result);
+fn rule_round_trip_and_bounded_page_encoding_preserve_decisions() {
+    let (rule, page, at) = inputs();
+    let restored = codec::decode_rule(&codec::encode_rule(&rule).unwrap()).unwrap();
+    assert_eq!(
+        rule.evaluate_page(&page.input(), at),
+        restored.evaluate_page(&page.input(), at)
+    );
+    let encoded = codec::encode_page(&page.input()).unwrap();
+    assert_eq!(encoded, codec::encode_page(&page.input()).unwrap());
+    let mut changed = page.clone();
+    changed.objects[0].facts.get_mut("model").unwrap().state = FactState::Null;
+    assert_ne!(encoded, codec::encode_page(&changed.input()).unwrap());
 }
 #[test]
-fn canonical_snapshot_deduplicates_equal_objects_and_rejects_conflicts() {
-    let (_, s, _) = inputs();
-    let mut dup = s.clone();
-    dup.objects.extend(s.objects.clone());
-    assert_eq!(
-        codec::encode_snapshot(&s).unwrap(),
-        codec::encode_snapshot(&dup).unwrap()
-    );
-    dup.objects[1].facts.get_mut("model").unwrap().state = FactState::Null;
-    assert!(codec::encode_snapshot(&dup).is_err());
+fn page_encoding_rejects_duplicate_devices() {
+    let (_, mut page, _) = inputs();
+    page.objects.push(page.objects[0].clone());
+    assert!(codec::encode_page(&page.input()).is_err());
 }
 #[test]
 fn corrupt_or_unknown_codec_is_rejected() {
     assert!(codec::decode_rule(br#"{"v":99}"#).is_err());
-    assert!(codec::decode_snapshot(b"[]").is_err());
     let (r, _, _) = inputs();
     let mut value: serde_json::Value =
         serde_json::from_slice(&codec::encode_rule(&r).unwrap()).unwrap();
@@ -144,22 +135,11 @@ fn nested_typed_rules_and_all_fact_states_keep_their_meaning() {
                 FactState::Denied,
             ] {
                 s.objects[0].facts.get_mut("model").unwrap().state = state;
-                let snapshot =
-                    codec::decode_snapshot(&codec::encode_snapshot(&s).unwrap()).unwrap();
-                assert_eq!(s, snapshot);
-                assert_eq!(r.evaluate(&s, t), decoded.evaluate(&snapshot, t));
-                if let Ok(result) = r.recalculate(&s, t, &[]) {
-                    assert_eq!(
-                        codec::decode_result(
-                            &codec::encode_result(&result).unwrap(),
-                            &decoded,
-                            &snapshot,
-                            t
-                        )
-                        .unwrap(),
-                        result
-                    );
-                }
+                assert_eq!(
+                    r.evaluate_page(&s.input(), t),
+                    decoded.evaluate_page(&s.input(), t)
+                );
+                assert!(!codec::encode_page(&s.input()).unwrap().is_empty());
             }
         }
     }
@@ -216,4 +196,27 @@ fn storage_diagnostics_survive_redaction_without_exposing_data() {
     }
     assert_eq!(logs.lines().count(), 5);
     assert!(!logs.contains("private"));
+}
+
+#[derive(Clone)]
+struct FixturePage {
+    tenant: TenantId,
+    id: String,
+    version: String,
+    dictionary_version: String,
+    coverage: BTreeSet<String>,
+    objects: Vec<ObjectSnapshot>,
+}
+impl FixturePage {
+    fn input(&self) -> PageInput<'_> {
+        PageInput {
+            tenant: self.tenant,
+            id: &self.id,
+            version: &self.version,
+            dictionary_version: &self.dictionary_version,
+            coverage: &self.coverage,
+            objects: &self.objects,
+            after: None,
+        }
+    }
 }

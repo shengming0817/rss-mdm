@@ -234,72 +234,22 @@ pub struct ObjectSnapshot {
     /// Explicit facts for every covered field, including missing-value markers.
     pub facts: BTreeMap<String, Fact>,
 }
-/// Completeness describes the candidate universe, not whether all values are known.
-/// In covered fields a missing value must be represented explicitly by FactState::Missing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Snapshot {
-    /// Tenant shared by rule and all objects.
+/// One bounded range of a frozen input. A page never asserts universe completeness.
+/// The persistence owner binds all pages to the same input identity and seals the
+/// result only after it has verified the complete source enumeration.
+pub struct PageInput<'a> {
+    /// Tenant shared by the rule, cursor and objects.
     pub tenant: TenantId,
-    /// Opaque source snapshot identity.
-    pub id: String,
-    /// Opaque immutable snapshot revision identity.
-    pub version: String,
-    /// Dictionary version that must equal the rule's version.
-    pub dictionary_version: String,
-    /// Caller assertion that the candidate universe is complete; not an authorization proof.
-    pub complete: bool,
-    /// Dictionary fields represented explicitly on every supplied object.
-    pub coverage: BTreeSet<String>,
-    /// Candidate facts; identical duplicate keys collapse, conflicting duplicates fail.
-    pub objects: Vec<ObjectSnapshot>,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Canonical set differences, retaining the tenant even when all three sets are empty.
-pub struct Difference {
-    /// Tenant retained even for empty results.
-    pub tenant: TenantId,
-    /// Sorted keys in the new membership set but not the old set.
-    pub added: Vec<ObjectKey>,
-    /// Sorted keys in the old membership set but not the new set.
-    pub removed: Vec<ObjectKey>,
-    /// Sorted keys present in both sets.
-    pub unchanged: Vec<ObjectKey>,
-}
-pub(crate) fn members(
-    tenant: TenantId,
-    input: &[ObjectKey],
-    budget: &mut Budget,
-) -> Result<BTreeSet<ObjectKey>> {
-    LimitKind::Objects.check(input.len())?;
-    for key in input {
-        if key.tenant != tenant {
-            return Err(Error::TenantMismatch);
-        }
-        budget.text(&key.id)?;
-    }
-    Ok(input.iter().cloned().collect())
-}
-pub(crate) fn difference(
-    tenant: TenantId,
-    old: &BTreeSet<ObjectKey>,
-    new: &BTreeSet<ObjectKey>,
-) -> Difference {
-    Difference {
-        tenant,
-        added: new.difference(old).cloned().collect(),
-        removed: old.difference(new).cloned().collect(),
-        unchanged: old.intersection(new).cloned().collect(),
-    }
-}
-/// Pure set difference, including static members; no Criteria or persistence involved.
-///
-/// Returns TenantMismatch for any foreign key and LimitExceeded for list/string budgets.
-/// Input order and duplicate keys do not affect the result.
-pub fn diff(tenant: TenantId, old: &[ObjectKey], new: &[ObjectKey]) -> Result<Difference> {
-    let mut budget = Budget::new(LimitKind::BatchBytes);
-    Ok(difference(
-        tenant,
-        &members(tenant, old, &mut budget)?,
-        &members(tenant, new, &mut budget)?,
-    ))
+    /// Frozen source identity.
+    pub id: &'a str,
+    /// Immutable source revision.
+    pub version: &'a str,
+    /// Dictionary identity used by all pages.
+    pub dictionary_version: &'a str,
+    /// Fields explicitly represented on every object, including Missing facts.
+    pub coverage: &'a BTreeSet<String>,
+    /// Strictly increasing objects; at most 1,000, further limited by work budgets.
+    pub objects: &'a [ObjectSnapshot],
+    /// Exclusive cursor confirmed by the previous durable page, if any.
+    pub after: Option<&'a ObjectKey>,
 }

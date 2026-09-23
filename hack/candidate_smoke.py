@@ -72,7 +72,7 @@ def run_smoke(directory):
         require(sql("SELECT count(*) FROM mdm_access.grants WHERE device='outside'")=="0","denied enrollment wrote business state")
         require(sql("SELECT count(*) FROM mdm_access.audit WHERE operation_id='"+denied+"' AND result='denied'")=="1","candidate denial audit missing")
         require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
-        require(browser.call("GET","/api/v1/devices/outside/inventory")[0]==403,"inventory scope bypass")
+        require(browser.call("GET","/api/v2/devices/outside/inventory")[0]==403,"inventory scope bypass")
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
         stale=Browser(deployed.port,deployed.root/"ca.crt");stale.cookie=old_cookie

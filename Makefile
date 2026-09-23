@@ -67,3 +67,7 @@ t2-assets:
 .PHONY: command-catalog
 command-catalog:
 	python3 hack/command_catalog.py --check
+
+.PHONY: capacity
+capacity:
+	python3 hack/capacity.py

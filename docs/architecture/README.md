@@ -7,3 +7,4 @@
 影响长期边界的取舍记录在 [adr/](adr/README.md)。产品与基础库职责遵循 [范围规则](../rules/project-scope.md)。
 
 - [#2350 + #2351 Windows 注册与管理通道实施计划](202609111146-2350-windows-enrollment-management-plan.md)
+- [#2464 资产变化与持久计划](202609221249-2464-asset-automation.md)

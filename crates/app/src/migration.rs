@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 30] {
+fn units() -> [(&'static str, &'static str); 37] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -191,11 +191,39 @@ fn units() -> [(&'static str, &'static str); 30] {
             "agent-access-v1",
             include_str!("../migrations/0012_agent_access.sql"),
         ),
+        (
+            "policy-candidates-v2",
+            rss_mdm_policy_postgres::CANDIDATES_MIGRATION_SQL,
+        ),
+        (
+            "group-generations-v1",
+            rss_mdm_group_postgres::GENERATIONS_MIGRATION_SQL,
+        ),
+        (
+            "asset-history-v1",
+            rss_mdm_inventory_postgres::HISTORY_MIGRATION_SQL,
+        ),
+        (
+            "asset-authority-history-v1",
+            include_str!("../migrations/0012_asset_history.sql"),
+        ),
+        (
+            "automation-v1",
+            include_str!("../migrations/0013_automation.sql"),
+        ),
+        (
+            "collection-history-v1",
+            include_str!("../migrations/0014_collection_history.sql"),
+        ),
+        (
+            "group-reverse-index-v1",
+            rss_mdm_group_postgres::REVERSE_INDEX_MIGRATION_SQL,
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.
 pub fn manifest() -> serde_json::Value {
-    serde_json::json!({"units":units().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))}))})
+    serde_json::json!({"units":units().into_iter().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))})).collect::<Vec<_>>()})
 }
 async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
     let instance = installation.validate()?;

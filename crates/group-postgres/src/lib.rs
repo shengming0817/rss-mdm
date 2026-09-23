@@ -1,38 +1,20 @@
-//! Tenant-scoped Group persistence over one host-owned RSS [`PgRuntime`](rss_transactional_messaging_postgres::PgRuntime).
-//!
-//! Install [`MIGRATION_SQL`] externally after the fixed RSS messaging migration, then
-//! construct [`GroupStore`] with a producer runtime and an explicit tenant/deadline.
-//! [`Command`] handles static definitions/members and dynamic rules. Every effective
-//! change stages its compact [`EVENT_SCHEMA`] event in the same local transaction.
-//!
-//! For dynamic membership: supply a core [`Rule`](rss_mdm_group::Rule), use
-//! [`GroupStore::preview`] for read-only evaluation, persist complete caller input with
-//! [`GroupStore::start_recalculation`], then [`GroupStore::resume`] by its original
-//! operation ID. Recovery needs no caller snapshot after admission commits. The host
-//! owns scheduling, authorization, asset reads, retention and runtime shutdown.
-//!
-//! A successful new recalculation advances [`Group::revision`] even without a delta;
-//! [`Group::member_version`] advances only when membership changes. Replay returns the
-//! original receipt, while reusing an identity with different input is rejected.
-//! A [`Error::CommitUnknown`] or [`Error::RollbackFailed`] is not a business rejection:
-//! reconnect and resolve the same identity. Before durable admission, the caller must
-//! retain its original request for replay. Never assign a replacement operation ID
-//! merely because a transaction acknowledgement was lost.
-//!
-//! The `*_in` methods validate RSS runtime ownership and tenant before all reads/writes,
-//! and never commit. Standalone execute rejects Delete; deletion uses execute_in. Check both
-//! layers of [`InTransaction`], propagate database errors to the outer owner, and lock
-//! groups in ascending ID order before companion reference/audit work. Authorization
-//! and reference protection are supplied by N12; this crate has no HTTP or Inventory
-//! dependency, fallback schema, scheduler, or historical rule interpreter.
+//! Group metadata and immutable paged membership owned by this adapter.
+//! The host supplies frozen facts and protects every write with RSS claims.
+//! Complete builds are published by pointer; original request identities recover
+//! unknown commits. The adapter never owns leases, retries or device execution.
 #![deny(missing_docs)]
 #![warn(clippy::cognitive_complexity)]
 
 mod admission;
 mod codec;
+mod decisions;
 mod event;
+mod generations;
+pub use decisions::{
+    DecisionOrigin, DecisionRecord, DecisionValue, FieldEvidence, PredicateDecision,
+};
 mod model;
-mod runs;
+pub use generations::{BuildRequest, DifferenceStep, MAX_MEMBERS, MemberBuild, MemberPatch};
 mod storage;
 mod store;
 pub use event::EVENT_SCHEMA;
@@ -47,3 +29,10 @@ mod codec_tests;
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.
 pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");
+/// Immutable paged member results and atomic current-set publication.
+pub const GENERATIONS_MIGRATION_SQL: &str =
+    include_str!("../migrations/0003_member_generations.sql");
+
+/// Reverse lookup of affected groups without host access to private membership tables.
+pub const REVERSE_INDEX_MIGRATION_SQL: &str =
+    include_str!("../migrations/0004_member_reverse_index.sql");

@@ -1,5 +1,4 @@
-use crate::{MAX_FACTS, STORAGE, codec, core::*, error::*, event, model::*};
-use rss_mdm_backend_postgres_support::MAX_DOCUMENT;
+use crate::{STORAGE, codec, core::*, error::*, event, model::*};
 use rss_mdm_backend_postgres_support::digest;
 use rss_mdm_backend_postgres_support::{AggregateRecord, RequestRecord};
 use rss_request_context::TenantId;
@@ -10,9 +9,9 @@ use sqlx::Row;
 use std::{collections::BTreeMap, sync::Arc};
 /// Tenant-bound Policy persistence using the host-owned RSS PostgreSQL runtime.
 pub struct PolicyStore {
-    runtime: Arc<PgRuntime>,
-    tenant: TenantId,
-    writer: PgOutboxWriter,
+    pub(crate) runtime: Arc<PgRuntime>,
+    pub(crate) tenant: TenantId,
+    pub(crate) writer: PgOutboxWriter,
 }
 impl PolicyStore {
     /// Identify this tenant's ordered event partition for a canonical aggregate ID.
@@ -56,7 +55,7 @@ impl PolicyStore {
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+    pub(crate) fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
         Ok(if tx.tenant_id() == self.tenant {
             Ok(())
@@ -90,7 +89,7 @@ impl PolicyStore {
             return Ok(Err(Rejection::TenantMismatch));
         }
         let row = STORAGE.read(tx, id.value()).await?;
-        let result = row
+        let mut result = row
             .map(
                 |AggregateRecord {
                      revision: rev,
@@ -104,21 +103,19 @@ impl PolicyStore {
                 },
             )
             .transpose()?;
-        if let Some(aggregate) = &result {
+        if let Some(aggregate) = &mut result {
+            if aggregate.plan.is_some() {
+                aggregate.references_current = self
+                    .installed_references_current(tx, id)
+                    .await?
+                    .unwrap_or(false);
+            }
             if let Some(v) = aggregate.policy.version() {
                 for (owner, kind, key, expected) in version_documents(v)? {
                     if STORAGE.immutable(tx, &owner, kind, &key).await?.as_ref() != Some(&expected)
                     {
                         return Err(STORAGE.fault("store::get_in"));
                     }
-                }
-            }
-            if let Some(t) = &aggregate.targets {
-                let key = format!("{}@{}", t.key().value(), t.revision());
-                if STORAGE.immutable(tx, "", "targets", &key).await?.as_ref()
-                    != Some(&STORAGE.encode(&codec::targets(t))?)
-                {
-                    return Err(STORAGE.fault("store::get_in"));
                 }
             }
         }
@@ -192,8 +189,12 @@ impl PolicyStore {
             return Ok(Err(Rejection::Conflict));
         }
         let previous = aggregate.revision;
-        let mut facts = load_facts(tx, r.policy()).await?;
-        let mut plan_document = None;
+        let mut facts = match &r.command {
+            Command::RecordExecutions { facts: updates, .. } => {
+                load_selected_facts(tx, r.policy(), updates).await?
+            }
+            _ => BTreeMap::new(),
+        };
         let changed = match &r.command {
             Command::Create { .. } => true,
             Command::Transition { transition, .. } => {
@@ -205,77 +206,41 @@ impl PolicyStore {
                 );
                 true
             }
-            Command::SelectTargets {
-                snapshot,
-                references,
-                ..
-            } => {
-                let changed = aggregate.targets.as_ref() != Some(snapshot)
-                    || &aggregate.references != references;
-                aggregate.targets = Some(snapshot.clone());
-                aggregate.references = references.clone();
-                changed
-            }
-            Command::ReplaceFacts { facts: updates, .. } => {
+            Command::RecordExecutions { facts: updates, .. } => {
                 let mut changed = false;
+                let mut versions = BTreeMap::new();
                 for f in updates {
                     let k = codec::key(f);
-                    let existing = input!(facts.get(&k).ok_or(Rejection::NotFound));
-                    if existing.version() != f.version() {
+                    if let Some(previous) = versions.insert(f.version().number(), f.version()) {
+                        if previous != f.version() {
+                            return Ok(Err(Rejection::IdentityConflict));
+                        }
+                    } else {
+                        input!(compatible_version(tx, f.version()).await?);
+                        if STORAGE
+                            .immutable(
+                                tx,
+                                r.policy().value(),
+                                "version",
+                                &f.version().number().to_string(),
+                            )
+                            .await?
+                            .is_none()
+                        {
+                            return Ok(Err(Rejection::NotFound));
+                        }
+                    }
+                    input!(
+                        classify_record(aggregate.policy(), false, f)
+                            .map_err(|_| Rejection::InvalidInput)
+                    );
+                    let existing = facts.get(&k);
+                    if existing.is_some_and(|old| old.version() != f.version()) {
                         return Ok(Err(Rejection::IdentityConflict));
                     }
-                    changed |= existing != f;
+                    changed |= existing != Some(f);
                     facts.insert(k, f.clone());
                 }
-                changed
-            }
-            Command::Replan { .. } => {
-                let targets = input!(aggregate.targets.as_ref().ok_or(Rejection::InvalidInput));
-                let records: Vec<_> = facts.values().cloned().collect();
-                let plan = input!(
-                    reconcile(PlanInput {
-                        policy: &aggregate.policy,
-                        targets,
-                        executions: &records,
-                        request: r.id.clone(),
-                        as_of: r.as_of
-                    })
-                    .map_err(|_| Rejection::InvalidInput)
-                );
-                let changed = !aggregate.plan_is_fresh() || aggregate.plan != Some(plan.id());
-                let document = STORAGE.encode(&json!([
-                    1,
-                    codec::policy(&aggregate.policy),
-                    codec::targets(targets),
-                    records.iter().map(codec::fact).collect::<Vec<_>>()
-                ]))?;
-                for intent in plan.intents() {
-                    let desired = match intent {
-                        Intent::Add(d) | Intent::Supersede { replacement: d, .. } => Some(d),
-                        _ => None,
-                    };
-                    if let Some(d) = desired {
-                        let v = aggregate
-                            .policy
-                            .version()
-                            .ok_or_else(|| STORAGE.fault("store::execute_in"))?;
-                        let f = crate::error::decode_domain(
-                            "store::execute_in",
-                            ExecutionRecord::new(
-                                v.clone(),
-                                d.key().device().clone(),
-                                Progress::Planned,
-                                Effect::Unverified,
-                            ),
-                        )?;
-                        facts.entry(codec::key(&f)).or_insert(f);
-                    }
-                }
-                if facts.len() > MAX_FACTS {
-                    return Ok(Err(Rejection::BudgetExceeded));
-                }
-                aggregate.plan = Some(plan.id());
-                plan_document = Some((codec::hex(plan.id().bytes()), document));
                 changed
             }
         };
@@ -283,26 +248,12 @@ impl PolicyStore {
             input!(aggregate.advance());
             aggregate.at = Some(r.as_of);
         }
-        if changed && matches!(r.command, Command::Replan { .. }) {
-            aggregate.installed = Some(aggregate.revision);
-            aggregate.installed_request = Some(r.id.clone());
-        }
         // Immutable checks precede all business writes. Concurrent cross-policy payload conflicts
         // become an outer storage error in STORAGE.freeze(), rolling back the entire transaction.
         if let Some(v) = aggregate.policy.version() {
             input!(compatible_version(tx, v).await?);
         }
-        if let Some(t) = &aggregate.targets {
-            let key = format!("{}@{}", t.key().value(), t.revision());
-            let document = STORAGE.encode(&codec::targets(t))?;
-            if STORAGE
-                .immutable(tx, "", "targets", &key)
-                .await?
-                .is_some_and(|b| b != document)
-            {
-                return Ok(Err(Rejection::IdentityConflict));
-            }
-        }
+
         let response = Receipt::new(&aggregate, r);
         if create || changed {
             STORAGE
@@ -318,29 +269,7 @@ impl PolicyStore {
         if let Some(v) = aggregate.policy.version() {
             freeze_version(tx, v).await?;
         }
-        if let Some(t) = &aggregate.targets {
-            STORAGE
-                .freeze(
-                    tx,
-                    "",
-                    "targets",
-                    &format!("{}@{}", t.key().value(), t.revision()),
-                    STORAGE.encode(&codec::targets(t))?,
-                )
-                .await?;
-        }
-        if let Some((key, document)) = plan_document {
-            // PlanId excludes provenance; retain the first canonical input.
-            if STORAGE
-                .immutable(tx, r.policy().value(), "plan", &key)
-                .await?
-                .is_none()
-            {
-                STORAGE
-                    .freeze(tx, r.policy().value(), "plan", &key, document)
-                    .await?;
-            }
-        }
+
         if changed {
             save_facts(tx, r.policy(), &facts).await?;
             event::append(
@@ -389,68 +318,6 @@ impl PolicyStore {
                 .await,
         )
     }
-    /// Restore an explicit replan using its immutable decision and original request provenance.
-    /// Use Aggregate::current_plan_request to select the current installation.
-    pub async fn plan(
-        &self,
-        policy: &PolicyId,
-        request: &RequestId,
-        deadline: OperationDeadline,
-    ) -> Result<Option<Plan>, Error> {
-        if policy.tenant() != self.tenant || request.tenant() != self.tenant {
-            return Err(Rejection::TenantMismatch.into());
-        }
-        settle(
-            self.runtime
-                .local_tx_with_context(
-                    self.tenant,
-                    deadline,
-                    (policy, request),
-                    |(policy, request), tx| {
-                        Box::pin(async move {
-                            let Some(RequestRecord {
-                                request: original_request,
-                                receipt,
-                                ..
-                            }) = STORAGE.receipt(tx, request.value()).await?
-                            else {
-                                return Ok(Ok(None));
-                            };
-                            let receipt: Receipt = STORAGE.decode(&receipt)?;
-                            let raw: Value = STORAGE.decode(&original_request)?;
-                            let fields = codec::array(&raw, 7)?;
-                            if receipt.policy != policy.value()
-                                || receipt.request != request.value()
-                                || codec::text(&fields[1])? != policy.tenant().to_string()
-                                || codec::text(&fields[2])? != request.value()
-                                || codec::text(&fields[3])? != policy.value()
-                                || fields[6] != json!([7])
-                            {
-                                return Ok(Err(Rejection::InvalidInput));
-                            }
-                            let id = codec::plan_id(
-                                receipt
-                                    .plan_id
-                                    .as_deref()
-                                    .ok_or_else(|| STORAGE.fault("store::plan"))?,
-                            )?;
-                            let bytes = STORAGE
-                                .immutable(tx, policy.value(), "plan", &codec::hex(id.bytes()))
-                                .await?
-                                .ok_or_else(|| STORAGE.fault("store::plan"))?;
-                            Ok(Ok(Some(restore_plan(
-                                &bytes,
-                                policy,
-                                id,
-                                request.clone(),
-                                codec::time(&fields[5])?,
-                            )?)))
-                        })
-                    },
-                )
-                .await,
-        )
-    }
     /// Read one immutable policy version, including versions never installed as plans.
     pub async fn version(
         &self,
@@ -476,38 +343,6 @@ impl PolicyStore {
                             .is_some_and(|v| v.policy() != *policy || v.number() != number)
                         {
                             return Err(STORAGE.fault("store::version"));
-                        }
-                        Ok(Ok(value))
-                    })
-                })
-                .await,
-        )
-    }
-    /// Read a complete, caller-owned immutable target snapshot by its original identity.
-    pub async fn target_snapshot(
-        &self,
-        id: &TargetSnapshotId,
-        revision: u64,
-        deadline: OperationDeadline,
-    ) -> Result<Option<TargetSnapshot>, Error> {
-        if id.tenant() != self.tenant || revision == 0 {
-            return Err(Rejection::InvalidInput.into());
-        }
-        settle(
-            self.runtime
-                .local_tx_with_context(self.tenant, deadline, id, move |id, tx| {
-                    Box::pin(async move {
-                        let bytes = STORAGE
-                            .immutable(tx, "", "targets", &format!("{}@{revision}", id.value()))
-                            .await?;
-                        let value = bytes
-                            .map(|b| codec::read_targets(&STORAGE.decode::<Value>(&b)?))
-                            .transpose()?;
-                        if value
-                            .as_ref()
-                            .is_some_and(|v| v.key() != *id || v.revision() != revision)
-                        {
-                            return Err(STORAGE.fault("store::target_snapshot"));
                         }
                         Ok(Ok(value))
                     })
@@ -552,7 +387,16 @@ impl PolicyStore {
         if policy.tenant() != self.tenant
             || limit == 0
             || limit > 1000
-            || after.as_ref().is_some_and(|s| s.len() > 512)
+            || after.as_ref().is_some_and(|s| {
+                s.len() > 512
+                    || s.split_once('/').is_none_or(|(version, device)| {
+                        version
+                            .parse::<u64>()
+                            .ok()
+                            .is_none_or(|n| n == 0 || n.to_string() != version)
+                            || DeviceId::new(self.tenant, device).is_err()
+                    })
+            })
         {
             return Ok(Err(Rejection::InvalidInput));
         }
@@ -563,41 +407,17 @@ impl PolicyStore {
     }
 }
 fn validate_request(r: &Request) -> Result<(), Rejection> {
-    match &r.command {
-        Command::SelectTargets {
-            snapshot,
-            references,
-            ..
-        } => {
-            if snapshot.key().tenant() != r.id.tenant() {
-                return Err(Rejection::TenantMismatch);
-            }
-            if snapshot.members().len() > MAX_FACTS || references.len() > 256 {
-                return Err(Rejection::BudgetExceeded);
-            }
-            let mut ids = std::collections::BTreeSet::new();
-            for v in references {
-                if RequestId::new(r.id.tenant(), &v.id).is_err()
-                    || v.revision == 0
-                    || !ids.insert(&v.id)
-                {
-                    return Err(Rejection::InvalidInput);
-                }
+    if let Command::RecordExecutions { facts, .. } = &r.command {
+        if facts.len() > 1000 {
+            return Err(Rejection::BudgetExceeded);
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        for f in facts {
+            if f.version().policy() != r.policy() || !keys.insert(f.key()) {
+                return Err(Rejection::InvalidInput);
             }
         }
-        Command::ReplaceFacts { facts, .. } => {
-            if facts.len() > MAX_FACTS {
-                return Err(Rejection::BudgetExceeded);
-            }
-            let mut keys = std::collections::BTreeSet::new();
-            for f in facts {
-                if f.version().policy() != r.policy() || !keys.insert(f.key()) {
-                    return Err(Rejection::InvalidInput);
-                }
-            }
-        }
-        _ => (),
-    };
+    }
     Ok(())
 }
 async fn compatible_version(tx: &mut PgTransaction<'_>, v: &Version) -> InTransaction<()> {
@@ -649,40 +469,20 @@ fn read_fact_row(row: sqlx::postgres::PgRow) -> Result<ExecutionRecord, PgError>
     }
     Ok(f)
 }
-async fn load_facts(
+async fn load_selected_facts(
     tx: &mut PgTransaction<'_>,
     policy: &PolicyId,
+    updates: &[ExecutionRecord],
 ) -> Result<BTreeMap<String, ExecutionRecord>, PgError> {
-    let (t, p) = (tx.tenant_id().to_string(), policy.value().to_owned());
-    let rows = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query(LOAD_FACTS_SQL)
-                    .bind(t)
-                    .bind(p)
-                    .fetch_all(c)
-                    .await
-            })
-        })
-        .await?;
-
-    if rows.len() > MAX_FACTS {
-        return Err(STORAGE.fault("store::load_facts"));
-    }
-    let mut facts = BTreeMap::new();
-    let mut size = 0;
-    for row in rows {
-        size += row.try_get::<Vec<u8>, _>("document")?.len();
-        if size > MAX_DOCUMENT {
-            return Err(STORAGE.fault("store::load_facts"));
-        }
-        let f = read_fact_row(row)?;
-        if f.version().policy() != policy {
-            return Err(STORAGE.fault("store::load_facts"));
-        }
-        facts.insert(codec::key(&f), f);
-    }
-    Ok(facts)
+    let tenant = tx.tenant_id().to_string();
+    let owner = policy.value().to_owned();
+    let keys: Vec<_> = updates.iter().map(codec::key).collect();
+    let rows=tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND key=ANY($3)")
+            .bind(tenant).bind(owner).bind(keys).fetch_all(c).await
+    })).await?;
+    let records = decode_fact_page(rows, tx.tenant_id(), policy.value())?;
+    Ok(records.into_iter().map(|f| (codec::key(&f), f)).collect())
 }
 async fn save_facts(
     tx: &mut PgTransaction<'_>,
@@ -700,60 +500,29 @@ async fn save_facts(
         .collect::<Result<Vec<_>, PgError>>()?;
     tx.with_connection(move |c| {
         Box::pin(async move {
-            for (k, h, b) in docs {
-                sqlx::query(SAVE_FACTS_SQL)
-                    .bind(&t)
-                    .bind(&owner)
-                    .bind(k)
-                    .bind(b)
-                    .bind(h)
-                    .execute(&mut *c)
-                    .await?;
+            let mut keys = Vec::with_capacity(docs.len());
+            let mut documents = Vec::with_capacity(docs.len());
+            let mut digests = Vec::with_capacity(docs.len());
+            for (key, digest, document) in docs {
+                keys.push(key);
+                documents.push(document);
+                digests.push(digest);
             }
+            sqlx::query(SAVE_FACTS_SQL)
+                .bind(t)
+                .bind(owner)
+                .bind(keys)
+                .bind(documents)
+                .bind(digests)
+                .execute(c)
+                .await?;
             Ok(())
         })
     })
     .await
 }
-fn restore_plan(
-    b: &[u8],
-    policy: &PolicyId,
-    id: PlanId,
-    request: RequestId,
-    as_of: rss_contract::Timepoint,
-) -> Result<Plan, PgError> {
-    let v: Value = STORAGE.decode(b)?;
-    let a = codec::array(&v, 4)?;
-    if codec::number(&a[0])? != 1 {
-        return Err(STORAGE.fault("store::restore_plan"));
-    }
-    let p = codec::read_policy(&a[1])?;
-    let t = codec::read_targets(&a[2])?;
-    let facts = a[3]
-        .as_array()
-        .ok_or_else(|| STORAGE.fault("store::restore_plan"))?
-        .iter()
-        .map(codec::read_fact)
-        .collect::<Result<Vec<_>, _>>()?;
-    let plan = crate::error::decode_domain(
-        "store::restore_plan",
-        reconcile(PlanInput {
-            policy: &p,
-            targets: &t,
-            executions: &facts,
-            request,
-            as_of,
-        }),
-    )?;
-    if plan.policy() != policy || plan.id() != id {
-        return Err(STORAGE.fault("store::restore_plan"));
-    }
-    Ok(plan)
-}
-
-const EXECUTION_FACTS_SQL: &str = "SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND ($3::text IS NULL OR key COLLATE \"C\">$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT $4";
-const LOAD_FACTS_SQL: &str = "SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 ORDER BY key COLLATE \"C\" LIMIT 10001";
-const SAVE_FACTS_SQL: &str = "INSERT INTO mdm_policy.facts(tenant_id,owner,key,document,digest) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,owner,key) DO UPDATE SET document=EXCLUDED.document,digest=EXCLUDED.digest WHERE mdm_policy.facts.document<>EXCLUDED.document";
+const EXECUTION_FACTS_SQL: &str = "SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND (version,device COLLATE \"C\")>(coalesce(split_part($3,'/',1)::numeric,0),coalesce(substring($3 FROM strpos($3,'/')+1),'') COLLATE \"C\") ORDER BY version,device COLLATE \"C\" LIMIT $4";
+const SAVE_FACTS_SQL: &str = "INSERT INTO mdm_policy.facts(tenant_id,owner,key,document,digest) SELECT $1::uuid,$2,k,d,h FROM unnest($3::text[],$4::bytea[],$5::bytea[]) AS batch(k,d,h) ON CONFLICT(tenant_id,owner,key) DO UPDATE SET document=EXCLUDED.document,digest=EXCLUDED.digest WHERE mdm_policy.facts.document<>EXCLUDED.document";
 
 async fn query_fact_page(
     tx: &mut PgTransaction<'_>,

@@ -125,6 +125,10 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     let service = DeviceService::new(access.clone(), A.into());
     let service_b = DeviceService::new(access.clone(), B.into());
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(A)
+        .execute(&mut root)
+        .await?;
     commit_deadlines(&service, &admin_a, &mut root).await?;
     let mdm = proof(A, Channel::Mdm, 1);
     let agent = proof(A, Channel::Agent, 1);
@@ -173,7 +177,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .is_err()
     );
     // Explicit source permission can be removed independently of an active credential.
-    root.execute("UPDATE mdm_access.report_sources SET enabled=false WHERE source='mdm.windows'")
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND source='mdm.windows'").bind(A).execute(&mut root)
         .await?;
     assert!(
         service
@@ -181,7 +185,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_err()
     );
-    root.execute("UPDATE mdm_access.report_sources SET enabled=true WHERE source='mdm.windows'")
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND source='mdm.windows'").bind(A).execute(&mut root)
         .await?;
     let newer = proof(A, Channel::Mdm, 2);
     let (next, second) = bind(&service, &admin_a, &newer, "same-serial", 1).await?;

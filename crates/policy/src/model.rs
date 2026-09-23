@@ -240,6 +240,9 @@ pub enum ExecutionFailure {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 /// Closed rejection of policy lifecycle or planning input; no external effects are performed.
 pub enum PolicyError {
+    #[error("stream input count overflow")]
+    /// An input stream exceeded the representable record count; never wraps.
+    InputCountOverflow,
     #[error("invalid object key")]
     /// A role/device identifier violates its constructor's character or byte-length limits.
     InvalidKey,
@@ -301,9 +304,6 @@ pub enum PolicyError {
         /// Payload revision reused with a different digest.
         revision: u64,
     },
-    #[error("target snapshot is incomplete")]
-    /// The caller did not provide a complete target universe.
-    IncompleteTargets,
     #[error("{reason}")]
     /// An execution fact fails policy, tenant, version or payload validation.
     InvalidExecution {
@@ -311,11 +311,5 @@ pub enum PolicyError {
         execution: Box<ExecutionKey>,
         /// Closed cause of rejection for that identity.
         reason: ExecutionFailure,
-    },
-    #[error("execution snapshots contradict each other")]
-    /// Two current facts for one execution key contradict each other.
-    ConflictingExecution {
-        /// Execution key associated with contradictory progress/effect/version facts.
-        execution: ExecutionKey,
     },
 }

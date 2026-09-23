@@ -14,15 +14,78 @@ async fn ok(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value> {
-    let diagnostic = body.clone();
-    let method_name = method.as_str().to_owned();
+    let query = method == Method::POST && path == "/api/v2/device-queries";
+    let saved = method == Method::POST && path.ends_with("/execute");
+    let body = if query || saved {
+        Some(request(
+            if saved { 1 } else { 0 },
+            body.unwrap_or_else(|| json!({})),
+        ))
+    } else {
+        body
+    };
     let (s, v) = browser.call(router, method, path, body).await?;
     ensure!(
-        s == StatusCode::OK,
-        "asset request {method_name} {path} with {diagnostic:?}: {s} {v}"
+        s == StatusCode::OK || s == StatusCode::ACCEPTED,
+        "asset request {path}: {s} {v}"
     );
+    if query || saved {
+        ensure!(s == StatusCode::ACCEPTED, "query must be asynchronous");
+        let status = v["asset"]["statusUrl"].as_str().unwrap();
+        await_task(browser, router, status).await?;
+        let (s, page) = browser
+            .call(router, Method::GET, &format!("{status}/items"), None)
+            .await?;
+        ensure!(s == StatusCode::OK, "query result: {s} {page}");
+        return Ok(page);
+    }
+    if let Some(task) = v["task"].as_str() {
+        let status = if let Some(url) = v["statusUrl"].as_str() {
+            url.to_owned()
+        } else {
+            format!("{path}/tasks/{task}")
+        };
+        await_task(browser, router, &status).await?;
+    }
     Ok(v)
 }
+struct GroupEvidence {
+    members: Value,
+    decisions: Value,
+}
+async fn preview(browser: &mut Browser, router: &Router, group: &str) -> Result<GroupEvidence> {
+    let (_, state) = browser.call(router, Method::GET, group, None).await?;
+    let accepted = ok(
+        browser,
+        router,
+        Method::POST,
+        &format!("{group}/previews"),
+        Some(request(
+            state["group"]["revision"].as_u64().unwrap(),
+            json!({}),
+        )),
+    )
+    .await?;
+    let task = accepted["task"].as_str().unwrap();
+    let members = ok(
+        browser,
+        router,
+        Method::GET,
+        &format!("{group}/results/{task}/members"),
+        None,
+    )
+    .await?;
+    let decisions = ok(
+        browser,
+        router,
+        Method::GET,
+        &format!("{group}/results/{task}/decisions"),
+        None,
+    )
+    .await?;
+    Ok(GroupEvidence { members, decisions })
+}
+
 async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result<()> {
     let mut grants = crate::identity_fixture::device_grants(
         device,
@@ -66,7 +129,7 @@ fn seed_source(device: &str, channel: &str, source: &str, value: &str) -> Result
 async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     let (mdm, _) = seed_source("asset-b", "mdm", "mdm.windows", "Same")?;
     let (agent, _) = seed_source("asset-b", "agent", "agent.builtin", "Same")?;
-    let path = "/api/v1/devices/asset-b/inventory";
+    let path = "/api/v2/devices/asset-b/inventory";
     let detail = ok(browser, router, Method::GET, path, None).await?;
     ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "known");
     ensure!(
@@ -86,24 +149,17 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
         browser,
         router,
         Method::POST,
-        "/api/v1/devices/search",
+        "/api/v2/device-queries",
         Some(query.clone()),
     )
     .await?;
     ensure!(found["asset"]["summary"]["matched"] == 0 && found["asset"]["summary"]["unknown"] == 2);
-    let group = format!("/api/v1/groups/{}", Uuid::new_v4());
+    let group = format!("/api/v2/groups/{}", Uuid::new_v4());
     ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":"conflict","description":"","criteria":query["criteria"]})))).await?;
-    let preview = ok(
-        browser,
-        router,
-        Method::GET,
-        &format!("{group}/preview?expectedRevision=1"),
-        None,
-    )
-    .await?;
+    let preview = preview(browser, router, &group).await?;
     ensure!(
-        preview["members"] == json!([])
-            && preview["decisions"][1]["explanations"][0]["outcome"]["reason"] == "conflict"
+        preview.members["page"]["items"] == json!([])
+            && preview.decisions["page"]["items"][1]["explanations"][0]["outcome"] == "conflict"
     );
     pg(&format!(
         "UPDATE mdm.inventory SET state='deleted',value=NULL WHERE registration='{agent}';"
@@ -169,7 +225,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             browser,
             router,
             Method::GET,
-            "/api/v1/devices/tie-a/inventory",
+            "/api/v2/devices/tie-a/inventory",
             None,
         )
         .await?;
@@ -189,7 +245,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             browser,
             router,
             Method::POST,
-            "/api/v1/devices/search",
+            "/api/v2/device-queries",
             Some(json!({"criteria":criteria})),
         )
         .await?;
@@ -197,31 +253,16 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             search["asset"]["summary"]["matched"] == 1
                 && search["asset"]["items"][0]["device"] == "tie-a"
         );
-        let group = format!("/api/v1/groups/{}", Uuid::new_v4());
-        ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":result,"description":"collection proof","criteria":criteria})))).await?;
-        let preview = ok(
-            browser,
-            router,
-            Method::GET,
-            &format!("{group}/preview?expectedRevision=1"),
-            None,
-        )
-        .await?;
-        ensure!(preview["members"] == json!(["tie-a"]));
-        ok(
-            browser,
-            router,
-            Method::POST,
-            &group,
-            Some(request(
-                1,
-                json!({"action":"recompute","snapshot":preview["snapshot"]}),
-            )),
-        )
-        .await?;
         ensure!(
-            ok(browser, router, Method::GET, &group, None).await?["members"] == json!(["tie-a"])
+            search["asset"]["items"][0]["quality"] == detail["asset"]["device"]["quality"],
+            "query lost frozen collection quality"
         );
+        let group = format!("/api/v2/groups/{}", Uuid::new_v4());
+        ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":result,"description":"collection proof","criteria":criteria})))).await?;
+        let preview = preview(browser, router, &group).await?;
+        ensure!(preview.members["page"]["items"] == json!(["tie-a"]));
+
+        ensure!(ok(browser, router, Method::GET, &group, None).await?["group"]["memberCount"] == 1);
     }
     let unsupported = crate::inventory_runtime::tests::report_statuses(
         &service,
@@ -236,7 +277,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         browser,
         router,
         Method::GET,
-        "/api/v1/devices/tie-a/inventory",
+        "/api/v2/devices/tie-a/inventory",
         None,
     )
     .await?;
@@ -247,7 +288,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         browser,
         router,
         Method::POST,
-        "/api/v1/devices/search",
+        "/api/v2/device-queries",
         Some(json!({"criteria":criteria})),
     )
     .await?;
@@ -255,39 +296,71 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         query["asset"]["summary"]["matched"] == 0
             && query["asset"]["summary"]["unknown"].as_u64().unwrap() > 0
     );
-    let group = format!("/api/v1/groups/{}", Uuid::new_v4());
+    let group = format!("/api/v2/groups/{}", Uuid::new_v4());
     ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":"unsupported","description":"explicit source status","criteria":criteria})))).await?;
-    let preview = ok(
-        browser,
-        router,
-        Method::GET,
-        &format!("{group}/preview?expectedRevision=1"),
-        None,
-    )
-    .await?;
-    ensure!(preview["members"] == json!([]));
+    let preview = preview(browser, router, &group).await?;
+    ensure!(preview.members["page"]["items"] == json!([]));
     ensure!(
-        preview["decisions"]
+        preview.decisions["page"]["items"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|d| d["explanations"][0]["outcome"]["reason"] == "unsupported")
+            .any(|d| d["explanations"][0]["outcome"] == "unsupported")
     );
-    ok(
-        browser,
-        router,
-        Method::POST,
-        &group,
-        Some(request(
-            1,
-            json!({"action":"recompute","snapshot":preview["snapshot"]}),
-        )),
-    )
-    .await?;
-    ensure!(ok(browser, router, Method::GET, &group, None).await?["members"] == json!([]));
+
+    ensure!(ok(browser, router, Method::GET, &group, None).await?["group"]["memberCount"] == 0);
     ensure!(owner.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
     access.close().await;
+    Ok(())
+}
+// Read projection fixture: two retained Agent runs may reuse a sequence.
+async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> Result<()> {
+    let (registration, epoch) = seed_source("tie-b", "agent", "agent.builtin", "quality-sequence")?;
+    let scope = crate::device::scope(
+        rss_request_context::TenantId::parse(TENANT)?,
+        registration,
+        "agent.builtin",
+        epoch,
+    )?
+    .encode()?
+    .replace('\'', "''");
+    let older = "80000000-0000-4000-8000-000000000001";
+    let newer = "80000000-0000-4000-8000-000000000002";
+    for id in [older, newer] {
+        pg(&format!(
+            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,'{id}','{registration}','agent.builtin','{epoch}','{scope}',7,started_at,attempts,result,reason,batch,digest,sealed_at,false FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='mdm.windows' AND reason='complete' AND batch IS NOT NULL ORDER BY sequence DESC LIMIT 1"
+        ))?;
+    }
+    let query = json!({"criteria":predicate("device.model","string",json!("quality-sequence"))});
+    for expected in [newer, older] {
+        let detail = ok(
+            browser,
+            router,
+            Method::GET,
+            "/api/v2/devices/tie-b/inventory",
+            None,
+        )
+        .await?;
+        ensure!(detail["asset"]["device"]["quality"][0]["runId"] == expected);
+        let page = ok(
+            browser,
+            router,
+            Method::POST,
+            "/api/v2/device-queries",
+            Some(query.clone()),
+        )
+        .await?;
+        ensure!(
+            page["asset"]["items"][0]["quality"] == detail["asset"]["device"]["quality"],
+            "retaining one run must not erase another with the same sequence"
+        );
+        if expected == newer {
+            pg(&format!(
+                "DELETE FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{newer}'"
+            ))?;
+        }
+    }
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -305,19 +378,24 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         )
         .await?,
     );
+    let automation = start_automation(&base).await?;
     let router = app(&base, reader.clone()).await?;
     let mut browser = Browser::default();
     ensure!(browser.login(&router, "admin").await? == StatusCode::OK);
     let subject = browser_subject(&browser, &router).await?;
     permissions(&subject, None, true).await?;
     pg(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{TENANT}','asset-a'),('{TENANT}','asset-b'),('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','foreign-asset');"
+        "INSERT INTO mdm_access.devices VALUES('{TENANT}','asset-a'),('{TENANT}','asset-b');"
     ))?;
+    pg_tenant(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "INSERT INTO mdm_access.devices VALUES('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','foreign-asset');",
+    )?;
     let catalog = ok(
         &mut browser,
         &router,
         Method::GET,
-        "/api/v1/asset-fields",
+        "/api/v2/asset-fields",
         None,
     )
     .await?;
@@ -329,7 +407,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         ("custom.purchase_date", "time", json!(1_700_000_000)),
     ];
     for (field, kind, value) in cases {
-        let path = format!("/api/v1/devices/asset-a/manual-fields/{field}");
+        let path = format!("/api/v2/devices/asset-a/manual-fields/{field}");
         let write = request(
             0,
             json!({"action":"set","value":{"kind":kind,"value":value}}),
@@ -367,7 +445,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             &mut browser,
             &router,
             Method::GET,
-            "/api/v1/devices/asset-a/inventory",
+            "/api/v2/devices/asset-a/inventory",
             None,
         )
         .await?;
@@ -380,7 +458,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             &mut browser,
             &router,
             Method::POST,
-            "/api/v1/devices/search",
+            "/api/v2/device-queries",
             Some(json!({"criteria":criteria})),
         )
         .await?;
@@ -389,35 +467,18 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
                 && result["asset"]["items"][0]["device"] == "asset-a"
         );
         let id = Uuid::new_v4();
-        let group = format!("/api/v1/groups/{id}");
+        let group = format!("/api/v2/groups/{id}");
         ok(&mut browser,&router,Method::POST,&group,Some(request(0,json!({"action":"create","name":field,"description":"asset proof","criteria":criteria})))).await?;
-        let preview = ok(
-            &mut browser,
-            &router,
-            Method::GET,
-            &format!("{group}/preview?expectedRevision=1"),
-            None,
-        )
-        .await?;
-        ensure!(preview["members"] == json!(["asset-a"]));
-        ok(
-            &mut browser,
-            &router,
-            Method::POST,
-            &group,
-            Some(request(
-                1,
-                json!({"action":"recompute","snapshot":preview["snapshot"]}),
-            )),
-        )
-        .await?;
+        let preview = preview(&mut browser, &router, &group).await?;
+        ensure!(preview.members["page"]["items"] == json!(["asset-a"]));
+
         ensure!(
-            ok(&mut browser, &router, Method::GET, &group, None).await?["members"]
-                == json!(["asset-a"])
+            ok(&mut browser, &router, Method::GET, &group, None).await?["group"]["memberCount"]
+                == 1
         );
     }
     source_matrix(&mut browser, &router).await?;
-    let floor = "/api/v1/devices/asset-a/manual-fields/custom.office_floor";
+    let floor = "/api/v2/devices/asset-a/manual-fields/custom.office_floor";
     for input in [
         json!({"action":"set","value":{"kind":"string","value":"3"}}),
         json!({"action":"set","value":{"kind":"integer","value":3},"validUntil":1}),
@@ -436,7 +497,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             .call(
                 &router,
                 Method::PUT,
-                "/api/v1/devices/asset-a/manual-fields/device.model",
+                "/api/v2/devices/asset-a/manual-fields/device.model",
                 Some(request(
                     0,
                     json!({"action":"set","value":{"kind":"string","value":"spoof"}})
@@ -451,42 +512,48 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             .call(
                 &router,
                 Method::GET,
-                "/api/v1/devices/asset-a/inventory?source=mdm.windows",
+                "/api/v2/devices/asset-a/inventory?source=mdm.windows",
                 None
             )
             .await?
             .0
             .is_client_error()
     );
-    let query = json!({"limit":1,"sort":{"field":"custom.office_floor"}});
-    let first = ok(
+    let query = json!({"sort":{"field":"custom.office_floor"}});
+    let result = ok(
         &mut browser,
         &router,
         Method::POST,
-        "/api/v1/devices/search",
-        Some(query.clone()),
+        "/api/v2/device-queries",
+        Some(query),
+    )
+    .await?;
+    let items_path = format!(
+        "/api/v2/device-queries/{}/items",
+        result["asset"]["snapshot"].as_str().unwrap()
+    );
+    let first = ok(
+        &mut browser,
+        &router,
+        Method::GET,
+        &format!("{items_path}?limit=1"),
+        None,
     )
     .await?;
     ensure!(
         first["asset"]["summary"]["total"] == 2
             && first["asset"]["items"][0]["device"] == "asset-a"
     );
-    let cursor = first["asset"]["nextCursor"].clone();
-    let mut second = query.clone();
-    second["cursor"] = cursor.clone();
+    let second = format!(
+        "{items_path}?limit=1&cursor={}",
+        first["asset"]["nextCursor"].as_str().unwrap()
+    );
     ensure!(
-        ok(
-            &mut browser,
-            &router,
-            Method::POST,
-            "/api/v1/devices/search",
-            Some(second.clone())
-        )
-        .await?["asset"]["items"][0]["device"]
+        ok(&mut browser, &router, Method::GET, &second, None).await?["asset"]["items"][0]["device"]
             == "asset-b"
     );
     let saved = Uuid::new_v4();
-    let saved_path = format!("/api/v1/saved-queries/{saved}");
+    let saved_path = format!("/api/v2/saved-queries/{saved}");
     let put = request(
         0,
         json!({"action":"put","definition":{"name":"Floor 3","query":{"criteria":predicate("custom.office_floor","integer",json!(3))}}}),
@@ -532,7 +599,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
                 &router,
                 Method::POST,
                 &format!("{saved_path}/execute"),
-                Some(json!({}))
+                Some(request(1, json!({})))
             )
             .await?
             .0
@@ -543,43 +610,21 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             &mut other,
             &router,
             Method::GET,
-            "/api/v1/saved-queries",
+            "/api/v2/saved-queries",
             None
         )
         .await?["asset"]["items"]
             == json!([])
     );
-    ensure!(
-        other
-            .call(
-                &router,
-                Method::POST,
-                "/api/v1/devices/search",
-                Some(second.clone())
-            )
-            .await?
-            .0
-            == StatusCode::CONFLICT
-    );
+    ensure!(other.call(&router, Method::GET, &second, None).await?.0 == StatusCode::FORBIDDEN);
     permissions(&subject, Some("asset-a"), false).await?;
-    ensure!(
-        browser
-            .call(
-                &router,
-                Method::POST,
-                "/api/v1/devices/search",
-                Some(second.clone())
-            )
-            .await?
-            .0
-            == StatusCode::CONFLICT
-    );
+    ensure!(browser.call(&router, Method::GET, &second, None).await?.0 == StatusCode::FORBIDDEN);
     ensure!(
         browser
             .call(
                 &router,
                 Method::GET,
-                "/api/v1/devices/asset-b/inventory",
+                "/api/v2/devices/asset-b/inventory",
                 None
             )
             .await?
@@ -599,8 +644,14 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             == StatusCode::FORBIDDEN
     );
     ensure!(
-        ok(&mut browser, &router, Method::GET, "/api/v1/devices", None).await?["asset"]["summary"]
-            ["total"]
+        ok(
+            &mut browser,
+            &router,
+            Method::POST,
+            "/api/v2/device-queries",
+            Some(json!({}))
+        )
+        .await?["asset"]["summary"]["total"]
             == 1
     );
     permissions(&subject, None, true).await?;
@@ -631,18 +682,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         (a.0 == StatusCode::OK) ^ (b.0 == StatusCode::OK),
         "CAS admitted both/neither: {a:?} {b:?}"
     );
-    ensure!(
-        browser
-            .call(
-                &router,
-                Method::POST,
-                "/api/v1/devices/search",
-                Some(second)
-            )
-            .await?
-            .0
-            == StatusCode::CONFLICT
-    );
+    ensure!(browser.call(&router, Method::GET, &second, None).await?.0 == StatusCode::OK);
     ok(
         &mut browser,
         &router,
@@ -655,7 +695,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         &mut browser,
         &router,
         Method::GET,
-        "/api/v1/devices/asset-a/inventory",
+        "/api/v2/devices/asset-a/inventory",
         None,
     )
     .await?;
@@ -672,7 +712,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         &mut browser,
         &router,
         Method::GET,
-        "/api/v1/devices/asset-a/inventory",
+        "/api/v2/devices/asset-a/inventory",
         None,
     )
     .await?;
@@ -720,7 +760,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
                 &router,
                 Method::POST,
                 &format!("{saved_path}/execute"),
-                Some(json!({}))
+                Some(request(2, json!({})))
             )
             .await?
             .0
@@ -735,7 +775,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             &mut browser,
             &router,
             Method::PUT,
-            &format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),
+            &format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),
             Some(request(
                 0,
                 json!({"action":"set","value":{"kind":"integer","value":99}}),
@@ -744,32 +784,37 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         .await?;
     }
     for descending in [false, true] {
-        let mut query = json!({"limit":1,"criteria":predicate("custom.office_floor","integer",json!(99)),"sort":{"field":"custom.office_floor","descending":descending}});
+        let query = json!({"criteria":predicate("custom.office_floor","integer",json!(99)),"sort":{"field":"custom.office_floor","descending":descending}});
+        let result = ok(
+            &mut browser,
+            &router,
+            Method::POST,
+            "/api/v2/device-queries",
+            Some(query),
+        )
+        .await?;
+        let base = format!(
+            "/api/v2/device-queries/{}/items?limit=1",
+            result["asset"]["snapshot"].as_str().unwrap()
+        );
+        let mut path = base.clone();
         let mut seen = Vec::new();
         loop {
-            let page = ok(
-                &mut browser,
-                &router,
-                Method::POST,
-                "/api/v1/devices/search",
-                Some(query.clone()),
-            )
-            .await?;
-            seen.push(
-                page["asset"]["items"][0]["device"]
-                    .as_str()
-                    .unwrap()
-                    .to_owned(),
-            );
-            if page["asset"]["nextCursor"].is_null() {
-                break;
+            let page = ok(&mut browser, &router, Method::GET, &path, None).await?;
+            for item in page["asset"]["items"].as_array().unwrap() {
+                seen.push(item["device"].as_str().unwrap().to_owned());
             }
-            query["cursor"] = page["asset"]["nextCursor"].clone();
-            ensure!(seen.len() < 4);
+            let Some(cursor) = page["asset"]["nextCursor"].as_str() else {
+                break;
+            };
+            path = format!("{base}&cursor={cursor}");
+            ensure!(seen.len() <= 3);
         }
         ensure!(seen == ["tie-a", "tie-b", "tie-c"]);
     }
     collection_matrix(&mut browser, &router, &base).await?;
+    retained_collection_quality(&mut browser, &router).await?;
+    ensure!(automation.shutdown().join().await?.is_clean());
     reader.close().await;
     Ok(())
 }

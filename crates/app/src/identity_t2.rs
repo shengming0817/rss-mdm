@@ -52,6 +52,10 @@ fn command(args: &[&str], input: Option<&str>) -> Result<String> {
     Ok(String::from_utf8(result.stdout)?)
 }
 fn pg(sql: &str) -> Result<String> {
+    pg_tenant(TENANT, sql)
+}
+fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
+    uuid::Uuid::parse_str(tenant)?;
     command(
         &[
             "exec",
@@ -63,11 +67,13 @@ fn pg(sql: &str) -> Result<String> {
             "postgres",
             "-d",
             "mdm_test",
-            "-At",
+            "-qAt",
             "-v",
             "ON_ERROR_STOP=1",
         ],
-        Some(sql),
+        Some(&format!(
+            "BEGIN; SET LOCAL rss.tenant_id='{tenant}'; {sql}; COMMIT;"
+        )),
     )
 }
 use crate::identity_fixture::{ADMIN, INSTANCE, PASSWORD};
@@ -260,6 +266,68 @@ fn monotonic() -> Arc<dyn rss_observation::Clock> {
     Arc::new(crate::Monotonic(|| {
         rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
     }))
+}
+
+async fn start_automation(value: &Value) -> Result<rss_runtime::ShutdownStack> {
+    let config: Config = serde_json::from_value(value.clone())?;
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut startup = stack.startup()?;
+    let service = config
+        .management
+        .open(
+            rss_request_context::TenantId::parse(TENANT)?,
+            Arc::new(crate::clock::SystemClock),
+            |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
+        )
+        .await?;
+    let automation =
+        crate::management::automation::Automation::open(service, &config.management.database)
+            .await?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::management::automation::Resource(automation.clone()),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(automation.registration().critical());
+    launch.finish();
+    Ok(stack)
+}
+
+async fn await_task(browser: &mut Browser, router: &Router, path: &str) -> Result<Value> {
+    let mut last = Value::Null;
+    let settled = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let (status, value) = browser.call(router, Method::GET, path, None).await?;
+            if status == StatusCode::SERVICE_UNAVAILABLE {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+            ensure!(status == StatusCode::OK, "task {path}: {status} {value}");
+            last = value.clone();
+            let state = if value.get("asset").is_some() {
+                &value["asset"]
+            } else {
+                &value
+            };
+            if state["status"] == "completed" {
+                return Ok(value);
+            }
+            ensure!(state["failure"].is_null(), "task {path} failed: {value}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    match settled {
+        Ok(result) => result,
+        Err(_) => {
+            let progress = pg(&format!(
+                "SELECT coalesce(jsonb_agg(p),'[]') FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase AS group_phase,r.object_count,s.phase AS scope_phase FROM mdm_management.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) LEFT JOIN mdm_management.scope_runs s ON (s.tenant_id,s.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p"
+            ))?;
+            anyhow::bail!("task {path} exceeded fixture deadline; last {last}; pending {progress}")
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1207,7 +1275,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     ensure!(me["instanceId"] == INSTANCE && me["tenantId"] == TENANT && me["grants"] == json!([]));
     let subject = me["principalId"].as_str().unwrap();
     host_context_matrix(&base, reader.clone(), &browser, subject).await?;
-    let query = format!("{DEVICE}/inventory");
+    let query = "/api/v2/devices/device-1/inventory".to_owned();
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
     let allowed = base.clone();
     crate::identity_fixture::set_grants(
@@ -1260,7 +1328,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
                 == "Model-A"
     );
     ensure!(assets["tenantId"] == TENANT && assets["asset"]["device"]["device"] == "device-1");
-    let outside = "/api/v1/devices/outside/inventory";
+    let outside = "/api/v2/devices/outside/inventory";
     ensure!(
         browser
             .call(&authorized, Method::GET, outside, None)
@@ -1268,7 +1336,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    management::matrix(&allowed, reader.clone(), &browser).await?;
+    Box::pin(management::matrix(&allowed, reader.clone(), &browser)).await?;
     enrollment_matrix(&authorized, &allowed, reader.clone(), &mut browser, &query).await?;
     native_accounts(&initial, &authorized, &mut browser, subject).await?;
     reader.close().await;

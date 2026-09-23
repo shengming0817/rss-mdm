@@ -1,18 +1,27 @@
 # rss-mdm-policy-postgres
 
-一个存储 revision；原 RequestId 重放；完整目标/分配引用、事实、计划和原子事件；不解析 Scope、不派发。
+Policy 的持久 owner：一个聚合 revision、有界执行事实、不可变候选、引用令牌与显式计划指针。
+不解析 Scope，不授权或派发设备执行。
 
-Store 通过同一宿主 `Arc<PgRuntime>` 接入，宿主关闭 runtime。使用本包 `core` 中的对应核心类型，TenantId / Timepoint 来自 canonical RSS owner。构造时校验本包 migration 的精确 catalog/权限；独立运行角色无 DDL、owner、superuser 或 BYPASSRLS。
+候选按 `begin_candidate_in` → `append_candidate_targets_in` → `seal_candidate_targets_in` →
+`advance_candidate_facts_in` 准备。目标页最多 1,000 台、当前目标总量最多 1,000,000；
+执行历史按版本和设备身份排序分页，不按当前设备容量截断。候选身份使用唯一规范流式摘要，
+分页边界不参与摘要。历史目标与意图从独立有界读取接口消费。
 
-`*_in` 校验 runtime owner/tenant，返回两层结果；业务拒绝必须处理，PG 错误须传播给外层以回滚。状态、原请求/回执和 Outbox 同事务；CommitUnknown / RollbackFailed 保留原请求身份，重连后查 operation 或精确重放，不生成新身份。序列化只在 adapter，恢复经过摘要、闭合格式及核心验证。
+`save_candidate_in` 只重新校验策略 CAS 与规范化引用，安装完整候选指针及回执、事件。
+保存不会写 `Planned` 或其它执行事实。`Command::RecordExecutions` 单独接受调用方确认的
+真实执行受理/进度；授权属于宿主。旧 SelectTargets、Replan、整份计划/目标快照读写及解码已删除。
 
-[完整调用、迁移和边界指南](../../docs/guides/202609132008-2388-2389-backend-persistence.md)。
+宿主提供同一 `Arc<PgRuntime>`，拥有权限、RSS claim 和关闭流程。`*_in` 校验 runtime owner
+与 tenant，返回两层结果；业务拒绝必须处理，PG 错误传播给外层回滚。提交未知沿原身份读取或
+精确重放；不制造新身份。启动校验精确 catalog、RLS、最低权限与迁移指纹。
 
 ```sh
 cargo test --locked -p rss-mdm-policy-postgres
 make t2-backend
-# 提交后验证默认/关闭默认 feature 的固定 SHA 独立消费者
+# 提交后运行固定 SHA 独立消费者
 make backend-consumers
 ```
 
-参考 SQLx v0.9.0 `sqlx-core/src/transaction.rs` 的提交/回滚不确定语义，复用 RSS 公开事务和 Outbox；不引入新的通用持久化框架。运行记录绑定源码 SHA，T2 不代表产品端侧 T3。
+参考 SQLx v0.9.0 `sqlx-core/src/transaction.rs` 的提交/回滚不确定语义，复用 RSS 公开事务和
+Outbox，不引入通用任务或存储框架。T1/T2 不代表产品端侧 T3。

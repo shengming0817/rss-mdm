@@ -8,7 +8,7 @@ const {chromium}=require('/opt/playwright-core');
 const input=JSON.parse(fs.readFileSync('/fixture/browser-input.json','utf8'));
 const origin='https://mdm.example.test', other='https://mdm-other.example.test';
 const api=`/api/v2/tenants/${input.tenant}`;
-const inventory='/api/v1/devices/device-1/inventory?source=mdm.windows';
+const inventory='/api/v2/devices/device-1/inventory';
 const checks={}, requests=[], privateValues=[];
 let stage='launch';
 const assert=(ok,message)=>{if(!ok)throw new Error(message)};
@@ -73,10 +73,10 @@ try{
   assert((await created).status()===201,'UI account creation');await admin.getByRole('cell',{name:/ui-created/}).waitFor();checks.account_ui=true;
 
   stage='inventory';let r=await request(member,inventory);
-  assert(r.status===200&&r.value.fields.some(f=>f.last_good?.value==='Model-2364'),'real authorized inventory');
-  assert((await request(member,'/api/v1/devices/outside/inventory?source=mdm.windows')).status===403,'device scope');checks.inventory=true;
+  assert(r.status===200&&r.value.asset.device.fields['device.model'].state.value.value==='Model-2364','real authorized inventory');
+  assert((await request(member,'/api/v2/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
 
-  stage='permissions';const group=crypto.randomUUID(),groupPath='/api/v1/groups/'+group;
+  stage='permissions';const group=crypto.randomUUID(),groupPath='/api/v2/groups/'+group;
   const change={operationId:crypto.randomUUID(),expectedRevision:0,input:{action:'create',name:'T3-2364',description:'product authorization fixture',criteria:null}};
   assert((await post(member,groupPath,change)).status===403,'management deny');
   assert(sql(`SELECT count(*) FROM mdm_group.groups WHERE id='${group}'`)==='0','denied write had effect');

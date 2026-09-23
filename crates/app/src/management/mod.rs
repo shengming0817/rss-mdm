@@ -1,9 +1,11 @@
 //! Product management composition. Core decisions and component storage retain their owners.
 pub(crate) mod assets;
+pub(crate) mod automation;
 mod config;
 mod groups;
 mod http;
 mod model;
+mod pages;
 mod plans;
 mod publications;
 mod resources;
@@ -12,7 +14,7 @@ mod storage;
 mod wire;
 use crate::{Error, Failure, audit::Audit};
 pub(crate) use config::Config;
-pub(crate) use http::routes;
+pub(crate) use http::{routes, routes_v2};
 use model::*;
 pub use model::{Missing, Permission};
 use rss_contract::Timepoint;
@@ -24,6 +26,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 pub(crate) struct Management {
+    pub(crate) automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     runtime: Arc<PgRuntime>,
     asset_cursor_key: ring::hmac::Key,
     tenant: TenantId,
@@ -82,10 +85,9 @@ impl Management {
             rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, deadline())
                 .await
                 .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
-        let mut key = [0; 32];
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut key)
-            .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
+        let key = storage::cursor_key(&runtime, tenant).await?;
         Ok(Self {
+            automation_task: std::sync::OnceLock::new(),
             asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
             runtime,
             tenant,
@@ -215,6 +217,10 @@ impl Management {
         authorize()?;
         Ok(value)
     }
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "flat exhaustive command routing keeps the public operation set auditable"
+    )]
     async fn dispatch(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -230,8 +236,12 @@ impl Management {
             Command::GroupRead { id } => self.group_read(tx, *id).await,
             Command::GroupPreview {
                 id,
+                operation,
                 expected_revision,
-            } => self.group_preview(tx, *id, *expected_revision, at).await,
+            } => {
+                self.group_preview(tx, *id, *operation, *expected_revision, at)
+                    .await
+            }
             Command::Scope { id, change } => self.scope_change(tx, *id, change, at).await,
             Command::ScopeRead { id } => self.scope_read(tx, *id).await,
             Command::Policy { id, change } => self.policy_change(tx, id, change, at).await,
@@ -241,11 +251,40 @@ impl Management {
                     .await
             }
             Command::Save { id, request } => self.save_plan(tx, id, request, at).await,
-            Command::PlanRead { id } => json(
-                &storage::preview(tx, *id)
-                    .await?
-                    .ok_or(Error::ManagementNotFound(Missing::Preview))?,
-            ),
+            Command::PlanRead { id } => {
+                self.task_read_in(tx, *id, None, automation::TaskKind::Policy)
+                    .await
+            }
+            Command::GroupPage {
+                group,
+                result,
+                projection,
+                query,
+            } => {
+                self.group_page_in(tx, *group, *result, *projection, query)
+                    .await
+            }
+            Command::ScopePage {
+                scope,
+                result,
+                projection,
+                query,
+            } => {
+                self.scope_page_in(tx, *scope, *result, *projection, query)
+                    .await
+            }
+            Command::PolicyPage {
+                policy,
+                result,
+                projection,
+                query,
+            } => {
+                self.policy_page_in(tx, policy, *result, *projection, query)
+                    .await
+            }
+            Command::TaskRead { id, target, family } => {
+                self.task_read_in(tx, *id, Some(target), *family).await
+            }
         }
     }
 }
@@ -276,6 +315,7 @@ enum Command {
     },
     GroupPreview {
         id: Uuid,
+        operation: Uuid,
         expected_revision: u64,
     },
     Scope {
@@ -303,6 +343,29 @@ enum Command {
     PlanRead {
         id: Uuid,
     },
+    GroupPage {
+        group: Uuid,
+        result: Uuid,
+        projection: pages::GroupPageKind,
+        query: pages::PageQuery,
+    },
+    ScopePage {
+        scope: Uuid,
+        result: Uuid,
+        projection: pages::ScopePageKind,
+        query: pages::PageQuery,
+    },
+    PolicyPage {
+        policy: String,
+        result: Uuid,
+        projection: pages::PolicyPageKind,
+        query: pages::PageQuery,
+    },
+    TaskRead {
+        id: Uuid,
+        target: String,
+        family: automation::TaskKind,
+    },
 }
 
 #[cfg(test)]
@@ -314,6 +377,13 @@ fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>
         | rss_mdm_group_postgres::Rejection::Deleted => {
             Error::ManagementNotFound(Missing::Group).into()
         }
+        rss_mdm_group_postgres::Rejection::CapacityExceeded => {
+            Error::Unavailable(Failure::AssetObjectLimit).into()
+        }
+        rss_mdm_group_postgres::Rejection::PageBudgetExceeded => {
+            Error::Unavailable(Failure::AssetBytesLimit).into()
+        }
+        rss_mdm_group_postgres::Rejection::InvalidInput => Error::Malformed.into(),
         _ => Error::Conflict.into(),
     })
 }

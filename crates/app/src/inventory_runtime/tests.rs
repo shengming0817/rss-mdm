@@ -228,6 +228,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let first = report(&service, &access, &credential, [Some("First"), Some("10")]).await?;
     // Simulate a corrupt relational coordinate while retaining a valid sealed blob/digest.
     let mut corrupt_root = PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(A)
+        .execute(&mut corrupt_root)
+        .await?;
     corrupt_root
         .execute("ALTER TABLE mdm_access.collection_runs DISABLE TRIGGER immutable_collection")
         .await?;
@@ -445,6 +449,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     runtime.close_fixture().await?;
 
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(A)
+        .execute(&mut root)
+        .await?;
     // The role cannot rewrite accepted bytes, reset sequence, or delete collection history.
     let mut tx = access.begin(A).await?;
     ensure!(sqlx::query("UPDATE mdm_access.collection_runs SET batch=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")

@@ -227,6 +227,7 @@ pub(crate) fn from_state(
         .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     let protected_v2 = Router::new()
+        .merge(crate::management::routes_v2())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))
@@ -291,6 +292,8 @@ pub(crate) async fn envelope(
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
+    let native_identity =
+        route.starts_with("/api/v2/tenants/") || route.starts_with("/api/v2/oidc/");
     let action = match route {
         "/api/v1/authorization" => "authorization_effective_read",
         "/api/v1/authorization/rules" => "authorization_rules_read",
@@ -309,10 +312,10 @@ pub(crate) async fn envelope(
         "/api/agent/v1/registrations" => "agent_registration",
         "/api/agent/v1/reports" => "agent_report",
         "/api/agent/v1/reports/{id}" => "agent_report_read",
-        "/api/v1/devices/{id}/inventory" => "inventory_read",
+        "/api/v2/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
-        path if path.starts_with("/api/v2/tenants/") => "authentication",
+        _ if native_identity => "authentication",
         "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
@@ -325,8 +328,7 @@ pub(crate) async fn envelope(
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
     // audit must not replace that settled response (including rotated credentials).
-    let audited = !matches!(request.uri().path(), "/livez" | "/readyz")
-        && !request.uri().path().starts_with("/api/v2/tenants/");
+    let audited = !matches!(request.uri().path(), "/livez" | "/readyz") && !native_identity;
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -682,7 +684,14 @@ async fn revoke_registration(
 }
 
 async fn ready(State(app): State<Arc<App>>) -> Response {
-    if app.readiness.ready() {
+    if app.readiness.ready()
+        && app
+            .management
+            .automation_task
+            .get()
+            .is_some_and(rss_runtime::TaskStatus::is_running)
+        && app.management.ingress_ready().await
+    {
         Json(json!({"ready":true})).into_response()
     } else {
         (
@@ -719,7 +728,7 @@ mod tests {
             access.close().await;
             let router = Router::new()
                 .route(
-                    "/api/v1/devices/{id}/inventory",
+                    "/api/v2/devices/{id}/inventory",
                     get(move || async move {
                         if mode == "transaction" {
                             Error::Unavailable(Failure::Audit).into_response()
@@ -741,7 +750,7 @@ mod tests {
             let response = router
                 .oneshot(
                     Request::builder()
-                        .uri("/api/v1/devices/sensitive-target/inventory")
+                        .uri("/api/v2/devices/sensitive-target/inventory")
                         .header("host", "mdm.example.test")
                         .body(axum::body::Body::empty())
                         .unwrap(),

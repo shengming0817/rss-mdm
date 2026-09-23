@@ -36,10 +36,11 @@ pub enum GroupChange {
         remove: Vec<String>,
     },
     Delete,
-    Recompute {
-        snapshot: String,
-    },
+    Recompute {},
 }
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyInput {}
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(
     tag = "kind",
@@ -108,28 +109,6 @@ pub struct PreviewInput {
 pub struct SavePlan {
     pub preview: Uuid,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub struct Source {
-    pub reference: Reference,
-    pub revision: u64,
-    pub member_version: Option<i64>,
-    pub members: Vec<String>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Preview {
-    pub id: Uuid,
-    pub policy: String,
-    pub policy_revision: u64,
-    pub scope: Uuid,
-    pub scope_revision: u64,
-    pub as_of: i64,
-    pub sources: Vec<Source>,
-    pub devices: Vec<String>,
-    pub registrations: std::collections::BTreeMap<String, DeviceIdentity>,
-    pub explanation: serde_json::Value,
-    pub plan: serde_json::Value,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct Registration {
     pub id: String,

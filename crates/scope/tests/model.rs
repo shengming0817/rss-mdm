@@ -1,272 +1,233 @@
 use rss_contract::Timepoint;
 use rss_mdm_scope::*;
 use rss_request_context::TenantId;
-
 fn tenant() -> TenantId {
-    TenantId::parse("00000000-0000-0000-0000-000000000001").unwrap()
+    TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
 }
-fn key(s: &str) -> DeviceId {
-    DeviceId::new(tenant(), s).unwrap()
+fn other() -> TenantId {
+    TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap()
 }
-fn source(id: &str, members: &[&str]) -> ResolvedSource {
-    ResolvedSource {
+fn device() -> DeviceId {
+    DeviceId::new(tenant(), "device").unwrap()
+}
+fn source(name: &str, contains: bool) -> SourceMembership {
+    SourceMembership {
         source: SourceRef::new(
-            SourceId::Group(GroupId::new(tenant(), id).unwrap()),
+            SourceId::Group(GroupId::new(tenant(), name).unwrap()),
             1,
-            Timepoint::try_from(10).unwrap(),
+            Timepoint::try_from(1).unwrap(),
         )
         .unwrap(),
-        resolution: Resolution::Complete(members.iter().map(|s| key(s)).collect()),
+        contains: Membership::Known(contains),
     }
 }
-fn input() -> ScopeInput {
-    ScopeInput {
-        tenant: tenant(),
-        targets: vec![source("a", &["d2", "d1", "d1"])],
-        limitations: Limitations::Unrestricted,
+fn input() -> DeviceInput {
+    DeviceInput {
+        device: device(),
+        targets: vec![source("targets", true)],
+        limitations: None,
         exclusions: vec![],
     }
 }
 #[test]
+fn finite_membership_truth_table_and_key_boundaries() {
+    for target in [false, true] {
+        for restricted in [false, true] {
+            for limit in [false, true] {
+                for excluded in [false, true] {
+                    let i = DeviceInput {
+                        device: device(),
+                        targets: vec![source("target", target)],
+                        limitations: restricted.then(|| vec![source("limit", limit)]),
+                        exclusions: vec![source("exclude", excluded)],
+                    };
+                    let decision = resolve_device(&i).unwrap();
+                    assert_eq!(decision.is_some(), target);
+                    assert_eq!(
+                        decision.as_ref().is_some_and(|d| d.reasons.is_empty()),
+                        target && (!restricted || limit) && !excluded
+                    );
+                    if let Some(d) = decision {
+                        assert_eq!(
+                            d.reasons.contains(&ExclusionReason::MissingLimitationMatch),
+                            restricted && !limit
+                        );
+                        assert_eq!(
+                            d.reasons.contains(&ExclusionReason::ExplicitExclusion),
+                            excluded
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(GroupId::new(tenant(), "").is_err());
+    assert!(DeviceId::new(tenant(), "x".repeat(257)).is_err());
+    assert!(DeviceId::new(tenant(), "x".repeat(256)).is_ok());
+    assert!(
+        SourceRef::new(
+            SourceId::Direct(device()),
+            0,
+            Timepoint::try_from(1).unwrap()
+        )
+        .is_err()
+    );
+}
+#[test]
 fn unconfigured_and_configured_empty_are_different() {
     let mut i = input();
-    assert_eq!(resolve(&i).unwrap().members, vec![key("d1"), key("d2")]);
-    i.limitations = Limitations::Restricted(vec![]);
-    let result = resolve(&i).unwrap();
-    assert!(result.members.is_empty());
-    assert!(
-        result
-            .explanations
-            .iter()
-            .all(|e| e.reasons.contains(&ExclusionReason::MissingLimitationMatch))
+    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
+    i.limitations = Some(vec![]);
+    assert_eq!(
+        resolve_device(&i).unwrap().unwrap().reasons,
+        vec![ExclusionReason::MissingLimitationMatch]
     );
-    i.limitations = Limitations::Restricted(vec![source("empty", &[])]);
-    assert!(resolve(&i).unwrap().members.is_empty());
+    i.targets.clear();
+    assert!(resolve_device(&i).unwrap().is_none());
 }
 #[test]
 fn formula_explanations_and_permutations() {
     let mut i = input();
-    i.targets.push(source("b", &["d3", "d2"]));
-    i.limitations = Limitations::Restricted(vec![source("l1", &["d1"]), source("l2", &["d2"])]);
-    i.exclusions = vec![source("x", &["d2", "d3"])];
-    let result = resolve(&i).unwrap();
-    assert_eq!(result.members, vec![key("d1")]);
-    assert_eq!(result.explanations.len(), 3);
-    assert_eq!(result.limitation_sources.as_ref().unwrap().len(), 2);
-    assert_eq!(result.explanations[1].targets.len(), 2);
-    assert_eq!(
-        result.explanations[2].reasons,
-        vec![
-            ExclusionReason::MissingLimitationMatch,
-            ExclusionReason::ExplicitExclusion
-        ]
-    );
+    i.targets.extend([
+        source("z", true),
+        source("a", true),
+        source("targets", true),
+        source("nonmatch", false),
+    ]);
+    i.limitations = Some(vec![source("limit", true)]);
+    i.exclusions = vec![source("exclude", true)];
+    let expected = resolve_device(&i).unwrap().unwrap();
+    assert_eq!(expected.object, device());
+    assert_eq!(expected.targets.len(), 3);
+    assert_eq!(expected.limitations.len(), 1);
+    assert_eq!(expected.exclusions.len(), 1);
     i.targets.reverse();
-    if let Resolution::Complete(m) = &mut i.targets[1].resolution {
-        m.reverse();
-    }
-    assert_eq!(result, resolve(&i).unwrap());
+    assert_eq!(resolve_device(&i).unwrap().unwrap(), expected);
 }
 #[test]
 fn incomplete_failure_and_cross_tenant_are_not_empty_sets() {
-    let mut i = input();
-    i.targets[0].resolution = Resolution::Incomplete;
-    assert!(matches!(resolve(&i), Err(ScopeError::IncompleteSource(_))));
-    i.targets[0].resolution = Resolution::Failed;
-    assert!(matches!(resolve(&i), Err(ScopeError::SourceFailed(_))));
-    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
-    i.targets[0].resolution = Resolution::Complete(vec![DeviceId::new(other, "d1").unwrap()]);
-    assert!(matches!(
-        resolve(&i),
-        Err(ScopeError::MemberTenantMismatch { .. })
-    ));
+    for state in [Membership::Incomplete, Membership::Failed] {
+        for role in 0..3 {
+            let mut i = input();
+            let mut invalid = source("bad", false);
+            invalid.contains = state;
+            match role {
+                0 => i.targets.push(invalid),
+                1 => i.limitations = Some(vec![invalid]),
+                _ => i.exclusions.push(invalid),
+            }
+            let error = resolve_device(&i).unwrap_err();
+            assert!(matches!(
+                (state, error),
+                (Membership::Incomplete, ScopeError::IncompleteSource(_))
+                    | (Membership::Failed, ScopeError::SourceFailed(_))
+            ));
+        }
+    }
 }
 #[test]
-fn direct_group_dedup_empty_targets_and_conflicting_snapshot() {
-    let mut i = input();
-    let direct = ResolvedSource {
-        source: SourceRef::new(
-            SourceId::Direct(key("d1")),
+fn foreign_sources_are_located_in_every_scope_role() {
+    for role in 0..3 {
+        let foreign = SourceRef::new(
+            SourceId::Group(GroupId::new(other(), "foreign").unwrap()),
             1,
-            Timepoint::try_from(10).unwrap(),
+            Timepoint::try_from(1).unwrap(),
         )
-        .unwrap(),
-        resolution: Resolution::Complete(vec![key("d1")]),
-    };
-    i.targets.push(direct.clone());
-    i.targets.push(direct);
-    let r = resolve(&i).unwrap();
-    assert_eq!(r.members.len(), 2);
-    assert_eq!(r.explanations[0].targets.len(), 2);
-    i.exclusions.push(source("a", &["different"]));
-    assert!(matches!(resolve(&i), Err(ScopeError::ConflictingSource(_))));
-    i = input();
-    i.targets.clear();
-    assert!(resolve(&i).unwrap().members.is_empty());
-}
-
-#[test]
-fn source_version_cannot_change_contents_with_a_different_resolution_time() {
+        .unwrap();
+        let invalid = SourceMembership {
+            source: foreign.clone(),
+            contains: Membership::Known(false),
+        };
+        let mut i = input();
+        match role {
+            0 => i.targets.push(invalid),
+            1 => i.limitations = Some(vec![invalid]),
+            _ => i.exclusions.push(invalid),
+        }
+        assert_eq!(
+            resolve_device(&i),
+            Err(ScopeError::SourceTenantMismatch {
+                source_ref: foreign,
+                expected: tenant()
+            })
+        );
+    }
     let mut i = input();
-    let mut conflict = source("a", &["other"]);
-    conflict.source = SourceRef::new(
-        SourceId::Group(GroupId::new(tenant(), "a").unwrap()),
-        1,
-        Timepoint::try_from(11).unwrap(),
-    )
-    .unwrap();
-    i.exclusions.push(conflict);
-    assert!(matches!(resolve(&i), Err(ScopeError::ConflictingSource(_))));
+    i.device = DeviceId::new(other(), "device").unwrap();
+    assert!(
+        matches!(resolve_device(&i),Err(ScopeError::SourceTenantMismatch{expected,..}) if expected==other())
+    );
 }
 #[test]
 fn invalid_sources_rejected_even_when_no_target_can_match() {
     let mut i = input();
     i.targets.clear();
-    let mut bad = source("group", &[]);
-    bad.resolution = Resolution::Incomplete;
-    i.exclusions.push(bad);
-    assert!(matches!(resolve(&i), Err(ScopeError::IncompleteSource(_))));
+    let mut invalid = source("bad", false);
+    invalid.contains = Membership::Incomplete;
+    i.exclusions.push(invalid);
+    assert!(matches!(
+        resolve_device(&i),
+        Err(ScopeError::IncompleteSource(_))
+    ));
+}
+#[test]
+fn direct_group_dedup_empty_targets_and_conflicting_snapshot() {
     let mut i = input();
-    i.targets[0].source = SourceRef::new(
-        SourceId::Direct(key("a")),
+    i.targets.push(source("targets", false));
+    assert!(matches!(
+        resolve_device(&i),
+        Err(ScopeError::ConflictingSource(_))
+    ));
+    i = input();
+    let direct = SourceRef::new(
+        SourceId::Direct(device()),
         1,
-        Timepoint::try_from(10).unwrap(),
+        Timepoint::try_from(1).unwrap(),
     )
     .unwrap();
+    i.targets = vec![SourceMembership {
+        source: direct.clone(),
+        contains: Membership::Known(false),
+    }];
+    assert_eq!(
+        resolve_device(&i),
+        Err(ScopeError::InvalidDirectSource(direct))
+    );
+    i.targets[0].contains = Membership::Known(true);
+    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
+    i.device = DeviceId::new(tenant(), "another").unwrap();
     assert!(matches!(
-        resolve(&i),
+        resolve_device(&i),
         Err(ScopeError::InvalidDirectSource(_))
     ));
-    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
-    i.targets[0].source = SourceRef::new(
-        SourceId::Group(GroupId::new(other, "a").unwrap()),
+    i.targets[0].contains = Membership::Known(false);
+    assert!(resolve_device(&i).unwrap().is_none());
+}
+#[test]
+fn source_version_cannot_change_contents_with_a_different_resolution_time() {
+    let mut i = input();
+    let mut repeat = source("targets", false);
+    repeat.source = SourceRef::new(
+        repeat.source.id().clone(),
         1,
-        Timepoint::try_from(10).unwrap(),
+        Timepoint::try_from(2).unwrap(),
     )
     .unwrap();
+    i.targets.push(repeat);
     assert!(matches!(
-        resolve(&i),
-        Err(ScopeError::SourceTenantMismatch { .. })
+        resolve_device(&i),
+        Err(ScopeError::ConflictingSource(_))
     ));
+    i.targets[1].contains = Membership::Known(true);
+    assert_eq!(resolve_device(&i).unwrap().unwrap().targets.len(), 2);
 }
 #[test]
-fn finite_membership_truth_table_and_key_boundaries() {
-    for target in [false, true] {
-        for limited in [false, true] {
-            for limit in [false, true] {
-                for exclude in [false, true] {
-                    let m = |present| if present { vec!["d1"] } else { vec![] };
-                    let i = ScopeInput {
-                        tenant: tenant(),
-                        targets: vec![source("t", &m(target))],
-                        limitations: if limited {
-                            Limitations::Restricted(vec![source("l", &m(limit))])
-                        } else {
-                            Limitations::Unrestricted
-                        },
-                        exclusions: vec![source("e", &m(exclude))],
-                    };
-                    assert_eq!(
-                        !resolve(&i).unwrap().members.is_empty(),
-                        target && (!limited || limit) && !exclude
-                    );
-                }
-            }
-        }
-    }
-    for bad in ["", "\0", "\n"] {
-        assert!(DeviceId::new(tenant(), bad).is_err());
-    }
-    assert!(DeviceId::new(tenant(), "a".repeat(256)).is_ok());
-    assert!(DeviceId::new(tenant(), "a".repeat(257)).is_err());
-    assert!(
-        SourceRef::new(
-            SourceId::Group(GroupId::new(tenant(), "a").unwrap()),
-            0,
-            Timepoint::try_from(0).unwrap()
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn explanations_preserve_empty_targets_and_nonmatching_exclusion_sources() {
-    let empty = source("empty-target", &[]);
-    let excluded = source("unrelated-exclusion", &["other"]);
-    let i = ScopeInput {
-        tenant: tenant(),
-        targets: vec![empty.clone(), empty.clone()],
-        limitations: Limitations::Unrestricted,
-        exclusions: vec![excluded.clone()],
-    };
-    let r = resolve(&i).unwrap();
-    assert!(r.members.is_empty());
-    assert!(r.explanations.is_empty());
-    assert_eq!(r.target_sources, vec![empty.source]);
-    assert_eq!(r.exclusion_sources, vec![excluded.source]);
-}
-
-#[test]
-fn tenant_errors_distinguish_source_and_member_locations() {
-    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
-    for role in 0..3 {
-        let mut errors = Vec::new();
-        for (source_name, member_name) in [("a", "foreign1"), ("b", "foreign1"), ("b", "foreign2")]
-        {
-            let mut bad = source(source_name, &[]);
-            bad.resolution = Resolution::Complete(vec![DeviceId::new(other, member_name).unwrap()]);
-            let mut i = input();
-            let expected = ScopeError::MemberTenantMismatch {
-                source_ref: Box::new(bad.source.clone()),
-                member: DeviceId::new(other, member_name).unwrap(),
-                expected: tenant(),
-            };
-            match role {
-                0 => i.targets.push(bad),
-                1 => i.limitations = Limitations::Restricted(vec![bad]),
-                _ => i.exclusions.push(bad),
-            }
-            let error = resolve(&i).unwrap_err();
-            assert_eq!(error, expected);
-            assert_eq!(
-                error.to_string(),
-                "source member belongs to a foreign tenant"
-            );
-            errors.push(error);
-        }
-        assert_ne!(errors[0], errors[1], "source identity is required");
-        assert_ne!(errors[1], errors[2], "member identity is required");
-    }
-}
-
-#[test]
-fn foreign_sources_are_located_in_every_scope_role() {
-    let other = TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap();
-    for role in 0..3 {
-        let source_ref = SourceRef::new(
-            SourceId::Group(GroupId::new(other, "foreign").unwrap()),
-            2,
-            Timepoint::try_from(10).unwrap(),
-        )
-        .unwrap();
-        let bad = ResolvedSource {
-            source: source_ref.clone(),
-            resolution: Resolution::Complete(vec![]),
-        };
-        let mut i = input();
-        match role {
-            0 => i.targets.push(bad),
-            1 => i.limitations = Limitations::Restricted(vec![bad]),
-            _ => i.exclusions.push(bad),
-        }
-        let error = resolve(&i).unwrap_err();
-        assert_eq!(
-            error,
-            ScopeError::SourceTenantMismatch {
-                source_ref,
-                expected: tenant()
-            }
-        );
-        assert_eq!(error.to_string(), "scope contains a foreign tenant");
-    }
+fn source_and_role_budgets_are_bounded() {
+    let mut i = input();
+    i.targets = (0..1000).map(|n| source(&format!("g{n}"), true)).collect();
+    assert_eq!(resolve_device(&i).unwrap().unwrap().targets.len(), 1000);
+    i.targets.push(source("overflow", false));
+    assert_eq!(resolve_device(&i), Err(ScopeError::SourceLimit));
+    i.targets = vec![source("same", true); 3001];
+    assert_eq!(resolve_device(&i), Err(ScopeError::SourceLimit));
 }
