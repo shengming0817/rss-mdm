@@ -224,3 +224,36 @@ mod tests {
         }
     }
 }
+
+/// Native exchange phases; database values are decoded fail-closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AttemptPhase {
+    Execute,
+    Observe,
+}
+impl AttemptPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Execute => "execute",
+            Self::Observe => "observe",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self, Error> {
+        match value {
+            "execute" => Ok(Self::Execute),
+            "observe" => Ok(Self::Observe),
+            _ => Err(Error::Unavailable(crate::Failure::CommandInvariant)),
+        }
+    }
+}
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+    #[test]
+    fn phase_storage_roundtrip_rejects_unknown() {
+        for phase in [AttemptPhase::Execute, AttemptPhase::Observe] {
+            assert_eq!(AttemptPhase::parse(phase.as_str()).unwrap(), phase);
+        }
+        assert!(AttemptPhase::parse("retry").is_err());
+    }
+}

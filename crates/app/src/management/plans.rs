@@ -181,7 +181,9 @@ impl Management {
             .await?
             .ok_or(Error::ManagementNotFound(Missing::Preview))?;
         if preview.policy != id || preview.policy_revision != request.expected_revision {
-            return Err(Error::Conflict.into());
+            return Err(crate::PlanFailureReason::StalePlan
+                .at(None, crate::PlanStage::Save)
+                .into());
         }
         let at = input(Timepoint::try_from(preview.as_of))?;
         let (revision, definition) = self
@@ -190,7 +192,9 @@ impl Management {
             .map_err(stale)?;
         let (sources, _) = self.sources(tx, &definition, at).await.map_err(stale)?;
         if revision != preview.scope_revision || sources != preview.sources {
-            return Err(Error::Conflict.into());
+            return Err(crate::PlanFailureReason::StalePlan
+                .at(None, crate::PlanStage::Save)
+                .into());
         }
         if self
             .device_identities(tx, &preview.devices)
@@ -198,7 +202,9 @@ impl Management {
             .map_err(stale)?
             != preview.registrations
         {
-            return Err(Error::Conflict.into());
+            return Err(crate::PlanFailureReason::StalePlan
+                .at(None, crate::PlanStage::Save)
+                .into());
         }
         if preview.configuration.is_some()
             && preview.devices.len() > super::configuration::MAX_TARGETS
@@ -207,8 +213,12 @@ impl Management {
         }
         if let Some(configuration) = &preview.configuration {
             for (device, expected) in &configuration.devices {
-                if super::configuration::evidence(tx, device).await? != *expected {
-                    return Err(Error::Conflict.into());
+                if super::configuration::evidence(tx, device, crate::PlanStage::Save).await?
+                    != *expected
+                {
+                    return Err(crate::PlanFailureReason::StalePlan
+                        .at(Some(device), crate::PlanStage::Save)
+                        .into());
                 }
             }
         }
@@ -266,10 +276,15 @@ impl Management {
             },
         };
         let result = checked(self.policies.execute_in(tx, &replan).await?)?;
-        let state = checked(self.policies.get_in(tx, &policy).await?)?.ok_or(Error::Conflict)?;
-        let plan = state.current_plan_id().ok_or(Error::Conflict)?;
-        if preview.plan["id"] != json!(hex(*plan.bytes())) {
-            return Err(Error::Conflict.into());
+        let state = checked(self.policies.get_in(tx, &policy).await?)?
+            .ok_or(crate::PlanFailureReason::StalePlan.at(None, crate::PlanStage::Save))?;
+        let plan = state
+            .current_plan_id()
+            .ok_or(crate::PlanFailureReason::StalePlan.at(None, crate::PlanStage::Save))?;
+        if preview.plan.id != hex(*plan.bytes()) {
+            return Err(crate::PlanFailureReason::StalePlan
+                .at(None, crate::PlanStage::Save)
+                .into());
         }
         let tenant = self.tenant.to_string();
         let policy = id.to_owned();
@@ -308,14 +323,49 @@ fn targets(tenant: TenantId, id: Uuid, devices: &[String]) -> Result<p::TargetSn
 fn hex(bytes: [u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
-fn plan_json(plan: &p::Plan) -> Value {
-    let intents=plan.intents().iter().map(|i|match i {
-        p::Intent::Add(e)=>json!({"kind":"add","device":e.key().device().value(),"version":e.key().version()}),
-        p::Intent::Retain {execution,reason}=>json!({"kind":"retain","device":execution.device().value(),"version":execution.version().number(),"reason":retain_reason(*reason)}),
-        p::Intent::Supersede {replacement,previous}=>json!({"kind":"supersede","device":replacement.key().device().value(),"version":replacement.key().version(),"previous_versions":previous.iter().map(|e|e.version()).collect::<Vec<_>>()}),
-        p::Intent::Cancel {execution,reason}=>json!({"kind":"cancel","device":execution.device().value(),"version":execution.version().number(),"reason":cancel_reason(*reason)}),
-    }).collect::<Vec<_>>();
-    json!({"id":hex(*plan.id().bytes()),"scheduling_open":plan.scheduling_open(),"intents":intents,"dispatch":"not_requested"})
+fn plan_json(plan: &p::Plan) -> FrozenPlan {
+    let intents = plan
+        .intents()
+        .iter()
+        .map(|i| match i {
+            p::Intent::Add(e) => FrozenIntent::Add {
+                device: e.key().device().value().into(),
+                version: e.key().version(),
+            },
+            p::Intent::Retain { execution, reason } => FrozenIntent::Retain {
+                device: execution.device().value().into(),
+                version: execution.version().number(),
+                reason: match reason {
+                    p::RetainReason::Current => RetainReason::Current,
+                    p::RetainReason::Paused => RetainReason::Paused,
+                    p::RetainReason::Historical => RetainReason::Historical,
+                },
+            },
+            p::Intent::Supersede {
+                replacement,
+                previous,
+            } => FrozenIntent::Supersede {
+                device: replacement.key().device().value().into(),
+                version: replacement.key().version(),
+                previous_versions: previous.iter().map(|e| e.version()).collect(),
+            },
+            p::Intent::Cancel { execution, reason } => FrozenIntent::Cancel {
+                device: execution.device().value().into(),
+                version: execution.version().number(),
+                reason: match reason {
+                    p::CancelReason::ScopeExit => CancelReason::ScopeExit,
+                    p::CancelReason::Archived => CancelReason::Archived,
+                    p::CancelReason::Superseded => CancelReason::Superseded,
+                },
+            },
+        })
+        .collect();
+    FrozenPlan {
+        id: hex(*plan.id().bytes()),
+        scheduling_open: plan.scheduling_open(),
+        intents,
+        dispatch: Dispatch::NotRequested,
+    }
 }
 
 fn policy_status(s: p::Status) -> &'static str {
@@ -326,24 +376,11 @@ fn policy_status(s: p::Status) -> &'static str {
         p::Status::Archived => "archived",
     }
 }
-fn retain_reason(r: p::RetainReason) -> &'static str {
-    match r {
-        p::RetainReason::Current => "current",
-        p::RetainReason::Paused => "paused",
-        p::RetainReason::Historical => "historical",
-    }
-}
-fn cancel_reason(r: p::CancelReason) -> &'static str {
-    match r {
-        p::CancelReason::ScopeExit => "scope_exit",
-        p::CancelReason::Archived => "archived",
-        p::CancelReason::Superseded => "superseded",
-    }
-}
-
 fn stale(error: Fault) -> Fault {
     match error {
-        Fault::Request(Error::ManagementNotFound(_)) => Error::Conflict.into(),
+        Fault::Request(Error::ManagementNotFound(_)) => crate::PlanFailureReason::StalePlan
+            .at(None, crate::PlanStage::Save)
+            .into(),
         other => other,
     }
 }

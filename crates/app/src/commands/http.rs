@@ -88,7 +88,8 @@ async fn execute_plan(
     body: std::result::Result<Json<super::plans::Execute>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
     let body = body.map_err(|_| Error::Malformed)?.0;
-    audit.operation(body.operation_id, "command_accept");
+    audit.operation(body.operation_id, "plan_execute");
+    audit.plan(plan);
     audit.target(&policy);
     app.commands
         .execute_plan(&auth.proof, &policy, plan, &body, &audit)

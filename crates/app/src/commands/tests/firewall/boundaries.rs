@@ -185,9 +185,35 @@ impl Client {
         revision: u64,
     ) -> anyhow::Result<Value> {
         let preview = Uuid::new_v4();
-        self.product(&format!("policies/{policy}/previews"),json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}})).await?;
+        let frozen = self.product(&format!("policies/{policy}/previews"),json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}})).await?;
         let saved=self.product(&format!("policies/{policy}/plans"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"preview":preview}})).await?;
-        self.product(&format!("policies/{policy}/plans/{preview}/execute"),json!({"operationId":Uuid::new_v4(),"expectedRevision":saved["receipt"]["storageRevision"],"deadline":self.app.clock.unix_seconds()?+300})).await
+        let request = json!({"operationId":Uuid::new_v4(),"expectedRevision":saved["receipt"]["storageRevision"],"deadline":self.app.clock.unix_seconds()?+300});
+        let path = format!("/api/v1/policies/{policy}/plans/{preview}/execute");
+        if frozen["devices"].as_array().unwrap().len() == 32 {
+            self.rollback_plan(preview, &frozen, &path, &request)
+                .await?;
+        }
+        let cancellation = frozen["configuration"]["policyStatus"] == "archived";
+        if cancellation {
+            self.cancel_rejections(preview, &path, &request).await?;
+        }
+        let result = self
+            .browser
+            .call(&self.router, Method::POST, &path, Some(request.clone()))
+            .await?;
+        ensure!(
+            result.0 == StatusCode::ACCEPTED,
+            "plan execution: {result:?}"
+        );
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let audit: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE plan=$1::uuid AND operation_id=$2::uuid AND action='plan_execute' AND result='success'").bind(preview.to_string()).bind(request["operationId"].as_str().unwrap()).fetch_one(&mut pg).await?;
+        ensure!(audit == 1, "missing or duplicate plan audit: {audit}");
+        if cancellation {
+            self.without_firewall_write(&mut pg, &path, &request)
+                .await?;
+        }
+        Ok(result.1)
     }
 }
 async fn start_write(f: &Fixture<'_>, session: u32) -> anyhow::Result<(s::Message, u32)> {
@@ -352,6 +378,8 @@ impl Client {
             op(1, json!({"action":"put","definition":definition(32)})),
         )
         .await?;
+        self.preview_failures(&policy, scope, revision, &devices[1])
+            .await?;
         let accepted = self.execute_existing_plan(&policy, scope, revision).await?;
         ensure!(accepted["operations"].as_array().unwrap().len() == 32);
         let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE request->'task'->>'policy'=$1),(SELECT count(*) FROM mdm_commands.firewall_owners WHERE policy=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox b JOIN mdm_commands.operations o ON b.message_id='dispatch.'||o.id::text AND b.tenant_id=o.tenant_id WHERE o.request->'task'->>'policy'=$1)").bind(&policy).fetch_one(&mut pg).await?;
@@ -406,7 +434,12 @@ impl Client {
                 Some(request),
             )
             .await?;
-        ensure!(conflict.0 == StatusCode::CONFLICT);
+        ensure!(
+            conflict.0 == StatusCode::CONFLICT
+                && conflict.1["code"] == "owner_conflict"
+                && conflict.1["device"] == first.as_str()
+                && conflict.1["stage"] == "execute"
+        );
         ensure!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT count(*) FROM mdm_commands.operations WHERE request->'task'->>'policy'=$1"
@@ -416,6 +449,29 @@ impl Client {
             .await?
                 == 0
         );
+        // An empty action plan still has one durable plan-level success audit.
+        self.product(
+            &format!("scopes/{small}"),
+            op(1, json!({"action":"put","definition":definition(0)})),
+        )
+        .await?;
+        let current = self
+            .browser
+            .call(
+                &self.router,
+                Method::GET,
+                &format!("/api/v1/policies/{competitor}"),
+                None,
+            )
+            .await?;
+        let empty = self
+            .execute_existing_plan(
+                &competitor,
+                small,
+                current.1["storageRevision"].as_u64().unwrap(),
+            )
+            .await?;
+        ensure!(empty["operations"].as_array().unwrap().is_empty());
         // Scope exit is a cancel-only plan; no target capability defaults are invented.
         self.product(
             &format!("scopes/{scope}"),

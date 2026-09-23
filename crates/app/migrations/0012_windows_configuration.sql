@@ -1,4 +1,9 @@
 BEGIN;
+ALTER TABLE mdm_access.audit ADD COLUMN plan uuid;
+ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
+ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
+('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
+'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save','authorization_write','authorization_initialize','authorization_effective_read','authorization_rules_read','authorization_groups_read','authorization_members_read','authorization_departments_read','command_accept','command_read','command_cancel','command_approve','command_dispatch','plan_execute'));
 -- One-way cutover: never reinterpret an in-flight old dispatch contract.
 CREATE TABLE mdm_commands.attempt_history (LIKE mdm_commands.attempts INCLUDING ALL);
 DO $$ DECLARE t text; BEGIN
@@ -31,6 +36,8 @@ CREATE TABLE mdm_commands.capability_queries (
  tenant_id uuid NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL, session bigint NOT NULL,
  request bytea NOT NULL, version_command bigint NOT NULL, edition_command bigint NOT NULL,
  os_version text, edition text, version_status integer, edition_status integer,
+ session_id text GENERATED ALWAYS AS (session::text) STORED NOT NULL,
+ FOREIGN KEY(tenant_id,registration,session_id) REFERENCES mdm_access.management_sessions(tenant_id,registration,session_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
  PRIMARY KEY(tenant_id,registration,session), FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id)
 );
 CREATE TABLE mdm_management.firewall_resources (

@@ -320,7 +320,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
 async fn firewall_finished(tx: &mut PgTransaction<'_>, op: &storage::Operation) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let id = op.id.to_string();
-    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2::uuid AND a.phase='execute' AND a.status=200 AND a.receipt_accepted) AND EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2::uuid AND a.phase='observe' AND a.receipt_accepted AND ((a.status=200 AND a.value IS NOT NULL) OR a.status>=400))").bind(tenant).bind(id).fetch_one(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2::uuid AND a.phase=$3 AND a.status=200 AND a.receipt_accepted) AND EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2::uuid AND a.phase=$4 AND a.receipt_accepted AND ((a.status=200 AND a.value IS NOT NULL) OR a.status>=400))").bind(tenant).bind(id).bind(AttemptPhase::Execute.as_str()).bind(AttemptPhase::Observe.as_str()).fetch_one(c).await})).await?)
 }
 
 #[cfg(test)]

@@ -361,7 +361,7 @@ pub(crate) async fn envelope(
             .headers()
             .get(header::CONTENT_TYPE)
             .is_some_and(|v| v.as_bytes().starts_with(b"application/soap+xml"))
-        && let Some(error) = response.extensions().get::<Error>().copied()
+        && let Some(error) = response.extensions().get::<Error>().cloned()
     {
         response = crate::windows::fault(None, error);
     }

@@ -1,5 +1,6 @@
 //! Product-owned authored configuration and immutable execution inputs.
 use super::*;
+use crate::{PlanFailureReason as Reason, PlanStage};
 use rss_mdm_resource as r;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -91,14 +92,12 @@ impl Management {
             .iter()
             .filter(|_| policy.status() == rss_mdm_policy::Status::Active)
         {
-            let e = evidence(tx, device).await?;
-            let p = input(rss_mdm_windows_mdm::configuration::Platform::new(
-                &e.os_version,
-                e.edition,
-            ))?;
-            input(rss_mdm_windows_mdm::configuration::Firewall::compile(
-                enabled, &p,
-            ))?;
+            let e = evidence(tx, device, PlanStage::Preview).await?;
+            let rejected = || Reason::PlatformUnsupported.at(Some(device), PlanStage::Preview);
+            let p = rss_mdm_windows_mdm::configuration::Platform::new(&e.os_version, e.edition)
+                .map_err(|_| rejected())?;
+            rss_mdm_windows_mdm::configuration::Firewall::compile(enabled, &p)
+                .map_err(|_| rejected())?;
             evidence_map.insert(device.clone(), e);
         }
         Ok(Some(Frozen {
@@ -118,12 +117,17 @@ impl Management {
         }))
     }
 }
-pub(super) async fn evidence(tx: &mut PgTransaction<'_>, device: &str) -> Result<Evidence> {
+pub(super) async fn evidence(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    stage: PlanStage,
+) -> Result<Evidence> {
+    let unknown = Reason::CapabilityUnknown.at(Some(device), stage);
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT r.id::text,r.generation,c.os_version,c.edition FROM mdm_access.registrations r JOIN mdm_commands.capabilities c ON(c.tenant_id,c.registration,c.generation)=(r.tenant_id,r.id,r.generation) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active'").bind(tenant).bind(device).fetch_all(c).await})).await?;
     if rows.len() != 1 {
-        return Err(Error::Conflict.into());
+        return Err(unknown.into());
     }
     let r = &rows[0];
     Ok(Evidence {

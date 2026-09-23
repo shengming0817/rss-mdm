@@ -1,5 +1,6 @@
 //! Real authenticated product authoring -> frozen plan -> native Replace -> independent Get.
 use super::*;
+mod admission;
 mod boundaries;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 impl Client {

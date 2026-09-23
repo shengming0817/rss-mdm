@@ -307,7 +307,10 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
             }
         )
         .await,
-        Err(Error::Conflict)
+        Err(Error::Plan(crate::PlanFailure {
+            reason: crate::PlanFailureReason::StalePlan,
+            ..
+        }))
     ));
     let denied = Uuid::new_v4();
     sql("REVOKE INSERT ON mdm_access.audit FROM mdm_management_runtime;");
@@ -595,7 +598,10 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
                 }
             )
             .await,
-            Err(Error::Conflict)
+            Err(Error::Plan(crate::PlanFailure {
+                reason: crate::PlanFailureReason::StalePlan,
+                ..
+            }))
         ));
     }
     sql(&format!(
@@ -611,7 +617,13 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
         )
         .await;
         assert!(
-            matches!(result, Err(Error::Conflict)),
+            matches!(
+                result,
+                Err(Error::Plan(crate::PlanFailure {
+                    reason: crate::PlanFailureReason::StalePlan,
+                    ..
+                }))
+            ),
             "lost registration must stale preview: {result:?}"
         );
     }

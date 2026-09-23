@@ -70,7 +70,7 @@ async fn settle_reports(
     let tenant = s.tenant.to_string();
     let registration = p.registration().to_string();
     let generation = p.generation();
-    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT DISTINCT o.id::text FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.session=$4 AND a.phase='execute' AND a.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id::text LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).fetch_all(c).await})).await?;
+    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT DISTINCT o.id::text FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.session=$4 AND a.phase=$5 AND a.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id::text LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).bind(AttemptPhase::Execute.as_str()).fetch_all(c).await})).await?;
     for id in ids {
         settle_one(s, tx, &id).await?;
     }
@@ -88,7 +88,7 @@ async fn settle_one(s: &Commands, tx: &mut PgTransaction<'_>, id: &str) -> Resul
         return Ok(());
     }
     let tenant = s.tenant.to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT status,value,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid AND phase='execute' ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT status,value,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid AND phase=$3 ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).bind(AttemptPhase::Execute.as_str()).fetch_optional(c).await})).await?;
     let Some(row) = row else { return Ok(()) };
     if row.try_get::<Option<bool>, _>("receipt_accepted")? != Some(true) {
         return Ok(());
@@ -133,14 +133,20 @@ pub(super) async fn observation(
     let tenant = tx.tenant_id().to_string();
     let id = op.id.to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT DISTINCT ON(phase) id::text,ordinal,phase,status,value,received_at,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY phase,ordinal DESC").bind(tenant).bind(id).fetch_all(c).await})).await?;
-    let execute = rows
+    let phases = rows
         .iter()
-        .find(|r| r.try_get::<String, _>("phase").ok().as_deref() == Some("execute"));
+        .map(|r| Ok((AttemptPhase::parse(&r.try_get::<String, _>("phase")?)?, r)))
+        .collect::<Result<Vec<_>>>()?;
+    let execute = phases
+        .iter()
+        .find(|(p, _)| *p == AttemptPhase::Execute)
+        .map(|(_, r)| *r);
     let read = match op.request.task {
         Task::StateVerify { .. } => execute,
-        Task::Firewall { .. } => rows
+        Task::Firewall { .. } => phases
             .iter()
-            .find(|r| r.try_get::<String, _>("phase").ok().as_deref() == Some("observe")),
+            .find(|(p, _)| *p == AttemptPhase::Observe)
+            .map(|(_, r)| *r),
     };
     let expired = storage::now(tx).await? >= op.request.deadline;
     let write_status = execute

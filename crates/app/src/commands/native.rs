@@ -295,44 +295,44 @@ pub(crate) async fn send_on(
         request.commands = vec![command.clone()];
         let wire = s::encode(&request, &CodecLimits::default()).map_err(|_| protocol())?;
         sqlx::query("INSERT INTO mdm_commands.attempts(tenant_id,id,operation,ordinal,credential,session,message,command,phase,uri,request) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9,$10,$11)")
-  .bind(&tenant).bind(Uuid::new_v4().to_string()).bind(id).bind(ordinal).bind(p.credential().to_string()).bind(session).bind(msg).bind(i64::from(native)).bind(phase).bind(uri).bind(wire).execute(&mut *c).await.map_err(db)?;
+  .bind(&tenant).bind(Uuid::new_v4().to_string()).bind(id).bind(ordinal).bind(p.credential().to_string()).bind(session).bind(msg).bind(i64::from(native)).bind(phase.as_str()).bind(uri).bind(wire).execute(&mut *c).await.map_err(db)?;
         response.commands.push(command);
         pending = true;
         break;
     }
-    let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND (a.status IS NULL OR (a.status=200 AND a.value IS NULL AND (a.phase='observe' OR o.request->'task'->>'kind'='state_verify'))))")
-    .bind(&tenant).bind(&reg).bind(session).fetch_one(c).await.map_err(db)?;
+    let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND (a.status IS NULL OR (a.status=200 AND a.value IS NULL AND (a.phase=$4 OR o.request->'task'->>'kind'='state_verify'))))")
+    .bind(&tenant).bind(&reg).bind(session).bind(AttemptPhase::Observe.as_str()).fetch_one(c).await.map_err(db)?;
     Ok(pending || outstanding)
 }
-type NextPhase = (Option<(i64, &'static str)>, bool);
+type NextPhase = (Option<(i64, AttemptPhase)>, bool);
 fn next_phase(
     old: Option<&sqlx::postgres::PgRow>,
     task: &Task,
     session: i64,
 ) -> std::result::Result<NextPhase, Error> {
     let Some(old) = old else {
-        return Ok((Some((1, "execute")), false));
+        return Ok((Some((1, AttemptPhase::Execute)), false));
     };
     let ordinal = old
         .try_get::<i64, _>("ordinal")
         .map_err(db)?
         .checked_add(1)
         .ok_or_else(protocol)?;
-    let phase: String = old.try_get("phase").map_err(db)?;
+    let phase = AttemptPhase::parse(&old.try_get::<String, _>("phase").map_err(db)?)?;
     let status: Option<i32> = old.try_get("status").map_err(db)?;
     let same = old.try_get::<i64, _>("session").map_err(db)? == session;
     match task {
         Task::Firewall { .. }
-            if phase == "execute"
+            if phase == AttemptPhase::Execute
                 && status == Some(200)
                 && old
                     .try_get::<Option<bool>, _>("receipt_accepted")
                     .map_err(db)?
                     == Some(true) =>
         {
-            Ok((Some((ordinal, "observe")), false))
+            Ok((Some((ordinal, AttemptPhase::Observe)), false))
         }
-        Task::StateVerify { .. } if !same => Ok((Some((ordinal, "execute")), false)),
+        Task::StateVerify { .. } if !same => Ok((Some((ordinal, AttemptPhase::Execute)), false)),
         _ => Ok((
             None,
             same && (status.is_none()
@@ -349,7 +349,7 @@ async fn command_for(
     p: &DevicePrincipal,
     task: &Task,
     native: u32,
-    phase: &str,
+    phase: AttemptPhase,
     session: i64,
 ) -> std::result::Result<Option<Command>, Error> {
     let tenant = p.tenant().to_string();
@@ -379,7 +379,7 @@ async fn command_for(
                 &Platform::new(os_version, *edition).map_err(|_| protocol())?,
             )
             .map_err(|_| protocol())?;
-            if phase == "observe" {
+            if phase == AttemptPhase::Observe {
                 firewall.observe(native)
             } else {
                 firewall.replace(native)

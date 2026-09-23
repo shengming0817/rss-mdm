@@ -352,6 +352,15 @@
       ""
     ],
     [
+      "capability_queries",
+      "session_id",
+      "text",
+      true,
+      "(session)::text",
+      "",
+      "s"
+    ],
+    [
       "devices",
       "tenant_id",
       "uuid",
@@ -805,6 +814,13 @@
       "capability_queries_tenant_id_registration_fkey",
       "f",
       "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
+      true
+    ],
+    [
+      "capability_queries",
+      "capability_queries_tenant_id_registration_session_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, registration, session_id) REFERENCES mdm_access.management_sessions(tenant_id, registration, session_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED",
       true
     ],
     [

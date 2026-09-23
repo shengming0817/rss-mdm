@@ -41,7 +41,12 @@ async fn seed(
         .bind(tenant).bind(registration.to_string()).bind(last).execute(&mut *pg).await?;
     sqlx::query("INSERT INTO mdm_access.management_messages SELECT tenant_id,registration,session_id,1,repeat('f',64),decode('00','hex') FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int BETWEEN 1000 AND $3")
         .bind(tenant).bind(registration.to_string()).bind(last).execute(&mut *pg).await?;
+    sqlx::query("INSERT INTO mdm_commands.capability_queries(tenant_id,registration,generation,session,request,version_command,edition_command) SELECT tenant_id,registration,generation,session_id::bigint,decode('00','hex'),1,2 FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int BETWEEN 1000 AND $3")
+        .bind(tenant).bind(registration.to_string()).bind(last).execute(&mut *pg).await?;
     Ok(())
+}
+async fn queries(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar("SELECT count(*) FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND session>=1000").bind(tenant).fetch_one(pg).await?)
 }
 async fn messages(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<i64> {
     Ok(sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND session_id::int>=1000").bind(tenant).fetch_one(pg).await?)
@@ -88,10 +93,12 @@ pub(super) async fn verify(
             == 0
     );
     ensure!(messages(&mut pg, tenant).await? == 257);
+    ensure!(queries(&mut pg, tenant).await? == 257);
     // A failure after deleting child rows rolls back both tables.
     pg.execute("CREATE FUNCTION mdm_access.reject_session_gc() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_session_gc BEFORE DELETE ON mdm_access.management_sessions FOR EACH ROW EXECUTE FUNCTION mdm_access.reject_session_gc()").await?;
     ensure!(store.prune_management(tenant).await.is_err());
     ensure!(messages(&mut pg, tenant).await? == 257);
+    ensure!(queries(&mut pg, tenant).await? == 257);
     pg.execute("DROP TRIGGER reject_session_gc ON mdm_access.management_sessions; DROP FUNCTION mdm_access.reject_session_gc()").await?;
     let (a, b) = tokio::join!(
         store.prune_management(tenant),
@@ -144,6 +151,7 @@ pub(super) async fn verify(
         .await?;
     ensure!(outcome.shutdown().as_ref().is_ok_and(|r| r.is_clean()));
     ensure!(messages(&mut pg, tenant).await? == 0);
+    ensure!(queries(&mut pg, tenant).await? == 0);
     ensure!(
         history(&mut pg, tenant).await? == before,
         "retention changed authoritative facts"

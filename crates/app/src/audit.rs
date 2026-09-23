@@ -25,6 +25,7 @@ pub(crate) struct Snapshot {
     pub write_outcome: WriteOutcome,
     pub software: Option<SoftwareFact>,
     pub management_result: Option<ManagementResult>,
+    pub plan: Option<Uuid>,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum ManagementResult {
@@ -92,6 +93,7 @@ impl Audit {
                     write_outcome: WriteOutcome::CommitNotStarted,
                     software: None,
                     management_result: None,
+                    plan: None,
                 },
                 finalized: false,
             }),
@@ -165,6 +167,9 @@ impl Audit {
             .expect("audit lock")
             .snapshot
             .registration_id = Some(id);
+    }
+    pub fn plan(&self, plan: Uuid) {
+        self.0.state.lock().expect("audit lock").snapshot.plan = Some(plan);
     }
     pub fn management_result(&self, result: ManagementResult) {
         self.0
