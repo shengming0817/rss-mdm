@@ -90,7 +90,7 @@ async fn actual_rss_connection_failures_are_visible_without_payloads() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "windows::tls::tests::actual_rss_connection_failures_are_visible_without_payloads",
+            "native::tls::tests::actual_rss_connection_failures_are_visible_without_payloads",
             "--nocapture",
         ])
         .env("MDM_PANIC_DIAGNOSTIC_CHILD", "1")
@@ -141,7 +141,9 @@ pub(crate) async fn verify_tls_lifecycle(
     );
     for established in [false, true] {
         let admission = Admission::new(
-            super::super::tests::monotonic(),
+            std::sync::Arc::new(crate::Monotonic(|| {
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            })),
             Arc::new(tokio::sync::Semaphore::new(4)),
             "mdm-enrollment-tls",
         );
@@ -180,7 +182,7 @@ pub(crate) async fn verify_tls_lifecycle(
             },
             access.clone(),
             "11111111-1111-4111-8111-111111111111".into(),
-            "mdm-enrollment-tls",
+            crate::native::NativeListenerKind::WindowsEnrollment,
         ));
         let stream = TcpStream::connect(address).await?;
         let mut io: Box<dyn tokio::io::AsyncRead + Unpin> = if established {

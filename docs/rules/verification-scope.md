@@ -47,3 +47,11 @@ check/clippy/T1/doc-test 使用选中包；T2 按 `hack/ci.py` 的 gate 映射�
 
 选择器未知内部异常使用 `selector-internal` 原因，并在 stderr 记录阶段和异常类型，不记录异常原文。
 runner 分离读取 stdout JSON 与 stderr 诊断，将诊断保存在选择记录的 diagnostic 字段；已知错误原因保持不变。
+
+## 人工授权的容量验证
+
+百万设备容量测试不属于 `make ci`、`make ci-full` 或 `make ci-plan`，普通 CI 不运行或清理其独立证据。
+仅在用户明确授权本次容量运行后执行 `python3 hack/capacity.py --human-authorized`，可用 `--case` 限定范围。
+脚本缺少授权确认参数时，在创建产物、启动 Docker 或构建之前拒绝执行。参数仅记录调用方确认，不验证人的身份。
+AI 与自动化不得从 ship、review、CI 或一般测试任务推断此授权，也不得自行添加参数绕过要求。
+完整运行可能耗时数十分钟；未获授权时只记录未运行，不作为普通 CI 失败。

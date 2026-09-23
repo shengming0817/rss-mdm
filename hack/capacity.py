@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Actual million-device PostgreSQL acceptance. Synthetic identities are not device T3."""
+"""Manual-only million-device PostgreSQL acceptance; not a CI gate.
+
+Requires explicit human authorization for this particular run. AI agents and
+automation MUST NOT infer permission from ship, CI, review, or general testing
+instructions, or add --human-authorized without that authorization. The flag
+records the caller's acknowledgement; it does not authenticate a human.
+Synthetic identities are not device T3. A full run can take tens of minutes.
+"""
 import argparse
 import importlib.util
 import json
@@ -112,9 +119,13 @@ def measure(name, head):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", choices=CASES, action="append")
+    parser.add_argument("--human-authorized", action="store_true",
+                        help="acknowledge explicit human authorization for this particular run")
     args = parser.parse_args()
+    if not args.human_authorized:
+        parser.error("explicit human authorization is required for this run; only then pass --human-authorized")
     OUT.mkdir(parents=True, exist_ok=True)
     head = output(["/usr/bin/git", "rev-parse", "HEAD"])
     record = {"head": head, "hardware": hardware(), "cases": {}, "clean_at_start": not output(["/usr/bin/git", "status", "--porcelain"]), "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}

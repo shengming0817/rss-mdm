@@ -1,9 +1,10 @@
-//! Windows collection is the durable product intake; RSS owns receipts and projection.
+//! Native collection is the durable product intake; RSS owns receipts and projection.
 use crate::{Error, Failure};
 use rss_mdm_inventory::FieldKey;
 use rss_observation::{Body, Change, Id};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub(crate) mod apple;
 mod store;
 pub(crate) use store::{
     DurableReport, Run, accept, create, revalidate, revalidate_source, terminate, terminate_session,
@@ -91,6 +92,35 @@ pub(crate) struct Attempts {
     pub fields: [FieldAttempt; FIELD_COUNT],
 }
 impl Attempts {
+    pub(super) fn apple(dictionary: Option<&plist::Dictionary>, received_at: i64) -> Self {
+        let mut attempts = Self::default();
+        for ((field, key), native) in attempts
+            .fields
+            .iter_mut()
+            .zip(FieldKey::observed())
+            .zip(["Model", "OSVersion"])
+        {
+            field.received_at = Some(received_at);
+            let value = dictionary.and_then(|d| d.get(native));
+            match value {
+                Some(plist::Value::String(value)) if key.validate(value) => {
+                    field.value = Some(value.clone());
+                    field.value_digest = Some(format!("{:x}", Sha256::digest(value.as_bytes())));
+                    field.quality = Quality::Success;
+                }
+                Some(_) => field.quality = Quality::Invalid,
+                None => {
+                    field.quality = if dictionary.is_some() {
+                        Quality::Missing
+                    } else {
+                        Quality::Failed
+                    }
+                }
+            }
+        }
+        attempts
+    }
+
     pub(crate) fn agent(
         body: &rss_mdm_agent_wire::ReportBody,
         received_at: i64,
@@ -187,7 +217,7 @@ impl Attempts {
         if self
             .fields
             .iter()
-            .all(|f| f.status.is_none() && f.value_digest.is_none())
+            .all(|f| f.received_at.is_none() && f.status.is_none() && f.value_digest.is_none())
         {
             return None;
         }

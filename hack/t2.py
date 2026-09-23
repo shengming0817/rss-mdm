@@ -154,7 +154,7 @@ def configure_identity(root, port, binary, env):
     config['management']['database']=database('mdm_management_runtime','runtime-fixture')
     config['command_database']=database('mdm_command_runtime','runtime-fixture')
     config['management']['publication_database']=database('mdm_software_driver','runtime-fixture')
-    config['windows']=json.loads((root/'windows.json').read_text())
+    config['native_protocols']={'windows':json.loads((root/'windows.json').read_text())}
     config['identity_management']=[dict(tenant_id=TENANTS[0],instance_id=INSTANCE,principal_id=ADMIN,permissions=['accounts','providers'])]
     env['MDM_TEST_CONFIG']=write('runtime.json',config)
     maintenance=database('mdm_identity_maintenance','identity-maintenance-fixture')
@@ -165,7 +165,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None):
+def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -209,16 +209,31 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             from windows_fixtures import generate
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_WINDOWS_FIXTURES']=str(root)
+            from apple_fixtures import generate as generate_apple
+            generate_apple(root, root/'server.crt', root/'server.key')
+            env['MDM_APPLE_FIXTURES']=str(root)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
+            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
+            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_apple"], stdout=subprocess.DEVNULL, timeout=10)
             upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
+            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection_apple ... ok' in upgrade.stdout and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
             if catalog_mode:
                 from command_catalog import capture
                 capture(name, catalog_mode)
                 return
             configure_identity(root, port, migrators[0], env)
+            if apple_only:
+                from apple_ca import running
+                from apple_oracle import running as oracle
+                with running(root, env), oracle(root, env):
+                    result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                    print(result.stdout,flush=True)
+                    expected={'apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'}
+                    passed=set(re.findall(r'^test (\S+) \.\.\. ok$',result.stdout,re.MULTILINE))
+                    require(result.returncode==0 and passed==expected and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in result.stdout,'Apple T2 failed or omitted required real protocol tests')
+                return
             env['MDM_TEST_PG_CONTAINER'] = name
             if task_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)

@@ -263,7 +263,7 @@ pub(crate) async fn send_on(
         response.commands.extend(request.commands);
         pending = true;
     }
-    let rows=sqlx::query("SELECT o.id::text,o.request::text,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND d.status IN('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.session=$4 AND o.request->'task'->>'kind'='state_verify') ORDER BY o.id LIMIT 64")
+    let rows=sqlx::query("SELECT o.id::text,o.request::text,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.request->'task'->>'kind' IN ('state_verify','firewall') AND o.gateway_accepted AND d.status IN('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.session=$4 AND o.request->'task'->>'kind'='state_verify') ORDER BY o.id LIMIT 64")
  .bind(&tenant).bind(&reg).bind(p.generation()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let op: Create = serde_json::from_str(&row.try_get::<String, _>("request").map_err(db)?)
@@ -355,6 +355,7 @@ async fn command_for(
     let tenant = p.tenant().to_string();
     let reg = p.registration().to_string();
     let command = match task {
+        Task::ProfileInstall { .. } | Task::ProfileRemove { .. } => return Err(Error::Unsupported),
         Task::StateVerify { field, .. } => get(
             native,
             match field {

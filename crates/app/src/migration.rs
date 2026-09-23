@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 45] {
+fn units() -> [(&'static str, &'static str); 46] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -226,6 +226,10 @@ fn units() -> [(&'static str, &'static str); 45] {
         (
             "windows-configuration-v1",
             include_str!("../migrations/0012_windows_configuration.sql"),
+        ),
+        (
+            "apple-management-v1",
+            include_str!("../migrations/0015_apple_management.sql"),
         ),
         (
             "agent-access-v2",
@@ -396,6 +400,17 @@ fn accepted_ledger(
     {
         return true;
     }
+    // The merged target's exact Apple ledger is also an accepted deployed baseline.
+    let apple_baseline = &units()[..40];
+    if actual.len() == apple_baseline.len()
+        && apple_baseline.iter().all(|(name, sql)| {
+            actual
+                .get(name)
+                .is_some_and(|digest| **digest == format!("{:x}", Sha256::digest(sql)))
+        })
+    {
+        return true;
+    }
     #[derive(serde::Deserialize)]
     struct Unit {
         name: String,
@@ -421,6 +436,23 @@ async fn preflight_upgrade(
     installed: &[(String, String, bool)],
     current: &[(&'static str, &'static str)],
 ) -> Result<()> {
+    if !installed.is_empty()
+        && !installed.iter().any(|unit| unit.0 == "apple-management-v1")
+        && installed
+            .iter()
+            .any(|unit| unit.0 == "windows-configuration-v1")
+        && current.iter().any(|unit| unit.0 == "apple-management-v1")
+    {
+        verify_installation(conn, installation, instance).await?;
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|_| MigrationError::at("apple-management-v1", "preflight transaction"))?;
+        sqlx::raw_sql(include_str!("migration/apple-preflight.sql")).execute(&mut *tx).await.map_err(|_|MigrationError::at("apple-management-v1","quiesce commands, dispatch, sessions, collections and reconciliation before upgrade"))?;
+        tx.commit()
+            .await
+            .map_err(|_| MigrationError::at("apple-management-v1", "preflight acknowledgement"))?;
+    }
     if !installed.is_empty()
         && !installed.iter().any(|unit| unit.0 == "agent-access-v2")
         && current.iter().any(|unit| unit.0 == "agent-access-v2")

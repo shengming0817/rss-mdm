@@ -208,7 +208,7 @@ fn current(
     proof: &Principal,
 ) -> Result<(), Error> {
     proof.enrollment(&auth.device)?;
-    if auth.channel != rss_mdm_inventory::Channel::Mdm
+    if auth.source != rss_mdm_inventory::ReportSource::MdmWindows
         || row.try_get::<String, _>("state").map_err(db)? == "cancelled"
         || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
         || uuid(row, "credential_ref")? != auth.credential_ref

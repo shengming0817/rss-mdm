@@ -28,6 +28,7 @@ use rss_mdm_inventory::{Channel, ReportSource};
 pub struct VerifiedChannelCredential {
     tenant: TenantId,
     channel: Channel,
+    source: ReportSource,
     locator: [u8; 32],
 }
 impl VerifiedChannelCredential {
@@ -41,7 +42,19 @@ impl VerifiedChannelCredential {
         Self {
             tenant,
             channel: Channel::Agent,
+            source: ReportSource::AgentBuiltin,
             locator: hash.finalize().into(),
+        }
+    }
+    pub(crate) fn apple(
+        tenant: TenantId,
+        checked: &crate::apple::certificate::CheckedLeaf,
+    ) -> Self {
+        Self {
+            tenant,
+            channel: Channel::Mdm,
+            source: ReportSource::MdmApple,
+            locator: checked.fingerprint(),
         }
     }
     pub(crate) fn windows(
@@ -51,6 +64,7 @@ impl VerifiedChannelCredential {
         Self {
             tenant,
             channel: Channel::Mdm,
+            source: ReportSource::MdmWindows,
             locator: checked.fingerprint(),
         }
     }
@@ -128,7 +142,7 @@ impl DeviceService {
         &self,
         credential: &VerifiedChannelCredential,
     ) -> Result<DevicePrincipal, Error> {
-        self.authorize_report(credential, ReportSource::MdmWindows)
+        self.authorize_report(credential, credential.source)
             .await
             .map(|(principal, _)| principal)
     }

@@ -19,8 +19,13 @@ WITH tables AS (
  ('mdm_access.report_sources','next_sequence'),('mdm_access.report_sources','next_command'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','correlation'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
+,
+ ('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
+ ('mdm_apple.profiles','profile'),('mdm_apple.profiles','operation'),('mdm_apple.profiles','registration'),('mdm_apple.profiles','version'),('mdm_apple.profiles','enabled'),
+ ('mdm_apple.devices','token'),('mdm_apple.devices','magic'),('mdm_apple.devices','state'),('mdm_apple.devices','push_id'),('mdm_apple.devices','push_lease_until'),('mdm_apple.devices','next_push'),('mdm_apple.devices','push_status'),('mdm_apple.devices','push_outcome'),('mdm_apple.devices','push_configuration'),('mdm_apple.devices','push_failures')
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_commands.action_polls',true,true,false),('mdm_commands.action_plans',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_access.agent_bindings',true,false,false),
+ ('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_access.requests',true,false,false),
 ('mdm_commands.firewall_owners',true,true,true),('mdm_commands.attempt_history',true,false,false),
 ('mdm_commands.capabilities',true,true,false),
 ('mdm_commands.capability_queries',true,true,false),

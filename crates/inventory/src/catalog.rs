@@ -190,7 +190,11 @@ impl FieldKey {
             } else if self.is_enterprise() {
                 &[crate::Source::AgentScript]
             } else {
-                &[crate::Source::MdmWindows, crate::Source::AgentBuiltin]
+                &[
+                    crate::Source::MdmWindows,
+                    crate::Source::MdmApple,
+                    crate::Source::AgentBuiltin,
+                ]
             },
             operations,
         }

@@ -11,6 +11,8 @@ rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
+plist = "=1.10.1"
+cms = { version = "=0.2.3", default-features = false, features = ["std"] }
 rss-mdm-backend-postgres-support = { path = "crates/backend-postgres-support" }
 rss-mdm-agent-wire = { path = "crates/agent-wire" }
 rss-mdm-software-release = { path = "crates/software-release" }
@@ -40,6 +42,7 @@ subtle = "2"
 libc = "0.2"
 rand = "0.8"
 http-body-util = "0.1"
+h2 = "=0.4.19"
 tower = { version = "0.5", features = ["util"] }
 rss-runtime = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "ec67bd142d70cb8f0d56feae636ac9471e7471fc", default-features = false }
 rss-axum = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "ec67bd142d70cb8f0d56feae636ac9471e7471fc", default-features = false, features = ["http1"] }

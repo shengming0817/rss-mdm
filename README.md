@@ -47,3 +47,4 @@ app → inventory-postgres/inventory/Identity 四个公开组件；examples → 
 Windows 注册与首次管理会话的当前范围、配置和 T3 边界见 [使用指南](docs/guides/202609111146-2350-windows-enrollment-management.md)。
 
 企业脚本、采集模板与持久任务服务端见 [任务指南](docs/guides/202609230001-2468-enterprise-tasks.md)；Agent wire V2 和数据库升级见 [部署步骤](docs/deployment/202609230002-2468-enterprise-task-upgrade.md)。真实终端 runner 按 #2475/#2476 另行验收。
+Apple 手动注册、DeviceInformation 和防火墙 Profile 的服务端范围与受控 T2 见 [Apple 管理指南](docs/guides/202609230000-2471-apple-management.md)；真实 Mac/组织 APNs 验收由 #2482 持有。

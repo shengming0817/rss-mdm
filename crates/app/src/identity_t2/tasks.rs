@@ -236,8 +236,8 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     let enrollment = post(
         &mut author,
         &router,
-        "/api/v2/enrollments",
-        json!({"deviceId":DEVICE_ID,"password":password,"channel":"agent"}),
+        "/api/v3/enrollments",
+        json!({"deviceId":DEVICE_ID,"password":password,"source":"agent.builtin"}),
     )
     .await?;
     author.operation = None;
@@ -263,8 +263,8 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     let enrollment = post(
         &mut author,
         &router,
-        "/api/v2/enrollments",
-        json!({"deviceId":DEVICE_ID,"password":password,"channel":"agent"}),
+        "/api/v3/enrollments",
+        json!({"deviceId":DEVICE_ID,"password":password,"source":"agent.builtin"}),
     )
     .await?;
     author.operation = None;

@@ -7,13 +7,7 @@ impl Client {
     async fn submit_product(&mut self, path: &str, body: Value) -> anyhow::Result<Value> {
         let route = format!(
             "/api/v{}/{path}",
-            if path.starts_with("resources/") {
-                3
-            } else if path.ends_with("/execute") {
-                1
-            } else {
-                2
-            }
+            if path.starts_with("resources/") { 3 } else { 2 }
         );
         let mut reply = self
             .browser
@@ -184,7 +178,7 @@ impl Client {
             )
             .await?;
         let request = json!({"operationId":Uuid::new_v4(),"expectedRevision":saved["receipt"]["storageRevision"],"deadline":self.app.clock.unix_seconds()?+300});
-        let path = format!("/api/v1/policies/{policy}/plans/{preview}/execute");
+        let path = format!("/api/v2/policies/{policy}/plans/{preview}/execute");
         let denied = self
             .browser
             .call(&self.router, Method::POST, &path, Some(request.clone()))

@@ -6,7 +6,7 @@
 
 管理请求使用现有 Identity 会话、Origin/CSRF 和设备范围授权。端点为：
 
-| 方法与路径（前缀 `/api/v1/devices/{device}`） | 权限 | 请求 |
+| 方法与路径（前缀 `/api/v2/devices/{device}`） | 权限 | 请求 |
 |---|---|---|
 | POST `/operations` | `state_verify` | `operationId`、`task: {kind:"state_verify",field,expectedValue}`、`deadline`（Unix 秒） |
 | GET `/operations/{id}` | `operation_read` | 无 |
@@ -55,7 +55,7 @@
 
 查询成功返回 `200`，字段为 `operationId`、`commandId`、`revision`、`task`、`deadline`、`authorization`、`commandStatus`、`observation`。任务规格始终是受理时的不可变内容。`authorization` 为 `approved` 或 `blocked`，不代表 command 已执行。`commandStatus` 枚举为 `queued`、`published`、`received`、`applied`、`rejected`、`timed_out`、`superseded`、`cancelled`。
 
-尚未发出尝试时，`observation` 包含 `result/effect/progress=unknown` 及 `writeStatus=null`。已有尝试时包含：
+Windows observation 带 `protocol:"mdm.windows"`；Apple 的 Profile 存在性结果见 [Apple 指南](202609230000-2471-apple-management.md)。尚未发出尝试时，`observation` 包含 `result/effect/progress=unknown` 及 `writeStatus=null`。已有尝试时包含：
 
 | 字段 | 类型及含义 |
 |---|---|

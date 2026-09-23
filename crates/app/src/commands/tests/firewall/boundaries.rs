@@ -230,7 +230,7 @@ impl Client {
         let frozen = frozen["execution"].clone();
         let saved=self.product(&format!("policies/{policy}/plans"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"preview":preview}})).await?;
         let request = json!({"operationId":Uuid::new_v4(),"expectedRevision":saved["receipt"]["storageRevision"],"deadline":self.app.clock.unix_seconds()?+300});
-        let path = format!("/api/v1/policies/{policy}/plans/{preview}/execute");
+        let path = format!("/api/v2/policies/{policy}/plans/{preview}/execute");
         if frozen["devices"].as_array().unwrap().len() == 32 {
             self.rollback_plan(preview, &frozen, &path, &request)
                 .await?;
@@ -370,7 +370,7 @@ impl Client {
                 .execute(&mut pg)
                 .await?;
             sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES($1::uuid,$2::uuid,'fixture','fixture',$3,'enrollment','consumed',clock_timestamp()+interval '60 seconds')").bind(TENANT).bind(grant.to_string()).bind(&device).execute(&mut pg).await?;
-            sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm')").bind(TENANT).bind(request.to_string()).bind(grant.to_string()).execute(&mut pg).await?;
+            sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm.windows')").bind(TENANT).bind(request.to_string()).bind(grant.to_string()).execute(&mut pg).await?;
             sqlx::query("INSERT INTO mdm_access.registrations VALUES($1::uuid,$2::uuid,$3,'mdm',1,$4::uuid,'active')").bind(TENANT).bind(registration.to_string()).bind(&device).bind(request.to_string()).execute(&mut pg).await?;
             sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')")
                 .bind(TENANT).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(format!("{:x}",sha2::Sha256::digest(registration.as_bytes()))).execute(&mut pg).await?;
@@ -450,7 +450,7 @@ impl Client {
                 .call(
                     &self.router,
                     Method::POST,
-                    &format!("/api/v1/devices/{first}/operations/{held}/cancel"),
+                    &format!("/api/v2/devices/{first}/operations/{held}/cancel"),
                     Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
                 )
                 .await?
@@ -485,7 +485,7 @@ impl Client {
             .call(
                 &self.router,
                 Method::POST,
-                &format!("/api/v1/policies/{competitor}/plans/{p}/execute"),
+                &format!("/api/v2/policies/{competitor}/plans/{p}/execute"),
                 Some(request),
             )
             .await?;

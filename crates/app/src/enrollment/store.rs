@@ -7,7 +7,7 @@ use crate::{
     audit::Audit,
     device::store::lock_channel,
 };
-use rss_mdm_inventory::Channel;
+use rss_mdm_inventory::ReportSource;
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 
 pub(crate) fn actor(proof: &Principal) -> Actor<'_> {
@@ -21,7 +21,7 @@ pub(crate) fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
     Uuid::parse_str(&row.try_get::<String, _>(name).map_err(db)?)
         .map_err(|_| Error::Unavailable(Failure::AccessStore))
 }
-fn authorization(row: PgRow) -> Result<Authorization, Error> {
+pub(crate) fn authorization(row: PgRow) -> Result<Authorization, Error> {
     Ok(Authorization {
         id: uuid(&row, "id")?,
         device: row.try_get("device").map_err(db)?,
@@ -32,11 +32,8 @@ fn authorization(row: PgRow) -> Result<Authorization, Error> {
         expected_generation: row.try_get("expected_generation").map_err(db)?,
         operation: uuid(&row, "issuance_operation")?,
         state: row.try_get("state").map_err(db)?,
-        channel: match row.try_get::<String, _>("channel").map_err(db)?.as_str() {
-            "agent" => Channel::Agent,
-            "mdm" => Channel::Mdm,
-            _ => return Err(Error::Unavailable(Failure::AccessStore)),
-        },
+        source: ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
+            .map_err(|_| Error::Unavailable(Failure::AccessStore))?,
     })
 }
 pub(crate) async fn request(
@@ -45,7 +42,7 @@ pub(crate) async fn request(
     id: Uuid,
 ) -> Result<PgRow, Error> {
     // Cancelled legacy rows have no password or session and can never be resumed.
-    sqlx::query("SELECT r.id::text,r.state,r.channel,r.password_digest,r.password_version,r.expected_generation,r.credential_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at>clock_timestamp() AS live,g.actor,g.instance,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL FOR UPDATE OF r")
+    sqlx::query("SELECT r.id::text,r.state,r.source,r.password_digest,r.password_version,r.expected_generation,r.credential_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at>clock_timestamp() AS live,g.actor,g.instance,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL FOR UPDATE OF r")
         .bind(tenant).bind(id.to_string()).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Forbidden)
 }
 impl AccessStore {
@@ -53,7 +50,7 @@ impl AccessStore {
         &self,
         permission: EnrollmentPermission<'_>,
         password: &Password,
-        channel: Channel,
+        source: ReportSource,
         session: Uuid,
         key: Uuid,
         audit: &Audit,
@@ -62,7 +59,7 @@ impl AccessStore {
         proof.enrollment(permission.device())?;
         let device = permission.device();
         let password_digest = password.digest(proof.tenant_id(), device)?;
-        let digest = digest(&("enrollment_create", device, channel, &password_digest));
+        let digest = digest(&("enrollment_create.v3", device, source, &password_digest));
         let op = Operation {
             actor: actor(proof),
             key,
@@ -74,22 +71,22 @@ impl AccessStore {
             return serde_json::from_str(&old)
                 .map_err(|_| Error::Unavailable(Failure::AccessStore));
         }
-        lock_channel(&mut tx, proof.tenant_id(), device, channel).await?;
+        lock_channel(&mut tx, proof.tenant_id(), device, source.channel()).await?;
         let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3")
-            .bind(proof.tenant_id()).bind(device).bind(channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
+            .bind(proof.tenant_id()).bind(device).bind(source.channel().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
         let id = Uuid::new_v4();
         let grant = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2::uuid,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
             .bind(proof.tenant_id()).bind(grant.to_string()).bind(proof.principal_id()).bind(proof.instance_id()).bind(device).execute(&mut *tx).await.map_err(db)?;
-        let expires: i64 = sqlx::query_scalar("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,channel,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation) VALUES($1::uuid,$2::uuid,$3::uuid,'pending',$4,$5,$6,1,$7::uuid,clock_timestamp()+interval '300 seconds',$8::uuid) RETURNING floor(extract(epoch FROM expires_at))::bigint")
-            .bind(proof.tenant_id()).bind(id.to_string()).bind(grant.to_string()).bind(channel.as_str()).bind(generation).bind(password_digest).bind(session.to_string()).bind(Uuid::new_v4().to_string()).fetch_one(&mut *tx).await.map_err(db)?;
+        let expires: i64 = sqlx::query_scalar("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation) VALUES($1::uuid,$2::uuid,$3::uuid,'pending',$4,$5,$6,1,$7::uuid,clock_timestamp()+interval '300 seconds',$8::uuid) RETURNING floor(extract(epoch FROM expires_at))::bigint")
+            .bind(proof.tenant_id()).bind(id.to_string()).bind(grant.to_string()).bind(source.as_str()).bind(generation).bind(password_digest).bind(session.to_string()).bind(Uuid::new_v4().to_string()).fetch_one(&mut *tx).await.map_err(db)?;
         let receipt = Receipt {
             operation_id: key,
             enrollment_id: id,
             status: "pending".into(),
             expires_at: expires,
             registration: None,
-            channel,
+            source,
         };
         proof.enrollment(permission.device())?;
         self.finish(
@@ -130,7 +127,7 @@ impl AccessStore {
         } else {
             "enrollment_cancel"
         };
-        let digest = digest(&(action, id, &password_digest));
+        let digest = digest(&("enrollment_change.v3", action, id, &password_digest));
         let op = Operation {
             actor: actor(proof),
             key,
@@ -186,11 +183,8 @@ impl AccessStore {
             },
             expires_at: expires,
             registration,
-            channel: match row.try_get::<String, _>("channel").map_err(db)?.as_str() {
-                "agent" => Channel::Agent,
-                "mdm" => Channel::Mdm,
-                _ => return Err(Error::Unavailable(Failure::AccessStore)),
-            },
+            source: ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
+                .map_err(|_| Error::Unavailable(Failure::AccessStore))?,
         };
         proof.enrollment(permission.device())?;
         self.finish(

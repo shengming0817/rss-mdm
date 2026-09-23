@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use rss_mdm_agent_wire as wire;
-use rss_mdm_inventory::{Channel, FieldKey, ReportSource as InventorySource};
+use rss_mdm_inventory::{FieldKey, ReportSource as InventorySource};
 use rss_observation::{Batch, Body, Change, Id};
 use rss_request_context::TenantId;
 use serde_json::Value;
@@ -136,7 +136,7 @@ async fn register_inner(
             &password,
         )
         .await?;
-    if auth.channel != Channel::Agent {
+    if auth.source != InventorySource::AgentBuiltin {
         return Err(Error::Unauthorized.into());
     }
     let proof = authenticate(app, app.credentials.get(auth.credential_ref)?).await?;
@@ -194,7 +194,7 @@ async fn register_inner(
         .map_err(|_| Error::Unavailable(Failure::AccessStore))?;
     sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,$3)")
         .bind(proof.tenant_id()).bind(receipt.registration.to_string()).bind(capabilities).execute(&mut *tx).await.map_err(db)?;
-    let changed = sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND channel='agent' AND password_version=$3 AND credential_ref=$4::uuid AND expires_at>clock_timestamp()")
+    let changed = sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND source='agent.builtin' AND password_version=$3 AND credential_ref=$4::uuid AND expires_at>clock_timestamp()")
         .bind(proof.tenant_id()).bind(auth.id.to_string()).bind(auth.version).bind(auth.credential_ref.to_string()).execute(&mut *tx).await.map_err(db)?;
     if changed.rows_affected() != 1 {
         return Err(Error::Unauthorized.into());

@@ -15,6 +15,10 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
     VerifiedChannelCredential {
         tenant: TenantId::parse(tenant).unwrap(),
         channel,
+        source: match channel {
+            Channel::Agent => ReportSource::AgentBuiltin,
+            Channel::Mdm => ReportSource::MdmWindows,
+        },
         locator: [key; 32],
     }
 }
@@ -75,7 +79,10 @@ async fn request(
         .create_enrollment(
             admin.enrollment(device)?,
             &Password::new(crate::enrollment::random())?,
-            channel,
+            match channel {
+                Channel::Agent => ReportSource::AgentBuiltin,
+                Channel::Mdm => ReportSource::MdmWindows,
+            },
             Uuid::new_v4(),
             key,
             &audit,

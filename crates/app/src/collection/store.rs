@@ -65,9 +65,37 @@ pub(crate) struct Run {
     pub result: RunResult,
     pub reason: Option<FinishReason>,
     batch: Option<Batch>,
+    windows: Option<WindowsCorrelation>,
+}
+#[derive(PartialEq, Eq)]
+struct WindowsCorrelation {
     request: Vec<u8>,
     request_message: u32,
     first_command: u32,
+}
+impl WindowsCorrelation {
+    fn restore(row: &PgRow) -> Result<Option<Self>, Error> {
+        let request: Option<Vec<u8>> = row.try_get("request").map_err(db)?;
+        let message: Option<i64> = row.try_get("request_message").map_err(db)?;
+        let first: Option<i64> = row.try_get("first_command").map_err(db)?;
+        match (request, message, first) {
+            (Some(request), Some(message), Some(first))
+                if row.try_get::<String, _>("source").map_err(db)? == "mdm.windows" =>
+            {
+                Ok(Some(Self {
+                    request,
+                    request_message: message.try_into().map_err(|_| corrupt())?,
+                    first_command: first.try_into().map_err(|_| corrupt())?,
+                }))
+            }
+            (None, None, None)
+                if row.try_get::<String, _>("source").map_err(db)? != "mdm.windows" =>
+            {
+                Ok(None)
+            }
+            _ => Err(corrupt()),
+        }
+    }
 }
 fn restored_scope(row: &PgRow) -> Result<Scope, Error> {
     let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
@@ -111,7 +139,7 @@ fn restored_batch(row: &PgRow, scope: &Scope) -> Result<(Uuid, u64, Option<Batch
 }
 
 impl Run {
-    fn from_row(row: PgRow) -> Result<Self, Error> {
+    pub(super) fn from_row(row: PgRow) -> Result<Self, Error> {
         let scope = restored_scope(&row)?;
         let (id, sequence, batch) = restored_batch(&row, &scope)?;
         Ok(Self {
@@ -130,17 +158,7 @@ impl Run {
                 .as_deref()
                 .map(FinishReason::parse)
                 .transpose()?,
-            request: row.try_get("request").map_err(db)?,
-            request_message: row
-                .try_get::<i64, _>("request_message")
-                .map_err(db)?
-                .try_into()
-                .map_err(|_| corrupt())?,
-            first_command: row
-                .try_get::<i64, _>("first_command")
-                .map_err(db)?
-                .try_into()
-                .map_err(|_| corrupt())?,
+            windows: WindowsCorrelation::restore(&row)?,
         })
     }
     pub(crate) fn batch(&self) -> Option<&Batch> {
@@ -216,8 +234,9 @@ pub(crate) async fn accept(
     let (_, sent) = syncml::encode_request(&previous, &limits).map_err(|_| corrupt())?;
     let mut expected =
         syncml::Expected::new(sent, message.header.message_id, &limits).map_err(|_| corrupt())?;
-    if previous.header.message_id != run.request_message {
-        let sent = syncml::decode(&run.request, &limits).map_err(|_| corrupt())?;
+    let windows = run.windows.as_ref().ok_or_else(corrupt)?;
+    if previous.header.message_id != windows.request_message {
+        let sent = syncml::decode(&windows.request, &limits).map_err(|_| corrupt())?;
         let (_, sent) = syncml::encode_request(&sent, &limits).map_err(|_| corrupt())?;
         expected.record_sent(sent, &limits).map_err(|_| corrupt())?;
     }
@@ -229,8 +248,8 @@ pub(crate) async fn accept(
             .map_err(db)?;
     run.attempts.apply(
         &correlated,
-        run.request_message,
-        run.first_command,
+        windows.request_message,
+        windows.first_command,
         received_at,
     )?;
     let terminal = run.attempts.complete() || message.header.message_id == 8;
@@ -247,7 +266,11 @@ pub(crate) async fn accept(
     }
     Ok(terminal)
 }
-async fn seal(tx: &mut sqlx::PgConnection, run: &mut Run, reason: &str) -> Result<(), Error> {
+pub(super) async fn seal(
+    tx: &mut sqlx::PgConnection,
+    run: &mut Run,
+    reason: &str,
+) -> Result<(), Error> {
     run.attempts.finish();
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -341,6 +364,7 @@ impl DurableReport {
 impl AccessStore {
     pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
         let mut tx = self.begin(tenant).await?;
+        super::apple::expire(&mut tx, tenant).await?;
         let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
             .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
         let reports: Vec<DurableReport> = rows
@@ -403,4 +427,19 @@ fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
     }
     let batch = batch.ok_or_else(corrupt)?;
     Ok(DurableReport { scope, batch })
+}
+
+pub(super) async fn load_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<Run, Error> {
+    Run::from_row(
+        sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE"))
+            .bind(tenant)
+            .bind(id.to_string())
+            .fetch_one(c)
+            .await
+            .map_err(db)?,
+    )
 }

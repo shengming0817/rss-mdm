@@ -58,14 +58,11 @@ impl Commands {
         audit: &Audit,
     ) -> Result<Value> {
         storage::admit(tx).await?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
+        require_tenant(self.tenant, proof)?;
         let auth = storage::authorized(tx, proof, device, input.task.permission()).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         storage::lock(tx, device).await?;
-        let fingerprint =
-            Sha256::digest(invalid(serde_json::to_vec(&(proof.user(), device, input)))?).to_vec();
+        let fingerprint = create_fingerprint(proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint).await? {
             audit.management_result(crate::audit::ManagementResult::Replayed);
             storage::audit(tx, audit, 202).await?;
@@ -75,6 +72,7 @@ impl Commands {
         input.validate(now)?;
         let (registration, registration_generation) =
             storage::current_registration(tx, device).await?;
+        storage::require_source(tx, registration, input.task.source()).await?;
         let (scope, coordinate) =
             storage::authority(self, tx, device, registration, registration_generation).await?;
         let approval = Approval::from_proof(&auth, proof, device, input.task.permission())?;
@@ -82,7 +80,7 @@ impl Commands {
             scope,
             invalid(dc::CommandId::parse(&input.operation_id.to_string()))?,
             coordinate,
-            input.task.digest()?,
+            input.digest(&self.tenant.to_string(), device)?,
             input.deadline * 1_000_000,
         );
         let message = dispatch(self.tenant, device, input, coordinate, now)?;
@@ -95,16 +93,8 @@ impl Commands {
         let approval = invalid(serde_json::to_string(&approval))?;
         let digest = fingerprint.clone();
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).execute(c).await?;Ok(())})).await?;
-        let response = json!({"operationId":input.operation_id,"commandId":input.operation_id,"revision":1,"accepted":true});
-        receipt(
-            tx,
-            input.operation_id,
-            input.operation_id,
-            fingerprint,
-            &response,
-        )
-        .await?;
-        storage::audit(tx, audit, 202).await?;
+        apple::own(tx, device, registration, input).await?;
+        let response = created(tx, audit, input.operation_id, fingerprint).await?;
         proof.check_live()?;
         Ok(response)
     }
@@ -145,7 +135,7 @@ impl Commands {
             let permission=if approve {op.request.task.permission()}else{Permission::OperationCancel};
             let auth=storage::authorized(tx,proof,device,permission).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
-            let fingerprint=Sha256::digest(invalid(serde_json::to_vec(&(proof.user(),device,id,change,approve)))?).to_vec();
+            let fingerprint=Sha256::digest(invalid(serde_json::to_vec(&("mdm.command-change/v2",proof.user(),device,id,change,approve)))?).to_vec();
             if let Some(value)=replay(tx,change.request_id,&fingerprint).await? {audit.management_result(crate::audit::ManagementResult::Replayed);storage::audit(tx,audit,200).await?;return Ok(value);}
             let op=storage::load(tx,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
@@ -213,7 +203,7 @@ fn dispatch(
     coordinate: dc::Coordinate,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
-    let payload = invalid(serde_json::to_vec(&DispatchV1 {
+    let payload = invalid(serde_json::to_vec(&DispatchV2 {
         device: device.into(),
         request: input.clone(),
         generation: coordinate.generation(),
@@ -229,13 +219,13 @@ fn dispatch(
                 tenant,
                 invalid(Timepoint::try_from(now))?,
                 messaging_domain(),
-                invalid(MessageRoute::parse("windows.command"))?,
+                invalid(MessageRoute::parse("device.command"))?,
                 ContractIdentity::new(
                     invalid(ContractId::parse("mdm.command-dispatch"))?,
-                    invalid(ContractVersion::from_major(1))?,
+                    invalid(ContractVersion::from_major(2))?,
                     invalid(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
-                        Sha256::digest(include_bytes!("dispatch-v1.json"))
+                        Sha256::digest(include_bytes!("dispatch-v2.json"))
                     )))?,
                 ),
             ),
@@ -255,4 +245,33 @@ pub(super) fn status(status: dc::Status) -> &'static str {
         dc::Status::Superseded => "superseded",
         dc::Status::Cancelled => "cancelled",
     }
+}
+
+fn create_fingerprint(proof: &Principal, device: &str, input: &Create) -> Result<Vec<u8>> {
+    Ok(Sha256::digest(invalid(serde_json::to_vec(&(
+        "mdm.command-create/v2",
+        proof.user(),
+        device,
+        input,
+    )))?)
+    .to_vec())
+}
+
+fn require_tenant(tenant: rss_request_context::TenantId, proof: &Principal) -> Result<()> {
+    if proof.tenant_id() != tenant.to_string() {
+        return Err(Error::Forbidden.into());
+    }
+    Ok(())
+}
+
+async fn created(
+    tx: &mut PgTransaction<'_>,
+    audit: &Audit,
+    id: Uuid,
+    fingerprint: Vec<u8>,
+) -> Result<Value> {
+    let response = json!({"operationId":id,"commandId":id,"revision":1,"accepted":true});
+    receipt(tx, id, id, fingerprint, &response).await?;
+    storage::audit(tx, audit, 202).await?;
+    Ok(response)
 }

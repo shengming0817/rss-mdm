@@ -129,7 +129,7 @@ pub fn scope_coverage(scope: &rss_observation::Scope) -> Result<Coverage> {
 /// The finite datasets owned by a trusted producer.
 pub fn datasets(source: Source) -> &'static [&'static str] {
     match source {
-        Source::AgentBuiltin | Source::MdmWindows => &[DATASET],
+        Source::AgentBuiltin | Source::MdmWindows | Source::MdmApple => &[DATASET],
         Source::AgentScript => &[
             "custom.corporate_agent.version",
             "custom.corporate_agent.healthy",

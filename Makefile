@@ -28,6 +28,7 @@ t2:
 	python3 hack/asset-t2.py
 	python3 hack/command-t2.py
 	python3 hack/task-t2.py
+	python3 hack/apple-t2.py
 
 .PHONY: source-t2 source-consumers agent-wire-consumer group-consumer
 source-t2:
@@ -69,10 +70,10 @@ t2-assets:
 command-catalog:
 	python3 hack/command_catalog.py --check
 
-.PHONY: capacity
-capacity:
-	python3 hack/capacity.py
-
 .PHONY: t2-tasks
 t2-tasks:
 	python3 hack/task-t2.py
+
+.PHONY: t2-apple
+t2-apple:
+	python3 hack/apple-t2.py
