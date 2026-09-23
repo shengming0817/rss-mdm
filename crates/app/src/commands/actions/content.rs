@@ -1,5 +1,5 @@
 //! Local immutable artifacts and signing authority, with no URL or ambient download grant.
-use crate::{ConfigIssue, Error};
+use crate::{ConfigIssue, Error, Failure};
 use base64::Engine;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use rss_mdm_agent_wire::{SignedTask, TaskPayload};
@@ -27,6 +27,12 @@ pub(in crate::commands) struct Content {
 }
 fn bad() -> Error {
     Error::Configuration(ConfigIssue::Commands)
+}
+fn storage() -> Error {
+    Error::Unavailable(Failure::CommandStorage)
+}
+fn invariant() -> Error {
+    Error::Unavailable(Failure::CommandInvariant)
 }
 impl Content {
     pub fn open(config: &Config, tenant: &str) -> Result<Self, Error> {
@@ -143,17 +149,17 @@ impl Content {
             return Err(Error::Malformed);
         }
         let path = self.path(artifact);
-        let metadata = fs::symlink_metadata(&path).map_err(|_| Error::NotFound)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|_| storage())?;
         if !metadata.is_file() || metadata.len() != artifact.length() {
-            return Err(Error::Conflict);
+            return Err(invariant());
         }
-        let mut file = fs::File::open(path).map_err(|_| Error::NotFound)?;
+        let mut file = fs::File::open(path).map_err(|_| storage())?;
         let mut bytes = Vec::new();
         Read::by_ref(&mut file)
             .take(artifact.length() + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| bad())?;
-        artifact.verify(&bytes).map_err(|_| Error::Conflict)?;
+            .map_err(|_| storage())?;
+        artifact.verify(&bytes).map_err(|_| invariant())?;
         Ok(bytes)
     }
 }
@@ -194,6 +200,49 @@ pub(super) fn range(header: Option<&str>, length: usize) -> Result<(usize, usize
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::rand::SystemRandom;
+
+    fn content(directory: PathBuf) -> Content {
+        let key = Ed25519KeyPair::from_pkcs8(
+            Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap();
+        Content {
+            directory,
+            key_id: "test".into(),
+            key,
+        }
+    }
+
+    fn artifact(bytes: &[u8]) -> Artifact {
+        Artifact::new(
+            rss_mdm_resource::Id::new("artifact").unwrap(),
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(bytes),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn read_distinguishes_missing_storage_from_corrupt_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let content = content(directory.path().to_owned());
+        let artifact = artifact(b"expected");
+
+        assert!(matches!(
+            content.read(&artifact),
+            Err(Error::Unavailable(Failure::CommandStorage))
+        ));
+
+        fs::write(content.path(&artifact), b"corrupt!").unwrap();
+        assert!(matches!(
+            content.read(&artifact),
+            Err(Error::Unavailable(Failure::CommandInvariant))
+        ));
+    }
+
     #[test]
     fn single_range_is_exact_and_rejects_multiple_or_overflow() {
         assert_eq!(range(Some("bytes=2-4"), 10).unwrap(), (2, 5));
