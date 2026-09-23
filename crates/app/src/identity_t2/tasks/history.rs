@@ -18,7 +18,7 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
             "SELECT available_at FROM mdm_commands.action_runs WHERE id='{task}'"
         ))?
         .trim()
-        .to_owned();
+        .parse::<i64>()?;
         let mut path = format!("/api/v3/script-plans/{plan}/runs");
         let mut ids = Vec::new();
         let mut unique = BTreeSet::new();
@@ -29,7 +29,7 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
             ensure!(items.len() <= 20, "unbounded run history page: {page}");
             for item in items {
                 ensure!(
-                    item["availableAt"].to_string() == available_at,
+                    item["availableAt"].as_i64() == Some(available_at),
                     "history fixture changed the shared ordering coordinate: {item}"
                 );
                 ensure!(
