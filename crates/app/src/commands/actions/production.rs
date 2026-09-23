@@ -11,6 +11,25 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProduceOutcome {
+    Produced,
+    Duplicate,
+    SkippedByPolicy,
+    CapacityBlocked,
+}
+impl ProduceOutcome {
+    fn merge(self, next: Self) -> Self {
+        use ProduceOutcome::*;
+        match (self, next) {
+            (CapacityBlocked, _) | (_, CapacityBlocked) => CapacityBlocked,
+            (Produced, _) | (_, Produced) => Produced,
+            (Duplicate, _) | (_, Duplicate) => Duplicate,
+            _ => SkippedByPolicy,
+        }
+    }
+}
+
 pub(super) async fn produce(
     service: &Commands,
     tx: &mut PgTransaction<'_>,
@@ -19,7 +38,8 @@ pub(super) async fn produce(
     trigger: &str,
     now: i64,
     only: Option<&str>,
-) -> Result<()> {
+) -> Result<ProduceOutcome> {
+    let mut outcome = ProduceOutcome::SkippedByPolicy;
     for device in &plan.frozen.input.devices {
         if only.is_some_and(|value| value != device) {
             continue;
@@ -39,6 +59,7 @@ pub(super) async fn produce(
             .schedule
             .occurrence(coordinate, &identity)?
         else {
+            outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
             continue;
         };
         if trigger == "timer"
@@ -48,11 +69,15 @@ pub(super) async fn produce(
             )
             && occurrence.available_at < now.saturating_sub(30)
         {
+            outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
             continue;
         }
         let target = match db::registration(tx, device).await {
             Ok(target) => target,
-            Err(crate::commands::Fault::Request(Error::Conflict)) => continue,
+            Err(crate::commands::Fault::Request(Error::Conflict)) => {
+                outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
+                continue;
+            }
             Err(e) => return Err(e),
         };
         let key = if trigger.starts_with("registration:") {
@@ -64,16 +89,23 @@ pub(super) async fn produce(
         let device_key = device.clone();
         let plan_key = plan.id.to_string();
         let occurrence_key = key.clone();
-        let eligible=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND device=$3 AND occurrence=$4) AND (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND deadline>floor(extract(epoch FROM clock_timestamp()))::bigint)<128").bind(tenant).bind(plan_key).bind(device_key).bind(occurrence_key).fetch_one(c).await})).await?;
-        if !eligible {
+        let (duplicate, active)=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND device=$3 AND occurrence=$4), (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)").bind(tenant).bind(plan_key).bind(device_key).bind(occurrence_key).bind(now).fetch_one(c).await})).await?;
+        if duplicate {
+            outcome = outcome.merge(ProduceOutcome::Duplicate);
+            continue;
+        }
+        if active >= 128 {
+            outcome = outcome.merge(ProduceOutcome::CapacityBlocked);
             continue;
         }
         let deadline = occurrence
             .available_at
             .checked_add(i64::from(plan.frozen.input.run_lifetime_seconds))
             .ok_or(Error::Malformed)?
-            .min(plan.frozen.input.schedule.until);
+            .min(plan.frozen.input.schedule.until)
+            .min(occurrence.window_end.unwrap_or(i64::MAX));
         if deadline <= now || deadline <= occurrence.available_at {
+            outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
             continue;
         }
         let id = Uuid::new_v4();
@@ -103,8 +135,9 @@ pub(super) async fn produce(
                 .map(|_| crate::audit::FailureReason::Transaction),
         );
         result?;
+        outcome = outcome.merge(ProduceOutcome::Produced);
     }
-    Ok(())
+    Ok(outcome)
 }
 fn dispatch(
     tenant: rss_request_context::TenantId,
@@ -152,8 +185,12 @@ pub(super) async fn tick(
     schedule.jitter_seconds = 0;
     schedule.window = None;
     schedule.misfire = super::schedule::Misfire::CoalesceOne;
+    let mut capacity_blocked = false;
     if let Some(occurrence) = schedule.due(plan.scan_at, now, b"schedule")? {
-        produce(service, tx, plan, occurrence.coordinate, "timer", now, None).await?;
+        capacity_blocked = matches!(
+            produce(service, tx, plan, occurrence.coordinate, "timer", now, None).await?,
+            ProduceOutcome::CapacityBlocked
+        );
     }
     if matches!(schedule.trigger, Trigger::Registration) {
         for device in &plan.frozen.input.devices {
@@ -161,12 +198,18 @@ pub(super) async fn tick(
                 Ok(target) => {
                     // Registration identity is stable across worker restarts. Production's device set
                     // is narrowed without changing the approved plan or target authorization bases.
-                    event(service, tx, plan, &target, "registration", now).await?;
+                    capacity_blocked |= matches!(
+                        event(service, tx, plan, &target, "registration", now).await?,
+                        ProduceOutcome::CapacityBlocked
+                    );
                 }
                 Err(crate::commands::Fault::Request(Error::Conflict)) => (),
                 Err(error) => return Err(error),
             }
         }
+    }
+    if capacity_blocked {
+        return Ok(());
     }
     let tenant = tx.tenant_id().to_string();
     let id = plan.id.to_string();
@@ -180,14 +223,14 @@ pub(super) async fn event(
     target: &super::model::Target,
     kind: &str,
     now: i64,
-) -> Result<()> {
+) -> Result<ProduceOutcome> {
     if let Trigger::CheckIn { minimum_seconds } = plan.frozen.input.schedule.trigger {
         let tenant = tx.tenant_id().to_string();
         let plan_id = plan.id.to_string();
         let device = target.device.clone();
         let last=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Option<i64>>("SELECT max(created_at) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND device=$3").bind(tenant).bind(plan_id).bind(device).fetch_one(c).await})).await?;
         if last.is_some_and(|last| now.saturating_sub(last) < i64::from(minimum_seconds)) {
-            return Ok(());
+            return Ok(ProduceOutcome::SkippedByPolicy);
         }
     }
     let key = if kind == "registration" {

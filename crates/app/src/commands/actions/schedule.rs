@@ -67,6 +67,8 @@ pub(super) struct Occurrence {
     // Base time is the immutable deduplication coordinate, never the delayed window time.
     pub coordinate: i64,
     pub available_at: i64,
+    // A configured window is also an execution admission boundary.
+    pub window_end: Option<i64>,
 }
 fn zone(name: &str) -> Result<TimeZone, Error> {
     if name != "UTC" && (!name.contains('/') || name.len() > 128) {
@@ -209,21 +211,22 @@ impl Schedule {
         let earliest = coordinate
             .checked_add(jitter as i64)
             .ok_or(Error::Malformed)?;
-        let available_at = if let Some(window) = &self.window {
+        let available = if let Some(window) = &self.window {
             window.next(earliest)?
         } else {
-            Some(earliest)
+            Some((earliest, None))
         };
-        Ok(available_at
-            .filter(|at| *at < self.until)
-            .map(|available_at| Occurrence {
+        Ok(available
+            .filter(|(at, _)| *at < self.until)
+            .map(|(available_at, window_end)| Occurrence {
                 coordinate,
                 available_at,
+                window_end,
             }))
     }
 }
 impl Window {
-    fn next(&self, at: i64) -> Result<Option<i64>, Error> {
+    fn next(&self, at: i64) -> Result<Option<(i64, Option<i64>)>, Error> {
         let tz = zone(&self.zone)?;
         let mut date = tz
             .to_datetime(Timestamp::from_second(at).map_err(|_| Error::Malformed)?)
@@ -239,7 +242,7 @@ impl Window {
                 && at < end
                 && start < end
             {
-                return Ok(Some(at.max(start)));
+                return Ok(Some((at.max(start), Some(end))));
             }
             date = date.checked_add(1.days()).map_err(|_| Error::Malformed)?;
         }
@@ -309,6 +312,16 @@ mod tests {
             .unwrap();
         assert_eq!(occurrence.coordinate, coordinate);
         assert_eq!(occurrence.available_at, ts("2026-09-21T10:00:00Z"));
+        assert_eq!(occurrence.window_end, Some(ts("2026-09-21T11:00:00Z")));
+        let mut run = crate::commands::actions::state::RunState::new(
+            occurrence.window_end.unwrap(),
+            occurrence.available_at,
+        )
+        .unwrap();
+        assert!(
+            run.claim(uuid::Uuid::new_v4(), occurrence.window_end.unwrap())
+                .is_err()
+        );
         assert_eq!(
             Some(occurrence),
             s.occurrence(coordinate, b"tenant/schedule/revision/device")
