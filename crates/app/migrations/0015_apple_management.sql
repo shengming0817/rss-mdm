@@ -50,6 +50,7 @@ CREATE TABLE mdm_apple.devices (
  token bytea CHECK(octet_length(token) BETWEEN 1 AND 512), magic text CHECK(length(magic) BETWEEN 1 AND 1024),
  token_revision bigint NOT NULL DEFAULT 0 CHECK(token_revision>=0),
  push_id uuid, push_lease_until timestamptz, next_push timestamptz NOT NULL DEFAULT clock_timestamp(),
+ push_configuration bytea CHECK(octet_length(push_configuration)=32), push_failures integer NOT NULL DEFAULT 0 CHECK(push_failures BETWEEN 0 AND 6),
  push_status integer, push_outcome text CHECK(push_outcome IN ('accepted','retryable','unregistered','rejected')),
  PRIMARY KEY(tenant_id,registration), FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id),
  CHECK(state<>'active' OR (token IS NOT NULL AND magic IS NOT NULL))
@@ -91,12 +92,12 @@ GRANT SELECT,INSERT ON mdm_apple.scep_attempts,mdm_apple.devices,mdm_apple.attem
 GRANT UPDATE(state,response,response_digest,received_at,next_attempt) ON mdm_apple.attempts TO mdm_access;
 GRANT SELECT ON mdm_access.requests TO mdm_command_runtime;
 GRANT UPDATE(state,transaction_id,csr_digest,spki,serial,fingerprint,certificate,registration) ON mdm_apple.scep_attempts TO mdm_access;
-GRANT UPDATE(state,token,magic,token_revision,next_push) ON mdm_apple.devices TO mdm_access;
+GRANT UPDATE(state,token,magic,token_revision,next_push,push_id,push_lease_until,push_status,push_outcome,push_failures) ON mdm_apple.devices TO mdm_access;
 GRANT SELECT,INSERT ON mdm_apple.attempts,mdm_apple.profiles TO mdm_command_runtime;
 GRANT SELECT ON mdm_apple.devices TO mdm_command_runtime;
 GRANT UPDATE(state,response,response_digest,received_at,next_attempt) ON mdm_apple.attempts TO mdm_command_runtime;
 GRANT UPDATE(profile,operation,registration,version,enabled) ON mdm_apple.profiles TO mdm_command_runtime;
-GRANT UPDATE(token,magic,state,push_id,push_lease_until,next_push,push_status,push_outcome) ON mdm_apple.devices TO mdm_command_runtime;
+GRANT UPDATE(token,magic,state,push_id,push_lease_until,next_push,push_status,push_outcome,push_configuration,push_failures) ON mdm_apple.devices TO mdm_command_runtime;
 ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
 ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
 ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',

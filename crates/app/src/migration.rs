@@ -370,9 +370,10 @@ async fn preflight_upgrade(
     installed: &[(String, String, bool)],
     current: &[(&'static str, &'static str)],
 ) -> Result<()> {
-    if installed
-        .last()
-        .is_some_and(|unit| unit.0 == "windows-configuration-v1")
+    if installed.len() + 1 == current.len()
+        && installed
+            .iter()
+            .any(|unit| unit.0 == "windows-configuration-v1")
         && current
             .last()
             .is_some_and(|unit| unit.0 == "apple-management-v1")

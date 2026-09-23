@@ -4,13 +4,17 @@ use crate::{ConfigIssue, Error, Failure};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
-use x509_cert::{Certificate, der::DecodePem};
+use x509_cert::{
+    Certificate,
+    der::{DecodePem, Encode},
+};
 
 pub(super) struct Push {
     client: reqwest::Client,
+    pub(super) configuration: [u8; 32],
     origin: String,
     topic: String,
-    expires: u64,
+    pub(super) expires: u64,
 }
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -35,8 +39,14 @@ impl Push {
         client: reqwest::ClientBuilder,
     ) -> Result<Self, Error> {
         let mut pem = crate::config::read(&config.apns_certificate_file, 128 * 1024, false)?;
-        let leaf =
-            Certificate::from_pem(&pem).map_err(|_| Error::Configuration(ConfigIssue::Apple))?;
+        let leaf = Certificate::from_pem(&pem)
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
+        use sha2::{Digest, Sha256};
+        let configuration = Sha256::digest(
+            leaf.to_der()
+                .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?,
+        )
+        .into();
         let topic = leaf
             .tbs_certificate
             .subject
@@ -63,7 +73,7 @@ impl Push {
                 .as_secs()
                 > now as u64
         {
-            return Err(Error::Configuration(ConfigIssue::Apple));
+            return Err(Error::Configuration(ConfigIssue::AppleApns));
         }
         pem.extend_from_slice(b"\n");
         pem.extend_from_slice(&crate::config::read(
@@ -72,7 +82,7 @@ impl Push {
             true,
         )?);
         let identity = reqwest::Identity::from_pem(&pem)
-            .map_err(|_| Error::Configuration(ConfigIssue::Apple))?;
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
         let client = client
             .identity(identity)
             .https_only(true)
@@ -81,9 +91,10 @@ impl Push {
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(6))
             .build()
-            .map_err(|_| Error::Configuration(ConfigIssue::Apple))?;
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
         Ok(Self {
             client,
+            configuration,
             origin: "https://api.push.apple.com".into(),
             topic: config.apns_topic.clone(),
             expires,
@@ -141,30 +152,38 @@ pub(crate) fn registration(
     let (task, _) = rss_runtime::ManagedTask::prepare("apple-apns", Duration::from_secs(8));
     task.into_registration(move|token|async move {
         let mut tick=tokio::time::interval(Duration::from_secs(1));tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut certificate_levels = [None; 3];
         loop {
+            if let Ok(now) = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock) { apple.report_certificate_health(now, &mut certificate_levels); }
             tokio::select!{biased;()=token.cancelled()=>return Ok(()),_=tick.tick()=>{}}
-            let result=tokio::select!{biased;()=token.cancelled()=>return Ok(()),result=wake(&apple,&commands)=>result};
+            let result=tokio::select!{biased;()=token.cancelled()=>return Ok(()),result=wake(&apple.push,&commands)=>result};
             if result.is_err(){eprintln!("{}",serde_json::json!({"event":"apple_push_failure"}));}
         }
     })
 }
-async fn wake(apple: &super::Apple, commands: &crate::commands::Commands) -> Result<(), Error> {
+pub(super) async fn wake(push: &Push, commands: &crate::commands::Commands) -> Result<(), Error> {
     use crate::clock::Clock;
-    let Some(wake) = commands.apple_wake().await? else {
+    let Some(wake) = commands.apple_wake(&push.configuration).await? else {
         return Ok(());
     };
     let now = crate::clock::SystemClock.unix_seconds()?;
-    let (status, outcome) = match apple
-        .push
-        .send(wake.id, &wake.token, &wake.magic, now)
-        .await
-    {
-        Ok(receipt) if receipt.id == wake.id => (Some(receipt.status), receipt.outcome),
-        _ => (None, Outcome::Retryable),
+    let (status, outcome, failure) = match push.send(wake.id, &wake.token, &wake.magic, now).await {
+        Ok(receipt) if receipt.id == wake.id => (Some(receipt.status), receipt.outcome, None),
+        Err(Error::Unavailable(Failure::Certificate)) => {
+            (None, Outcome::Retryable, Some("certificate_expired"))
+        }
+        _ => (None, Outcome::Retryable, Some("transport")),
     };
-    commands.apple_pushed(&wake, status, outcome).await
+    commands.apple_pushed(&wake, status, outcome).await?;
+    if outcome != Outcome::Accepted {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"apple_push_result","registration":wake.registration,"token_revision":wake.revision,"status":status,"outcome":outcome,"failure":failure})
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 #[path = "push_tests.rs"]
-mod tests;
+pub(super) mod tests;

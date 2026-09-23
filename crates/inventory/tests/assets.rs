@@ -77,6 +77,7 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
     );
     for source in [
         rss_mdm_inventory::ReportSource::MdmWindows,
+        rss_mdm_inventory::ReportSource::MdmApple,
         rss_mdm_inventory::ReportSource::AgentBuiltin,
     ] {
         assert_eq!(
@@ -148,5 +149,26 @@ fn deletion_does_not_remove_another_source_value() {
             .as_ref()
             .map(|k| k.value.clone()),
         Some(Scalar::String("old".into()))
+    );
+}
+
+#[test]
+fn apple_observations_use_the_canonical_asset_resolver() {
+    for field in FieldKey::observed() {
+        let observed = fact("Apple value", "mdm.apple");
+        assert_eq!(
+            resolve(field, vec![observed.clone()]).unwrap().state,
+            observed.state
+        );
+        assert_eq!(
+            resolve(field, vec![observed, fact("Other value", "agent.builtin")])
+                .unwrap()
+                .state,
+            State::Conflict
+        );
+    }
+    assert_eq!(
+        resolve(FieldKey::AssetTag, vec![fact("Apple value", "mdm.apple")]),
+        Err(rss_mdm_inventory::Invalid::SourceNotAllowed)
     );
 }

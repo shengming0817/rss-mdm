@@ -144,7 +144,7 @@ impl Config {
                     || w.enrollment.origin == apple.management.origin
                     || w.management.origin == apple.management.origin
             }) {
-                return Err(Error::Configuration(ConfigIssue::Apple));
+                return Err(Error::Configuration(ConfigIssue::AppleListeners));
             }
         }
         let identity_management = crate::access::IdentityManagementPolicy::new(

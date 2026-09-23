@@ -62,8 +62,9 @@ pub(super) async fn download(
     State(app): State<Arc<App>>,
     Path(id): Path<Uuid>,
     Extension(audit): Extension<Audit>,
-    Json(input): Json<Resume>,
+    input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
+    let input = input.map_err(|_| Error::Malformed)?.0;
     let apple = app.apple()?;
     let (auth, proof) = authorized(&app, id, &input.password, &audit).await?;
     let mut tx = app.access.begin(proof.tenant_id()).await?;

@@ -48,4 +48,23 @@ SCEP challenge 的授权消费先提交，再返回 allow；同事务、同 CSR 
 - 真实联调修正：两个 UUID 的 CN 编码为 64 小写 hex；按 CN 内容接受 UTF8String/PrintableString；step-ca 通知类型为 NOTIFYING，两个独立 HMAC 身份；webhook TLS 信任不来自 federatedRoots；启用首个 SCEP provisioner 后重启 CA。
 - ProfileList 使用完整列表而非 ManagedOnly，不依赖尚未验证的 macOS 版本；Partial/Failed 沿用最后完整资产的既有权威规则。
 
-重注册、活跃公钥复用拒绝、授权撤销阻断原生命令/APNs、未报告采集超时均通过真实 T2；独立 target 下 T1（59 项）与全 target/all-features Clippy 通过。后续完成容量 gate、PR 内置 review、完整本地 CI 与 ship 交接。一次共享 target 构建读到其他 worktree 的 CollectedValue::Scalar，已切换本任务独立 target；失败构建不计作验证通过。最终结果以绑定提交的 CI 和 PR artifact 为准。
+重注册、活跃公钥复用拒绝、授权撤销阻断原生命令/APNs、未报告采集超时均通过真实 T2。所有构建使用本任务独立 target，避免其他 worktree 产物污染。
+
+## 内置复核与计划更新
+
+六维度复核按根因归并为 8 项，全部在本次范围内完成修复，无延期项：
+
+1. Apple Observation 加入统一资产字段来源目录；通过实际 Inventory HTTP API 验证 Model、OSVersion。
+2. 升级预检不再依赖无序账本末行；逆序账本、未封存采集与待投递采集均验证拒绝升级，不修改已封存历史。
+3. APNs 永久拒绝持久暂停，证书或 token revision 更新恢复；限流/服务端错误有界退避，410 退回 pending_token。结构化诊断不包含秘密。真实 PG + HTTP/2 走生产 wake 链，精确核对 TLS 证书及轮换、恢复、租约释放和 Commands 不推进。
+4. 三类 Apple 证书加入 30/7 天到期提示及过期 readiness 阻断，复用现有 worker，按阈值变化记录告警。
+5. NotNow 后验证原 UUID 与原请求字节重投，再允许 ACK。
+6. 两个 Apple POST 的 JSON 解析错误统一返回产品 Malformed/400 契约。
+7. 启动错误区分 listener、SCEP、Profile signer、APNs 和两个 webhook，保持诊断脱敏。
+8. 失效授权采集延后扫描，避免占据原生命令/APNs 首批队列；65 条失效工作后的有效工作验证可达。
+
+以上修正没有增加旧接口适配层或并行领域模型：仍由 Commands、CollectionRun、Observation、Inventory 承担各自权威，Apple 模块只负责协议转换及身份约束，符合彻底、不向后兼容、优雅简洁的原则。
+
+复验：T1 60 项、资产 resolver 4 项、Apple T2 3 项、真实数据库迁移/catalog、全 target/all-features Clippy 均通过；Windows 完整 T2 与 Python 91 项已通过。PR 前四项容量 gate 在初始实现提交 3905c2c 上通过，最终修复提交仍须执行完整本地 CI。
+
+剩余顺序：提交修复 → PR 无损审查 artifact 与再审 label → 清洁 HEAD 完整本地 CI（一次，失败项精确复验）→ 等待 15 分钟 → 一次 pr-monitor 交接。真实设备/组织/APNs T3 继续由 #2482 验收，不计入本次 T2 完成证据。

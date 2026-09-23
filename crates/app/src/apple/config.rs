@@ -35,21 +35,27 @@ impl Webhook {
 }
 impl Config {
     pub(crate) fn validate(&self, browser: SocketAddr) -> Result<(), Error> {
-        let bad = || Error::Configuration(ConfigIssue::Apple);
-        let endpoint = crate::config::https_url(&self.management.origin).map_err(|_| bad())?;
-        crate::config::https_url(&self.scep_url).map_err(|_| bad())?;
+        let bad = |issue| Error::Configuration(issue);
+        let endpoint = crate::config::https_url(&self.management.origin)
+            .map_err(|_| bad(ConfigIssue::AppleListeners))?;
         if endpoint.origin().ascii_serialization() != self.management.origin
             || self.management.listen == browser
             || self.management.listen.port() == 0
-            || !self.apns_topic.starts_with("com.apple.mgmt.")
-            || self.apns_topic.len() > 255
-            || !self.challenge_webhook.valid()
-            || !self.notify_webhook.valid()
-            || self.challenge_webhook.id == self.notify_webhook.id
-            || self.scep_provisioner.is_empty()
-            || self.scep_provisioner.len() > 128
         {
-            return Err(bad());
+            return Err(bad(ConfigIssue::AppleListeners));
+        }
+        crate::config::https_url(&self.scep_url).map_err(|_| bad(ConfigIssue::AppleScep))?;
+        if self.scep_provisioner.is_empty() || self.scep_provisioner.len() > 128 {
+            return Err(bad(ConfigIssue::AppleScep));
+        }
+        if !self.apns_topic.starts_with("com.apple.mgmt.") || self.apns_topic.len() > 255 {
+            return Err(bad(ConfigIssue::AppleApns));
+        }
+        if !self.challenge_webhook.valid() {
+            return Err(bad(ConfigIssue::AppleChallengeWebhook));
+        }
+        if !self.notify_webhook.valid() || self.challenge_webhook.id == self.notify_webhook.id {
+            return Err(bad(ConfigIssue::AppleNotifyWebhook));
         }
         Ok(())
     }

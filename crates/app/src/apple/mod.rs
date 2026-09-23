@@ -34,15 +34,20 @@ impl Apple {
     }
 
     pub(crate) fn load(config: config::Config, now: i64) -> Result<Self, Error> {
-        let authority = certificate::Authority::load(&config.issuer_certificate_file, now)?;
+        let authority = certificate::Authority::load(&config.issuer_certificate_file, now)
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?;
         let signer = certificate::Signer::load(
             &config.profile_certificate_file,
             &config.profile_private_key_file,
             now,
-        )?;
-        let push = push::Push::load(&config, now)?;
-        let challenge_key = webhook_key(&config.challenge_webhook)?;
-        let notify_key = webhook_key(&config.notify_webhook)?;
+        )
+        .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?;
+        let push = push::Push::load(&config, now)
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
+        let challenge_key = webhook_key(&config.challenge_webhook)
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleChallengeWebhook))?;
+        let notify_key = webhook_key(&config.notify_webhook)
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleNotifyWebhook))?;
         let configuration = Sha256::digest(
             serde_json::to_vec(&(
                 "mdm.apple.enrollment/v1",
@@ -78,10 +83,10 @@ fn webhook_key(config: &config::Webhook) -> Result<ring::hmac::Key, Error> {
     let secret = zeroize::Zeroizing::new(
         base64::engine::general_purpose::STANDARD
             .decode(secret.as_slice())
-            .map_err(|_| Error::Configuration(ConfigIssue::Apple))?,
+            .map_err(|_| Error::Configuration(ConfigIssue::SecretContents))?,
     );
     if secret.len() < 32 {
-        return Err(Error::Configuration(ConfigIssue::Apple));
+        return Err(Error::Configuration(ConfigIssue::SecretContents));
     }
     Ok(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &secret))
 }
@@ -138,3 +143,93 @@ pub(crate) fn router(
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CertificateLevel {
+    Healthy,
+    RenewSoon,
+    Critical,
+    Expired,
+}
+#[derive(Clone, Copy, serde::Serialize)]
+pub(super) struct CertificateHealth {
+    purpose: &'static str,
+    level: CertificateLevel,
+    remaining_days: u64,
+}
+impl CertificateHealth {
+    fn new(purpose: &'static str, expires: u64, now: i64) -> Self {
+        let remaining = expires.saturating_sub(now.max(0) as u64);
+        let level = if now <= 0 || expires <= now as u64 {
+            CertificateLevel::Expired
+        } else if remaining <= 7 * 86400 {
+            CertificateLevel::Critical
+        } else if remaining <= 30 * 86400 {
+            CertificateLevel::RenewSoon
+        } else {
+            CertificateLevel::Healthy
+        };
+        Self {
+            purpose,
+            level,
+            remaining_days: remaining / 86400,
+        }
+    }
+}
+impl Apple {
+    pub(super) fn certificate_health(&self, now: i64) -> [CertificateHealth; 3] {
+        [
+            CertificateHealth::new("scep_issuer", self.authority.expires(), now),
+            CertificateHealth::new("profile_signer", self.signer.expires(), now),
+            CertificateHealth::new("apns", self.push.expires, now),
+        ]
+    }
+    pub(crate) fn ready(&self, now: i64) -> bool {
+        self.certificate_health(now)
+            .iter()
+            .all(|item| item.level != CertificateLevel::Expired)
+    }
+    pub(super) fn report_certificate_health(
+        &self,
+        now: i64,
+        previous: &mut [Option<CertificateLevel>; 3],
+    ) {
+        for (item, last) in self.certificate_health(now).into_iter().zip(previous) {
+            if *last != Some(item.level) && item.level != CertificateLevel::Healthy {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"event":"apple_certificate_health","certificate":item})
+                );
+            }
+            *last = Some(item.level);
+        }
+    }
+}
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+    #[test]
+    fn certificate_health_warns_before_expiry_and_fails_closed_at_expiry() {
+        for (remaining, level) in [
+            (31 * 86400, CertificateLevel::Healthy),
+            (30 * 86400, CertificateLevel::RenewSoon),
+            (7 * 86400, CertificateLevel::Critical),
+            (1, CertificateLevel::Critical),
+            (0, CertificateLevel::Expired),
+        ] {
+            assert_eq!(
+                CertificateHealth::new("fixture", 100 + remaining, 100).level,
+                level
+            );
+        }
+        assert_eq!(
+            CertificateHealth::new("fixture", 100, 101).level,
+            CertificateLevel::Expired
+        );
+        assert_eq!(
+            CertificateHealth::new("fixture", 100, -1).level,
+            CertificateLevel::Expired
+        );
+    }
+}

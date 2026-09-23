@@ -735,6 +735,10 @@ async fn revoke_registration(
 async fn ready(State(app): State<Arc<App>>) -> Response {
     if app.readiness.ready()
         && app
+            .apple
+            .as_ref()
+            .is_none_or(|apple| app.clock.unix_seconds().is_ok_and(|now| apple.ready(now)))
+        && app
             .management
             .automation_task
             .get()

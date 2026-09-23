@@ -56,7 +56,7 @@ pub(super) async fn checkin(
     match input {
         CheckIn::Authenticate { .. } => {}
         CheckIn::TokenUpdate { token, magic, .. } => {
-            sqlx::query("UPDATE mdm_apple.devices SET state='active',token=$3,magic=$4,token_revision=token_revision+1,next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2::uuid")
+            sqlx::query("UPDATE mdm_apple.devices SET state='active',token=$3,magic=$4,token_revision=token_revision+1,next_push=clock_timestamp(),push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome=NULL,push_failures=0 WHERE tenant_id=$1::uuid AND registration=$2::uuid")
                 .bind(&tenant).bind(&registration).bind(token).bind(magic).execute(&mut *tx).await.map_err(db)?;
         }
         CheckIn::CheckOut { .. } => {

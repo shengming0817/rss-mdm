@@ -32,8 +32,9 @@ pub(crate) async fn create(
     Path(device): Path<String>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
-    Json(input): Json<Create>,
+    input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), Error> {
+    let input = input.map_err(|_| Error::Malformed)?.0;
     app.apple()?;
     if input.source != ReportSource::MdmApple || input.request_id.is_nil() {
         return Err(Error::Malformed);
@@ -191,6 +192,7 @@ pub(crate) async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Ve
     for row in rows {
         let id = uuid(&row, "id")?;
         if !approved(c, &tenant, id).await? {
+            sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
             continue;
         }
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")

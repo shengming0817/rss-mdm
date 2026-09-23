@@ -2,7 +2,7 @@ WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_apple'
 ), updates(relation,col) AS (VALUES
  ('scep_attempts','state'),('scep_attempts','transaction_id'),('scep_attempts','csr_digest'),('scep_attempts','spki'),('scep_attempts','serial'),('scep_attempts','fingerprint'),('scep_attempts','certificate'),('scep_attempts','registration'),
- ('devices','state'),('devices','token'),('devices','magic'),('devices','token_revision'),('devices','next_push'),
+ ('devices','state'),('devices','token'),('devices','magic'),('devices','token_revision'),('devices','next_push'),('devices','push_id'),('devices','push_lease_until'),('devices','push_status'),('devices','push_outcome'),('devices','push_failures'),
  ('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
 )
 SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')

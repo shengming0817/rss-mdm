@@ -29,6 +29,29 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     owner
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;
+    let mut shuffled: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name DESC")
+            .fetch_all(&mut owner)
+            .await?;
+    if shuffled
+        .last()
+        .is_some_and(|row| row.0 == "windows-configuration-v1")
+    {
+        shuffled.reverse();
+    }
+    ensure!(accepted_ledger(&shuffled, &candidate));
+    ensure!(
+        preflight_upgrade(
+            &mut owner,
+            &installation,
+            installation.validate()?,
+            &shuffled,
+            &candidate
+        )
+        .await
+        .is_err(),
+        "unordered ledger bypassed quiesce preflight"
+    );
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
     ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='apple-management-v1')").fetch_one(&mut owner).await?);
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
@@ -55,6 +78,18 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
     owner.execute("UPDATE rss_reconcile.targets SET result='converged',next_run=NULL WHERE reconciler='mdm.commands.v1'").await?;
 
+    owner.execute("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result) SELECT tenant_id,'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',registration,source,epoch,scope,2,session_id,request_message,first_command,request,started_at,attempts,'pending' FROM mdm_access.collection_runs WHERE id='77777777-7777-4777-8777-777777777777'").await?;
+    for unfinished in [true, false] {
+        if !unfinished {
+            owner.execute("UPDATE mdm_access.collection_runs SET result='partial',reason='complete',sealed_at=1000,batch=decode('01','hex'),digest=repeat('0',64),delivery_pending=true WHERE id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'").await?;
+        }
+        ensure!(
+            migrate_on(&mut owner, &installation).await.is_err(),
+            "unsettled collection allowed upgrade"
+        );
+        ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='apple-management-v1')").fetch_one(&mut owner).await?);
+    }
+    owner.execute("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'").await?;
     owner
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;

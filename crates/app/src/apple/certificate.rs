@@ -59,6 +59,14 @@ pub(super) struct Signer {
     certificates: Vec<Certificate>,
 }
 impl Signer {
+    pub(super) fn expires(&self) -> u64 {
+        self.certificates[0]
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs()
+    }
     pub(super) fn load(cert: &Path, key: &Path, now: i64) -> Result<Self, Error> {
         use rustls::pki_types::pem::PemObject;
         let bytes = crate::config::read(cert, 128 * 1024, false)?;
@@ -69,7 +77,7 @@ impl Signer {
             .map_err(invalid)?;
         let leaf = certificates
             .first()
-            .ok_or(Error::Configuration(ConfigIssue::Apple))?;
+            .ok_or(Error::Configuration(ConfigIssue::AppleProfileSigner))?;
         if certificates.len() > 4
             || !valid(leaf, now)
             || leaf.tbs_certificate.subject_public_key_info.algorithm.oid != RSA
@@ -80,7 +88,7 @@ impl Signer {
                 .as_bytes()
                 != Some(key.public_key().as_ref())
         {
-            return Err(Error::Configuration(ConfigIssue::Apple));
+            return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
         }
         Ok(Self { key, certificates })
     }
@@ -167,6 +175,14 @@ impl CheckedLeaf {
     }
 }
 impl Authority {
+    pub(super) fn expires(&self) -> u64 {
+        self.issuer
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs()
+    }
     pub(super) fn load(path: &Path, now: i64) -> Result<Self, Error> {
         let issuer =
             Certificate::from_pem(&crate::config::read(path, 32768, false)?).map_err(invalid)?;
@@ -182,7 +198,7 @@ impl Authority {
                 .map_err(invalid)?
                 .is_none_or(|(_, v)| !v.key_cert_sign())
         {
-            return Err(Error::Configuration(ConfigIssue::Apple));
+            return Err(Error::Configuration(ConfigIssue::AppleScep));
         }
         let der = issuer.to_der().map_err(invalid)?;
         let mut roots = rustls::RootCertStore::empty();

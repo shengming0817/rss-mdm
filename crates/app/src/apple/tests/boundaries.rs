@@ -32,6 +32,26 @@ pub(super) async fn unbound_leaf_and_replay(
 }
 impl Fixture {
     pub async fn before_token(&mut self, peer: &Peer) -> Result<()> {
+        for path in [
+            format!("/api/v3/enrollments/{}/profile", Uuid::new_v4()),
+            format!("/api/v1/devices/{DEVICE}/collection-runs"),
+        ] {
+            for body in [
+                json!(null),
+                json!({}),
+                json!({"source":"mdm.apple","requestId":Uuid::new_v4(),"password":"invalid","unknown":true}),
+            ] {
+                let reply = self
+                    .browser
+                    .call(&self.router, Method::POST, &path, Some(body))
+                    .await?;
+                ensure!(
+                    reply.0 == StatusCode::BAD_REQUEST
+                        && reply.1 == json!({"code":"malformed_request"}),
+                    "noncanonical Apple JSON rejection: {reply:?}"
+                );
+            }
+        }
         let reply = peer
             .send(
                 "/mdm",
@@ -92,6 +112,7 @@ impl Fixture {
             .await?;
         ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
         self.approval_and_timeout(peer).await?;
+        self.queue_fairness(peer).await?;
         self.profile_mismatch(peer).await?;
         let rejected = self
             .create_operation(json!({"kind":"profile_install","enabled":false}))
@@ -107,7 +128,7 @@ impl Fixture {
         let old = self
             .app
             .commands
-            .apple_wake()
+            .apple_wake(&self.app.apple()?.push.configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing wake"))?;
         peer.token().await?;
@@ -334,7 +355,11 @@ impl Fixture {
         );
         ensure!(self.operation(op).await?["authorization"] == "blocked");
         ensure!(
-            self.app.commands.apple_wake().await?.is_none(),
+            self.app
+                .commands
+                .apple_wake(&self.app.apple()?.push.configuration)
+                .await?
+                .is_none(),
             "revoked approval triggered APNs"
         );
         let cancelled = self
@@ -384,6 +409,103 @@ impl Fixture {
                     "operation_cancel",
                 ],
             )?,
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+impl Fixture {
+    async fn queue_fairness(&mut self, peer: &Peer) -> Result<()> {
+        let path = format!("/api/v1/devices/{DEVICE}/collection-runs");
+        for _ in 0..65 {
+            let reply = self
+                .browser
+                .call(
+                    &self.router,
+                    Method::POST,
+                    &path,
+                    Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
+                )
+                .await?;
+            ensure!(reply.0 == StatusCode::ACCEPTED);
+        }
+        // Replacing the admission rule invalidates all previously frozen approvals.
+        crate::identity_fixture::set_grants(
+            TENANT,
+            crate::identity_fixture::ADMIN,
+            crate::identity_fixture::device_grants(
+                Some(DEVICE),
+                &[
+                    "enrollment",
+                    "credentials",
+                    "inventory_read",
+                    "inventory_collect",
+                    "firewall_write",
+                    "operation_read",
+                    "operation_cancel",
+                ],
+            )?,
+        )
+        .await?;
+        let fresh = self
+            .browser
+            .call(
+                &self.router,
+                Method::POST,
+                &path,
+                Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
+            )
+            .await?;
+        ensure!(fresh.0 == StatusCode::ACCEPTED);
+        let run = Uuid::parse_str(fresh.1["runId"].as_str().unwrap())?;
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+            .bind(TENANT)
+            .execute(&mut pg)
+            .await?;
+        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second'")
+            .execute(&mut pg)
+            .await?;
+        ensure!(
+            self.app
+                .commands
+                .apple_wake(&self.app.apple()?.push.configuration)
+                .await?
+                .is_none()
+        );
+        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second'")
+            .execute(&mut pg)
+            .await?;
+        let wake = self
+            .app
+            .commands
+            .apple_wake(&self.app.apple()?.push.configuration)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("blocked queue page starved approved wake"))?;
+        self.app
+            .commands
+            .apple_pushed(&wake, Some(200), push::Outcome::Accepted)
+            .await?;
+        // Make old entries due again to independently exercise the native 32-item scan.
+        sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE collection IS NOT NULL AND state='pending'").execute(&mut pg).await?;
+        pg.close().await?;
+        let (id, _) = peer.next("DeviceInformation").await?;
+        ensure!(
+            id == run,
+            "blocked queue page starved approved native request"
+        );
+        peer.manage(
+            "Acknowledged",
+            Some(run),
+            Some((
+                "QueryResponses",
+                plist::Value::Dictionary(protocol::dictionary([
+                    ("Model", "Mac14,7".into()),
+                    ("OSVersion", "14.7".into()),
+                ])),
+            )),
         )
         .await?;
         Ok(())

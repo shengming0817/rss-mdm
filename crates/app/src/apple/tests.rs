@@ -6,6 +6,8 @@
 mod boundaries;
 mod lifecycle;
 mod oracle;
+#[path = "tests/push_cycle.rs"]
+mod push_cycle;
 mod scep;
 use super::*;
 use crate::{
@@ -45,6 +47,7 @@ impl Fixture {
         .await?;
         let mut config = crate::identity_fixture::config(TENANT)?;
         config.native_protocols.windows = None;
+        startup_diagnostics(&root)?;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
         apple.management.listen = manage.local_addr()?;
@@ -341,6 +344,7 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
     };
     f.before_token(&peer).await?;
     peer.token().await?;
+    f.push_cycle(&peer).await?;
     f.collection_cycle(&peer).await?;
     f.profile_cycle(&peer).await?;
     let replacement = f.replace(&peer, &device).await?;
@@ -351,4 +355,40 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
 #[allow(clippy::disallowed_methods, reason = "test composition root")]
 fn fixture_clock() -> Arc<dyn rss_observation::Clock> {
     Arc::new(crate::Monotonic(std::time::Instant::now))
+}
+
+fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+    for (pointer, category) in [
+        ("/issuer_certificate_file", "AppleScep"),
+        ("/profile_certificate_file", "AppleProfileSigner"),
+        ("/apns_certificate_file", "AppleApns"),
+        ("/challenge_webhook/secret_file", "AppleChallengeWebhook"),
+        ("/notify_webhook/secret_file", "AppleNotifyWebhook"),
+    ] {
+        let mut input = original.clone();
+        *input.pointer_mut(pointer).unwrap() = json!("private-material-path-must-not-be-logged");
+        let config = serde_json::from_value(input)?;
+        match Apple::load(config, crate::clock::SystemClock.unix_seconds()?) {
+            Err(crate::Error::Configuration(issue)) => ensure!(
+                format!("{issue:?}") == category,
+                "wrong startup category for {pointer}"
+            ),
+            _ => anyhow::bail!("missing startup category for {pointer}"),
+        }
+    }
+    let apple = Apple::load(
+        serde_json::from_value(original)?,
+        crate::clock::SystemClock.unix_seconds()?,
+    )?;
+    ensure!(apple.ready(crate::clock::SystemClock.unix_seconds()?));
+    for expires in [
+        apple.authority.expires(),
+        apple.signer.expires(),
+        apple.push.expires,
+    ] {
+        ensure!(!apple.ready(expires as i64));
+    }
+    Ok(())
 }

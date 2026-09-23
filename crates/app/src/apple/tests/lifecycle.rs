@@ -203,11 +203,18 @@ impl Fixture {
             let mut projected = false;
             for _ in 0..100 {
                 let rows:Vec<(String,Option<String>)>=sqlx::query_as("SELECT field,value FROM mdm.inventory WHERE tenant_id=$1::uuid AND source='mdm.apple' ORDER BY field").bind(TENANT).fetch_all(&mut pg).await?;
-                if rows
-                    == vec![
-                        ("device.model".into(), Some("Mac14,7".into())),
-                        ("device.os.version".into(), Some("14.7".into())),
-                    ]
+                let delivered: bool = sqlx::query_scalar(
+                    "SELECT NOT delivery_pending FROM mdm_access.collection_runs WHERE id=$1::uuid",
+                )
+                .bind(run.to_string())
+                .fetch_one(&mut pg)
+                .await?;
+                if delivered
+                    && rows
+                        == vec![
+                            ("device.model".into(), Some("Mac14,7".into())),
+                            ("device.os.version".into(), Some("14.7".into())),
+                        ]
                 {
                     projected = true;
                     break;
@@ -228,6 +235,27 @@ impl Fixture {
                 anyhow::bail!("Inventory did not preserve partial response: {read:?}; {rows:?}")
             }
             pg.close().await?;
+            let asset = self
+                .browser
+                .call(
+                    &self.router,
+                    Method::GET,
+                    &format!("/api/v2/devices/{DEVICE}/inventory"),
+                    None,
+                )
+                .await?;
+            ensure!(
+                asset.0 == StatusCode::OK,
+                "Apple asset read failed: {asset:?}"
+            );
+            ensure!(
+                asset.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
+                    == "Mac14,7"
+            );
+            ensure!(
+                asset.1["asset"]["device"]["fields"]["device.os.version"]["state"]["value"]["value"]
+                    == "14.7"
+            );
         }
         Ok(())
     }
@@ -237,20 +265,27 @@ impl Fixture {
             .await?;
         let (execute, payload) = peer.next("InstallProfile").await?;
         ensure!(payload["Payload"].as_data().is_some());
-        // Push acceptance is a wake-up receipt and cannot turn Published into Received.
-        let wake = self
-            .app
-            .commands
-            .apple_wake()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("missing durable APNs wake"))?;
-        self.app
-            .commands
-            .apple_pushed(&wake, Some(200), push::Outcome::Accepted)
-            .await?;
         ensure!(self.operation(installed).await?["commandStatus"] == "published");
         ensure!(peer.manage("NotNow", Some(execute), None).await?.is_empty());
         ensure!(self.operation(installed).await?["commandStatus"] == "published");
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+            .bind(TENANT)
+            .execute(&mut pg)
+            .await?;
+        sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(execute.to_string()).execute(&mut pg).await?;
+        let request: Vec<u8> =
+            sqlx::query_scalar("SELECT request FROM mdm_apple.attempts WHERE id=$1::uuid")
+                .bind(execute.to_string())
+                .fetch_one(&mut pg)
+                .await?;
+        pg.close().await?;
+        let retried = peer.manage("Idle", None, None).await?;
+        ensure!(
+            retried == request && command(&retried, "InstallProfile")?.0 == execute,
+            "NotNow retry changed UUID or bytes"
+        );
         let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
         let (observe, _) = command(&bytes, "ProfileList")?;
         ensure!(self.operation(installed).await?["commandStatus"] == "received");
