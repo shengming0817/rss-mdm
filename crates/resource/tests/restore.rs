@@ -20,8 +20,7 @@ fn snapshot_preserves_states_and_rejects_inconsistent_storage() {
                 id("script"),
                 Declaration::Script {
                     artifact: Artifact::new(id("script"), 3, Digest::of(b"abc")).unwrap(),
-                    interpreter: id("powershell"),
-                    detect: id("exit-code"),
+                    definition: script(),
                 },
             )],
         )
@@ -48,4 +47,8 @@ fn snapshot_preserves_states_and_rejects_inconsistent_storage() {
     let mut bad = snapshot;
     bad.key = id("another");
     assert!(Resource::restore(bad).is_err());
+}
+
+fn script() -> ScriptDefinition {
+    serde_json::from_value(serde_json::json!({"profile":"power_shell7","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object"},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1})).unwrap()
 }

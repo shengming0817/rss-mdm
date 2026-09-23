@@ -2,8 +2,8 @@
 -- numbers are rendered as names; values/data are never included in this snapshot.
 WITH relations AS (
  SELECT c.*,n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE c.relkind='r' AND (n.nspname IN('rss_device_command','rss_reconcile') OR (n.nspname='mdm_access' AND c.relname IN
- ('devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','authorization_rules','user_groups','management_sessions','management_messages','collection_runs','audit')))
+ WHERE c.relkind='r' AND (n.nspname IN('rss_device_command','rss_reconcile') OR (n.nspname='mdm_resource' AND c.relname IN ('aggregates','immutable')) OR (n.nspname='mdm_access' AND c.relname IN
+ ('agent_bindings','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','authorization_rules','user_groups','management_sessions','management_messages','collection_runs','audit')))
 ), contracts AS (
  SELECT t.nspname||'.'||t.relname AS name, encode(sha256(convert_to(jsonb_build_object(
  'shape',jsonb_build_array(t.relkind,t.relpersistence,t.relrowsecurity,t.relforcerowsecurity,pg_get_userbyid(t.relowner)),

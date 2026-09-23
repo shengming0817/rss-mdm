@@ -233,7 +233,7 @@ impl Command {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct QualityRun {
-    pub source: rss_mdm_inventory::ReportSource,
+    pub source: rss_mdm_inventory::Source,
     pub channel: rss_mdm_inventory::Channel,
     pub registration: Uuid,
     pub registration_generation: u64,

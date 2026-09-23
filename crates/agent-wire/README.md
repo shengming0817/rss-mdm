@@ -1,31 +1,19 @@
 # RSS MDM Agent wire
 
-`rss-mdm-agent-wire` owns the strict JSON contract between the RSS MDM service and its Rust
-Agent. Version 1 contains Agent bootstrap registration, basic inventory snapshots/partial/failure
-reports, durable acknowledgements and processing status. It contains no database, HTTP server,
-product domain or RSS provider dependency.
+`rss-mdm-agent-wire` 2.0.0 owns the closed Agent registration, basic reports and enterprise task
+contract. V1 is removed. The package has no database, HTTP server, product domain or RSS provider
+dependency. It uses ring for Ed25519 verification; no signing authority is provided to the Agent.
 
-The package is consumed from one exact Git revision. Candidate verification also packages the
-crate and binds the archive SHA-256; neither proof is a registry publication.
+`schema/agent-v2.schema-manifest.json` lists all twelve request/response schemas.
+`SCHEMA_FINGERPRINT` binds their ordered bytes. Task signatures bind key ID, immutable executor
+inputs, exact platform/architecture, artifact digest, tenant, device, registration, generation,
+task, attempt, permit and expiry. Verification requires the trusted local context; deserializing
+an offer is not execution authorization.
 
-V1 rejects unknown fields, enum values, capabilities and versions. A semantic extension requires
-a new wire version and fixtures rather than an in-place fallback.
+The immutable current-major baseline in `hack/agent_wire_compat.py` is checked independently of
+the fingerprint. Missing history fails closed; JSON formatting/key order may change but structural
+changes require a new major and explicit baseline. Candidate packaging and fixed-Git consumption
+are manually verified by `hack/agent-wire-consumer.py`, not by CI and not as registry publication.
 
-`schema/agent-v1.schema-manifest.json` is the complete versioned surface: registration request and
-receipt, report request/ack/status, and the closed error body. `SCHEMA_FINGERPRINT` binds those
-ordered schema bytes, and source/candidate consumers deserialize representative server outputs in
-addition to constructing requests.
-
-Local `make ci` runs `hack/agent_wire_compat.py` against the immutable Git candidate
-`0637e0c4024673d79aaa6562018c96e667e694e3` from PR #1082. This is the reviewed V1
-baseline, not a claim of registry publication. The commit must be available locally;
-a shallow checkout must fetch it before CI (missing history fails closed).
-
-The gate compares all six JSON schemas and the manifest structurally with that commit,
-independently of `SCHEMA_FINGERPRINT`. Formatting and object key order may change.
-Because V1 is closed, all structural changes are conservatively rejected, including
-request narrowing, response expansion, enum/required-field changes and nested constraints.
-Even a semantically equivalent schema rewrite needs review; this gate does not attempt
-general JSON Schema implication. Updating the fingerprint alone never waives the gate.
-A semantic change requires a new wire major, versioned schemas/fixtures and an explicit
-new baseline in the gate; do not repoint the frozen V1 baseline to a mutable branch.
+See [the product guide](../../docs/guides/202609230001-2468-enterprise-tasks.md) for task semantics
+and [upgrade rules](../../docs/deployment/202609230002-2468-enterprise-task-upgrade.md).

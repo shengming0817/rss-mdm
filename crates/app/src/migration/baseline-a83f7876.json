@@ -1,0 +1,160 @@
+{
+  "units": [
+    {
+      "name": "access-v1",
+      "sha256": "380576954443b102314d6b78fb2645fc4c741f793355a6cf1262262b6e330ede"
+    },
+    {
+      "name": "observation-v2",
+      "sha256": "036a7834f54519ced3dd1187c02e549e2d34bb935cc81672e4a4971fc69c9efe"
+    },
+    {
+      "name": "projection-v3",
+      "sha256": "0243ae520a336c75204ffc5b7d610a271738788d7fb5ede463d5c1a36aed7491"
+    },
+    {
+      "name": "inventory-v1",
+      "sha256": "627596dec4ca5847ddb8be93fda3645649cfe93ae4ab2649c7b29e3d279e4e92"
+    },
+    {
+      "name": "inventory-api-reader-v1",
+      "sha256": "df0d7b26535ebfa2180903b1a35375b39c7795f646ff26e483c1d9c809514cdf"
+    },
+    {
+      "name": "access-audit-request-index-v1",
+      "sha256": "18e17152181760cad0e50f5e9b7af8b5ccd7007ce885eec7f1df9a51e2b96f88"
+    },
+    {
+      "name": "device-identity-v1",
+      "sha256": "7437a837f205b6f7728e1dafb7d89d7a4ae0b6bcec2dd80f5aa9f88b77b9ab0a"
+    },
+    {
+      "name": "windows-enrollment-v1",
+      "sha256": "7ab0cb09dd874ed895e0d2823f8e50881a87d741cdfcf5817926dc854e9681e8"
+    },
+    {
+      "name": "windows-collection-v1",
+      "sha256": "206125d255a737634acf70e29368544bd5cc8937d22fd5ab1ccc618594d3f255"
+    },
+    {
+      "name": "transactional-messaging-v1",
+      "sha256": "54afca3df7f00abb2230991def06ca4a4ccdcdc5fa61e4b998fd06899871f2a1"
+    },
+    {
+      "name": "group-v1",
+      "sha256": "350a9af78b6424b25ca313700dccd9811a410c3ed7fd6a0b3c390d160767e76e"
+    },
+    {
+      "name": "policy-v1",
+      "sha256": "8fd5c0b5a8102b907ea51d58a79d1475b8771357b1b9d1fbf2574df7bc814054"
+    },
+    {
+      "name": "resource-v1",
+      "sha256": "b3b05931f2a583144dcf1574ba4bb4f7350325dcbc442d075aa89c81b8d387bf"
+    },
+    {
+      "name": "software-release-v1",
+      "sha256": "6e7920927b0108417e122ae147c6ca5eaf3f9c6a100a8879b9f1f963708c2978"
+    },
+    {
+      "name": "software-publication-v1",
+      "sha256": "2f99fd94f8b1bb2103c5a775beaf03e889d2fada8e3e36092352ac3abe7993c6"
+    },
+    {
+      "name": "management-v1",
+      "sha256": "8be4d1fc9da4b65f3b7c191047ab6322bbb58a130a9be9a4bde38bf057e2093a"
+    },
+    {
+      "name": "group-outbox-writer-v1",
+      "sha256": "dfedd87a0bbeddb71c797afeb9fe72925d4bc97d98e2783c542b6e6745376eb9"
+    },
+    {
+      "name": "policy-outbox-writer-v1",
+      "sha256": "b4308e89bf15d9d8c29627660137ddf76fe5331e8be61c99cebb5e9811e20b2e"
+    },
+    {
+      "name": "resource-outbox-writer-v1",
+      "sha256": "7eced2823a49c1d1f5068ebbd86cfb073decb1c82c0c9ed933e533e32eb0cf75"
+    },
+    {
+      "name": "software-release-outbox-writer-v1",
+      "sha256": "3348ce09d429495b06f6548d668575806db823e97f4ec973ec307ce690293a21"
+    },
+    {
+      "name": "installation-binding-v1",
+      "sha256": "afe89f19f99a55b4d90e2fd5a92cd7ed9a3c4d64823fa7986232424d03b135f2"
+    },
+    {
+      "name": "identity-authority-v11",
+      "sha256": "029f01cc97e2dc83c48dd4c5459e487af6c56de69444f5d4a26cd874377f5048"
+    },
+    {
+      "name": "embedded-identity-coordinates-v1",
+      "sha256": "c1be83c24bee20a1e1437a8db6b01a29ec5fdf29b799c30f6af8e69d72799066"
+    },
+    {
+      "name": "authorization-v1",
+      "sha256": "29b6f2414157db80975f993d7ad5c942a7e60a676f4b6484252d51cd9677b3f7"
+    },
+    {
+      "name": "device-command-v1",
+      "sha256": "9558e62e3ffa6489a13a9b7878427df52f64c0030c2a8090c47d5e2d5d567395"
+    },
+    {
+      "name": "reconcile-v1",
+      "sha256": "a75d07572764344615f8f93f1f3fa8ce4ec7a54184ddfa776b13c288dfe8c3dd"
+    },
+    {
+      "name": "commands-v1",
+      "sha256": "4f7989efc68d8ba47b8b5969e05791c8bda473304fad29fd1133b19a18325764"
+    },
+    {
+      "name": "inventory-v2",
+      "sha256": "10ec2b9efe39edc7af5619af774656d95ec365608c1e38cc33df2c7d8c194a81"
+    },
+    {
+      "name": "assets-management-v1",
+      "sha256": "21da856d4a7981c7a0183425ba0608c1319297255a60cd4133b420557ec1052f"
+    },
+    {
+      "name": "agent-access-v1",
+      "sha256": "8cce4a073c3e589ee5ec24b8097b02b307f984bcf584ed54423963fc074be89e"
+    },
+    {
+      "name": "policy-candidates-v2",
+      "sha256": "c1adf36d3c8f005b6910e34b58ab3398c9f93944af87cbc4c6463afcf21882c5"
+    },
+    {
+      "name": "group-generations-v1",
+      "sha256": "41c20ccfbf81c63992740a0e69d1f01cc55b69ae5201e628d3f2d4e1d5ed7bff"
+    },
+    {
+      "name": "asset-history-v1",
+      "sha256": "bb5e023cf1743af9bce9c932ab6611c9997ca5468da305030ec2ba0cf649a151"
+    },
+    {
+      "name": "asset-authority-history-v1",
+      "sha256": "1b570585f5afe8f4eab091af4e63710b6afa9534d292b200d93d85c87fc11789"
+    },
+    {
+      "name": "automation-v1",
+      "sha256": "36f39f93fd03333abb9a6078c2942c9d95c2ed344888555aee4245395570c4b1"
+    },
+    {
+      "name": "collection-history-v1",
+      "sha256": "6195f976e17f7fb7b83685d6bc95f3072e96528bdeae3b3a5a9c81d9fc454804"
+    },
+    {
+      "name": "group-reverse-index-v1",
+      "sha256": "76f48e67254ff2a8e11d59a20bb6c46754f52932eea2ed482d6feecd30e2123b"
+    },
+    {
+      "name": "policy-execution-admission-v1",
+      "sha256": "be36eb4cf06853406fc860e745cfae64f9a23b3fdb8b011e84eb5bef4886acc1"
+    },
+    {
+      "name": "windows-configuration-v1",
+      "sha256": "a4f1c8929e2057ca08a84c9f64d17b7346791f49b95191fef5d750ef374f9b2d"
+    }
+  ]
+}

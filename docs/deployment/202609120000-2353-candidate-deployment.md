@@ -19,7 +19,7 @@ smoke 只运行实际 MDM OCI、自有 TLS PostgreSQL 和 HTTPS 网关。它执�
 
 ## 全新实例安装
 
-当前版本要求全新 PostgreSQL 17 实例，完整 RSS schema 和 Identity v11。旧 ledger、摘要、安装主体或存储坐标不匹配时拒绝；不回填旧 Outbox、不改历史 digest、不删数据重试。旧账户、会话及非终态业务不续接。
+新部署使用 PostgreSQL 17、完整 RSS schema 和 Identity v11。唯一接受的旧库基线与停写检查见 [企业任务升级](202609230002-2468-enterprise-task-upgrade.md)。旧 ledger、摘要、安装主体或存储坐标不匹配时拒绝；不回填旧 Outbox、不改历史 digest、不删数据重试。旧账户、会话及非终态业务不续接。
 
 按[认证指南](../guides/202609091600-2343-mdm-identity.md)准备数据库基础角色，再按顺序安装候选源码中的 `software-publication-roles.sql`、`management-roles.sql`、`identity-roles.sql`、`commands-roles.sql`（位于 `crates/app/schema/`）。为各运行角色配置独立登录秘密。`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 权限，脚本成功不代表角色准入成功。
 

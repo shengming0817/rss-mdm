@@ -148,27 +148,28 @@ impl Management {
         let mut subjects = BTreeMap::new();
         for row in rows {
             let device: String = row.try_get("device")?;
-            let source = stored(rss_mdm_inventory::ReportSource::parse(
-                row.try_get("source")?,
-            ))?;
+            let source = stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?;
             let channel: &str = row.try_get("channel")?;
-            if channel != source.channel().as_str() {
+            if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
                 return Err(Error::Unavailable(Failure::InventoryQuery).into());
             }
-            let scope = crate::device::scope(
-                self.tenant,
-                stored(Uuid::parse_str(row.try_get("registration")?))?,
-                source.as_str(),
-                stored(Uuid::parse_str(row.try_get("epoch")?))?,
-            )?;
-            let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
-            devices
-                .get_mut(&device)
-                .ok_or(Error::Unavailable(Failure::ManagementStorage))?
-                .channels
-                .insert(channel.to_owned());
-            subjects.insert(stored(scope.encode())?, (device, generation));
-            scopes.push(scope);
+            for dataset in rss_mdm_inventory::datasets(source) {
+                let scope = crate::device::scope_dataset(
+                    self.tenant,
+                    stored(Uuid::parse_str(row.try_get("registration")?))?,
+                    source.as_str(),
+                    stored(Uuid::parse_str(row.try_get("epoch")?))?,
+                    dataset,
+                )?;
+                let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
+                devices
+                    .get_mut(&device)
+                    .ok_or(Error::Unavailable(Failure::ManagementStorage))?
+                    .channels
+                    .insert(channel.to_owned());
+                subjects.insert(stored(scope.encode())?, (device.clone(), generation));
+                scopes.push(scope);
+            }
         }
         let tenant = self.tenant;
         let selected = ids.to_vec();

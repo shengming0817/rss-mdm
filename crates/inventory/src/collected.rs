@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 pub enum CollectedValue {
     /// Valid nonempty standard text.
     Known(String),
+    /// Typed scalar from an enterprise task.
+    Scalar(crate::Scalar),
     /// The existing channel explicitly cannot implement the requested field Get.
     Unsupported,
 }
@@ -30,6 +32,15 @@ impl CollectedValue {
     fn validate(&self, field: FieldKey) -> Result<()> {
         if field.is_manual() {
             return Err(Invalid::SourceNotAllowed);
+        }
+        if field.is_enterprise() {
+            return match self {
+                Self::Scalar(value) => field.validate_scalar(value),
+                _ => Err(Invalid::TypeMismatch),
+            };
+        }
+        if matches!(self, Self::Scalar(_)) {
+            return Err(Invalid::TypeMismatch);
         }
         if let Self::Known(s) = self {
             field.validate_scalar(&crate::Scalar::String(s.clone()))?;

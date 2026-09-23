@@ -71,3 +71,7 @@ command-catalog:
 .PHONY: capacity
 capacity:
 	python3 hack/capacity.py
+
+.PHONY: t2-tasks
+t2-tasks:
+	python3 hack/task-t2.py

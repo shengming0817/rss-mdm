@@ -1,6 +1,6 @@
 [package]
 name = "rss-mdm-agent-wire"
-version = "1.0.0"
+version = "2.0.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -8,6 +8,7 @@ include = ["src/**", "schema/**", "tests/**", "Cargo.toml", "README.md"]
 
 [dependencies]
 base64.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

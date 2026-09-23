@@ -56,6 +56,12 @@ impl ReportSource {
 /// All allowed asset sources. Serialized as their canonical stable identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Source {
+    /// Approved collection script evidence.
+    #[serde(rename = "agent.script")]
+    AgentScript,
+    /// Fixed osquery info evidence.
+    #[serde(rename = "agent.osquery")]
+    AgentOsquery,
     /// Built-in agent evidence.
     #[serde(rename = "agent.builtin")]
     AgentBuiltin,
@@ -71,16 +77,27 @@ impl Source {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
+            Self::AgentScript => "agent.script",
+            Self::AgentOsquery => "agent.osquery",
             Self::MdmWindows => ReportSource::MdmWindows.as_str(),
             Self::AgentBuiltin => ReportSource::AgentBuiltin.as_str(),
         }
     }
+    /// Device transport for collected evidence; Manual has none.
+    pub const fn channel(self) -> Option<Channel> {
+        match self {
+            Self::Manual => None,
+            Self::MdmWindows => Some(Channel::Mdm),
+            _ => Some(Channel::Agent),
+        }
+    }
     /// Parse stored evidence through the same report vocabulary.
     pub fn parse(s: &str) -> Result<Self> {
-        if s == "manual" {
-            Ok(Self::Manual)
-        } else {
-            ReportSource::parse(s).map(Into::into)
+        match s {
+            "manual" => Ok(Self::Manual),
+            "agent.script" => Ok(Self::AgentScript),
+            "agent.osquery" => Ok(Self::AgentOsquery),
+            _ => ReportSource::parse(s).map(Into::into),
         }
     }
 }

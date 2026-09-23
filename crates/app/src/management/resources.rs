@@ -57,8 +57,7 @@ enum Declaration {
     },
     Script {
         artifact: Artifact,
-        interpreter: String,
-        detect: String,
+        definition: r::ScriptDefinition,
     },
     Configuration {
         artifact: Artifact,
@@ -135,12 +134,10 @@ fn variant(v: &Variant) -> Result<r::Variant> {
         },
         Declaration::Script {
             artifact: a,
-            interpreter,
-            detect,
+            definition,
         } => r::Declaration::Script {
             artifact: artifact(a)?,
-            interpreter: id(interpreter)?,
-            detect: id(detect)?,
+            definition: definition.clone(),
         },
         Declaration::Configuration {
             artifact: a,
@@ -207,7 +204,7 @@ impl Management {
                 let resource = resource.to_owned();
                 let version_copy = version.clone();
                 let references=tx.with_connection(move |c|Box::pin(async move {
-     sqlx::query_scalar::<_,i64>("SELECT (SELECT count(*) FROM mdm_management.resource_references WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3) + (SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3)")
+     sqlx::query_scalar::<_,i64>("SELECT (SELECT count(*) FROM mdm_management.resource_references WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3) + (SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3) + (SELECT count(*) FROM mdm_commands.action_plans WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3)")
       .bind(tenant).bind(resource).bind(version_copy).fetch_one(c).await
     })).await?;
                 pg::Command::Archive {
@@ -275,12 +272,10 @@ fn variant_view(v: &r::Variant) -> Variant {
         },
         r::Declaration::Script {
             artifact,
-            interpreter,
-            detect,
+            definition,
         } => Declaration::Script {
             artifact: artifact_view(artifact),
-            interpreter: text(interpreter),
-            detect: text(detect),
+            definition: definition.clone(),
         },
         r::Declaration::Configuration {
             artifact,

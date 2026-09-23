@@ -1,0 +1,53 @@
+{
+  "wireVersion": 2,
+  "schemas": [
+    {
+      "type": "RegistrationRequest",
+      "file": "registration-request-v2.schema.json"
+    },
+    {
+      "type": "RegistrationReceipt",
+      "file": "registration-receipt-v2.schema.json"
+    },
+    {
+      "type": "ReportRequest",
+      "file": "report-request-v2.schema.json"
+    },
+    {
+      "type": "ReportAck",
+      "file": "report-ack-v2.schema.json"
+    },
+    {
+      "type": "ReportStatus",
+      "file": "report-status-v2.schema.json"
+    },
+    {
+      "type": "ErrorBody",
+      "file": "error-body-v2.schema.json"
+    },
+    {
+      "type": "TaskClaimRequest",
+      "file": "task-claim-request-v2.schema.json"
+    },
+    {
+      "type": "TaskEventRequest",
+      "file": "task-event-request-v2.schema.json"
+    },
+    {
+      "type": "TaskPayload",
+      "file": "task-payload-v2.schema.json"
+    },
+    {
+      "type": "SignedTask",
+      "file": "signed-task-v2.schema.json"
+    },
+    {
+      "type": "TaskClaimResponse",
+      "file": "task-claim-response-v2.schema.json"
+    },
+    {
+      "type": "TaskEventAck",
+      "file": "task-event-ack-v2.schema.json"
+    }
+  ]
+}

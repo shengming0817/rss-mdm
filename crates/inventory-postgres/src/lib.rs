@@ -28,3 +28,6 @@ mod manual;
 pub use manual::{Assignment, assign_in, manual_in};
 mod history;
 pub use history::{manual_at_in, read_at_in, watermark_in};
+
+/// Fixed enterprise task field catalog and typed storage bounds.
+pub const ENTERPRISE_MIGRATION_SQL: &str = include_str!("../migrations/0005_enterprise.sql");

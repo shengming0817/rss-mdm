@@ -9,6 +9,9 @@ publish.workspace = true
 rss-request-context = { workspace = true }
 rss-contract = { workspace = true }
 sha2 = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+jsonschema.workspace = true
 
 [lints]
 workspace = true

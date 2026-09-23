@@ -13,11 +13,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "agent-wire-consumer"
 PACKAGE = "rss-mdm-agent-wire"
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 SCHEMAS = [
-    "registration-request-v1.schema.json", "registration-receipt-v1.schema.json",
-    "report-request-v1.schema.json", "report-ack-v1.schema.json",
-    "report-status-v1.schema.json", "error-body-v1.schema.json",
+    "registration-request-v2.schema.json", "registration-receipt-v2.schema.json",
+    "report-request-v2.schema.json", "report-ack-v2.schema.json",
+    "report-status-v2.schema.json", "error-body-v2.schema.json",
+    "task-claim-request-v2.schema.json", "task-event-request-v2.schema.json",
+    "task-payload-v2.schema.json", "signed-task-v2.schema.json",
+    "task-claim-response-v2.schema.json", "task-event-ack-v2.schema.json",
 ]
 
 def require(condition, message):
@@ -45,27 +48,27 @@ use serde_json::json;
 use uuid::Uuid;
 
 #[test]
-fn independent_agent_consumes_exact_v1() {
+fn independent_agent_consumes_exact_v2() {
     let secret = || Secret::parse("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let registration = RegistrationRequest::new(
         Uuid::new_v4(), Uuid::new_v4(), secret(), secret()
     ).unwrap();
-    assert_eq!(registration.capabilities(), &[Capability::InventoryBasicV1]);
+    assert_eq!(registration.capabilities(), &[Capability::InventoryBasicV2]);
     let report = ReportRequest::new(
         Uuid::new_v4(), 0, 1, ReportBody::Snapshot(vec![])
     ).unwrap();
     assert!(matches!(report.body(), ReportBody::Snapshot(_)));
-    assert_eq!(serde_json::to_value(&registration).unwrap()["wireVersion"], 1);
+    assert_eq!(serde_json::to_value(&registration).unwrap()["wireVersion"], 2);
     let operation = Uuid::new_v4();
     let registration_id = Uuid::new_v4();
     let epoch = Uuid::new_v4();
     let report_id = Uuid::new_v4();
     let _: RegistrationReceipt = serde_json::from_value(json!({
-        "wireVersion":1,"operationId":operation,"deviceId":"device-1",
+        "wireVersion":2,"operationId":operation,"deviceId":"device-1",
         "registrationId":registration_id,"generation":1,"source":"agent.builtin",
-        "epoch":epoch,"capabilities":["inventory.basic.v1"]
+        "epoch":epoch,"capabilities":["inventory.basic.v2"]
     })).unwrap();
-    let ack = json!({"wireVersion":1,"reportId":report_id,"receivedAt":1,"intake":"durable"});
+    let ack = json!({"wireVersion":2,"reportId":report_id,"receivedAt":1,"intake":"durable"});
     let _: ReportAck = serde_json::from_value(ack.clone()).unwrap();
     let _: ReportStatus = serde_json::from_value(json!({
         "ack":ack,"observation":"pending","projection":"pending"
@@ -73,6 +76,15 @@ fn independent_agent_consumes_exact_v1() {
     let _: ErrorBody = serde_json::from_value(json!({"code":"operation_unknown"})).unwrap();
     assert!(SCHEMA_MANIFEST.contains("RegistrationReceipt"));
     assert_eq!(SCHEMA_FINGERPRINT.len(), 64);
+    use rss_mdm_agent_wire::{TaskClaimRequest,TaskEventRequest,TaskEvent,TaskClaimResponse,TaskEventAck};
+    let claim=TaskClaimRequest::new(Uuid::new_v4()).unwrap();
+    assert_eq!(serde_json::to_value(claim).unwrap()["wireVersion"],2);
+    let event=TaskEventRequest::new(Uuid::new_v4(),Uuid::new_v4(),TaskEvent::Start).unwrap();
+    assert_eq!(serde_json::to_value(event).unwrap()["event"]["kind"],"start");
+    let _:TaskClaimResponse=serde_json::from_value(json!({"wireVersion":2,"task":null,"cancellations":[]})).unwrap();
+    let _:TaskEventAck=serde_json::from_value(json!({"wireVersion":2,"accepted":true,"permit":null,"cancelRequested":false})).unwrap();
+    assert!(serde_json::from_value::<TaskClaimRequest>(json!({"wireVersion":1,"operationId":Uuid::new_v4()})).is_err());
+    assert!(SCHEMA_MANIFEST.contains("SignedTask"));
 }
 ''')
     logs = []

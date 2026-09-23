@@ -16,7 +16,7 @@ mod storage;
 mod wire;
 use crate::{Error, Failure, audit::Audit};
 pub(crate) use config::Config;
-pub(crate) use http::{routes, routes_v2};
+pub(crate) use http::{resource_routes, routes, routes_v2};
 use model::*;
 pub use model::{Missing, Permission};
 use rss_contract::Timepoint;

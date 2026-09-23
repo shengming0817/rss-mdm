@@ -45,3 +45,5 @@ app → inventory-postgres/inventory/Identity 四个公开组件；examples → 
 管理员接入与生产命令见 [MDM Identity 接入](docs/guides/202609091600-2343-mdm-identity.md)。
 
 Windows 注册与首次管理会话的当前范围、配置和 T3 边界见 [使用指南](docs/guides/202609111146-2350-windows-enrollment-management.md)。
+
+企业脚本、采集模板与持久任务服务端见 [任务指南](docs/guides/202609230001-2468-enterprise-tasks.md)；Agent wire V2 和数据库升级见 [部署步骤](docs/deployment/202609230002-2468-enterprise-task-upgrade.md)。真实终端 runner 按 #2475/#2476 另行验收。

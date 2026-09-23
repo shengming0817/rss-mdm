@@ -1,4 +1,4 @@
-//! Strict Agent V1 HTTP adapter. Wire values never carry tenant, device or generation authority.
+//! Strict Agent V2 HTTP adapter. Wire values never carry tenant, device or generation authority.
 
 use crate::{
     AccessStore, Error, Failure,
@@ -29,13 +29,14 @@ const MAX_PENDING_REPORTS_PER_REGISTRATION: i64 = 32;
 
 pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
+        .merge(crate::commands::actions::http::agent_routes())
         .route("/registrations", post(register))
         .route("/reports", post(report))
         .route("/reports/{id}", get(status))
 }
 
 #[derive(Clone)]
-enum AgentError {
+pub(crate) enum AgentError {
     Wire(wire::ErrorCode),
     App(Error),
 }
@@ -79,7 +80,9 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
         | wire::ErrorCode::UnsupportedWire
         | wire::ErrorCode::UnsupportedCapability => StatusCode::BAD_REQUEST,
         wire::ErrorCode::InvalidIdentity => StatusCode::UNAUTHORIZED,
-        wire::ErrorCode::ReportNotFound => StatusCode::NOT_FOUND,
+        wire::ErrorCode::ReportNotFound | wire::ErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
+        wire::ErrorCode::PermissionDenied => StatusCode::FORBIDDEN,
+        wire::ErrorCode::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
         wire::ErrorCode::OperationConflict => StatusCode::CONFLICT,
         wire::ErrorCode::OperationUnknown | wire::ErrorCode::ServiceUnavailable => {
             StatusCode::SERVICE_UNAVAILABLE
@@ -181,7 +184,7 @@ async fn register_inner(
         [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,1,'[\"inventory.basic.v1\"]')")
+    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,'[\"inventory.basic.v2\"]')")
         .bind(proof.tenant_id()).bind(receipt.registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     let changed = sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND channel='agent' AND password_version=$3 AND credential_ref=$4::uuid AND expires_at>clock_timestamp()")
         .bind(proof.tenant_id()).bind(auth.id.to_string()).bind(auth.version).bind(auth.credential_ref.to_string()).execute(&mut *tx).await.map_err(db)?;
@@ -201,7 +204,7 @@ async fn register_inner(
             .map_err(|_| Error::Unavailable(Failure::AccessStore))?,
         source: wire::ReportSource::AgentBuiltin,
         epoch: receipt.epoch,
-        capabilities: vec![wire::Capability::InventoryBasicV1],
+        capabilities: vec![wire::Capability::InventoryBasicV2],
     };
     app.access
         .finish_status(
@@ -390,7 +393,7 @@ fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentErr
     let capabilities = value
         .get("capabilities")
         .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if capabilities != &serde_json::json!(["inventory.basic.v1"]) {
+    if capabilities != &serde_json::json!(["inventory.basic.v2"]) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedCapability));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
@@ -418,7 +421,7 @@ fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
 }
-fn agent_credential(
+pub(crate) fn agent_credential(
     app: &App,
     headers: &HeaderMap,
 ) -> Result<VerifiedChannelCredential, AgentError> {
@@ -497,7 +500,7 @@ fn registration_digest(input: &wire::RegistrationRequest) -> String {
         &input.enrollment_id().to_string(),
         input.password().expose(),
         input.credential().expose(),
-        "inventory.basic.v1",
+        "inventory.basic.v2",
     ] {
         hash.update(value.len().to_be_bytes());
         hash.update(value.as_bytes());
@@ -525,7 +528,7 @@ mod tests {
             error,
             AgentError::Wire(wire::ErrorCode::MalformedRequest)
         ));
-        let error = parse_report(br#"{"wireVersion":2}"#).unwrap_err();
+        let error = parse_report(br#"{"wireVersion":1}"#).unwrap_err();
         assert!(matches!(
             error,
             AgentError::Wire(wire::ErrorCode::UnsupportedWire)

@@ -13,9 +13,10 @@ fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value.map(|v| v.0).map_err(|_| Error::Malformed)
 }
 pub(crate) fn routes() -> Router<Arc<App>> {
-    Router::new()
-        .merge(publications::routes())
-        .route("/resources/{id}", get(resource_read).post(resource_write))
+    publications::routes()
+}
+pub(crate) fn resource_routes() -> Router<Arc<App>> {
+    Router::new().route("/resources/{id}", get(resource_read).post(resource_write))
 }
 pub(crate) fn routes_v2() -> Router<Arc<App>> {
     Router::new()

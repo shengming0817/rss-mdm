@@ -6,6 +6,9 @@
 //! caller authorization or device effects. [`Artifact::verify`] checks supplied bytes.
 //! Persist snapshots and reference checks atomically in the consuming adapter; a
 //! returned decision does not prove a database commit or execution on a device.
+mod script;
+pub use script::*;
+
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use sha2::{Digest as _, Sha256};
@@ -114,7 +117,7 @@ impl Digest {
 pub enum Kind {
     /// A package artifact with installation and detection identities.
     Software,
-    /// A script artifact with an interpreter and detection identity.
+    /// A script artifact with a frozen, validated execution interface.
     Script,
     /// A configuration artifact with schema, application and detection identities.
     Configuration,
@@ -225,10 +228,8 @@ pub enum Declaration {
     Script {
         /// Expected immutable artifact; construction does not load its bytes.
         artifact: Artifact,
-        /// Consumer-owned interpreter identity.
-        interpreter: Id,
-        /// Consumer-owned detection operation identity.
-        detect: Id,
+        /// Complete validated execution interface.
+        definition: ScriptDefinition,
     },
     /// Configuration metadata; construction does not apply it.
     Configuration {
@@ -321,7 +322,7 @@ impl Version {
     /// Freeze 1–64 variants, sorted by platform, architecture and key.
     /// Returns [`Error::InvalidInput`] for an invalid count, [`Error::KindMismatch`]
     /// for a different declaration kind, or [`Error::DuplicateVariant`] for duplicate
-    /// selection coordinates. Computes the V1 content digest; does not verify artifacts.
+    /// selection coordinates. Computes the content digest; does not verify artifacts.
     pub fn new(
         tenant: TenantId,
         resource: Id,
@@ -334,6 +335,11 @@ impl Version {
         }
         if variants.iter().any(|v| v.declaration.kind() != kind) {
             return Err(Error::KindMismatch);
+        }
+        for variant in &variants {
+            if let Declaration::Script { definition, .. } = &variant.declaration {
+                definition.validate_platform(variant.platform)?;
+            }
         }
         variants.sort_by(|a, b| {
             (a.platform, a.architecture, &a.key).cmp(&(b.platform, b.architecture, &b.key))
@@ -371,7 +377,7 @@ impl Version {
     pub const fn kind(&self) -> Kind {
         self.kind
     }
-    /// Return the digest of the canonical V1 version encoding, not an artifact digest.
+    /// Return the canonical version digest, not an artifact digest.
     pub const fn digest(&self) -> Digest {
         self.digest
     }
@@ -394,7 +400,11 @@ impl Version {
     }
     // V1: domain separator, tenant, length-prefixed identities, explicit tags/counts.
     fn canonical(&self) -> Vec<u8> {
-        let mut e = Encoding(b"rss-mdm-resource-v1\0".to_vec());
+        let mut e = Encoding(if self.kind == Kind::Script {
+            b"rss-mdm-resource-script-v2\0".to_vec()
+        } else {
+            b"rss-mdm-resource-v1\0".to_vec()
+        });
         e.0.extend(self.tenant.octets());
         e.id(&self.resource);
         e.id(&self.label);
@@ -433,13 +443,10 @@ impl Version {
                     e.id(detect);
                     e.optional(uninstall);
                 }
-                Declaration::Script {
-                    interpreter,
-                    detect,
-                    ..
-                } => {
-                    e.id(interpreter);
-                    e.id(detect);
+                Declaration::Script { definition, .. } => {
+                    let bytes = definition.canonical();
+                    e.0.extend((bytes.len() as u32).to_be_bytes());
+                    e.0.extend(bytes);
                 }
                 Declaration::Configuration {
                     schema,

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/mdm/agent/v2/task-claim-request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "wireVersion",
+    "operationId"
+  ],
+  "properties": {
+    "wireVersion": {
+      "const": 2
+    },
+    "operationId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    }
+  }
+}

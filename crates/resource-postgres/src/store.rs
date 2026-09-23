@@ -140,54 +140,9 @@ impl ResourceStore {
         id: &Id,
     ) -> InTransaction<Option<StoredResource>> {
         input!(self.check(tx)?);
-        let Some(AggregateRecord { revision, document }) = STORAGE.read(tx, id.as_str()).await?
-        else {
-            return Ok(Ok(None));
-        };
-        let t = self.tenant.to_string();
-        let owner = id.as_str().to_owned();
-        let rows = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    sqlx::query(GET_IN_SQL)
-                        .bind(t)
-                        .bind(owner)
-                        .fetch_all(c)
-                        .await
-                })
-            })
-            .await?;
-
-        if rows.len() > 10_000 {
-            return Err(STORAGE.fault("store::get_in"));
-        }
-        let mut versions = BTreeMap::new();
-        let mut size = 0;
-        for row in rows {
-            let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
-            size += bytes.len();
-            if size > MAX_DOCUMENT {
-                return Err(STORAGE.fault("store::get_in"));
-            }
-            let v = codec::read_version(&bytes)?;
-            if v.tenant() != self.tenant
-                || v.resource() != id
-                || v.label().as_str() != row.try_get::<String, _>("key")?
-            {
-                return Err(STORAGE.fault("store::get_in"));
-            }
-            versions.insert(v.label().as_str().into(), v);
-        }
-        let resource = codec::restore(&document, versions)?;
-        let s = resource.snapshot();
-        if s.tenant != self.tenant || &s.key != id {
-            return Err(STORAGE.fault("store::get_in"));
-        }
-        Ok(Ok(Some(StoredResource {
-            resource,
-            storage_revision: revision,
-        })))
+        read_in(tx, self.tenant, id).await
     }
+
     /// Lock the resource aggregate and return its immutable version, state and storage revision.
     /// Hold this borrowed transaction while adding references or checking archive eligibility.
     pub async fn lock_version_in(
@@ -446,3 +401,78 @@ fn request_document(t: TenantId, r: &Request) -> Result<Vec<u8>, PgError> {
 }
 
 const GET_IN_SQL: &str = "SELECT key,document,digest FROM mdm_resource.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind='version' ORDER BY key COLLATE \"C\" LIMIT 10001";
+
+async fn read_in(
+    tx: &mut PgTransaction<'_>,
+    tenant: TenantId,
+    id: &Id,
+) -> InTransaction<Option<StoredResource>> {
+    let Some(AggregateRecord { revision, document }) = STORAGE.read(tx, id.as_str()).await? else {
+        return Ok(Ok(None));
+    };
+    let t = tenant.to_string();
+    let owner = id.as_str().to_owned();
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(GET_IN_SQL)
+                    .bind(t)
+                    .bind(owner)
+                    .fetch_all(c)
+                    .await
+            })
+        })
+        .await?;
+
+    if rows.len() > 10_000 {
+        return Err(STORAGE.fault("store::get_in"));
+    }
+    let mut versions = BTreeMap::new();
+    let mut size = 0;
+    for row in rows {
+        let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
+        size += bytes.len();
+        if size > MAX_DOCUMENT {
+            return Err(STORAGE.fault("store::get_in"));
+        }
+        let v = codec::read_version(&bytes)?;
+        if v.tenant() != tenant
+            || v.resource() != id
+            || v.label().as_str() != row.try_get::<String, _>("key")?
+        {
+            return Err(STORAGE.fault("store::get_in"));
+        }
+        versions.insert(v.label().as_str().into(), v);
+    }
+    let resource = codec::restore(&document, versions)?;
+    let s = resource.snapshot();
+    if s.tenant != tenant || &s.key != id {
+        return Err(STORAGE.fault("store::get_in"));
+    }
+    Ok(Ok(Some(StoredResource {
+        resource,
+        storage_revision: revision,
+    })))
+}
+/// Lock one exact version while adding a product-owned reference in the same transaction.
+/// Tenant comes from the RSS transaction. The host must admit its role and Resource catalog.
+/// The shared advisory lock serializes archival and reference insertion under READ COMMITTED.
+/// Does not commit or open another runtime.
+pub async fn lock_reference_in(
+    tx: &mut PgTransaction<'_>,
+    id: &Id,
+    version: &Id,
+) -> InTransaction<(Version, State)> {
+    STORAGE.lock(tx, "resource", id.as_str()).await?;
+    let tenant = tx.tenant_id();
+    let stored = input!(input!(read_in(tx, tenant, id).await?).ok_or(Rejection::NotFound));
+    let value = input!(
+        stored
+            .resource
+            .version(version)
+            .map_err(|_| Rejection::NotFound)
+    );
+    let state =
+        crate::error::decode_domain("store::lock_reference_in", stored.resource.state(version))?;
+    Ok(Ok((value.clone(), state)))
+}

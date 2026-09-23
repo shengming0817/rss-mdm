@@ -165,7 +165,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(identity_only=False, asset_only=False, command_only=False, catalog_mode=None):
+def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None):
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -220,6 +220,11 @@ def main(identity_only=False, asset_only=False, command_only=False, catalog_mode
                 return
             configure_identity(root, port, migrators[0], env)
             env['MDM_TEST_PG_CONTAINER'] = name
+            if task_only:
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(result.stdout,flush=True)
+                require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
+                return
             if asset_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)

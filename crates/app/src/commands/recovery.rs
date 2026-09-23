@@ -170,10 +170,11 @@ impl Commands {
         claim: rss_transactional_messaging_postgres::PgOutboxClaim,
     ) -> std::result::Result<(), Error> {
         let message = PgOutboxStore::<()>::message(&claim);
+        let action = message.message_id().as_str().starts_with("action.");
         let id = message
             .message_id()
             .as_str()
-            .strip_prefix("dispatch.")
+            .strip_prefix(if action { "action." } else { "dispatch." })
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or_else(|| {
                 let e = Error::Unavailable(Failure::CommandInvariant);
@@ -181,7 +182,11 @@ impl Commands {
                 e
             })?;
         let fingerprint = message.fingerprint().as_bytes().to_vec();
-        let result = self.accept_dispatch(id, fingerprint).await;
+        let result = if action {
+            self.accept_action_dispatch(id, fingerprint).await
+        } else {
+            self.accept_dispatch(id, fingerprint).await
+        };
         if let Err(e) = &result {
             relay_diagnostic("accept", Some(id), e);
             // Preserve the claim and original message for repair; never retry poisoned facts.
@@ -247,6 +252,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
             let audit = Audit::new(self.tenant.to_string(), "management_read");
             let active=self.transact((self,claim.target().entity()),&audit,|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
+            if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::active(tx,id).await;}
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let mut after=Uuid::nil();
             loop {
@@ -282,6 +288,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
                 storage::admit(tx).await?;
+                if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::recover(service,tx,id).await;}
                 let Some(name)=device(tx,entity).await? else{return Ok(())};
                 storage::lock(tx,&name).await?;
                 let tenant=service.tenant.to_string();let key=name.clone();

@@ -220,14 +220,34 @@ pub(crate) fn scope(
     source: &str,
     epoch: Uuid,
 ) -> Result<Scope, Error> {
+    scope_dataset(
+        tenant,
+        registration,
+        source,
+        epoch,
+        rss_mdm_inventory::DATASET,
+    )
+}
+pub(crate) fn scope_dataset(
+    tenant: TenantId,
+    registration: Uuid,
+    source: &str,
+    epoch: Uuid,
+    dataset: &str,
+) -> Result<Scope, Error> {
     Ok(Scope::new(
         tenant,
-        // RSS's lifecycle fence is object-wide. Each independently registered channel
-        // generation is its own observation subject; Device identity lives in our mapping.
-        Id::new(registration.to_string()).map_err(|_| Error::Malformed)?,
+        // Lifecycle CAS is object-wide. Each independently activated fixed dataset
+        // has its own subject within the registration; Device identity stays in our mapping.
+        Id::new(if dataset == rss_mdm_inventory::DATASET {
+            registration.to_string()
+        } else {
+            format!("{registration}:{dataset}")
+        })
+        .map_err(|_| Error::Malformed)?,
         Registration::new(registration.to_string()).map_err(|_| Error::Malformed)?,
         Id::new(source).map_err(|_| Error::Malformed)?,
-        Id::new("inventory").expect("fixed dataset"),
+        Id::new(dataset).map_err(|_| Error::Malformed)?,
         Epoch::new(epoch.to_string()).map_err(|_| Error::Malformed)?,
     ))
 }

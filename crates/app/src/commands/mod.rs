@@ -1,5 +1,6 @@
 //! Product operation composition; RSS remains the command, messaging and recovery owner.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
+pub(crate) mod actions;
 mod config;
 mod http;
 mod model;
@@ -38,6 +39,7 @@ pub(crate) struct Commands {
     reconcile: rss_reconcile_postgres::PgStore,
     tenant: TenantId,
     instance: String,
+    content: Option<Arc<actions::content::Content>>,
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Fault {

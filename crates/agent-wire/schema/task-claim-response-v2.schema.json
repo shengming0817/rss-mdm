@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/mdm/agent/v2/task-claim-response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "wireVersion",
+    "task",
+    "cancellations"
+  ],
+  "properties": {
+    "wireVersion": {
+      "const": 2
+    },
+    "task": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "payload",
+            "keyId",
+            "signature"
+          ],
+          "properties": {
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "wireVersion",
+                "tenantId",
+                "deviceId",
+                "registrationId",
+                "generation",
+                "taskId",
+                "attemptId",
+                "permit",
+                "expiresAt",
+                "resourceDigest",
+                "content",
+                "profile",
+                "runAs",
+                "arguments",
+                "environment",
+                "timeoutSeconds",
+                "outputBytes",
+                "maxRows",
+                "platform",
+                "architecture"
+              ],
+              "properties": {
+                "wireVersion": {
+                  "const": 2
+                },
+                "tenantId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "not": {
+                    "const": "00000000-0000-0000-0000-000000000000"
+                  }
+                },
+                "deviceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024,
+                  "pattern": "^[^\\p{Cc}]+$"
+                },
+                "registrationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "not": {
+                    "const": "00000000-0000-0000-0000-000000000000"
+                  }
+                },
+                "generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9223372036854775807
+                },
+                "taskId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "not": {
+                    "const": "00000000-0000-0000-0000-000000000000"
+                  }
+                },
+                "attemptId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "not": {
+                    "const": "00000000-0000-0000-0000-000000000000"
+                  }
+                },
+                "permit": {
+                  "enum": [
+                    "offer",
+                    "start"
+                  ]
+                },
+                "expiresAt": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "resourceDigest": {
+                  "type": "array",
+                  "minItems": 32,
+                  "maxItems": 32,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                },
+                "content": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "length",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "length": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 16777216
+                    },
+                    "sha256": {
+                      "type": "array",
+                      "minItems": 32,
+                      "maxItems": 32,
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255
+                      }
+                    }
+                  }
+                },
+                "profile": {
+                  "enum": [
+                    "power_shell7",
+                    "posix_sh",
+                    "bash",
+                    "osquery_info_v1"
+                  ]
+                },
+                "runAs": {
+                  "enum": [
+                    "system",
+                    "logged_in_user"
+                  ]
+                },
+                "arguments": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 65536,
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "environment": {
+                  "type": "object",
+                  "maxProperties": 32,
+                  "propertyNames": {
+                    "type": "string",
+                    "minLength": 11,
+                    "maxLength": 64,
+                    "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 65536,
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "timeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3600
+                },
+                "outputBytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1048576
+                },
+                "maxRows": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "platform": {
+                  "enum": [
+                    "windows",
+                    "macos"
+                  ]
+                },
+                "architecture": {
+                  "enum": [
+                    "x86_64",
+                    "aarch64"
+                  ]
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "profile": {
+                        "const": "osquery_info_v1"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "arguments": {
+                        "maxItems": 0
+                      },
+                      "environment": {
+                        "maxProperties": 0
+                      },
+                      "maxRows": {
+                        "const": 1
+                      },
+                      "runAs": {
+                        "const": "system"
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "keyId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "signature": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+            }
+          }
+        }
+      ]
+    },
+    "cancellations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "attemptId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "attemptId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        }
+      }
+    }
+  }
+}

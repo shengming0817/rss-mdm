@@ -108,6 +108,11 @@ impl Commands {
                 reconcile,
                 tenant,
                 instance: config.identity.instance_id.clone(),
+                content: config
+                    .tasks
+                    .as_ref()
+                    .map(|c| actions::content::Content::open(c, &tenant.to_string()).map(Arc::new))
+                    .transpose()?,
             }))
         }
         .await;

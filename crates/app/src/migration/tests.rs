@@ -19,36 +19,49 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     };
     let mut owner = PgConnection::connect_with(&options).await?;
     let candidate = units();
-    migrate_units(&mut owner, &installation, &candidate[..candidate.len() - 1]).await?;
-    // A real previous ledger is installed; tenant RLS must not hide active work from upgrade.
+    // This is the exact a83f7876 39-unit baseline, not an arbitrary prefix.
+    migrate_units(&mut owner, &installation, &candidate[..39]).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(&installation.tenants[0])
         .execute(&mut owner)
         .await?;
-    owner.execute("INSERT INTO rss_device_command.authorities VALUES('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222',1,1); INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint) VALUES('11111111-1111-4111-8111-111111111111','upgrade-evidence','22222222-2222-4222-8222-222222222222',1,1,decode(repeat('00',32),'hex'),1000,1,'mdm.commands.v1','upgrade-evidence',decode(repeat('00',32),'hex'))").await?;
+    owner.execute(include_str!("agent-v1-fixture.sql")).await?;
     owner
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
-    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
+    ensure!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='agent-v2')"
+        )
+        .fetch_one(&mut owner)
+        .await?
+    );
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(&installation.tenants[0])
         .execute(&mut owner)
         .await?;
-    owner.execute("UPDATE rss_device_command.commands SET status='cancelled',terminal_at=2 WHERE command_id='upgrade-evidence'").await?;
-    owner.execute(include_str!("legacy-fixture.sql")).await?;
+    owner
+        .execute("UPDATE mdm_access.registrations SET state='revoked' WHERE channel='agent'")
+        .await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    owner
+        .execute("UPDATE mdm_access.credentials SET state='revoked' WHERE channel='agent'")
+        .await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    owner
+        .execute("UPDATE mdm_access.collection_runs SET delivery_pending=false")
+        .await?;
+    // No inferred conversion of incomplete legacy Script declarations.
+    owner.execute("INSERT INTO mdm_resource.immutable VALUES(current_setting('rss.tenant_id')::uuid,'old-script','version','v1',convert_to('[1,0,0,0,1]','UTF8'),decode(repeat('00',32),'hex'))").await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    owner
+        .execute("DELETE FROM mdm_resource.immutable WHERE owner='old-script'")
+        .await?;
     let historical: serde_json::Value =
-        sqlx::query_scalar("SELECT to_jsonb(a) FROM mdm_commands.attempts a")
+        sqlx::query_scalar("SELECT to_jsonb(r) FROM mdm_access.collection_runs r")
             .fetch_one(&mut owner)
             .await?;
-    ensure!(migrate_on(&mut owner, &installation).await.is_err());
-    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
-    owner.execute("UPDATE rss_transactional_messaging.outbox SET status='published' WHERE domain='mdm.commands.v1'").await?;
-    // Terminal commands and settled Outbox still cannot allow old live response replay.
-    ensure!(migrate_on(&mut owner, &installation).await.is_err());
-    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
-    owner.execute("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second'").await?;
-
     owner
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;
@@ -58,36 +71,24 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         .execute(&mut owner)
         .await?;
     ensure!(
-        sqlx::query_scalar::<_, String>(
-            "SELECT status FROM rss_device_command.commands WHERE command_id='upgrade-evidence'"
-        )
-        .fetch_one(&mut owner)
-        .await?
-            == "cancelled"
-    );
-
-    ensure!(
         sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT to_jsonb(a) FROM mdm_commands.attempt_history a"
+            "SELECT to_jsonb(r) FROM mdm_access.collection_runs r"
         )
         .fetch_one(&mut owner)
         .await?
             == historical
     );
-    let converted:(String,String,String)=sqlx::query_as("SELECT request->'task'->>'kind',request->'task'->>'expectedValue',approval->>'permission' FROM mdm_commands.operations WHERE id='33333333-3333-4333-8333-333333333333'").fetch_one(&mut owner).await?;
     ensure!(
-        converted
-            == (
-                "state_verify".into(),
-                "Historical Model".into(),
-                "state_verify".into()
-            )
-    );
-    ensure!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mdm_commands.attempts")
+        sqlx::query_scalar::<_, i16>("SELECT wire_version FROM mdm_access.agent_bindings")
             .fetch_one(&mut owner)
             .await?
-            == 0
+            == 1
+    );
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT state FROM mdm_access.credentials")
+            .fetch_one(&mut owner)
+            .await?
+            == "revoked"
     );
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
@@ -179,4 +180,40 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     );
     owner.close().await?;
     Ok(())
+}
+
+#[test]
+fn task_upgrade_accepts_only_the_exact_named_baseline_or_complete_current_ledger() {
+    let current = units();
+    let ledger = |items: &[(&str, &str)]| {
+        items
+            .iter()
+            .map(|(name, sql)| (name.to_string(), format!("{:x}", Sha256::digest(sql)), true))
+            .collect::<Vec<_>>()
+    };
+    assert!(accepted_ledger(&[], &current));
+    assert!(accepted_ledger(&ledger(&current), &current));
+    assert!(!accepted_ledger(&ledger(&current[..38]), &current));
+    let baseline: serde_json::Value =
+        serde_json::from_str(include_str!("baseline-a83f7876.json")).unwrap();
+    let baseline = baseline["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|unit| {
+            (
+                unit["name"].as_str().unwrap().to_owned(),
+                unit["sha256"].as_str().unwrap().to_owned(),
+                true,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(baseline.len(), 39);
+    assert!(accepted_ledger(&baseline, &current));
+    let mut altered = baseline.clone();
+    altered[0].1 = "0".repeat(64);
+    assert!(!accepted_ledger(&altered, &current));
+    let mut duplicate = baseline;
+    duplicate[0] = duplicate[1].clone();
+    assert!(!accepted_ledger(&duplicate, &current));
 }
