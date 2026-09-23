@@ -30,4 +30,6 @@
 
 - [统一资产、Manual 与授权搜索](202609210000-2463-unified-assets.md)（#2463）。
 - [设备状态核实任务](202609210000-2465-command-operations.md)：授权受理、原生投递、实际观察及恢复。
+
+- [Windows Domain 防火墙配置](202609220000-2466-windows-firewall.md)（#2466）：固定 DDF、冻结计划、统一原生投递及独立设备级观察。
 - [Agent V1 注册与报告接入](202609220000-2467-agent-wire-access.md)：严格 wire、全新安装、凭据绑定、持久报告与独立 artifact 消费证明。

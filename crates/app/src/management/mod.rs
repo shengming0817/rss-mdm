@@ -2,9 +2,11 @@
 pub(crate) mod assets;
 pub(crate) mod automation;
 mod config;
+pub(crate) mod configuration;
+pub(crate) mod execution;
 mod groups;
 mod http;
-mod model;
+pub(crate) mod model;
 mod pages;
 mod plans;
 mod publications;

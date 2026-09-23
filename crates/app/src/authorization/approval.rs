@@ -6,6 +6,7 @@ use sqlx::{PgConnection, Row};
 
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct Approval {
+    permission: Permission,
     user: User,
     device: String,
     rules: Vec<Basis>,
@@ -21,16 +22,26 @@ impl Approval {
         snapshot: &Snapshot,
         proof: &Principal,
         device: &str,
+        permission: Permission,
     ) -> Result<Self, Error> {
-        snapshot.require(proof, Permission::StateVerify, Some(device))?;
-        let rules = snapshot.approval_bases(proof, device)?;
+        snapshot.require(proof, permission, Some(device))?;
+        let rules = snapshot.approval_bases(proof, device, permission)?;
         Ok(Self {
+            permission,
             user: proof.user(),
             device: device.into(),
             rules,
         })
     }
-    pub(crate) async fn valid(&self, conn: &mut PgConnection, now: i64) -> Result<bool, Error> {
+    pub(crate) async fn valid(
+        &self,
+        conn: &mut PgConnection,
+        permission: Permission,
+        now: i64,
+    ) -> Result<bool, Error> {
+        if self.permission != permission {
+            return Ok(false);
+        }
         super::store::lock(conn, &self.user.tenant_id, &self.user.instance_id).await?;
         for basis in &self.rules {
             if basis.expires_at.is_some_and(|until| now >= until) {
@@ -49,7 +60,7 @@ impl Approval {
             if !rule
                 .grants
                 .iter()
-                .any(|g| g.covers(Permission::StateVerify, Some(&self.device)))
+                .any(|g| g.covers(self.permission, Some(&self.device)))
             {
                 continue;
             }
@@ -78,11 +89,16 @@ impl Approval {
     }
 }
 impl Snapshot {
-    fn approval_bases(&self, proof: &Principal, device: &str) -> Result<Vec<Basis>, Error> {
+    fn approval_bases(
+        &self,
+        proof: &Principal,
+        device: &str,
+        permission: Permission,
+    ) -> Result<Vec<Basis>, Error> {
         self.effective(proof).map(|grants| {
             grants
                 .into_iter()
-                .filter(|g| g.grant.covers(Permission::StateVerify, Some(device)))
+                .filter(|g| g.grant.covers(permission, Some(device)))
                 .map(|g| Basis {
                     id: g.rule_id,
                     revision: g.rule_revision,

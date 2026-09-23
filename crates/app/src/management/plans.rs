@@ -44,12 +44,18 @@ impl Management {
                     1,
                     v.digest().bytes(),
                 ))?;
+                let version_number = *version;
                 let version = input(p::Version::new(
                     id.clone(),
                     *version,
                     payload,
                     p::RemovalRule::CancelOutstandingRetainEffects,
                 ))?;
+                let tenant = self.tenant.to_string();
+                let policy_key = id.value().to_owned();
+                let r = resource.clone();
+                let v = resource_version.clone();
+                tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_management.firewall_versions SELECT $1::uuid,$2,$3,resource,version FROM mdm_management.firewall_resources WHERE tenant_id=$1::uuid AND resource=$4 AND version=$5 ON CONFLICT DO NOTHING").bind(tenant).bind(policy_key).bind(version_number as i64).bind(r).bind(v).execute(c).await?;Ok(())})).await?;
                 let tenant = self.tenant.to_string();
                 let resource = resource.clone();
                 let resource_version = resource_version.clone();

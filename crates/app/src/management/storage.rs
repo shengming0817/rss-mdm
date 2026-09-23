@@ -170,6 +170,7 @@ pub(super) async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result:
                 let expected: Value = serde_json::from_str(include_str!("catalog.json"))
                     .expect("checked management catalog");
                 if !ok || actual != expected {
+                    eprintln!("{}",serde_json::json!({"event":"management_admission_rejected","authority":ok,"catalog":actual==expected}));
                     return Err(
                         sqlx::Error::Protocol("management admission rejected".into()).into(),
                     );

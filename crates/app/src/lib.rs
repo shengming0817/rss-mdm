@@ -38,13 +38,17 @@ use axum::{
 };
 pub use lifecycle::{serve, signal};
 
-#[derive(Clone, Copy, Debug, thiserror::Error, serde::Serialize)]
+#[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
+    #[error("firewall plans support at most 32 devices")]
+    ConfigurationTargetLimit,
+    #[error("configuration plan rejected")]
+    Plan(PlanFailure),
     #[error("certificate request rejected")]
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
@@ -66,9 +70,13 @@ pub enum Error {
 }
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let (status, code) = match self {
+        let (status, code) = match &self {
+            Self::Plan(failure) => (StatusCode::CONFLICT, failure.reason.code()),
             Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
+            Self::ConfigurationTargetLimit => {
+                (StatusCode::BAD_REQUEST, "configuration_target_limit")
+            }
             Self::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
             Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
@@ -80,8 +88,53 @@ impl IntoResponse for Error {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
         };
-        let mut response = (status, Json(serde_json::json!({"code":code}))).into_response();
+        let mut body = serde_json::json!({"code":code});
+        if let Self::Plan(failure) = &self {
+            body["device"] = serde_json::json!(failure.device);
+            body["stage"] = serde_json::json!(failure.stage);
+        }
+        let mut response = (status, Json(body)).into_response();
         response.extensions_mut().insert(self);
         response
     }
+}
+
+/// Safe product failure context; no source documents or database errors escape.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PlanFailure {
+    pub reason: PlanFailureReason,
+    pub device: Option<String>,
+    pub stage: PlanStage,
+}
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFailureReason {
+    CapabilityUnknown,
+    PlatformUnsupported,
+    StalePlan,
+    OwnerConflict,
+}
+impl PlanFailureReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::CapabilityUnknown => "capability_unknown",
+            Self::PlatformUnsupported => "platform_unsupported",
+            Self::StalePlan => "stale_plan",
+            Self::OwnerConflict => "owner_conflict",
+        }
+    }
+    pub(crate) fn at(self, device: Option<&str>, stage: PlanStage) -> Error {
+        Error::Plan(PlanFailure {
+            reason: self,
+            device: device.map(str::to_owned),
+            stage,
+        })
+    }
+}
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStage {
+    Preview,
+    Save,
+    Execute,
 }

@@ -41,6 +41,7 @@ impl Management {
         let mut processed = 0u64;
         let mut members = 0u64;
         let mut plan = None;
+        let mut policy_revision = None;
         if failure.is_none() {
             match &job {
                 JobInput::AssetQuery { .. } => {}
@@ -76,6 +77,7 @@ impl Management {
                     .await?
                 {
                     Ok(c) => {
+                        policy_revision = Some(c.request.expected_revision);
                         processed = c.target_count + c.fact_count;
                         members = c.target_count;
                         plan = c.plan.map(|id| {
@@ -101,8 +103,19 @@ impl Management {
         } else {
             "pending"
         };
+        let execution = super::super::execution::read_in(tx, id, crate::PlanStage::Preview).await;
+        let execution = match execution {
+            Ok(a) => Some(a.plan),
+            Err(Fault::Request(Error::Plan(_))) => None,
+            Err(e) => return Err(e),
+        };
+        let tenant = self.tenant.to_string();
+        let failure_detail: Option<Value> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT failure_detail FROM mdm_management.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant).bind(id.to_string()).fetch_one(c).await
+        })).await?;
         Ok(
-            serde_json::json!({"task":id,"kind":job.kind(),"target":job.target(),"status":status,"processed":processed,"members":members,"plan":plan,"failure":failure}),
+            serde_json::json!({"execution":execution,"policy_revision":policy_revision,"failure_detail":failure_detail,"task":id,"kind":job.kind(),"target":job.target(),"status":status,"processed":processed,"members":members,"plan":plan,"failure":failure}),
         )
     }
     pub(in crate::management) async fn enqueue_job_in(

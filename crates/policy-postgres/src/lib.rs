@@ -61,3 +61,6 @@ pub(crate) const ADMISSION: Admission = Admission {
 pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");
 /// Paged candidates, source tokens and normalized execution lookup keys.
 pub const CANDIDATES_MIGRATION_SQL: &str = include_str!("../migrations/0003_candidates.sql");
+/// Narrow tenant-scoped freshness projection for product execution admission.
+pub const EXECUTION_ADMISSION_MIGRATION_SQL: &str =
+    include_str!("../migrations/0004_execution_admission.sql");

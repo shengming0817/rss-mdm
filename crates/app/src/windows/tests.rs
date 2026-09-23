@@ -642,10 +642,17 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
 pub(super) fn monotonic() -> Arc<dyn rss_observation::Clock> {
     Arc::new(crate::Monotonic(std::time::Instant::now))
 }
-struct IngressClock(std::sync::Mutex<std::time::Instant>);
+struct IngressClock(std::sync::Mutex<Option<std::time::Instant>>);
 impl rss_observation::Clock for IngressClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T2 ingress clock uses real time until the deterministic burst test"
+    )]
     fn now(&self) -> std::time::Instant {
-        *self.0.lock().unwrap()
+        self.0
+            .lock()
+            .unwrap()
+            .unwrap_or_else(std::time::Instant::now)
     }
 }
 impl IngressClock {
@@ -654,10 +661,11 @@ impl IngressClock {
         reason = "T2 composition root controls only ingress refill time, while TLS/HTTP/PG remain real"
     )]
     fn new() -> Arc<Self> {
-        Arc::new(Self(std::sync::Mutex::new(std::time::Instant::now())))
+        Arc::new(Self(std::sync::Mutex::new(None)))
     }
     fn advance(&self) {
-        *self.0.lock().unwrap() += Duration::from_secs(60);
+        let now = rss_observation::Clock::now(self);
+        *self.0.lock().unwrap() = Some(now + Duration::from_secs(60));
     }
 }
 
@@ -679,6 +687,8 @@ async fn ingress_burst(
     let bytes = soap::encode(&request, &CodecLimits::default())?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
     let before:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='windows_discovery'").bind(TENANT).fetch_one(&mut pg).await?;
+    // Freeze refill time only for the deterministic burst assertions.
+    clock.advance();
     let mut accepted = 0i64;
     let mut refused = 0;
     for index in 0..128 {
@@ -974,8 +984,11 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
             Arc::new(crate::clock::SystemClock),
             |_| {},
         )
-        .await?;
-    let commands = crate::commands::Commands::open(&config).await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("management startup: {e:?}"))?;
+    let commands = crate::commands::Commands::open(&config)
+        .await
+        .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
     let app = Arc::new(App {
         commands,
         management,
@@ -1337,53 +1350,74 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
             _ => None,
         })
         .collect();
-    ensure!(gets.len() == 2 && gets[0].1 == "./DevInfo/Mod" && gets[1].1 == "./DevDetail/SwV");
-    let packet = |message_id, previous, index: usize, value: &str| syncml::Message {
-        header: syncml::Header {
-            message_id,
-            credential: None,
-            ..message.header.clone()
-        },
-        commands: vec![
-            Command::Status(syncml::Status {
-                id: 1,
-                message_ref: previous,
-                command_ref: 0,
-                command: CommandName::SyncHdr,
-                target_refs: vec![],
-                source_refs: vec![],
-                code: 200,
-                items: vec![],
-                challenge: None,
+    ensure!(
+        gets.len() == 4 + usize::from(with_commands)
+            && gets[0].1 == "./DevInfo/Mod"
+            && gets[1].1 == "./DevDetail/SwV"
+    );
+    let packet = |message_id, previous, index: usize, value: &str| {
+        let mut result = syncml::Message {
+            header: syncml::Header {
+                message_id,
                 credential: None,
-            }),
-            Command::Status(syncml::Status {
-                id: 2,
-                message_ref: 2,
-                command_ref: gets[index].0,
-                command: CommandName::Get,
-                target_refs: vec![],
-                source_refs: vec![],
-                code: 200,
-                items: vec![],
-                challenge: None,
-                credential: None,
-            }),
-            Command::Results(syncml::Results {
-                id: 3,
-                message_ref: Some(2),
-                command_ref: Some(gets[index].0),
-                command: Some(CommandName::Get),
-                meta: None,
-                items: vec![syncml::Item {
-                    source: Some(gets[index].1.clone()),
-                    target: None,
+                ..message.header.clone()
+            },
+            commands: vec![
+                Command::Status(syncml::Status {
+                    id: 1,
+                    message_ref: previous,
+                    command_ref: 0,
+                    command: CommandName::SyncHdr,
+                    target_refs: vec![],
+                    source_refs: vec![],
+                    code: 200,
+                    items: vec![],
+                    challenge: None,
+                    credential: None,
+                }),
+                Command::Status(syncml::Status {
+                    id: 2,
+                    message_ref: 2,
+                    command_ref: gets[index].0,
+                    command: CommandName::Get,
+                    target_refs: vec![],
+                    source_refs: vec![],
+                    code: 200,
+                    items: vec![],
+                    challenge: None,
+                    credential: None,
+                }),
+                Command::Results(syncml::Results {
+                    id: 3,
+                    message_ref: Some(2),
+                    command_ref: Some(gets[index].0),
+                    command: Some(CommandName::Get),
                     meta: None,
-                    data: Some(Secret(value.into())),
-                }],
-            }),
-        ],
-        final_message: true,
+                    items: vec![syncml::Item {
+                        source: Some(gets[index].1.clone()),
+                        target: None,
+                        meta: None,
+                        data: Some(Secret(value.into())),
+                    }],
+                }),
+            ],
+            final_message: true,
+        };
+        if with_commands && index == 0 {
+            let mut status = result.commands[1].clone();
+            if let Command::Status(s) = &mut status {
+                s.id = 4;
+                s.command_ref = gets[4].0;
+            }
+            result.commands.push(status);
+            let mut value = result.commands[2].clone();
+            if let Command::Results(r) = &mut value {
+                r.id = 5;
+                r.command_ref = Some(gets[4].0);
+            }
+            result.commands.push(value);
+        }
+        result
     };
     let extra = u32::from(with_commands);
     if let Some(client) = &mut task_client {

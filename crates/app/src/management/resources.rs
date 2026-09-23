@@ -84,6 +84,10 @@ pub(super) struct Variant {
     deny_unknown_fields
 )]
 pub(super) enum Change {
+    FirewallVersion {
+        version: String,
+        enabled: bool,
+    },
     Create {
         kind: Kind,
     },
@@ -175,6 +179,10 @@ impl Management {
     ) -> Result<Value> {
         let rid = id(resource)?;
         let command = match &op.input {
+            Change::FirewallVersion { version, enabled } => pg::Command::Insert(
+                self.firewall_version(tx, resource, version, *enabled)
+                    .await?,
+            ),
             Change::Create { kind } => pg::Command::Create(kind.core()),
             Change::Version {
                 version,
@@ -231,8 +239,11 @@ impl Management {
         let stored = checked(self.resources.get_in(tx, &id(resource)?).await?)?
             .ok_or(Error::ManagementNotFound(Missing::Resource))?;
         let snapshot = stored.resource.snapshot();
+        let tenant = self.tenant.to_string();
+        let resource_key = resource.to_owned();
+        let configurations=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(String,bool)>("SELECT version,enabled FROM mdm_management.firewall_resources WHERE tenant_id=$1::uuid AND resource=$2").bind(tenant).bind(resource_key).fetch_all(c).await})).await?.into_iter().collect::<std::collections::BTreeMap<_,_>>();
         Ok(
-            json!({"id":resource,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
+            json!({"id":resource,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"configuration":configurations.get(v.version.label().as_str()).map(|enabled|serde_json::json!({"enabled":enabled})),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
         )
     }
 }

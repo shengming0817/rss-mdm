@@ -23,7 +23,7 @@ impl Commands {
         input: &Create,
         audit: &Audit,
     ) -> std::result::Result<Value, Error> {
-        proof.require(Permission::StateVerify, Some(device))?;
+        proof.require(input.task.permission(), Some(device))?;
         let failure = Mutex::new(None);
         let timer = recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -49,7 +49,7 @@ impl Commands {
         .await;
         settle(attempt, audit, failure)
     }
-    async fn create_in(
+    pub(super) async fn create_in(
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &Principal,
@@ -61,7 +61,7 @@ impl Commands {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden.into());
         }
-        let auth = storage::authorized(tx, proof, device, Permission::StateVerify).await?;
+        let auth = storage::authorized(tx, proof, device, input.task.permission()).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         storage::lock(tx, device).await?;
         let fingerprint =
@@ -77,12 +77,12 @@ impl Commands {
             storage::current_registration(tx, device).await?;
         let (scope, coordinate) =
             storage::authority(self, tx, device, registration, registration_generation).await?;
-        let approval = Approval::from_proof(&auth, proof, device)?;
+        let approval = Approval::from_proof(&auth, proof, device, input.task.permission())?;
         let spec = dc::CommandSpec::new(
             scope,
             invalid(dc::CommandId::parse(&input.operation_id.to_string()))?,
             coordinate,
-            input.field.digest(&input.expected_value)?,
+            input.task.digest()?,
             input.deadline * 1_000_000,
         );
         let message = dispatch(self.tenant, device, input, coordinate, now)?;
@@ -122,9 +122,9 @@ impl Commands {
             if op.device!=device{return Err(Error::Forbidden.into());}
             let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(tx,&op,now).await?;
-            let observation=protocol::observation(tx,&op).await?;
+            let observation=protocol::observation(tx,&op,command.status()).await?;
             storage::audit(tx,audit,200).await?;
-            Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"field":op.request.field,"expectedValue":op.request.expected_value,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
+            Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
         })).await
     }
     pub(super) async fn change(
@@ -141,7 +141,8 @@ impl Commands {
         }
         self.transact((self,proof,device,id,change,approve,audit),audit,|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,approve,audit) = *ctx;
-            let permission=if approve {Permission::StateVerify}else{Permission::OperationCancel};
+            let op=storage::load(tx,id).await?;
+            let permission=if approve {op.request.task.permission()}else{Permission::OperationCancel};
             let auth=storage::authorized(tx,proof,device,permission).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
             let fingerprint=Sha256::digest(invalid(serde_json::to_vec(&(proof.user(),device,id,change,approve)))?).to_vec();
@@ -154,7 +155,7 @@ impl Commands {
             if command.status().is_terminal() || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let approval=if approve {
                 if storage::current_registration(tx,device).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
-                Approval::from_proof(&auth,proof,device)?
+                Approval::from_proof(&auth,proof,device,op.request.task.permission())?
             } else {
                 let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
                 if transition.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
@@ -190,7 +191,7 @@ async fn receipt(
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO mdm_commands.requests VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb)",
+                "INSERT INTO mdm_commands.requests(tenant_id,id,operation,fingerprint,response) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb)",
             )
             .bind(tenant)
             .bind(id.to_string())
@@ -212,12 +213,12 @@ fn dispatch(
     coordinate: dc::Coordinate,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
-    let payload = invalid(serde_json::to_vec(&(
-        device,
-        input,
-        coordinate.generation(),
-        coordinate.epoch(),
-    )))?;
+    let payload = invalid(serde_json::to_vec(&DispatchV1 {
+        device: device.into(),
+        request: input.clone(),
+        generation: coordinate.generation(),
+        epoch: coordinate.epoch(),
+    }))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         invalid(MessageId::parse(&format!(
             "dispatch.{}",
@@ -228,9 +229,9 @@ fn dispatch(
                 tenant,
                 invalid(Timepoint::try_from(now))?,
                 messaging_domain(),
-                invalid(MessageRoute::parse("windows.verify"))?,
+                invalid(MessageRoute::parse("windows.command"))?,
                 ContractIdentity::new(
-                    invalid(ContractId::parse("mdm.state-verify"))?,
+                    invalid(ContractId::parse("mdm.command-dispatch"))?,
                     invalid(ContractVersion::from_major(1))?,
                     invalid(SchemaDigest::parse(&format!(
                         "sha256:{:x}",

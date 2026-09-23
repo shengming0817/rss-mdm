@@ -62,6 +62,13 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Supported bounded command profile; IDs must be positive and unique per message.
 pub enum Command {
+    /// Product-selected server write; distinct from device initialization.
+    Replace {
+        /// Positive ID allocated by the response owner.
+        id: u32,
+        /// Closed firewall configuration, never arbitrary XML or URI.
+        configuration: crate::configuration::Firewall,
+    },
     /// Read requested target URIs; the codec does not execute the reads.
     Get {
         /// Positive command ID unique within this message.
@@ -228,7 +235,10 @@ impl Command {
     /// Return the command ID; message validation checks positivity and uniqueness.
     pub fn id(&self) -> u32 {
         match self {
-            Self::Get { id, .. } | Self::Alert { id, .. } | Self::DevInfo { id, .. } => *id,
+            Self::Replace { id, .. }
+            | Self::Get { id, .. }
+            | Self::Alert { id, .. }
+            | Self::DevInfo { id, .. } => *id,
             Self::Status(s) => s.id,
             Self::Results(r) => r.id,
         }
@@ -488,9 +498,20 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
             p.command()?;
             p.open(NS, "Replace")?;
             let id = num(&mut p, "CmdID", false)?;
+            let meta = meta(&mut p)?;
             let items = items(&mut p)?;
             p.end(NS, "Replace")?;
-            Command::DevInfo { id, items }
+            if items.iter().any(|i| i.target.is_some()) {
+                Command::Replace {
+                    id,
+                    configuration: crate::configuration::Firewall::from_wire(meta, &items)?,
+                }
+            } else {
+                if meta.is_some() {
+                    return Err(E::Unsupported);
+                }
+                Command::DevInfo { id, items }
+            }
         } else {
             break;
         };
@@ -684,6 +705,18 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
             return Err(E::Duplicate);
         }
         match c {
+            Command::Replace { configuration, .. } => {
+                for item in configuration.items() {
+                    text(
+                        item.target.as_deref().ok_or(E::Structure)?,
+                        l.uri_bytes,
+                        false,
+                    )?;
+                    validate_meta(item.meta.as_ref(), l, false)?;
+                    text(&item.data.ok_or(E::Structure)?.0, l.field_bytes, false)?;
+                }
+                count = count.checked_add(1).ok_or(E::LimitExceeded)?;
+            }
             Command::Get { meta, items, .. } => {
                 validate_meta(meta.as_ref(), l, false)?;
                 validate_items(items, l, true, false)?;
@@ -863,7 +896,7 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
             Command::Status(_) => "Status",
             Command::Results(_) => "Results",
             Command::Alert { .. } => "Alert",
-            Command::DevInfo { .. } => "Replace",
+            Command::DevInfo { .. } | Command::Replace { .. } => "Replace",
         };
         w.start(name, &[])?;
         write_num(&mut w, "CmdID", c.id(), l)?;
@@ -871,6 +904,9 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
             Command::Get { meta, items, .. } => {
                 write_meta(&mut w, meta.as_ref(), l)?;
                 write_items(&mut w, items, l)?;
+            }
+            Command::Replace { configuration, .. } => {
+                write_items(&mut w, &configuration.items(), l)?
             }
             Command::DevInfo { items, .. } => write_items(&mut w, items, l)?,
             Command::Alert { alert, .. } => {

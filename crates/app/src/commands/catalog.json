@@ -1,8 +1,71 @@
 {
   "columns": [
     [
+      "attempt_history",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_history",
+      "operation",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_history",
+      "ordinal",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_history",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_history",
+      "collection",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_history",
+      "credential",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "attempts",
       "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "id",
       "uuid",
       true,
       null,
@@ -29,30 +92,273 @@
     ],
     [
       "attempts",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempts",
-      "collection",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempts",
       "credential",
       "uuid",
       true,
       null,
       "",
       ""
+    ],
+    [
+      "attempts",
+      "session",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "message",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "command",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "phase",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "uri",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "status",
+      "integer",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "value",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "received_at",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "receipt_accepted",
+      "boolean",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
+      "request",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capabilities",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capabilities",
+      "registration",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capabilities",
+      "generation",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capabilities",
+      "os_version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capabilities",
+      "edition",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capabilities",
+      "session",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capabilities",
+      "observed_at",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "registration",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "generation",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "session",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "request",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "version_command",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "edition_command",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "os_version",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "edition",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "version_status",
+      "integer",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "edition_status",
+      "integer",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "capability_queries",
+      "session_id",
+      "text",
+      true,
+      "(session)::text",
+      "",
+      "s"
     ],
     [
       "devices",
@@ -122,6 +428,60 @@
       "recovery_after",
       "text",
       false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "node",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "policy",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "version",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_owners",
+      "operation",
+      "uuid",
+      true,
       null,
       "",
       ""
@@ -244,6 +604,51 @@
       ""
     ],
     [
+      "plan_executions",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "plan_executions",
+      "plan",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "plan_executions",
+      "policy",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "plan_executions",
+      "policy_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "plan_executions",
+      "request",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "requests",
       "tenant_id",
       "uuid",
@@ -265,7 +670,7 @@
       "requests",
       "operation",
       "uuid",
-      true,
+      false,
       null,
       "",
       ""
@@ -287,11 +692,41 @@
       null,
       "",
       ""
+    ],
+    [
+      "requests",
+      "plan",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
     ]
   ],
   "constraints": [
     [
-      "attempts",
+      "attempt_history",
+      "attempt_history_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, operation, ordinal)",
+      true
+    ],
+    [
+      "attempt_history",
+      "attempt_history_tenant_id_id_key",
+      "u",
+      "UNIQUE (tenant_id, id)",
+      true
+    ],
+    [
+      "attempt_history",
+      "attempt_history_tenant_id_operation_collection_key",
+      "u",
+      "UNIQUE (tenant_id, operation, collection)",
+      true
+    ],
+    [
+      "attempt_history",
       "attempts_ordinal_check",
       "c",
       "CHECK ((ordinal > 0))",
@@ -299,16 +734,30 @@
     ],
     [
       "attempts",
-      "attempts_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, operation, ordinal)",
+      "attempts_ordinal_check1",
+      "c",
+      "CHECK ((ordinal > 0))",
       true
     ],
     [
       "attempts",
-      "attempts_tenant_id_collection_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, collection) REFERENCES mdm_access.collection_runs(tenant_id, id)",
+      "attempts_phase_check",
+      "c",
+      "CHECK ((phase = ANY (ARRAY['execute'::text, 'observe'::text])))",
+      true
+    ],
+    [
+      "attempts",
+      "attempts_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "attempts",
+      "attempts_status_check",
+      "c",
+      "CHECK (((status IS NULL) OR ((status >= 100) AND (status <= 599))))",
       true
     ],
     [
@@ -320,23 +769,58 @@
     ],
     [
       "attempts",
-      "attempts_tenant_id_id_key",
-      "u",
-      "UNIQUE (tenant_id, id)",
-      true
-    ],
-    [
-      "attempts",
-      "attempts_tenant_id_operation_collection_key",
-      "u",
-      "UNIQUE (tenant_id, operation, collection)",
-      true
-    ],
-    [
-      "attempts",
       "attempts_tenant_id_operation_fkey",
       "f",
       "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
+      true
+    ],
+    [
+      "attempts",
+      "attempts_tenant_id_operation_ordinal_key",
+      "u",
+      "UNIQUE (tenant_id, operation, ordinal)",
+      true
+    ],
+    [
+      "attempts",
+      "attempts_value_check",
+      "c",
+      "CHECK (((value IS NULL) OR (octet_length(value) <= 4096)))",
+      true
+    ],
+    [
+      "capabilities",
+      "capabilities_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, registration)",
+      true
+    ],
+    [
+      "capabilities",
+      "capabilities_tenant_id_registration_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
+      true
+    ],
+    [
+      "capability_queries",
+      "capability_queries_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, registration, session)",
+      true
+    ],
+    [
+      "capability_queries",
+      "capability_queries_tenant_id_registration_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
+      true
+    ],
+    [
+      "capability_queries",
+      "capability_queries_tenant_id_registration_session_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, registration, session_id) REFERENCES mdm_access.management_sessions(tenant_id, registration, session_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED",
       true
     ],
     [
@@ -386,6 +870,41 @@
       "devices_tenant_id_registration_fkey",
       "f",
       "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_node_check",
+      "c",
+      "CHECK ((node = './Vendor/MSFT/Firewall/MdmStore/DomainProfile/EnableFirewall'::text))",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, device, node)",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_tenant_id_operation_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_tenant_id_policy_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
+      true
+    ],
+    [
+      "firewall_owners",
+      "firewall_owners_version_check",
+      "c",
+      "CHECK ((version > 0))",
       true
     ],
     [
@@ -459,6 +978,41 @@
       true
     ],
     [
+      "plan_executions",
+      "plan_executions_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, plan)",
+      true
+    ],
+    [
+      "plan_executions",
+      "plan_executions_tenant_id_plan_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_management.firewall_plans(tenant_id, id)",
+      true
+    ],
+    [
+      "plan_executions",
+      "plan_executions_tenant_id_request_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, request) REFERENCES mdm_commands.requests(tenant_id, id)",
+      true
+    ],
+    [
+      "plan_executions",
+      "plan_executions_tenant_id_request_key",
+      "u",
+      "UNIQUE (tenant_id, request)",
+      true
+    ],
+    [
+      "requests",
+      "requests_check",
+      "c",
+      "CHECK (((operation IS NULL) <> (plan IS NULL)))",
+      true
+    ],
+    [
       "requests",
       "requests_fingerprint_check",
       "c",
@@ -478,29 +1032,76 @@
       "f",
       "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
       true
+    ],
+    [
+      "requests",
+      "requests_tenant_id_plan_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_management.firewall_plans(tenant_id, id)",
+      true
     ]
   ],
   "indexes": [
     [
+      "attempt_history",
+      "attempt_history_pkey",
+      "CREATE UNIQUE INDEX attempt_history_pkey ON mdm_commands.attempt_history USING btree (tenant_id, operation, ordinal)",
+      true,
+      true,
+      true
+    ],
+    [
+      "attempt_history",
+      "attempt_history_tenant_id_id_key",
+      "CREATE UNIQUE INDEX attempt_history_tenant_id_id_key ON mdm_commands.attempt_history USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "attempt_history",
+      "attempt_history_tenant_id_operation_collection_key",
+      "CREATE UNIQUE INDEX attempt_history_tenant_id_operation_collection_key ON mdm_commands.attempt_history USING btree (tenant_id, operation, collection)",
+      true,
+      true,
+      true
+    ],
+    [
       "attempts",
       "attempts_pkey",
-      "CREATE UNIQUE INDEX attempts_pkey ON mdm_commands.attempts USING btree (tenant_id, operation, ordinal)",
+      "CREATE UNIQUE INDEX attempts_pkey ON mdm_commands.attempts USING btree (tenant_id, id)",
       true,
       true,
       true
     ],
     [
       "attempts",
-      "attempts_tenant_id_id_key",
-      "CREATE UNIQUE INDEX attempts_tenant_id_id_key ON mdm_commands.attempts USING btree (tenant_id, id)",
+      "attempts_tenant_id_operation_ordinal_key",
+      "CREATE UNIQUE INDEX attempts_tenant_id_operation_ordinal_key ON mdm_commands.attempts USING btree (tenant_id, operation, ordinal)",
       true,
       true,
       true
     ],
     [
       "attempts",
-      "attempts_tenant_id_operation_collection_key",
-      "CREATE UNIQUE INDEX attempts_tenant_id_operation_collection_key ON mdm_commands.attempts USING btree (tenant_id, operation, collection)",
+      "native_session_receipts",
+      "CREATE INDEX native_session_receipts ON mdm_commands.attempts USING btree (tenant_id, session, operation) WHERE receipt_accepted",
+      true,
+      true,
+      true
+    ],
+    [
+      "capabilities",
+      "capabilities_pkey",
+      "CREATE UNIQUE INDEX capabilities_pkey ON mdm_commands.capabilities USING btree (tenant_id, registration)",
+      true,
+      true,
+      true
+    ],
+    [
+      "capability_queries",
+      "capability_queries_pkey",
+      "CREATE UNIQUE INDEX capability_queries_pkey ON mdm_commands.capability_queries USING btree (tenant_id, registration, session)",
       true,
       true,
       true
@@ -522,9 +1123,33 @@
       true
     ],
     [
+      "firewall_owners",
+      "firewall_owners_pkey",
+      "CREATE UNIQUE INDEX firewall_owners_pkey ON mdm_commands.firewall_owners USING btree (tenant_id, device, node)",
+      true,
+      true,
+      true
+    ],
+    [
       "operations",
       "operations_pkey",
       "CREATE UNIQUE INDEX operations_pkey ON mdm_commands.operations USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "plan_executions",
+      "plan_executions_pkey",
+      "CREATE UNIQUE INDEX plan_executions_pkey ON mdm_commands.plan_executions USING btree (tenant_id, plan)",
+      true,
+      true,
+      true
+    ],
+    [
+      "plan_executions",
+      "plan_executions_tenant_id_request_key",
+      "CREATE UNIQUE INDEX plan_executions_tenant_id_request_key ON mdm_commands.plan_executions USING btree (tenant_id, request)",
       true,
       true,
       true

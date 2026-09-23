@@ -8,18 +8,21 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-NAMES = ("catalog", "dependencies")
+NAMES = ("catalog", "dependencies", "management")
 
 def capture(container, mode):
     directory = ROOT / "crates/app/src/commands"
     query = "BEGIN; SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog;\n"
-    query += "\n".join((directory / f"{name}.sql").read_text() + ";" for name in NAMES)
+    paths = {name: (directory / f"{name}.sql") if name != "management" else ROOT / "crates/app/src/management/catalog.sql" for name in NAMES}
+    query += "\n".join(paths[name].read_text() + ";" for name in NAMES)
     query += "\nROLLBACK;"
-    result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=query, text=True, capture_output=True, check=True)
+    result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=query, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError("command catalog query failed: " + result.stderr)
     values = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     if len(values) != len(NAMES):
-        raise RuntimeError("command catalog query did not produce both contracts")
-    outputs = {directory / f"{name}.json": json.dumps(value, indent=2, sort_keys=True) + "\n" for name, value in zip(NAMES, values, strict=True)}
+        raise RuntimeError("command catalog query did not produce all contracts")
+    outputs = {paths[name].with_suffix(".json"): json.dumps(value, indent=2, sort_keys=True) + "\n" for name, value in zip(NAMES, values, strict=True)}
     if mode == "check":
         mismatches = [path.name for path, content in outputs.items() if json.loads(path.read_text()) != json.loads(content)]
         if mismatches:
@@ -40,7 +43,18 @@ def capture(container, mode):
                 temporary.unlink(missing_ok=True)
     else:
         raise ValueError("unknown catalog mode")
-    print(f"command catalog {mode}: both contracts match isolated migrations", flush=True)
+    # Check actual runtime authority as well as capturing shape. Session identity matters.
+    admission = (directory / 'admission.sql').read_text()
+    probe = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + admission + ";\nROLLBACK;", text=True, capture_output=True, check=True)
+    if probe.stdout.strip() != 't':
+        import re
+        prefix, predicates = admission.split('\nSELECT ', 1)
+        terms = re.split(r'\n AND ', predicates.strip())
+        diagnostics = prefix + '\nSELECT ' + ','.join('(' + term.rstrip(';') + ')' for term in terms) + ';'
+        result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + diagnostics + "\nROLLBACK;", text=True, capture_output=True, check=True)
+        rejected = [terms[i][:200] for i, value in enumerate(result.stdout.strip().split('|')) if value != 't']
+        raise RuntimeError('command runtime admission rejected: ' + repr(rejected))
+    print(f"command catalog {mode}: all contracts match isolated migrations", flush=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

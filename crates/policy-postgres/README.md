@@ -12,6 +12,11 @@ Policy 的持久 owner：一个聚合 revision、有界执行事实、不可变�
 保存不会写 `Planned` 或其它执行事实。`Command::RecordExecutions` 单独接受调用方确认的
 真实执行受理/进度；授权属于宿主。旧 SelectTargets、Replan、整份计划/目标快照读写及解码已删除。
 
+`EXECUTION_ADMISSION_MIGRATION_SQL` 安装独立 `mdm_policy_projection` 只读接缝。
+`execution_admission(policy,candidate,revision,saved)` 只判断当前 tenant 的策略 CAS、候选安装
+和引用令牌是否仍有效；宿主组合 Scope/身份依据后授予产品运行角色窄入口权限。
+此投影不开放 Policy 私表，也不改变 `mdm_policy` 存储 schema 的函数禁入约束。
+
 宿主提供同一 `Arc<PgRuntime>`，拥有权限、RSS claim 和关闭流程。`*_in` 校验 runtime owner
 与 tenant，返回两层结果；业务拒绝必须处理，PG 错误传播给外层回滚。提交未知沿原身份读取或
 精确重放；不制造新身份。启动校验精确 catalog、RLS、最低权限与迁移指纹。

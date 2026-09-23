@@ -34,7 +34,7 @@ pub(crate) fn routes() -> Router<Arc<App>> {
         .route("/reports/{id}", get(status))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum AgentError {
     Wire(wire::ErrorCode),
     App(Error),
@@ -50,10 +50,10 @@ impl IntoResponse for AgentError {
             Self::Wire(code) => (status_for(code), code, None),
             Self::App(error) => {
                 let code = match error {
-                    Error::Malformed | Error::CertificateRequest => {
-                        wire::ErrorCode::MalformedRequest
-                    }
-                    Error::Conflict => wire::ErrorCode::OperationConflict,
+                    Error::Malformed
+                    | Error::CertificateRequest
+                    | Error::ConfigurationTargetLimit => wire::ErrorCode::MalformedRequest,
+                    Error::Conflict | Error::Plan(_) => wire::ErrorCode::OperationConflict,
                     Error::CommitUnknown => wire::ErrorCode::OperationUnknown,
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
                     Error::NotFound | Error::ManagementNotFound(_) => {

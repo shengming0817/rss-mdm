@@ -36,7 +36,7 @@ view!(ResourceReceipt {
     storage_revision: u64
 });
 view!(ResourceRead { id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
-view!(ResourceVersion { id: String, digest: [u8;32], state: String, variants: Vec<super::resources::Variant> });
+view!(ResourceVersion { configuration: Option<serde_json::Value>, id: String, digest: [u8;32], state: String, variants: Vec<super::resources::Variant> });
 view!(SavedPlan {
     receipt: PolicyReceipt,
     preview: Uuid,
@@ -49,12 +49,12 @@ view!(JobAccepted {
     target: String,
     status_url: String
 });
-view!(TaskRead {task:Uuid,kind:String,target:String,status:String,processed:u64,members:u64,plan:Option<String>,failure:Option<String>});
+view!(TaskRead {task:Uuid,kind:String,target:String,status:String,processed:u64,members:u64,plan:Option<String>,failure:Option<String>,failure_detail:Option<crate::PlanFailure>,execution:Option<PlanExecutionAdmission>,policy_revision:Option<u64>});
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum Response {
     JobAccepted(JobAccepted),
-    TaskRead(TaskRead),
+    TaskRead(Box<TaskRead>),
     Asset(assets::AssetEnvelope),
     GroupRead(GroupRead),
     GroupPage(pages::GroupPage),

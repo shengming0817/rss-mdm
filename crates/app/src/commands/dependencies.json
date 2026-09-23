@@ -1,5 +1,5 @@
 {
-  "mdm_access.audit": "af399c59fe4c36e7244dc6b5d0a233976c09ed0ffc85412c827b0ca26dadd8a2",
+  "mdm_access.audit": "a8b46c48857f0ae2fddeb567599a2c639f43bd236df469b14c7b15beaf55d17c",
   "mdm_access.authorization_rules": "f2f5fdb64239ce56d7686f0b22d5d7a818d17fc79253ca893204b17e1cf8df00",
   "mdm_access.collection_runs": "c15d8251819e2eb37908a66482359edb8456a67435b601bdaa0f8a76ea6229b4",
   "mdm_access.credentials": "36b7b9e63c143f41ab37a95fe2b3115fd27a5fe850b786b9874d75460694604e",
@@ -11,6 +11,8 @@
   "mdm_access.registrations": "ca4cc11a60b607fe1fa8e89cbd1edc0b652f1b78f9cc04799d6421566fca6d35",
   "mdm_access.report_sources": "86399218884de753f3b842dd6e54d76cf29d2ef4d2da8dd8b21b849db5a18167",
   "mdm_access.user_groups": "fb89320dee03fdd3b499d67cf598e76a512ea701ada33a0f735f3dd604042144",
+  "mdm_management.plan_execution_admission(p_plan uuid)": "644956e5e9e7902c29e4c1f579827fd8d72c25f8c660f51bd8b0c4f6c5b9f613",
+  "mdm_policy_projection.execution_admission(p_policy text, p_candidate text, p_revision bigint, p_saved boolean)": "67e30740db26df87bbebab8b1074d9556442a35c91a42b573de35ee08f63ebb2",
   "rss_device_command.advance(t uuid, d uuid, g bigint, e bigint, ng bigint, ne bigint)": "ffc5353f187196a8876355251d31e3aecb1feed280f60bb1a3fa023073f5ccad",
   "rss_device_command.authorities": "1eef37fd69e7df0e23f539dcf9c652983e135725d99671eda0eb9cd62b1085ff",
   "rss_device_command.commands": "2894d230cc1f3126c2d2e1a045b55a5016f0e83d321c6aa1f8496d94344fefc2",

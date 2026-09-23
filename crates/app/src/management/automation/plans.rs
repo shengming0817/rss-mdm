@@ -71,6 +71,29 @@ impl Management {
         Ok(())
     }
 
+    async fn resolved_policy_scope_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        resolution: Uuid,
+    ) -> Result<sqlx::postgres::PgRow> {
+        let tenant = self.tenant.to_string();
+        let id = resolution;
+        let resolved=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query("SELECT r.phase,r.definition_revision,r.input::text,s.resolution_revision,coalesce(r.result_fingerprint=current.result_fingerprint,false) AS current FROM mdm_management.scope_runs r JOIN mdm_management.scopes s ON (s.tenant_id,s.id)=(r.tenant_id,r.scope) LEFT JOIN mdm_management.scope_runs current ON (current.tenant_id,current.id)=(s.tenant_id,s.resolution) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
+                .bind(tenant).bind(id.to_string()).fetch_optional(c).await
+        })).await?;
+        let Some(resolved) = resolved else {
+            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+        };
+        if resolved.try_get::<&str, _>("phase")? != "published" {
+            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+        }
+        if !resolved.try_get::<bool, _>("current")? {
+            return Err(Error::Conflict.into());
+        }
+        Ok(resolved)
+    }
+
     pub(super) async fn advance_policy_job_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -95,21 +118,7 @@ impl Management {
         }
         self.revalidate_assignment_in(tx, policy, *scope, *assignment_revision)
             .await?;
-        let tenant = self.tenant.to_string();
-        let id = *resolution;
-        let resolved=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT r.phase,r.definition_revision,r.input::text,s.resolution_revision,coalesce(r.result_fingerprint=current.result_fingerprint,false) AS current FROM mdm_management.scope_runs r JOIN mdm_management.scopes s ON (s.tenant_id,s.id)=(r.tenant_id,r.scope) LEFT JOIN mdm_management.scope_runs current ON (current.tenant_id,current.id)=(s.tenant_id,s.resolution) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-        })).await?;
-        let Some(resolved) = resolved else {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
-        };
-        if resolved.try_get::<&str, _>("phase")? != "published" {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
-        }
-        if !resolved.try_get::<bool, _>("current")? {
-            return Err(Error::Conflict.into());
-        }
+        let resolved = self.resolved_policy_scope_in(tx, *resolution).await?;
         let candidate_id = input(p::RequestId::new(self.tenant, task.to_string()))?;
         let candidate = match self.policies.candidate_in(tx, &candidate_id).await? {
             Ok(c) => c,
@@ -122,10 +131,19 @@ impl Management {
                     id: format!("scope-resolution.{scope}"),
                     revision: version,
                 });
+                let revision = self
+                    .import_firewall_facts_in(
+                        tx,
+                        task,
+                        policy,
+                        *expected_revision,
+                        stored(Timepoint::try_from(*as_of))?,
+                    )
+                    .await?;
                 let request = pg::CandidateRequest {
                     id: candidate_id.clone(),
                     policy: input(p::PolicyId::new(self.tenant, policy))?,
-                    expected_revision: *expected_revision,
+                    expected_revision: revision,
                     targets: input(p::TargetSnapshotId::new(self.tenant, scope.to_string()))?,
                     target_revision: version,
                     references,
@@ -137,44 +155,8 @@ impl Management {
         };
         match candidate.phase {
             pg::CandidatePhase::Targets => {
-                let tenant = self.tenant.to_string();
-                let run = *resolution;
-                let after = candidate.target_cursor.clone();
-                let mut devices:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query_scalar("SELECT device FROM mdm_management.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND matched AND device>coalesce($3::text,'') COLLATE \"C\" ORDER BY device LIMIT 1001")
-                        .bind(tenant).bind(run.to_string()).bind(after).fetch_all(c).await
-                })).await?;
-                let more = devices.len() > 1000;
-                devices.truncate(1000);
-                let total = candidate.target_count + devices.len() as u64;
-                if !devices.is_empty() {
-                    let devices = devices
-                        .into_iter()
-                        .map(|d| input(p::DeviceId::new(self.tenant, d)))
-                        .collect::<Result<Vec<_>>>()?;
-                    let after = candidate
-                        .target_cursor
-                        .map(|d| input(p::DeviceId::new(self.tenant, d)))
-                        .transpose()?;
-                    checked(
-                        self.policies
-                            .append_candidate_targets_in(
-                                tx,
-                                &candidate_id,
-                                after.as_ref(),
-                                &devices,
-                            )
-                            .await?,
-                    )?;
-                }
-                if !more {
-                    checked(
-                        self.policies
-                            .seal_candidate_targets_in(tx, &candidate_id, total)
-                            .await?,
-                    )?;
-                }
-                Ok(())
+                self.append_policy_targets_in(tx, *resolution, &candidate)
+                    .await
             }
             pg::CandidatePhase::Facts => {
                 checked(
@@ -185,6 +167,8 @@ impl Management {
                 Ok(())
             }
             pg::CandidatePhase::Ready | pg::CandidatePhase::Saved => {
+                self.freeze_execution_in(tx, task, *resolution, &candidate)
+                    .await?;
                 let tenant = self.tenant.to_string();
                 let policy = policy.clone();
                 tx.with_connection(move |c|Box::pin(async move {
@@ -199,6 +183,53 @@ impl Management {
         }
     }
 
+    async fn append_policy_targets_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        resolution: Uuid,
+        candidate: &pg::Candidate,
+    ) -> Result<()> {
+        let tenant = self.tenant.to_string();
+        let run = resolution;
+        let after = candidate.target_cursor.clone();
+        let mut devices:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
+                    sqlx::query_scalar("SELECT device FROM mdm_management.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND matched AND device>coalesce($3::text,'') COLLATE \"C\" ORDER BY device LIMIT 1001")
+                        .bind(tenant).bind(run.to_string()).bind(after).fetch_all(c).await
+                })).await?;
+        let more = devices.len() > 1000;
+        devices.truncate(1000);
+        let total = candidate.target_count + devices.len() as u64;
+        if !devices.is_empty() {
+            let devices = devices
+                .into_iter()
+                .map(|d| input(p::DeviceId::new(self.tenant, d)))
+                .collect::<Result<Vec<_>>>()?;
+            let after = candidate
+                .target_cursor
+                .clone()
+                .map(|d| input(p::DeviceId::new(self.tenant, d)))
+                .transpose()?;
+            checked(
+                self.policies
+                    .append_candidate_targets_in(
+                        tx,
+                        &candidate.request.id,
+                        after.as_ref(),
+                        &devices,
+                    )
+                    .await?,
+            )?;
+        }
+        if !more {
+            checked(
+                self.policies
+                    .seal_candidate_targets_in(tx, &candidate.request.id, total)
+                    .await?,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(in crate::management) async fn save_ready_candidate_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -206,6 +237,8 @@ impl Management {
         request: &Operation<SavePlan>,
         at: Timepoint,
     ) -> Result<Value> {
+        self.validate_execution_save_in(tx, request.input.preview)
+            .await?;
         let (job, complete, failure, _, _) = self.job_in(tx, request.input.preview).await?;
         let JobInput::Policy {
             policy: owner,
@@ -235,6 +268,13 @@ impl Management {
                 .save_candidate_in(tx, &operation, &candidate, request.expected_revision, at)
                 .await?,
         )?;
+        let tenant = self.tenant.to_string();
+        let task = request.input.preview;
+        let saved_revision = receipt.storage_revision as i64;
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("UPDATE mdm_management.firewall_plans SET saved_revision=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant).bind(task.to_string()).bind(saved_revision).execute(c).await?; Ok(())
+        })).await?;
         let tenant = self.tenant.to_string();
         let policy = policy.to_owned();
         tx.with_connection(move |c|Box::pin(async move {

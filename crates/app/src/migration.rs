@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 37] {
+fn units() -> [(&'static str, &'static str); 39] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -219,6 +219,14 @@ fn units() -> [(&'static str, &'static str); 37] {
             "group-reverse-index-v1",
             rss_mdm_group_postgres::REVERSE_INDEX_MIGRATION_SQL,
         ),
+        (
+            "policy-execution-admission-v1",
+            rss_mdm_policy_postgres::EXECUTION_ADMISSION_MIGRATION_SQL,
+        ),
+        (
+            "windows-configuration-v1",
+            include_str!("../migrations/0012_windows_configuration.sql"),
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -226,6 +234,13 @@ pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().into_iter().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))})).collect::<Vec<_>>()})
 }
 async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
+    migrate_units(conn, installation, &units()).await
+}
+async fn migrate_units(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    current: &[(&'static str, &'static str)],
+) -> Result<()> {
     let instance = installation.validate()?;
     sqlx::raw_sql("SET statement_timeout='30s'; SET lock_timeout='10s';")
         .execute(&mut *conn)
@@ -255,66 +270,126 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             .fetch_all(&mut *conn)
             .await
             .map_err(|_| MigrationError::at("installation", "ledger read"))?;
-    let current = units();
-    if !installed.is_empty()
-        && (installed.len() != current.len()
-            || installed.iter().any(|(name, digest, complete)| {
-                !complete
-                    || !current.iter().any(|(expected, sql)| {
-                        name == expected && digest == &format!("{:x}", Sha256::digest(sql))
-                    })
-            }))
-    {
+    if !accepted_ledger(&installed, current) {
         return Err(MigrationError::at(
             "installation",
-            "fresh installation required; existing ledger differs or is incomplete",
+            "existing ledger differs or is incomplete",
         ));
     }
-    for (name, sql) in units() {
-        let digest = format!("{:x}", Sha256::digest(sql));
-        let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
-            .bind(name)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|_| MigrationError::at(name, "ledger read"))?;
-        if let Some(row) = old {
-            let old_digest: String = row
-                .try_get("digest")
-                .map_err(|_| MigrationError::at(name, "invalid ledger shape"))?;
-            let complete: bool = row
-                .try_get("complete")
-                .map_err(|_| MigrationError::at(name, "invalid ledger shape"))?;
-            if old_digest != digest || !complete {
-                return Err(MigrationError::at(
-                    name,
-                    "changed or interrupted; inspect/restore installation, do not delete ledger",
-                ));
-            }
-            continue;
-        }
-        sqlx::query("INSERT INTO public.mdm_migrations(name,digest) VALUES($1,$2)")
-            .bind(name)
-            .bind(digest)
-            .execute(&mut *conn)
-            .await
-            .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
-        if name == "identity-authority-v11" {
-            install_identity(conn, installation, instance).await?;
-        } else {
-            sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
-                MigrationError::at(
-                    name,
-                    "component SQL failed; inspect incomplete installation",
-                )
-            })?;
-        }
-        sqlx::query("UPDATE public.mdm_migrations SET complete=true WHERE name=$1")
-            .bind(name)
-            .execute(&mut *conn)
-            .await
-            .map_err(|_| MigrationError::at(name, "completion acknowledgement unknown"))?;
+    preflight_upgrade(conn, installation, instance, &installed, current).await?;
+    for &(name, sql) in current {
+        apply_unit(conn, installation, instance, name, sql).await?;
     }
     verify_installation(conn, installation, instance).await?;
+    Ok(())
+}
+
+async fn apply_unit(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    instance: rss_identity_core::InstanceId,
+    name: &'static str,
+    sql: &'static str,
+) -> Result<()> {
+    let digest = format!("{:x}", Sha256::digest(sql));
+    if unit_installed(conn, name, &digest).await? {
+        return Ok(());
+    }
+    sqlx::query("INSERT INTO public.mdm_migrations(name,digest) VALUES($1,$2)")
+        .bind(name)
+        .bind(digest)
+        .execute(&mut *conn)
+        .await
+        .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
+    if name == "identity-authority-v11" {
+        install_identity(conn, installation, instance).await?;
+    } else {
+        sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
+            MigrationError::at(
+                name,
+                "component SQL failed; inspect incomplete installation",
+            )
+        })?;
+    }
+    sqlx::query("UPDATE public.mdm_migrations SET complete=true WHERE name=$1")
+        .bind(name)
+        .execute(&mut *conn)
+        .await
+        .map_err(|_| MigrationError::at(name, "completion acknowledgement unknown"))?;
+    Ok(())
+}
+
+async fn unit_installed(conn: &mut PgConnection, name: &'static str, digest: &str) -> Result<bool> {
+    let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
+        .bind(name)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|_| MigrationError::at(name, "ledger read"))?;
+    if let Some(row) = old {
+        let old_digest: String = row
+            .try_get("digest")
+            .map_err(|_| MigrationError::at(name, "invalid ledger shape"))?;
+        let complete: bool = row
+            .try_get("complete")
+            .map_err(|_| MigrationError::at(name, "invalid ledger shape"))?;
+        if old_digest != digest || !complete {
+            return Err(MigrationError::at(
+                name,
+                "changed or interrupted; inspect/restore installation, do not delete ledger",
+            ));
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn accepted_ledger(
+    installed: &[(String, String, bool)],
+    current: &[(&'static str, &'static str)],
+) -> bool {
+    !(!installed.is_empty()
+        && ((installed.len() != current.len() && installed.len() != current.len() - 1)
+            || installed.iter().any(|(name, digest, complete)| {
+                !complete
+                    || !current[..installed.len().min(current.len())].iter().any(
+                        |(expected, sql)| {
+                            name == expected && digest == &format!("{:x}", Sha256::digest(sql))
+                        },
+                    )
+            })))
+}
+
+async fn preflight_upgrade(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    instance: rss_identity_core::InstanceId,
+    installed: &[(String, String, bool)],
+    current: &[(&'static str, &'static str)],
+) -> Result<()> {
+    if installed.iter().any(|u| u.0 == "commands-v1")
+        && !installed.iter().any(|u| u.0 == "windows-configuration-v1")
+        && current
+            .last()
+            .is_some_and(|unit| unit.0 == "windows-configuration-v1")
+    {
+        verify_installation(conn, installation, instance).await?;
+        let mut preflight = conn
+            .begin()
+            .await
+            .map_err(|_| MigrationError::at("windows-configuration-v1", "preflight transaction"))?;
+        sqlx::raw_sql(include_str!("migration/windows-preflight.sql"))
+            .execute(&mut *preflight)
+            .await
+            .map_err(|_| {
+                MigrationError::at(
+                    "windows-configuration-v1",
+                    "quiesce old tasks, dispatch and sessions before upgrade",
+                )
+            })?;
+        preflight.commit().await.map_err(|_| {
+            MigrationError::at("windows-configuration-v1", "preflight acknowledgement")
+        })?;
+    }
     Ok(())
 }
 

@@ -15,7 +15,7 @@ impl Automation {
     ) -> std::result::Result<Arc<Self>, Error> {
         Self::connect(service, database.options()?).await
     }
-    pub(in crate::management) async fn connect(
+    pub(crate) async fn connect(
         service: Arc<Management>,
         options: sqlx::postgres::PgConnectOptions,
     ) -> std::result::Result<Arc<Self>, Error> {
@@ -248,6 +248,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     |_| Err(Error::Unavailable(Failure::ManagementStorage)),
                 )
                 .map_err(reconcile_error)?;
+            let detail = match &rejection {
+                Some(Error::Plan(detail)) => Some(detail.clone()),
+                _ => None,
+            };
             let terminal = match rejection {
                 Some(Error::Conflict) => Some("superseded"),
                 Some(Error::Unavailable(
@@ -258,6 +262,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                 Some(Error::ManagementNotFound(_)) | Some(Error::NotFound) => {
                     Some("source_unavailable")
                 }
+                Some(Error::Plan(ref detail)) => Some(detail.reason.code()),
+                Some(Error::ConfigurationTargetLimit) => Some("configuration_target_limit"),
                 Some(Error::Malformed) => Some("invalid_input"),
                 Some(error) => return Err(reconcile_error(error)),
                 None => return Ok(()),
@@ -279,6 +285,14 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                 &self.service,
                 |service, tx| {
                     Box::pin(async move {
+                        if let Some(detail) = detail {
+                            let tenant = tx.tenant_id().to_string();
+                            let document = serde_json::to_value(detail).expect("closed failure DTO");
+                            tx.with_connection(move |c| Box::pin(async move {
+                                sqlx::query("UPDATE mdm_management.automation_jobs SET failure_detail=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                                    .bind(tenant).bind(id.to_string()).bind(document).execute(c).await?; Ok(())
+                            })).await?;
+                        }
                         if terminal == Some("superseded") {
                             service
                                 .retry_superseded_group_in(tx, id)
