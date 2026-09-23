@@ -181,6 +181,15 @@
       ""
     ],
     [
+      "action_plans",
+      "blocked_at",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "action_polls",
       "tenant_id",
       "uuid",
@@ -1122,6 +1131,13 @@
       "action_attempts_tenant_id_run_fkey",
       "f",
       "FOREIGN KEY (tenant_id, run) REFERENCES mdm_commands.action_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "action_plans",
+      "action_plans_blocked_at_check",
+      "c",
+      "CHECK ((blocked_at >= 0))",
       true
     ],
     [
