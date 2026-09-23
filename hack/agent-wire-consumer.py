@@ -55,9 +55,14 @@ use uuid::Uuid;
 fn independent_agent_consumes_exact_v2() {
     let secret = || Secret::parse("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let registration = RegistrationRequest::new(
-        Uuid::new_v4(), Uuid::new_v4(), secret(), secret()
+        Uuid::new_v4(), Uuid::new_v4(), secret(), secret(),
+        vec![Capability::InventoryBasicV2,Capability::TaskExecuteV2]
     ).unwrap();
-    assert_eq!(registration.capabilities(), &[Capability::InventoryBasicV2]);
+    assert_eq!(registration.capabilities(), &[Capability::InventoryBasicV2,Capability::TaskExecuteV2]);
+    let inventory_only=RegistrationRequest::new(
+        Uuid::new_v4(),Uuid::new_v4(),secret(),secret(),vec![Capability::InventoryBasicV2]
+    ).unwrap();
+    assert_eq!(inventory_only.capabilities(), &[Capability::InventoryBasicV2]);
     let report = ReportRequest::new(
         Uuid::new_v4(), 0, 1, ReportBody::Snapshot(vec![])
     ).unwrap();
@@ -70,7 +75,7 @@ fn independent_agent_consumes_exact_v2() {
     let _: RegistrationReceipt = serde_json::from_value(json!({
         "wireVersion":2,"operationId":operation,"deviceId":"device-1",
         "registrationId":registration_id,"generation":1,"source":"agent.builtin",
-        "epoch":epoch,"capabilities":["inventory.basic.v2"]
+        "epoch":epoch,"capabilities":["inventory.basic.v2","task.execute.v2"]
     })).unwrap();
     let ack = json!({"wireVersion":2,"reportId":report_id,"receivedAt":1,"intake":"durable"});
     let _: ReportAck = serde_json::from_value(ack.clone()).unwrap();
@@ -80,7 +85,7 @@ fn independent_agent_consumes_exact_v2() {
     let _: ErrorBody = serde_json::from_value(json!({"code":"operation_unknown"})).unwrap();
     assert!(SCHEMA_MANIFEST.contains("RegistrationReceipt"));
     assert_eq!(SCHEMA_FINGERPRINT.len(), 64);
-    use rss_mdm_agent_wire::{ExecutionIdentity,ExecutorProfile,OutputQuality,SignedTask,TaskArchitecture,TaskClaimRequest,TaskClaimResponse,TaskContent,TaskEvent,TaskEventAck,TaskEventRequest,TaskPayload,TaskPermit,TaskPlatform,TaskSpec,TaskVerification};
+    use rss_mdm_agent_wire::{ExecutionIdentity,ExecutorProfile,OutputQuality,SignedTask,TaskArchitecture,TaskClaimRequest,TaskClaimResponse,TaskContent,TaskEvent,TaskEventAck,TaskEventRequest,TaskResult,TaskDiagnostics,TaskFailure,TaskPayload,TaskPermit,TaskPlatform,TaskSpec,TaskVerification};
     let claim=TaskClaimRequest::new(Uuid::new_v4()).unwrap();
     assert_eq!(serde_json::to_value(claim).unwrap()["wireVersion"],2);
     let key_document=Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
@@ -104,10 +109,8 @@ fn independent_agent_consumes_exact_v2() {
         payload,key_id:"fixture".into(),
     };
     let signed_offer=sign(offer_spec.clone().try_into().unwrap());
-    let response:TaskClaimResponse=serde_json::from_value(serde_json::to_value(TaskClaimResponse {
-        wire_version:2,task:Some(signed_offer),cancellations:vec![]
-    }).unwrap()).unwrap();
-    let offer=response.task.unwrap();
+    let response:TaskClaimResponse=serde_json::from_value(serde_json::to_value(TaskClaimResponse::new(Some(signed_offer),vec![]).unwrap()).unwrap()).unwrap();
+    let offer=response.task().unwrap();
     let context=TaskVerification {
         key_id:"fixture",public_key:key.public_key().as_ref(),tenant_id:tenant,
         device_id:"device-1",platform:TaskPlatform::Macos,architecture:TaskArchitecture::Aarch64,
@@ -121,17 +124,26 @@ fn independent_agent_consumes_exact_v2() {
     start_spec.permit=TaskPermit::Start;
     start_spec.expires_at=115;
     let signed_start=sign(start_spec.try_into().unwrap());
-    let start_ack:TaskEventAck=serde_json::from_value(serde_json::to_value(TaskEventAck {
-        wire_version:2,accepted:true,permit:Some(signed_start),cancel_requested:false
-    }).unwrap()).unwrap();
-    let start=start_ack.permit.unwrap();
+    let start_ack:TaskEventAck=serde_json::from_value(serde_json::to_value(TaskEventAck::new(Some(signed_start),false)).unwrap()).unwrap();
+    let start=start_ack.permit().unwrap();
     assert!(start.verify(&TaskVerification{permit:TaskPermit::Start,now:100,..context}).is_ok());
     for quality in [OutputQuality::Complete,OutputQuality::Truncated] {
-        let result=TaskEventRequest::new(Uuid::new_v4(),attempt,TaskEvent::Result {
-            exit_code:Some(0),quality,output:json!({"version":"1.2.3"})
-        }).unwrap();
+        let failure=if quality==OutputQuality::Truncated {Some(TaskFailure::OutputLimit)} else {None};
+        let diagnostics=TaskDiagnostics::new("version=1.2.3".into(),String::new(),5,100,failure).unwrap();
+        let result=TaskEventRequest::new(Uuid::new_v4(),attempt,TaskEvent::Result(
+            TaskResult::new(Some(0),quality,json!({"version":"1.2.3"}),diagnostics).unwrap()
+        )).unwrap();
         let encoded=serde_json::to_value(result).unwrap();
         assert_eq!(encoded["event"]["quality"],serde_json::to_value(quality).unwrap());
+        assert_eq!(encoded["event"]["diagnostics"]["stdout"],"version=1.2.3");
+        assert_eq!(encoded["event"]["diagnostics"]["durationMs"],5);
+        assert_eq!(encoded["event"]["diagnostics"]["executedAt"],100);
+        let decoded:TaskEventRequest=serde_json::from_value(encoded.clone()).unwrap();
+        let TaskEvent::Result(evidence)=decoded.event() else {panic!("result lost")};
+        assert_eq!(evidence.diagnostics().stdout(),"version=1.2.3");
+        let mut legacy=encoded;
+        legacy["event"].as_object_mut().unwrap().remove("diagnostics");
+        assert!(serde_json::from_value::<TaskEventRequest>(legacy).is_err());
     }
     assert!(serde_json::from_value::<TaskClaimRequest>(json!({"wireVersion":1,"operationId":Uuid::new_v4()})).is_err());
     assert!(SCHEMA_MANIFEST.contains("SignedTask"));
