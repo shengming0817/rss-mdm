@@ -4,7 +4,7 @@
 
 ## 部署输入
 
-[完整配置](../../fixtures/mdm-config.example.json) 中 `windows.enrollment`、`windows.management` 各有显式 listen、HTTPS origin、PEM 证书链和 DER PKCS#8 私钥文件。两个协议监听器由 Rust 终止 TLS，不能接到终止 mTLS 的反向代理后。四层转发可保留真实 TLS；不接受代理设备身份头。浏览器管理入口仍使用原有回环监听与受控 HTTPS 入口。
+[完整配置](../../fixtures/mdm-config.example.json) 中 `native_protocols.windows.enrollment`、`native_protocols.windows.management` 各有显式 listen、HTTPS origin、PEM 证书链和 DER PKCS#8 私钥文件。两个协议监听器由 Rust 终止 TLS，不能接到终止 mTLS 的反向代理后。四层转发可保留真实 TLS；不接受代理设备身份头。浏览器管理入口仍使用原有回环监听与受控 HTTPS 入口。
 
 协议入口：
 

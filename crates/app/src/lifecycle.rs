@@ -83,8 +83,7 @@ pub async fn serve(
                     let (
                         listener,
                         app,
-                        enrollment_listener,
-                        management_listener,
+                        native_listeners,
                         access,
                         tenant,
                         runtime,
@@ -205,25 +204,20 @@ pub async fn serve(
                                     kind: e.kind(),
                                 }
                             })?;
-                        let enrollment_listener =
-                            tokio::net::TcpListener::bind(app.enrollment.listen)
+                        let mut native_listeners = Vec::new();
+                        for (name, router) in app.listeners.drain(..) {
+                            let listener = tokio::net::TcpListener::bind(router.listen)
                                 .await
                                 .map_err(|e| ProcessError::Io {
-                                    stage: "startup.enrollment_listener",
+                                    stage: name,
                                     kind: e.kind(),
                                 })?;
-                        let management_listener =
-                            tokio::net::TcpListener::bind(app.management.listen)
-                                .await
-                                .map_err(|e| ProcessError::Io {
-                                    stage: "startup.management_listener",
-                                    kind: e.kind(),
-                                })?;
+                            native_listeners.push((name, listener, router));
+                        }
                         Ok::<_, ProcessError>((
                             listener,
                             app,
-                            enrollment_listener,
-                            management_listener,
+                            native_listeners,
                             access,
                             tenant,
                             runtime,
@@ -237,13 +231,23 @@ pub async fn serve(
                         kind: "total deadline exceeded",
                     })??;
                     let mut launch = startup.commit();
+                    if let Some(apple) = app.apple {
+                        launch.stage_task_with_token(
+                            crate::apple::push::registration(apple, commands.clone()).critical(),
+                        );
+                    }
                     launch.stage_deferred_task_with_token(commands.registration().critical());
                     launch.stage_deferred_task_with_token(automation.registration().critical());
                     launch.stage_deferred_task_with_token(runtime.registration().critical());
-                    launch.stage_task_with_token(
-                        crate::windows::retention::registration(access.clone(), tenant.clone())
-                            .critical(),
-                    );
+                    if native_listeners
+                        .iter()
+                        .any(|(name, _, _)| *name == "mdm-management-tls")
+                    {
+                        launch.stage_task_with_token(
+                            crate::windows::retention::registration(access.clone(), tenant.clone())
+                                .critical(),
+                        );
+                    }
                     launch.stage_task_with_token(
                         rss_axum::serve_http1_registration(
                             listener,
@@ -254,26 +258,18 @@ pub async fn serve(
                         )
                         .critical(),
                     );
-                    launch.stage_task_with_token(
-                        crate::windows::tls::registration(
-                            enrollment_listener,
-                            app.enrollment,
-                            access.clone(),
-                            tenant.clone(),
-                            "mdm-enrollment-tls",
-                        )
-                        .critical(),
-                    );
-                    launch.stage_task_with_token(
-                        crate::windows::tls::registration(
-                            management_listener,
-                            app.management,
-                            access,
-                            tenant,
-                            "mdm-management-tls",
-                        )
-                        .critical(),
-                    );
+                    for (name, listener, router) in native_listeners {
+                        launch.stage_task_with_token(
+                            crate::native::tls::registration(
+                                listener,
+                                router,
+                                access.clone(),
+                                tenant.clone(),
+                                name,
+                            )
+                            .critical(),
+                        );
+                    }
                     launch.finish();
                     std::future::pending().await
                 })
@@ -307,7 +303,7 @@ fn assembly_error(error: Error) -> ProcessError {
     let stage = match error {
         Error::Configuration(ConfigIssue::EnrollmentCa) => "startup.windows_ca",
         Error::Configuration(ConfigIssue::ProtocolKey) => "startup.protocol_key",
-        Error::Configuration(ConfigIssue::WindowsTls) => "startup.windows_tls",
+        Error::Configuration(ConfigIssue::NativeTls) => "startup.native_tls",
         Error::Configuration(ConfigIssue::WindowsListeners) => "startup.windows_listeners",
         _ => "startup.identity",
     };
@@ -389,7 +385,7 @@ mod tests {
         for (issue, stage) in [
             (ConfigIssue::EnrollmentCa, "startup.windows_ca"),
             (ConfigIssue::ProtocolKey, "startup.protocol_key"),
-            (ConfigIssue::WindowsTls, "startup.windows_tls"),
+            (ConfigIssue::NativeTls, "startup.native_tls"),
         ] {
             assert!(
                 assembly_error(Error::Configuration(issue))

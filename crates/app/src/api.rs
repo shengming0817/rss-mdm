@@ -35,9 +35,19 @@ pub(crate) struct App {
     pub(crate) collection: CollectionService,
     pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
-    pub(crate) windows: Arc<crate::windows::Windows>,
+    pub(crate) apple: Option<Arc<crate::apple::Apple>>,
+    pub(crate) windows: Option<Arc<crate::windows::Windows>>,
     pub(crate) access: Arc<AccessStore>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
+}
+
+impl App {
+    pub(crate) fn apple(&self) -> Result<&Arc<crate::apple::Apple>, Error> {
+        self.apple.as_ref().ok_or(Error::Unsupported)
+    }
+    pub(crate) fn windows(&self) -> Result<&Arc<crate::windows::Windows>, Error> {
+        self.windows.as_ref().ok_or(Error::Unsupported)
+    }
 }
 
 #[derive(Clone)]
@@ -164,7 +174,7 @@ pub(crate) struct AssemblyDependencies {
 pub(crate) fn from_compiled(
     compiled: crate::config::Compiled,
     dependencies: AssemblyDependencies,
-) -> Result<crate::windows::Routers, Error> {
+) -> Result<crate::native::Routers, Error> {
     let crate::config::Compiled {
         config,
         identity_management,
@@ -187,16 +197,21 @@ pub(crate) fn from_compiled(
         .strip_prefix("https://")
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
-    let windows = crate::windows::Windows::load(
-        config.windows,
-        clock
-            .unix_seconds()
-            .map_err(|_| Error::Unavailable(Failure::Clock))?,
-    )?;
+    let windows = config
+        .native_protocols
+        .windows
+        .map(|config| crate::windows::Windows::load(config, clock.unix_seconds()?).map(Arc::new))
+        .transpose()?;
+    let apple = config
+        .native_protocols
+        .apple
+        .map(|config| crate::apple::Apple::load(config, clock.unix_seconds()?).map(Arc::new))
+        .transpose()?;
     let state = Arc::new(App {
+        apple,
         commands,
         management,
-        windows: Arc::new(windows),
+        windows,
         access: access.clone(),
         identity,
         credentials: Credentials::new(monotonic.clone(), 10000),
@@ -214,20 +229,26 @@ pub(crate) fn from_state(
     state: Arc<App>,
     host: String,
     monotonic: Arc<dyn rss_observation::Clock>,
-) -> crate::windows::Routers {
+) -> crate::native::Routers {
     let authentication = state.identity.routes();
     let audit_tenant = state.identity.tenant.to_string();
     let access = state.access.clone();
     let requests = state.requests.clone();
     let protected_v1 = Router::new()
         .merge(crate::management::routes())
-        .merge(crate::commands::routes())
         .merge(crate::authorization::routes())
+        .route(
+            "/devices/{id}/collection-runs",
+            post(crate::collection::apple::create),
+        )
         .route("/devices/{id}/collection-runs/{run}", get(collection_run))
         .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     let protected_v2 = Router::new()
+        .merge(crate::commands::routes())
         .merge(crate::management::routes_v2())
+        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
+    let protected_v3 = Router::new()
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))
@@ -238,18 +259,30 @@ pub(crate) fn from_state(
             post(revoke_registration),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
-    let (enrollment, management) = crate::windows::routers(state.clone(), monotonic.clone());
+    let mut listeners = Vec::new();
+    if let Some((enrollment, management)) =
+        crate::windows::routers(state.clone(), monotonic.clone())
+    {
+        listeners.push(("mdm-enrollment-tls", enrollment));
+        listeners.push(("mdm-management-tls", management));
+    }
+    if let Some(apple) = crate::apple::router(state.clone(), monotonic.clone()) {
+        listeners.push(("apple-management-tls", apple));
+    }
     let host_context = Router::new()
         .route(
             "/api/identity-host/v1/tenants/{tenant}/context",
             get(identity_context),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), identity_only));
+    let apple = state.apple.clone();
     let browser = Router::new()
         .merge(host_context)
+        .merge(crate::apple::browser_routes())
         .nest("/api/agent/v1", crate::agent::routes())
         .nest("/api/v1", protected_v1)
         .nest("/api/v2", protected_v2)
+        .nest("/api/v3", protected_v3)
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready))
         .with_state(state)
@@ -265,10 +298,10 @@ pub(crate) fn from_state(
             },
             envelope,
         ));
-    crate::windows::Routers {
+    crate::native::Routers {
+        apple,
         browser,
-        enrollment,
-        management,
+        listeners,
     }
 }
 
@@ -279,6 +312,40 @@ pub(crate) struct Envelope {
     pub(crate) access: Arc<AccessStore>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
     pub(crate) tenant: String,
+}
+fn route_action(route: &str, native_identity: bool) -> &'static str {
+    match route {
+        "/api/v1/authorization" => "authorization_effective_read",
+        "/api/v1/authorization/rules" => "authorization_rules_read",
+        "/api/v1/authorization/user-groups" => "authorization_groups_read",
+        "/api/v1/authorization/user-groups/{id}/members" => "authorization_members_read",
+        "/api/v1/authorization/departments" => "authorization_departments_read",
+        "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
+            "authorization_write"
+        }
+        "/api/v3/enrollments" => "enrollment_create",
+        "/api/v3/enrollments/{id}" => "enrollment_read",
+        "/api/v3/devices/{device}/registrations" => "registration_read",
+        "/api/v3/enrollments/{id}/resume" => "enrollment_resume",
+        "/api/v3/enrollments/{id}/cancel" => "enrollment_cancel",
+        "/api/v3/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
+        "/api/agent/v1/registrations" => "agent_registration",
+        "/api/agent/v1/reports" => "agent_report",
+        "/api/agent/v1/reports/{id}" => "agent_report_read",
+        "/api/v2/devices/{id}/inventory" => "inventory_read",
+        "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
+        "/api/v1/devices/{id}/actions" => "device_action",
+        _ if native_identity => "authentication",
+        "/EnrollmentServer/Discovery.svc" => "windows_discovery",
+        "/EnrollmentServer/Policy.svc" => "windows_policy",
+        "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
+        "/ManagementServer/MDM.svc" => "windows_management",
+        "/checkin" => "apple_checkin",
+        "/mdm" => "apple_management",
+        "/native/apple/scep/challenge" | "/native/apple/scep/notify" => "apple_scep",
+        p if p.starts_with("/api/v3/enrollments/") && p.ends_with("/profile") => "apple_profile",
+        _ => "protected_request",
+    }
 }
 pub(crate) async fn envelope(
     State(envelope): State<Envelope>,
@@ -294,34 +361,7 @@ pub(crate) async fn envelope(
         .unwrap_or("");
     let native_identity =
         route.starts_with("/api/v2/tenants/") || route.starts_with("/api/v2/oidc/");
-    let action = match route {
-        "/api/v1/authorization" => "authorization_effective_read",
-        "/api/v1/authorization/rules" => "authorization_rules_read",
-        "/api/v1/authorization/user-groups" => "authorization_groups_read",
-        "/api/v1/authorization/user-groups/{id}/members" => "authorization_members_read",
-        "/api/v1/authorization/departments" => "authorization_departments_read",
-        "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
-            "authorization_write"
-        }
-        "/api/v2/enrollments" => "enrollment_create",
-        "/api/v2/enrollments/{id}" => "enrollment_read",
-        "/api/v2/devices/{device}/registrations" => "registration_read",
-        "/api/v2/enrollments/{id}/resume" => "enrollment_resume",
-        "/api/v2/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v2/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/agent/v1/registrations" => "agent_registration",
-        "/api/agent/v1/reports" => "agent_report",
-        "/api/agent/v1/reports/{id}" => "agent_report_read",
-        "/api/v2/devices/{id}/inventory" => "inventory_read",
-        "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
-        "/api/v1/devices/{id}/actions" => "device_action",
-        _ if native_identity => "authentication",
-        "/EnrollmentServer/Discovery.svc" => "windows_discovery",
-        "/EnrollmentServer/Policy.svc" => "windows_policy",
-        "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
-        "/ManagementServer/MDM.svc" => "windows_management",
-        _ => "protected_request",
-    };
+    let action = route_action(route, native_identity);
     let soap = route.starts_with("/EnrollmentServer/");
     let agent_route = route.starts_with("/api/agent/v1/");
     let audit = Audit::new(envelope.tenant.clone(), action);
@@ -571,6 +611,15 @@ async fn create_enrollment(
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;
     let input = input.map_err(|_| Error::Malformed)?.0;
+    match input.source {
+        rss_mdm_inventory::ReportSource::MdmWindows => {
+            app.windows()?;
+        }
+        rss_mdm_inventory::ReportSource::MdmApple => {
+            app.apple()?;
+        }
+        rss_mdm_inventory::ReportSource::AgentBuiltin => {}
+    }
     let permission = auth.proof.enrollment(&input.device_id)?;
     audit.target(&input.device_id);
     let reference = app.credentials.insert(
@@ -580,7 +629,7 @@ async fn create_enrollment(
         .create_enrollment(
             permission,
             &input.password,
-            input.channel,
+            input.source,
             reference,
             key,
             &audit,

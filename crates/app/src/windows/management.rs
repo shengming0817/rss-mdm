@@ -41,7 +41,7 @@ pub(super) async fn manage(
         return Err(Error::Malformed);
     }
     let checked = app
-        .windows
+        .windows()?
         .ca
         .verify(peer.chain(), app.clock.unix_seconds()?)?;
     let credential = VerifiedChannelCredential::windows(
@@ -54,7 +54,7 @@ pub(super) async fn manage(
     audit.target(principal.device());
     let message = syncml::decode(&bytes, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
     if message.header.source != principal.device()
-        || message.header.target != app.windows.management_url()
+        || message.header.target != app.windows()?.management_url()
         || !message.final_message
     {
         return Err(Error::Forbidden);
@@ -72,7 +72,7 @@ pub(super) async fn manage(
     }
     let response = app
         .commands
-        .management(&app.windows, &principal, &message, &bytes, &audit)
+        .management(app.windows()?, &principal, &message, &bytes, &audit)
         .await?;
     Ok((
         [(

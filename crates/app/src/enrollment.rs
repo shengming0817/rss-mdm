@@ -2,7 +2,7 @@
 pub(crate) mod read;
 pub(crate) mod store;
 use crate::Error;
-use rss_mdm_inventory::Channel;
+use rss_mdm_inventory::ReportSource;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 pub(crate) struct Create {
     pub device_id: String,
     pub password: Password,
-    pub channel: Channel,
+    pub source: ReportSource,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -25,6 +25,9 @@ pub(crate) struct Resume {
 #[serde(transparent)]
 pub(crate) struct Password(Zeroizing<String>);
 impl Password {
+    pub(crate) fn expose(&self) -> &str {
+        self.0.as_str()
+    }
     pub(crate) fn new(value: String) -> Result<Self, Error> {
         if !valid(&value) {
             return Err(Error::Malformed);
@@ -58,7 +61,7 @@ pub(crate) struct Receipt {
     pub expires_at: i64,
     #[serde(rename = "registrationId")]
     pub registration: Option<Uuid>,
-    pub channel: Channel,
+    pub source: ReportSource,
 }
 /// All fields originate in PG, never in device claims.
 pub(crate) struct Authorization {
@@ -71,7 +74,7 @@ pub(crate) struct Authorization {
     pub expected_generation: i64,
     pub operation: Uuid,
     pub state: String,
-    pub channel: Channel,
+    pub source: ReportSource,
 }
 
 /// Enrollment password generation, independent of browser authentication.
@@ -126,17 +129,19 @@ mod tests {
     }
 
     #[test]
-    fn enrollment_channel_is_explicit_and_closed() {
+    fn enrollment_source_is_explicit_and_protocol_bound() {
         let password = random();
         assert!(
             serde_json::from_value::<Create>(serde_json::json!({
-                "deviceId":"device-a","password":password,"channel":"agent"
+                "deviceId":"device-a","password":password,"source":"mdm.apple"
             }))
             .is_ok()
         );
         for value in [
             serde_json::json!({"deviceId":"device-a","password":random()}),
             serde_json::json!({"deviceId":"device-a","password":random(),"channel":"legacy"}),
+            serde_json::json!({"deviceId":"device-a","password":random(),"channel":"mdm"}),
+            serde_json::json!({"deviceId":"device-a","password":random(),"source":"manual"}),
         ] {
             assert!(serde_json::from_value::<Create>(value).is_err());
         }

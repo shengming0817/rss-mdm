@@ -56,7 +56,7 @@ async fn create(
         .create_enrollment(
             proof.enrollment(device)?,
             password,
-            rss_mdm_inventory::Channel::Mdm,
+            rss_mdm_inventory::ReportSource::MdmWindows,
             reference,
             key,
             &a,
@@ -676,7 +676,7 @@ async fn ingress_burst(
 ) -> anyhow::Result<()> {
     let url = format!(
         "{}/EnrollmentServer/Discovery.svc",
-        app.windows.config.enrollment.origin
+        app.windows()?.config.enrollment.origin
     );
     let mut request = soap::decode(
         include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
@@ -754,7 +754,7 @@ async fn discover_and_policy(
     enrollment: Uuid,
     password: &str,
 ) -> anyhow::Result<()> {
-    let origin = &app.windows.config.enrollment.origin;
+    let origin = &app.windows()?.config.enrollment.origin;
     let mut discovery = soap::decode(
         include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
         Operation::Discover,
@@ -929,13 +929,16 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let mut value: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
-    value["windows"] = serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
-    value["windows"]["enrollment"]["origin"] =
+    value["native_protocols"]["windows"] =
+        serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
+    value["native_protocols"]["windows"]["enrollment"]["origin"] =
         serde_json::json!(format!("https://localhost:{}", enroll.local_addr()?.port()));
-    value["windows"]["enrollment"]["listen"] = serde_json::json!(enroll.local_addr()?.to_string());
-    value["windows"]["management"]["origin"] =
+    value["native_protocols"]["windows"]["enrollment"]["listen"] =
+        serde_json::json!(enroll.local_addr()?.to_string());
+    value["native_protocols"]["windows"]["management"]["origin"] =
         serde_json::json!(format!("https://localhost:{}", manage.local_addr()?.port()));
-    value["windows"]["management"]["listen"] = serde_json::json!(manage.local_addr()?.to_string());
+    value["native_protocols"]["windows"]["management"]["listen"] =
+        serde_json::json!(manage.local_addr()?.to_string());
     value["identity"] = serde_json::from_slice::<serde_json::Value>(&std::fs::read(
         std::env::var("MDM_TEST_CONFIG")?,
     )?)?["identity"]
@@ -990,6 +993,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
     let app = Arc::new(App {
+        apple: None,
         commands,
         management,
         identity,
@@ -1001,19 +1005,27 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
         devices,
         access: store.clone(),
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
-        windows: Arc::new(Windows::load(config.windows, now())?),
+        windows: Some(Arc::new(Windows::load(
+            config
+                .native_protocols
+                .windows
+                .expect("Windows test configuration"),
+            now(),
+        )?)),
     });
-    tls::verify_tls_lifecycle(store.clone(), app.windows.enrollment_tls.clone(), &root).await?;
+    tls::verify_tls_lifecycle(store.clone(), app.windows()?.enrollment_tls.clone(), &root).await?;
     let ingress_clock = IngressClock::new();
-    let crate::windows::Routers {
+    let crate::native::Routers {
         browser,
-        mut enrollment,
-        management,
+        mut listeners,
+        ..
     } = crate::api::from_state(
         app.clone(),
         "mdm.example.test".into(),
         ingress_clock.clone(),
     );
+    let (_, management) = listeners.pop().expect("management listener");
+    let (_, mut enrollment) = listeners.pop().expect("enrollment listener");
     let mut task_client = if with_commands {
         Some(crate::commands::tests::Client::start(browser, app.clone()).await?)
     } else {
@@ -1067,7 +1079,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
         client
             .get(format!(
                 "{}/accepted-peer",
-                app.windows.config.enrollment.origin
+                app.windows()?.config.enrollment.origin
             ))
             .header("x-forwarded-for", "198.51.100.23")
             .send()
@@ -1092,7 +1104,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     discover_and_policy(&client, &app, receipt.enrollment_id, &plain).await?;
     let path = format!(
         "{}/EnrollmentServer/Enrollment.svc",
-        app.windows.config.enrollment.origin
+        app.windows()?.config.enrollment.origin
     );
     let mut issue = soap::decode(
         include_bytes!("../../../windows-mdm/tests/fixtures/issue-request.xml"),
@@ -1157,7 +1169,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     let csr = std::fs::read(root.join("device.csr"))?;
     let intent = store
         .issuance_intent(
-            &app.windows,
+            app.windows()?,
             &auth,
             &proof,
             (
@@ -1167,7 +1179,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
             now(),
         )
         .await?;
-    let cert = app.windows.ca.sign(&intent.tbs)?;
+    let cert = app.windows()?.ca.sign(&intent.tbs)?;
     let cert_pem = x509_cert::Certificate::from_der(&cert)?.to_pem(LineEnding::LF)?;
     let identity = reqwest::Identity::from_pem(
         &[
@@ -1182,7 +1194,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
         .identity(identity)
         .timeout(Duration::from_secs(12))
         .build()?;
-    let url = app.windows.management_url();
+    let url = app.windows()?.management_url();
     ensure!(
         client
             .post(&url)
@@ -1224,7 +1236,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     message.header.target = url.clone();
     message.header.source = "tls-device".into();
     let secrets = app
-        .windows
+        .windows()?
         .protection
         .open(TENANT, auth.id, &intent.sealed)?;
     message.header.credential = Some(syncml::Credential {

@@ -167,3 +167,15 @@ fn agent_reports_use_the_canonical_quality_model() {
             .all(|field| field.quality == Quality::Failed)
     );
 }
+
+#[test]
+fn apple_partial_observation_keeps_missing_fields_and_never_fabricates_syncml_status() {
+    let values = crate::apple::protocol::dictionary([("Model", "MacBookPro18,3".into())]);
+    let attempts = Attempts::apple(Some(&values), 100);
+    assert_eq!(attempts.fields[0].quality, Quality::Success);
+    assert_eq!(attempts.fields[1].quality, Quality::Missing);
+    assert!(attempts.fields.iter().all(|f| f.status.is_none()));
+    assert!(matches!(attempts.body(),Some(Body::Partial(changes)) if changes.len()==1));
+    let failed = Attempts::apple(None, 101);
+    assert!(matches!(failed.body(), Some(Body::Failed { .. })));
+}

@@ -29,15 +29,15 @@ use tokio_rustls::{
 };
 
 #[derive(Clone)]
-pub(super) struct Peer {
+pub(crate) struct Peer {
     chain: Arc<Vec<CertificateDer<'static>>>,
 }
 impl Peer {
-    pub(super) fn chain(&self) -> &[CertificateDer<'static>] {
+    pub(crate) fn chain(&self) -> &[CertificateDer<'static>] {
         &self.chain
     }
 }
-pub(super) fn configuration(
+pub(crate) fn configuration(
     endpoint: &TlsEndpoint,
     client: Option<Arc<dyn ClientCertVerifier>>,
 ) -> Result<Arc<rustls::ServerConfig>, Error> {
@@ -69,7 +69,7 @@ pub(super) fn configuration(
         config.send_tls13_tickets = 0;
         Ok(Arc::new(config))
     };
-    build().map_err(|_| Error::Configuration(ConfigIssue::WindowsTls))
+    build().map_err(|_| Error::Configuration(ConfigIssue::NativeTls))
 }
 pub(crate) fn registration(
     listener: TcpListener,
@@ -207,4 +207,4 @@ fn event(name: &str, kind: ConnectionFailure) -> serde_json::Value {
 mod tests;
 
 #[cfg(test)]
-pub(super) use tests::verify_tls_lifecycle;
+pub(crate) use tests::verify_tls_lifecycle;

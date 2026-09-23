@@ -30,24 +30,30 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
-    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
+    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='apple-management-v1')").fetch_one(&mut owner).await?);
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(&installation.tenants[0])
         .execute(&mut owner)
         .await?;
     owner.execute("UPDATE rss_device_command.commands SET status='cancelled',terminal_at=2 WHERE command_id='upgrade-evidence'").await?;
-    owner.execute(include_str!("legacy-fixture.sql")).await?;
+    owner
+        .execute(include_str!("windows-history-fixture.sql"))
+        .await?;
     let historical: serde_json::Value =
         sqlx::query_scalar("SELECT to_jsonb(a) FROM mdm_commands.attempts a")
             .fetch_one(&mut owner)
             .await?;
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
-    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
+    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='apple-management-v1')").fetch_one(&mut owner).await?);
     owner.execute("UPDATE rss_transactional_messaging.outbox SET status='published' WHERE domain='mdm.commands.v1'").await?;
     // Terminal commands and settled Outbox still cannot allow old live response replay.
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
-    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='windows-configuration-v1')").fetch_one(&mut owner).await?);
+    ensure!(sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='apple-management-v1')").fetch_one(&mut owner).await?);
     owner.execute("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second'").await?;
+
+    owner.execute("INSERT INTO rss_reconcile.targets(tenant_id,reconciler,entity) VALUES(current_setting('rss.tenant_id')::uuid,'mdm.commands.v1','upgrade')").await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    owner.execute("UPDATE rss_reconcile.targets SET result='converged',next_run=NULL WHERE reconciler='mdm.commands.v1'").await?;
 
     owner
         .execute("SELECT set_config('rss.tenant_id','',false)")
@@ -68,7 +74,7 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
 
     ensure!(
         sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT to_jsonb(a) FROM mdm_commands.attempt_history a"
+            "SELECT to_jsonb(a) FROM mdm_commands.attempts a"
         )
         .fetch_one(&mut owner)
         .await?
@@ -87,7 +93,7 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mdm_commands.attempts")
             .fetch_one(&mut owner)
             .await?
-            == 0
+            == 1
     );
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")

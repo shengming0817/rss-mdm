@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "mdm.command-dispatch/v1",
+  "$id": "mdm.command-dispatch/v2",
   "type": "object",
   "required": [
     "device",
@@ -94,6 +94,39 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 4294967295
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "enabled"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "profile_install"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "profile"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "profile_remove"
+                },
+                "profile": {
+                  "type": "string",
+                  "format": "uuid"
                 }
               },
               "additionalProperties": false

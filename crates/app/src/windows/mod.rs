@@ -1,5 +1,5 @@
 //! Product Windows enrollment/management assembly. TLS and authority stay outside the codec.
-mod admission;
+use crate::native::{TlsEndpoint, TlsRouter, admission, tls};
 pub(crate) mod certificate;
 mod issuance;
 pub(crate) mod management;
@@ -9,7 +9,7 @@ pub(crate) mod retention;
 mod retention_tests;
 #[cfg(test)]
 mod tests;
-pub(crate) mod tls;
+
 use crate::{
     ConfigIssue, Error, Failure,
     api::{App, Envelope, authenticate, envelope},
@@ -33,14 +33,6 @@ use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use uuid::Uuid;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TlsEndpoint {
-    pub listen: SocketAddr,
-    pub origin: String,
-    pub certificate_file: PathBuf,
-    pub private_key_file: PathBuf,
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsConfig {
@@ -117,21 +109,11 @@ impl Windows {
         format!("{}/ManagementServer/MDM.svc", self.config.management.origin)
     }
 }
-pub(crate) struct TlsRouter {
-    admission: Arc<admission::Admission>,
-    pub listen: SocketAddr,
-    pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
-    pub router: Router,
-}
-pub(crate) struct Routers {
-    pub browser: Router,
-    pub enrollment: TlsRouter,
-    pub management: TlsRouter,
-}
 pub(crate) fn routers(
     app: Arc<App>,
     clock: Arc<dyn rss_observation::Clock>,
-) -> (TlsRouter, TlsRouter) {
+) -> Option<(TlsRouter, TlsRouter)> {
+    let windows = app.windows.as_ref()?;
     let wrap = |router: Router<Arc<App>>, origin: &str| {
         router
             .with_state(app.clone())
@@ -153,30 +135,30 @@ pub(crate) fn routers(
             .route("/EnrollmentServer/Discovery.svc", post(discover))
             .route("/EnrollmentServer/Policy.svc", post(policy))
             .route("/EnrollmentServer/Enrollment.svc", post(issue)),
-        &app.windows.config.enrollment.origin,
+        &windows.config.enrollment.origin,
     );
     let management = wrap(
         Router::new().route("/ManagementServer/MDM.svc", post(management::manage)),
-        &app.windows.config.management.origin,
+        &windows.config.management.origin,
     );
-    (
+    Some((
         TlsRouter {
             admission: admission::Admission::new(
                 clock.clone(),
                 app.requests.clone(),
                 "mdm-enrollment-tls",
             ),
-            listen: app.windows.config.enrollment.listen,
-            tls: app.windows.enrollment_tls.clone(),
+            listen: windows.config.enrollment.listen,
+            tls: windows.enrollment_tls.clone(),
             router: enrollment,
         },
         TlsRouter {
             admission: admission::Admission::new(clock, app.requests.clone(), "mdm-management-tls"),
-            listen: app.windows.config.management.listen,
-            tls: app.windows.management_tls.clone(),
+            listen: windows.config.management.listen,
+            tls: windows.management_tls.clone(),
             router: management,
         },
-    )
+    ))
 }
 fn decode(
     bytes: &[u8],
@@ -199,7 +181,7 @@ fn decode(
     }
     let message = soap::decode(bytes, op, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
     if message.header.to.as_deref()
-        != Some(format!("{}{path}", app.windows.config.enrollment.origin).as_str())
+        != Some(format!("{}{path}", app.windows()?.config.enrollment.origin).as_str())
     {
         return Err(Error::Malformed);
     }
@@ -262,6 +244,10 @@ pub(crate) fn fault(request: Option<&soap::Message>, error: Error) -> Response {
     r
 }
 async fn discover(State(app): State<Arc<App>>, headers: HeaderMap, bytes: Bytes) -> Response {
+    let windows = match app.windows() {
+        Ok(windows) => windows,
+        Err(e) => return fault(None, e),
+    };
     let message = match decode(
         &bytes,
         &headers,
@@ -278,11 +264,11 @@ async fn discover(State(app): State<Arc<App>>, headers: HeaderMap, bytes: Bytes)
             enrollment_version: "4.0".into(),
             policy_url: format!(
                 "{}/EnrollmentServer/Policy.svc",
-                app.windows.config.enrollment.origin
+                windows.config.enrollment.origin
             ),
             enrollment_url: format!(
                 "{}/EnrollmentServer/Enrollment.svc",
-                app.windows.config.enrollment.origin
+                windows.config.enrollment.origin
             ),
         }),
         0,
@@ -334,7 +320,7 @@ async fn enrollment(
             .access
             .enrollment_authorization(&app.identity.tenant.to_string(), id, &password)
             .await?;
-        if auth.channel != rss_mdm_inventory::Channel::Mdm {
+        if auth.source != rss_mdm_inventory::ReportSource::MdmWindows {
             return Err(Error::Unauthorized);
         }
         let credential = app.credentials.get(auth.credential_ref)?;
@@ -405,7 +391,7 @@ async fn enrollment(
         let intent = app
             .access
             .issuance_intent(
-                &app.windows,
+                app.windows()?,
                 &auth,
                 &proof,
                 (&input.csr.0, enrollment_type),
@@ -418,10 +404,10 @@ async fn enrollment(
             .await?
         {
             Some(certificate) => certificate,
-            None => app.windows.ca.sign(&intent.tbs)?,
+            None => app.windows()?.ca.sign(&intent.tbs)?,
         };
         let provisioning = issuance::provision(
-            &app.windows,
+            app.windows()?,
             &intent,
             &certificate,
             &auth,
@@ -431,7 +417,7 @@ async fn enrollment(
         let _permission = proof.enrollment(&auth.device)?;
         app.access
             .complete_issuance(
-                &app.windows,
+                app.windows()?,
                 &auth,
                 &proof,
                 &intent,

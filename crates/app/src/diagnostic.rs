@@ -41,6 +41,7 @@ impl rss_observation::Clock for Monotonic {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigIssue {
+    Apple,
     Commands,
     Management,
     Listen,
@@ -63,12 +64,15 @@ pub enum ConfigIssue {
     Budget,
     WindowsListeners,
     EnrollmentCa,
-    WindowsTls,
+    NativeTls,
     ProtocolKey,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
+    ApplePush,
+    AppleStorage,
+    AppleInvariant,
     CommandStorage,
     CommandInvariant,
     ManagementAdmission,

@@ -82,7 +82,7 @@ pub(crate) struct Browser {
     pub(crate) network: Option<(Client, String)>,
     cookies: BTreeMap<String, String>,
     csrf: Option<String>,
-    operation: Option<uuid::Uuid>,
+    pub(crate) operation: Option<uuid::Uuid>,
 }
 impl Browser {
     pub(crate) async fn call(
@@ -338,7 +338,7 @@ async fn enrollment_matrix(
     browser: &mut Browser,
     query: &str,
 ) -> Result<()> {
-    let issue = "/api/v2/enrollments";
+    let issue = "/api/v3/enrollments";
     let enrollment_only = config.clone();
     set_device_grants(
         browser,
@@ -369,7 +369,7 @@ async fn enrollment_matrix(
                 &enrollment_router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
             )
             .await?
             .0
@@ -382,7 +382,7 @@ async fn enrollment_matrix(
             router,
             Method::POST,
             issue,
-            Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"})),
+            Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"})),
         )
         .await?;
     ensure!(
@@ -395,7 +395,7 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
             )
             .await?
             .1
@@ -403,7 +403,7 @@ async fn enrollment_matrix(
         "issue replay changed result"
     );
     let enrollment = grant["enrollmentId"].as_str().unwrap();
-    let status_path = format!("/api/v2/enrollments/{enrollment}");
+    let status_path = format!("/api/v3/enrollments/{enrollment}");
     let current = browser
         .call(router, Method::GET, &status_path, None)
         .await?;
@@ -412,7 +412,7 @@ async fn enrollment_matrix(
             && current.1["status"] == "pending"
             && current.1["registrationId"].is_null()
     );
-    let resume = format!("/api/v2/enrollments/{enrollment}/resume");
+    let resume = format!("/api/v3/enrollments/{enrollment}/resume");
     browser.operation = Some(uuid::Uuid::new_v4());
     let (_, resumed) = browser
         .call(
@@ -436,7 +436,7 @@ async fn enrollment_matrix(
             == resumed
     );
     browser.operation = Some(uuid::Uuid::new_v4());
-    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))).await?.0 == StatusCode::FORBIDDEN);
     let no_permission = config.clone();
     set_device_grants(browser, router, "device-1", &["inventory_read"]).await?;
     let restarted = app(&no_permission, reader.clone()).await?;
@@ -463,7 +463,7 @@ async fn enrollment_matrix(
         &["inventory_read", "enrollment"],
     )
     .await?;
-    let cancel = format!("/api/v2/enrollments/{enrollment}/cancel");
+    let cancel = format!("/api/v3/enrollments/{enrollment}/cancel");
     let (status, cancelled) = browser
         .call(router, Method::POST, &cancel, Some(json!({})))
         .await?;
@@ -505,7 +505,7 @@ async fn enrollment_matrix(
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel":"mdm"}))
+                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
             )
             .await?
             .0
@@ -627,12 +627,12 @@ async fn agent_matrix(
         .call(
             router,
             Method::POST,
-            "/api/v2/enrollments",
-            Some(json!({"deviceId":"device-1","password":password,"channel":"agent"})),
+            "/api/v3/enrollments",
+            Some(json!({"deviceId":"device-1","password":password,"source":"agent.builtin"})),
         )
         .await?;
     ensure!(
-        status == StatusCode::OK && enrollment["channel"] == "agent",
+        status == StatusCode::OK && enrollment["source"] == "agent.builtin",
         "Agent enrollment failed: {status} {enrollment}"
     );
     ensure!(
@@ -962,8 +962,8 @@ async fn agent_matrix(
         .call(
             router,
             Method::POST,
-            "/api/v2/enrollments",
-            Some(json!({"deviceId":"device-1","password":next_password,"channel":"agent"})),
+            "/api/v3/enrollments",
+            Some(json!({"deviceId":"device-1","password":next_password,"source":"agent.builtin"})),
         )
         .await?;
     ensure!(status == StatusCode::OK);
@@ -1079,7 +1079,7 @@ async fn revoke_http_matrix(
     );
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
     pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','{INSTANCE}','revoke-device','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-        INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES('{TENANT}','{request}','{grant}','mdm');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','mdm.windows');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','revoke-device');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','revoke-device','mdm',1,'{request}','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
@@ -1154,8 +1154,8 @@ async fn revoke_http_matrix(
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     for bad in [
-        "/api/v2/enrollments/not-a-uuid/resume",
-        "/api/v2/enrollments/not-a-uuid/cancel",
+        "/api/v3/enrollments/not-a-uuid/resume",
+        "/api/v3/enrollments/not-a-uuid/cancel",
         "/api/v2/devices/revoke-device/registrations/not-a-uuid/revoke",
     ] {
         let response = browser
@@ -1245,7 +1245,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     for (method, path) in [
         (Method::GET, "/api/v1/authorization".to_owned()),
         (Method::GET, format!("/api/v2/tenants/{TENANT}/session")),
-        (Method::POST, "/api/v2/enrollments".to_owned()),
+        (Method::POST, "/api/v3/enrollments".to_owned()),
     ] {
         for cookie in [
             format!("__Host-identity-session={credential}; broken"),
@@ -1312,7 +1312,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     pg(&format!(
         r#"
         INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-        INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm');
+        INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm.windows');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1') ON CONFLICT DO NOTHING;
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');

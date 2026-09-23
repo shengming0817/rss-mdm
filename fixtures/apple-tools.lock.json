@@ -1,0 +1,27 @@
+{
+  "step-ca": {
+    "version": "0.30.2",
+    "repository": "smallstep/certificates",
+    "artifacts": {
+      "darwin-arm64": "67bfba1bc440fca65ec820d4349b749f14ca72e37f22d9e80767159ebed1cca7",
+      "darwin-amd64": "430fa9078bf5adafc92ee68244a5dc4cbbbb2bc190af9785ad962be39c552887",
+      "linux-amd64": "126615795bafe3f2d3f890e2d628fa6e2857315fb48d0671d34b23047cc37d73",
+      "linux-arm64": "43f79d1b0b8cab9895dbadd46b0a014006f682a6b1341e1fadf0be31d4b9f4b4"
+    }
+  },
+  "step": {
+    "version": "0.30.2",
+    "repository": "smallstep/cli",
+    "artifacts": {
+      "darwin-arm64": "3ec0836af9e2948f5eaf341fc6a5441f4d826a26fa0560f9220d21072af45830",
+      "darwin-amd64": "d3fbc24b5807c09f6e60b697d64f12ac30baedb007b8a53cf1670955f9ab585b",
+      "linux-amd64": "abf5ffe9a39c01c7b4e777d50a96f30f33f5bd8eeafa2dfeef22b8a4abeee14a",
+      "linux-arm64": "7d66fa62949d64142b053db1c86ee29037088919cd329ac7966b15b09e914230"
+    }
+  },
+  "nanomdm": {
+    "revision": "b2fd8e1655633d1721b1fbebd7301e5d14c46bc0",
+    "sourceArchiveSha256": "dc395c989c7200ed582fa9dc871c54443bd2c9e8e00b271958559e4d64c4c0ee",
+    "purpose": "isolated T2 protocol oracle only; never production identity or storage"
+  }
+}

@@ -116,7 +116,7 @@ def inputs(root, example):
         path=runtime/Path(source).name;shutil.copy(source,path);path.chmod(0o600)
         return "/run/mdm/"+path.name
     config=json.loads(example.read_text())
-    config["windows"]=copy_inputs(windows)
+    config["native_protocols"]={"windows":copy_inputs(windows)}
     for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime"),("command_database","mdm_command_runtime")]:
         config[field]=database(runtime,role)
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")

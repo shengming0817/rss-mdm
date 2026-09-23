@@ -22,24 +22,6 @@
     "password_file": "/run/mdm/mdm-access-password",
     "ca_file": "/run/mdm/database-ca.pem"
   },
-  "windows": {
-    "enrollment": {
-      "listen": "0.0.0.0:8443",
-      "origin": "https://enroll.example.test:8443",
-      "certificate_file": "/run/mdm/enrollment-tls.pem",
-      "private_key_file": "/run/mdm/enrollment-tls.pk8"
-    },
-    "management": {
-      "listen": "0.0.0.0:8444",
-      "origin": "https://manage.example.test:8444",
-      "certificate_file": "/run/mdm/management-tls.pem",
-      "private_key_file": "/run/mdm/management-tls.pk8"
-    },
-    "ca_certificate_file": "/run/mdm/enrollment-ca.pem",
-    "ca_private_key_file": "/run/mdm/enrollment-ca.pk8",
-    "protocol_key_file": "/run/mdm/protocol.key",
-    "provider_id": "RSS-MDM"
-  },
   "runtime_database": {
     "host": "postgres.example.test",
     "port": 5432,
@@ -113,5 +95,25 @@
     "user": "mdm_command_runtime",
     "password_file": "/run/secrets/command-password",
     "ca_file": "/run/mdm/database-ca.pem"
+  },
+  "native_protocols": {
+    "windows": {
+      "enrollment": {
+        "listen": "0.0.0.0:8443",
+        "origin": "https://enroll.example.test:8443",
+        "certificate_file": "/run/mdm/enrollment-tls.pem",
+        "private_key_file": "/run/mdm/enrollment-tls.pk8"
+      },
+      "management": {
+        "listen": "0.0.0.0:8444",
+        "origin": "https://manage.example.test:8444",
+        "certificate_file": "/run/mdm/management-tls.pem",
+        "private_key_file": "/run/mdm/management-tls.pk8"
+      },
+      "ca_certificate_file": "/run/mdm/enrollment-ca.pem",
+      "ca_private_key_file": "/run/mdm/enrollment-ca.pk8",
+      "protocol_key_file": "/run/mdm/protocol.key",
+      "provider_id": "RSS-MDM"
+    }
   }
 }

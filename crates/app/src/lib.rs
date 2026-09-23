@@ -18,6 +18,7 @@ mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 mod agent;
 mod api;
+mod apple;
 mod clock;
 pub mod config;
 mod enrollment_credentials;
@@ -29,6 +30,7 @@ mod identity_t2;
 mod lifecycle;
 pub mod maintenance;
 pub mod migration;
+mod native;
 pub mod software_publication;
 pub mod windows;
 use axum::{

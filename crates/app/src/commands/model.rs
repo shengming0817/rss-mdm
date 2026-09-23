@@ -36,6 +36,12 @@ impl Field {
     deny_unknown_fields
 )]
 pub(crate) enum Task {
+    ProfileInstall {
+        enabled: bool,
+    },
+    ProfileRemove {
+        profile: Uuid,
+    },
     StateVerify {
         field: Field,
         expected_value: String,
@@ -50,14 +56,26 @@ pub(crate) enum Task {
     },
 }
 impl Task {
+    pub(crate) fn source(&self) -> rss_mdm_inventory::ReportSource {
+        match self {
+            Self::ProfileInstall { .. } | Self::ProfileRemove { .. } => {
+                rss_mdm_inventory::ReportSource::MdmApple
+            }
+            _ => rss_mdm_inventory::ReportSource::MdmWindows,
+        }
+    }
+
     pub(crate) fn permission(&self) -> crate::authorization::Permission {
         match self {
             Self::StateVerify { .. } => crate::authorization::Permission::StateVerify,
-            Self::Firewall { .. } => crate::authorization::Permission::FirewallWrite,
+            Self::ProfileInstall { .. } | Self::ProfileRemove { .. } | Self::Firewall { .. } => {
+                crate::authorization::Permission::FirewallWrite
+            }
         }
     }
     pub(super) fn digest(&self) -> Result<StateDigest, Error> {
         match self {
+            Self::ProfileInstall { .. } | Self::ProfileRemove { .. } => Err(Error::Malformed),
             Self::StateVerify {
                 field,
                 expected_value,
@@ -89,6 +107,24 @@ pub(super) struct Create {
     pub deadline: i64,
 }
 impl Create {
+    pub(super) fn profile_target(&self) -> Option<(Uuid, bool)> {
+        match self.task {
+            Task::ProfileInstall { .. } => Some((self.operation_id, true)),
+            Task::ProfileRemove { profile } => Some((profile, false)),
+            _ => None,
+        }
+    }
+    pub(super) fn digest(&self, tenant: &str, device: &str) -> Result<StateDigest, Error> {
+        match self.profile_target() {
+            Some((profile, present)) => Ok(crate::apple::profile::presence_digest(
+                &crate::apple::profile::identifier(tenant, device),
+                profile,
+                present,
+            )),
+            None => self.task.digest(),
+        }
+    }
+
     pub(super) fn validate(&self, now: i64) -> Result<(), Error> {
         if self.operation_id.is_nil()
             || self.deadline <= now
@@ -96,14 +132,20 @@ impl Create {
         {
             return Err(Error::Malformed);
         }
-        self.task.digest()?;
+        match self.profile_target() {
+            Some((profile, _)) if profile.is_nil() => return Err(Error::Malformed),
+            Some(_) => {}
+            None => {
+                self.task.digest()?;
+            }
+        }
         Ok(())
     }
 }
 /// Canonical dispatch payload; the fixed schema and golden consumer guard this wire.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DispatchV1 {
+pub(super) struct DispatchV2 {
     pub device: String,
     pub request: Create,
     pub generation: i64,
@@ -170,9 +212,32 @@ mod tests {
         );
     }
     #[test]
+    fn profile_presence_digest_binds_target_version_device_and_desired_state() {
+        let mut request = Create {
+            operation_id: Uuid::new_v4(),
+            task: Task::ProfileInstall { enabled: true },
+            deadline: 100,
+        };
+        let present = request.digest("tenant", "mac").unwrap();
+        assert_ne!(present, request.digest("other", "mac").unwrap());
+        assert_ne!(present, request.digest("tenant", "other").unwrap());
+        request.task = Task::ProfileRemove {
+            profile: request.operation_id,
+        };
+        assert_ne!(present, request.digest("tenant", "mac").unwrap());
+        assert_eq!(
+            request.task.source(),
+            rss_mdm_inventory::ReportSource::MdmApple
+        );
+        request.task = Task::ProfileRemove {
+            profile: Uuid::nil(),
+        };
+        assert!(request.validate(1).is_err());
+    }
+    #[test]
     fn dispatch_wire_matches_schema_and_independent_consumer() {
         let validator = jsonschema::validator_for(
-            &serde_json::from_str(include_str!("dispatch-v1.json")).unwrap(),
+            &serde_json::from_str(include_str!("dispatch-v2.json")).unwrap(),
         )
         .unwrap();
         let id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
@@ -198,7 +263,7 @@ mod tests {
                     serde_json::json!({"kind":"firewall","enabled":false,"plan":id,"policy":"domain","version":1,"osVersion":"10.0.19045.0","edition":48})
                 }
             };
-            let dto = DispatchV1 {
+            let dto = DispatchV2 {
                 device: "device-1".into(),
                 request: Create {
                     operation_id: id,
@@ -214,7 +279,7 @@ mod tests {
                 serde_json::json!({"device":"device-1","request":{"operationId":id,"task":expected_task,"deadline":100},"generation":2,"epoch":3})
             );
             assert!(validator.is_valid(&wire));
-            assert!(serde_json::from_value::<DispatchV1>(wire.clone()).is_ok());
+            assert!(serde_json::from_value::<DispatchV2>(wire.clone()).is_ok());
             let mut invalid = wire.clone();
             invalid["request"]["task"]["unknown"] = true.into();
             assert!(!validator.is_valid(&invalid));

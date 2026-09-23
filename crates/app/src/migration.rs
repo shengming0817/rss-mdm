@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 39] {
+fn units() -> [(&'static str, &'static str); 40] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -226,6 +226,10 @@ fn units() -> [(&'static str, &'static str); 39] {
         (
             "windows-configuration-v1",
             include_str!("../migrations/0012_windows_configuration.sql"),
+        ),
+        (
+            "apple-management-v1",
+            include_str!("../migrations/0015_apple_management.sql"),
         ),
     ]
 }
@@ -366,6 +370,23 @@ async fn preflight_upgrade(
     installed: &[(String, String, bool)],
     current: &[(&'static str, &'static str)],
 ) -> Result<()> {
+    if installed
+        .last()
+        .is_some_and(|unit| unit.0 == "windows-configuration-v1")
+        && current
+            .last()
+            .is_some_and(|unit| unit.0 == "apple-management-v1")
+    {
+        verify_installation(conn, installation, instance).await?;
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|_| MigrationError::at("apple-management-v1", "preflight transaction"))?;
+        sqlx::raw_sql(include_str!("migration/apple-preflight.sql")).execute(&mut *tx).await.map_err(|_|MigrationError::at("apple-management-v1","quiesce commands, dispatch, sessions, collections and reconciliation before upgrade"))?;
+        tx.commit()
+            .await
+            .map_err(|_| MigrationError::at("apple-management-v1", "preflight acknowledgement"))?;
+    }
     if installed.iter().any(|u| u.0 == "commands-v1")
         && !installed.iter().any(|u| u.0 == "windows-configuration-v1")
         && current

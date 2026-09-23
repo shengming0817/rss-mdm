@@ -59,6 +59,19 @@ pub struct Identity {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NativeProtocols {
+    #[serde(default, deserialize_with = "enabled")]
+    pub apple: Option<crate::apple::config::Config>,
+    #[serde(default, deserialize_with = "enabled")]
+    pub windows: Option<crate::windows::WindowsConfig>,
+}
+fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub listen: SocketAddr,
     pub product_origin: String,
@@ -69,7 +82,7 @@ pub struct Config {
     pub command_database: Database,
     pub(crate) management: crate::management::Config,
     pub identity_management: Vec<IdentityManagementGrant>,
-    pub windows: crate::windows::WindowsConfig,
+    pub native_protocols: NativeProtocols,
 }
 pub(crate) struct Compiled {
     pub config: Config,
@@ -120,7 +133,20 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::Commands));
         }
         self.management.validate(&self.access_database)?;
-        self.windows.validate(self.listen)?;
+        if let Some(windows) = &self.native_protocols.windows {
+            windows.validate(self.listen)?;
+        }
+        if let Some(apple) = &self.native_protocols.apple {
+            apple.validate(self.listen)?;
+            if self.native_protocols.windows.as_ref().is_some_and(|w| {
+                w.enrollment.listen == apple.management.listen
+                    || w.management.listen == apple.management.listen
+                    || w.enrollment.origin == apple.management.origin
+                    || w.management.origin == apple.management.origin
+            }) {
+                return Err(Error::Configuration(ConfigIssue::Apple));
+            }
+        }
         let identity_management = crate::access::IdentityManagementPolicy::new(
             &self.identity.tenant_id,
             &self.identity.instance_id,
@@ -259,12 +285,12 @@ mod tests {
                 "Tenant",
             ),
             (
-                "/windows/enrollment/origin",
+                "/native_protocols/windows/enrollment/origin",
                 serde_json::json!("http://synthetic-secret.example.test"),
                 "WindowsListeners",
             ),
             (
-                "/windows/management/origin",
+                "/native_protocols/windows/management/origin",
                 serde_json::json!("http://synthetic-secret.example.test"),
                 "WindowsListeners",
             ),
@@ -282,6 +308,30 @@ mod tests {
             assert!(diagnostic.contains(field));
             assert!(!diagnostic.contains("synthetic-secret"));
         }
+    }
+    #[test]
+    fn native_protocols_are_explicit_closed_and_do_not_require_windows() {
+        let mut config: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        let windows = config["native_protocols"]["windows"].clone();
+        config["native_protocols"] = serde_json::json!({});
+        let decoded: Config = serde_json::from_value(config.clone()).unwrap();
+        assert!(
+            decoded.native_protocols.windows.is_none() && decoded.native_protocols.apple.is_none()
+        );
+        for protocols in [
+            serde_json::json!({"windows":null}),
+            serde_json::json!({"apple":null}),
+            serde_json::json!({"unknown":{}}),
+        ] {
+            config["native_protocols"] = protocols;
+            assert!(serde_json::from_value::<Config>(config.clone()).is_err());
+        }
+        config.as_object_mut().unwrap().remove("native_protocols");
+        assert!(serde_json::from_value::<Config>(config.clone()).is_err());
+        config["windows"] = windows;
+        assert!(serde_json::from_value::<Config>(config).is_err());
     }
     #[test]
     fn ca_inputs_reject_symlinks_directories_and_oversize() {
