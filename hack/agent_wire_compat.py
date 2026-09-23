@@ -10,8 +10,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-# Reviewed candidate from PR 1082, not evidence of a registry release.
-BASELINE = "0637e0c4024673d79aaa6562018c96e667e694e3"
+# Initial V2 candidate for #2468; reviewed with this PR, not a registry release.
+BASELINE = "4e06558eefb0f47b33b58ef0378bb19ec5467233"
 SCHEMA_PATH = "crates/agent-wire/schema"
 MANIFEST = "agent-v2.schema-manifest.json"
 
