@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 /// Maximum encoded task event, including a 1 MiB result and bounded envelope.
 pub const MAX_TASK_REQUEST_BYTES: usize = 1_114_112;
+/// Maximum cancellation coordinates returned by one task claim.
+pub const MAX_TASK_CANCELLATIONS: usize = 128;
 
 fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     let value = u8::deserialize(d)?;
@@ -34,8 +36,8 @@ pub struct TaskCancellation {
     pub attempt_id: Uuid,
 }
 /// Poll response; the offer still requires signature verification and a separate start permit.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskClaimResponse {
     /// Sole supported major.
     #[serde(deserialize_with = "version")]
@@ -44,6 +46,27 @@ pub struct TaskClaimResponse {
     pub task: Option<SignedTask>,
     /// Authenticated cancellation requests.
     pub cancellations: Vec<TaskCancellation>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawTaskClaimResponse {
+    #[serde(deserialize_with = "version")]
+    wire_version: u8,
+    task: Option<SignedTask>,
+    cancellations: Vec<TaskCancellation>,
+}
+impl<'de> Deserialize<'de> for TaskClaimResponse {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawTaskClaimResponse::deserialize(deserializer)?;
+        if raw.cancellations.len() > MAX_TASK_CANCELLATIONS {
+            return Err(serde::de::Error::custom("too many task cancellations"));
+        }
+        Ok(Self {
+            wire_version: raw.wire_version,
+            task: raw.task,
+            cancellations: raw.cancellations,
+        })
+    }
 }
 /// A durable event receipt. Acceptance alone cannot authorize process execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

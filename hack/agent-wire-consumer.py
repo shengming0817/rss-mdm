@@ -42,8 +42,12 @@ edition = "2024"
 rss-mdm-agent-wire = {{ {dependency} }}
 serde_json = "1"
 uuid = {{ version = "1", features = ["v4"] }}
+base64 = "0.22"
+ring = "0.17"
 ''')
-    (base / "tests" / "contract.rs").write_text(r'''use rss_mdm_agent_wire::{Capability, ErrorBody, RegistrationReceipt, RegistrationRequest, ReportAck, ReportBody, ReportRequest, ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST, Secret};
+    (base / "tests" / "contract.rs").write_text(r'''use base64::Engine;
+use ring::signature::{Ed25519KeyPair, KeyPair};
+use rss_mdm_agent_wire::{Capability, ErrorBody, RegistrationReceipt, RegistrationRequest, ReportAck, ReportBody, ReportRequest, ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST, Secret};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -76,13 +80,59 @@ fn independent_agent_consumes_exact_v2() {
     let _: ErrorBody = serde_json::from_value(json!({"code":"operation_unknown"})).unwrap();
     assert!(SCHEMA_MANIFEST.contains("RegistrationReceipt"));
     assert_eq!(SCHEMA_FINGERPRINT.len(), 64);
-    use rss_mdm_agent_wire::{TaskClaimRequest,TaskEventRequest,TaskEvent,TaskClaimResponse,TaskEventAck};
+    use rss_mdm_agent_wire::{ExecutionIdentity,ExecutorProfile,OutputQuality,SignedTask,TaskArchitecture,TaskClaimRequest,TaskClaimResponse,TaskContent,TaskEvent,TaskEventAck,TaskEventRequest,TaskPayload,TaskPermit,TaskPlatform,TaskSpec,TaskVerification};
     let claim=TaskClaimRequest::new(Uuid::new_v4()).unwrap();
     assert_eq!(serde_json::to_value(claim).unwrap()["wireVersion"],2);
-    let event=TaskEventRequest::new(Uuid::new_v4(),Uuid::new_v4(),TaskEvent::Start).unwrap();
-    assert_eq!(serde_json::to_value(event).unwrap()["event"]["kind"],"start");
-    let _:TaskClaimResponse=serde_json::from_value(json!({"wireVersion":2,"task":null,"cancellations":[]})).unwrap();
-    let _:TaskEventAck=serde_json::from_value(json!({"wireVersion":2,"accepted":true,"permit":null,"cancelRequested":false})).unwrap();
+    let key_document=Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+    let key=Ed25519KeyPair::from_pkcs8(key_document.as_ref()).unwrap();
+    let tenant=Uuid::new_v4();
+    let registration=Uuid::new_v4();
+    let task=Uuid::new_v4();
+    let attempt=Uuid::new_v4();
+    let offer_spec=TaskSpec {
+        wire_version:2,tenant_id:tenant,device_id:"device-1".into(),
+        platform:TaskPlatform::Macos,architecture:TaskArchitecture::Aarch64,
+        registration_id:registration,generation:1,task_id:task,attempt_id:attempt,
+        permit:TaskPermit::Offer,expires_at:200,resource_digest:[1;32],
+        content:TaskContent{length:3,sha256:[2;32]},profile:ExecutorProfile::PosixSh,
+        run_as:ExecutionIdentity::System,arguments:vec!["literal".into()],
+        environment:Default::default(),timeout_seconds:60,output_bytes:4096,max_rows:1,
+    };
+    let sign=|payload:TaskPayload| SignedTask {
+        signature:base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(key.sign(&payload.signing_bytes("fixture").unwrap()).as_ref()),
+        payload,key_id:"fixture".into(),
+    };
+    let signed_offer=sign(offer_spec.clone().try_into().unwrap());
+    let response:TaskClaimResponse=serde_json::from_value(serde_json::to_value(TaskClaimResponse {
+        wire_version:2,task:Some(signed_offer),cancellations:vec![]
+    }).unwrap()).unwrap();
+    let offer=response.task.unwrap();
+    let context=TaskVerification {
+        key_id:"fixture",public_key:key.public_key().as_ref(),tenant_id:tenant,
+        device_id:"device-1",platform:TaskPlatform::Macos,architecture:TaskArchitecture::Aarch64,
+        registration_id:registration,generation:1,task_id:task,attempt_id:attempt,
+        permit:TaskPermit::Offer,now:100,
+    };
+    assert_eq!(offer.verify(&context).unwrap().payload().task_id,task);
+    let start_request=TaskEventRequest::new(Uuid::new_v4(),attempt,TaskEvent::Start).unwrap();
+    assert_eq!(serde_json::to_value(start_request).unwrap()["event"]["kind"],"start");
+    let mut start_spec:TaskSpec=offer.payload.clone().into();
+    start_spec.permit=TaskPermit::Start;
+    start_spec.expires_at=115;
+    let signed_start=sign(start_spec.try_into().unwrap());
+    let start_ack:TaskEventAck=serde_json::from_value(serde_json::to_value(TaskEventAck {
+        wire_version:2,accepted:true,permit:Some(signed_start),cancel_requested:false
+    }).unwrap()).unwrap();
+    let start=start_ack.permit.unwrap();
+    assert!(start.verify(&TaskVerification{permit:TaskPermit::Start,now:100,..context}).is_ok());
+    for quality in [OutputQuality::Complete,OutputQuality::Truncated] {
+        let result=TaskEventRequest::new(Uuid::new_v4(),attempt,TaskEvent::Result {
+            exit_code:Some(0),quality,output:json!({"version":"1.2.3"})
+        }).unwrap();
+        let encoded=serde_json::to_value(result).unwrap();
+        assert_eq!(encoded["event"]["quality"],serde_json::to_value(quality).unwrap());
+    }
     assert!(serde_json::from_value::<TaskClaimRequest>(json!({"wireVersion":1,"operationId":Uuid::new_v4()})).is_err());
     assert!(SCHEMA_MANIFEST.contains("SignedTask"));
 }

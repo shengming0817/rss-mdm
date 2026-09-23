@@ -154,7 +154,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
 
 #[test]
 fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
-    use rss_mdm_agent_wire::{TaskClaimResponse, TaskEventAck};
+    use rss_mdm_agent_wire::{MAX_TASK_CANCELLATIONS, TaskClaimResponse, TaskEventAck};
     let samples = [
         (
             include_str!("../schema/task-claim-response-v2.schema.json"),
@@ -184,4 +184,22 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
             assert!(!rust_valid(bad));
         }
     }
+    let cancellation = json!({"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4()});
+    let boundary = json!({
+        "wireVersion":2,
+        "task":null,
+        "cancellations":vec![cancellation.clone(); MAX_TASK_CANCELLATIONS]
+    });
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../schema/task-claim-response-v2.schema.json")).unwrap();
+    let validator = jsonschema::draft202012::new(&schema).unwrap();
+    assert!(validator.is_valid(&boundary));
+    assert!(serde_json::from_value::<TaskClaimResponse>(boundary).is_ok());
+    let overflow = json!({
+        "wireVersion":2,
+        "task":null,
+        "cancellations":vec![cancellation; MAX_TASK_CANCELLATIONS + 1]
+    });
+    assert!(!validator.is_valid(&overflow));
+    assert!(serde_json::from_value::<TaskClaimResponse>(overflow).is_err());
 }

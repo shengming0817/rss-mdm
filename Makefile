@@ -27,6 +27,7 @@ t2:
 	python3 hack/management-t2.py
 	python3 hack/asset-t2.py
 	python3 hack/command-t2.py
+	python3 hack/task-t2.py
 
 .PHONY: source-t2 source-consumers agent-wire-consumer group-consumer
 source-t2:
