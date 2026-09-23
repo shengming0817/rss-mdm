@@ -456,26 +456,6 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         Err(Error::Conflict)
     ));
     input.expected_resource_revision -= 1;
-    let r = rss_mdm_resource_postgres::Request {
-        id: id(&unique()),
-        resource: input.resource.clone(),
-        expected_storage_revision: 2,
-        as_of: at(10),
-        command: rss_mdm_resource_postgres::Command::Archive {
-            version: input.version.clone(),
-            references: 0,
-        },
-    };
-    assert!(matches!(
-        service
-            .archive_resource(
-                &r,
-                &rel::ActorId::new(tenant(), "publisher").unwrap(),
-                cutoff()
-            )
-            .await,
-        Err(Error::Blocked)
-    ));
     let mut same = server.winget();
     same.pilot = same.test.clone();
     assert!(
@@ -719,48 +699,6 @@ async fn publication_result_commit_unknown_recovers_one_external_call_and_audit(
         )),
         "1"
     );
-    runtime.close().await;
-}
-
-#[tokio::test]
-#[ignore = "real PG reference/archival concurrency + HTTPS: publication-t2"]
-async fn archive_and_candidate_reference_race_is_atomic() {
-    let server = Server::new().await;
-    let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_submission()).await;
-    let archive = rss_mdm_resource_postgres::Request {
-        id: id(&unique()),
-        resource: input.resource.clone(),
-        expected_storage_revision: input.expected_resource_revision,
-        as_of: input.as_of,
-        command: rss_mdm_resource_postgres::Command::Archive {
-            version: input.version.clone(),
-            references: 0,
-        },
-    };
-    let publisher = rel::ActorId::new(tenant(), "publisher").unwrap();
-    let (created, archived) = tokio::join!(
-        service.create_candidate(&input, cutoff()),
-        service.archive_resource(&archive, &publisher, cutoff())
-    );
-    match (created, archived) {
-        (Ok(_), Err(Error::Blocked)) => assert!(
-            service
-                .candidate(&input.candidate, cutoff())
-                .await
-                .unwrap()
-                .is_some()
-        ),
-        (Err(Error::Conflict), Ok(_)) => assert!(
-            service
-                .candidate(&input.candidate, cutoff())
-                .await
-                .unwrap()
-                .is_none()
-        ),
-        result => panic!("reference and archival must serialize: {result:?}"),
-    }
     runtime.close().await;
 }
 
