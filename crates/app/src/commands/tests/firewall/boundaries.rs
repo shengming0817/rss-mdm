@@ -77,9 +77,8 @@ impl Client {
         let current = self.call(Method::GET, &format!("/{new}"), None).await?;
         ensure!(current.1["observation"]["effect"] == "unknown");
         // A missing observation reaches the deadline without rewriting an acknowledged value.
-        let deadline = self.app.clock.unix_seconds()? + 5;
         let missing = self
-            .next_firewall_plan(f.resource, f.policy, f.scope, true, 10, Some(deadline))
+            .next_firewall_plan(f.resource, f.policy, f.scope, true, 10, Some(5))
             .await?;
         self.publish_operation(missing).await?;
         let (receipt, _) = start_write(&f, 970).await?;
@@ -88,6 +87,12 @@ impl Client {
             &observe,
             &[("get", rss_mdm_windows_mdm::configuration::STATUS_URI)],
         )?;
+        let deadline = self
+            .call(Method::GET, &format!("/{missing}"), None)
+            .await?
+            .1["deadline"]
+            .as_i64()
+            .unwrap();
         let wait = (deadline - self.app.clock.unix_seconds()?).max(0) as u64;
         tokio::time::sleep(Duration::from_secs(wait + 1)).await;
         self.publish_operation(missing).await?;
@@ -103,12 +108,17 @@ impl Client {
                 && state.1["observation"]["quality"] == "missing"
         );
         // Expiry before the write ACK fences a late 200 as historical evidence only.
-        let deadline = self.app.clock.unix_seconds()? + 5;
         let expired = self
-            .next_firewall_plan(f.resource, f.policy, f.scope, true, 11, Some(deadline))
+            .next_firewall_plan(f.resource, f.policy, f.scope, true, 11, Some(5))
             .await?;
         self.publish_operation(expired).await?;
         let (late, _) = start_write(&f, 971).await?;
+        let deadline = self
+            .call(Method::GET, &format!("/{expired}"), None)
+            .await?
+            .1["deadline"]
+            .as_i64()
+            .unwrap();
         let wait = (deadline - self.app.clock.unix_seconds()?).max(0) as u64;
         tokio::time::sleep(Duration::from_secs(wait + 1)).await;
         self.publish_operation(expired).await?;
@@ -129,7 +139,7 @@ impl Client {
             .call(
                 &self.router,
                 Method::GET,
-                &format!("/api/v1/policies/{}", f.policy),
+                &format!("/api/v2/policies/{}", f.policy),
                 None,
             )
             .await?;
@@ -186,6 +196,8 @@ impl Client {
     ) -> anyhow::Result<Value> {
         let preview = Uuid::new_v4();
         let frozen = self.product(&format!("policies/{policy}/previews"),json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}})).await?;
+        let revision = frozen["policyRevision"].as_u64().unwrap();
+        let frozen = frozen["execution"].clone();
         let saved=self.product(&format!("policies/{policy}/plans"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"preview":preview}})).await?;
         let request = json!({"operationId":Uuid::new_v4(),"expectedRevision":saved["receipt"]["storageRevision"],"deadline":self.app.clock.unix_seconds()?+300});
         let path = format!("/api/v1/policies/{policy}/plans/{preview}/execute");
@@ -311,6 +323,10 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         // Controlled admission fixtures; only the earlier peer tests claim authenticated transport coverage.
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+            .bind(TENANT)
+            .execute(&mut pg)
+            .await?;
         let mut devices = Vec::new();
         for i in 0..33 {
             let device = format!("firewall-fleet-{i:02}");
@@ -323,7 +339,7 @@ impl Client {
                 .execute(&mut pg)
                 .await?;
             sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES($1::uuid,$2::uuid,'fixture','fixture',$3,'enrollment','consumed',clock_timestamp()+interval '60 seconds')").bind(TENANT).bind(grant.to_string()).bind(&device).execute(&mut pg).await?;
-            sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES($1::uuid,$2::uuid,$3::uuid)").bind(TENANT).bind(request.to_string()).bind(grant.to_string()).execute(&mut pg).await?;
+            sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm')").bind(TENANT).bind(request.to_string()).bind(grant.to_string()).execute(&mut pg).await?;
             sqlx::query("INSERT INTO mdm_access.registrations VALUES($1::uuid,$2::uuid,$3,'mdm',1,$4::uuid,'active')").bind(TENANT).bind(registration.to_string()).bind(&device).bind(request.to_string()).execute(&mut pg).await?;
             sqlx::query("INSERT INTO mdm_commands.capabilities VALUES($1::uuid,$2::uuid,1,'10.0.19045.0',48,1,floor(extract(epoch FROM clock_timestamp()))::bigint)").bind(TENANT).bind(registration.to_string()).execute(&mut pg).await?;
             devices.push(device);
@@ -359,14 +375,18 @@ impl Client {
         .await?;
         let preview = Uuid::new_v4();
         let revision = activated["storageRevision"].as_u64().unwrap();
-        let denied=self.browser.call(&self.router,Method::POST,&format!("/api/v1/policies/{policy}/previews"),Some(json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}}))).await?;
+        let denied=self.browser.call(&self.router,Method::POST,&format!("/api/v2/policies/{policy}/previews"),Some(json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}}))).await?;
+        ensure!(denied.0.is_success(), "preview enqueue: {denied:?}");
+        let denied = self
+            .wait_preview(denied.1["statusUrl"].as_str().unwrap())
+            .await?;
         ensure!(
-            denied.0 == StatusCode::BAD_REQUEST && denied.1["code"] == "configuration_target_limit",
+            denied["failure"] == "configuration_target_limit",
             "33-device preview: {denied:?}"
         );
         ensure!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM mdm_management.previews WHERE id=$1::uuid"
+                "SELECT count(*) FROM mdm_management.firewall_plans WHERE id=$1::uuid"
             )
             .bind(preview.to_string())
             .fetch_one(&mut pg)
@@ -460,7 +480,7 @@ impl Client {
             .call(
                 &self.router,
                 Method::GET,
-                &format!("/api/v1/policies/{competitor}"),
+                &format!("/api/v2/policies/{competitor}"),
                 None,
             )
             .await?;
@@ -483,7 +503,7 @@ impl Client {
             .call(
                 &self.router,
                 Method::GET,
-                &format!("/api/v1/policies/{policy}"),
+                &format!("/api/v2/policies/{policy}"),
                 None,
             )
             .await?;

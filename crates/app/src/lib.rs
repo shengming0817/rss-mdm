@@ -16,6 +16,7 @@ pub use access_store::AccessStore;
 pub use management::Missing as ManagementObject;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
+mod agent;
 mod api;
 mod clock;
 pub mod config;
@@ -99,13 +100,13 @@ impl IntoResponse for Error {
 }
 
 /// Safe product failure context; no source documents or database errors escape.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlanFailure {
     pub reason: PlanFailureReason,
     pub device: Option<String>,
     pub stage: PlanStage,
 }
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanFailureReason {
     CapabilityUnknown,
@@ -130,7 +131,7 @@ impl PlanFailureReason {
         })
     }
 }
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanStage {
     Preview,

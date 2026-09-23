@@ -19,17 +19,11 @@ Activate 可选择更高版本并进入 Active，Resume 只恢复原版本。
 相同载荷身份不能对应不同摘要。`restore` 供可信存储读取使用，只验证结构，不证明数据库内容真实性。
 同一输入中所有历史版本也须满足不可变约束；跨请求的不可变存储和 revision CAS 归 N10。
 
-`TargetSnapshot::new` 要求具名 `SnapshotCompleteness` 声明；Incomplete 在构造边界立即拒绝，
-成功构造的快照均为完整输入；同 tenant 的设备键排序去重。
-DeviceId 保留 1–256 UTF-8 字节、不含控制字符的原始产品设备标识；其它角色键保持 1–128 字节 ASCII 字母、数字、`.`、`_`、`-`。
-已有执行输入是每个执行的当前事实快照，完全重复允许，互相矛盾拒绝；历史事件归并由调用方拥有。
-未来版本事实、其他策略事实及混租户输入整体拒绝，范围退出设备的事实则是合法输入。
-顶层输入与生命周期错误携带 revision 的 expected/actual、状态/操作、冲突版本号或载荷身份/revision。
-逐执行事实错误返回 `InvalidExecution { execution, reason }`，必带失败记录的 `ExecutionKey`；
-`ExecutionFailure` 区分混租户、其他策略、未来版本、版本内容冲突和载荷内容冲突。
-未来事实用 `FutureVersion { latest }`（实际版本在 execution key 中），`StaleVersion` 仅用于激活版本回退；
-相互矛盾的重复事实继续返回带执行键的 `ConflictingExecution`。调用方可直接定位失败记录；
-Display 保持稳定分类，不输出身份值或任意底层正文。
+核心仅接受逐设备成员关系与逐执行事实，调用方从完成的不可变来源分页提供输入。
+`desired_for_device` 使用历史存在性摘要决定 Add/Supersede；`classify_record` 决定 Retain/Cancel。
+不可变版本、重复事实及跨记录冲突由持久 owner 校验，核心验证当前记录的租户、策略、版本和载荷。
+DeviceId 保留 1–256 UTF-8 字节、不含控制字符的产品身份；其它角色键为 1–128 字节 ASCII。
+所有错误使用封闭类别，不输出资产值。
 
 ## 差分与事实
 
@@ -46,7 +40,7 @@ Display 保持稳定分类，不输出身份值或任意底层正文。
 Unverified、Unknown、VerifiedPresent、VerifiedAbsent。成功不证明已核实，取消不证明撤销。
 取消意图引用原记录，不改写真实进度或效果。未知事实不能自动转为成功、已取消或可重试。
 
-`scheduling_open` 仅是 Apply 调度的策略前置条件，不是授权、任务领取权或任意 Retain 项可重放的许可。
+Active 状态仅是 Apply 调度的策略前置条件，不是授权、任务领取权或任意 Retain 项可重放的许可。
 Cancel 意图仍需持久化和后续执行 owner 处理；核心不驱动或撤销任何外部操作。
 同版本取消后重入仍 Retain(Cancelled)，不会生成新执行；显式重试需要后续独立契约。
 唯一已实现移除规则是显式 `CancelOutstandingRetainEffects`，不推导 cleanup、卸载、补偿或回滚。
@@ -55,21 +49,20 @@ Cancel 意图仍需持久化和后续执行 owner 处理；核心不驱动或撤
 
 执行键是结构化 `(tenant, policy, version, device, Apply)`，不包含 request、时间或目标快照 revision。
 `PlanId` 是规范决策输入的 SHA-256；不同事实或前置条件可得到新计划，但不产生不同的同版本执行身份。
-V1 编码在 `src/fingerprint.rs`：域 `rss-mdm-policy/plan/v1`，整数为 big-endian u64，变长字节前缀为 u64 长度，
-tenant 为 canonical 16 字节，摘要为固定 32 字节；版本、目标和事实按封闭字段及有序集合编码，禁止使用 Debug/内存布局。
-request 与 `as_of` 仅作显式溯源，不参与此版本的决策或身份。算法不读系统时钟。
+唯一编码在 `src/fingerprint.rs`：目标与执行分别规范化流式折叠，再通过
+`rss-mdm-policy/plan/v2` 绑定策略和来源版本。整数使用 big-endian u64，变长字节使用长度前缀，
+tenant 为 canonical 16 字节；禁止使用 Debug/内存布局。折叠状态与计数可以随持久游标恢复，
+分页大小不改变结果。request 与时间只作来源证据，不进入摘要。
 
-Plan 返回策略 revision、目标快照身份/revision 和确定的意图。N10/N12 必须在应用前确认这些输入仍有效，
-并在同一事务持久化计划、执行键唯一性与事件；不能只存 PlanId 或依赖纯核心实现跨进程互斥。
-调用方拥有可信设备映射、认证授权、事实完整性和持久化；私有字段不证明外部事实可信。
+持久 owner 在完整输入封闭后计算摘要，保存时校验全部版本并安装候选指针。
+保存意图不是执行事实，也不是执行批准。旧全量 PlanInput/TargetSnapshot/reconcile 和 V1 编码均已删除。
 
 ## 验证与来源
 
-`cargo test --locked -p rss-mdm-policy` 覆盖状态转换矩阵、版本/载荷冲突、稳定身份、重算/重入、
-暂停/恢复/退出/归档、旧事实和取消/效果分离。PlanId 测试逐项改变合法编码字段，并固定 Active/历史事实
-及空 Draft 的 V1 SHA-256 向量；Apply 与移除规则当前各只有一个合法值，由固定向量锁定其标签。`hack/core_consumer.py` 复用公共 API 测试，在仓外以固定 Git SHA
-分别验证默认与关闭默认 features 的独立 consumer；consumer 直接依赖本产品包及 canonical `TenantId` / `Timepoint` owner，
-校验 root 精确普通依赖集合及产品包普通/构建依赖闭包；独立消费结果不是 registry 发布或端侧 T3 证明。
+`cargo test --locked -p rss-mdm-policy` 覆盖生命周期矩阵、逐记录版本与载荷校验、
+所有进度/效果组合、暂停/退出/归档、流式摘要的分页与重启稳定性，以及旧入口不可用。
+`hack/core_consumer.py` 在仓外固定 Git SHA 分别验证默认与关闭默认 features 的消费者。
+存储 owner 的集成测试另外覆盖跨记录身份冲突、完整性、幂等与提交未知。
 
 - kube-rs 1.1.0 [`controller::Action`](https://github.com/kube-rs/kube/blob/1.1.0/kube-runtime/src/controller/mod.rs)：参考决策结果与驱动执行分离；不引入 kube controller/runtime。
 - WinMDM 历史 `src/internal/domain/policy/{value_object,entity}.go`：生命周期及事实语义证据；

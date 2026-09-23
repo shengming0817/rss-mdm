@@ -5,6 +5,8 @@ WITH tables AS (
  WHERE n.nspname='mdm_management' AND c.relkind='r'
 )
 SELECT jsonb_build_object(
+ 'executionAdmission',(SELECT jsonb_build_array(pg_get_functiondef(oid),pg_get_userbyid(proowner),prosecdef,proconfig) FROM pg_proc WHERE oid='mdm_management.plan_execution_admission(uuid)'::regprocedure),
+ 'policyAdmission',(SELECT jsonb_build_array(pg_get_functiondef(oid),pg_get_userbyid(proowner),prosecdef,proconfig) FROM pg_proc WHERE pronamespace=(SELECT oid FROM pg_namespace WHERE nspname='mdm_policy_projection') AND proname='execution_admission'),
  'policyFacts',(SELECT jsonb_build_array(pg_get_functiondef(oid),pg_get_userbyid(proowner),prosecdef,proconfig) FROM pg_proc WHERE oid='mdm_commands.policy_facts(text)'::regprocedure),
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,
    format_type(a.atttypid,a.atttypmod),a.attnotnull,pg_get_expr(d.adbin,d.adrelid),

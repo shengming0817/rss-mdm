@@ -1,5 +1,4 @@
-use rss_contract::Timepoint;
-use rss_mdm_group::{Rule, Snapshot};
+use rss_mdm_group::Rule;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -133,17 +132,6 @@ pub enum Command {
         /// Validated core rule; tenant must match and version is limited to 256 UTF-8 bytes.
         rule: Rule,
     },
-    /// Apply remove then add to a static group; original lists share the core byte budget.
-    Members {
-        /// Target group identity within this store’s tenant.
-        group: GroupId,
-        /// The caller-observed sole group CAS revision.
-        expected: Revision,
-        /// Object IDs to add; repeated IDs are idempotent within the request.
-        add: Vec<String>,
-        /// Object IDs to remove before additions; absent IDs have no effect.
-        remove: Vec<String>,
-    },
     /// Logically delete and clear members, preserving history. Only execute_in accepts this command.
     /// N12 must compose reference checks and audit in the same transaction.
     Delete {
@@ -160,7 +148,6 @@ impl Command {
             Self::Create { group, .. }
             | Self::Edit { group, .. }
             | Self::SetRule { group, .. }
-            | Self::Members { group, .. }
             | Self::Delete { group, .. } => *group,
         }
     }
@@ -169,7 +156,6 @@ impl Command {
             Self::Create { .. } => None,
             Self::Edit { expected, .. }
             | Self::SetRule { expected, .. }
-            | Self::Members { expected, .. }
             | Self::Delete { expected, .. } => Some(*expected),
         }
     }
@@ -210,43 +196,6 @@ pub struct Receipt {
     /// Number of members removed by this operation.
     pub removed: usize,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-/// Caller provenance for a run; labels are nonempty, control-free and at most 4 KiB each.
-pub enum Trigger {
-    /// Explicit caller request.
-    Manual,
-    /// Caller-defined scheduled slot; this adapter does not schedule it.
-    Periodic {
-        /// Host-defined periodic slot identity.
-        slot: String,
-    },
-    /// Caller-defined source event; not an authorization or delivery proof.
-    Change {
-        /// Host-defined source identity.
-        source: String,
-        /// Host-defined source event identity.
-        event: String,
-    },
-}
-#[derive(Clone, Debug)]
-/// Original immutable admission input; retain it until admission is confirmed durable.
-pub struct RecalculationRequest {
-    /// Identity of this stored record.
-    pub id: OperationId,
-    /// Target group identity within this store’s tenant.
-    pub group: GroupId,
-    /// The caller-observed sole group CAS revision.
-    pub expected: Revision,
-    /// Immutable rule identity; present only for dynamic groups.
-    pub rule_version: String,
-    /// Frozen caller provenance, included in idempotency matching.
-    pub trigger: Trigger,
-    /// Complete caller-supplied snapshot, validated before encoding and persisted at admission.
-    pub snapshot: Snapshot,
-    /// Frozen evaluation time in UTC; identical on replay and resume.
-    pub as_of: Timepoint,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 #[error("Group request rejected: {self:?}")]
@@ -254,6 +203,10 @@ pub struct RecalculationRequest {
 pub enum Rejection {
     /// Input violates a shape, text or resource budget.
     InvalidInput,
+    /// Current device capacity would exceed one million.
+    CapacityExceeded,
+    /// This page exceeds a byte or evaluation budget; a smaller page may fit.
+    PageBudgetExceeded,
     /// Deletion requires the host-owned transaction for reference checks and audit; use execute_in.
     CompanionTransactionRequired,
     /// Request or borrowed transaction tenant differs from the store.
@@ -274,38 +227,6 @@ pub enum Rejection {
     InvalidStoredDocument,
     /// The revision reached the signed 64-bit limit; it never wraps.
     VersionExhausted,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "status",
-    content = "value",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-/// Durable run lifecycle; transient database failures never become a business rejection.
-pub enum RunState {
-    /// Input is durable and discoverable for resume; no claim or lease exists.
-    Pending,
-    /// Application committed; this receipt is stable on replay.
-    Completed(Receipt),
-    /// A durable terminal business rejection; resuming does not re-evaluate it.
-    Rejected(Rejection),
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Durable recalculation identity, frozen provenance and current terminal/pending state.
-pub struct Run {
-    /// Identity of this stored record.
-    pub id: OperationId,
-    /// Target group identity within this store’s tenant.
-    pub group: GroupId,
-    /// Current durable lifecycle state.
-    pub state: RunState,
-    /// Frozen caller provenance, included in idempotency matching.
-    pub trigger: Trigger,
-    /// Frozen evaluation time in UTC; identical on replay and resume.
-    pub as_of: Timepoint,
-    /// Database admission-to-completion duration; None while pending (not worker CPU time).
-    pub duration_micros: Option<i64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// One bytewise object-ID ordered page of a completed operation’s actual membership changes.

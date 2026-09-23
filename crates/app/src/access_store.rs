@@ -107,11 +107,23 @@ impl AccessStore {
     }
     pub(crate) async fn finish(
         &self,
+        tx: Transaction<'_, Postgres>,
+        operation: &Operation<'_>,
+        result: &str,
+        audit: &Audit,
+        request: Option<Uuid>,
+    ) -> Result<(), Error> {
+        self.finish_status(tx, operation, result, audit, request, 200)
+            .await
+    }
+    pub(crate) async fn finish_status(
+        &self,
         mut tx: Transaction<'_, Postgres>,
         operation: &Operation<'_>,
         result: &str,
         audit: &Audit,
         request: Option<Uuid>,
+        status: u16,
     ) -> Result<(), Error> {
         let Operation {
             actor: proof,
@@ -128,15 +140,25 @@ impl AccessStore {
         }
         sqlx::query("INSERT INTO mdm_access.operations(tenant_id,actor,operation_id,digest,result,instance) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)")
             .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.instance).execute(&mut *tx).await.map_err(db)?;
-        self.commit_audited(tx, audit, request).await
+        self.commit_audited_status(tx, audit, request, status).await
     }
+    #[cfg(test)]
     pub(crate) async fn commit_audited(
+        &self,
+        tx: Transaction<'_, Postgres>,
+        audit: &Audit,
+        request: Option<Uuid>,
+    ) -> Result<(), Error> {
+        self.commit_audited_status(tx, audit, request, 200).await
+    }
+    pub(crate) async fn commit_audited_status(
         &self,
         mut tx: Transaction<'_, Postgres>,
         audit: &Audit,
         request: Option<Uuid>,
+        status: u16,
     ) -> Result<(), Error> {
-        append(&mut tx, audit, 200, "success", request).await?;
+        append(&mut tx, audit, status, "success", request).await?;
         #[cfg(test)]
         if self
             .fault
@@ -227,8 +249,8 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND has_schema_privilege(current_user,'mdm_access','USAGE')
- AND (SELECT count(*)=16 AND bool_and(c.relname IN ('grants','requests','operations','audit','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','management_sessions','management_messages','collection_runs','authorization_rules','user_groups','authorization_initializations') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
- AND (CASE WHEN c.relname <> 'audit' THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')
+ AND (SELECT count(*)=19 AND bool_and(c.relname IN ('grants','requests','operations','audit','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','management_sessions','management_messages','collection_runs','authorization_rules','user_groups','authorization_initializations','asset_authority_history','collection_history','agent_bindings') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+ AND (CASE WHEN c.relname NOT IN ('audit','asset_authority_history','collection_history') THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')=(c.relname NOT IN('asset_authority_history','collection_history'))
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
  AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
  AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.'||t,col,'UPDATE')) FROM unnest(ARRAY['authorization_rules','user_groups']) t CROSS JOIN unnest(ARRAY['revision','document']) col)
@@ -247,7 +269,7 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_attribute col JOIN pg_class c ON c.oid=col.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(col.attacl) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND (a.is_grantable OR a.privilege_type='REFERENCES'))))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('mdm_access','pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f') AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind='S' AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
- AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
+ AND (SELECT count(*)=1 AND bool_and(n.nspname='mdm_access' AND p.proname='prune_agent_collections' AND p.prosecdef AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) AND p.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'] AND has_function_privilege(current_user,p.oid,'EXECUTE')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
 "#).fetch_one(&mut *tx).await.map_err(db)?;
     if !valid {
         return Err(Error::Unavailable(Failure::AccessAdmission));
@@ -261,7 +283,7 @@ SELECT current_user='mdm_access' AND session_user=current_user
     let policies: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)"#).fetch_one(&mut *tx).await.map_err(db)?;
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access'").fetch_one(&mut *tx).await.map_err(db)?;
     let retention: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND (c.relname='management_sessions' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='expires_at<clock_timestamp' OR c.relname='management_messages' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp')"#).fetch_one(&mut *tx).await.map_err(db)?;
-    if policies != 16 || retention != 2 || total != 18 {
+    if policies != 19 || retention != 2 || total != 21 {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)

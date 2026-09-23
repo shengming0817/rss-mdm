@@ -5,6 +5,7 @@ use rss_mdm_resource as r;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 pub(crate) const MAX_TARGETS: usize = 32;
+pub(super) const MAX_EXECUTIONS: usize = 10_000;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Evidence {
@@ -156,9 +157,30 @@ impl Management {
                 })
             })
             .await?;
+        if rows.len() > MAX_EXECUTIONS {
+            return Err(Error::ConfigurationTargetLimit.into());
+        }
+        let tenant = self.tenant.to_string();
+        let key = policy.value().to_owned();
+        let numbers = rows
+            .iter()
+            .map(|row| row.try_get::<i64, _>("version"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let versions: Vec<(i64, Vec<u8>)> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_as("SELECT v.version,r.digest FROM mdm_management.firewall_versions v JOIN mdm_management.firewall_resources r ON (r.tenant_id,r.resource,r.version)=(v.tenant_id,v.resource,v.resource_version) WHERE v.tenant_id=$1::uuid AND v.policy=$2 AND v.version=ANY($3)")
+                .bind(tenant).bind(key).bind(numbers).fetch_all(c).await
+        })).await?;
+        let versions: std::collections::BTreeMap<_, _> = versions.into_iter().collect();
         rows.into_iter()
             .map(|row| {
-                let digest: [u8; 32] = stored(row.try_get::<Vec<u8>, _>("digest")?.try_into())?;
+                let number: i64 = row.try_get("version")?;
+                let digest: [u8; 32] = stored(
+                    versions
+                        .get(&number)
+                        .ok_or(Error::Unavailable(Failure::ManagementStorage))?
+                        .as_slice()
+                        .try_into(),
+                )?;
                 let label = digest
                     .iter()
                     .map(|b| format!("{b:02x}"))
@@ -194,5 +216,50 @@ impl Management {
                 ))
             })
             .collect()
+    }
+}
+
+impl Management {
+    pub(super) async fn import_firewall_facts_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        policy: &str,
+        expected: u64,
+        at: Timepoint,
+    ) -> Result<u64> {
+        use rss_mdm_policy as p;
+        use rss_mdm_policy_postgres as pg;
+        let policy_key = input(p::PolicyId::new(self.tenant, policy))?;
+        let facts = self.firewall_facts(tx, &policy_key).await?;
+        if facts.is_empty() {
+            return Ok(expected);
+        }
+        tx.prepare_outbox_partitions(&[self.policies.partition(policy)?])
+            .await?;
+        let mut revision = expected;
+        for (page, facts) in facts.chunks(1000).enumerate() {
+            revision = checked(
+                self.policies
+                    .execute_in(
+                        tx,
+                        &pg::Request {
+                            id: input(p::RequestId::new(
+                                self.tenant,
+                                format!("{task}-facts-{page}"),
+                            ))?,
+                            expected_storage_revision: revision,
+                            as_of: at,
+                            command: pg::Command::RecordExecutions {
+                                policy: policy_key.clone(),
+                                facts: facts.to_vec(),
+                            },
+                        },
+                    )
+                    .await?,
+            )?
+            .storage_revision;
+        }
+        Ok(revision)
     }
 }

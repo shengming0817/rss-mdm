@@ -1,6 +1,420 @@
 {
   "columns": [
     [
+      "asset_dispatch",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "consumed",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "watermark",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "group_cursor",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "failure",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "phase",
+      "text",
+      true,
+      "'groups'::text",
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "run",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "label",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_facets",
+      "total",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "run",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "sort_key",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "document",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_results",
+      "digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "total",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "matched",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "asset_query_runs",
+      "unknown",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "target",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "input",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "forwarded",
+      "boolean",
+      true,
+      "false",
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "completed",
+      "boolean",
+      true,
+      "false",
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "cursor",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "authority_revision",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "failure",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
+      "failure_detail",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "candidate_heads",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "candidate_heads",
+      "policy",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "candidate_heads",
+      "desired",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "candidate_heads",
+      "candidate",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "cursor_keys",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "cursor_keys",
+      "secret",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_plans",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_plans",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_plans",
+      "policy",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_plans",
+      "resolution",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_plans",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_plans",
+      "saved_revision",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "firewall_plans",
+      "document",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "firewall_resources",
       "tenant_id",
       "uuid",
@@ -91,6 +505,33 @@
       ""
     ],
     [
+      "group_fields",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "group_fields",
+      "group_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "group_fields",
+      "field",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "operations",
       "tenant_id",
       "uuid",
@@ -127,7 +568,7 @@
       ""
     ],
     [
-      "plan_references",
+      "policy_assignments",
       "tenant_id",
       "uuid",
       true,
@@ -136,16 +577,7 @@
       ""
     ],
     [
-      "plan_references",
-      "preview",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_references",
+      "policy_assignments",
       "policy",
       "text",
       true,
@@ -154,43 +586,7 @@
       ""
     ],
     [
-      "plan_references",
-      "plan",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_references",
-      "saved_revision",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
+      "policy_assignments",
       "scope",
       "uuid",
       true,
@@ -199,18 +595,9 @@
       ""
     ],
     [
-      "previews",
-      "scope_revision",
+      "policy_assignments",
+      "revision",
       "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "previews",
-      "document",
-      "jsonb",
       true,
       null,
       "",
@@ -307,6 +694,258 @@
       ""
     ],
     [
+      "scope_results",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_results",
+      "run",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_results",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_results",
+      "matched",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_results",
+      "explanation",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "scope",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "definition_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "asset_watermark",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "input",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "fingerprint",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "identity_revision",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "result_fingerprint",
+      "bytea",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "phase",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "source_index",
+      "integer",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "source_cursor",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "evaluation_cursor",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "object_count",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "member_count",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "scope_source_members",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_source_members",
+      "run",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_source_members",
+      "source",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_source_members",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_sources",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_sources",
+      "scope",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_sources",
+      "kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_sources",
+      "target",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "scope_versions",
       "tenant_id",
       "uuid",
@@ -377,9 +1016,272 @@
       "false",
       "",
       ""
+    ],
+    [
+      "scopes",
+      "resolution",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scopes",
+      "resolution_revision",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
     ]
   ],
   "constraints": [
+    [
+      "asset_dispatch",
+      "asset_dispatch_check",
+      "c",
+      "CHECK (((consumed >= 0) AND (watermark >= consumed)))",
+      true
+    ],
+    [
+      "asset_dispatch",
+      "asset_dispatch_failure_check",
+      "c",
+      "CHECK ((failure = 'automation_suspended'::text))",
+      true
+    ],
+    [
+      "asset_dispatch",
+      "asset_dispatch_phase_check",
+      "c",
+      "CHECK ((phase = ANY (ARRAY['groups'::text, 'devices'::text])))",
+      true
+    ],
+    [
+      "asset_dispatch",
+      "asset_dispatch_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id)",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_kind_check",
+      "c",
+      "CHECK ((kind = ANY (ARRAY['os_versions'::text, 'channels'::text, 'asset_states'::text])))",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_label_check",
+      "c",
+      "CHECK ((octet_length(label) <= 256))",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run, kind, label)",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_tenant_id_run_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_management.asset_query_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_total_check",
+      "c",
+      "CHECK ((total > 0))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_device_check",
+      "c",
+      "CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256)))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_digest_check",
+      "c",
+      "CHECK ((octet_length(digest) = 32))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_document_check",
+      "c",
+      "CHECK ((octet_length(document) <= 1048576))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run, device)",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_sort_key_check",
+      "c",
+      "CHECK ((octet_length(sort_key) <= 1024))",
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_tenant_id_run_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_management.asset_query_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_check",
+      "c",
+      "CHECK (((matched >= 0) AND (matched <= total)))",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_check1",
+      "c",
+      "CHECK (((unknown >= 0) AND (unknown <= total)))",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_tenant_id_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, id) REFERENCES mdm_management.automation_jobs(tenant_id, id)",
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_total_check",
+      "c",
+      "CHECK (((total >= 0) AND (total <= 1000000)))",
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_authority_revision_check",
+      "c",
+      "CHECK ((authority_revision >= 0))",
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_failure_check",
+      "c",
+      "CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text])))",
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_input_check",
+      "c",
+      "CHECK ((octet_length((input)::text) <= 1048576))",
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_kind_check",
+      "c",
+      "CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'scope'::text, 'policy'::text, 'asset_query'::text])))",
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_target_check",
+      "c",
+      "CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))",
+      true
+    ],
+    [
+      "candidate_heads",
+      "candidate_heads_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, policy)",
+      true
+    ],
+    [
+      "candidate_heads",
+      "candidate_heads_tenant_id_candidate_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_management.automation_jobs(tenant_id, id)",
+      true
+    ],
+    [
+      "candidate_heads",
+      "candidate_heads_tenant_id_desired_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, desired) REFERENCES mdm_management.automation_jobs(tenant_id, id)",
+      true
+    ],
+    [
+      "candidate_heads",
+      "candidate_heads_tenant_id_policy_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
+      true
+    ],
+    [
+      "cursor_keys",
+      "cursor_keys_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id)",
+      true
+    ],
+    [
+      "cursor_keys",
+      "cursor_keys_secret_check",
+      "c",
+      "CHECK ((octet_length(secret) = 32))",
+      true
+    ],
+    [
+      "firewall_plans",
+      "firewall_plans_document_check",
+      "c",
+      "CHECK ((octet_length((document)::text) <= 16777216))",
+      true
+    ],
+    [
+      "firewall_plans",
+      "firewall_plans_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "firewall_plans",
+      "firewall_plans_tenant_id_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, id) REFERENCES mdm_management.automation_jobs(tenant_id, id)",
+      true
+    ],
     [
       "firewall_resources",
       "firewall_resources_digest_check",
@@ -409,6 +1311,20 @@
       true
     ],
     [
+      "group_fields",
+      "group_fields_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, group_id, field)",
+      true
+    ],
+    [
+      "group_fields",
+      "group_fields_tenant_id_group_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id)",
+      true
+    ],
+    [
       "operations",
       "operations_fingerprint_check",
       "c",
@@ -430,45 +1346,31 @@
       true
     ],
     [
-      "plan_references",
-      "plan_references_pkey",
+      "policy_assignments",
+      "policy_assignments_pkey",
       "p",
-      "PRIMARY KEY (tenant_id, preview)",
+      "PRIMARY KEY (tenant_id, policy)",
       true
     ],
     [
-      "plan_references",
-      "plan_references_plan_check",
+      "policy_assignments",
+      "policy_assignments_revision_check",
       "c",
-      "CHECK ((octet_length(plan) = 32))",
+      "CHECK ((revision > 0))",
       true
     ],
     [
-      "plan_references",
-      "plan_references_tenant_id_preview_fkey",
+      "policy_assignments",
+      "policy_assignments_tenant_id_policy_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, preview) REFERENCES mdm_management.previews(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
       true
     ],
     [
-      "previews",
-      "previews_document_check",
-      "c",
-      "CHECK ((octet_length((document)::text) <= 8388608))",
-      true
-    ],
-    [
-      "previews",
-      "previews_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
-      true
-    ],
-    [
-      "previews",
-      "previews_tenant_id_scope_scope_revision_fkey",
+      "policy_assignments",
+      "policy_assignments_tenant_id_scope_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, scope, scope_revision) REFERENCES mdm_management.scope_versions(tenant_id, id, revision)",
+      "FOREIGN KEY (tenant_id, scope) REFERENCES mdm_management.scopes(tenant_id, id)",
       true
     ],
     [
@@ -497,6 +1399,146 @@
       "saved_queries_revision_check",
       "c",
       "CHECK ((revision > 0))",
+      true
+    ],
+    [
+      "scope_results",
+      "scope_results_explanation_check",
+      "c",
+      "CHECK ((octet_length((explanation)::text) <= 1048576))",
+      true
+    ],
+    [
+      "scope_results",
+      "scope_results_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run, device)",
+      true
+    ],
+    [
+      "scope_results",
+      "scope_results_tenant_id_run_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_management.scope_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_check",
+      "c",
+      "CHECK (((member_count >= 0) AND (member_count <= object_count)))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_fingerprint_check",
+      "c",
+      "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_identity_revision_check",
+      "c",
+      "CHECK ((identity_revision >= 0))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_input_check",
+      "c",
+      "CHECK ((octet_length((input)::text) <= 1048576))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_object_count_check",
+      "c",
+      "CHECK (((object_count >= 0) AND (object_count <= 1000000)))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_phase_check",
+      "c",
+      "CHECK ((phase = ANY (ARRAY['sources'::text, 'evaluate'::text, 'ready'::text, 'published'::text, 'superseded'::text])))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_result_fingerprint_check",
+      "c",
+      "CHECK (((result_fingerprint IS NULL) OR (octet_length(result_fingerprint) = 32)))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_source_index_check",
+      "c",
+      "CHECK (((source_index >= 0) AND (source_index <= 1000)))",
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_tenant_id_scope_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, scope) REFERENCES mdm_management.scopes(tenant_id, id)",
+      true
+    ],
+    [
+      "scope_source_members",
+      "scope_source_members_device_check",
+      "c",
+      "CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256)))",
+      true
+    ],
+    [
+      "scope_source_members",
+      "scope_source_members_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run, source, device)",
+      true
+    ],
+    [
+      "scope_source_members",
+      "scope_source_members_source_check",
+      "c",
+      "CHECK (((source >= 0) AND (source <= 999)))",
+      true
+    ],
+    [
+      "scope_source_members",
+      "scope_source_members_tenant_id_run_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_management.scope_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "scope_sources",
+      "scope_sources_kind_check",
+      "c",
+      "CHECK ((kind = ANY (ARRAY['group'::text, 'device'::text])))",
+      true
+    ],
+    [
+      "scope_sources",
+      "scope_sources_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, scope, kind, target)",
+      true
+    ],
+    [
+      "scope_sources",
+      "scope_sources_tenant_id_scope_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, scope) REFERENCES mdm_management.scopes(tenant_id, id)",
       true
     ],
     [
@@ -536,13 +1578,115 @@
     ],
     [
       "scopes",
+      "scopes_resolution_revision_check",
+      "c",
+      "CHECK ((resolution_revision >= 0))",
+      true
+    ],
+    [
+      "scopes",
       "scopes_revision_check",
       "c",
       "CHECK ((revision > 0))",
       true
+    ],
+    [
+      "scopes",
+      "scopes_tenant_id_resolution_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, resolution) REFERENCES mdm_management.scope_runs(tenant_id, id)",
+      true
+    ]
+  ],
+  "executionAdmission": [
+    "CREATE OR REPLACE FUNCTION mdm_management.plan_execution_admission(p_plan uuid)\n RETURNS TABLE(document jsonb, saved_revision bigint, current boolean)\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nSELECT f.document,f.saved_revision,\n mdm_policy_projection.execution_admission(f.policy,f.id::text,coalesce(f.saved_revision,f.revision),f.saved_revision IS NOT NULL)\n AND EXISTS(SELECT 1 FROM mdm_management.scope_runs r JOIN mdm_management.scopes s\n ON (s.tenant_id,s.id)=(r.tenant_id,r.scope)\n JOIN mdm_management.scope_runs live ON (live.tenant_id,live.id)=(s.tenant_id,s.resolution)\n WHERE (r.tenant_id,r.id)=(f.tenant_id,f.resolution) AND NOT s.deleted\n AND s.revision=r.definition_revision AND live.result_fingerprint=r.result_fingerprint\n AND NOT EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h\n WHERE h.tenant_id=r.tenant_id AND h.revision>r.asset_watermark\n AND EXISTS(SELECT 1 FROM mdm_management.scope_source_members m\n WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))))\nFROM mdm_management.firewall_plans f\nWHERE f.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND f.id=p_plan;\n$function$\n",
+    "mdm_owner",
+    true,
+    [
+      "search_path=pg_catalog"
     ]
   ],
   "indexes": [
+    [
+      "asset_dispatch",
+      "asset_dispatch_pkey",
+      "CREATE UNIQUE INDEX asset_dispatch_pkey ON mdm_management.asset_dispatch USING btree (tenant_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_facets",
+      "asset_query_facets_pkey",
+      "CREATE UNIQUE INDEX asset_query_facets_pkey ON mdm_management.asset_query_facets USING btree (tenant_id, run, kind, label)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_order",
+      "CREATE INDEX asset_query_results_order ON mdm_management.asset_query_results USING btree (tenant_id, run, sort_key, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_pkey",
+      "CREATE UNIQUE INDEX asset_query_results_pkey ON mdm_management.asset_query_results USING btree (tenant_id, run, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_pkey",
+      "CREATE UNIQUE INDEX asset_query_runs_pkey ON mdm_management.asset_query_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_pending",
+      "CREATE INDEX automation_jobs_pending ON mdm_management.automation_jobs USING btree (tenant_id, id) WHERE (NOT forwarded)",
+      true,
+      true,
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_pkey",
+      "CREATE UNIQUE INDEX automation_jobs_pkey ON mdm_management.automation_jobs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "candidate_heads",
+      "candidate_heads_pkey",
+      "CREATE UNIQUE INDEX candidate_heads_pkey ON mdm_management.candidate_heads USING btree (tenant_id, policy)",
+      true,
+      true,
+      true
+    ],
+    [
+      "cursor_keys",
+      "cursor_keys_pkey",
+      "CREATE UNIQUE INDEX cursor_keys_pkey ON mdm_management.cursor_keys USING btree (tenant_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "firewall_plans",
+      "firewall_plans_pkey",
+      "CREATE UNIQUE INDEX firewall_plans_pkey ON mdm_management.firewall_plans USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
     [
       "firewall_resources",
       "firewall_resources_pkey",
@@ -560,6 +1704,22 @@
       true
     ],
     [
+      "group_fields",
+      "group_fields_field",
+      "CREATE INDEX group_fields_field ON mdm_management.group_fields USING btree (tenant_id, field, group_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "group_fields",
+      "group_fields_pkey",
+      "CREATE UNIQUE INDEX group_fields_pkey ON mdm_management.group_fields USING btree (tenant_id, group_id, field)",
+      true,
+      true,
+      true
+    ],
+    [
       "operations",
       "operations_pkey",
       "CREATE UNIQUE INDEX operations_pkey ON mdm_management.operations USING btree (tenant_id, id)",
@@ -568,17 +1728,17 @@
       true
     ],
     [
-      "plan_references",
-      "plan_references_pkey",
-      "CREATE UNIQUE INDEX plan_references_pkey ON mdm_management.plan_references USING btree (tenant_id, preview)",
+      "policy_assignments",
+      "policy_assignments_pkey",
+      "CREATE UNIQUE INDEX policy_assignments_pkey ON mdm_management.policy_assignments USING btree (tenant_id, policy)",
       true,
       true,
       true
     ],
     [
-      "previews",
-      "previews_pkey",
-      "CREATE UNIQUE INDEX previews_pkey ON mdm_management.previews USING btree (tenant_id, id)",
+      "policy_assignments",
+      "policy_assignments_scope",
+      "CREATE INDEX policy_assignments_scope ON mdm_management.policy_assignments USING btree (tenant_id, scope, policy)",
       true,
       true,
       true
@@ -600,6 +1760,62 @@
       true
     ],
     [
+      "scope_results",
+      "scope_results_members",
+      "CREATE INDEX scope_results_members ON mdm_management.scope_results USING btree (tenant_id, run, device) WHERE matched",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_results",
+      "scope_results_pkey",
+      "CREATE UNIQUE INDEX scope_results_pkey ON mdm_management.scope_results USING btree (tenant_id, run, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_runs",
+      "scope_runs_pkey",
+      "CREATE UNIQUE INDEX scope_runs_pkey ON mdm_management.scope_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_source_members",
+      "scope_source_members_devices",
+      "CREATE INDEX scope_source_members_devices ON mdm_management.scope_source_members USING btree (tenant_id, run, device, source)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_source_members",
+      "scope_source_members_pkey",
+      "CREATE UNIQUE INDEX scope_source_members_pkey ON mdm_management.scope_source_members USING btree (tenant_id, run, source, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_sources",
+      "scope_sources_pkey",
+      "CREATE UNIQUE INDEX scope_sources_pkey ON mdm_management.scope_sources USING btree (tenant_id, scope, kind, target)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_sources",
+      "scope_sources_target",
+      "CREATE INDEX scope_sources_target ON mdm_management.scope_sources USING btree (tenant_id, kind, target, scope)",
+      true,
+      true,
+      true
+    ],
+    [
       "scope_versions",
       "scope_versions_pkey",
       "CREATE UNIQUE INDEX scope_versions_pkey ON mdm_management.scope_versions USING btree (tenant_id, id, revision)",
@@ -616,8 +1832,16 @@
       true
     ]
   ],
+  "policyAdmission": [
+    "CREATE OR REPLACE FUNCTION mdm_policy_projection.execution_admission(p_policy text, p_candidate text, p_revision bigint, p_saved boolean)\n RETURNS boolean\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nSELECT EXISTS(\n SELECT 1 FROM mdm_policy.candidates c JOIN mdm_policy.aggregates a\n ON (a.tenant_id,a.id)=(c.tenant_id,c.policy)\n WHERE c.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid\n AND c.id=p_candidate AND c.policy=p_policy AND a.revision=p_revision\n AND CASE WHEN p_saved THEN c.phase='saved' AND EXISTS(\n  SELECT 1 FROM mdm_policy.current_plans p WHERE (p.tenant_id,p.policy,p.candidate)=(c.tenant_id,c.policy,c.id))\n ELSE c.phase='ready' AND c.expected_revision=p_revision END\n AND NOT EXISTS(SELECT 1 FROM mdm_policy.candidate_references r\n LEFT JOIN mdm_policy.reference_heads h ON (h.tenant_id,h.id)=(r.tenant_id,r.reference)\n WHERE (r.tenant_id,r.candidate)=(c.tenant_id,c.id)\n AND (h.revision IS NULL OR h.revision<>r.revision OR h.observed_input<h.required_input)))\n$function$\n",
+    "mdm_owner",
+    true,
+    [
+      "search_path=pg_catalog"
+    ]
+  ],
   "policyFacts": [
-    "CREATE OR REPLACE FUNCTION mdm_commands.policy_facts(p_policy text)\n RETURNS TABLE(device text, version bigint, digest bytea, status text, write_status integer)\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog', 'mdm_commands'\nAS $function$\nSELECT o.device,(o.request->'task'->>'version')::bigint AS version,r.digest,d.status,(SELECT a.status FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.receipt_accepted ORDER BY ordinal DESC LIMIT 1) AS write_status FROM mdm_commands.operations o JOIN mdm_management.firewall_versions v ON v.tenant_id=o.tenant_id AND v.policy=o.request->'task'->>'policy' AND v.version=(o.request->'task'->>'version')::bigint JOIN mdm_management.firewall_resources r ON(r.tenant_id,r.resource,r.version)=(v.tenant_id,v.resource,v.resource_version) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND o.request->'task'->>'kind'='firewall' AND o.request->'task'->>'policy'=p_policy ORDER BY o.id;\n$function$\n",
+    "CREATE OR REPLACE FUNCTION mdm_commands.policy_facts(p_policy text)\n RETURNS TABLE(device text, version bigint, status text, write_status integer)\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog', 'mdm_commands'\nAS $function$\nSELECT o.device,(o.request->'task'->>'version')::bigint AS version,d.status,(SELECT a.status FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.receipt_accepted ORDER BY ordinal DESC LIMIT 1) AS write_status FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND o.request->'task'->>'kind'='firewall' AND o.request->'task'->>'policy'=p_policy ORDER BY o.id LIMIT 10001;\n$function$\n",
     "mdm_owner",
     true,
     [

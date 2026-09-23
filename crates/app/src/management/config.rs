@@ -15,7 +15,7 @@ pub(crate) const SOURCE_STARTUP_SECONDS: u64 = 6;
 impl Config {
     pub(crate) fn startup_budget(&self) -> Duration {
         Duration::from_secs(
-            35 + if self.sources.is_empty() {
+            45 + if self.sources.is_empty() {
                 0
             } else {
                 5 + SOURCE_STARTUP_SECONDS * self.sources.len() as u64

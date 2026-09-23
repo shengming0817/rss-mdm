@@ -1,31 +1,27 @@
 # rss-mdm-scope
 
-N03 / #2381 的纯集合核心。`resolve(&ScopeInput)` 只接受调用方已经解析的来源，不查询 Group、设备 API 或数据库。
+Scope 的纯决策核心。唯一计算入口 `resolve_device(&DeviceInput)` 接受一个设备及有界来源成员证据，不查询 Group、设备 API 或数据库，也不接受完整设备集合。
 
 ## 输入与解释
 
 公共输入直接使用 `rss-request-context::TenantId` 和 `rss-contract::Timepoint`；本包不重导出它们。
-调用方须从各自 owner 导入，compile-fail 文档测试保护该边界。
+`DeviceId` 与 `GroupId` 是独立角色类型，包含 canonical TenantId，不能互传。
+`SourceRef` 包含来源身份、非零版本与解析时间；时间是来源证据，不决定过期。
 
-`DeviceId` 与 `GroupId` 是独立角色类型，不能互传；两者包含 canonical `TenantId`。DeviceId 保留 1–256 UTF-8 字节、不含控制字符的产品设备标识；GroupId 保持 1–128 字节 ASCII 字母、数字、`.`、`_`、`-`。
-`SourceRef` 包含 `SourceId::Direct(DeviceId)` / `Group(GroupId)`、非零来源版本与显式 `Timepoint`。
-同一对象/来源种类/版本的成员必须一致；解析时间是解释依据，不允许据此改变同版本内容。
-Direct 来源必须恰好包含自己的对象；Group 来源允许完整空集合。
+每个来源使用 `Membership::Known(bool)` 表达已确认的成员关系；`Incomplete` 与 `Failed`
+分别拒绝不完整来源和解析失败，不能伪装成确定的非成员。直接设备来源必须与正在判断的
+设备一致；相同来源身份和版本的证据不能相互矛盾。所有来源都验证，包括未命中来源。
 
-`Limitations::Unrestricted` 表示未配置限制；`Restricted([])` 或全空限制来源表示配置为空。
-结果为 Target 并集与 Limitation 并集的交集减 Exclusion 并集；未配置限制时不做交集。
-所有来源先通过完整性、tenant 和内容冲突检查，失败整体返回错误，绝不返回部分结果。
+`limitations: None` 表示未配置限制，`Some([])` 表示配置为空。结果为目标来源并集与
+限制来源并集的交集减排除来源并集。没有命中目标时返回 None；命中目标时返回该设备的
+来源解释及排除原因。每个设备最多 1,000 个不同来源、3,000 个角色项。
 
-输出 `target_sources`、`limitation_sources`、`exclusion_sources` 保留所有参与来源，包含空目标组与未命中排除。
-输出成员和全部 Target 候选的解释均按对象/来源稳定排序去重；解释保存命中来源及限制未命中、
-显式排除原因。`limitation_sources` 保留实际考虑的限制来源，即使没有匹配；None 与 Some([]) 分开。
-相同成员来自多个输入来源时保留全部出处；同一来源的完全重复输入折叠。
-来源 tenant 不匹配返回 `SourceTenantMismatch { source_ref, expected }`；成员 tenant 不匹配返回
-`MemberTenantMismatch { source_ref, member, expected }`，三类输入来源均保留失败位置。
-其余来源错误同样携带可定位来源；Display 只输出稳定分类，不输出身份值或底层任意错误正文。
+调用方从已完成的不可变来源枚举设备，保存完整来源定义、未命中来源及成员结果，
+并在全部分页完成后发布。核心只产生当前设备的决策，不将局部页当作完整集合。
+来源认证、授权、版本真实性、存储及恢复由调用方负责；tenant 检查不能代替认证。
 
-调用方拥有来源认证、授权、版本真实性、Scope 定义/成员快照存储及历史解释持久化。
-核心的 tenant 一致性检查不是认证证明；输入来源存在也不证明其内容可信。
+旧 `resolve`、`ScopeInput`、全量 `Resolution` 和 `ScopeResolution` 已移除，
+compile-fail 测试保护退出约束，不提供兼容包装。
 
 ## 验证与来源
 

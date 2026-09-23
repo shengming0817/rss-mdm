@@ -6,7 +6,7 @@ use crate::{
     identity::Principal,
     management::{
         configuration::Evidence,
-        model::{FrozenIntent, Preview},
+        model::{FrozenIntent, PlanExecutionAdmission},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -142,7 +142,7 @@ impl Commands {
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &Principal,
-        preview: &Preview,
+        preview: &PlanExecutionAdmission,
     ) -> Result<Vec<Value>> {
         let mut results = Vec::new();
         for intent in &preview.plan.intents {
@@ -183,7 +183,7 @@ impl Commands {
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &Principal,
-        preview: &Preview,
+        preview: &PlanExecutionAdmission,
         device: &str,
         input: &Execute,
         audit: &Audit,
@@ -282,14 +282,13 @@ async fn validate_execute_plan(
     policy: &str,
     plan: Uuid,
     expected_revision: i64,
-) -> Result<Preview> {
+) -> Result<PlanExecutionAdmission> {
     let tenant = tx.tenant_id().to_string();
     let executed=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.plan_executions WHERE tenant_id=$1::uuid AND plan=$2::uuid)").bind(tenant).bind(plan.to_string()).fetch_one(c).await})).await?;
     if executed {
         return Err(Error::Conflict.into());
     }
     let preview = load_saved_plan(tx, policy, plan, expected_revision).await?;
-    validate_sources(tx, &preview.sources).await?;
     authorize_plan(tx, proof, &preview).await?;
     let targets = actionable_targets(&preview);
     for device in &targets {
@@ -298,13 +297,13 @@ async fn validate_execute_plan(
     Ok(preview)
 }
 
-fn actionable_targets(preview: &Preview) -> Vec<&String> {
+fn actionable_targets(preview: &PlanExecutionAdmission) -> Vec<&String> {
     preview.devices.iter().filter(|device| preview.plan.scheduling_open && preview.plan.intents.iter().any(|i| matches!(i, FrozenIntent::Add {device: d, ..} | FrozenIntent::Supersede {device: d, ..} if d == *device))).collect()
 }
 
 async fn validate_target(
     tx: &mut PgTransaction<'_>,
-    preview: &Preview,
+    preview: &PlanExecutionAdmission,
     device: &str,
 ) -> Result<()> {
     let frozen = preview.configuration.as_ref().ok_or(Error::Malformed)?;
@@ -376,39 +375,10 @@ async fn evidence(
     })
 }
 
-async fn validate_sources(
-    tx: &mut PgTransaction<'_>,
-    sources: &[crate::management::model::Source],
-) -> Result<()> {
-    for source in sources {
-        let tenant = tx.tenant_id().to_string();
-        let revision = source.revision as i64;
-        let valid = match &source.reference {
-            crate::management::model::Reference::Group(id) => {
-                let id = id.to_string();
-                let members = source.member_version;
-                tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid AND revision=$3 AND member_version=$4 AND NOT deleted)").bind(tenant).bind(id).bind(revision).bind(members).fetch_one(c).await})).await?
-            }
-            crate::management::model::Reference::Device(device) => {
-                let device = device.clone();
-                tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT coalesce(max(generation)=$3,false) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active'").bind(tenant).bind(device).bind(revision).fetch_one(c).await})).await?
-            }
-        };
-        if !valid {
-            let device = match &source.reference {
-                crate::management::model::Reference::Device(device) => Some(device.as_str()),
-                crate::management::model::Reference::Group(_) => None,
-            };
-            return Err(Reason::StalePlan.at(device, PlanStage::Execute).into());
-        }
-    }
-    Ok(())
-}
-
 async fn authorize_plan(
     tx: &mut PgTransaction<'_>,
     proof: &Principal,
-    preview: &Preview,
+    preview: &PlanExecutionAdmission,
 ) -> Result<()> {
     let targets: std::collections::BTreeSet<&str> = preview
         .devices
@@ -431,16 +401,23 @@ async fn authorize_replay(
     proof: &Principal,
     response: &Value,
 ) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let plan = response["plan"]
+    let id = response["plan"]
         .as_str()
-        .ok_or(Error::Unavailable(Failure::CommandInvariant))?
-        .to_owned();
-    let document: Value = tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar("SELECT document FROM mdm_management.previews WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(plan).fetch_one(c).await
-    })).await?;
-    let preview: Preview = corrupt(serde_json::from_value(document))?;
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
+    let preview = execution_admission(tx, id).await?.plan;
     authorize_plan(tx, proof, &preview).await
+}
+
+async fn execution_admission(
+    tx: &mut PgTransaction<'_>,
+    plan: Uuid,
+) -> Result<crate::management::execution::Admission> {
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(crate::management::execution::read_on(c, plan).await) })
+    })
+    .await??
+    .ok_or_else(|| Reason::StalePlan.at(None, PlanStage::Execute).into())
 }
 
 async fn load_saved_plan(
@@ -448,14 +425,12 @@ async fn load_saved_plan(
     policy: &str,
     plan: Uuid,
     expected_revision: i64,
-) -> Result<Preview> {
-    let tenant = tx.tenant_id().to_string();
-    let key = policy.to_owned();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT p.document,r.saved_revision FROM mdm_management.previews p JOIN mdm_management.plan_references r ON(r.tenant_id,r.preview)=(p.tenant_id,p.id) JOIN mdm_policy.aggregates a ON(a.tenant_id,a.id,a.revision)=(r.tenant_id,r.policy,r.saved_revision) JOIN mdm_management.scopes sc ON(sc.tenant_id,sc.id,sc.revision)=(p.tenant_id,p.scope,p.scope_revision) WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND r.policy=$3 AND NOT sc.deleted").bind(tenant).bind(plan.to_string()).bind(key).fetch_optional(c).await})).await?.ok_or(Reason::StalePlan.at(None, PlanStage::Execute))?;
-    if row.try_get::<i64, _>("saved_revision")? != expected_revision {
+) -> Result<PlanExecutionAdmission> {
+    let admission = execution_admission(tx, plan).await?;
+    if !admission.current || admission.saved_revision != Some(expected_revision) {
         return Err(Reason::StalePlan.at(None, PlanStage::Execute).into());
     }
-    let preview: Preview = corrupt(serde_json::from_value(row.try_get("document")?))?;
+    let preview = admission.plan;
     if preview.devices.len() > crate::management::configuration::MAX_TARGETS {
         return Err(Error::ConfigurationTargetLimit.into());
     }

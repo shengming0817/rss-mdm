@@ -3,7 +3,7 @@ SELECT set_config('rss.execution_epoch',epoch::text,false) FROM rss_transactiona
 -- Test-only previous-format relational evidence. Opaque archived payloads must survive unchanged.
 INSERT INTO mdm_access.devices VALUES(current_setting('rss.tenant_id')::uuid,'upgrade-device');
 INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES(current_setting('rss.tenant_id')::uuid,'66666666-6666-4666-8666-666666666666','previous-actor','previous-client','upgrade-device','enrollment','consumed',clock_timestamp()+interval '60 seconds');
-INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES(current_setting('rss.tenant_id')::uuid,'55555555-5555-4555-8555-555555555555','66666666-6666-4666-8666-666666666666');
+INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES(current_setting('rss.tenant_id')::uuid,'55555555-5555-4555-8555-555555555555','66666666-6666-4666-8666-666666666666','mdm');
 INSERT INTO mdm_access.registrations VALUES(current_setting('rss.tenant_id')::uuid,'22222222-2222-4222-8222-222222222222','upgrade-device','mdm',1,'55555555-5555-4555-8555-555555555555','active');
 INSERT INTO mdm_access.credentials VALUES(current_setting('rss.tenant_id')::uuid,'44444444-4444-4444-8444-444444444444','22222222-2222-4222-8222-222222222222','mdm',repeat('1',64),'active');
 INSERT INTO mdm_commands.devices(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES(current_setting('rss.tenant_id')::uuid,'upgrade-device','22222222-2222-4222-8222-222222222222',1,1,'22222222-2222-4222-8222-222222222222',1);

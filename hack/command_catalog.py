@@ -16,7 +16,9 @@ def capture(container, mode):
     paths = {name: (directory / f"{name}.sql") if name != "management" else ROOT / "crates/app/src/management/catalog.sql" for name in NAMES}
     query += "\n".join(paths[name].read_text() + ";" for name in NAMES)
     query += "\nROLLBACK;"
-    result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=query, text=True, capture_output=True, check=True)
+    result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=query, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError("command catalog query failed: " + result.stderr)
     values = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     if len(values) != len(NAMES):
         raise RuntimeError("command catalog query did not produce all contracts")

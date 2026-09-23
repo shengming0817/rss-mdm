@@ -83,12 +83,15 @@ impl Client {
             (48, 2, "capability_unknown"),
         ] {
             sqlx::query("UPDATE mdm_commands.capabilities c SET edition=$3,generation=$4 FROM mdm_access.registrations r WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND r.tenant_id=$1::uuid AND r.device=$2").bind(TENANT).bind(device).bind(edition).bind(generation).execute(&mut pg).await?;
-            let rejected = self.browser.call(&self.router, Method::POST, &format!("/api/v1/policies/{policy}/previews"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}}))).await?;
+            let rejected = self.browser.call(&self.router, Method::POST, &format!("/api/v2/policies/{policy}/previews"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}}))).await?;
+            ensure!(rejected.0.is_success(), "preview enqueue: {rejected:?}");
+            let rejected = self
+                .wait_preview(rejected.1["statusUrl"].as_str().unwrap())
+                .await?;
             ensure!(
-                rejected.0 == StatusCode::CONFLICT
-                    && rejected.1["code"] == code
-                    && rejected.1["device"] == device
-                    && rejected.1["stage"] == "preview",
+                rejected["failure"] == code
+                    && rejected["failureDetail"]["device"] == device
+                    && rejected["failureDetail"]["stage"] == "preview",
                 "device preview reason lost: {rejected:?}"
             );
         }

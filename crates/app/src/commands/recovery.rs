@@ -298,8 +298,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
                     if !command.status().is_terminal(){
                         let operation=storage::load(tx,corrupt(Uuid::parse_str(command.spec().id().as_str()))?).await?;
                         if let Task::Firewall{plan,..}=operation.request.task {
-                            let tenant=service.tenant.to_string();
-                            let current=tx.with_connection(move|c|Box::pin(async move{Ok(super::native::current_plan_on(c,&tenant,plan).await)})).await??;
+                            let current=tx.with_connection(move|c|Box::pin(async move{Ok(super::native::current_plan_on(c,plan).await)})).await??;
                             if !current && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into())}
                         }
                     }

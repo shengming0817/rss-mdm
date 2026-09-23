@@ -401,7 +401,33 @@ impl Client {
         ensure!(other.0 == StatusCode::FORBIDDEN);
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        for relation in [
+            "mdm_management.firewall_plans",
+            "mdm_management.scopes",
+            "mdm_management.firewall_resources",
+            "mdm_management.firewall_versions",
+            "mdm_policy.aggregates",
+            "mdm_group.groups",
+        ] {
+            let permitted: bool =
+                sqlx::query_scalar("SELECT has_table_privilege('mdm_command_runtime',$1,'SELECT')")
+                    .bind(relation)
+                    .fetch_one(&mut pg)
+                    .await?;
+            ensure!(
+                !permitted,
+                "command role reads private owner relation {relation}"
+            );
+        }
         for (damage, restore) in [
+            (
+                "GRANT SELECT ON mdm_management.firewall_plans TO mdm_command_runtime",
+                "REVOKE SELECT ON mdm_management.firewall_plans FROM mdm_command_runtime",
+            ),
+            (
+                "ALTER FUNCTION mdm_management.plan_execution_admission(uuid) SECURITY INVOKER",
+                "ALTER FUNCTION mdm_management.plan_execution_admission(uuid) SECURITY DEFINER",
+            ),
             (
                 "ALTER ROLE mdm_owner BYPASSRLS",
                 "ALTER ROLE mdm_owner NOBYPASSRLS",

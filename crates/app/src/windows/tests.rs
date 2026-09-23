@@ -53,7 +53,14 @@ async fn create(
 ) -> anyhow::Result<crate::enrollment::Receipt> {
     let a = audit(proof, key, device, "enrollment_create");
     let receipt = store
-        .create_enrollment(proof.enrollment(device)?, password, reference, key, &a)
+        .create_enrollment(
+            proof.enrollment(device)?,
+            password,
+            rss_mdm_inventory::Channel::Mdm,
+            reference,
+            key,
+            &a,
+        )
         .await;
     a.finalize(None);
     Ok(receipt?)

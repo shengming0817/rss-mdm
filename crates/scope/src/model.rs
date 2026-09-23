@@ -50,45 +50,6 @@ impl SourceRef {
         self.resolved_at
     }
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Caller-supplied source resolution; only complete sources may enter a result.
-pub enum Resolution {
-    /// The full member set, including an empty group; completeness is caller-attested.
-    Complete(Vec<DeviceId>),
-    /// The source could be resolved only partially; the whole computation must fail.
-    Incomplete,
-    /// Source resolution failed; never interpreted as an empty source.
-    Failed,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// One source snapshot and the caller's resolution outcome.
-pub struct ResolvedSource {
-    /// Exact source identity/version/time used for provenance.
-    pub source: SourceRef,
-    /// Complete members or a failure condition that prevents resolution.
-    pub resolution: Resolution,
-}
-/// `Restricted([])` is configured-empty, never unrestricted.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Limitations {
-    /// No limitation intersection is applied to targets.
-    Unrestricted,
-    /// Intersect targets with this source union; an empty list permits no members.
-    Restricted(Vec<ResolvedSource>),
-}
-#[derive(Clone)]
-/// Resolved target union, optional limitation intersection and exclusion subtraction.
-/// All inputs must share the tenant; authorization and group expansion belong to the caller.
-pub struct ScopeInput {
-    /// Tenant required on every source and member.
-    pub tenant: TenantId,
-    /// Source union from which candidate members and explanations are formed.
-    pub targets: Vec<ResolvedSource>,
-    /// Optional intersection constraint, distinguishing absent from configured-empty.
-    pub limitations: Limitations,
-    /// Source union subtracted after limitation matching.
-    pub exclusions: Vec<ResolvedSource>,
-}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Reason a targeted device is absent from the resolved membership set.
 pub enum ExclusionReason {
@@ -111,24 +72,12 @@ pub struct MemberExplanation {
     /// Applicable exclusion reasons; empty exactly when this target is retained.
     pub reasons: Vec<ExclusionReason>,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Complete in-memory set decision with source provenance; not a persisted membership receipt.
-pub struct ScopeResolution {
-    /// Sorted unique target references, including sources with no matches.
-    pub target_sources: Vec<SourceRef>,
-    /// Sorted unique exclusion references, including sources with no matches.
-    pub exclusion_sources: Vec<SourceRef>,
-    /// None means unrestricted; Some([]) means configured-empty. Includes sources
-    /// that did not match, so MissingLimitationMatch remains explainable.
-    pub limitation_sources: Option<Vec<SourceRef>>,
-    /// Sorted unique target devices retained after intersection and subtraction.
-    pub members: Vec<DeviceId>,
-    /// One explanation per unique targeted device, ordered by device identity.
-    pub explanations: Vec<MemberExplanation>,
-}
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-/// Source validation failure; [`crate::resolve`] returns no partial membership set.
+/// Source validation failure; [`crate::resolve_device`] returns no partial membership set.
 pub enum ScopeError {
+    #[error("too many source memberships in a device input")]
+    /// One device references more than the bounded target/limitation/exclusion set.
+    SourceLimit,
     #[error("invalid object key")]
     /// A role or device identity violates its constructor's length/character rules.
     InvalidKey,
@@ -140,16 +89,6 @@ pub enum ScopeError {
     SourceTenantMismatch {
         /// Exact source reference whose resolution was rejected.
         source_ref: SourceRef,
-        /// Tenant required by the scope input.
-        expected: TenantId,
-    },
-    #[error("source member belongs to a foreign tenant")]
-    /// A resolved member belongs to a different tenant than the scope.
-    MemberTenantMismatch {
-        /// Exact source reference whose resolution was rejected.
-        source_ref: Box<SourceRef>,
-        /// Foreign member that caused rejection.
-        member: DeviceId,
         /// Tenant required by the scope input.
         expected: TenantId,
     },

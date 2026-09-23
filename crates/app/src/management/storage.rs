@@ -22,6 +22,7 @@ pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>
         Command::PublicationIntent { request, .. } => Some(request.operation_id),
         Command::Resource { change, .. } => Some(change.operation_id),
         Command::Group { change, .. } => Some(change.operation_id),
+        Command::GroupPreview { operation, .. } => Some(*operation),
         Command::Scope { change, .. } => Some(change.operation_id),
         Command::Policy { change, .. } => Some(change.operation_id),
         Command::Preview { request, .. } => Some(request.operation_id),
@@ -115,14 +116,6 @@ pub(super) async fn receipt(
     .await?;
     Ok(())
 }
-pub(super) async fn preview(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Preview>> {
-    let tenant = tx.tenant_id().to_string();
-    let raw=tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar::<_,String>("SELECT document::text FROM mdm_management.previews WHERE tenant_id=$1::uuid AND id=$2::uuid")
-            .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-    })).await?;
-    raw.map(|v| stored(serde_json::from_str(&v))).transpose()
-}
 pub(super) async fn device(tx: &mut PgTransaction<'_>, id: &str) -> Result<DeviceIdentity> {
     input(rss_mdm_scope::DeviceId::new(tx.tenant_id(), id))?;
     let tenant = tx.tenant_id().to_string();
@@ -194,4 +187,30 @@ pub(super) async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result:
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::Unavailable(Failure::ManagementAdmission)),
     )
+}
+
+// Immutable tenant secret shared by all instances. A retry always reads the
+// committed winner, including when the original initialization commit was unknown.
+pub(super) async fn cursor_key(
+    runtime: &PgRuntime,
+    tenant: TenantId,
+) -> std::result::Result<Vec<u8>, Error> {
+    let mut candidate = vec![0; 32];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut candidate)
+        .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
+    for _ in 0..3 {
+        let result=runtime.local_tx_with_context(tenant,deadline(),&candidate,|candidate,tx| Box::pin(async move {
+            let tenant=tx.tenant_id().to_string();
+            let candidate=candidate.to_vec();
+            tx.with_connection(move |c| Box::pin(async move {
+                if let Some(key)=sqlx::query_scalar::<_,Vec<u8>>("SELECT secret FROM mdm_management.cursor_keys WHERE tenant_id=$1::uuid").bind(&tenant).fetch_optional(&mut *c).await? { return Ok(key); }
+                sqlx::query("INSERT INTO mdm_management.cursor_keys(tenant_id,secret) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(candidate).execute(&mut *c).await?;
+                sqlx::query_scalar("SELECT secret FROM mdm_management.cursor_keys WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await
+            })).await
+        })).await.fold(Some, |_|None, |_|None, |_|None, |_|None, |_|None);
+        if let Some(key) = result {
+            return Ok(key);
+        }
+    }
+    Err(Error::Unavailable(Failure::ManagementAdmission))
 }

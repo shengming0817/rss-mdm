@@ -139,7 +139,7 @@ pub(crate) async fn receive_on(
         if status.is_some_and(|s| s >= 400) && value.is_some() {
             return Err(Error::Conflict);
         }
-        let accepted = receipt_acceptance(c, p, &row, status).await?;
+        let accepted = receipt_acceptance(c, &row, status).await?;
         sqlx::query("UPDATE mdm_commands.attempts SET status=$3,value=$4,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,receipt_accepted=$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
   .bind(&tenant).bind(row.try_get::<String,_>("id").map_err(db)?).bind(status).bind(value).bind(accepted).execute(&mut *c).await.map_err(db)?;
         consumed.insert((msg, id));
@@ -369,9 +369,9 @@ async fn command_for(
             plan,
             ..
         } => {
-            let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capabilities c JOIN mdm_commands.plan_executions e ON e.tenant_id=c.tenant_id AND e.plan=$6::uuid JOIN mdm_policy.aggregates a ON a.tenant_id=e.tenant_id AND a.id=e.policy AND a.revision=e.policy_revision WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.generation=$3 AND c.os_version=$4 AND c.edition=$5 AND c.session=$7)")
+            let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capabilities c JOIN mdm_commands.plan_executions e ON e.tenant_id=c.tenant_id AND e.plan=$6::uuid WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.generation=$3 AND c.os_version=$4 AND c.edition=$5 AND c.session=$7)")
     .bind(&tenant).bind(&reg).bind(p.generation()).bind(os_version).bind(*edition as i32).bind(plan.to_string()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
-            if !eligible || !current_plan_on(c, &tenant, *plan).await? {
+            if !eligible || !current_plan_on(c, *plan).await? {
                 return Ok(None);
             }
             let firewall = Firewall::compile(
@@ -411,7 +411,7 @@ pub(crate) async fn replay_on(
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
         if let Task::Firewall { plan, .. } = request.task
-            && !current_plan_on(c, &p.tenant().to_string(), plan).await?
+            && !current_plan_on(c, plan).await?
         {
             return Err(Error::Forbidden);
         }
@@ -430,20 +430,15 @@ pub(crate) async fn replay_on(
 
 pub(super) async fn current_plan_on(
     c: &mut PgConnection,
-    tenant: &str,
     plan: Uuid,
 ) -> std::result::Result<bool, Error> {
-    sqlx::query_scalar(include_str!("current-plan.sql"))
-        .bind(tenant)
-        .bind(plan.to_string())
-        .fetch_one(c)
-        .await
-        .map_err(db)
+    Ok(crate::management::execution::read_on(c, plan)
+        .await?
+        .is_some_and(|a| a.current && a.saved_revision.is_some()))
 }
 
 async fn receipt_acceptance(
     c: &mut PgConnection,
-    p: &DevicePrincipal,
     row: &sqlx::postgres::PgRow,
     status: Option<i32>,
 ) -> std::result::Result<Option<bool>, Error> {
@@ -471,7 +466,7 @@ async fn receipt_acceptance(
     let at = now(c).await?;
     let mut valid = approval.valid(c, request.task.permission(), at).await?;
     if let Task::Firewall { plan, .. } = request.task {
-        valid &= current_plan_on(c, &p.tenant().to_string(), plan).await?;
+        valid &= current_plan_on(c, plan).await?;
     }
     Ok(Some(valid))
 }

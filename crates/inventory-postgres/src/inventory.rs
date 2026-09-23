@@ -27,6 +27,7 @@ pub fn definition() -> DefinitionIdentity {
     digest.update(":device-basics:2:model-os:typed-v2:exact-scope:observed-received:");
     digest.update(include_str!("../migrations/0001_inventory.sql"));
     digest.update(include_str!("../migrations/0003_assets.sql"));
+    digest.update(include_str!("../migrations/0004_history.sql"));
     DefinitionIdentity::new(digest.finalize().into())
 }
 /// Inventory effect consumes a source without exposing its internal handle.
@@ -104,6 +105,13 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
                 let (state,value)=match &outcome {Some(model::CollectedValue::Known(s))=>("known",Some(s.as_str())),Some(model::CollectedValue::Unsupported)=>("unsupported",None),None=>("deleted",None)};
                 sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $7 IS NOT NULL THEN $8 END,CASE WHEN $7 IS NOT NULL THEN $9 END,CASE WHEN $7 IS NOT NULL THEN $10 END,$12,$13,$14) ON CONFLICT(tenant_id,journal,generation,scope,coverage,field) DO UPDATE SET value=excluded.value,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=coalesce(excluded.value,mdm.inventory.last_known),last_known_batch=CASE WHEN excluded.value IS NOT NULL THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.value IS NOT NULL THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.value IS NOT NULL THEN excluded.received_at ELSE mdm.inventory.last_known_received END")
                     .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).execute(&mut *conn).await?;
+            }
+            // An empty complete report may write no fact rows at all. Its durable
+            // input signal must still share the projection checkpoint transaction.
+            if body.changes().is_empty() {
+                let fields:Vec<_>=model::FieldKey::observed().map(|f|f.as_str()).collect();
+                sqlx::query("SELECT mdm.record_asset_change($1::uuid,'inventory',jsonb_build_object('registration',$2::text,'scope',$3::text,'batch',$4::text),$5::text[])")
+                    .bind(&tenant).bind(&registration).bind(&scope).bind(&batch).bind(fields).execute(&mut *conn).await?;
             }
             Ok(())
         })).await?;

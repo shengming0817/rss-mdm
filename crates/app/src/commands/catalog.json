@@ -988,7 +988,7 @@
       "plan_executions",
       "plan_executions_tenant_id_plan_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_management.previews(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_management.firewall_plans(tenant_id, id)",
       true
     ],
     [
@@ -1037,7 +1037,7 @@
       "requests",
       "requests_tenant_id_plan_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_management.previews(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_management.firewall_plans(tenant_id, id)",
       true
     ]
   ],

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Encoded storage budget, in addition to the core's semantic budgets.
-pub(crate) const MAX_DOCUMENT: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_DOCUMENT: usize = 16 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 #[error("invalid Group storage document")]
 pub(crate) struct Invalid;
@@ -350,24 +350,21 @@ struct ObjectDoc {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SnapshotDoc {
+struct PageDoc {
     v: u8,
     tenant: String,
     id: String,
     version: String,
     dictionary_version: String,
-    complete: bool,
     coverage: BTreeSet<String>,
     objects: Vec<ObjectDoc>,
 }
-pub(crate) fn encode_snapshot(s: &Snapshot) -> Result<Vec<u8>> {
-    check(s.objects.len() <= limits::OBJECTS)?;
+pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
+    check(s.objects.len() <= 1000)?;
     let mut unique = BTreeMap::new();
-    for o in &s.objects {
+    for o in s.objects {
         check(o.key.tenant() == s.tenant)?;
-        if let Some(old) = unique.insert(o.key.clone(), o) {
-            check(old == o)?;
-        }
+        check(unique.insert(o.key.clone(), o).is_none())?;
     }
     let objects = unique
         .values()
@@ -399,232 +396,13 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Result<Vec<u8>> {
                 .collect(),
         })
         .collect();
-    encode(&SnapshotDoc {
+    encode(&PageDoc {
         v: 2,
         tenant: s.tenant.to_string(),
-        id: s.id.clone(),
-        version: s.version.clone(),
-        dictionary_version: s.dictionary_version.clone(),
-        complete: s.complete,
+        id: s.id.to_owned(),
+        version: s.version.to_owned(),
+        dictionary_version: s.dictionary_version.to_owned(),
         coverage: s.coverage.clone(),
         objects,
     })
-}
-pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot> {
-    let d: SnapshotDoc = decode(bytes)?;
-    check(d.v == 2 && d.objects.len() <= limits::OBJECTS && d.coverage.len() <= limits::FIELDS)?;
-    let tenant = tenant(&d.tenant)?;
-    let objects = d
-        .objects
-        .into_iter()
-        .map(|o| {
-            check(o.facts.len() <= limits::FIELDS)?;
-            let facts = o
-                .facts
-                .into_iter()
-                .map(|(k, f)| {
-                    let state = match f.state {
-                        State::Known(v) => FactState::Known(value(v)?),
-                        State::Null => FactState::Null,
-                        State::Missing => FactState::Missing,
-                        State::Unsupported => FactState::Unsupported,
-                        State::Denied => FactState::Denied,
-                        State::Deleted => FactState::Deleted,
-                        State::Conflict => FactState::Conflict,
-                    };
-                    Ok((
-                        k,
-                        Fact {
-                            state,
-                            source: f.source,
-                            snapshot_id: f.snapshot_id,
-                            observed_at: time(f.observed_at)?,
-                        },
-                    ))
-                })
-                .collect::<Result<_>>()?;
-            Ok(ObjectSnapshot {
-                key: ObjectKey::new(tenant, o.id).map_err(|_| Invalid)?,
-                facts,
-            })
-        })
-        .collect::<Result<_>>()?;
-    Ok(Snapshot {
-        tenant,
-        id: d.id,
-        version: d.version,
-        dictionary_version: d.dictionary_version,
-        complete: d.complete,
-        coverage: d.coverage,
-        objects,
-    })
-}
-fn outcome(o: Outcome) -> &'static str {
-    match o {
-        Outcome::Match => "match",
-        Outcome::NoMatch => "no_match",
-        Outcome::Unknown(r) => match r {
-            UnknownReason::Null => "null",
-            UnknownReason::Missing => "missing",
-            UnknownReason::Deleted => "deleted",
-            UnknownReason::Unsupported => "unsupported",
-            UnknownReason::Conflict => "conflict",
-        },
-    }
-}
-fn read_outcome(s: &str) -> Result<Outcome> {
-    Ok(match s {
-        "match" => Outcome::Match,
-        "no_match" => Outcome::NoMatch,
-        "null" => Outcome::Unknown(UnknownReason::Null),
-        "missing" => Outcome::Unknown(UnknownReason::Missing),
-        "deleted" => Outcome::Unknown(UnknownReason::Deleted),
-        "unsupported" => Outcome::Unknown(UnknownReason::Unsupported),
-        "conflict" => Outcome::Unknown(UnknownReason::Conflict),
-        _ => return Err(Invalid),
-    })
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DecisionDoc {
-    id: String,
-    decision: String,
-    leaves: Vec<(Vec<usize>, String)>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResultDoc {
-    v: u8,
-    objects: Vec<DecisionDoc>,
-    added: Vec<String>,
-    removed: Vec<String>,
-}
-pub(crate) fn encode_result(r: &Recalculation) -> Result<Vec<u8>> {
-    let objects = r
-        .evaluation
-        .objects
-        .iter()
-        .map(|o| DecisionDoc {
-            id: o.key.id().into(),
-            decision: match o.decision {
-                Decision::Match => "match",
-                Decision::NoMatch => "no_match",
-                Decision::Unknown => "unknown",
-            }
-            .into(),
-            leaves: o
-                .explanations
-                .iter()
-                .map(|e| (e.path.clone(), outcome(e.outcome).into()))
-                .collect(),
-        })
-        .collect();
-    encode(&ResultDoc {
-        v: 2,
-        objects,
-        added: r.difference.added.iter().map(|o| o.id().into()).collect(),
-        removed: r.difference.removed.iter().map(|o| o.id().into()).collect(),
-    })
-}
-/// Read persisted decisions; deliberately never invokes Rule::evaluate/recalculate.
-pub(crate) fn decode_result(
-    bytes: &[u8],
-    rule: &Rule,
-    s: &Snapshot,
-    as_of: Timepoint,
-) -> Result<Recalculation> {
-    let d: ResultDoc = decode(bytes)?;
-    check(d.v == 2 && d.objects.len() <= limits::OBJECTS)?;
-    let input: BTreeMap<_, _> = s.objects.iter().map(|o| (&o.key, o)).collect();
-    let mut objects = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut explanations = 0usize;
-    for o in d.objects {
-        let key = ObjectKey::new(s.tenant, o.id).map_err(|_| Invalid)?;
-        check(seen.insert(key.clone()))?;
-        let original = input.get(&key).ok_or(Invalid)?;
-        explanations = explanations.checked_add(o.leaves.len()).ok_or(Invalid)?;
-        check(explanations <= limits::EXPLANATIONS)?;
-        let mut provenance = BTreeMap::new();
-        let leaves = o
-            .leaves
-            .into_iter()
-            .map(|(path, result)| {
-                check(path.len() <= limits::DEPTH)?;
-                let p = rule.predicate_at(&path).ok_or(Invalid)?;
-                if let Some(f) = original.facts.get(&p.field) {
-                    provenance.insert(
-                        p.field.clone(),
-                        Provenance {
-                            source: f.source.clone(),
-                            snapshot_id: f.snapshot_id.clone(),
-                            observed_at: f.observed_at,
-                        },
-                    );
-                }
-                Ok(Explanation {
-                    path,
-                    outcome: read_outcome(&result)?,
-                })
-            })
-            .collect::<Result<_>>()?;
-        let decision = match o.decision.as_str() {
-            "match" => Decision::Match,
-            "no_match" => Decision::NoMatch,
-            "unknown" => Decision::Unknown,
-            _ => return Err(Invalid),
-        };
-        objects.push(ObjectEvaluation {
-            key,
-            decision,
-            explanations: leaves,
-            provenance,
-        });
-    }
-    check(seen.len() == input.len())?;
-    let added = read_keys(s.tenant, d.added)?;
-    let removed = read_keys(s.tenant, d.removed)?;
-    let new: BTreeSet<_> = objects
-        .iter()
-        .filter(|o| o.decision == Decision::Match)
-        .map(|o| o.key.clone())
-        .collect();
-    check(added.iter().all(|k| new.contains(k)) && removed.iter().all(|k| !new.contains(k)))?;
-    let added_set: BTreeSet<_> = added.iter().cloned().collect();
-    let unchanged = new.difference(&added_set).cloned().collect();
-    let unknown = objects
-        .iter()
-        .filter(|o| o.decision == Decision::Unknown)
-        .map(|o| o.key.clone())
-        .collect();
-    Ok(Recalculation {
-        evaluation: Evaluation {
-            complete: s.complete,
-            coverage: s.coverage.clone(),
-            tenant: s.tenant,
-            rule_version: rule.view().version.into(),
-            dictionary_version: s.dictionary_version.clone(),
-            snapshot_id: s.id.clone(),
-            snapshot_version: s.version.clone(),
-            as_of,
-            objects,
-        },
-        difference: Difference {
-            tenant: s.tenant,
-            added,
-            removed,
-            unchanged,
-        },
-        unknown,
-    })
-}
-fn read_keys(tenant: TenantId, items: Vec<String>) -> Result<Vec<ObjectKey>> {
-    check(items.len() <= limits::OBJECTS)?;
-    let n = items.len();
-    let keys = items
-        .into_iter()
-        .map(|id| ObjectKey::new(tenant, id).map_err(|_| Invalid))
-        .collect::<Result<BTreeSet<_>>>()?;
-    check(keys.len() == n)?;
-    Ok(keys.into_iter().collect())
 }

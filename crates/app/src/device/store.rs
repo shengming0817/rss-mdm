@@ -59,9 +59,12 @@ impl DeviceService {
         }
         let mut tx = self.access.begin(admin.tenant_id()).await?;
         // The accepted request supplies the target; its UUID alone never authorizes binding.
-        let request = sqlx::query("SELECT g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
+        let request = sqlx::query("SELECT g.device,r.channel FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
             .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.principal_id()).bind(admin.instance_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
         let device: String = request.try_get("device").map_err(db)?;
+        if request.try_get::<String, _>("channel").map_err(db)? != credential.channel.as_str() {
+            return Err(Error::Forbidden);
+        }
         let _permission = admin.enrollment(&device)?;
         audit.target(&device);
         let digest = digest(&(
@@ -161,7 +164,7 @@ impl DeviceService {
             .await?;
         Ok(receipt)
     }
-    pub(super) async fn authorize_report(
+    pub(crate) async fn authorize_report(
         &self,
         credential: &VerifiedChannelCredential,
         source: ReportSource,
@@ -284,6 +287,18 @@ pub(crate) async fn bind_in(
         .map_err(db)?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid)")
             .bind(admin.tenant_id()).bind(command.request_id.to_string()).fetch_one(&mut **tx).await.map_err(db)? { return Err(Error::Conflict); }
+    let request_channel: String = sqlx::query_scalar(
+        "SELECT channel FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2::uuid",
+    )
+    .bind(admin.tenant_id())
+    .bind(command.request_id.to_string())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db)?
+    .ok_or(Error::Forbidden)?;
+    if request_channel != credential.channel.as_str() {
+        return Err(Error::Forbidden);
+    }
     lock_channel(tx, admin.tenant_id(), &device, credential.channel).await?;
     let current:i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3")
             .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut **tx).await.map_err(db)?;

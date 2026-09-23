@@ -1,4 +1,6 @@
 use rss_mdm_policy_postgres::*;
+#[path = "support/planning.rs"]
+mod planning;
 mod support;
 use support::*;
 #[path = "support/ack.rs"]
@@ -40,20 +42,6 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
                     ),
                 },
             ),
-            (
-                2,
-                Command::SelectTargets {
-                    policy: key.clone(),
-                    snapshot: core::TargetSnapshot::new(
-                        core::TargetSnapshotId::new(tenant(), unique()).unwrap(),
-                        1,
-                        core::SnapshotCompleteness::Complete,
-                        vec![core::DeviceId::new(tenant(), "device").unwrap()],
-                    )
-                    .unwrap(),
-                    references: vec![],
-                },
-            ),
         ] {
             s.execute(
                 &Request {
@@ -68,14 +56,7 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
             .unwrap();
         }
         let id = core::RequestId::new(tenant(), unique()).unwrap();
-        let request = Request {
-            id: id.clone(),
-            expected_storage_revision: 3,
-            as_of: at(10),
-            command: Command::Replan {
-                policy: key.clone(),
-            },
-        };
+        let candidate = planning::prepare(&runtime, &s, &key, 2, &["device"]).await;
         let gate = if protocol {
             Some(ack::CommitGate::start("mdm_policy", id.value()).await)
         } else {
@@ -88,7 +69,9 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
             let deadline = rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 std::time::Duration::from_secs(7),
             );
-            let mut operation = Box::pin(s.execute(&request, deadline));
+            let mut operation = Box::pin(planning::save(
+                &runtime, &s, &key, &id, &candidate, 2, deadline,
+            ));
             if let Some(gate) = &gate {
                 tokio::select! {_=gate.entered()=>{},r=&mut operation=>panic!("request returned before COMMIT gate: {r:?}")}
                 proxy
@@ -106,15 +89,35 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
         let s = PolicyStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap();
-        let first = s.execute(&request, deadline()).await.unwrap();
-        assert_eq!(first, s.execute(&request, deadline()).await.unwrap());
-        assert_eq!(first.storage_revision, 4);
+        let first = planning::save(&runtime, &s, &key, &id, &candidate, 2, deadline())
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            planning::save(&runtime, &s, &key, &id, &candidate, 2, deadline())
+                .await
+                .unwrap()
+        );
+        assert_eq!(first.storage_revision, 3);
         let current = s.get(&key, deadline()).await.unwrap().unwrap();
         assert!(current.plan_is_fresh());
         assert_eq!(current.current_plan_request(), Some(&id));
-        let plan = s.plan(&key, &id, deadline()).await.unwrap().unwrap();
-        assert_eq!(Some(plan.id()), current.current_plan_id());
-        assert_eq!(plan.request(), &id);
+        let prepared = planning::settle(
+            runtime
+                .local_tx_with_context(tenant(), deadline(), (&s, &candidate), |ctx, tx| {
+                    Box::pin(async move { ctx.0.candidate_in(tx, ctx.1).await })
+                })
+                .await,
+        )
+        .unwrap();
+        assert_eq!(prepared.plan, current.current_plan_id());
+        assert!(
+            s.execution_facts(&key, None, 1000, deadline())
+                .await
+                .unwrap()
+                .records
+                .is_empty()
+        );
         assert_eq!(
             sql(&format!(
                 "SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='policy.v1:{}'",

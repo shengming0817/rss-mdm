@@ -218,10 +218,16 @@ pub(crate) fn from_state(
     let authentication = state.identity.routes();
     let audit_tenant = state.identity.tenant.to_string();
     let access = state.access.clone();
-    let protected = Router::new()
+    let requests = state.requests.clone();
+    let protected_v1 = Router::new()
         .merge(crate::management::routes())
         .merge(crate::commands::routes())
         .merge(crate::authorization::routes())
+        .route("/devices/{id}/collection-runs/{run}", get(collection_run))
+        .route("/devices/{id}/actions", post(action))
+        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
+    let protected_v2 = Router::new()
+        .merge(crate::management::routes_v2())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))
@@ -231,8 +237,6 @@ pub(crate) fn from_state(
             "/devices/{device}/registrations/{registration}/revoke",
             post(revoke_registration),
         )
-        .route("/devices/{id}/collection-runs/{run}", get(collection_run))
-        .route("/devices/{id}/actions", post(action))
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
     let (enrollment, management) = crate::windows::routers(state.clone(), monotonic.clone());
     let host_context = Router::new()
@@ -243,7 +247,9 @@ pub(crate) fn from_state(
         .route_layer(middleware::from_fn_with_state(state.clone(), identity_only));
     let browser = Router::new()
         .merge(host_context)
-        .nest("/api/v1", protected)
+        .nest("/api/agent/v1", crate::agent::routes())
+        .nest("/api/v1", protected_v1)
+        .nest("/api/v2", protected_v2)
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready))
         .with_state(state)
@@ -254,6 +260,7 @@ pub(crate) fn from_state(
                 host,
                 clock: monotonic,
                 access,
+                requests,
                 tenant: audit_tenant,
             },
             envelope,
@@ -270,6 +277,7 @@ pub(crate) struct Envelope {
     pub(crate) host: String,
     pub(crate) clock: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<AccessStore>,
+    pub(crate) requests: Arc<tokio::sync::Semaphore>,
     pub(crate) tenant: String,
 }
 pub(crate) async fn envelope(
@@ -284,6 +292,8 @@ pub(crate) async fn envelope(
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
+    let native_identity =
+        route.starts_with("/api/v2/tenants/") || route.starts_with("/api/v2/oidc/");
     let action = match route {
         "/api/v1/authorization" => "authorization_effective_read",
         "/api/v1/authorization/rules" => "authorization_rules_read",
@@ -293,16 +303,19 @@ pub(crate) async fn envelope(
         "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
             "authorization_write"
         }
-        "/api/v1/enrollments" => "enrollment_create",
-        "/api/v1/enrollments/{id}" => "enrollment_read",
-        "/api/v1/devices/{device}/registrations" => "registration_read",
-        "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
-        "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/v1/devices/{id}/inventory" => "inventory_read",
+        "/api/v2/enrollments" => "enrollment_create",
+        "/api/v2/enrollments/{id}" => "enrollment_read",
+        "/api/v2/devices/{device}/registrations" => "registration_read",
+        "/api/v2/enrollments/{id}/resume" => "enrollment_resume",
+        "/api/v2/enrollments/{id}/cancel" => "enrollment_cancel",
+        "/api/v2/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
+        "/api/agent/v1/registrations" => "agent_registration",
+        "/api/agent/v1/reports" => "agent_report",
+        "/api/agent/v1/reports/{id}" => "agent_report_read",
+        "/api/v2/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
-        path if path.starts_with("/api/v2/") => "authentication",
+        _ if native_identity => "authentication",
         "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
@@ -310,12 +323,12 @@ pub(crate) async fn envelope(
         _ => "protected_request",
     };
     let soap = route.starts_with("/EnrollmentServer/");
+    let agent_route = route.starts_with("/api/agent/v1/");
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
     // audit must not replace that settled response (including rotated credentials).
-    let audited =
-        !matches!(request.uri().path(), "/livez" | "/readyz") && !route.starts_with("/api/v2/");
+    let audited = !matches!(request.uri().path(), "/livez" | "/readyz") && !native_identity;
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -327,7 +340,7 @@ pub(crate) async fn envelope(
     {
         Error::Malformed.into_response()
     } else {
-        bounded_body(request, next).await
+        bounded_body(request, next, agent_route, envelope.requests.clone()).await
     };
     let snapshot = audit.snapshot();
     if matches!(
@@ -396,13 +409,37 @@ pub(crate) fn secure_response(mut response: Response, request_id: uuid::Uuid) ->
     );
     response
 }
-async fn bounded_body(request: Request, next: Next) -> Response {
+async fn bounded_body(
+    request: Request,
+    next: Next,
+    agent: bool,
+    requests: Arc<tokio::sync::Semaphore>,
+) -> Response {
     // Bound ingress before starting any transaction. Component operations then settle
     // within their own budgets; product operations are bounded after authentication.
+    let _agent_permit = if agent {
+        match requests.try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return crate::agent::ingress_error(
+                    rss_mdm_agent_wire::ErrorCode::ServiceUnavailable,
+                );
+            }
+        }
+    } else {
+        None
+    };
     let (parts, body) = request.into_parts();
     match tokio::time::timeout(
         Duration::from_secs(8),
-        axum::body::to_bytes(body, 2 * 1024 * 1024),
+        axum::body::to_bytes(
+            body,
+            if agent {
+                rss_mdm_agent_wire::MAX_REQUEST_BYTES
+            } else {
+                2 * 1024 * 1024
+            },
+        ),
     )
     .await
     {
@@ -410,7 +447,13 @@ async fn bounded_body(request: Request, next: Next) -> Response {
             next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
                 .await
         }
+        Ok(Err(_)) if agent => {
+            crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::MalformedRequest)
+        }
         Ok(Err(_)) => axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) if agent => {
+            crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable)
+        }
         Err(_) => Error::Unavailable(Failure::RequestDeadline).into_response(),
     }
 }
@@ -534,7 +577,14 @@ async fn create_enrollment(
         SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
     )?;
     app.access
-        .create_enrollment(permission, &input.password, reference, key, &audit)
+        .create_enrollment(
+            permission,
+            &input.password,
+            input.channel,
+            reference,
+            key,
+            &audit,
+        )
         .await
         .map(Json)
 }
@@ -634,7 +684,14 @@ async fn revoke_registration(
 }
 
 async fn ready(State(app): State<Arc<App>>) -> Response {
-    if app.readiness.ready() {
+    if app.readiness.ready()
+        && app
+            .management
+            .automation_task
+            .get()
+            .is_some_and(rss_runtime::TaskStatus::is_running)
+        && app.management.ingress_ready().await
+    {
         Json(json!({"ready":true})).into_response()
     } else {
         (
@@ -671,7 +728,7 @@ mod tests {
             access.close().await;
             let router = Router::new()
                 .route(
-                    "/api/v1/devices/{id}/inventory",
+                    "/api/v2/devices/{id}/inventory",
                     get(move || async move {
                         if mode == "transaction" {
                             Error::Unavailable(Failure::Audit).into_response()
@@ -685,6 +742,7 @@ mod tests {
                         host: "mdm.example.test".into(),
                         clock: monotonic(),
                         access,
+                        requests: Arc::new(tokio::sync::Semaphore::new(4)),
                         tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },
                     envelope,
@@ -692,7 +750,7 @@ mod tests {
             let response = router
                 .oneshot(
                     Request::builder()
-                        .uri("/api/v1/devices/sensitive-target/inventory")
+                        .uri("/api/v2/devices/sensitive-target/inventory")
                         .header("host", "mdm.example.test")
                         .body(axum::body::Body::empty())
                         .unwrap(),
@@ -766,6 +824,7 @@ mod tests {
                         host: "mdm.example.test".to_owned(),
                         clock: monotonic(),
                         access: Arc::new(AccessStore::unconnected()),
+                        requests: Arc::new(tokio::sync::Semaphore::new(4)),
                         tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },
                     envelope,

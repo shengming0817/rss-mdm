@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/mdm/agent/v1/registration-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wireVersion", "operationId", "deviceId", "registrationId", "generation", "source", "epoch", "capabilities"],
+  "properties": {
+    "wireVersion": { "const": 1 },
+    "operationId": { "$ref": "#/$defs/nonNilUuid" },
+    "deviceId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$" },
+    "registrationId": { "$ref": "#/$defs/nonNilUuid" },
+    "generation": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "source": { "const": "agent.builtin" },
+    "epoch": { "$ref": "#/$defs/nonNilUuid" },
+    "capabilities": { "const": ["inventory.basic.v1"] }
+  },
+  "$defs": {
+    "nonNilUuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": { "const": "00000000-0000-0000-0000-000000000000" }
+    }
+  }
+}

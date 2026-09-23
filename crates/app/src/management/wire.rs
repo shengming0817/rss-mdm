@@ -10,24 +10,14 @@ macro_rules! view {
     };
 }
 view!(Group { id: Uuid, kind: rss_mdm_group_postgres::GroupKind, name: String, description: String, revision: i64, member_version: i64, member_count: usize, rule_version: Option<String>, deleted: bool });
-view!(GroupRead { group: Group, criteria: Option<Criteria>, members: Vec<String> });
+view!(GroupRead { group: Group, criteria: Option<Criteria>, member_set: Option<Uuid> });
 view!(GroupReceipt {
     operation: Uuid,
     group: Group,
     added: usize,
-    removed: usize
+    removed: usize,
+    task: Option<Uuid>
 });
-view!(GroupPreview { revision: i64, snapshot: String, members: Vec<String>, assets: Vec<Asset>, decisions: Vec<Decision> });
-type Asset = assets::DeviceView;
-view!(Decision { device: String, decision: String, explanations: Vec<Explanation> });
-view!(Explanation { path: Vec<usize>, outcome: Outcome });
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Outcome {
-    Match,
-    NoMatch,
-    Unknown { reason: String },
-}
 view!(ScopeRead {
     id: Uuid,
     revision: u64,
@@ -35,10 +25,11 @@ view!(ScopeRead {
 });
 view!(ScopeReceipt {
     id: Uuid,
-    revision: u64
+    revision: u64,
+    task:Option<Uuid>
 });
 view!(PolicyRead { id: String, storage_revision: u64, revision: u64, status: String, plan: Option<String>, fresh: bool });
-view!(PolicyReceipt { policy: String, request: String, storage_revision: u64, plan_id: Option<String>, plan_is_fresh: bool });
+view!(PolicyReceipt { policy: String, request: String, storage_revision: u64, plan_id: Option<String>, plan_is_fresh: bool, task:Option<Uuid> });
 view!(ResourceReceipt {
     resource: String,
     request: String,
@@ -46,63 +37,36 @@ view!(ResourceReceipt {
 });
 view!(ResourceRead { id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
 view!(ResourceVersion { configuration: Option<serde_json::Value>, id: String, digest: [u8;32], state: String, variants: Vec<super::resources::Variant> });
-view!(Source { reference: Reference, revision: u64, member_version: Option<i64>, members: Vec<String> });
-view!(SourceRef {
-    reference: Reference,
-    revision: u64,
-    resolved_at: i64
-});
-view!(MemberExplanation { device: String, targets: Vec<SourceRef>, limitations: Vec<SourceRef>, exclusions: Vec<SourceRef>, reasons: Vec<String> });
-view!(ScopeExplanation { targets: Vec<SourceRef>, limitations: Option<Vec<SourceRef>>, exclusions: Vec<SourceRef>, members: Vec<MemberExplanation> });
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields(serialize = "camelCase"),
-    deny_unknown_fields
-)]
-pub(super) enum Intent {
-    Add {
-        device: String,
-        version: u64,
-    },
-    Retain {
-        device: String,
-        version: u64,
-        reason: String,
-    },
-    Supersede {
-        device: String,
-        version: u64,
-        previous_versions: Vec<u64>,
-    },
-    Cancel {
-        device: String,
-        version: u64,
-        reason: String,
-    },
-}
-view!(Plan { id: String, scheduling_open: bool, intents: Vec<Intent>, dispatch: String });
-view!(Preview { configuration: Option<super::configuration::Frozen>, id: Uuid, policy: String, policy_revision: u64, scope: Uuid, scope_revision: u64, as_of: i64, sources: Vec<Source>, devices: Vec<String>, registrations: std::collections::BTreeMap<String,DeviceIdentity>, explanation: ScopeExplanation, plan: Plan });
 view!(SavedPlan {
     receipt: PolicyReceipt,
     preview: Uuid,
-    plan: Plan
+    plan: Option<String>,
+    dispatch:String
 });
+view!(JobAccepted {
+    task: Uuid,
+    kind: String,
+    target: String,
+    status_url: String
+});
+view!(TaskRead {task:Uuid,kind:String,target:String,status:String,processed:u64,members:u64,plan:Option<String>,failure:Option<String>,failure_detail:Option<crate::PlanFailure>,execution:Option<PlanExecutionAdmission>,policy_revision:Option<u64>});
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum Response {
+    JobAccepted(JobAccepted),
+    TaskRead(Box<TaskRead>),
     Asset(assets::AssetEnvelope),
     GroupRead(GroupRead),
+    GroupPage(pages::GroupPage),
+    ScopePage(pages::ScopePage),
+    PolicyPage(pages::PolicyPage),
     GroupReceipt(GroupReceipt),
-    GroupPreview(GroupPreview),
     ScopeRead(ScopeRead),
     ScopeReceipt(ScopeReceipt),
     PolicyRead(PolicyRead),
     PolicyReceipt(PolicyReceipt),
     ResourceRead(ResourceRead),
     ResourceReceipt(ResourceReceipt),
-    Preview(Box<Preview>),
     SavedPlan(SavedPlan),
 }
 impl Response {

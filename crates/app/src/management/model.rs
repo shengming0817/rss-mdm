@@ -36,10 +36,11 @@ pub enum GroupChange {
         remove: Vec<String>,
     },
     Delete,
-    Recompute {
-        snapshot: String,
-    },
+    Recompute {},
 }
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyInput {}
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(
     tag = "kind",
@@ -109,29 +110,6 @@ pub struct SavePlan {
     pub preview: Uuid,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub struct Source {
-    pub reference: Reference,
-    pub revision: u64,
-    pub member_version: Option<i64>,
-    pub members: Vec<String>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Preview {
-    pub configuration: Option<super::configuration::Frozen>,
-    pub id: Uuid,
-    pub policy: String,
-    pub policy_revision: u64,
-    pub scope: Uuid,
-    pub scope_revision: u64,
-    pub as_of: i64,
-    pub sources: Vec<Source>,
-    pub devices: Vec<String>,
-    pub registrations: std::collections::BTreeMap<String, DeviceIdentity>,
-    pub explanation: serde_json::Value,
-    pub plan: FrozenPlan,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct Registration {
     pub id: String,
     pub channel: String,
@@ -175,6 +153,17 @@ impl Missing {
     }
 }
 
+/// Management owns the immutable, bounded command execution contract.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanExecutionAdmission {
+    pub id: Uuid,
+    pub policy: String,
+    pub devices: Vec<String>,
+    pub configuration: Option<super::configuration::Frozen>,
+    pub plan: FrozenPlan,
+}
+
 /// Immutable product projection of every RSS Policy intent.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -199,7 +188,6 @@ pub enum FrozenIntent {
     Supersede {
         device: String,
         version: u64,
-        previous_versions: Vec<u64>,
     },
     Cancel {
         device: String,
@@ -235,7 +223,7 @@ impl FrozenIntent {
             | Self::Retain { device, .. } => device,
         }
     }
-    pub fn cancellation(&self, preview: &Preview) -> Option<(&str, u64)> {
+    pub fn cancellation(&self, preview: &PlanExecutionAdmission) -> Option<(&str, u64)> {
         match self {
             Self::Cancel {
                 device, version, ..
@@ -265,7 +253,7 @@ mod frozen_tests {
             serde_json::json!({"kind":"unknown","device":"d","version":1}),
             serde_json::json!({"kind":"add","device":"d","version":1,"extra":true}),
             serde_json::json!({"kind":"cancel","device":"d","version":1,"reason":"unknown"}),
-            serde_json::json!({"kind":"supersede","device":"d","version":2}),
+            serde_json::json!({"kind":"supersede","device":"d"}),
         ] {
             assert!(serde_json::from_value::<FrozenIntent>(intent).is_err());
         }

@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 NAMES=('policy','resource','software-release')
 SCHEMAS=('mdm_policy','mdm_resource','mdm_software_release')
 CONSUMERS={
- 'policy':{'admission_rejects_noninherited_switchable_privileges','fact_pages_preserve_boundaries_and_reject_foreign_documents','persistence_replay_aba_and_old_facts','concurrent_cas_borrowed_rollback_and_runtime_owner','outbox_failure_and_immutable_inputs'},
+ 'policy':{'saving_intents_does_not_create_execution_facts','admission_rejects_noninherited_switchable_privileges','fact_pages_preserve_boundaries_and_reject_foreign_documents','persistence_replay_aba_and_old_facts','concurrent_cas_borrowed_rollback_and_runtime_owner','outbox_failure_and_immutable_inputs'},
  'resource':{'admission_rejects_noninherited_switchable_privileges','resource_admission_rejects_schema_and_privilege_drift','resource_immutable_versions_restart_and_reference_rollback','resource_cas_events_and_owner_admission'},
  'software-release':{'admission_rejects_noninherited_switchable_privileges','release_approval_unknown_retry_history_and_late_results','release_immutable_version_request_uniqueness_and_rollback','release_event_failure_and_runtime_admission'},
 }
@@ -15,7 +15,7 @@ def verify_tests(output,expected):
     actual=set(re.findall(r'^test (\S+) \.\.\. ok$',output,re.MULTILINE))
     require(actual==expected and f'test result: ok. {len(expected)} passed; 0 failed; 0 ignored;' in output, 'backend T2 missing required behavior')
 @contextlib.contextmanager
-def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
+def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None,metrics=False):
     with tempfile.TemporaryDirectory(prefix='mdm-backend-pg-') as directory:
         root=Path(directory);quiet=dict(stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Backend T2 CA','-keyout',str(root/'ca.key'),'-out',str(root/'ca.crt')],**quiet)
@@ -27,11 +27,12 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
         def sql(statement):
             return run(['docker','exec','-i',name,'psql','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','backend'],input=statement,capture_output=True,timeout=30).stdout.strip()
         try:
-            run(['docker','run','-d','--rm','--name',name,'-p','127.0.0.1::5432','-v',f'{root}:/certs:ro','-e','POSTGRES_PASSWORD=admin-fixture','-e','POSTGRES_DB=backend',IMAGE,'sh','-c','cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'],stdout=subprocess.DEVNULL,timeout=120)
+            run(['docker','run','-d','--rm','--name',name,'-p','127.0.0.1::5432','-v',f'{root}:/certs:ro','-e','POSTGRES_PASSWORD=admin-fixture','-e','POSTGRES_DB=backend',IMAGE,'sh','-c','cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'+(' -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all' if metrics else '')],stdout=subprocess.DEVNULL,timeout=120)
             until=time.monotonic()+45
             while True:
                 if subprocess.run(['docker','exec',name,'pg_isready','-h','127.0.0.1','-U','postgres','-d','backend'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode==0:break
                 require(time.monotonic()<until,'backend PG startup deadline');time.sleep(.2)
+            if metrics: sql('CREATE SCHEMA capacity_metrics; REVOKE ALL ON SCHEMA capacity_metrics FROM PUBLIC; CREATE EXTENSION pg_stat_statements WITH SCHEMA capacity_metrics; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA capacity_metrics FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA capacity_metrics FROM PUBLIC;')
             port=int(run(['docker','port',name,'5432'],capture_output=True,timeout=5).stdout.strip().rsplit(':',1)[1])
             sql("CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE backend TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;")
             sql(((source/'crates/app/schema/software-publication-roles.sql').read_text()+(source/'crates/app/schema/management-roles.sql').read_text()+(source/'crates/app/schema/commands-roles.sql').read_text()))
@@ -70,7 +71,9 @@ def main():
         if args.write_catalogs:return
         failed=[]
         for name in NAMES:
-            for target,expected in [('consumer',CONSUMERS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]:
+            suites=[('consumer',CONSUMERS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]
+            if name=='policy': suites.append(('candidates',{'paged_candidate_save_preserves_execution_facts_and_source_invalidation'}))
+            for target,expected in suites:
                 result=subprocess.run(['cargo','test','--locked','-p',f'rss-mdm-{name}-postgres','--features','integration','--test',target,'--','--ignored','--test-threads=1'],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 try:

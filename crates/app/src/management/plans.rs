@@ -2,18 +2,8 @@ use super::*;
 use rss_mdm_policy as p;
 use rss_mdm_policy_postgres as pg;
 use serde_json::json;
+use sqlx::Row;
 impl Management {
-    async fn device_identities(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        devices: &[String],
-    ) -> Result<std::collections::BTreeMap<String, DeviceIdentity>> {
-        let mut identities = std::collections::BTreeMap::new();
-        for device in devices {
-            identities.insert(device.clone(), storage::device(tx, device).await?);
-        }
-        Ok(identities)
-    }
     pub(super) async fn policy_read(&self, tx: &mut PgTransaction<'_>, id: &str) -> Result<Value> {
         let id = input(p::PolicyId::new(self.tenant, id))?;
         let state = checked(self.policies.get_in(tx, &id).await?)?
@@ -94,7 +84,38 @@ impl Management {
             as_of: at,
             command,
         };
-        json(&checked(self.policies.execute_in(tx, &request).await?)?)
+        let receipt = checked(self.policies.execute_in(tx, &request).await?)?;
+        let mut response = json(&receipt)?;
+        if !matches!(op.input, PolicyChange::Create) {
+            let tenant = self.tenant.to_string();
+            let policy = id.value().to_owned();
+            let binding=tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query("SELECT scope::text,revision FROM mdm_management.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2")
+                    .bind(tenant).bind(policy).fetch_optional(c).await
+            })).await?;
+            if let Some(binding) = binding {
+                let scope = stored(Uuid::parse_str(binding.try_get("scope")?))?;
+                let resolution = Uuid::new_v4();
+                let task = Uuid::new_v4();
+                self.enqueue_job_in(tx, resolution, &automation::JobInput::Scope { scope })
+                    .await?;
+                self.enqueue_job_in(
+                    tx,
+                    task,
+                    &automation::JobInput::Policy {
+                        policy: id.value().into(),
+                        scope,
+                        resolution,
+                        assignment_revision: Some(binding.try_get("revision")?),
+                        expected_revision: receipt.storage_revision,
+                        as_of: at.unix_seconds(),
+                    },
+                )
+                .await?;
+                response["task"] = serde_json::json!(task);
+            }
+        }
+        Ok(response)
     }
     pub(super) async fn preview(
         &self,
@@ -104,268 +125,28 @@ impl Management {
         request: &PreviewInput,
         at: Timepoint,
     ) -> Result<Value> {
-        let id = input(p::PolicyId::new(self.tenant, id))?;
-        let state = checked(self.policies.get_in(tx, &id).await?)?
-            .ok_or(Error::ManagementNotFound(Missing::Policy))?;
-        if state.storage_revision() != request.expected_revision {
-            return Err(Error::Conflict.into());
-        }
-        let (revision, definition) = self.scope_definition(tx, request.scope).await?;
-        let (sources, resolution) = self.sources(tx, &definition, at).await?;
-        let devices = resolution
-            .members
-            .iter()
-            .map(|d| d.value().to_owned())
-            .collect::<Vec<_>>();
-        let target = targets(self.tenant, preview, &devices)?;
-        let mut facts = Vec::new();
-        let mut after = None;
-        loop {
-            let page = checked(
-                self.policies
-                    .execution_facts_in(tx, &id, after, 1000)
-                    .await?,
-            )?;
-            facts.extend(page.records);
-            if facts.len() > pg::MAX_FACTS {
-                return Err(Error::Malformed.into());
-            }
-            after = page.next;
-            if after.is_none() {
-                break;
-            }
-        }
-        for fact in self.firewall_facts(tx, &id).await? {
-            facts.retain(|f| f.key() != fact.key());
-            facts.push(fact);
-        }
-        let plan = input(p::reconcile(p::PlanInput {
-            policy: state.policy(),
-            targets: &target,
-            executions: &facts,
-            request: input(p::RequestId::new(self.tenant, preview.to_string()))?,
-            as_of: at,
-        }))?;
-        let registrations = self.device_identities(tx, &devices).await?;
-        let configuration = self.freeze_firewall(tx, state.policy(), &devices).await?;
-        let result = Preview {
-            configuration,
-            registrations,
-            id: preview,
-            policy: id.value().into(),
-            policy_revision: state.storage_revision(),
-            scope: request.scope,
-            scope_revision: revision,
-            as_of: at.unix_seconds(),
-            sources,
-            devices,
-            explanation: scopes::explanation(&resolution),
-            plan: plan_json(&plan),
-        };
-        let tenant = self.tenant.to_string();
-        let document = input(serde_json::to_string(&result))?;
-        let scope = request.scope;
-        tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_management.previews VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb)").bind(tenant).bind(preview.to_string()).bind(scope.to_string()).bind(revision as i64).bind(document).execute(c).await?;Ok(())
-        })).await?;
-        json(&result)
+        self.start_policy_preview_in(
+            tx,
+            id,
+            preview,
+            request.expected_revision,
+            request.scope,
+            at,
+        )
+        .await
     }
     pub(super) async fn save_plan(
         &self,
         tx: &mut PgTransaction<'_>,
         id: &str,
         request: &Operation<SavePlan>,
-        _at: Timepoint,
+        at: Timepoint,
     ) -> Result<Value> {
-        let preview = storage::preview(tx, request.input.preview)
-            .await?
-            .ok_or(Error::ManagementNotFound(Missing::Preview))?;
-        if preview.policy != id || preview.policy_revision != request.expected_revision {
-            return Err(crate::PlanFailureReason::StalePlan
-                .at(None, crate::PlanStage::Save)
-                .into());
-        }
-        let at = input(Timepoint::try_from(preview.as_of))?;
-        let (revision, definition) = self
-            .scope_definition(tx, preview.scope)
-            .await
-            .map_err(stale)?;
-        let (sources, _) = self.sources(tx, &definition, at).await.map_err(stale)?;
-        if revision != preview.scope_revision || sources != preview.sources {
-            return Err(crate::PlanFailureReason::StalePlan
-                .at(None, crate::PlanStage::Save)
-                .into());
-        }
-        if self
-            .device_identities(tx, &preview.devices)
-            .await
-            .map_err(stale)?
-            != preview.registrations
-        {
-            return Err(crate::PlanFailureReason::StalePlan
-                .at(None, crate::PlanStage::Save)
-                .into());
-        }
-        if preview.configuration.is_some()
-            && preview.devices.len() > super::configuration::MAX_TARGETS
-        {
-            return Err(Error::ConfigurationTargetLimit.into());
-        }
-        if let Some(configuration) = &preview.configuration {
-            for (device, expected) in &configuration.devices {
-                if super::configuration::evidence(tx, device, crate::PlanStage::Save).await?
-                    != *expected
-                {
-                    return Err(crate::PlanFailureReason::StalePlan
-                        .at(Some(device), crate::PlanStage::Save)
-                        .into());
-                }
-            }
-        }
-        let policy = input(p::PolicyId::new(self.tenant, id))?;
-        let mut selected_revision = preview.policy_revision;
-        let updates = self.firewall_facts(tx, &policy).await?;
-        if !updates.is_empty() {
-            selected_revision = checked(
-                self.policies
-                    .execute_in(
-                        tx,
-                        &pg::Request {
-                            id: input(p::RequestId::new(
-                                self.tenant,
-                                format!("{}-facts", request.operation_id),
-                            ))?,
-                            expected_storage_revision: selected_revision,
-                            as_of: at,
-                            command: pg::Command::ReplaceFacts {
-                                policy: policy.clone(),
-                                facts: updates,
-                            },
-                        },
-                    )
-                    .await?,
-            )?
-            .storage_revision;
-        }
-        let select = pg::Request {
-            id: input(p::RequestId::new(
-                self.tenant,
-                format!("{}-targets", request.operation_id),
-            ))?,
-            expected_storage_revision: selected_revision,
-            as_of: at,
-            command: pg::Command::SelectTargets {
-                policy: policy.clone(),
-                snapshot: targets(self.tenant, preview.id, &preview.devices)?,
-                references: vec![pg::AssignmentReference {
-                    id: preview.scope.to_string(),
-                    revision: preview.scope_revision,
-                }],
-            },
-        };
-        let selected = checked(self.policies.execute_in(tx, &select).await?)?;
-        let replan = pg::Request {
-            id: input(p::RequestId::new(
-                self.tenant,
-                format!("{}-plan", request.operation_id),
-            ))?,
-            expected_storage_revision: selected.storage_revision,
-            as_of: at,
-            command: pg::Command::Replan {
-                policy: policy.clone(),
-            },
-        };
-        let result = checked(self.policies.execute_in(tx, &replan).await?)?;
-        let state = checked(self.policies.get_in(tx, &policy).await?)?
-            .ok_or(crate::PlanFailureReason::StalePlan.at(None, crate::PlanStage::Save))?;
-        let plan = state
-            .current_plan_id()
-            .ok_or(crate::PlanFailureReason::StalePlan.at(None, crate::PlanStage::Save))?;
-        if preview.plan.id != hex(*plan.bytes()) {
-            return Err(crate::PlanFailureReason::StalePlan
-                .at(None, crate::PlanStage::Save)
-                .into());
-        }
-        let tenant = self.tenant.to_string();
-        let policy = id.to_owned();
-        let bytes = plan.bytes().to_vec();
-        let saved_revision = result.storage_revision as i64;
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query(
-                    "INSERT INTO mdm_management.plan_references VALUES($1::uuid,$2::uuid,$3,$4,$5)",
-                )
-                .bind(tenant)
-                .bind(preview.id.to_string())
-                .bind(policy)
-                .bind(bytes)
-                .bind(saved_revision)
-                .execute(c)
-                .await?;
-                Ok(())
-            })
-        })
-        .await?;
-        Ok(json!({"receipt":result,"preview":preview.id,"plan":preview.plan}))
+        self.save_ready_candidate_in(tx, id, request, at).await
     }
-}
-fn targets(tenant: TenantId, id: Uuid, devices: &[String]) -> Result<p::TargetSnapshot> {
-    input(p::TargetSnapshot::new(
-        input(p::TargetSnapshotId::new(tenant, id.to_string()))?,
-        1,
-        p::SnapshotCompleteness::Complete,
-        devices
-            .iter()
-            .map(|d| input(p::DeviceId::new(tenant, d)))
-            .collect::<Result<_>>()?,
-    ))
 }
 fn hex(bytes: [u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-fn plan_json(plan: &p::Plan) -> FrozenPlan {
-    let intents = plan
-        .intents()
-        .iter()
-        .map(|i| match i {
-            p::Intent::Add(e) => FrozenIntent::Add {
-                device: e.key().device().value().into(),
-                version: e.key().version(),
-            },
-            p::Intent::Retain { execution, reason } => FrozenIntent::Retain {
-                device: execution.device().value().into(),
-                version: execution.version().number(),
-                reason: match reason {
-                    p::RetainReason::Current => RetainReason::Current,
-                    p::RetainReason::Paused => RetainReason::Paused,
-                    p::RetainReason::Historical => RetainReason::Historical,
-                },
-            },
-            p::Intent::Supersede {
-                replacement,
-                previous,
-            } => FrozenIntent::Supersede {
-                device: replacement.key().device().value().into(),
-                version: replacement.key().version(),
-                previous_versions: previous.iter().map(|e| e.version()).collect(),
-            },
-            p::Intent::Cancel { execution, reason } => FrozenIntent::Cancel {
-                device: execution.device().value().into(),
-                version: execution.version().number(),
-                reason: match reason {
-                    p::CancelReason::ScopeExit => CancelReason::ScopeExit,
-                    p::CancelReason::Archived => CancelReason::Archived,
-                    p::CancelReason::Superseded => CancelReason::Superseded,
-                },
-            },
-        })
-        .collect();
-    FrozenPlan {
-        id: hex(*plan.id().bytes()),
-        scheduling_open: plan.scheduling_open(),
-        intents,
-        dispatch: Dispatch::NotRequested,
-    }
 }
 
 fn policy_status(s: p::Status) -> &'static str {
@@ -374,13 +155,5 @@ fn policy_status(s: p::Status) -> &'static str {
         p::Status::Active => "active",
         p::Status::Paused => "paused",
         p::Status::Archived => "archived",
-    }
-}
-fn stale(error: Fault) -> Fault {
-    match error {
-        Fault::Request(Error::ManagementNotFound(_)) => crate::PlanFailureReason::StalePlan
-            .at(None, crate::PlanStage::Save)
-            .into(),
-        other => other,
     }
 }

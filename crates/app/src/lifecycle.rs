@@ -89,6 +89,7 @@ pub async fn serve(
                         tenant,
                         runtime,
                         commands,
+                        automation,
                     ) = tokio::time::timeout(compiled.config.management.startup_budget(), async {
                         let access = Arc::new(
                             crate::AccessStore::connect(
@@ -158,6 +159,15 @@ pub async fn serve(
                         let commands = crate::commands::Commands::open(&compiled.config)
                             .await
                             .map_err(|e| ProcessError::at("startup.commands", e))?;
+                        let automation = crate::management::automation::Automation::open(
+                            management.clone(),
+                            &compiled.config.management.database,
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.asset_automation", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(
+                            crate::management::automation::Resource(automation.clone()),
+                        ));
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::commands::Resource(commands.clone()),
                         ));
@@ -218,6 +228,7 @@ pub async fn serve(
                             tenant,
                             runtime,
                             commands,
+                            automation,
                         ))
                     })
                     .await
@@ -227,6 +238,7 @@ pub async fn serve(
                     })??;
                     let mut launch = startup.commit();
                     launch.stage_deferred_task_with_token(commands.registration().critical());
+                    launch.stage_deferred_task_with_token(automation.registration().critical());
                     launch.stage_deferred_task_with_token(runtime.registration().critical());
                     launch.stage_task_with_token(
                         crate::windows::retention::registration(access.clone(), tenant.clone())

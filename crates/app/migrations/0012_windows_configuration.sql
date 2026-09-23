@@ -3,7 +3,7 @@ ALTER TABLE mdm_access.audit ADD COLUMN plan uuid;
 ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
 ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
 ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
-'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save','authorization_write','authorization_initialize','authorization_effective_read','authorization_rules_read','authorization_groups_read','authorization_members_read','authorization_departments_read','command_accept','command_read','command_cancel','command_approve','command_dispatch','plan_execute'));
+'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save','authorization_write','authorization_initialize','authorization_effective_read','authorization_rules_read','authorization_groups_read','authorization_members_read','authorization_departments_read','command_accept','command_read','command_cancel','command_approve','command_dispatch','plan_execute','agent_registration','agent_report','agent_report_read','automation_completed','automation_superseded','automation_failed'));
 -- One-way cutover: never reinterpret an in-flight old dispatch contract.
 CREATE TABLE mdm_commands.attempt_history (LIKE mdm_commands.attempts INCLUDING ALL);
 DO $$ DECLARE t text; BEGIN
@@ -12,7 +12,6 @@ DO $$ DECLARE t text; BEGIN
  UPDATE mdm_commands.operations SET request=jsonb_build_object('operationId',request->'operationId','deadline',request->'deadline','task',jsonb_build_object('kind','state_verify','field',request->'field','expectedValue',request->'expectedValue')),
  approval=approval||'{"permission":"state_verify"}'::jsonb;
  INSERT INTO mdm_commands.attempt_history SELECT * FROM mdm_commands.attempts;
- UPDATE mdm_management.previews SET document=document||'{"configuration":null}'::jsonb;
  END LOOP;
 END $$;
 DROP TABLE mdm_commands.attempts;
@@ -50,15 +49,21 @@ CREATE TABLE mdm_management.firewall_versions (
  PRIMARY KEY(tenant_id,policy,version),
  FOREIGN KEY(tenant_id,resource,resource_version) REFERENCES mdm_management.firewall_resources(tenant_id,resource,version)
 );
+CREATE TABLE mdm_management.firewall_plans (
+ tenant_id uuid NOT NULL, id uuid NOT NULL, policy text NOT NULL, resolution uuid NOT NULL,
+ revision bigint NOT NULL, saved_revision bigint, document jsonb NOT NULL,
+ PRIMARY KEY(tenant_id,id), FOREIGN KEY(tenant_id,id) REFERENCES mdm_management.automation_jobs(tenant_id,id),
+ CHECK(octet_length(document::text)<=16777216)
+);
 ALTER TABLE mdm_commands.requests ALTER COLUMN operation DROP NOT NULL;
 ALTER TABLE mdm_commands.requests ADD COLUMN plan uuid;
-ALTER TABLE mdm_commands.requests ADD FOREIGN KEY(tenant_id,plan) REFERENCES mdm_management.previews(tenant_id,id);
+ALTER TABLE mdm_commands.requests ADD FOREIGN KEY(tenant_id,plan) REFERENCES mdm_management.firewall_plans(tenant_id,id);
 ALTER TABLE mdm_commands.requests ADD CHECK((operation IS NULL)<>(plan IS NULL));
 CREATE TABLE mdm_commands.plan_executions (
  tenant_id uuid NOT NULL, plan uuid NOT NULL, policy text NOT NULL, policy_revision bigint NOT NULL,
  request uuid NOT NULL,
  PRIMARY KEY(tenant_id,plan), UNIQUE(tenant_id,request),
- FOREIGN KEY(tenant_id,plan) REFERENCES mdm_management.previews(tenant_id,id),
+ FOREIGN KEY(tenant_id,plan) REFERENCES mdm_management.firewall_plans(tenant_id,id),
  FOREIGN KEY(tenant_id,request) REFERENCES mdm_commands.requests(tenant_id,id)
 );
 CREATE TABLE mdm_commands.firewall_owners (
@@ -70,7 +75,7 @@ CREATE TABLE mdm_commands.firewall_owners (
  FOREIGN KEY(tenant_id,policy) REFERENCES mdm_policy.aggregates(tenant_id,id)
 );
 DO $$ DECLARE n text; t text; BEGIN
- FOR n,t IN SELECT * FROM (VALUES ('mdm_commands','attempts'),('mdm_commands','attempt_history'),('mdm_commands','capabilities'),('mdm_commands','capability_queries'),('mdm_commands','plan_executions'),('mdm_commands','firewall_owners'),('mdm_management','firewall_resources'),('mdm_management','firewall_versions')) AS names(n,t) LOOP
+ FOR n,t IN SELECT * FROM (VALUES ('mdm_commands','attempts'),('mdm_commands','attempt_history'),('mdm_commands','capabilities'),('mdm_commands','capability_queries'),('mdm_commands','plan_executions'),('mdm_commands','firewall_owners'),('mdm_management','firewall_plans'),('mdm_management','firewall_resources'),('mdm_management','firewall_versions')) AS names(n,t) LOOP
  EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY',n,t);
  EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY',n,t);
  EXECUTE format('CREATE POLICY tenant ON %I.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',n,t);
@@ -84,18 +89,40 @@ GRANT SELECT,INSERT ON mdm_commands.attempts,mdm_commands.capabilities,mdm_comma
 GRANT UPDATE(status,value,received_at,receipt_accepted) ON mdm_commands.attempts TO mdm_command_runtime;
 GRANT UPDATE(generation,os_version,edition,session,observed_at) ON mdm_commands.capabilities TO mdm_command_runtime;
 GRANT UPDATE(os_version,edition,version_status,edition_status) ON mdm_commands.capability_queries TO mdm_command_runtime;
-GRANT USAGE ON SCHEMA mdm_management,mdm_policy,mdm_group TO mdm_command_runtime;
-GRANT SELECT ON mdm_management.previews,mdm_management.plan_references,mdm_management.firewall_resources,mdm_management.firewall_versions,mdm_policy.aggregates,mdm_group.groups,mdm_management.scopes TO mdm_command_runtime;
-GRANT SELECT,INSERT ON mdm_management.firewall_resources,mdm_management.firewall_versions TO mdm_management_runtime;
+GRANT USAGE ON SCHEMA mdm_management TO mdm_command_runtime;
+GRANT UPDATE(saved_revision) ON mdm_management.firewall_plans TO mdm_management_runtime;
+GRANT SELECT,INSERT ON mdm_management.firewall_plans,mdm_management.firewall_resources,mdm_management.firewall_versions TO mdm_management_runtime;
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_management_runtime;
 GRANT SELECT ON mdm_commands.capabilities TO mdm_management_runtime;
 -- Narrow read projection; the RSS component still admits only its command runtime.
-CREATE FUNCTION mdm_commands.policy_facts(p_policy text) RETURNS TABLE(device text,version bigint,digest bytea,status text,write_status integer)
+CREATE FUNCTION mdm_commands.policy_facts(p_policy text) RETURNS TABLE(device text,version bigint,status text,write_status integer)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,mdm_commands AS $facts$
-SELECT o.device,(o.request->'task'->>'version')::bigint AS version,r.digest,d.status,(SELECT a.status FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.receipt_accepted ORDER BY ordinal DESC LIMIT 1) AS write_status FROM mdm_commands.operations o JOIN mdm_management.firewall_versions v ON v.tenant_id=o.tenant_id AND v.policy=o.request->'task'->>'policy' AND v.version=(o.request->'task'->>'version')::bigint JOIN mdm_management.firewall_resources r ON(r.tenant_id,r.resource,r.version)=(v.tenant_id,v.resource,v.resource_version) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND o.request->'task'->>'kind'='firewall' AND o.request->'task'->>'policy'=p_policy ORDER BY o.id;
+SELECT o.device,(o.request->'task'->>'version')::bigint AS version,d.status,(SELECT a.status FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.receipt_accepted ORDER BY ordinal DESC LIMIT 1) AS write_status FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND o.request->'task'->>'kind'='firewall' AND o.request->'task'->>'policy'=p_policy ORDER BY o.id LIMIT 10001;
 $facts$;
 REVOKE ALL ON FUNCTION mdm_commands.policy_facts(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_commands.policy_facts(text) TO mdm_management_runtime;
-ALTER TABLE mdm_management.plan_references ADD COLUMN saved_revision bigint NOT NULL DEFAULT 0;
-ALTER TABLE mdm_management.plan_references ALTER COLUMN saved_revision DROP DEFAULT;
+-- Immutable execution inputs plus a single owner-composed freshness predicate.
+CREATE FUNCTION mdm_management.plan_execution_admission(p_plan uuid)
+RETURNS TABLE(document jsonb,saved_revision bigint,current boolean)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $admission$
+SELECT f.document,f.saved_revision,
+ mdm_policy_projection.execution_admission(f.policy,f.id::text,coalesce(f.saved_revision,f.revision),f.saved_revision IS NOT NULL)
+ AND EXISTS(SELECT 1 FROM mdm_management.scope_runs r JOIN mdm_management.scopes s
+ ON (s.tenant_id,s.id)=(r.tenant_id,r.scope)
+ JOIN mdm_management.scope_runs live ON (live.tenant_id,live.id)=(s.tenant_id,s.resolution)
+ WHERE (r.tenant_id,r.id)=(f.tenant_id,f.resolution) AND NOT s.deleted
+ AND s.revision=r.definition_revision AND live.result_fingerprint=r.result_fingerprint
+ AND NOT EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h
+ WHERE h.tenant_id=r.tenant_id AND h.revision>r.asset_watermark
+ AND EXISTS(SELECT 1 FROM mdm_management.scope_source_members m
+ WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))))
+FROM mdm_management.firewall_plans f
+WHERE f.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND f.id=p_plan;
+$admission$;
+REVOKE ALL ON FUNCTION mdm_management.plan_execution_admission(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_management.plan_execution_admission(uuid) TO mdm_management_runtime,mdm_command_runtime;
+ALTER TABLE mdm_management.automation_jobs ADD COLUMN failure_detail jsonb;
+ALTER TABLE mdm_management.automation_jobs DROP CONSTRAINT automation_jobs_failure_check;
+ALTER TABLE mdm_management.automation_jobs ADD CONSTRAINT automation_jobs_failure_check CHECK(failure IN('superseded','capacity_exceeded','source_unavailable','invalid_input','storage_invariant','automation_suspended','configuration_target_limit','capability_unknown','platform_unsupported','stale_plan','owner_conflict'));
+GRANT UPDATE(failure_detail) ON mdm_management.automation_jobs TO mdm_management_runtime;
 COMMIT;

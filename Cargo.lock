@@ -2404,6 +2404,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-agent-wire"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "rss-mdm-app"
 version = "0.1.0"
 dependencies = [
@@ -2425,6 +2438,7 @@ dependencies = [
  "rss-identity-http-axum",
  "rss-identity-oidc",
  "rss-identity-postgres",
+ "rss-mdm-agent-wire",
  "rss-mdm-brew-source",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",

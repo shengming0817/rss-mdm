@@ -1,8 +1,8 @@
 # 与 RSS 一致的扁平 workspace；产品实现按职责放在 crates/ 下。
 [workspace]
 resolver = "3"
-members = ["crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
-default-members = ["crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
+members = ["crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "tests/inventory-postgres-integration", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
+default-members = ["crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 rss-mdm-backend-postgres-support = { path = "crates/backend-postgres-support" }
+rss-mdm-agent-wire = { path = "crates/agent-wire" }
 rss-mdm-software-release = { path = "crates/software-release" }
 rss-mdm-resource = { path = "crates/resource" }
 rss-mdm-winget-source = { path = "crates/winget-source" }

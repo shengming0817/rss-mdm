@@ -20,9 +20,14 @@
 //!     let _ = ExecutionRecord::new(version, payload, Progress::Planned, Effect::Unverified);
 //! }
 //! ```
+//! Full-target inputs and synchronous full-plan materialization are unavailable.
+//! ```compile_fail
+//! use rss_mdm_policy::{reconcile, PlanInput, TargetSnapshot};
+//! ```
 #![forbid(unsafe_code)]
 #![warn(clippy::cognitive_complexity)]
 mod fingerprint;
+pub use fingerprint::{ExecutionDigest, TargetDigest, stream_plan_id};
 mod identity;
 mod lifecycle;
 pub use identity::{DeviceId, PayloadId, PolicyId, RequestId, TargetSnapshotId};
