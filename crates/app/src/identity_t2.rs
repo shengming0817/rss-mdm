@@ -1274,7 +1274,13 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         .await?;
     ensure!(me["instanceId"] == INSTANCE && me["tenantId"] == TENANT && me["grants"] == json!([]));
     let subject = me["principalId"].as_str().unwrap();
-    host_context_matrix(&base, reader.clone(), &browser, subject).await?;
+    Box::pin(host_context_matrix(
+        &base,
+        reader.clone(),
+        &browser,
+        subject,
+    ))
+    .await?;
     let query = "/api/v2/devices/device-1/inventory".to_owned();
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
     let allowed = base.clone();
@@ -1297,7 +1303,13 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::OK
     );
-    agent_matrix(&authorized, &allowed, &agent_access, &mut browser).await?;
+    Box::pin(agent_matrix(
+        &authorized,
+        &allowed,
+        &agent_access,
+        &mut browser,
+    ))
+    .await?;
     let scope = serde_json::to_string(
         &json!({"tenant":TENANT,"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
     )?;
@@ -1337,8 +1349,21 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             == StatusCode::FORBIDDEN
     );
     Box::pin(management::matrix(&allowed, reader.clone(), &browser)).await?;
-    enrollment_matrix(&authorized, &allowed, reader.clone(), &mut browser, &query).await?;
-    native_accounts(&initial, &authorized, &mut browser, subject).await?;
+    Box::pin(enrollment_matrix(
+        &authorized,
+        &allowed,
+        reader.clone(),
+        &mut browser,
+        &query,
+    ))
+    .await?;
+    Box::pin(native_accounts(
+        &initial,
+        &authorized,
+        &mut browser,
+        subject,
+    ))
+    .await?;
     reader.close().await;
     println!("MDM_LOCAL_AUTHORITY_MATRIX_PASSED");
     Ok(())

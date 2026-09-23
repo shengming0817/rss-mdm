@@ -403,7 +403,10 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         None,
     )
     .await?;
-    ensure!(catalog["asset"]["fields"].as_array().unwrap().len() == 6);
+    ensure!(
+        catalog["asset"]["fields"].as_array().unwrap().len()
+            == rss_mdm_inventory::FieldKey::ALL.len()
+    );
     let cases = [
         ("custom.asset_tag", "string", json!("A-2463")),
         ("custom.office_floor", "integer", json!(3)),
