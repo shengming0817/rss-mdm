@@ -165,7 +165,7 @@ def prepare_output(out):
 
 
 def main():
-    out = ci.OUT / "core-consumers"
+    out = ci.ROOT / "artifacts" / "core-consumers"
     prepare_output(out)
     head = ci.command(["/usr/bin/git", "rev-parse", "HEAD"]).stdout.strip()
     ci.require(ci.command(["/usr/bin/git", "status", "--porcelain"]).stdout.strip() == "", "commit implementation before core consumer verification")

@@ -63,7 +63,7 @@ def run(source,base,kind,head,pin,out,defaults):
     (out/f'{kind}-{defaults}.lock').write_bytes(frozen)
     return {'head':head,'package':product,'defaultFeatures':defaults,'rssRevision':pin[1],'lockSha256':hashlib.sha256((root/'Cargo.lock').read_bytes()).hexdigest(),'status':'passed'}
 def main():
-    out=ci.OUT/'inventory-consumers';prepare_output(out)
+    out=ci.ROOT/'artifacts'/'inventory-consumers';prepare_output(out)
     ci.require(not ci.command(['/usr/bin/git','status','--porcelain']).stdout.strip(),'commit implementation before isolated proof')
     head=ci.command(['/usr/bin/git','rev-parse','HEAD']).stdout.strip();results=[]
     with tempfile.TemporaryDirectory(prefix='mdm-inventory-consumer-',dir='/tmp') as d:

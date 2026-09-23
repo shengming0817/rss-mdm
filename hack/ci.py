@@ -18,7 +18,6 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
-SOURCE_CONSUMER_OUT = ROOT / "artifacts" / "source-consumers"
 
 LOCAL_PACKAGES = {
     "rss-mdm-agent-wire": "crates/agent-wire",
@@ -223,115 +222,11 @@ def isolate():
         return "clean checkout, fresh Cargo home/target, both feature graphs passed"
 
 
-# Capability families include their subcrates (e.g. sqlx-postgres, hyper-util).
-# Product/RSS owners are separately restricted to Group and its two value types.
-GROUP_FORBIDDEN_DEPENDENCIES = {
-    "http", "hyper", "reqwest", "ureq", "surf", "awc", "attohttpc", "isahc",
-    "axum", "actix-web", "warp", "tide", "poem", "rocket", "salvo",
-    "postgres", "tokio-postgres", "sqlx", "diesel", "sea-orm", "sea-query",
-    "deadpool-postgres", "bb8-postgres",
-}
-
-def verify_group_consumer(data, group_source, pin):
-    """Check resolved package identities and the actual production dependency edges."""
-    packages = {p["id"]: p for p in data["packages"]}
-    root = data["resolve"]["root"]
-    require(data["workspace_members"] == [root], "consumer must be the sole workspace member")
-    require(packages[root]["name"] == "group-consumer" and packages[root]["source"] is None, "invalid consumer root")
-    value_types = {"rss-contract", "rss-request-context"}
-    expected_rss = f"git+{pin[0]}?rev={pin[1]}#{pin[1]}"
-    group_ids = []
-    for key, package in packages.items():
-        name, source = package["name"], package["source"]
-        if key == root:
-            continue
-        if name == "rss-mdm-group":
-            require(source == group_source, "Group source must equal the tested Git SHA")
-            group_ids.append(key)
-        elif name.startswith("rss-"):
-            require(name in value_types and source == expected_rss, "unexpected RSS/product dependency or revision")
-        else:
-            require(source and source.startswith("registry+https://github.com/rust-lang/crates.io-index"), "unexpected path/source in consumer closure")
-    require(len(group_ids) == 1, "exactly one Group package required")
-    nodes = {n["id"]: n for n in data["resolve"]["nodes"]}
-    require(packages[group_ids[0]]["features"] == {} and nodes[group_ids[0]]["features"] == [], "Group feature surface changed; extend the consumer matrix explicitly")
-    def dependencies(key):
-        return {packages[d["pkg"]]["name"] for d in nodes[key]["deps"]}
-    require(dependencies(root) == value_types | {"rss-mdm-group"}, "consumer must directly use only Group and its public value types")
-    require(dependencies(group_ids[0]) == value_types, "Group must depend only on public tenant/time values")
-    visited, todo = set(), [group_ids[0]]
-    while todo:
-        key = todo.pop()
-        if key in visited:
-            continue
-        visited.add(key)
-        name = packages[key]["name"]
-        require(not any(name == banned or name.startswith(banned + "-") for banned in GROUP_FORBIDDEN_DEPENDENCIES),
-                f"forbidden Group production dependency: {name}")
-        for dep in nodes[key]["deps"]:
-            # Include normal/build edges on every target; dependency tests are not production.
-            if any(kind.get("kind") != "dev" for kind in dep.get("dep_kinds", [{"kind": None}])):
-                todo.append(dep["pkg"])
-
-
-def group_consumer(head):
-    """One package consumed from committed Git source; fixture source stays in Group tests."""
-    (OUT / "group-consumer.log").write_text(f"tested HEAD: {head}\n")
-    status = command(["/usr/bin/git", "status", "--porcelain"])
-    require(status.returncode == 0 and not status.stdout.strip(), "commit inputs before Group consumer proof")
-    pin = workspace_pin(ROOT)
-    url = ROOT.as_uri()
-    with tempfile.TemporaryDirectory(prefix="mdm-group-consumer-", dir="/tmp") as directory:
-        base = Path(directory).resolve()
-        consumer = base / "consumer"
-        (consumer / "tests").mkdir(parents=True)
-        for parent in [consumer, *consumer.parents]:
-            for name in ["config", "config.toml"]:
-                require(not (parent / ".cargo" / name).exists(), "ancestor Cargo config leaks into consumer")
-        # Own only credential transport configuration; do not inherit parent build/features.
-        (consumer / ".cargo").mkdir()
-        (consumer / ".cargo/config.toml").write_text("[net]\ngit-fetch-with-cli = true\n")
-        for source, destination in [("crates/group/tests/consumer.rs", "tests/consumer.rs"), ("rust-toolchain.toml", "rust-toolchain.toml")]:
-            result = command(["/usr/bin/git", "show", f"{head}:{source}"])
-            require(result.returncode == 0, result.stdout)
-            (consumer / destination).write_text(result.stdout)
-        manifest = '[workspace]\n[package]\nname = "group-consumer"\nversion = "0.0.0"\nedition = "2024"\n[dependencies]\n'
-        for name, source, rev in [("rss-mdm-group", url, head), ("rss-contract", *pin), ("rss-request-context", *pin)]:
-            options = '' if name == 'rss-mdm-group' else ', default-features = false'
-            manifest += f'{name} = {{ git = {json.dumps(source)}, rev = {json.dumps(rev)}{options} }}\n'
-        (consumer / "Cargo.toml").write_text(manifest)
-        env = {k:v for k,v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
-        env.update(CARGO_HOME=str(base / "cargo-home"), CARGO_TARGET_DIR=str(base / "target"))
-        env["PATH"] = "/usr/bin:" + env.get("PATH", "")
-        logs = [f"tested HEAD: {head}"]
-        for args in [["cargo", "generate-lockfile"], ["cargo", "check", "--locked"], ["cargo", "test", "--locked"],
-                     ["cargo", "metadata", "--locked", "--format-version", "1"], ["cargo", "tree", "--locked", "-e", "features"]]:
-            result = subprocess.run(args, cwd=consumer, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, capture_output=True)
-            logs.append("$ " + " ".join(args) + "\n" + result.stdout + result.stderr)
-            (OUT / "group-consumer.log").write_text("\n".join(logs))
-            require(result.returncode == 0, "Group consumer command failed; see group-consumer.log")
-            if args[1] == "metadata":
-                verify_group_consumer(json.loads(result.stdout), f"git+{url}?rev={head}#{head}", pin)
-                (OUT / "group-metadata.json").write_text(result.stdout)
-            if args[1] == "tree":
-                (OUT / "group-tree.txt").write_text(result.stdout)
-        lock = (consumer / "Cargo.lock").read_bytes()
-        (OUT / "group-consumer.lock").write_bytes(lock)
-        (OUT / "group-consumer.json").write_text(json.dumps({"head": head, "rssRevision": pin[1], "lockSha256": hashlib.sha256(lock).hexdigest(),
-            "features": "Group defaults enabled; empty declared/resolved feature sets verified", "source": "local committed Git revision", "T3": "not run"}, indent=2) + "\n")
-
-
-# Scripts consume public packages and sometimes fixture/source files outside Cargo
-# edges. Keep these extra inputs explicit; unclassified new gates run conservatively.
+# T2 scripts also read fixture/source files outside Cargo edges. Keep those
+# inputs explicit; unclassified new CI gates run conservatively.
 APP_INPUTS = {"rss-mdm-app", "rss-mdm-examples"}
 GATE_PACKAGES = {
     "agent-wire-compat": {"rss-mdm-agent-wire"},
-    "core-consumers": {"rss-mdm-scope", "rss-mdm-policy", "rss-mdm-software-release"},
-    "inventory-consumers": APP_INPUTS | {"rss-mdm-inventory", "rss-mdm-inventory-postgres"},
-    "group-consumer": {"rss-mdm-group"},
-    "group-postgres-consumers": {"rss-mdm-group-postgres"},
-    "backend-consumers": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
-    "source-consumers": {"rss-mdm-resource", "rss-mdm-winget-source", "rss-mdm-brew-source"},
     "source-t2": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
     "source-t2-oracle": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
     "group-t2": APP_INPUTS | {"rss-mdm-group-postgres"},
@@ -394,22 +289,27 @@ def gate_command(name, args, selection):
 # Gate-owned, regenerable evidence only; retain unrelated archives and T3 results.
 EXTRA_EVIDENCE = {
     "pin": ("pin.log",),
-    "core-consumers": ("core-consumers",),
-    "inventory-consumers": ("inventory-consumers",),
-    "backend-consumers": ("backend-consumers",),
-    "group-postgres-consumers": ("group-postgres-consumers",),
     "isolation": ("isolation-error.txt", "isolated-build.log", "metadata-normal.json",
                   "metadata-integration.json", "metadata-normal.stderr.log",
                   "metadata-integration.stderr.log", "tree-normal.txt", "tree-integration.txt"),
-    "group-consumer": ("group-consumer-error.txt", "group-consumer.log", "group-consumer.json",
-                       "group-consumer.lock", "group-metadata.json", "group-tree.txt"),
 }
+
+# Old CI-owned consumer receipts must not survive as apparent current CI proof.
+# Explicit consumer acceptance now writes outside artifacts/local-ci.
+LEGACY_CONSUMER_EVIDENCE = (
+    "core-consumers", "inventory-consumers", "backend-consumers", "group-postgres-consumers",
+    "group-consumer-error.txt", "group-consumer.log", "group-consumer.json",
+    "group-consumer.lock", "group-metadata.json", "group-tree.txt",
+    "core-consumers.log", "inventory-consumers.log", "backend-consumers.log",
+    "group-postgres-consumers.log", "source-consumers.log", "agent-wire-consumer.log",
+)
 
 
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
     paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
-    paths.update({SOURCE_CONSUMER_OUT, OUT / "result.json", OUT / "selection.json"})
+    paths.update(OUT / name for name in LEGACY_CONSUMER_EVIDENCE)
+    paths.update({OUT / "result.json", OUT / "selection.json"})
     for path in paths:
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
@@ -429,8 +329,6 @@ def main():
         ("clippy",["cargo","clippy","--locked","--workspace","--all-targets","--all-features","--","-D","warnings"]),
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
-        ("core-consumers",[sys.executable,"hack/core_consumer.py"]),
-        ("inventory-consumers",[sys.executable,"hack/inventory_consumer.py"]),
         ("t2",[sys.executable,"hack/t2.py"]),
         ("group-t2",[sys.executable,"hack/group-t2.py"]),
         ("management-t2",[sys.executable,"hack/management-t2.py"]),
@@ -439,13 +337,9 @@ def main():
         ("command-t2",[sys.executable,"hack/command-t2.py"]),
         ("backend-t2",[sys.executable,"hack/backend-t2.py"]),
         ("publication-t2",[sys.executable,"hack/publication-t2.py"]),
-        ("backend-consumers",[sys.executable,"hack/backend_postgres_consumer.py"]),
-        ("group-postgres-consumers",[sys.executable,"hack/group_postgres_consumer.py"]),
         ("source-t2-oracle",[sys.executable,"hack/test_source_t2.py"]),
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
-        ("source-consumers",[sys.executable,"hack/source-consumers.py"]),
         ("agent-wire-compat",[sys.executable,"hack/agent_wire_compat.py"]),
-        ("agent-wire-consumer",[sys.executable,"hack/agent-wire-consumer.py"]),
 
         ("gateway-t2",[sys.executable,"hack/login_gateway_t2.py"]),
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
@@ -460,7 +354,6 @@ def main():
         "pin": "Check workspace RSS/Identity pins and dependency source policy",
         "identity": "Verify final HEAD equals starting HEAD and Git status is clean",
         "isolation": "Clean Git clone, fresh Cargo home/target, locked clippy and both feature graphs",
-        "group-consumer": "Consume Group public API from the tested Git revision in isolation",
     }.items():
         plan["gates"][name] = {"selected": name in {"pin", "identity"} or selected_gate(name, selection),
                                "check": description}
@@ -495,7 +388,7 @@ def main():
         print(f"{name}: {results[name]}", flush=True)
     try:
         if selected_gate("isolation", selection):
-            print("local CI: isolated Git consumer", flush=True)
+            print("local CI: isolated product build", flush=True)
             isolate()
             results["isolation"] = "passed"
         else:
@@ -503,17 +396,7 @@ def main():
     except Exception as error:
         (OUT / "isolation-error.txt").write_text(str(error))
         results["isolation"] = "failed"
-    try:
-        if selected_gate("group-consumer", selection):
-            print("local CI: Group public API consumer", flush=True)
-            group_consumer(start_head)
-            results["group-consumer"] = "passed"
-        else:
-            results["group-consumer"] = "skipped"
-    except Exception as error:
-        (OUT / "group-consumer-error.txt").write_text(str(error))
-        results["group-consumer"] = "failed"
-    for name in ("pin", "isolation", "group-consumer"):
+    for name in ("pin", "isolation"):
         print(f"{name}: {results[name]}", flush=True)
     end_head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     status = command(["/usr/bin/git", "status", "--porcelain"])

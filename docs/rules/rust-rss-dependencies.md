@@ -28,7 +28,7 @@ Git checkout 内上游自身的 workspace/path 关系由 Cargo 解析为同一 G
 ## 产品内部逐 crate 独立消费
 
 本批能力名称与依赖禁边由 [ADR](../architecture/adr/202609072231-001-rust-rss-product-foundation.md#独立后端能力契约n01--2379) 唯一持有。
-以下是各实现 PBI 的验收方法；N01 只冻结方法，不新增 gate，也不声明逐包验证已经通过。
+以下是明确消费者验收任务可显式运行的逐包方法；不属于任何本地 CI 入口。N01 只冻结方法，不新增 gate，也不声明逐包验证已经通过。
 
 每个待验核心或 adapter 从已提交源码的固定 Git SHA 获取，由 RSS 与 rss-mdm workspace 外的最小 consumer
 只直接依赖一个产品 package；此外可直接依赖该产品公共签名所需的 canonical RSS 值类型 owner。
