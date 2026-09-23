@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 use std::collections::BTreeSet;
 
 pub(super) async fn verify(router: &Router, pending: Value) -> Result<Value> {
