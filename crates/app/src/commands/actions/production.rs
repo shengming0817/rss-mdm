@@ -30,6 +30,33 @@ impl ProduceOutcome {
     }
 }
 
+enum Admission {
+    Available,
+    Duplicate,
+    CapacityBlocked,
+}
+
+async fn admission(
+    tx: &mut PgTransaction<'_>,
+    plan: Uuid,
+    device: &str,
+    occurrence: &str,
+    now: i64,
+) -> Result<Admission> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let plan = plan.to_string();
+    let occurrence = occurrence.to_owned();
+    let (duplicate, active)=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND device=$3 AND occurrence=$4), (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)").bind(tenant).bind(plan).bind(device).bind(occurrence).bind(now).fetch_one(c).await})).await?;
+    Ok(if duplicate {
+        Admission::Duplicate
+    } else if active >= 128 {
+        Admission::CapacityBlocked
+    } else {
+        Admission::Available
+    })
+}
+
 pub(super) async fn produce(
     service: &Commands,
     tx: &mut PgTransaction<'_>,
@@ -85,18 +112,16 @@ pub(super) async fn produce(
         } else {
             format!("{trigger}:{coordinate}")
         };
-        let tenant = tx.tenant_id().to_string();
-        let device_key = device.clone();
-        let plan_key = plan.id.to_string();
-        let occurrence_key = key.clone();
-        let (duplicate, active)=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND device=$3 AND occurrence=$4), (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)").bind(tenant).bind(plan_key).bind(device_key).bind(occurrence_key).bind(now).fetch_one(c).await})).await?;
-        if duplicate {
-            outcome = outcome.merge(ProduceOutcome::Duplicate);
-            continue;
-        }
-        if active >= 128 {
-            outcome = outcome.merge(ProduceOutcome::CapacityBlocked);
-            continue;
+        match admission(tx, plan.id, device, &key, now).await? {
+            Admission::Available => (),
+            Admission::Duplicate => {
+                outcome = outcome.merge(ProduceOutcome::Duplicate);
+                continue;
+            }
+            Admission::CapacityBlocked => {
+                outcome = outcome.merge(ProduceOutcome::CapacityBlocked);
+                continue;
+            }
         }
         let deadline = occurrence
             .available_at

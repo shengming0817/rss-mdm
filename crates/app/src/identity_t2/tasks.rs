@@ -7,6 +7,23 @@ use uuid::Uuid;
 const CREDENTIAL: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
 const DEVICE_ID: &str = "enterprise-device";
 
+fn next_new_york_fold(now: i64) -> Result<i64> {
+    use jiff::{ToSpan, tz::AmbiguousOffset};
+    let zone = jiff::tz::TimeZone::get("America/New_York")?;
+    let mut date = zone.to_datetime(jiff::Timestamp::from_second(now)?).date();
+    for _ in 0..=366 {
+        let ambiguous = zone.to_ambiguous_timestamp(date.at(1, 30, 0, 0));
+        if matches!(ambiguous.offset(), AmbiguousOffset::Fold { .. }) {
+            let fold = ambiguous.earlier()?.as_second();
+            if fold > now {
+                return Ok(fold);
+            }
+        }
+        date = date.checked_add(1.days())?;
+    }
+    anyhow::bail!("next New York DST fold not found")
+}
+
 async fn post(browser: &mut Browser, router: &Router, path: &str, body: Value) -> Result<Value> {
     let response = browser.call(router, Method::POST, path, Some(body)).await?;
     ensure!(response.0.is_success(), "{path}: {response:?}");
@@ -252,6 +269,18 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     .await?;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let plan_id = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    ensure!(
+        author
+            .call(
+                &router,
+                Method::POST,
+                &format!("/api/v3/resources/{id}"),
+                Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"archive","version":"v1"}})),
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
     let config: Config = serde_json::from_value(base.clone())?;
     let worker = crate::commands::Commands::open(&config).await?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
@@ -332,6 +361,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         "detail: {detail}"
     );
     group_matrix(&mut author, &router, &base).await?;
+    history::verify(&mut author, &router, plan_id).await?;
     let read = author
         .call(
             &router,
@@ -360,9 +390,130 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
             == "1.2",
         "bad output replaced trusted value: {detail}"
     );
-    plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
-    let pending = claim(&router).await?;
+    let timeout_plan = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    let timeout_task = claim(&router).await?;
+    task_event(&router, &timeout_task, json!({"kind":"received"})).await?;
+    task_event(&router, &timeout_task, json!({"kind":"start"})).await?;
+    let cancel_plan = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    let cancel_task = claim(&router).await?;
+    task_event(&router, &cancel_task, json!({"kind":"received"})).await?;
+    task_event(&router, &cancel_task, json!({"kind":"start"})).await?;
+    let queued_plan = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if pg(&format!(
+                "SELECT gateway_accepted FROM mdm_commands.action_runs WHERE plan='{queued_plan}'"
+            ))?
+            .trim()
+                == "t"
+            {
+                break Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    capacity::verify(&mut author, &mut reviewer, &router, id, &commands).await?;
     scheduled_matrix(&mut author, &mut reviewer, &router, id, &commands, &config).await?;
+    ensure!(stack.shutdown().join().await?.is_clean());
+    post(
+        &mut author,
+        &router,
+        &format!("/api/v3/script-plans/{cancel_plan}/cancel"),
+        json!({"operationId":Uuid::new_v4()}),
+    )
+    .await?;
+    let timeout_id = timeout_task["payload"]["taskId"].as_str().unwrap();
+    pg(&format!(
+        "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{timeout_id}'"
+    ))?;
+    pg(&format!(
+        "UPDATE mdm_commands.action_plans SET recovery_after=NULL WHERE id IN ('{timeout_plan}','{cancel_plan}','{queued_plan}')"
+    ))?;
+    let before_runs = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
+    let before_attempts = pg("SELECT count(*) FROM mdm_commands.action_attempts")?;
+    let before_outbox = pg("SELECT count(*) FROM rss_transactional_messaging.outbox")?;
+    let restarted = crate::commands::Commands::open(&config).await?;
+    for plan in [timeout_plan, cancel_plan, queued_plan] {
+        restarted.recover_action_fixture(plan).await?;
+    }
+    ensure!(pg("SELECT count(*) FROM mdm_commands.action_runs")? == before_runs);
+    ensure!(pg("SELECT count(*) FROM mdm_commands.action_attempts")? == before_attempts);
+    ensure!(pg("SELECT count(*) FROM rss_transactional_messaging.outbox")? == before_outbox);
+    ensure!(
+        pg(&format!(
+            "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE id='{timeout_id}'"
+        ))?
+        .trim()
+            == "unknown"
+    );
+    let cancel_id = cancel_task["payload"]["taskId"].as_str().unwrap();
+    ensure!(
+        pg(&format!(
+            "SELECT state->>'cancellation' FROM mdm_commands.action_runs WHERE id='{cancel_id}'"
+        ))?
+        .trim()
+            == "requested"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE plan='{queued_plan}'"
+        ))?
+        .trim()
+            == "not_started"
+    );
+    task_event(&router,&timeout_task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"late-timeout","healthy":false}})).await?;
+    task_event(&router,&cancel_task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"late-cancel","healthy":false}})).await?;
+    task_event(&router, &cancel_task, json!({"kind":"cancelled"})).await?;
+    for task in [&timeout_task, &cancel_task] {
+        let task = task["payload"]["taskId"].as_str().unwrap();
+        ensure!(
+            pg(&format!(
+                "SELECT result->>'trusted' FROM mdm_commands.action_runs WHERE id='{task}'"
+            ))?
+            .trim()
+                == "false"
+        );
+        ensure!(
+            pg(&format!(
+                "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE id='{task}'"
+            ))?
+            .trim()
+                == "succeeded"
+        );
+    }
+    ensure!(
+        pg(&format!(
+            "SELECT state->>'cancellation' FROM mdm_commands.action_runs WHERE id='{cancel_id}'"
+        ))?
+        .trim()
+            == "confirmed"
+    );
+    rss_runtime::ManagedResource::shutdown(&crate::commands::Resource(restarted)).await?;
+    let pending = claim(&router).await?;
+    let pending = poll::verify(&router, pending).await?;
+    ensure!(
+        pending["payload"]["taskId"]
+            == pg(&format!(
+                "SELECT id FROM mdm_commands.action_runs WHERE plan='{queued_plan}'"
+            ))?
+            .trim()
+    );
+    tokio::time::timeout(Duration::from_secs(15),async{loop{if pg("SELECT count(*) FROM mdm_access.collection_runs WHERE source='agent.script' AND delivery_pending")?.trim()=="0"{break Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;}}).await??;
+    let (_, recovered_detail) = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/devices/{DEVICE_ID}/inventory"),
+            None,
+        )
+        .await?;
+    ensure!(
+        recovered_detail["asset"]["device"]["fields"]["custom.corporate_agent.version"]["state"]["value"]
+            ["value"]
+            == "1.2",
+        "late evidence replaced lastKnown: {recovered_detail}"
+    );
     crate::identity_fixture::set_grants(TENANT, &reviewer_id, vec![]).await?;
     let event=agent_call(&router,Method::POST,&format!("/api/agent/v2/tasks/{}/events",pending["payload"]["taskId"].as_str().unwrap()),Some(CREDENTIAL),Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"attemptId":pending["payload"]["attemptId"],"event":{"kind":"received"}}))).await?;
     ensure!(
@@ -401,7 +552,6 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     );
     ensure!(inventory.shutdown().join().await?.is_clean());
     runtime.close_fixture().await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
     Ok(())
 }
 
@@ -508,8 +658,7 @@ async fn scheduled_matrix(
     pg(
         "UPDATE mdm_commands.action_plans SET active=false WHERE document->'input'->'schedule'->'trigger'->>'kind'='check_in'",
     )?;
-    let timestamp = |s: &str| s.parse::<jiff::Timestamp>().unwrap().as_second();
-    let fold = timestamp("2026-11-01T05:30:00Z");
+    let fold = next_new_york_fold(now)?;
     let mut cases = Vec::new();
     for misfire in ["skip", "coalesce_one"] {
         cases.push((json!({"trigger":{"kind":"interval","anchor":fold-600,"seconds":60},"notBefore":fold-600,"until":fold+86400,"jitterSeconds":0,"window":null,"misfire":misfire}),fold+59,if misfire=="skip"{0}else{1}));
@@ -517,7 +666,12 @@ async fn scheduled_matrix(
     cases.push((json!({"trigger":{"kind":"weekly","zone":"America/New_York","weekday":7,"minute":90},"notBefore":fold-3600,"until":fold+86400,"jitterSeconds":0,"window":{"zone":"UTC","weekdays":[7],"startMinute":600,"endMinute":660},"misfire":"coalesce_one"}),fold+5400,1));
     for (schedule, at, count) in cases {
         let id = Uuid::new_v4();
-        post(author,router,"/api/v3/script-plans",json!({"operationId":id,"resource":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default","parameters":{},"devices":[DEVICE_ID],"schedule":schedule,"runLifetimeSeconds":300})).await?;
+        let lifetime = if schedule["trigger"]["kind"] == "weekly" {
+            7200
+        } else {
+            300
+        };
+        post(author,router,"/api/v3/script-plans",json!({"operationId":id,"resource":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default","parameters":{},"devices":[DEVICE_ID],"schedule":schedule,"runLifetimeSeconds":lifetime})).await?;
         post(
             reviewer,
             router,
@@ -552,7 +706,14 @@ async fn scheduled_matrix(
                     "SELECT available_at FROM mdm_commands.action_runs WHERE plan='{id}'"
                 ))?
                 .trim()
-                    == timestamp("2026-11-01T10:00:00Z").to_string()
+                    == (fold + 16_200).to_string()
+            );
+            ensure!(
+                pg(&format!(
+                    "SELECT deadline FROM mdm_commands.action_runs WHERE plan='{id}'"
+                ))?
+                .trim()
+                    == (fold + 19_800).to_string()
             );
         }
         post(
@@ -596,3 +757,7 @@ async fn group_matrix(author: &mut Browser, router: &Router, config: &Value) -> 
     ensure!(automation.shutdown().join().await?.is_clean());
     Ok(())
 }
+
+mod capacity;
+mod history;
+mod poll;

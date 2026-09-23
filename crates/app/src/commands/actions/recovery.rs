@@ -77,6 +77,24 @@ impl Commands {
 
 #[cfg(all(test, feature = "integration"))]
 impl Commands {
+    /// Exercise the production recovery transaction through the same action funnel as the worker.
+    pub(crate) async fn recover_action_fixture(
+        &self,
+        id: Uuid,
+    ) -> std::result::Result<(), crate::Error> {
+        let audit = crate::audit::Audit::new(self.tenant.to_string(), "management_write");
+        let result = self
+            .transact((self, id), &audit, |ctx, tx| {
+                Box::pin(async move {
+                    let (service, id) = *ctx;
+                    recover(service, tx, id).await
+                })
+            })
+            .await;
+        audit.finalize(None);
+        result
+    }
+
     /// Drive the production scheduling transaction at a fixed clock without a second worker.
     pub(crate) async fn scan_action_fixture(
         &self,
