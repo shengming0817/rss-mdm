@@ -90,11 +90,17 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
     }
 }
 
-async fn bounded<T>(
+pub(crate) async fn bounded<T>(
     _app: &Arc<App>,
     work: impl Future<Output = Result<T, AgentError>>,
 ) -> Result<T, AgentError> {
-    tokio::time::timeout(Duration::from_secs(8), work)
+    bounded_for(Duration::from_secs(8), work).await
+}
+async fn bounded_for<T>(
+    budget: Duration,
+    work: impl Future<Output = Result<T, AgentError>>,
+) -> Result<T, AgentError> {
+    tokio::time::timeout(budget, work)
         .await
         .map_err(|_| AgentError::App(Error::Unavailable(Failure::RequestDeadline)))?
 }
@@ -519,6 +525,20 @@ fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bounded_timeout_preserves_the_agent_deadline_error() {
+        let error = bounded_for(
+            Duration::ZERO,
+            std::future::pending::<Result<(), AgentError>>(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            AgentError::App(Error::Unavailable(Failure::RequestDeadline))
+        ));
+    }
 
     #[test]
     fn wire_discriminators_distinguish_absent_from_unsupported() {
