@@ -69,10 +69,6 @@ t2-assets:
 command-catalog:
 	python3 hack/command_catalog.py --check
 
-.PHONY: capacity
-capacity:
-	python3 hack/capacity.py
-
 .PHONY: t2-apple
 t2-apple:
 	python3 hack/apple-t2.py

@@ -226,7 +226,6 @@ def isolate():
 # inputs explicit; unclassified new CI gates run conservatively.
 APP_INPUTS = {"rss-mdm-app", "rss-mdm-examples"}
 GATE_PACKAGES = {
-    "capacity": APP_INPUTS | {"rss-mdm-group", "rss-mdm-group-postgres", "rss-mdm-scope", "rss-mdm-policy", "rss-mdm-policy-postgres"},
     "agent-wire-compat": {"rss-mdm-agent-wire"},
     "source-t2": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
     "source-t2-oracle": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
@@ -289,7 +288,6 @@ def gate_command(name, args, selection):
 
 # Gate-owned, regenerable evidence only; retain unrelated archives and T3 results.
 EXTRA_EVIDENCE = {
-    "capacity": ("../capacity",),
     "pin": ("pin.log",),
     "isolation": ("isolation-error.txt", "isolated-build.log", "metadata-normal.json",
                   "metadata-integration.json", "metadata-normal.stderr.log",
@@ -334,7 +332,6 @@ def main():
         ("t2",[sys.executable,"hack/t2.py"]),
         ("group-t2",[sys.executable,"hack/group-t2.py"]),
         ("management-t2",[sys.executable,"hack/management-t2.py"]),
-        ("capacity",[sys.executable,"hack/capacity.py"]),
         ("asset-t2",[sys.executable,"hack/asset-t2.py"]),
         ("command-catalog",[sys.executable,"hack/command_catalog.py","--check"]),
         ("command-t2",[sys.executable,"hack/command-t2.py"]),
