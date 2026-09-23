@@ -26,6 +26,8 @@ pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
         .route("/script-plans", post(create))
         .route("/script-plans/{id}", get(read))
+        .route("/script-plans/{id}/runs", get(runs))
+        .route("/script-plans/{id}/runs/{task}", get(run))
         .route("/script-plans/{id}/approve", post(approve))
         .route("/script-plans/{id}/cancel", post(cancel))
         .route(
@@ -50,6 +52,7 @@ async fn create(
 ) -> Result<(StatusCode, Json<Value>), Error> {
     let input = body(input)?;
     audit.operation(input.operation_id, "command_accept");
+    audit.plan(input.operation_id);
     app.commands
         .create_action_plan(&auth.proof, &input, &audit)
         .await
@@ -62,8 +65,37 @@ async fn read(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, Error> {
     audit.operation(id, "command_read");
+    audit.plan(id);
     app.commands
         .read_action_plan(&auth.proof, id, &audit)
+        .await
+        .map(Json)
+}
+async fn runs(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path(id): Path<Uuid>,
+    Query(page): Query<super::history::Page>,
+) -> Result<Json<Value>, Error> {
+    audit.operation(id, "command_read");
+    audit.plan(id);
+    app.commands
+        .action_runs(&auth.proof, id, &page, &audit)
+        .await
+        .map(Json)
+}
+async fn run(
+    State(app): State<Arc<App>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<Audit>,
+    Path((id, task)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>, Error> {
+    audit.operation(task, "command_read");
+    audit.plan(id);
+    audit.target(&task.to_string());
+    app.commands
+        .action_run(&auth.proof, id, task, &audit)
         .await
         .map(Json)
 }
@@ -76,6 +108,7 @@ async fn approve(
 ) -> Result<Json<Value>, Error> {
     let input = body(input)?;
     audit.operation(input.operation_id, "command_approve");
+    audit.plan(id);
     app.commands
         .approve_action_plan(&auth.proof, id, &input, &audit)
         .await
@@ -90,6 +123,7 @@ async fn cancel(
 ) -> Result<Json<Value>, Error> {
     let input = body(input)?;
     audit.operation(input.operation_id, "command_cancel");
+    audit.plan(id);
     app.commands
         .cancel_action_plan(&auth.proof, id, &input, &audit)
         .await
@@ -125,15 +159,18 @@ async fn claim(
     headers: HeaderMap,
     input: Body<wire::TaskClaimRequest>,
 ) -> Result<Json<Value>, crate::agent::AgentError> {
-    let input = body(input)?;
-    let principal = authenticate(&app, &headers, &audit).await?;
-    audit.operation(input.operation_id(), "command_read");
-    Ok(Json(
-        app.commands
-            .claim_action(&principal, &input, &audit)
-            .await
-            .map_err(task_error)?,
-    ))
+    crate::agent::bounded(&app, async {
+        let input = body(input)?;
+        let principal = authenticate(&app, &headers, &audit).await?;
+        audit.operation(input.operation_id(), "command_read");
+        Ok(Json(
+            app.commands
+                .claim_action(&principal, &input, &audit)
+                .await
+                .map_err(task_error)?,
+        ))
+    })
+    .await
 }
 async fn event(
     State(app): State<Arc<App>>,
@@ -142,15 +179,18 @@ async fn event(
     Path(id): Path<Uuid>,
     input: Body<wire::TaskEventRequest>,
 ) -> Result<Json<Value>, crate::agent::AgentError> {
-    let input = body(input)?;
-    let principal = authenticate(&app, &headers, &audit).await?;
-    audit.operation(input.operation_id(), "command_accept");
-    Ok(Json(
-        app.commands
-            .action_event(&principal, id, &input, &audit)
-            .await
-            .map_err(task_error)?,
-    ))
+    crate::agent::bounded(&app, async {
+        let input = body(input)?;
+        let principal = authenticate(&app, &headers, &audit).await?;
+        audit.operation(input.operation_id(), "command_accept");
+        Ok(Json(
+            app.commands
+                .action_event(&principal, id, &input, &audit)
+                .await
+                .map_err(task_error)?,
+        ))
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,79 +204,82 @@ async fn download(
     Path(id): Path<Uuid>,
     Query(query): Query<Download>,
 ) -> Result<Response, crate::agent::AgentError> {
-    let principal = authenticate(&app, &headers, &audit).await?;
-    audit.operation(id, "command_read");
-    let (bytes, etag) = app
-        .commands
-        .action_content(&principal, id, query.attempt, &audit)
-        .await
-        .map_err(task_error)?;
-    if headers.get_all(header::RANGE).iter().count() > 1 {
-        return Err(Error::Malformed.into());
-    }
-    let requested = headers
-        .get(header::RANGE)
-        .map(|h| h.to_str().map_err(|_| Error::Malformed))
-        .transpose()?;
-    let requested = if headers
-        .get(header::IF_RANGE)
-        .is_some_and(|value| value.as_bytes() != etag.as_bytes())
-    {
-        None
-    } else {
-        requested
-    };
-    let (start, end) = match super::content::range(requested, bytes.len()) {
-        Ok(range) => range,
-        Err(_) => {
-            let mut response = (
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                Json(wire::ErrorBody {
-                    code: wire::ErrorCode::RangeNotSatisfiable,
-                }),
-            )
-                .into_response();
+    crate::agent::bounded(&app, async {
+        let principal = authenticate(&app, &headers, &audit).await?;
+        audit.operation(id, "command_read");
+        let (bytes, etag) = app
+            .commands
+            .action_content(&principal, id, query.attempt, &audit)
+            .await
+            .map_err(task_error)?;
+        if headers.get_all(header::RANGE).iter().count() > 1 {
+            return Err(Error::Malformed.into());
+        }
+        let requested = headers
+            .get(header::RANGE)
+            .map(|h| h.to_str().map_err(|_| Error::Malformed))
+            .transpose()?;
+        let requested = if headers
+            .get(header::IF_RANGE)
+            .is_some_and(|value| value.as_bytes() != etag.as_bytes())
+        {
+            None
+        } else {
+            requested
+        };
+        let (start, end) = match super::content::range(requested, bytes.len()) {
+            Ok(range) => range,
+            Err(_) => {
+                let mut response = (
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    Json(wire::ErrorBody {
+                        code: wire::ErrorCode::RangeNotSatisfiable,
+                    }),
+                )
+                    .into_response();
+                response.headers_mut().insert(
+                    header::CONTENT_RANGE,
+                    format!("bytes */{}", bytes.len())
+                        .parse()
+                        .map_err(|_| Error::Malformed)?,
+                );
+                return Ok(response);
+            }
+        };
+        let mut response = (
+            if requested.is_some() {
+                StatusCode::PARTIAL_CONTENT
+            } else {
+                StatusCode::OK
+            },
+            bytes[start..end].to_vec(),
+        )
+            .into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            "application/octet-stream".parse().expect("constant"),
+        );
+        response
+            .headers_mut()
+            .insert(header::ETAG, etag.parse().map_err(|_| Error::Malformed)?);
+        response
+            .headers_mut()
+            .insert(header::ACCEPT_RANGES, "bytes".parse().expect("constant"));
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            "private, no-store".parse().expect("constant"),
+        );
+        if requested.is_some() {
             response.headers_mut().insert(
                 header::CONTENT_RANGE,
-                format!("bytes */{}", bytes.len())
+                format!("bytes {start}-{}/{}", end - 1, bytes.len())
                     .parse()
                     .map_err(|_| Error::Malformed)?,
             );
-            return Ok(response);
         }
-    };
-    let mut response = (
-        if requested.is_some() {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        },
-        bytes[start..end].to_vec(),
-    )
-        .into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        "application/octet-stream".parse().expect("constant"),
-    );
-    response
-        .headers_mut()
-        .insert(header::ETAG, etag.parse().map_err(|_| Error::Malformed)?);
-    response
-        .headers_mut()
-        .insert(header::ACCEPT_RANGES, "bytes".parse().expect("constant"));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        "private, no-store".parse().expect("constant"),
-    );
-    if requested.is_some() {
-        response.headers_mut().insert(
-            header::CONTENT_RANGE,
-            format!("bytes {start}-{}/{}", end - 1, bytes.len())
-                .parse()
-                .map_err(|_| Error::Malformed)?,
-        );
-    }
-    Ok(response)
+        Ok(response)
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

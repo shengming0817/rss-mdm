@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 43] {
+fn units() -> [(&'static str, &'static str); 44] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -242,6 +242,10 @@ fn units() -> [(&'static str, &'static str); 43] {
         (
             "enterprise-inventory-v1",
             include_str!("../migrations/0017_enterprise_inventory.sql"),
+        ),
+        (
+            "action-polls-v1",
+            include_str!("../migrations/0018_action_polls.sql"),
         ),
     ]
 }

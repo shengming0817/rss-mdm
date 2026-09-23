@@ -181,6 +181,33 @@
       ""
     ],
     [
+      "action_polls",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_polls",
+      "registration",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_polls",
+      "cancellation_after",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "action_receipts",
       "tenant_id",
       "uuid",
@@ -1140,6 +1167,20 @@
       true
     ],
     [
+      "action_polls",
+      "action_polls_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, registration)",
+      true
+    ],
+    [
+      "action_polls",
+      "action_polls_tenant_id_registration_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
+      true
+    ],
+    [
       "action_receipts",
       "action_receipts_fingerprint_check",
       "c",
@@ -1601,6 +1642,14 @@
       "action_plans",
       "action_plans_pkey",
       "CREATE UNIQUE INDEX action_plans_pkey ON mdm_commands.action_plans USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "action_polls",
+      "action_polls_pkey",
+      "CREATE UNIQUE INDEX action_polls_pkey ON mdm_commands.action_polls USING btree (tenant_id, registration)",
       true,
       true,
       true

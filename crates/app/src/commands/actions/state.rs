@@ -114,6 +114,14 @@ impl RunState {
         self.started_at = Some(now);
         Ok(())
     }
+    pub fn trusts_result(&self, now: i64, timeout: u32) -> bool {
+        self.execution == Execution::Running
+            && self.cancellation == Cancellation::None
+            && now < self.deadline
+            && self
+                .started_at
+                .is_some_and(|start| now >= start && now - start < i64::from(timeout))
+    }
     pub fn result(&mut self, attempt: Uuid, success: bool) -> Result<(), Error> {
         // Late evidence from the same attempt can resolve Unknown, but cannot authorize rerun.
         if self.attempt() != Some(attempt)
@@ -210,6 +218,24 @@ mod tests {
         assert!(run.claim(Uuid::new_v4(), 123).is_err());
         run.result(second, true).unwrap();
         assert_eq!(run.execution, Execution::Succeeded);
+    }
+    #[test]
+    fn late_or_cancelled_evidence_cannot_become_trusted_facts() {
+        let mut run = RunState::new(100, 0).unwrap();
+        let attempt = Uuid::new_v4();
+        run.claim(attempt, 0).unwrap();
+        run.received(attempt, 1).unwrap();
+        run.start(attempt, 2).unwrap();
+        assert!(run.trusts_result(61, 60));
+        assert!(!run.trusts_result(62, 60));
+        assert!(!run.trusts_result(100, 3600));
+        run.cancel();
+        assert!(!run.trusts_result(3, 60));
+        run.cancelled(attempt).unwrap();
+        assert!(!run.trusts_result(4, 60));
+        run.result(attempt, true).unwrap();
+        assert_eq!(run.execution, Execution::Succeeded);
+        assert!(!run.trusts_result(5, 60));
     }
     #[test]
     fn cancellation_is_separate_from_effect_and_late_execution_evidence() {

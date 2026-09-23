@@ -26,7 +26,6 @@ pub(super) struct Run {
     pub available_at: i64,
     pub deadline: i64,
     pub state: RunState,
-    pub gateway_accepted: bool,
     pub result: Option<Value>,
 }
 pub(super) async fn registration(tx: &mut PgTransaction<'_>, device: &str) -> Result<Target> {
@@ -74,7 +73,7 @@ pub(super) async fn load_plan(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Pl
 }
 pub(super) async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT plan::text,device,registration::text,generation,available_at,deadline,state,gateway_accepted,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT plan::text,device,registration::text,generation,available_at,deadline,state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
     Ok(Run {
         id,
         plan: corrupt(Uuid::parse_str(&row.try_get::<String, _>("plan")?))?,
@@ -86,7 +85,6 @@ pub(super) async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
         state: corrupt(serde_json::from_value(row.try_get("state")?))?,
-        gateway_accepted: row.try_get("gateway_accepted")?,
         result: row.try_get("result")?,
     })
 }

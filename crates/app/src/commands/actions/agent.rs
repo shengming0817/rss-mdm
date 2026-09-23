@@ -52,8 +52,8 @@ impl Commands {
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
                 if let Some(task)=response.get("task").filter(|v|!v.is_null()) {
                     let signed:wire::SignedTask=corrupt(serde_json::from_value(task.clone()))?;
-                    let run=db::load_run(tx,signed.payload.task_id).await?;belongs(&run,p)?;let plan=db::load_plan(tx,run.plan).await?;
-                    if signed.payload.expires_at<=now || run.state.attempt()!=Some(signed.payload.attempt_id) || !db::valid(tx,&plan,p.device(),now).await?{return Err(Error::Conflict.into());}
+                    let run=db::load_run(tx,signed.payload.task_id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&run.id.to_string());let plan=db::load_plan(tx,run.plan).await?;
+                    if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || signed.payload.expires_at<=now || run.state.attempt()!=Some(signed.payload.attempt_id) || !db::valid(tx,&plan,p.device(),now).await?{return Err(Error::Conflict.into());}
                 }
                 storage::audit(tx,audit,200).await?;return Ok(response);
             }
@@ -65,28 +65,29 @@ impl Commands {
                 let kind=if matches!(plan.frozen.input.schedule.trigger,Trigger::Registration){"registration"}else{"checkin"};
                 super::production::event(service,tx,&plan,&target,kind,now).await?;
             }
-            let tenant=tx.tenant_id().to_string();let registration=p.registration().to_string();
-            let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND ((state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed') OR state->>'cancellation'='requested') ORDER BY available_at,id LIMIT 128").bind(tenant).bind(registration).fetch_all(c).await})).await?;
-            let mut offer=None;let mut cancellations=Vec::new();
+            let ids=super::poll::offer_candidates(tx,p.registration(),now).await?;
+            let mut offer=None;
             for id in ids {
                 let mut run=db::load_run(tx,corrupt(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_plan(tx,run.plan).await?;
                 run.state.expire(now,plan.frozen.definition.spec().timeout_seconds);
                 if !db::valid(tx,&plan,p.device(),now).await?{run.state.cancel();}
-                if run.state.cancellation==Cancellation::Requested {
-                    if let Some(attempt)=run.state.attempt(){cancellations.push(wire::TaskCancellation {task_id:run.id,attempt_id:attempt});}
-                } else if offer.is_none() && run.gateway_accepted && run.available_at<=now {
+                if run.state.cancellation==Cancellation::None && run.available_at<=now {
                     let attempt=Uuid::new_v4();
                     if run.state.claim(attempt,now).is_ok(){
                         let content=service.content.as_ref().ok_or(Error::Unsupported)?;
                         let signed=content.sign(plan.frozen.task(invalid(Uuid::parse_str(&tx.tenant_id().to_string()))?,&run.target,run.id,attempt,wire::TaskPermit::Offer,(now+60).min(run.deadline))?)?;
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=invalid(serde_json::to_value(&signed))?;
                         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6)").bind(tenant).bind(attempt.to_string()).bind(run_id).bind(reg).bind(now).bind(value).execute(c).await?;Ok(())})).await?;
-                        offer=Some(signed);
+                        audit.plan(run.plan);audit.target(&run.id.to_string());offer=Some(signed);
                     }
                 }
                 db::save_run(tx,&run).await?;
+                if offer.is_some(){break;}
             }
-            let response=invalid(serde_json::to_value(wire::TaskClaimResponse {wire_version:2,task:offer,cancellations}))?;db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;storage::audit(tx,audit,200).await?;Ok(response)
+            let cancellations=super::poll::cancellations(tx,p.registration()).await?;
+            let has_offer=offer.is_some();
+            let response=invalid(serde_json::to_value(wire::TaskClaimResponse {wire_version:2,task:offer,cancellations}))?;
+            if has_offer{db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;}storage::audit(tx,audit,200).await?;Ok(response)
         })).await
     }
     pub(super) async fn action_event(
@@ -98,7 +99,7 @@ impl Commands {
     ) -> std::result::Result<Value, Error> {
         self.transact((self,p,id,input,audit),audit,|ctx,tx|Box::pin(async move{
             let (service,p,id,input,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
-            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
+            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&id.to_string());let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
             let allowed=db::valid(tx,&plan,p.device(),now).await?;
             if matches!(input.event(),wire::TaskEvent::Start|wire::TaskEvent::Received) && !allowed{return Err(Error::Forbidden.into());}
             if run.state.attempt()!=Some(input.attempt_id()){return Err(Error::Conflict.into());}
@@ -119,10 +120,12 @@ impl Commands {
                 },
                 wire::TaskEvent::Cancelled=>{run.state.cancel();run.state.cancelled(input.attempt_id())?;},
                 wire::TaskEvent::Result{exit_code,quality,output}=>{
-                    let success=*exit_code==Some(0) && *quality==wire::OutputQuality::Complete && plan.frozen.definition.validate_output(output).is_ok();
+                    let schema_valid=plan.frozen.definition.validate_output(output).is_ok();
+                    let success=*exit_code==Some(0) && *quality==wire::OutputQuality::Complete && schema_valid;
+                    let trusted=success && allowed && run.state.trusts_result(now,plan.frozen.definition.spec().timeout_seconds);
                     run.state.result(input.attempt_id(),success)?;
-                    super::collection::accept(tx,&plan.frozen,&run,output,success && allowed,now).await?;
-                    run.result=Some(json!({"exitCode":exit_code,"quality":quality,"schemaValid":plan.frozen.definition.validate_output(output).is_ok(),"output":output,"trusted":success && allowed}));
+                    super::collection::accept(tx,&plan.frozen,&run,output,trusted,now).await?;
+                    run.result=Some(json!({"exitCode":exit_code,"quality":quality,"schemaValid":schema_valid,"output":output,"trusted":trusted}));
                 },
             }
             db::save_run(tx,&run).await?;let response=invalid(serde_json::to_value(wire::TaskEventAck{wire_version:2,accepted:true,permit,cancel_requested:!allowed || run.state.cancellation!=Cancellation::None}))?;
@@ -138,7 +141,7 @@ impl Commands {
     ) -> std::result::Result<(Vec<u8>, String), Error> {
         self.transact((self,p,id,attempt,audit),audit,|ctx,tx|Box::pin(async move{
             let (service,p,id,attempt,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
-            let run=db::load_run(tx,id).await?;belongs(&run,p)?;let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
+            let run=db::load_run(tx,id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&id.to_string());let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
             if run.state.attempt()!=Some(attempt) || run.deadline<=now || run.state.cancellation!=Cancellation::None || !db::valid(tx,&plan,p.device(),now).await?{return Err(Error::Forbidden.into());}
             let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
             if now>=expiry{return Err(Error::Forbidden.into());}

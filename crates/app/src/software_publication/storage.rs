@@ -786,30 +786,6 @@ const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.p
 const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
 const COMPLETE_NOOP_SQL: &str = "UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)";
 
-const RESOURCE_REFERENCE_COUNT_SQL: &str = "SELECT (SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3) + (SELECT count(*) FROM mdm_management.resource_references WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3)";
-pub(super) async fn resource_reference_count(
-    tx: &mut PgTransaction<'_>,
-    resource: &str,
-    version: &str,
-) -> std::result::Result<i64, PgError> {
-    let (tenant, resource, version) = (
-        tx.tenant_id().to_string(),
-        resource.to_owned(),
-        version.to_owned(),
-    );
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query_scalar(RESOURCE_REFERENCE_COUNT_SQL)
-                .bind(tenant)
-                .bind(resource)
-                .bind(version)
-                .fetch_one(c)
-                .await
-        })
-    })
-    .await
-}
-
 const RESET_WITHDRAWAL_PREFLIGHT_SQL: &str = "UPDATE mdm_software_composition.targets SET attempted=false WHERE tenant_id=$1::uuid AND id=$2 AND attempted AND NOT acknowledged";
 pub(super) async fn reset_withdrawal_preflight(
     tx: &mut PgTransaction<'_>,

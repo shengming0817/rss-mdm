@@ -92,7 +92,7 @@ impl Commands {
                 let tenant=tx.tenant_id().to_string();let reviewer=invalid(serde_json::to_value(proof.user()))?;let approvals_value=invalid(serde_json::to_value(&approvals))?;
                 tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_plans SET reviewer=$3,reviewer_approvals=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).bind(reviewer).bind(approvals_value).execute(c).await?;Ok(())})).await?;
                 plan.reviewer=Some(proof.user());plan.reviewer_approvals=approvals;
-                if matches!(plan.frozen.input.schedule.trigger,Trigger::Manual){super::production::produce(service,tx,&plan,now,"manual",now,None).await?;}
+                if matches!(plan.frozen.input.schedule.trigger,Trigger::Manual) && super::production::produce(service,tx,&plan,now,"manual",now,None).await?==super::production::ProduceOutcome::CapacityBlocked{return Err(Error::Conflict.into());}
                 let response=json!({"planId":id,"revision":1,"authorization":"approved"});db::receipt(tx,&actor,change.operation_id,hash,&response).await?;storage::audit(tx,audit,200).await?;proof.check_live()?;Ok(response)
             }.await;
             match result{Ok(value)=>{audit.mark_commit_started();Ok(value)},Err(error)=>Err(rejection(error,failure))}
@@ -108,9 +108,7 @@ impl Commands {
         self.transact((proof,id,audit),audit,|ctx,tx|Box::pin(async move{
             let (proof,id,audit)=*ctx;storage::lock(tx,"action-owner").await?;let plan=db::load_plan(tx,id).await?;
             for device in &plan.frozen.input.devices{storage::authorized(tx,proof,device,Permission::OperationRead).await?;}
-            let tenant=tx.tenant_id().to_string();
-            let runs=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('taskId',id,'device',device,'registrationId',registration,'generation',generation,'occurrence',occurrence,'availableAt',available_at,'deadline',deadline,'state',state,'effect','unverified','result',result) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid ORDER BY available_at DESC,id LIMIT 256").bind(tenant).bind(id.to_string()).fetch_all(c).await})).await?;
-            storage::audit(tx,audit,200).await?;Ok(json!({"planId":id,"revision":1,"active":plan.active,"approved":plan.reviewer.is_some(),"definition":plan.frozen,"runs":runs}))
+            storage::audit(tx,audit,200).await?;Ok(json!({"planId":id,"revision":1,"active":plan.active,"approved":plan.reviewer.is_some(),"definition":plan.frozen,"runsUrl":format!("/api/v3/script-plans/{id}/runs")}))
         })).await
     }
     pub(super) async fn cancel_action_plan(
