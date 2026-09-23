@@ -1,14 +1,6 @@
 use super::super::{Command, resources};
+use crate::publication_support::{Server, pg, seed};
 use crate::software_publication::Error as PublicationError;
-
-#[allow(
-    dead_code,
-    reason = "the shared publication fixture exposes scenarios unused by this focused test"
-)]
-#[path = "../../tests/publication_support/mod.rs"]
-mod publication_support;
-
-use publication_support::{Server, pg, seed};
 
 fn archive(input: &crate::software_publication::CandidateInput) -> Command {
     Command::Resource {

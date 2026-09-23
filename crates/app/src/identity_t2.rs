@@ -6,9 +6,7 @@
 mod assets;
 mod authorization;
 mod management;
-#[allow(dead_code)]
-#[path = "../tests/publication_support/mod.rs"]
-mod publication_support;
+use crate::publication_support;
 #[cfg(feature = "integration")]
 mod sso;
 #[cfg(feature = "integration")]
