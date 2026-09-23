@@ -411,10 +411,9 @@ impl Client {
         .await?;
         let preview = Uuid::new_v4();
         let revision = activated["storageRevision"].as_u64().unwrap();
-        let denied=self.browser.call(&self.router,Method::POST,&format!("/api/v2/policies/{policy}/previews"),Some(json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}}))).await?;
-        ensure!(denied.0.is_success(), "preview enqueue: {denied:?}");
+        let denied=self.submit_product(&format!("policies/{policy}/previews"),json!({"operationId":preview,"expectedRevision":revision,"input":{"scope":scope,"expectedRevision":revision}})).await?;
         let denied = self
-            .wait_preview(denied.1["statusUrl"].as_str().unwrap())
+            .wait_preview(denied["statusUrl"].as_str().unwrap())
             .await?;
         ensure!(
             denied["failure"] == "configuration_target_limit",
