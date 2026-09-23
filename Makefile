@@ -28,7 +28,7 @@ t2:
 	python3 hack/asset-t2.py
 	python3 hack/command-t2.py
 
-.PHONY: source-t2 source-consumers agent-wire-consumer
+.PHONY: source-t2 source-consumers agent-wire-consumer group-consumer
 source-t2:
 	python3 hack/source-t2.py
 
@@ -37,6 +37,9 @@ source-consumers:
 
 agent-wire-consumer:
 	python3 hack/agent-wire-consumer.py
+
+group-consumer:
+	python3 hack/group_consumer.py
 
 .PHONY: t2-identity
 t2-identity:

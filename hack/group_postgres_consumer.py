@@ -200,7 +200,7 @@ def run_consumer(source, base, defaults, head, pin, out, capability="group", fix
 
 
 def main():
-    out = ci.OUT / 'group-postgres-consumers'
+    out = ci.ROOT / 'artifacts' / 'group-postgres-consumers'
     prepare_output(out)
     head = ci.command(['/usr/bin/git', 'rev-parse', 'HEAD']).stdout.strip()
     ci.require(not ci.command(['/usr/bin/git', 'status', '--porcelain']).stdout.strip(), 'commit tested source before consumer verification')

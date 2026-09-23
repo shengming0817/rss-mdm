@@ -7,7 +7,7 @@ from core_consumer import prepare_output
 from group_postgres_consumer import run_consumer
 spec=importlib.util.spec_from_file_location('backend_t2',Path(__file__).with_name('backend-t2.py'));pg=importlib.util.module_from_spec(spec);spec.loader.exec_module(pg)
 def main():
-    out=ci.OUT/'backend-consumers';prepare_output(out)
+    out=ci.ROOT/'artifacts'/'backend-consumers';prepare_output(out)
     head=ci.command(['/usr/bin/git','rev-parse','HEAD']).stdout.strip()
     ci.require(not ci.command(['/usr/bin/git','status','--porcelain']).stdout.strip(),'commit tested source before independent consumption')
     records=[]

@@ -3,10 +3,13 @@ from pathlib import Path
 import unittest
 import copy
 import tempfile
+import sys
 
 spec = importlib.util.spec_from_file_location("local_ci", Path(__file__).resolve().parents[1] / "hack/ci.py")
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
+sys.path.insert(0, str(ci.ROOT / "hack"))
+import group_consumer as group
 
 class IsolationGates(unittest.TestCase):
     def test_require_survives_optimized_python(self):
@@ -140,15 +143,15 @@ class GroupConsumer(unittest.TestCase):
             for i, n in enumerate(names)], 'resolve': {'root': 'group-consumer', 'nodes': [
                 {'id': n, 'features': [], 'deps': [{'pkg': p} for p in (names[1:] if i == 0 else names[2:] if i == 1 else [])]}
                 for i, n in enumerate(names)]}}
-        ci.verify_group_consumer(data, source, pin)
+        group.verify_group_consumer(data, source, pin)
         for bad_source in [None, 'path+file:///parent/rss', rss_source.replace(pin[1], '0' * 40)]:
             bad = copy.deepcopy(data); bad['packages'][2]['source'] = bad_source
-            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+            with self.assertRaises(RuntimeError): group.verify_group_consumer(bad, source, pin)
         for dependency in ['rss-mdm-inventory', 'rss-mdm-group-postgres', 'reqwest', 'sqlx', 'rss-mdm-windows-mdm']:
             bad = copy.deepcopy(data)
             bad['packages'].append({'id': dependency, 'name': dependency, 'source': 'registry+https://github.com/rust-lang/crates.io-index'})
             bad['resolve']['nodes'][1]['deps'].append({'pkg': dependency})
-            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+            with self.assertRaises(RuntimeError): group.verify_group_consumer(bad, source, pin)
         for parent, dependency in [('rss-contract', 'sqlx'), ('rss-request-context', 'reqwest')]:
             with self.subTest(parent=parent, dependency=dependency):
                 bad = copy.deepcopy(data)
@@ -156,7 +159,7 @@ class GroupConsumer(unittest.TestCase):
                 bad['resolve']['nodes'].append({'id': dependency, 'features': [], 'deps': []})
                 next(n for n in bad['resolve']['nodes'] if n['id'] == parent)['deps'].append({'pkg': dependency, 'dep_kinds': [{'kind': None, 'target': None}]})
                 with self.assertRaisesRegex(RuntimeError, 'forbidden Group production dependency'):
-                    ci.verify_group_consumer(bad, source, pin)
+                    group.verify_group_consumer(bad, source, pin)
         for dependency in ['sqlx-postgres', 'hyper-util', 'postgres-types', 'axum-core']:
             for kind, rejected in [(None, True), ('build', True), ('dev', False)]:
                 with self.subTest(dependency=dependency, kind=kind):
@@ -173,16 +176,16 @@ class GroupConsumer(unittest.TestCase):
                     ])
                     if rejected:
                         with self.assertRaisesRegex(RuntimeError, 'forbidden Group production dependency'):
-                            ci.verify_group_consumer(bad, source, pin)
+                            group.verify_group_consumer(bad, source, pin)
                     else:
-                        ci.verify_group_consumer(bad, source, pin)
+                        group.verify_group_consumer(bad, source, pin)
         bad = copy.deepcopy(data); bad['packages'][1]['source'] = 'path+file:///tmp/group'
-        with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        with self.assertRaises(RuntimeError): group.verify_group_consumer(bad, source, pin)
         for declared, resolved in [({'default': ['new']}, []), ({}, ['new'])]:
             bad = copy.deepcopy(data); bad['packages'][1]['features'] = declared; bad['resolve']['nodes'][1]['features'] = resolved
-            with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+            with self.assertRaises(RuntimeError): group.verify_group_consumer(bad, source, pin)
         bad = copy.deepcopy(data); bad['resolve']['nodes'][0]['deps'].pop()
-        with self.assertRaises(RuntimeError): ci.verify_group_consumer(bad, source, pin)
+        with self.assertRaises(RuntimeError): group.verify_group_consumer(bad, source, pin)
 
 class AdvisoryPolicy(unittest.TestCase):
     def test_advisory_acceptance_is_exact(self):
@@ -347,14 +350,29 @@ class CoreConsumerGate(unittest.TestCase):
             core.prepare_output(out)
             self.assertEqual(list(out.iterdir()),[])
 class GroupEvidence(unittest.TestCase):
+    def test_manual_entry_prepares_workspace_before_cargo_failure(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        def command(args, **kwargs):
+            if 'rust-toolchain.toml' in args[-1]:
+                return SimpleNamespace(returncode=0, stdout='[toolchain]\nchannel="1.96.0"\n')
+            return SimpleNamespace(returncode=0, stdout='')
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            failed_cargo = SimpleNamespace(returncode=1, stdout='', stderr='fixture failure')
+            with mock.patch.object(group, 'OUT', out), mock.patch.object(group, 'command', side_effect=command), mock.patch.object(group, 'workspace_pin', return_value=('https://example.invalid/rss', 'a' * 40)), mock.patch.object(group.subprocess, 'run', return_value=failed_cargo):
+                with self.assertRaisesRegex(RuntimeError, 'Group consumer command failed'):
+                    group.group_consumer('b' * 40)
+            self.assertIn('fixture failure', (out / 'group-consumer.log').read_text())
+
     def test_early_failure_cannot_leave_an_old_success_log(self):
         from unittest import mock
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             (out / 'group-consumer.log').write_text('old success')
-            with mock.patch.object(ci, 'OUT', out), mock.patch.object(ci, 'command', return_value=SimpleNamespace(returncode=0, stdout=' M tracked')):
-                with self.assertRaises(RuntimeError): ci.group_consumer('b' * 40)
+            with mock.patch.object(group, 'OUT', out), mock.patch.object(group, 'command', return_value=SimpleNamespace(returncode=0, stdout=' M tracked')):
+                with self.assertRaises(RuntimeError): group.group_consumer('b' * 40)
             log = (out / 'group-consumer.log').read_text()
             self.assertNotIn('old success', log)
             self.assertIn('b' * 40, log)
