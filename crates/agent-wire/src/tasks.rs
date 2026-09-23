@@ -10,6 +10,8 @@ use uuid::Uuid;
 pub const MAX_TASK_REQUEST_BYTES: usize = 1_114_112;
 /// Maximum cancellation coordinates returned by one task claim.
 pub const MAX_TASK_CANCELLATIONS: usize = 128;
+/// Maximum UTF-8 bytes retained for each diagnostic stream.
+pub const MAX_TASK_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 
 fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     let value = u8::deserialize(d)?;
@@ -30,10 +32,30 @@ fn accepted<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
 pub struct TaskCancellation {
     /// Task identity.
     #[serde(with = "strict_uuid")]
-    pub task_id: Uuid,
+    task_id: Uuid,
     /// Attempt to stop.
     #[serde(with = "strict_uuid")]
-    pub attempt_id: Uuid,
+    attempt_id: Uuid,
+}
+impl TaskCancellation {
+    /// Construct one cancellation for an exact non-nil task attempt.
+    pub fn new(task_id: Uuid, attempt_id: Uuid) -> Result<Self, WireError> {
+        if task_id.is_nil() || attempt_id.is_nil() {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self {
+            task_id,
+            attempt_id,
+        })
+    }
+    /// Task identity.
+    pub const fn task_id(&self) -> Uuid {
+        self.task_id
+    }
+    /// Attempt to stop.
+    pub const fn attempt_id(&self) -> Uuid {
+        self.attempt_id
+    }
 }
 /// Poll response; the offer still requires signature verification and a separate start permit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -41,31 +63,52 @@ pub struct TaskCancellation {
 pub struct TaskClaimResponse {
     /// Sole supported major.
     #[serde(deserialize_with = "version")]
-    pub wire_version: u8,
+    wire_version: u8,
     /// At most one offered task.
-    pub task: Option<SignedTask>,
+    task: Option<SignedTask>,
     /// Authenticated cancellation requests.
-    pub cancellations: Vec<TaskCancellation>,
+    cancellations: Vec<TaskCancellation>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawTaskClaimResponse {
-    #[serde(deserialize_with = "version")]
-    wire_version: u8,
+    #[serde(rename = "wireVersion", deserialize_with = "version")]
+    _wire_version: u8,
     task: Option<SignedTask>,
     cancellations: Vec<TaskCancellation>,
 }
 impl<'de> Deserialize<'de> for TaskClaimResponse {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawTaskClaimResponse::deserialize(deserializer)?;
-        if raw.cancellations.len() > MAX_TASK_CANCELLATIONS {
-            return Err(serde::de::Error::custom("too many task cancellations"));
+        Self::new(raw.task, raw.cancellations).map_err(serde::de::Error::custom)
+    }
+}
+impl TaskClaimResponse {
+    /// Construct a bounded poll response with the fixed wire version.
+    pub fn new(
+        task: Option<SignedTask>,
+        cancellations: Vec<TaskCancellation>,
+    ) -> Result<Self, WireError> {
+        if cancellations.len() > MAX_TASK_CANCELLATIONS {
+            return Err(WireError::InvalidValue);
         }
         Ok(Self {
-            wire_version: raw.wire_version,
-            task: raw.task,
-            cancellations: raw.cancellations,
+            wire_version: WIRE_VERSION,
+            task,
+            cancellations,
         })
+    }
+    /// Offered task, if any.
+    pub const fn task(&self) -> Option<&SignedTask> {
+        self.task.as_ref()
+    }
+    /// Consume the response and return its offered task.
+    pub fn into_task(self) -> Option<SignedTask> {
+        self.task
+    }
+    /// Authenticated cancellation requests.
+    pub fn cancellations(&self) -> &[TaskCancellation] {
+        &self.cancellations
     }
 }
 /// A durable event receipt. Acceptance alone cannot authorize process execution.
@@ -74,14 +117,41 @@ impl<'de> Deserialize<'de> for TaskClaimResponse {
 pub struct TaskEventAck {
     /// Sole supported major.
     #[serde(deserialize_with = "version")]
-    pub wire_version: u8,
+    wire_version: u8,
     /// The event was durably accepted.
     #[serde(deserialize_with = "accepted")]
-    pub accepted: bool,
+    accepted: bool,
     /// Only Start may return a freshly signed start permit.
-    pub permit: Option<SignedTask>,
+    permit: Option<SignedTask>,
     /// Stop this attempt; execution effects may remain unknown.
-    pub cancel_requested: bool,
+    cancel_requested: bool,
+}
+impl TaskEventAck {
+    /// Construct a durable accepted receipt with the fixed wire version.
+    pub const fn new(permit: Option<SignedTask>, cancel_requested: bool) -> Self {
+        Self {
+            wire_version: WIRE_VERSION,
+            accepted: true,
+            permit,
+            cancel_requested,
+        }
+    }
+    /// The event was durably accepted.
+    pub const fn accepted(&self) -> bool {
+        self.accepted
+    }
+    /// Freshly signed start permit, if any.
+    pub const fn permit(&self) -> Option<&SignedTask> {
+        self.permit.as_ref()
+    }
+    /// Consume the receipt and return its start permit.
+    pub fn into_permit(self) -> Option<SignedTask> {
+        self.permit
+    }
+    /// Whether the Agent should stop this attempt.
+    pub const fn cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
 }
 /// A task receipt, start request, or bounded execution result; none proves applied state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,14 +169,7 @@ pub enum TaskEvent {
     /// Cancellation was observed and the process stopped or never started.
     Cancelled,
     /// Process evidence. Successful exit alone does not prove the requested side effect.
-    Result {
-        /// Process exit code; absent if the process could not produce one.
-        exit_code: Option<i32>,
-        /// Completeness of the captured output.
-        quality: OutputQuality,
-        /// Parsed JSON output; raw diagnostics or secret-bearing stderr are excluded.
-        output: Value,
-    },
+    Result(TaskResult),
 }
 /// Output completeness controls whether collection facts may be accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +183,180 @@ pub enum OutputQuality {
     Truncated,
     /// Execution or capture failed.
     Failed,
+}
+/// Closed executor failure classification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskFailure {
+    /// The executor process could not be launched.
+    LaunchFailed,
+    /// The configured execution deadline elapsed.
+    TimedOut,
+    /// Execution was cancelled before a complete result was produced.
+    Cancelled,
+    /// The process exited with a non-zero status.
+    NonZeroExit,
+    /// A configured output or row limit was reached.
+    OutputLimit,
+    /// The executor could not capture a complete result.
+    CaptureFailed,
+}
+/// Private bounded process diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "DiagnosticsInput", into = "DiagnosticsInput")]
+pub struct TaskDiagnostics(DiagnosticsInput);
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DiagnosticsInput {
+    stdout: String,
+    stderr: String,
+    duration_ms: u64,
+    executed_at: i64,
+    failure: Option<TaskFailure>,
+}
+impl From<TaskDiagnostics> for DiagnosticsInput {
+    fn from(value: TaskDiagnostics) -> Self {
+        value.0
+    }
+}
+impl TryFrom<DiagnosticsInput> for TaskDiagnostics {
+    type Error = WireError;
+    fn try_from(value: DiagnosticsInput) -> Result<Self, Self::Error> {
+        Self::new(
+            value.stdout,
+            value.stderr,
+            value.duration_ms,
+            value.executed_at,
+            value.failure,
+        )
+    }
+}
+impl TaskDiagnostics {
+    /// Construct bounded diagnostic streams and timing evidence.
+    pub fn new(
+        stdout: String,
+        stderr: String,
+        duration_ms: u64,
+        executed_at: i64,
+        failure: Option<TaskFailure>,
+    ) -> Result<Self, WireError> {
+        if stdout.len() > MAX_TASK_DIAGNOSTIC_BYTES
+            || stderr.len() > MAX_TASK_DIAGNOSTIC_BYTES
+            || stdout.contains('\0')
+            || stderr.contains('\0')
+            || duration_ms > 3_600_000
+            || executed_at < 1
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self(DiagnosticsInput {
+            stdout,
+            stderr,
+            duration_ms,
+            executed_at,
+            failure,
+        }))
+    }
+    /// Captured standard output after the Agent's secret-protection policy.
+    pub fn stdout(&self) -> &str {
+        &self.0.stdout
+    }
+    /// Captured standard error after the Agent's secret-protection policy.
+    pub fn stderr(&self) -> &str {
+        &self.0.stderr
+    }
+    /// Executor wall-clock duration in milliseconds.
+    pub const fn duration_ms(&self) -> u64 {
+        self.0.duration_ms
+    }
+    /// Unix timestamp in seconds when execution began.
+    pub const fn executed_at(&self) -> i64 {
+        self.0.executed_at
+    }
+    /// Executor failure classification, if any.
+    pub const fn failure(&self) -> Option<TaskFailure> {
+        self.0.failure
+    }
+}
+/// Private validated execution result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ResultInput", into = "ResultInput")]
+pub struct TaskResult(ResultInput);
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResultInput {
+    exit_code: Option<i32>,
+    quality: OutputQuality,
+    output: Value,
+    diagnostics: TaskDiagnostics,
+}
+impl From<TaskResult> for ResultInput {
+    fn from(value: TaskResult) -> Self {
+        value.0
+    }
+}
+impl TryFrom<ResultInput> for TaskResult {
+    type Error = WireError;
+    fn try_from(value: ResultInput) -> Result<Self, Self::Error> {
+        Self::new(
+            value.exit_code,
+            value.quality,
+            value.output,
+            value.diagnostics,
+        )
+    }
+}
+impl TaskResult {
+    /// Construct coherent process evidence with a bounded structured output.
+    pub fn new(
+        exit_code: Option<i32>,
+        quality: OutputQuality,
+        output: Value,
+        diagnostics: TaskDiagnostics,
+    ) -> Result<Self, WireError> {
+        let quality_is_coherent = match quality {
+            OutputQuality::Complete => exit_code == Some(0) && diagnostics.failure().is_none(),
+            OutputQuality::Failed => diagnostics.failure().is_some(),
+            OutputQuality::Truncated => diagnostics.failure() == Some(TaskFailure::OutputLimit),
+            OutputQuality::Partial => true,
+        };
+        let failure_is_coherent = match diagnostics.failure() {
+            Some(TaskFailure::NonZeroExit) => exit_code.is_some_and(|code| code != 0),
+            Some(TaskFailure::LaunchFailed) => exit_code.is_none(),
+            _ => true,
+        };
+        if !quality_is_coherent
+            || !failure_is_coherent
+            || serde_json::to_vec(&output)
+                .map_err(|_| WireError::InvalidValue)?
+                .len()
+                > 1_048_576
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self(ResultInput {
+            exit_code,
+            quality,
+            output,
+            diagnostics,
+        }))
+    }
+    /// Process exit code, if the process produced one.
+    pub const fn exit_code(&self) -> Option<i32> {
+        self.0.exit_code
+    }
+    /// Completeness of the captured output.
+    pub const fn quality(&self) -> OutputQuality {
+        self.0.quality
+    }
+    /// Parsed JSON output.
+    pub const fn output(&self) -> &Value {
+        &self.0.output
+    }
+    /// Bounded process diagnostics.
+    pub const fn diagnostics(&self) -> &TaskDiagnostics {
+        &self.0.diagnostics
+    }
 }
 /// Private validated event envelope, with no client-asserted tenant/device/generation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,20 +392,20 @@ impl TaskEventRequest {
         if operation_id.is_nil() || attempt_id.is_nil() {
             return Err(WireError::InvalidValue);
         }
-        if let TaskEvent::Result { output, .. } = &event
-            && serde_json::to_vec(output)
-                .map_err(|_| WireError::InvalidValue)?
-                .len()
-                > 1_048_576
-        {
-            return Err(WireError::InvalidValue);
-        }
-        Ok(Self(EventInput {
+        let input = EventInput {
             wire_version: WIRE_VERSION,
             operation_id,
             attempt_id,
             event,
-        }))
+        };
+        if serde_json::to_vec(&input)
+            .map_err(|_| WireError::InvalidValue)?
+            .len()
+            > MAX_TASK_REQUEST_BYTES
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(Self(input))
     }
     /// Idempotent event identity.
     pub fn operation_id(&self) -> Uuid {

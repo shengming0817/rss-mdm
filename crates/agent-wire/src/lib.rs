@@ -21,7 +21,7 @@ pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v2.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "234ce83b807f812691764d549eb6a2414b43f55ef094a2af1f9d22814f8f21f8";
+    "d5c7e3cf7ab73c711d0eaca663c5bc622136b9f4b16453819f8d7a6138f7afc1";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +102,16 @@ pub enum Capability {
     /// Full/partial/failed reports for the two basic inventory fields.
     #[serde(rename = "inventory.basic.v2")]
     InventoryBasicV2,
+    /// Receive and execute signed task offers.
+    #[serde(rename = "task.execute.v2")]
+    TaskExecuteV2,
+}
+
+fn supported_capabilities(value: &[Capability]) -> bool {
+    matches!(
+        value,
+        [Capability::InventoryBasicV2] | [Capability::InventoryBasicV2, Capability::TaskExecuteV2]
+    )
 }
 
 /// Agent registration request. Tenant, device and generation are never device claims.
@@ -132,7 +142,7 @@ struct RawRegistrationRequest {
 impl<'de> Deserialize<'de> for RegistrationRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawRegistrationRequest::deserialize(deserializer)?;
-        if raw.wire_version != WIRE_VERSION || raw.capabilities != [Capability::InventoryBasicV2] {
+        if raw.wire_version != WIRE_VERSION || !supported_capabilities(&raw.capabilities) {
             return Err(D::Error::custom(WireError::InvalidValue));
         }
         Self::new(
@@ -140,19 +150,22 @@ impl<'de> Deserialize<'de> for RegistrationRequest {
             raw.enrollment_id,
             raw.password,
             raw.credential,
+            raw.capabilities,
         )
         .map_err(D::Error::custom)
     }
 }
 impl RegistrationRequest {
-    /// Construct the only V2 registration shape and inject its fixed version and capability.
+    /// Construct one supported V2 registration capability profile.
     pub fn new(
         operation_id: Uuid,
         enrollment_id: Uuid,
         password: Secret,
         credential: Secret,
+        capabilities: Vec<Capability>,
     ) -> Result<Self, WireError> {
-        if operation_id.is_nil() || enrollment_id.is_nil() {
+        if operation_id.is_nil() || enrollment_id.is_nil() || !supported_capabilities(&capabilities)
+        {
             return Err(WireError::InvalidValue);
         }
         Ok(Self {
@@ -161,7 +174,7 @@ impl RegistrationRequest {
             enrollment_id,
             password,
             credential,
-            capabilities: vec![Capability::InventoryBasicV2],
+            capabilities,
         })
     }
     /// Stable retry identity selected by the Agent.
@@ -239,7 +252,7 @@ impl<'de> Deserialize<'de> for RegistrationReceipt {
         if raw.wire_version != WIRE_VERSION
             || raw.generation == 0
             || raw.generation > i64::MAX as u64
-            || raw.capabilities != [Capability::InventoryBasicV2]
+            || !supported_capabilities(&raw.capabilities)
             || raw.device_id.trim().is_empty()
             || raw.device_id.chars().count() > 256
             || raw.device_id.chars().any(char::is_control)

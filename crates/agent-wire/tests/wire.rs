@@ -50,6 +50,7 @@ fn producers_construct_the_only_supported_shape() {
         Uuid::new_v4(),
         Secret::parse(&secret()).unwrap(),
         Secret::parse(&secret()).unwrap(),
+        vec![Capability::InventoryBasicV2],
     )
     .unwrap();
     assert_eq!(serde_json::to_value(request).unwrap()["wireVersion"], 2);
@@ -59,10 +60,33 @@ fn producers_construct_the_only_supported_shape() {
             Uuid::new_v4(),
             Secret::parse(&secret()).unwrap(),
             Secret::parse(&secret()).unwrap(),
+            vec![Capability::InventoryBasicV2],
         ),
         Err(WireError::InvalidValue)
     ));
     assert!(ReportRequest::new(Uuid::new_v4(), 1, 1, ReportBody::Snapshot(vec![])).is_ok());
+    let task_capable = RegistrationRequest::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Secret::parse(&secret()).unwrap(),
+        Secret::parse(&secret()).unwrap(),
+        vec![Capability::InventoryBasicV2, Capability::TaskExecuteV2],
+    )
+    .unwrap();
+    assert_eq!(
+        task_capable.capabilities(),
+        &[Capability::InventoryBasicV2, Capability::TaskExecuteV2]
+    );
+    assert!(
+        RegistrationRequest::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Secret::parse(&secret()).unwrap(),
+            Secret::parse(&secret()).unwrap(),
+            vec![Capability::TaskExecuteV2],
+        )
+        .is_err()
+    );
     assert_eq!(
         ReportRequest::new(
             Uuid::new_v4(),
@@ -111,6 +135,22 @@ fn published_schemas_match_wire_rejections() {
     }
     assert!(registration_validator.is_valid(&valid_registration));
     assert!(serde_json::from_value::<RegistrationRequest>(valid_registration).is_ok());
+
+    let mut task_capable = registration();
+    task_capable["operationId"] = json!(Uuid::new_v4());
+    task_capable["capabilities"] = json!(["inventory.basic.v2", "task.execute.v2"]);
+    assert!(registration_validator.is_valid(&task_capable));
+    assert!(serde_json::from_value::<RegistrationRequest>(task_capable.clone()).is_ok());
+    for capabilities in [
+        json!(["task.execute.v2"]),
+        json!(["task.execute.v2", "inventory.basic.v2"]),
+        json!(["inventory.basic.v2", "task.execute.v2", "task.execute.v2"]),
+    ] {
+        let mut invalid = task_capable.clone();
+        invalid["capabilities"] = capabilities;
+        assert!(!registration_validator.is_valid(&invalid));
+        assert!(serde_json::from_value::<RegistrationRequest>(invalid).is_err());
+    }
 
     for operation in [
         "8CC2FB40-21A1-4390-B4EC-702087C284B5",

@@ -74,7 +74,8 @@
             "kind",
             "exitCode",
             "quality",
-            "output"
+            "output",
+            "diagnostics"
           ],
           "properties": {
             "kind": {
@@ -100,8 +101,166 @@
                 "failed"
               ]
             },
-            "output": {}
-          }
+            "output": {},
+            "diagnostics": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "stdout",
+                "stderr",
+                "durationMs",
+                "executedAt",
+                "failure"
+              ],
+              "properties": {
+                "stdout": {
+                  "type": "string",
+                  "maxLength": 16384,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "stderr": {
+                  "type": "string",
+                  "maxLength": 16384,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "durationMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3600000
+                },
+                "executedAt": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9223372036854775807
+                },
+                "failure": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "enum": [
+                        "launch_failed",
+                        "timed_out",
+                        "cancelled",
+                        "non_zero_exit",
+                        "output_limit",
+                        "capture_failed"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "complete"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "exitCode": {
+                    "const": 0
+                  },
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "non_zero_exit"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "exitCode": {
+                    "type": "integer",
+                    "not": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "launch_failed"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "exitCode": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "failed"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "truncated"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "output_limit"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
         }
       ]
     }

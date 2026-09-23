@@ -28,8 +28,14 @@
       "$ref": "#/$defs/secret"
     },
     "capabilities": {
-      "const": [
-        "inventory.basic.v2"
+      "enum": [
+        [
+          "inventory.basic.v2"
+        ],
+        [
+          "inventory.basic.v2",
+          "task.execute.v2"
+        ]
       ]
     }
   },
