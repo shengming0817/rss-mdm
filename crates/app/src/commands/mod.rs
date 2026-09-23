@@ -1,5 +1,7 @@
 //! Product operation composition; RSS remains the command, messaging and recovery owner.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
+mod apple;
+mod apple_push;
 mod config;
 mod http;
 mod model;
@@ -23,7 +25,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const DOMAIN: &str = "mdm.commands.v1";
+const DOMAIN: &str = "mdm.commands.v2";
 fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
     rss_transactional_messaging::message::MessagingDomain::parse(DOMAIN).expect("fixed domain")
 }

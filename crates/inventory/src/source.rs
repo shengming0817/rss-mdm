@@ -22,6 +22,9 @@ impl Channel {
 /// Only sources allowed to produce device reports. Manual cannot enter collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReportSource {
+    /// Native Apple MDM collector.
+    #[serde(rename = "mdm.apple")]
+    MdmApple,
     /// Existing Windows MDM collector.
     #[serde(rename = "mdm.windows")]
     MdmWindows,
@@ -33,6 +36,7 @@ impl ReportSource {
     /// Parse the canonical source without accepting Manual or unknown producers.
     pub fn parse(s: &str) -> Result<Self> {
         match s {
+            "mdm.apple" => Ok(Self::MdmApple),
             "mdm.windows" => Ok(Self::MdmWindows),
             "agent.builtin" => Ok(Self::AgentBuiltin),
             _ => Err(Invalid::UnknownSource),
@@ -41,6 +45,7 @@ impl ReportSource {
     /// Canonical storage identifier.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::MdmApple => "mdm.apple",
             Self::MdmWindows => "mdm.windows",
             Self::AgentBuiltin => "agent.builtin",
         }
@@ -48,7 +53,7 @@ impl ReportSource {
     /// The sole source-to-channel binding.
     pub const fn channel(self) -> Channel {
         match self {
-            Self::MdmWindows => Channel::Mdm,
+            Self::MdmWindows | Self::MdmApple => Channel::Mdm,
             Self::AgentBuiltin => Channel::Agent,
         }
     }
@@ -56,6 +61,9 @@ impl ReportSource {
 /// All allowed asset sources. Serialized as their canonical stable identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Source {
+    /// Apple MDM evidence.
+    #[serde(rename = "mdm.apple")]
+    MdmApple,
     /// Built-in agent evidence.
     #[serde(rename = "agent.builtin")]
     AgentBuiltin,
@@ -71,6 +79,7 @@ impl Source {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
+            Self::MdmApple => ReportSource::MdmApple.as_str(),
             Self::MdmWindows => ReportSource::MdmWindows.as_str(),
             Self::AgentBuiltin => ReportSource::AgentBuiltin.as_str(),
         }
@@ -87,6 +96,7 @@ impl Source {
 impl From<ReportSource> for Source {
     fn from(source: ReportSource) -> Self {
         match source {
+            ReportSource::MdmApple => Self::MdmApple,
             ReportSource::MdmWindows => Self::MdmWindows,
             ReportSource::AgentBuiltin => Self::AgentBuiltin,
         }

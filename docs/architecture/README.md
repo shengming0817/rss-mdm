@@ -8,3 +8,5 @@
 
 - [#2350 + #2351 Windows 注册与管理通道实施计划](202609111146-2350-windows-enrollment-management-plan.md)
 - [#2464 资产变化与持久计划](202609221249-2464-asset-automation.md)
+
+- [#2471 Apple 管理实施计划](202609230000-2471-apple-management-plan.md)

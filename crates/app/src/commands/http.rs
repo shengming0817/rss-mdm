@@ -26,8 +26,17 @@ async fn create(
     input: std::result::Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
-    if !matches!(input.task, Task::StateVerify { .. }) {
+    if matches!(input.task, Task::Firewall { .. }) {
         return Err(Error::Malformed);
+    }
+    match input.task.source() {
+        rss_mdm_inventory::ReportSource::MdmApple => {
+            app.apple()?;
+        }
+        rss_mdm_inventory::ReportSource::MdmWindows => {
+            app.windows()?;
+        }
+        _ => return Err(Error::Unsupported),
     }
     audit.operation(input.operation_id, "command_accept");
     audit.target(&device);

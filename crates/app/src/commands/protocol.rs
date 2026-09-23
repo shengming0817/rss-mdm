@@ -130,6 +130,9 @@ pub(super) async fn observation(
     op: &storage::Operation,
     command_status: dc::Status,
 ) -> Result<Value> {
+    if op.request.profile_target().is_some() {
+        return apple::observation(tx, op, command_status).await;
+    }
     let tenant = tx.tenant_id().to_string();
     let id = op.id.to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT DISTINCT ON(phase) id::text,ordinal,phase,status,value,received_at,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY phase,ordinal DESC").bind(tenant).bind(id).fetch_all(c).await})).await?;
@@ -142,6 +145,9 @@ pub(super) async fn observation(
         .find(|(p, _)| *p == AttemptPhase::Execute)
         .map(|(_, r)| *r);
     let read = match op.request.task {
+        Task::ProfileInstall { .. } | Task::ProfileRemove { .. } => {
+            return Err(Error::Unsupported.into());
+        }
         Task::StateVerify { .. } => execute,
         Task::Firewall { .. } => phases
             .iter()
@@ -187,6 +193,7 @@ pub(super) async fn observation(
         result["cleanup"] = json!("unsupported");
         result["observationScope"] = json!("device_firewall");
     }
+    result["protocol"] = json!("mdm.windows");
     result["receiptAccepted"] = json!(accepted);
     Ok(result)
 }

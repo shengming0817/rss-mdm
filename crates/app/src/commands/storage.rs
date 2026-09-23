@@ -233,3 +233,19 @@ pub(super) async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
     }
     Ok(())
 }
+
+pub(super) async fn require_source(
+    tx: &mut PgTransaction<'_>,
+    registration: Uuid,
+    source: rss_mdm_inventory::ReportSource,
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let valid=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) JOIN mdm_access.credentials k ON (k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.state='active' AND k.state='active' AND q.source=$3 AND s.source=$3 AND s.enabled)")
+            .bind(tenant).bind(registration.to_string()).bind(source.as_str()).fetch_one(c).await
+    })).await?;
+    if !valid {
+        return Err(Error::Conflict.into());
+    }
+    Ok(())
+}

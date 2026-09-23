@@ -64,6 +64,7 @@ impl Commands {
         let s = self;
         self.lock_plan_request(tx, proof, input).await?;
         let fingerprint = Sha256::digest(invalid(serde_json::to_vec(&(
+            "mdm.plan-execute/v2",
             proof.user(),
             policy,
             plan,

@@ -29,15 +29,15 @@ use tokio_rustls::{
 };
 
 #[derive(Clone)]
-pub(super) struct Peer {
+pub(crate) struct Peer {
     chain: Arc<Vec<CertificateDer<'static>>>,
 }
 impl Peer {
-    pub(super) fn chain(&self) -> &[CertificateDer<'static>] {
+    pub(crate) fn chain(&self) -> &[CertificateDer<'static>] {
         &self.chain
     }
 }
-pub(super) fn configuration(
+pub(crate) fn configuration(
     endpoint: &TlsEndpoint,
     client: Option<Arc<dyn ClientCertVerifier>>,
 ) -> Result<Arc<rustls::ServerConfig>, Error> {
@@ -69,14 +69,14 @@ pub(super) fn configuration(
         config.send_tls13_tickets = 0;
         Ok(Arc::new(config))
     };
-    build().map_err(|_| Error::Configuration(ConfigIssue::WindowsTls))
+    build().map_err(|_| Error::Configuration(ConfigIssue::NativeTls))
 }
 pub(crate) fn registration(
     listener: TcpListener,
     app: TlsRouter,
     access: Arc<AccessStore>,
     tenant: String,
-    name: &'static str,
+    kind: super::NativeListenerKind,
 ) -> ManagedTaskRegistration {
     rss_axum::serve_http1_registration(
         listener,
@@ -86,9 +86,9 @@ pub(crate) fn registration(
             admission: app.admission,
             access,
             tenant,
-            name,
+            kind,
         },
-        name,
+        kind.name(),
         crate::lifecycle::http_policy(),
     )
 }
@@ -110,7 +110,7 @@ struct TlsTransport {
     admission: Arc<Admission>,
     access: Arc<AccessStore>,
     tenant: String,
-    name: &'static str,
+    kind: super::NativeListenerKind,
 }
 impl ConnectionTransport for TlsTransport {
     type Io = TlsStream<TcpStream>;
@@ -142,15 +142,8 @@ impl ConnectionTransport for TlsTransport {
                     Ok(Ok(_)) => unreachable!("successful handshake handled above"),
                 };
                 // Emit before the bounded audit so cancellation cannot hide the diagnosed failure.
-                eprintln!("{}", event(self.name, kind));
-                let audit = Audit::new(
-                    self.tenant.clone(),
-                    if self.name == "mdm-management-tls" {
-                        "windows_management"
-                    } else {
-                        "protected_request"
-                    },
-                );
+                eprintln!("{}", event(self.kind.name(), kind));
+                let audit = Audit::new(self.tenant.clone(), self.kind.audit_action());
                 let failed = !matches!(
                     tokio::time::timeout(
                         Duration::from_secs(2),
@@ -207,4 +200,4 @@ fn event(name: &str, kind: ConnectionFailure) -> serde_json::Value {
 mod tests;
 
 #[cfg(test)]
-pub(super) use tests::verify_tls_lifecycle;
+pub(crate) use tests::verify_tls_lifecycle;

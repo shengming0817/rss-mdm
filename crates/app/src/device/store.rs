@@ -53,16 +53,16 @@ impl DeviceService {
         }
         if admin.tenant_id() != self.tenant
             || admin.tenant_id() != credential.tenant.to_string()
-            || command.source.channel() != credential.channel
+            || command.source != credential.source
         {
             return Err(Error::Forbidden);
         }
         let mut tx = self.access.begin(admin.tenant_id()).await?;
         // The accepted request supplies the target; its UUID alone never authorizes binding.
-        let request = sqlx::query("SELECT g.device,r.channel FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
+        let request = sqlx::query("SELECT g.device,r.source FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
             .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.principal_id()).bind(admin.instance_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
         let device: String = request.try_get("device").map_err(db)?;
-        if request.try_get::<String, _>("channel").map_err(db)? != credential.channel.as_str() {
+        if request.try_get::<String, _>("source").map_err(db)? != command.source.as_str() {
             return Err(Error::Forbidden);
         }
         let _permission = admin.enrollment(&device)?;
@@ -169,7 +169,7 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         source: ReportSource,
     ) -> Result<(DevicePrincipal, Scope), Error> {
-        if source.channel() != credential.channel || self.tenant != credential.tenant.to_string() {
+        if source != credential.source || self.tenant != credential.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let tenant = credential.tenant.to_string();
@@ -246,7 +246,7 @@ fn unique_or_db(error: sqlx::Error) -> Error {
         db(error)
     }
 }
-async fn retire(
+pub(crate) async fn retire(
     tx: &mut Transaction<'_, Postgres>,
     tenant: &str,
     registration: Uuid,
@@ -263,6 +263,8 @@ async fn retire(
     .map_err(db)?;
     sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut **tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.devices SET state='retired',token=NULL,magic=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
     crate::collection::terminate(tx, tenant, &registration.to_string(), state).await?;
     Ok(())
 }
@@ -287,8 +289,8 @@ pub(crate) async fn bind_in(
         .map_err(db)?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid)")
             .bind(admin.tenant_id()).bind(command.request_id.to_string()).fetch_one(&mut **tx).await.map_err(db)? { return Err(Error::Conflict); }
-    let request_channel: String = sqlx::query_scalar(
-        "SELECT channel FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2::uuid",
+    let request_source: String = sqlx::query_scalar(
+        "SELECT source FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2::uuid",
     )
     .bind(admin.tenant_id())
     .bind(command.request_id.to_string())
@@ -296,7 +298,7 @@ pub(crate) async fn bind_in(
     .await
     .map_err(db)?
     .ok_or(Error::Forbidden)?;
-    if request_channel != credential.channel.as_str() {
+    if request_source != command.source.as_str() || command.source != credential.source {
         return Err(Error::Forbidden);
     }
     lock_channel(tx, admin.tenant_id(), &device, credential.channel).await?;

@@ -71,30 +71,30 @@ struct State {
     requests: Bucket,
     pruned: Instant,
 }
-pub(super) struct Admission {
+pub(crate) struct Admission {
     clock: Arc<dyn rss_observation::Clock>,
     state: Mutex<State>,
     requests: Arc<Semaphore>,
     name: &'static str,
     refused: [AtomicU64; 2],
 }
-pub(super) struct ConnectionPermit {
+pub(crate) struct ConnectionPermit {
     _slot: OwnedSemaphorePermit,
     gate: RequestGate,
 }
 impl ConnectionPermit {
-    pub(super) fn gate(&self) -> RequestGate {
+    pub(crate) fn gate(&self) -> RequestGate {
         self.gate.clone()
     }
 }
 #[derive(Clone)]
-pub(super) struct RequestGate {
+pub(crate) struct RequestGate {
     owner: Arc<Admission>,
     peer: IpAddr,
 }
 impl Admission {
     #[cfg(test)]
-    pub(super) fn active_connections(&self, peer: IpAddr) -> usize {
+    pub(crate) fn active_connections(&self, peer: IpAddr) -> usize {
         self.state
             .lock()
             .unwrap()
@@ -102,7 +102,7 @@ impl Admission {
             .get(&peer)
             .map_or(0, |peer| 4 - peer.connections.available_permits())
     }
-    pub(super) fn new(
+    pub(crate) fn new(
         clock: Arc<dyn rss_observation::Clock>,
         requests: Arc<Semaphore>,
         name: &'static str,
@@ -131,7 +131,7 @@ impl Admission {
             );
         }
     }
-    pub(super) fn connection(self: &Arc<Self>, peer: IpAddr) -> Option<ConnectionPermit> {
+    pub(crate) fn connection(self: &Arc<Self>, peer: IpAddr) -> Option<ConnectionPermit> {
         let result = self.connection_slot(peer).map(|slot| ConnectionPermit {
             _slot: slot,
             gate: RequestGate {
@@ -178,7 +178,7 @@ impl Admission {
         Some((slot, self.requests.clone().try_acquire_owned().ok()?))
     }
 }
-pub(super) async fn admit(
+pub(crate) async fn admit(
     Extension(gate): Extension<RequestGate>,
     request: Request,
     next: Next,

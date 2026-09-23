@@ -151,7 +151,11 @@ impl FieldKey {
             sources: if manual {
                 &[crate::Source::Manual]
             } else {
-                &[crate::Source::MdmWindows, crate::Source::AgentBuiltin]
+                &[
+                    crate::Source::MdmWindows,
+                    crate::Source::MdmApple,
+                    crate::Source::AgentBuiltin,
+                ]
             },
             operations,
         }
