@@ -26,6 +26,13 @@ fn accepted<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     }
     Ok(true)
 }
+fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
 /// Cancellation applies only to this exact task attempt; it asserts no rollback.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -74,6 +81,7 @@ pub struct TaskClaimResponse {
 struct RawTaskClaimResponse {
     #[serde(rename = "wireVersion", deserialize_with = "version")]
     _wire_version: u8,
+    #[serde(deserialize_with = "required_option")]
     task: Option<SignedTask>,
     cancellations: Vec<TaskCancellation>,
 }
@@ -122,6 +130,7 @@ pub struct TaskEventAck {
     #[serde(deserialize_with = "accepted")]
     accepted: bool,
     /// Only Start may return a freshly signed start permit.
+    #[serde(deserialize_with = "required_option")]
     permit: Option<SignedTask>,
     /// Stop this attempt; execution effects may remain unknown.
     cancel_requested: bool,
@@ -212,6 +221,7 @@ struct DiagnosticsInput {
     stderr: String,
     duration_ms: u64,
     executed_at: i64,
+    #[serde(deserialize_with = "required_option")]
     failure: Option<TaskFailure>,
 }
 impl From<TaskDiagnostics> for DiagnosticsInput {
@@ -285,6 +295,7 @@ pub struct TaskResult(ResultInput);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResultInput {
+    #[serde(deserialize_with = "required_option")]
     exit_code: Option<i32>,
     quality: OutputQuality,
     output: Value,

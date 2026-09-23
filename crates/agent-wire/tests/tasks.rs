@@ -177,6 +177,13 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
         };
         assert!(validator.is_valid(&value));
         assert!(rust_valid(value.clone()));
+        let mut missing_nullable = value.clone();
+        missing_nullable
+            .as_object_mut()
+            .unwrap()
+            .remove(if index == 0 { "task" } else { "permit" });
+        assert!(!validator.is_valid(&missing_nullable));
+        assert!(!rust_valid(missing_nullable));
         for (name, invalid) in [("wireVersion", json!(1)), ("tenant", json!(Uuid::new_v4()))] {
             let mut bad = value.clone();
             bad[name] = invalid;
@@ -277,6 +284,24 @@ fn task_results_require_bounded_coherent_diagnostics() {
             .is_valid(&encoded)
     );
     assert!(serde_json::from_value::<TaskEventRequest>(encoded).is_ok());
+
+    for field in ["exitCode", "failure"] {
+        let mut missing = serde_json::to_value(&request).unwrap();
+        if field == "failure" {
+            missing["event"]["diagnostics"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        } else {
+            missing["event"].as_object_mut().unwrap().remove(field);
+        }
+        assert!(
+            !jsonschema::draft202012::new(&schema)
+                .unwrap()
+                .is_valid(&missing)
+        );
+        assert!(serde_json::from_value::<TaskEventRequest>(missing).is_err());
+    }
 
     for invalid in [
         {
