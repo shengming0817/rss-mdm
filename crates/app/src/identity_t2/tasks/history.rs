@@ -36,6 +36,11 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
                     item["result"].get("output").is_none(),
                     "run summary exposed output: {item}"
                 );
+                ensure!(
+                    item["result"]["diagnostics"].get("stdout").is_none()
+                        && item["result"]["diagnostics"].get("stderr").is_none(),
+                    "run summary exposed diagnostic streams: {item}"
+                );
                 let id = item["taskId"].as_str().context("history taskId")?.to_owned();
                 ensure!(unique.insert(id.clone()), "duplicate run history item: {id}");
                 ids.push(id);
@@ -66,6 +71,11 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
             .await?;
         ensure!(status == StatusCode::OK, "run detail: {status} {detail}");
         ensure!(detail["result"]["output"]["version"] == "1.2", "run detail: {detail}");
+        ensure!(
+            detail["result"]["diagnostics"]["stdout"] == "captured stdout"
+                && detail["result"]["diagnostics"]["stderr"] == "captured stderr",
+            "run detail lost diagnostic streams: {detail}"
+        );
         ensure!(
             author
                 .call(

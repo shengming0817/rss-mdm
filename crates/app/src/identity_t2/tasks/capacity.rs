@@ -83,6 +83,11 @@ pub(super) async fn verify(
         ))? == before,
         "capacity-blocked timer advanced its cursor"
     );
+    let blocked = pg(&format!(
+        "SELECT blocked_at FROM mdm_commands.action_plans WHERE id='{timer}'"
+    ))?
+    .trim()
+    .parse::<i64>()?;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{timer}'"
@@ -92,22 +97,28 @@ pub(super) async fn verify(
     );
 
     pg("DELETE FROM mdm_commands.action_runs WHERE occurrence LIKE 'capacity-fixture:%'")?;
-    commands.scan_action_fixture(timer, now).await?;
-    commands.scan_action_fixture(timer, now).await?;
+    commands.scan_action_fixture(timer, blocked + 60).await?;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{timer}'"
         ))?
         .trim()
             == "1",
-        "timer retry did not produce exactly one run"
+        "timer retry did not produce the original occurrence first"
     );
     ensure!(
         pg(&format!(
-            "SELECT scan_at FROM mdm_commands.action_plans WHERE id='{timer}'"
+            "SELECT scan_at={blocked} AND blocked_at IS NULL FROM mdm_commands.action_plans WHERE id='{timer}'"
         ))?
         .trim()
-            == now.to_string()
+            == "t"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT occurrence FROM mdm_commands.action_runs WHERE plan='{timer}'"
+        ))?
+        .trim()
+            == format!("timer:{blocked}")
     );
     for plan in [manual, timer] {
         post(

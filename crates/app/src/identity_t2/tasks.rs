@@ -5,6 +5,7 @@ use ring::signature::KeyPair;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 const CREDENTIAL: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
+const INVENTORY_CREDENTIAL: &str = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
 const DEVICE_ID: &str = "enterprise-device";
 
 fn next_new_york_fold(now: i64) -> Result<i64> {
@@ -50,22 +51,41 @@ async fn upload(browser: &Browser, router: &Router, id: Uuid, bytes: &[u8]) -> R
         .header("cookie",browser.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
     Ok(router.clone().oneshot(request).await?.status())
 }
-async fn task_event(router: &Router, task: &Value, kind: Value) -> Result<Value> {
-    let response=agent_call(router,Method::POST,&format!("/api/agent/v2/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(CREDENTIAL),Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":kind}))).await?;
+async fn task_event(router: &Router, task: &Value, mut kind: Value) -> Result<Value> {
+    let response = task_event_request(router, task, Uuid::new_v4(), &mut kind).await?;
     ensure!(response.0 == StatusCode::OK, "event: {response:?}");
     Ok(response.1)
+}
+async fn task_event_request(
+    router: &Router,
+    task: &Value,
+    operation: Uuid,
+    kind: &mut Value,
+) -> Result<(StatusCode, Value)> {
+    if kind["kind"] == "result" && kind.get("diagnostics").is_none() {
+        let failure = match kind["quality"].as_str() {
+            Some("truncated") => json!("output_limit"),
+            Some("failed") => json!("capture_failed"),
+            _ => Value::Null,
+        };
+        kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
+    }
+    agent_call(router,Method::POST,&format!("/api/agent/v2/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(CREDENTIAL),Some(json!({"wireVersion":2,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+}
+async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
+    agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v2/tasks/claim",
+        Some(CREDENTIAL),
+        Some(json!({"wireVersion":2,"operationId":operation})),
+    )
+    .await
 }
 async fn claim(router: &Router) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let response = agent_call(
-                router,
-                Method::POST,
-                "/api/agent/v2/tasks/claim",
-                Some(CREDENTIAL),
-                Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()})),
-            )
-            .await?;
+            let response = claim_request(router, Uuid::new_v4()).await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
             let _: rss_mdm_agent_wire::TaskClaimResponse =
                 serde_json::from_value(response.1.clone())?;
@@ -101,6 +121,12 @@ async fn plan(
             == StatusCode::SERVICE_UNAVAILABLE
     );
     let receipt = post(author, router, "/api/v3/script-plans", body.clone()).await?;
+    ensure!(
+        receipt["operationId"] == id.to_string()
+            && receipt["targetCount"] == 1
+            && receipt["nextStage"] == "review",
+        "plan receipt lacks stable progress feedback: {receipt}"
+    );
     ensure!(
         receipt == post(author, router, "/api/v3/script-plans", body).await?,
         "plan replay changed"
@@ -215,10 +241,38 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v2/registrations",None,Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":CREDENTIAL,"capabilities":["inventory.basic.v2"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v2/registrations",None,Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":INVENTORY_CREDENTIAL,"capabilities":["inventory.basic.v2"]}))).await?;
     ensure!(
-        registration.0 == StatusCode::CREATED,
+        registration.0 == StatusCode::CREATED
+            && registration.1["capabilities"] == json!(["inventory.basic.v2"]),
         "registration: {registration:?}"
+    );
+    let taskless = agent_call(
+        &router,
+        Method::POST,
+        "/api/agent/v2/tasks/claim",
+        Some(INVENTORY_CREDENTIAL),
+        Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()})),
+    )
+    .await?;
+    ensure!(
+        taskless.0 == StatusCode::FORBIDDEN,
+        "inventory-only registration entered task API: {taskless:?}"
+    );
+    author.operation = Some(Uuid::new_v4());
+    let enrollment = post(
+        &mut author,
+        &router,
+        "/api/v2/enrollments",
+        json!({"deviceId":DEVICE_ID,"password":password,"channel":"agent"}),
+    )
+    .await?;
+    author.operation = None;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v2/registrations",None,Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":CREDENTIAL,"capabilities":["inventory.basic.v2","task.execute.v2"]}))).await?;
+    ensure!(
+        registration.0 == StatusCode::CREATED
+            && registration.1["capabilities"] == json!(["inventory.basic.v2", "task.execute.v2"]),
+        "task registration: {registration:?}"
     );
     // Legacy URL and major cannot enter task intake.
     let old = router
@@ -294,7 +348,33 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(worker.registration().critical());
     launch.finish();
-    let task = claim(&router).await?;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if pg(&format!(
+                "SELECT gateway_accepted FROM mdm_commands.action_runs WHERE plan='{plan_id}'"
+            ))?
+            .trim()
+                == "t"
+            {
+                break Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    let claim_operation = Uuid::new_v4();
+    commands.inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+    ensure!(
+        claim_request(&router, claim_operation).await?.0 == StatusCode::SERVICE_UNAVAILABLE,
+        "claim commit-pending fault was not surfaced"
+    );
+    let claim_response = claim_request(&router, claim_operation).await?;
+    ensure!(claim_response.0 == StatusCode::OK && !claim_response.1["task"].is_null());
+    ensure!(
+        claim_response == claim_request(&router, claim_operation).await?,
+        "claim retry receipt changed"
+    );
+    let task = claim_response.1["task"].clone();
     let signed: rss_mdm_agent_wire::SignedTask = serde_json::from_value(task.clone())?;
     let context = rss_mdm_agent_wire::TaskVerification {
         key_id: "fixture",
@@ -304,7 +384,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         platform: rss_mdm_agent_wire::TaskPlatform::Macos,
         architecture: rss_mdm_agent_wire::TaskArchitecture::Aarch64,
         registration_id: Uuid::parse_str(registration.1["registrationId"].as_str().unwrap())?,
-        generation: 1,
+        generation: registration.1["generation"].as_u64().unwrap(),
         task_id: signed.payload.task_id,
         attempt_id: signed.payload.attempt_id,
         permit: rss_mdm_agent_wire::TaskPermit::Offer,
@@ -315,13 +395,46 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     task_event(&router, &task, json!({"kind":"received"})).await?;
     let permit = task_event(&router, &task, json!({"kind":"start"})).await?;
     let ack: rss_mdm_agent_wire::TaskEventAck = serde_json::from_value(permit)?;
-    ack.permit
+    ack.into_permit()
         .unwrap()
         .verify(&rss_mdm_agent_wire::TaskVerification {
             permit: rss_mdm_agent_wire::TaskPermit::Start,
             ..context
         })?;
-    task_event(&router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
+    let result_operation = Uuid::new_v4();
+    let mut result = json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
+    commands.inject_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    ensure!(
+        task_event_request(&router, &task, result_operation, &mut result)
+            .await?
+            .0
+            == StatusCode::SERVICE_UNAVAILABLE,
+        "result commit-unknown fault was not surfaced"
+    );
+    let accepted = task_event_request(&router, &task, result_operation, &mut result).await?;
+    ensure!(accepted.0 == StatusCode::OK);
+    ensure!(
+        accepted == task_event_request(&router, &task, result_operation, &mut result).await?,
+        "result retry receipt changed"
+    );
+    let mut conflict = result.clone();
+    conflict["output"]["version"] = json!("different");
+    ensure!(
+        task_event_request(&router, &task, result_operation, &mut conflict)
+            .await?
+            .0
+            == StatusCode::CONFLICT,
+        "result operation accepted conflicting payload"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.action_receipts WHERE id='{result_operation}'"
+        ))?
+        .trim()
+            == "1"
+    );
     ensure!(pg("SELECT count(*) FROM mdm_access.collection_runs WHERE source='agent.script' AND delivery_pending")?.trim()=="2");
     ensure!(
         pg(&format!(
@@ -413,9 +526,9 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         }
     })
     .await??;
+    ensure!(stack.shutdown().join().await?.is_clean());
     capacity::verify(&mut author, &mut reviewer, &router, id, &commands).await?;
     scheduled_matrix(&mut author, &mut reviewer, &router, id, &commands, &config).await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
     post(
         &mut author,
         &router,

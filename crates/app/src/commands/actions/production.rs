@@ -210,12 +210,23 @@ pub(super) async fn tick(
     schedule.jitter_seconds = 0;
     schedule.window = None;
     schedule.misfire = super::schedule::Misfire::CoalesceOne;
-    let mut capacity_blocked = false;
-    if let Some(occurrence) = schedule.due(plan.scan_at, now, b"schedule")? {
-        capacity_blocked = matches!(
-            produce(service, tx, plan, occurrence.coordinate, "timer", now, None).await?,
+    let coordinate = if let Some(blocked) = plan.blocked_at {
+        Some(blocked)
+    } else {
+        schedule
+            .due(plan.scan_at, now, b"schedule")?
+            .map(|occurrence| occurrence.coordinate)
+    };
+    if let Some(coordinate) = coordinate
+        && matches!(
+            produce(service, tx, plan, coordinate, "timer", now, None).await?,
             ProduceOutcome::CapacityBlocked
-        );
+        )
+    {
+        let tenant = tx.tenant_id().to_string();
+        let id = plan.id.to_string();
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_plans SET blocked_at=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(coordinate).execute(c).await?;Ok(())})).await?;
+        return Ok(());
     }
     if matches!(schedule.trigger, Trigger::Registration) {
         for device in &plan.frozen.input.devices {
@@ -223,22 +234,18 @@ pub(super) async fn tick(
                 Ok(target) => {
                     // Registration identity is stable across worker restarts. Production's device set
                     // is narrowed without changing the approved plan or target authorization bases.
-                    capacity_blocked |= matches!(
-                        event(service, tx, plan, &target, "registration", now).await?,
-                        ProduceOutcome::CapacityBlocked
-                    );
+                    // Capacity is retried from that identity on every tick; it does not use scan_at.
+                    let _ = event(service, tx, plan, &target, "registration", now).await?;
                 }
                 Err(crate::commands::Fault::Request(Error::Conflict)) => (),
                 Err(error) => return Err(error),
             }
         }
     }
-    if capacity_blocked {
-        return Ok(());
-    }
+    let scan_at = coordinate.unwrap_or(now);
     let tenant = tx.tenant_id().to_string();
     let id = plan.id.to_string();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_plans SET scan_at=greatest(scan_at,$3) WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(now).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_plans SET scan_at=greatest(scan_at,$3),blocked_at=NULL WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(scan_at).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
 pub(super) async fn event(

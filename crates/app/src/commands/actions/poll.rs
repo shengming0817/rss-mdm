@@ -32,10 +32,10 @@ pub(super) async fn cancellations(
     })).await?;
     rows.into_iter()
         .map(|row| {
-            Ok(wire::TaskCancellation {
-                task_id: corrupt(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
-                attempt_id: corrupt(Uuid::parse_str(&row.try_get::<String, _>("attempt")?))?,
-            })
+            corrupt(wire::TaskCancellation::new(
+                corrupt(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
+                corrupt(Uuid::parse_str(&row.try_get::<String, _>("attempt")?))?,
+            ))
         })
         .collect()
 }

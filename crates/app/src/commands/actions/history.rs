@@ -33,7 +33,7 @@ impl Commands {
             for device in &plan.frozen.input.devices {storage::authorized(tx,proof,device,Permission::OperationRead).await?;}
             let tenant=tx.tenant_id().to_string();let at=page.after_at;let after=page.after_id.map(|id|id.to_string());
             let mut rows=tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('taskId',id,'device',device,'registrationId',registration,'generation',generation,'occurrence',occurrence,'availableAt',available_at,'deadline',deadline,'state',state,'effect','unverified','result',result-'output') FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND ($3::bigint IS NULL OR (available_at,id)<($3,$4::uuid)) ORDER BY available_at DESC,id DESC LIMIT 21")
+                sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('taskId',id,'device',device,'registrationId',registration,'generation',generation,'occurrence',occurrence,'availableAt',available_at,'deadline',deadline,'state',state,'effect','unverified','result',CASE WHEN result IS NULL THEN NULL ELSE (result-'output') || jsonb_build_object('diagnostics',(result->'diagnostics')-'stdout'-'stderr') END) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND ($3::bigint IS NULL OR (available_at,id)<($3,$4::uuid)) ORDER BY available_at DESC,id DESC LIMIT 21")
                     .bind(tenant).bind(id.to_string()).bind(at).bind(after).fetch_all(c).await
             })).await?;
             let more=rows.len()>20;rows.truncate(20);

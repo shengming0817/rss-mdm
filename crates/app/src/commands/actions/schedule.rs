@@ -109,10 +109,27 @@ impl Schedule {
             Trigger::Once { at } if *at < self.not_before || *at >= self.until => {
                 return Err(Error::Malformed);
             }
-            Trigger::Interval { anchor, seconds }
-                if *anchor < 0 || !(60..=31_536_000).contains(seconds) =>
-            {
-                return Err(Error::Malformed);
+            Trigger::Interval { anchor, seconds } => {
+                if *anchor < 0 || !(60..=31_536_000).contains(seconds) {
+                    return Err(Error::Malformed);
+                }
+                let seconds = i64::from(*seconds);
+                let first = if *anchor >= self.not_before {
+                    *anchor
+                } else {
+                    let distance = self
+                        .not_before
+                        .checked_sub(*anchor)
+                        .ok_or(Error::Malformed)?;
+                    let intervals =
+                        distance.checked_add(seconds - 1).ok_or(Error::Malformed)? / seconds;
+                    anchor
+                        .checked_add(intervals.checked_mul(seconds).ok_or(Error::Malformed)?)
+                        .ok_or(Error::Malformed)?
+                };
+                if first >= self.until {
+                    return Err(Error::Malformed);
+                }
             }
             Trigger::Weekly {
                 zone: name,
@@ -347,5 +364,30 @@ mod tests {
             ..s
         };
         assert_eq!(s.due(0, 599, b"x").unwrap().unwrap().coordinate, 540);
+    }
+
+    #[test]
+    fn interval_requires_an_occurrence_before_until() {
+        let mut s = Schedule {
+            trigger: Trigger::Interval {
+                anchor: 120,
+                seconds: 60,
+            },
+            misfire: Misfire::CoalesceOne,
+            not_before: 60,
+            until: 120,
+            jitter_seconds: 0,
+            window: None,
+        };
+        assert!(s.validate().is_err());
+        if let Trigger::Interval { anchor, .. } = &mut s.trigger {
+            *anchor = 0;
+        }
+        assert!(s.validate().is_ok());
+        s.not_before = 1;
+        s.until = 30;
+        assert!(s.validate().is_err());
+        s.until = 61;
+        assert!(s.validate().is_ok());
     }
 }

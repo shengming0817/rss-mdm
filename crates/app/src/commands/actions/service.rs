@@ -59,7 +59,7 @@ impl Commands {
             let frozen=Frozen{input:input.clone(),definition:definition.clone(),resource_digest:version.digest().bytes(),artifact_reference:artifact.reference().as_str().into(),content:rss_mdm_agent_wire::TaskContent{length:artifact.length(),sha256:artifact.digest().bytes()}};
             let tenant=tx.tenant_id().to_string();let document=invalid(serde_json::to_value(frozen))?;let author=invalid(serde_json::to_value(proof.user()))?;let approvals=invalid(serde_json::to_value(approvals))?;let digest=hash.clone();let id=input.operation_id.to_string();let resource=input.resource.clone();let version=input.version.clone();
             tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_plans(tenant_id,id,resource,version,document,fingerprint,author,author_approvals,scan_at) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(id).bind(resource).bind(version).bind(document).bind(digest).bind(author).bind(approvals).bind(now-1).execute(c).await?;Ok(())})).await?;
-            let response=json!({"planId":input.operation_id,"revision":1,"authorization":"pending_review"});
+            let response=json!({"operationId":input.operation_id,"planId":input.operation_id,"revision":1,"authorization":"pending_review","targetCount":input.devices.len(),"nextStage":"review"});
             db::receipt(tx,&actor,input.operation_id,hash,&response).await?;storage::audit(tx,audit,202).await?;proof.check_live()?;Ok(response)
         })).await
     }

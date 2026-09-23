@@ -190,8 +190,10 @@ async fn register_inner(
         [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,'[\"inventory.basic.v2\"]')")
-        .bind(proof.tenant_id()).bind(receipt.registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    let capabilities = serde_json::to_string(input.capabilities())
+        .map_err(|_| Error::Unavailable(Failure::AccessStore))?;
+    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,$3)")
+        .bind(proof.tenant_id()).bind(receipt.registration.to_string()).bind(capabilities).execute(&mut *tx).await.map_err(db)?;
     let changed = sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND channel='agent' AND password_version=$3 AND credential_ref=$4::uuid AND expires_at>clock_timestamp()")
         .bind(proof.tenant_id()).bind(auth.id.to_string()).bind(auth.version).bind(auth.credential_ref.to_string()).execute(&mut *tx).await.map_err(db)?;
     if changed.rows_affected() != 1 {
@@ -210,7 +212,7 @@ async fn register_inner(
             .map_err(|_| Error::Unavailable(Failure::AccessStore))?,
         source: wire::ReportSource::AgentBuiltin,
         epoch: receipt.epoch,
-        capabilities: vec![wire::Capability::InventoryBasicV2],
+        capabilities: input.capabilities().to_vec(),
     };
     app.access
         .finish_status(
@@ -399,7 +401,9 @@ fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentErr
     let capabilities = value
         .get("capabilities")
         .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if capabilities != &serde_json::json!(["inventory.basic.v2"]) {
+    if capabilities != &serde_json::json!(["inventory.basic.v2"])
+        && capabilities != &serde_json::json!(["inventory.basic.v2", "task.execute.v2"])
+    {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedCapability));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))

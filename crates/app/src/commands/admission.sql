@@ -1,7 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
- ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_plans','reviewer'),('mdm_commands.action_plans','reviewer_approvals'),('mdm_commands.action_plans','active'),('mdm_commands.action_plans','scan_at'),('mdm_commands.action_plans','recovery_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
+ ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_plans','reviewer'),('mdm_commands.action_plans','reviewer_approvals'),('mdm_commands.action_plans','active'),('mdm_commands.action_plans','scan_at'),('mdm_commands.action_plans','blocked_at'),('mdm_commands.action_plans','recovery_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
  ('mdm_commands.firewall_owners','version'),('mdm_commands.firewall_owners','operation'),('mdm_commands.attempts','receipt_accepted'),('mdm_commands.attempts','status'),
  ('mdm_commands.attempts','value'),
  ('mdm_commands.attempts','received_at'),

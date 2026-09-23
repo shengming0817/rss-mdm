@@ -135,10 +135,11 @@ async fn authenticate(
     audit: &Audit,
 ) -> Result<crate::device::DevicePrincipal, crate::agent::AgentError> {
     let credential = crate::agent::agent_credential(app, headers)?;
-    let (principal, _) = app
+    let principal = app
         .devices
-        .authorize_report(&credential, rss_mdm_inventory::ReportSource::AgentBuiltin)
-        .await?;
+        .authorize_task(&credential)
+        .await
+        .map_err(task_error)?;
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());

@@ -18,6 +18,7 @@ pub(super) struct Plan {
     pub reviewer_approvals: Vec<Approval>,
     pub active: bool,
     pub scan_at: i64,
+    pub blocked_at: Option<i64>,
 }
 pub(super) struct Run {
     pub id: Uuid,
@@ -43,7 +44,14 @@ pub(super) async fn registration(tx: &mut PgTransaction<'_>, device: &str) -> Re
         })
     })
     .await??;
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT r.id::text,r.generation FROM mdm_access.registrations r JOIN mdm_access.agent_bindings b ON (b.tenant_id,b.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active' AND b.wire_version=2 AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active')").bind(tenant).bind(device).fetch_optional(c).await})).await?.ok_or(Error::Conflict)?;
+    let row=tx.with_connection(move|c|Box::pin(async move{
+        let row=sqlx::query("SELECT r.id::text,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active')").bind(&tenant).bind(&device).fetch_optional(&mut *c).await?;
+        if let Some(row)=&row {
+            let registration:String=row.try_get("id")?;
+            if !crate::device::store::task_capable(c,&tenant,&registration).await? {return Ok(None);}
+        }
+        Ok(row)
+    })).await?.ok_or(Error::Conflict)?;
     Ok(Target {
         device: target_device,
         registration: corrupt(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
@@ -52,7 +60,7 @@ pub(super) async fn registration(tx: &mut PgTransaction<'_>, device: &str) -> Re
 }
 pub(super) async fn load_plan(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Plan> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT document,author,author_approvals,reviewer,reviewer_approvals,active,scan_at FROM mdm_commands.action_plans WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT document,author,author_approvals,reviewer,reviewer_approvals,active,scan_at,blocked_at FROM mdm_commands.action_plans WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
     Ok(Plan {
         id,
         frozen: corrupt(serde_json::from_value(row.try_get("document")?))?,
@@ -69,6 +77,7 @@ pub(super) async fn load_plan(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Pl
             .unwrap_or_default(),
         active: row.try_get("active")?,
         scan_at: row.try_get("scan_at")?,
+        blocked_at: row.try_get("blocked_at")?,
     })
 }
 pub(super) async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {

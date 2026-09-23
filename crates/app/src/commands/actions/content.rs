@@ -9,7 +9,7 @@ use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[derive(Deserialize)]
@@ -77,6 +77,7 @@ impl Content {
         {
             return Err(bad());
         }
+        Self::clean_uploads(&directory)?;
         Ok(Self {
             directory,
             key_id: config.key_id.clone(),
@@ -109,15 +110,16 @@ impl Content {
         if bytes.len() > 16_777_216 {
             return Err(Error::Malformed);
         }
-        let final_path = self.path(artifact);
-        if final_path.exists() {
-            self.read(artifact)?;
-            return Ok(());
-        }
-        let temporary = self
-            .directory
-            .join(format!(".upload-{}", uuid::Uuid::new_v4()));
-        let outcome = (|| {
+        Self::with_lock(&self.directory, || {
+            Self::clean_uploads_locked(&self.directory)?;
+            let final_path = self.path(artifact);
+            if final_path.exists() {
+                self.read(artifact)?;
+                return Ok(());
+            }
+            let temporary = self
+                .directory
+                .join(format!(".upload-{}", uuid::Uuid::new_v4()));
             let mut options = OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]
@@ -125,23 +127,91 @@ impl Content {
                 use std::os::unix::fs::OpenOptionsExt;
                 options.mode(0o600);
             }
-            let mut file = options.open(&temporary).map_err(|_| bad())?;
-            file.write_all(bytes).map_err(|_| bad())?;
-            file.sync_all().map_err(|_| bad())?;
-            match fs::hard_link(&temporary, &final_path) {
-                Ok(()) => (),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    self.read(artifact)?;
+            let outcome = (|| {
+                let mut file = options.open(&temporary).map_err(|_| storage())?;
+                file.write_all(bytes).map_err(|_| storage())?;
+                file.sync_all().map_err(|_| storage())?;
+                match fs::hard_link(&temporary, &final_path) {
+                    Ok(()) => (),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        self.read(artifact)?;
+                    }
+                    Err(_) => return Err(storage()),
                 }
-                Err(_) => return Err(bad()),
+                Ok(())
+            })();
+            let cleanup = if temporary.exists() {
+                fs::remove_file(&temporary).map_err(|_| storage())
+            } else {
+                Ok(())
+            };
+            let sync = Self::sync_directory(&self.directory);
+            outcome.and(cleanup).and(sync)
+        })
+    }
+
+    fn with_lock<T>(
+        directory: &Path,
+        operation: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let path = directory.join(".upload.lock");
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock = options.open(&path).map_err(|_| storage())?;
+        if fs::symlink_metadata(path)
+            .map_err(|_| storage())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(storage());
+        }
+        lock.lock().map_err(|_| storage())?;
+        let outcome = operation();
+        let unlocked = lock.unlock().map_err(|_| storage());
+        outcome.and_then(|value| unlocked.map(|()| value))
+    }
+
+    fn sync_directory(directory: &Path) -> Result<(), Error> {
+        fs::File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| storage())
+    }
+
+    fn clean_uploads(directory: &Path) -> Result<(), Error> {
+        Self::with_lock(directory, || Self::clean_uploads_locked(directory))
+    }
+
+    fn clean_uploads_locked(directory: &Path) -> Result<(), Error> {
+        let mut removed = false;
+        for entry in fs::read_dir(directory).map_err(|_| storage())? {
+            let entry = entry.map_err(|_| storage())?;
+            let name = entry.file_name();
+            let Some(suffix) = name.to_str().and_then(|name| name.strip_prefix(".upload-")) else {
+                continue;
+            };
+            let Ok(id) = uuid::Uuid::parse_str(suffix) else {
+                continue;
+            };
+            if id.hyphenated().to_string() != suffix
+                || !fs::symlink_metadata(entry.path())
+                    .map_err(|_| storage())?
+                    .file_type()
+                    .is_file()
+            {
+                continue;
             }
-            fs::File::open(&self.directory)
-                .and_then(|d| d.sync_all())
-                .map_err(|_| bad())?;
-            Ok(())
-        })();
-        let _ = fs::remove_file(temporary);
-        outcome
+            fs::remove_file(entry.path()).map_err(|_| storage())?;
+            removed = true;
+        }
+        if removed {
+            Self::sync_directory(directory)?;
+        }
+        Ok(())
     }
     pub fn read(&self, artifact: &Artifact) -> Result<Vec<u8>, Error> {
         use std::io::Read;
@@ -201,6 +271,7 @@ pub(super) fn range(header: Option<&str>, length: usize) -> Result<(usize, usize
 mod tests {
     use super::*;
     use ring::rand::SystemRandom;
+    use std::{sync::mpsc, time::Duration};
 
     fn content(directory: PathBuf) -> Content {
         let key = Ed25519KeyPair::from_pkcs8(
@@ -241,6 +312,50 @@ mod tests {
             content.read(&artifact),
             Err(Error::Unavailable(Failure::CommandInvariant))
         ));
+    }
+
+    #[test]
+    fn put_reports_runtime_io_as_storage_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let content = content(directory.path().join("missing"));
+        let bytes = b"content";
+        assert!(matches!(
+            content.put(&artifact(bytes), bytes),
+            Err(Error::Unavailable(Failure::CommandStorage))
+        ));
+    }
+
+    #[test]
+    fn cleanup_waits_for_directory_lock_and_only_removes_owned_uploads() {
+        let directory = tempfile::tempdir().unwrap();
+        let owned = directory
+            .path()
+            .join(format!(".upload-{}", uuid::Uuid::new_v4()));
+        let unrelated = directory.path().join(".upload-not-a-uuid");
+        fs::write(&owned, b"partial").unwrap();
+        fs::write(&unrelated, b"keep").unwrap();
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.path().join(".upload.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        let path = directory.path().to_owned();
+        let (send, receive) = mpsc::channel();
+        std::thread::spawn(move || send.send(Content::clean_uploads(&path)).unwrap());
+        assert!(matches!(
+            receive.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        lock.unlock().unwrap();
+        receive
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert!(!owned.exists());
+        assert!(unrelated.exists());
     }
 
     #[test]

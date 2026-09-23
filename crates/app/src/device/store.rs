@@ -36,6 +36,17 @@ pub(crate) async fn lock_channel(
         .map_err(db)?;
     Ok(())
 }
+pub(crate) async fn task_capable(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=2 AND capabilities='[\"inventory.basic.v2\",\"task.execute.v2\"]')")
+        .bind(tenant)
+        .bind(registration)
+        .fetch_one(tx)
+        .await
+}
 impl DeviceService {
     #[cfg(test)]
     pub(super) async fn bind_inner(
@@ -182,7 +193,7 @@ impl DeviceService {
         let row=sqlx::query("SELECT device,generation,channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active' FOR SHARE")
             .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
         if credential.channel == Channel::Agent {
-            let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=2 AND capabilities='[\"inventory.basic.v2\"]')")
+            let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=2 AND capabilities IN ('[\"inventory.basic.v2\"]','[\"inventory.basic.v2\",\"task.execute.v2\"]'))")
                 .bind(&tenant).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
             if !current {
                 return Err(Error::Unauthorized);
@@ -206,6 +217,23 @@ impl DeviceService {
         )?;
         tx.commit().await.map_err(db)?;
         Ok((principal, scope))
+    }
+    pub(crate) async fn authorize_task(
+        &self,
+        credential: &VerifiedChannelCredential,
+    ) -> Result<DevicePrincipal, Error> {
+        let (principal, _) = self
+            .authorize_report(credential, ReportSource::AgentBuiltin)
+            .await?;
+        let mut tx = self.access.begin(&self.tenant).await?;
+        let allowed = task_capable(&mut tx, &self.tenant, &principal.registration().to_string())
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        if !allowed {
+            return Err(Error::Forbidden);
+        }
+        Ok(principal)
     }
     pub(crate) async fn current_scope(
         &self,

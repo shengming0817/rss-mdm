@@ -16,17 +16,30 @@ async fn principal(tx: &mut PgTransaction<'_>, principal: &DevicePrincipal) -> R
         return Err(Error::Unauthorized.into());
     }
     let principal = principal.clone();
+    let checked = principal.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::collection::revalidate_source(
                 c,
-                &principal,
+                &checked,
                 rss_mdm_inventory::ReportSource::AgentBuiltin,
             )
             .await)
         })
     })
     .await??;
+    let tenant = principal.tenant().to_string();
+    let registration = principal.registration().to_string();
+    let enabled = tx
+        .with_connection(move |c| {
+            Box::pin(
+                async move { crate::device::store::task_capable(c, &tenant, &registration).await },
+            )
+        })
+        .await?;
+    if !enabled {
+        return Err(Error::Forbidden.into());
+    }
     Ok(())
 }
 fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
@@ -86,7 +99,7 @@ impl Commands {
             }
             let cancellations=super::poll::cancellations(tx,p.registration()).await?;
             let has_offer=offer.is_some();
-            let response=invalid(serde_json::to_value(wire::TaskClaimResponse {wire_version:2,task:offer,cancellations}))?;
+            let response=invalid(serde_json::to_value(invalid(wire::TaskClaimResponse::new(offer,cancellations))?))?;
             if has_offer{db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;}storage::audit(tx,audit,200).await?;Ok(response)
         })).await
     }
@@ -119,16 +132,17 @@ impl Commands {
                     permit=Some(signed);
                 },
                 wire::TaskEvent::Cancelled=>{run.state.cancel();run.state.cancelled(input.attempt_id())?;},
-                wire::TaskEvent::Result{exit_code,quality,output}=>{
+                wire::TaskEvent::Result(result)=>{
+                    let output=result.output();
                     let schema_valid=plan.frozen.definition.validate_output(output).is_ok();
-                    let success=*exit_code==Some(0) && *quality==wire::OutputQuality::Complete && schema_valid;
+                    let success=result.exit_code()==Some(0) && result.quality()==wire::OutputQuality::Complete && schema_valid;
                     let trusted=success && allowed && run.state.trusts_result(now,plan.frozen.definition.spec().timeout_seconds);
                     run.state.result(input.attempt_id(),success)?;
                     super::collection::accept(tx,&plan.frozen,&run,output,trusted,now).await?;
-                    run.result=Some(json!({"exitCode":exit_code,"quality":quality,"schemaValid":schema_valid,"output":output,"trusted":trusted}));
+                    run.result=Some(json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"output":output,"diagnostics":result.diagnostics(),"trusted":trusted}));
                 },
             }
-            db::save_run(tx,&run).await?;let response=invalid(serde_json::to_value(wire::TaskEventAck{wire_version:2,accepted:true,permit,cancel_requested:!allowed || run.state.cancellation!=Cancellation::None}))?;
+            db::save_run(tx,&run).await?;let response=invalid(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None)))?;
             db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;storage::audit(tx,audit,200).await?;Ok(response)
         })).await
     }
