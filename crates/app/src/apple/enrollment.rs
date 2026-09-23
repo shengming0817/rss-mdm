@@ -140,6 +140,11 @@ pub(super) async fn challenge(
     }
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
     let password = Password::new(input.scep_challenge.ok_or(Error::Unauthorized)?)?;
+    if super::renewal::challenge(&app, &csr, password.expose(), &input.transaction, &audit).await? {
+        return Ok(Json(
+            serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment,csr.attempt)}}),
+        ));
+    }
     let (auth, proof) = authorized(&app, csr.enrollment, &password, &audit).await?;
     let mut tx = app.access.begin(proof.tenant_id()).await?;
     current(
@@ -185,6 +190,9 @@ pub(super) async fn notify(
     )?;
     if leaf.enrollment != csr.enrollment || leaf.attempt != csr.attempt || leaf.spki != csr.spki {
         return Err(Error::Unauthorized);
+    }
+    if super::renewal::notify(&app, &leaf, &csr, &input.transaction, &audit).await? {
+        return Ok(Json(serde_json::json!({"allow":true})));
     }
     let tenant = app.identity.tenant.to_string();
     let mut tx = app.access.begin(&tenant).await?;
@@ -235,8 +243,8 @@ pub(super) async fn persist_leaf(
     tenant: &str,
     leaf: &certificate::CheckedLeaf,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET fingerprint=$3,serial=$4,certificate=$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-        .bind(tenant).bind(leaf.attempt.to_string()).bind(leaf.fingerprint.as_slice()).bind(&leaf.serial).bind(&leaf.certificate).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET fingerprint=$3,serial=$4,certificate=$5,not_before=$6,not_after=$7 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+        .bind(tenant).bind(leaf.attempt.to_string()).bind(leaf.fingerprint.as_slice()).bind(&leaf.serial).bind(&leaf.certificate).bind(leaf.not_before).bind(leaf.not_after).execute(&mut **tx).await.map_err(db)?;
     Ok(())
 }
 

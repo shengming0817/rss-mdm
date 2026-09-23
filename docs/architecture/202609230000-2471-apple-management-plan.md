@@ -68,3 +68,20 @@ SCEP challenge 的授权消费先提交，再返回 allow；同事务、同 CSR 
 复验：T1 60 项、资产 resolver 4 项、Apple T2 3 项、真实数据库迁移/catalog、全 target/all-features Clippy 均通过；Windows 完整 T2 与 Python 91 项已通过。PR 前四项容量 gate 在初始实现提交 3905c2c 上通过，最终修复提交仍须执行完整本地 CI。
 
 剩余顺序：提交修复 → PR 无损审查 artifact 与再审 label → 清洁 HEAD 完整本地 CI（一次，失败项精确复验）→ 等待 15 分钟 → 一次 pr-monitor 交接。真实设备/组织/APNs T3 继续由 #2482 验收，不计入本次 T2 完成证据。
+
+## PR #1089 外部审查修复计划
+
+本轮按最新审查的 8 项 finding 加已复现的 identity T2 栈溢出实施。全部由主 agent 完成，无子 agent 写入。F2 的 Cx3 处置已由用户在飞书选择“当前 PR 修复：受控续期及旧凭据隔离”；其余为本次范围内 Cx1/Cx2。
+
+1. F4 固定归档每次解压到新临时目录构建；缓存污染测试红→绿。
+2. F3 创建采集的拒绝审计固定为 collection_start；映射红→绿并验证真实拒绝审计。
+3. F5 使用 NativeListenerKind 穷举 listener 名称、审计动作与 retention 决策；诊断字符串不再决定行为。
+4. F8 Apple attempt owner 统一锁定、响应摘要重放与转换；Commands、CollectionRun、身份续期保留各自业务授权与后续效果。
+5. F7/F1 有界解析 APNs reason/timestamp，闭合恢复类别；连续内部失败及配置拒绝进入 readiness，短暂网络错误使用持久退避。
+6. F2 持久证书期限，临期经 InstallProfile 更新稳定注册 profile；绑定当前注册/代际的一次性签发，新密钥首次 mTLS+UDID 证明才切换 credential ID 并隔离旧凭据。复用原生 attempts，不创建业务 Commands 成功事实。
+7. F6 用生产 serve 路径验证真正的 listener、自动 APNs worker、readiness 故障恢复与关闭；受控 APNs endpoint 仅存在于不可反序列化的测试配置字段。
+8. F9 分离大型 management 测试 task 与父测试 poll stack，不调大栈预算；注册撤销矩阵改用当前 v3 契约，不恢复旧路由；精确复验 identity T2。
+
+验收只运行失败项及受影响的脚本、迁移、T1、Clippy 与 Apple/Windows/identity T2，不重复本阶段已执行的完整 CI。百万容量 gate 已从所有 CI 入口移除；运行容量脚本须用户对本次执行另行明确授权，当前无该授权。
+
+参考：[Apple 设备证书更新](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)、[APNs 响应处理](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)、Apple device-management 固定提交 09f249a06e7e3289930bf6d05f38fb562f748ebf 的 MDM payload 更新约束。真实 Mac 更新 profile 仍由 #2482 验证。

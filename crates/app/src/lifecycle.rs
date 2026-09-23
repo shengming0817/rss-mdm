@@ -205,14 +205,14 @@ pub async fn serve(
                                 }
                             })?;
                         let mut native_listeners = Vec::new();
-                        for (name, router) in app.listeners.drain(..) {
+                        for (kind, router) in app.listeners.drain(..) {
                             let listener = tokio::net::TcpListener::bind(router.listen)
                                 .await
                                 .map_err(|e| ProcessError::Io {
-                                    stage: name,
+                                    stage: kind.name(),
                                     kind: e.kind(),
                                 })?;
-                            native_listeners.push((name, listener, router));
+                            native_listeners.push((kind, listener, router));
                         }
                         Ok::<_, ProcessError>((
                             listener,
@@ -233,7 +233,13 @@ pub async fn serve(
                     let mut launch = startup.commit();
                     if let Some(apple) = app.apple {
                         launch.stage_task_with_token(
-                            crate::apple::push::registration(apple, commands.clone()).critical(),
+                            crate::apple::push::registration(
+                                apple,
+                                commands.clone(),
+                                access.clone(),
+                                tenant.clone(),
+                            )
+                            .critical(),
                         );
                     }
                     launch.stage_deferred_task_with_token(commands.registration().critical());
@@ -241,7 +247,7 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(runtime.registration().critical());
                     if native_listeners
                         .iter()
-                        .any(|(name, _, _)| *name == "mdm-management-tls")
+                        .any(|(kind, _, _)| kind.windows_retention())
                     {
                         launch.stage_task_with_token(
                             crate::windows::retention::registration(access.clone(), tenant.clone())
@@ -258,14 +264,14 @@ pub async fn serve(
                         )
                         .critical(),
                     );
-                    for (name, listener, router) in native_listeners {
+                    for (kind, listener, router) in native_listeners {
                         launch.stage_task_with_token(
                             crate::native::tls::registration(
                                 listener,
                                 router,
                                 access.clone(),
                                 tenant.clone(),
-                                name,
+                                kind,
                             )
                             .critical(),
                         );

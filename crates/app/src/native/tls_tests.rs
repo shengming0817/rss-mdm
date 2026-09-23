@@ -182,7 +182,7 @@ pub(crate) async fn verify_tls_lifecycle(
             },
             access.clone(),
             "11111111-1111-4111-8111-111111111111".into(),
-            "mdm-enrollment-tls",
+            crate::native::NativeListenerKind::WindowsEnrollment,
         ));
         let stream = TcpStream::connect(address).await?;
         let mut io: Box<dyn tokio::io::AsyncRead + Unpin> = if established {

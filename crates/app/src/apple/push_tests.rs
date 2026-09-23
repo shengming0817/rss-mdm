@@ -13,13 +13,37 @@ use tokio_rustls::{
 pub(in crate::apple) struct Participant {
     pub(in crate::apple) push: Push,
     server: tokio::task::JoinHandle<Result<()>>,
+    stop: tokio_util::sync::CancellationToken,
 }
 impl Participant {
+    pub(in crate::apple) fn origin(&self) -> String {
+        self.push.origin.clone()
+    }
     pub(in crate::apple) async fn start(statuses: Vec<u16>, token: Vec<u8>) -> Result<Self> {
         Self::start_with_rotation(statuses, token, false).await
     }
     pub(in crate::apple) async fn start_with_rotation(
         statuses: Vec<u16>,
+        token: Vec<u8>,
+        rotate: bool,
+    ) -> Result<Self> {
+        let responses = statuses
+            .into_iter()
+            .map(|status| {
+                let body = match status {
+                    200 => Vec::new(),
+                    410 => br#"{"reason":"Unregistered","timestamp":1}"#.to_vec(),
+                    429 => br#"{"reason":"TooManyRequests"}"#.to_vec(),
+                    503 => br#"{"reason":"ServiceUnavailable"}"#.to_vec(),
+                    _ => br#"{"reason":"BadTopic"}"#.to_vec(),
+                };
+                (status, body)
+            })
+            .collect();
+        Self::responses(responses, token, rotate).await
+    }
+    async fn responses(
+        responses: Vec<(u16, Vec<u8>)>,
         token: Vec<u8>,
         rotate: bool,
     ) -> Result<Self> {
@@ -79,6 +103,8 @@ impl Participant {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let topic = config.apns_topic.clone();
+        let stop = tokio_util::sync::CancellationToken::new();
+        let stopped = stop.clone();
         let server = tokio::spawn(async move {
             let (io, _) = listener.accept().await?;
             let io = acceptor.accept(io).await?;
@@ -90,7 +116,7 @@ impl Participant {
             );
             let mut h2 = h2::server::handshake(io).await?;
             let mut handlers = tokio::task::JoinSet::new();
-            for status in statuses {
+            for (status, body) in responses {
                 let (request, mut send) = h2
                     .accept()
                     .await
@@ -118,12 +144,16 @@ impl Participant {
                     );
                     let mut response =
                         send.send_response(Response::builder().status(status).body(())?, false)?;
-                    response.send_data(Bytes::from_static(b"{}"), true)?;
+                    response.send_data(Bytes::from(body), true)?;
                     Ok::<(), anyhow::Error>(())
                 });
             }
-            h2.graceful_shutdown();
-            while h2.accept().await.is_some() {}
+            // Drive response frames until the caller has consumed its receipts.
+            // Client connection pooling must not decide the fixture's lifetime.
+            tokio::select! {
+                () = stopped.cancelled() => {},
+                next = h2.accept() => ensure!(next.is_none(), "unexpected extra APNs request"),
+            }
             while let Some(result) = handlers.join_next().await {
                 result??;
             }
@@ -135,9 +165,10 @@ impl Participant {
         );
         let mut push = Push::with_client(&config, now, client)?;
         push.origin = endpoint.origin;
-        Ok(Self { push, server })
+        Ok(Self { push, server, stop })
     }
     pub(in crate::apple) async fn close(self) -> Result<()> {
+        self.stop.cancel();
         drop(self.push);
         tokio::time::timeout(Duration::from_secs(5), self.server).await???;
         Ok(())
@@ -173,5 +204,77 @@ async fn production_transport_receipts_are_not_command_evidence() -> Result<()> 
             .await?;
         ensure!(receipt.id == id && receipt.status == status && receipt.outcome == outcome);
     }
-    participant.close().await
+    participant.close().await?;
+    let oversized = Participant::responses(vec![(200, vec![b' '; 4097])], vec![1], false).await?;
+    let receipt = oversized.push.send(id, &[1], "fixture-magic", now).await?;
+    ensure!(
+        receipt.outcome == Outcome::Retryable && receipt.reason == Some(Reason::InvalidResponse),
+        "oversized HTTP 200 response was accepted"
+    );
+    oversized.close().await
+}
+
+#[test]
+fn provider_reasons_choose_recovery_without_logging_arbitrary_text() {
+    let id = Uuid::nil();
+    for (status, body, outcome, reason) in [
+        (
+            400,
+            r#"{"reason":"BadDeviceToken"}"#,
+            Outcome::Unregistered,
+            Reason::TokenInvalid,
+        ),
+        (
+            400,
+            r#"{"reason":"DeviceTokenNotForTopic"}"#,
+            Outcome::Unregistered,
+            Reason::TokenInvalid,
+        ),
+        (
+            400,
+            r#"{"reason":"IdleTimeout"}"#,
+            Outcome::Retryable,
+            Reason::IdleTimeout,
+        ),
+        (
+            403,
+            r#"{"reason":"BadCertificateEnvironment"}"#,
+            Outcome::Rejected,
+            Reason::Certificate,
+        ),
+        (
+            400,
+            r#"{"reason":"BadTopic"}"#,
+            Outcome::Rejected,
+            Reason::Topic,
+        ),
+        (
+            413,
+            r#"{"reason":"PayloadTooLarge"}"#,
+            Outcome::Rejected,
+            Reason::Payload,
+        ),
+        (
+            400,
+            r#"{"reason":"secret-provider-text"}"#,
+            Outcome::Retryable,
+            Reason::InvalidResponse,
+        ),
+        (400, "not json", Outcome::Retryable, Reason::InvalidResponse),
+    ] {
+        let receipt = classify(id, status, body.as_bytes());
+        assert_eq!((receipt.outcome, receipt.reason), (outcome, Some(reason)));
+    }
+}
+#[test]
+fn persistent_worker_failure_affects_health_and_recovers() {
+    let mut health = Health::default();
+    let error = Err(Error::Unavailable(Failure::AppleStorage));
+    assert!(health.observe(&error).0);
+    assert!(health.observe(&error).0);
+    assert!(!health.observe(&error).0);
+    assert!(health.observe(&Ok(WakeHealth::Idle)).0);
+    assert!(!health.observe(&Ok(WakeHealth::Configuration)).0);
+    assert!(!health.observe(&Ok(WakeHealth::Idle)).0);
+    assert!(health.observe(&Ok(WakeHealth::Healthy)).0);
 }

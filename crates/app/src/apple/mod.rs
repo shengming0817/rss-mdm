@@ -1,4 +1,5 @@
 //! Product-owned Apple MDM. Device identity and durable execution remain in the product.
+pub(crate) mod attempt;
 pub(crate) mod certificate;
 pub(crate) mod config;
 pub(crate) mod profile;
@@ -6,6 +7,7 @@ pub(crate) mod protocol;
 pub(crate) mod push;
 
 mod enrollment;
+mod renewal;
 mod webhook;
 use crate::{ConfigIssue, Error};
 use base64::Engine;
@@ -16,6 +18,7 @@ pub(crate) struct Apple {
     authority: certificate::Authority,
     signer: certificate::Signer,
     push: push::Push,
+    push_ready: std::sync::atomic::AtomicBool,
     challenge_key: ring::hmac::Key,
     notify_key: ring::hmac::Key,
     configuration: [u8; 32],
@@ -71,6 +74,7 @@ impl Apple {
             authority,
             signer,
             push,
+            push_ready: std::sync::atomic::AtomicBool::new(true),
             challenge_key,
             notify_key,
             configuration,
@@ -186,6 +190,9 @@ impl Apple {
         ]
     }
     pub(crate) fn ready(&self, now: i64) -> bool {
+        if !self.push_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
         self.certificate_health(now)
             .iter()
             .all(|item| item.level != CertificateLevel::Expired)

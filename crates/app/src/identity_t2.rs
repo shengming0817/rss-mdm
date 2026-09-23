@@ -1084,8 +1084,8 @@ async fn revoke_http_matrix(
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','revoke-device','mdm',1,'{request}','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
-    let path = format!("/api/v2/devices/revoke-device/registrations/{registration}/revoke");
-    let listing = "/api/v2/devices/revoke-device/registrations";
+    let path = format!("/api/v3/devices/revoke-device/registrations/{registration}/revoke");
+    let listing = "/api/v3/devices/revoke-device/registrations";
     let cfg = config.clone();
     let initial = app(&cfg, reader.clone()).await?;
     set_device_grants(
@@ -1121,7 +1121,7 @@ async fn revoke_http_matrix(
             .call(
                 &allowed,
                 Method::GET,
-                "/api/v2/devices/outside/registrations",
+                "/api/v3/devices/outside/registrations",
                 None
             )
             .await?
@@ -1156,7 +1156,7 @@ async fn revoke_http_matrix(
     for bad in [
         "/api/v3/enrollments/not-a-uuid/resume",
         "/api/v3/enrollments/not-a-uuid/cancel",
-        "/api/v2/devices/revoke-device/registrations/not-a-uuid/revoke",
+        "/api/v3/devices/revoke-device/registrations/not-a-uuid/revoke",
     ] {
         let response = browser
             .call(&allowed, Method::POST, bad, Some(json!({})))
@@ -1336,7 +1336,15 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    Box::pin(management::matrix(&allowed, reader.clone(), &browser)).await?;
+    // Keep the independently served management matrix out of the parent test's
+    // debug poll stack; do not increase global/test runtime stack budgets.
+    let management_base = allowed.clone();
+    let management_reader = reader.clone();
+    let management_browser = browser.clone();
+    tokio::spawn(async move {
+        management::matrix(&management_base, management_reader, &management_browser).await
+    })
+    .await??;
     enrollment_matrix(&authorized, &allowed, reader.clone(), &mut browser, &query).await?;
     native_accounts(&initial, &authorized, &mut browser, subject).await?;
     reader.close().await;

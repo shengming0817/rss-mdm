@@ -5,6 +5,9 @@ use std::{net::SocketAddr, path::PathBuf};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[cfg(test)]
+    #[serde(skip)]
+    pub test_push_transport: Option<(String, PathBuf)>,
     pub management: TlsEndpoint,
     pub scep_url: String,
     pub scep_provisioner: String,

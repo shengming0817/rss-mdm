@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import tarfile
+import tempfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,10 +59,13 @@ def nano_binary():
     if hashlib.sha256(data).hexdigest() != item['sourceArchiveSha256']:
         raise RuntimeError('NanoMDM oracle source checksum mismatch')
     archive.write_bytes(data)
-    with tarfile.open(fileobj=io.BytesIO(data),mode='r:gz') as tar:
-        tar.extractall(cache,filter='data')
-    source = cache/('nanomdm-'+item['revision'])
     destination = cache/'nanomdm'
-    subprocess.run(['go','build','-mod=readonly','-trimpath','-o',str(destination),'./cmd/nanomdm'],
-                   cwd=source,env={**os.environ,'GOWORK':'off'},check=True,timeout=180)
+    with tempfile.TemporaryDirectory(prefix='build-', dir=cache) as temporary:
+        with tarfile.open(fileobj=io.BytesIO(data),mode='r:gz') as tar:
+            tar.extractall(temporary,filter='data')
+        source = Path(temporary)/('nanomdm-'+item['revision'])
+        built = Path(temporary)/'nanomdm'
+        subprocess.run(['go','build','-mod=readonly','-trimpath','-o',str(built),'./cmd/nanomdm'],
+                       cwd=source,env={**os.environ,'GOWORK':'off'},check=True,timeout=180)
+        built.replace(destination)
     return destination

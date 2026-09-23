@@ -6,8 +6,12 @@
 mod boundaries;
 mod lifecycle;
 mod oracle;
+#[path = "tests/production.rs"]
+mod production;
 #[path = "tests/push_cycle.rs"]
 mod push_cycle;
+#[path = "tests/renewal.rs"]
+mod renewal_cycle;
 mod scep;
 use super::*;
 use crate::{
@@ -166,7 +170,7 @@ impl Fixture {
                     native,
                     access.clone(),
                     TENANT.into(),
-                    "apple-management-tls",
+                    crate::native::NativeListenerKind::AppleManagement,
                 )
                 .critical(),
             );
@@ -176,7 +180,7 @@ impl Fixture {
                     hooks,
                     access,
                     TENANT.into(),
-                    "apple-webhook-fixture",
+                    crate::native::NativeListenerKind::AppleWebhookFixture,
                 )
                 .critical(),
             );
@@ -279,10 +283,6 @@ impl Fixture {
             )?)?)
             .build()?)
     }
-    async fn close(self) -> Result<()> {
-        ensure!(self.owner.shutdown().join().await?.is_clean());
-        Ok(())
-    }
 }
 #[tokio::test]
 #[ignore = "Apple T2: real step-ca SCEP, PostgreSQL and native mTLS"]
@@ -347,9 +347,10 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
     f.push_cycle(&peer).await?;
     f.collection_cycle(&peer).await?;
     f.profile_cycle(&peer).await?;
-    let replacement = f.replace(&peer, &device).await?;
+    let (renewed, renewed_device) = f.renewal_cycle(&peer, &device).await?;
+    let replacement = f.replace(&renewed, &renewed_device).await?;
     f.native_boundaries(&replacement).await?;
-    f.close().await
+    f.production().await
 }
 
 #[allow(clippy::disallowed_methods, reason = "test composition root")]

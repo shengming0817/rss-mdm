@@ -136,35 +136,17 @@ pub(crate) async fn receive(
     d: &plist::Dictionary,
     bytes: &[u8],
 ) -> Result<bool, Error> {
-    use sha2::{Digest, Sha256};
+    use crate::apple::attempt::{self, Owner, Reception};
     let tenant = p.tenant().to_string();
-    let row=sqlx::query("SELECT state,response_digest FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND collection IS NOT NULL FOR UPDATE")
-        .bind(&tenant).bind(id.to_string()).bind(p.registration().to_string()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(row) = row else { return Ok(false) };
-    let state: String = row.try_get("state").map_err(db)?;
-    let digest = Sha256::digest(bytes).to_vec();
-    if matches!(state.as_str(), "acknowledged" | "error") {
-        return if row
-            .try_get::<Option<Vec<u8>>, _>("response_digest")
-            .map_err(db)?
-            == Some(digest)
-        {
-            Ok(true)
-        } else {
-            Err(Error::Conflict)
-        };
-    }
-    if !matches!(state.as_str(), "sent" | "not_now") || !approved(c, &tenant, id).await? {
+    let attempt = match attempt::lock(c, p, id, Owner::Collection, bytes).await? {
+        None => return Ok(false),
+        Some(Reception::Replay) => return Ok(true),
+        Some(Reception::Ready(attempt)) => attempt,
+    };
+    if !approved(c, &tenant, id).await? {
         return Err(Error::Forbidden);
     }
-    let state = match status {
-        wire::Status::Acknowledged => "acknowledged",
-        wire::Status::Error => "error",
-        wire::Status::NotNow => "not_now",
-        wire::Status::Idle => return Err(Error::Malformed),
-    };
-    sqlx::query("UPDATE mdm_apple.attempts SET state=$3,response=$4,response_digest=$5,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
-        .bind(&tenant).bind(id.to_string()).bind(state).bind(bytes).bind(digest).execute(&mut *c).await.map_err(db)?;
+    attempt.settle(c, status).await?;
     if status != wire::Status::NotNow {
         let mut run = store::load_on(c, &tenant, id).await?;
         let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")

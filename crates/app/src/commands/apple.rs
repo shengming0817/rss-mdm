@@ -190,47 +190,28 @@ async fn receive(
     if collected {
         return Ok(());
     }
-    let tenant = tx.tenant_id().to_string();
-    let registration = p.registration().to_string();
-    let generation = p.generation();
-    let row=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("SELECT operation::text,phase,state,response_digest FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND operation IS NOT NULL FOR UPDATE")
-            .bind(tenant).bind(id.to_string()).bind(registration).bind(generation).fetch_optional(c).await
-    })).await?.ok_or(Error::Conflict)?;
-    let state: String = row.try_get("state")?;
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(bytes).to_vec();
-    if matches!(state.as_str(), "acknowledged" | "error") {
-        return if row.try_get::<Option<Vec<u8>>, _>("response_digest")? == Some(digest) {
-            Ok(())
-        } else {
-            Err(Error::Conflict.into())
-        };
-    }
-    if !matches!(state.as_str(), "sent" | "not_now") {
-        return Err(Error::Conflict.into());
-    }
-    let op = storage::load(
-        tx,
-        corrupt(Uuid::parse_str(&row.try_get::<String, _>("operation")?))?,
-    )
-    .await?;
+    use crate::apple::attempt::{self, Owner, Reception};
+    let principal = p.clone();
+    let response = bytes.to_vec();
+    let attempt = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(attempt::lock(c, &principal, id, Owner::Command, &response).await)
+            })
+        })
+        .await??
+        .ok_or(Error::Conflict)?;
+    let attempt = match attempt {
+        Reception::Replay => return Ok(()),
+        Reception::Ready(attempt) => attempt,
+    };
+    let op = storage::load(tx, attempt.operation.ok_or(Error::Conflict)?).await?;
     if !eligible(service, tx, p, &op).await? {
         return Err(Error::Forbidden.into());
     }
-    let phase: String = row.try_get("phase")?;
-    let next = match status {
-        wire::Status::Acknowledged => "acknowledged",
-        wire::Status::Error => "error",
-        wire::Status::NotNow => "not_now",
-        wire::Status::Idle => return Err(Error::Malformed.into()),
-    };
-    let tenant = tx.tenant_id().to_string();
-    let response = bytes.to_vec();
-    tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("UPDATE mdm_apple.attempts SET state=$3,response=$4,response_digest=$5,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
-            .bind(tenant).bind(id.to_string()).bind(next).bind(response).bind(digest).execute(c).await?;Ok(())
-    })).await?;
+    let phase = attempt.phase.clone();
+    tx.with_connection(move |c| Box::pin(async move { Ok(attempt.settle(c, status).await) }))
+        .await??;
     let event = match (phase.as_str(), status) {
         (_, wire::Status::NotNow) => return Ok(()),
         (_, wire::Status::Error) => dc::DeviceEvent::Rejected,

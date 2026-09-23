@@ -162,6 +162,8 @@ pub(super) struct Authority {
     pub issuer_fingerprint: [u8; 32],
 }
 pub(crate) struct CheckedLeaf {
+    pub(super) not_before: i64,
+    pub(super) not_after: i64,
     pub(super) fingerprint: [u8; 32],
     pub(super) spki: [u8; 32],
     pub(super) enrollment: Uuid,
@@ -265,6 +267,8 @@ impl Authority {
             return Err(Error::Unauthorized);
         }
         Ok(CheckedLeaf {
+            not_before: tbs.validity.not_before.to_unix_duration().as_secs() as i64,
+            not_after: tbs.validity.not_after.to_unix_duration().as_secs() as i64,
             fingerprint: Sha256::digest(&chain[0]).into(),
             spki: Sha256::digest(tbs.subject_public_key_info.to_der().map_err(invalid)?).into(),
             enrollment,

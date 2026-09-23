@@ -263,11 +263,17 @@ pub(crate) fn from_state(
     if let Some((enrollment, management)) =
         crate::windows::routers(state.clone(), monotonic.clone())
     {
-        listeners.push(("mdm-enrollment-tls", enrollment));
-        listeners.push(("mdm-management-tls", management));
+        listeners.push((
+            crate::native::NativeListenerKind::WindowsEnrollment,
+            enrollment,
+        ));
+        listeners.push((
+            crate::native::NativeListenerKind::WindowsManagement,
+            management,
+        ));
     }
     if let Some(apple) = crate::apple::router(state.clone(), monotonic.clone()) {
-        listeners.push(("apple-management-tls", apple));
+        listeners.push((crate::native::NativeListenerKind::AppleManagement, apple));
     }
     let host_context = Router::new()
         .route(
@@ -333,6 +339,7 @@ fn route_action(route: &str, native_identity: bool) -> &'static str {
         "/api/agent/v1/reports" => "agent_report",
         "/api/agent/v1/reports/{id}" => "agent_report_read",
         "/api/v2/devices/{id}/inventory" => "inventory_read",
+        "/api/v1/devices/{id}/collection-runs" => "collection_start",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
         _ if native_identity => "authentication",
@@ -772,6 +779,14 @@ async fn collection_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn collection_creation_has_a_business_action_before_authorization() {
+        assert_eq!(
+            route_action("/api/v1/devices/{id}/collection-runs", false),
+            "collection_start"
+        );
+    }
+
     #[tokio::test]
     async fn audit_failure_logs_preserve_action_and_origin() {
         use tower::ServiceExt;

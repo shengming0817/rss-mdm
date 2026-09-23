@@ -76,7 +76,7 @@ pub(crate) fn registration(
     app: TlsRouter,
     access: Arc<AccessStore>,
     tenant: String,
-    name: &'static str,
+    kind: super::NativeListenerKind,
 ) -> ManagedTaskRegistration {
     rss_axum::serve_http1_registration(
         listener,
@@ -86,9 +86,9 @@ pub(crate) fn registration(
             admission: app.admission,
             access,
             tenant,
-            name,
+            kind,
         },
-        name,
+        kind.name(),
         crate::lifecycle::http_policy(),
     )
 }
@@ -110,7 +110,7 @@ struct TlsTransport {
     admission: Arc<Admission>,
     access: Arc<AccessStore>,
     tenant: String,
-    name: &'static str,
+    kind: super::NativeListenerKind,
 }
 impl ConnectionTransport for TlsTransport {
     type Io = TlsStream<TcpStream>;
@@ -142,15 +142,8 @@ impl ConnectionTransport for TlsTransport {
                     Ok(Ok(_)) => unreachable!("successful handshake handled above"),
                 };
                 // Emit before the bounded audit so cancellation cannot hide the diagnosed failure.
-                eprintln!("{}", event(self.name, kind));
-                let audit = Audit::new(
-                    self.tenant.clone(),
-                    if self.name == "mdm-management-tls" {
-                        "windows_management"
-                    } else {
-                        "protected_request"
-                    },
-                );
+                eprintln!("{}", event(self.kind.name(), kind));
+                let audit = Audit::new(self.tenant.clone(), self.kind.audit_action());
                 let failed = !matches!(
                     tokio::time::timeout(
                         Duration::from_secs(2),

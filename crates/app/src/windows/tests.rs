@@ -1051,7 +1051,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
                 enrollment,
                 store.clone(),
                 TENANT.into(),
-                "mdm-enrollment-tls",
+                crate::native::NativeListenerKind::WindowsEnrollment,
             )
             .critical(),
         );
@@ -1061,7 +1061,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
                 management,
                 store.clone(),
                 TENANT.into(),
-                "mdm-management-tls",
+                crate::native::NativeListenerKind::WindowsManagement,
             )
             .critical(),
         );

@@ -349,6 +349,16 @@ impl Fixture {
             )?,
         )
         .await?;
+        let refused = self
+            .browser
+            .call(
+                &self.router,
+                Method::POST,
+                &path,
+                Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
+            )
+            .await?;
+        ensure!(refused.0 == StatusCode::FORBIDDEN);
         ensure!(
             peer.manage("Idle", None, None).await?.is_empty(),
             "revoked approval dispatched native work"
@@ -379,6 +389,8 @@ impl Fixture {
             .execute(&mut pg)
             .await?;
         // Provider time injection, not a fabricated device response or result.
+        let audited: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.audit WHERE action='collection_start' AND result='denied' AND actor IS NOT NULL)").fetch_one(&mut pg).await?;
+        ensure!(audited, "collection denial lost business action audit");
         sqlx::query("UPDATE mdm_access.collection_runs SET apple_deadline=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(run).execute(&mut pg).await?;
         let mut terminal = false;
         for _ in 0..100 {

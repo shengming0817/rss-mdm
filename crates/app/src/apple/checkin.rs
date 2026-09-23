@@ -32,6 +32,7 @@ pub(super) async fn checkin(
         CheckIn::CheckOut { udid } => udid,
         CheckIn::UserAuthenticate => return Ok(StatusCode::GONE),
     };
+    super::renewal::activate(&app, &leaf, udid).await?;
     let credential = VerifiedChannelCredential::apple(app.identity.tenant, &leaf);
     if matches!(input, CheckIn::Authenticate { .. })
         && authenticate(&app, &leaf, udid, &audit).await?
@@ -82,11 +83,26 @@ pub(super) async fn manage(
     let leaf = apple
         .authority
         .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    let dictionary = protocol::decode(&bytes)?;
+    let message = protocol::management(&dictionary)?;
+    super::renewal::activate(&app, &leaf, message.udid).await?;
     let credential = VerifiedChannelCredential::apple(app.identity.tenant, &leaf);
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.target(principal.device());
     audit.registration(principal.registration());
+    if let Some(response) =
+        super::renewal::management(&app, &principal, &dictionary, &bytes, &audit).await?
+    {
+        return Ok((
+            [
+                ("content-type", "application/xml"),
+                ("cache-control", "no-store"),
+            ],
+            response,
+        )
+            .into_response());
+    }
     let bytes = app
         .commands
         .apple_management(apple, &principal, &bytes, &audit)
