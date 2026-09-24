@@ -1,5 +1,9 @@
 //! Cross-capability retirement keeps the original transaction and lock order.
 use crate::Error;
+// Registration retirement may seal a backlog of collections atomically. Match the
+// existing command transaction budget, leaving two seconds within DeviceService's
+// eight-second bound for settlement; a single-event two-second budget is insufficient.
+pub(crate) const TRANSACTION_BUDGET: std::time::Duration = std::time::Duration::from_secs(6);
 pub(crate) async fn retire(
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,

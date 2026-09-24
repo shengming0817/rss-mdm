@@ -173,9 +173,11 @@ pub(super) async fn complete_issuance(
     };
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+    let deadline = rss_request_context::Deadline::from_timeout(
+        &timer,
+        crate::registration_lifecycle::TRANSACTION_BUDGET,
+    )
+    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
     let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
     let attempt = store
         .execute(

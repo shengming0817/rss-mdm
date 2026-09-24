@@ -39,6 +39,7 @@ async fn installed_audit_receipts_replay_and_atomicity() -> Result<()> {
             exercise(&pool, ledger).await?;
             if role == "mdm_access" {
                 process_interruption(&pool, ledger).await?;
+                retirement_batch(&pool, ledger).await?;
             }
         }
         pool.close().await;
@@ -556,4 +557,63 @@ async fn audit_process_exit_fixture() -> Result<()> {
         })
         .await;
     anyhow::bail!("crash fixture unexpectedly settled: {}", state(attempt));
+}
+
+// Exercise the real retirement backlog size under the product's owner budget in
+// both modes; each event retains a separate identity and exact recovery receipt.
+async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = Control::new(
+        &timer,
+        Deadline::from_timeout(&timer, crate::registration_lifecycle::TRANSACTION_BUDGET)?,
+        &cancel,
+    );
+    let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
+    let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let request = RequestAudit::new(tenant.to_string(), "collection_finish");
+    request.identify_service("service:collection-finalizer");
+    let facts = (0..65)
+        .map(|index| {
+            Fact::business(
+                &request,
+                &format!("collection-{index}:finish"),
+                b"retired",
+                200,
+                "success",
+                None,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut original = None;
+    for replayed in [false, true] {
+        let control = Control::new(
+            &timer,
+            Deadline::from_timeout(&timer, crate::registration_lifecycle::TRANSACTION_BUDGET)?,
+            &cancel,
+        );
+        let attempt = store
+            .execute(tenant, &control, (&store, &facts), |(store, facts), tx| {
+                Box::pin(async move {
+                    for fact in facts.iter() {
+                        store.append(tx, fact, replayed).await?;
+                    }
+                    Ok::<_, Error>(())
+                })
+            })
+            .await;
+        ensure!(
+            state(attempt) == "committed",
+            "retirement batch mode ledger={ledger} replay={replayed}"
+        );
+        let canonical = bytes(pool, tenant).await?;
+        ensure!(canonical.len() == 65);
+        if let Some(original) = &original {
+            ensure!(&canonical == original);
+        } else {
+            original = Some(canonical);
+        }
+    }
+    request.finalize(None);
+    Ok(())
 }
