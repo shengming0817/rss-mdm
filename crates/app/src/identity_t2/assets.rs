@@ -7,7 +7,7 @@ fn request(revision: u64, input: Value) -> Value {
 fn predicate(field: &str, kind: &str, value: Value) -> Value {
     json!({"kind":"predicate","field":field,"op":"eq","value":{"kind":kind,"value":value}})
 }
-async fn ok(
+pub(super) async fn ok(
     browser: &mut Browser,
     router: &Router,
     method: Method,
@@ -49,11 +49,15 @@ async fn ok(
     }
     Ok(v)
 }
-struct GroupEvidence {
-    members: Value,
-    decisions: Value,
+pub(super) struct GroupEvidence {
+    pub(super) members: Value,
+    pub(super) decisions: Value,
 }
-async fn preview(browser: &mut Browser, router: &Router, group: &str) -> Result<GroupEvidence> {
+pub(super) async fn preview(
+    browser: &mut Browser,
+    router: &Router,
+    group: &str,
+) -> Result<GroupEvidence> {
     let (_, state) = browser.call(router, Method::GET, group, None).await?;
     let accepted = ok(
         browser,
@@ -122,7 +126,7 @@ fn seed_source(device: &str, channel: &str, source: &str, value: &str) -> Result
     let encoded = scope.encode()?.replace('\'', "''");
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','{source}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v2','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');"
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','{source}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');"
     ))?;
     Ok((registration, epoch))
 }
@@ -399,7 +403,10 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         None,
     )
     .await?;
-    ensure!(catalog["asset"]["fields"].as_array().unwrap().len() == 6);
+    ensure!(
+        catalog["asset"]["fields"].as_array().unwrap().len()
+            == rss_mdm_inventory::FieldKey::ALL.len()
+    );
     let cases = [
         ("custom.asset_tag", "string", json!("A-2463")),
         ("custom.office_floor", "integer", json!(3)),

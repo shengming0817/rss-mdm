@@ -11,6 +11,8 @@ use std::collections::BTreeSet;
 mod capacity;
 #[path = "recovery_tests.rs"]
 mod recovery;
+#[path = "resource_archive_tests.rs"]
+mod resource_archive;
 fn tenant() -> TenantId {
     TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
 }

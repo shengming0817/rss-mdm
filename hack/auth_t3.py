@@ -19,6 +19,7 @@ SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','re
              'account_disabled','membership_removed','restart','isolation','enterprise','unknown_subject',
              'private_binding','idp_down','pg_down','installation_mismatch','safe_logs')
 PLAYWRIGHT_INTEGRITY='sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA=='
+INVENTORY_GENERATION='inventory-v3'
 
 def validate_checks(checks):
     require(set(checks)==set(SCENARIOS) and all(v is True for v in checks.values()),'incomplete browser acceptance')
@@ -71,7 +72,7 @@ def seed_inventory(stack):
     INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
     INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','{registration}','mdm',repeat('a',64),'active');
     INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);
-    INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v2','{scope}','{coverage}','device.model','Model-2364','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}');
+    INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','{INVENTORY_GENERATION}','{scope}','{coverage}','device.model','Model-2364','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}');
     """)
 
 def prepare_member(stack):

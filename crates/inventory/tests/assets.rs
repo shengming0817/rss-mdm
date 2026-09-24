@@ -81,6 +81,10 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
         rss_mdm_inventory::ReportSource::AgentBuiltin,
     ] {
         assert_eq!(
+            rss_mdm_inventory::Source::from(source).channel(),
+            Some(source.channel())
+        );
+        assert_eq!(
             rss_mdm_inventory::ReportSource::parse(source.as_str()).unwrap(),
             source
         );

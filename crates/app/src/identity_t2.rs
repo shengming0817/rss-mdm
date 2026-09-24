@@ -6,11 +6,11 @@
 mod assets;
 mod authorization;
 mod management;
-#[allow(dead_code)]
-#[path = "../tests/publication_support/mod.rs"]
-mod publication_support;
+use crate::publication_support;
 #[cfg(feature = "integration")]
 mod sso;
+#[cfg(feature = "integration")]
+mod tasks;
 use crate::config::Config;
 use anyhow::{Result, ensure};
 use axum::{
@@ -578,7 +578,7 @@ async fn wait_agent_status(
             let (status, body) = agent_call(
                 router,
                 Method::GET,
-                &format!("/api/agent/v1/reports/{report_id}"),
+                &format!("/api/agent/v2/reports/{report_id}"),
                 Some(credential),
                 None,
             )
@@ -645,17 +645,17 @@ async fn agent_matrix(
     );
     let operation = uuid::Uuid::new_v4();
     let registration_request = json!({
-        "wireVersion":1,
+        "wireVersion":2,
         "operationId":operation,
         "enrollmentId":enrollment["enrollmentId"],
         "password":password,
         "credential":credential,
-        "capabilities":["inventory.basic.v1"]
+        "capabilities":["inventory.basic.v2"]
     });
     let (status, registration) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/registrations",
+        "/api/agent/v2/registrations",
         None,
         Some(registration_request.clone()),
     )
@@ -667,7 +667,7 @@ async fn agent_matrix(
     let (status, error) = agent_call(
         router,
         Method::GET,
-        "/api/agent/v1/reports/not-a-uuid",
+        "/api/agent/v2/reports/not-a-uuid",
         Some(credential),
         None,
     )
@@ -679,7 +679,7 @@ async fn agent_matrix(
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/reports",
+        "/api/agent/v2/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(17_000)})),
     )
@@ -691,7 +691,7 @@ async fn agent_matrix(
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/reports",
+        "/api/agent/v2/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(2 * 1024 * 1024 + 1)})),
     )
@@ -701,11 +701,11 @@ async fn agent_matrix(
         ">2 MiB body escaped the Agent wire boundary: {status} {error}"
     );
     let mut unsupported_wire = registration_request.clone();
-    unsupported_wire["wireVersion"] = json!(2);
+    unsupported_wire["wireVersion"] = json!(1);
     let response = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/registrations",
+        "/api/agent/v2/registrations",
         None,
         Some(unsupported_wire),
     )
@@ -716,7 +716,7 @@ async fn agent_matrix(
     let response = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/registrations",
+        "/api/agent/v2/registrations",
         None,
         Some(unsupported_capability),
     )
@@ -732,7 +732,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v1/registrations",
+            "/api/agent/v2/registrations",
             None,
             Some(registration_request)
         )
@@ -745,7 +745,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v1/reports/{missing}"),
+            &format!("/api/agent/v2/reports/{missing}"),
             Some(credential),
             None
         )
@@ -756,7 +756,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v1/reports/{missing}"),
+            &format!("/api/agent/v2/reports/{missing}"),
             Some(password),
             None
         )
@@ -765,7 +765,7 @@ async fn agent_matrix(
     );
     let report_id = uuid::Uuid::new_v4();
     let report = json!({
-        "wireVersion":1,
+        "wireVersion":2,
         "reportId":report_id,
         "sequence":0,
         "observedAt":1,
@@ -777,7 +777,7 @@ async fn agent_matrix(
     let (status, ack) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/reports",
+        "/api/agent/v2/reports",
         Some(credential),
         Some(report.clone()),
     )
@@ -790,7 +790,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v1/reports",
+            "/api/agent/v2/reports",
             Some(credential),
             Some(report.clone())
         )
@@ -799,7 +799,7 @@ async fn agent_matrix(
         "report replay changed acknowledgement"
     );
     let concurrent_id = uuid::Uuid::new_v4();
-    let concurrent = json!({"wireVersion":1,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+    let concurrent = json!({"wireVersion":2,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
     let mut same_id = tokio::task::JoinSet::new();
     for _ in 0..4 {
         let router = router.clone();
@@ -808,7 +808,7 @@ async fn agent_matrix(
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v1/reports",
+                "/api/agent/v2/reports",
                 Some(credential),
                 Some(body),
             )
@@ -838,7 +838,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v1/reports",
+            "/api/agent/v2/reports",
             Some(credential),
             Some(changed)
         )
@@ -849,7 +849,7 @@ async fn agent_matrix(
     let (status, current) = agent_call(
         router,
         Method::GET,
-        &format!("/api/agent/v1/reports/{report_id}"),
+        &format!("/api/agent/v2/reports/{report_id}"),
         Some(credential),
         None,
     )
@@ -875,14 +875,14 @@ async fn agent_matrix(
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
     for body in [
-        json!({"wireVersion":1,"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"known","value":"Unconfirmed"}}]}}),
-        json!({"wireVersion":1,"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
+        json!({"wireVersion":2,"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"known","value":"Unconfirmed"}}]}}),
+        json!({"wireVersion":2,"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
     ] {
         ensure!(
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v1/reports",
+                "/api/agent/v2/reports",
                 Some(credential),
                 Some(body)
             )
@@ -897,12 +897,12 @@ async fn agent_matrix(
     let mut capacity = tokio::task::JoinSet::new();
     for sequence in [3, 4] {
         let router = router.clone();
-        let body = json!({"wireVersion":1,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":2,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         capacity.spawn(async move {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v1/reports",
+                "/api/agent/v2/reports",
                 Some(credential),
                 Some(body),
             )
@@ -968,12 +968,12 @@ async fn agent_matrix(
         .await?;
     ensure!(status == StatusCode::OK);
     let next_operation = uuid::Uuid::new_v4();
-    let next_registration = json!({"wireVersion":1,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"capabilities":["inventory.basic.v1"]});
+    let next_registration = json!({"wireVersion":2,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"capabilities":["inventory.basic.v2"]});
     access.fail_next(1);
     let rolled_back = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/registrations",
+        "/api/agent/v2/registrations",
         None,
         Some(next_registration.clone()),
     )
@@ -987,7 +987,7 @@ async fn agent_matrix(
     let unknown = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/registrations",
+        "/api/agent/v2/registrations",
         None,
         Some(next_registration.clone()),
     )
@@ -998,7 +998,7 @@ async fn agent_matrix(
     let recovered = agent_call(
         router,
         Method::POST,
-        "/api/agent/v1/registrations",
+        "/api/agent/v2/registrations",
         None,
         Some(next_registration),
     )
@@ -1011,12 +1011,12 @@ async fn agent_matrix(
         recovered.1 == stored_receipt,
         "registration ACK-loss retry did not recover the committed receipt"
     );
-    ensure!(agent_call(router, Method::POST, "/api/agent/v1/reports", Some(credential), Some(json!({"wireVersion":1,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
+    ensure!(agent_call(router, Method::POST, "/api/agent/v2/reports", Some(credential), Some(json!({"wireVersion":2,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
     ensure!(
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v1/reports/{report_id}"),
+            &format!("/api/agent/v2/reports/{report_id}"),
             Some(credential),
             None
         )
@@ -1025,12 +1025,12 @@ async fn agent_matrix(
     );
     for (fault, expected) in [(1, "service_unavailable"), (2, "operation_unknown")] {
         let fault_report = uuid::Uuid::new_v4();
-        let body = json!({"wireVersion":1,"reportId":fault_report,"sequence":100+fault,"observedAt":100+fault,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":2,"reportId":fault_report,"sequence":100+fault,"observedAt":100+fault,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         access.fail_next(fault);
         let failed = agent_call(
             router,
             Method::POST,
-            "/api/agent/v1/reports",
+            "/api/agent/v2/reports",
             Some(next_credential),
             Some(body.clone()),
         )
@@ -1043,7 +1043,7 @@ async fn agent_matrix(
         let retry = agent_call(
             router,
             Method::POST,
-            "/api/agent/v1/reports",
+            "/api/agent/v2/reports",
             Some(next_credential),
             Some(body.clone()),
         )
@@ -1053,7 +1053,7 @@ async fn agent_matrix(
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v1/reports",
+                "/api/agent/v2/reports",
                 Some(next_credential),
                 Some(body)
             )
@@ -1274,7 +1274,13 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         .await?;
     ensure!(me["instanceId"] == INSTANCE && me["tenantId"] == TENANT && me["grants"] == json!([]));
     let subject = me["principalId"].as_str().unwrap();
-    host_context_matrix(&base, reader.clone(), &browser, subject).await?;
+    Box::pin(host_context_matrix(
+        &base,
+        reader.clone(),
+        &browser,
+        subject,
+    ))
+    .await?;
     let query = "/api/v2/devices/device-1/inventory".to_owned();
     ensure!(browser.call(&initial, Method::GET, &query, None).await?.0 == StatusCode::FORBIDDEN);
     let allowed = base.clone();
@@ -1297,7 +1303,13 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::OK
     );
-    agent_matrix(&authorized, &allowed, &agent_access, &mut browser).await?;
+    Box::pin(agent_matrix(
+        &authorized,
+        &allowed,
+        &agent_access,
+        &mut browser,
+    ))
+    .await?;
     let scope = serde_json::to_string(
         &json!({"tenant":TENANT,"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
     )?;
@@ -1345,8 +1357,21 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         management::matrix(&management_base, management_reader, &management_browser).await
     })
     .await??;
-    enrollment_matrix(&authorized, &allowed, reader.clone(), &mut browser, &query).await?;
-    native_accounts(&initial, &authorized, &mut browser, subject).await?;
+    Box::pin(enrollment_matrix(
+        &authorized,
+        &allowed,
+        reader.clone(),
+        &mut browser,
+        &query,
+    ))
+    .await?;
+    Box::pin(native_accounts(
+        &initial,
+        &authorized,
+        &mut browser,
+        subject,
+    ))
+    .await?;
     reader.close().await;
     println!("MDM_LOCAL_AUTHORITY_MATRIX_PASSED");
     Ok(())

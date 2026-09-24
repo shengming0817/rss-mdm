@@ -12,6 +12,13 @@ pub mod device;
 mod enrollment;
 mod inventory_runtime;
 mod management;
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the shared publication fixture exposes scenarios used by separate test modules"
+)]
+#[path = "../tests/publication_support/mod.rs"]
+mod publication_support;
 pub use access_store::AccessStore;
 pub use management::Missing as ManagementObject;
 mod diagnostic;

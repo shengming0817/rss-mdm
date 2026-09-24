@@ -61,9 +61,9 @@ pub async fn read_in(
 ) -> Result<Vec<InventoryField>> {
     ensure!(scopes.len() <= 20_000, "asset scope budget exceeded");
     ensure!(
-        scopes.iter().all(|s| s.tenant() == tenant
-            && s.dataset().as_str() == rss_mdm_inventory::DATASET
-            && rss_mdm_inventory::ReportSource::parse(s.source().as_str()).is_ok()),
+        scopes
+            .iter()
+            .all(|s| s.tenant() == tenant && rss_mdm_inventory::scope_coverage(s).is_ok()),
         "asset scope mismatch"
     );
     assert_tenant(connection, tenant).await?;
@@ -71,9 +71,17 @@ pub async fn read_in(
         .iter()
         .map(Scope::encode)
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let coverages = scopes
+        .iter()
+        .map(|s| {
+            Ok(serde_json::to_string(&rss_mdm_inventory::scope_coverage(
+                s,
+            )?)?)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let projection = super::projection_scope(tenant);
-    let rows=sqlx::query("SELECT scope,field,value,state,last_known,last_known_batch,last_known_observed,last_known_received,batch_id,observed_at,received_at,registration,source,epoch FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND coverage=$4 AND scope=ANY($5) ORDER BY scope,field")
-        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(keys).fetch_all(connection).await?;
+    let rows=sqlx::query("SELECT scope,field,value,state,last_known,last_known_batch,last_known_observed,last_known_received,batch_id,observed_at,received_at,registration,source,epoch FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND (coverage,scope) IN (SELECT * FROM unnest($4::text[],$5::text[])) ORDER BY scope,field")
+        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(coverages).bind(keys).fetch_all(connection).await?;
     decode_rows(rows)
 }
 
@@ -82,7 +90,7 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
         .map(|r| {
             let field = FieldKey::parse(r.try_get::<&str, _>("field")?)?;
             let state = match r.try_get::<&str, _>("state")? {
-                "known" => State::Known(Scalar::String(r.try_get("value")?)),
+                "known" => State::Known(decode_value(field, r.try_get("value")?)?),
                 "deleted" => State::Deleted,
                 "unsupported" => State::Unsupported,
                 _ => anyhow::bail!("invalid asset state"),
@@ -111,7 +119,7 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
                 prior.observed_at = r.try_get("last_known_observed")?;
                 prior.received_at = r.try_get("last_known_received")?;
                 Some(rss_mdm_inventory::KnownValue {
-                    value: Scalar::String(value),
+                    value: decode_value(field, value)?,
                     evidence: prior,
                 })
             } else {
@@ -142,4 +150,14 @@ pub(crate) async fn assert_tenant(
         "asset transaction tenant mismatch"
     );
     Ok(())
+}
+
+fn decode_value(field: FieldKey, value: String) -> Result<Scalar> {
+    let scalar = if field.is_enterprise() {
+        serde_json::from_str(&value)?
+    } else {
+        Scalar::String(value)
+    };
+    field.validate_scalar(&scalar)?;
+    Ok(scalar)
 }

@@ -12,6 +12,16 @@ sys.path.insert(0, str(ci.ROOT / "hack"))
 import group_consumer as group
 
 class IsolationGates(unittest.TestCase):
+    def test_t2_umbrella_runs_enterprise_tasks(self):
+        lines=(ci.ROOT/'Makefile').read_text().splitlines()
+        start=lines.index('t2:')+1
+        recipe=[]
+        for line in lines[start:]:
+            if not line.startswith('\t'):
+                break
+            recipe.append(line)
+        self.assertIn('\tpython3 hack/task-t2.py',recipe)
+
     def test_require_survives_optimized_python(self):
         with self.assertRaises(RuntimeError):
             ci.require(False, "reject")

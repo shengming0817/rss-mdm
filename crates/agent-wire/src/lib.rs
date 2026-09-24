@@ -2,8 +2,11 @@
 //! Strict Agent protocol values for RSS MDM.
 //!
 //! This package owns JSON values only. Device authority, persistence and HTTP authentication
-//! remain product responsibilities. V1 is deliberately closed: extensions require a new wire
+//! remain product responsibilities. V2 is deliberately closed: extensions require a new wire
 //! version rather than an implicit compatibility path.
+
+mod tasks;
+pub use tasks::*;
 
 use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -11,19 +14,19 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Exact supported wire major.
-pub const WIRE_VERSION: u8 = 1;
+pub const WIRE_VERSION: u8 = 2;
 /// Maximum complete JSON request accepted by the product adapter.
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
-/// Canonical manifest for every public Agent V1 JSON shape.
-pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v1.schema-manifest.json");
+/// Canonical manifest for every public Agent V2 JSON shape.
+pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v2.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "838dd0c2695c112c18b59022e579bb18b9f41601d2bbfe57a632fdd616f7bf9b";
+    "d5c7e3cf7ab73c711d0eaca663c5bc622136b9f4b16453819f8d7a6138f7afc1";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireError {
-    /// A value is malformed or outside the V1 profile.
+    /// A value is malformed or outside the V2 profile.
     InvalidValue,
 }
 impl std::fmt::Display for WireError {
@@ -93,12 +96,22 @@ impl<'de> Deserialize<'de> for Secret {
     }
 }
 
-/// Closed V1 capability set.
+/// Closed V2 capability set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Capability {
     /// Full/partial/failed reports for the two basic inventory fields.
-    #[serde(rename = "inventory.basic.v1")]
-    InventoryBasicV1,
+    #[serde(rename = "inventory.basic.v2")]
+    InventoryBasicV2,
+    /// Receive and execute signed task offers.
+    #[serde(rename = "task.execute.v2")]
+    TaskExecuteV2,
+}
+
+fn supported_capabilities(value: &[Capability]) -> bool {
+    matches!(
+        value,
+        [Capability::InventoryBasicV2] | [Capability::InventoryBasicV2, Capability::TaskExecuteV2]
+    )
 }
 
 /// Agent registration request. Tenant, device and generation are never device claims.
@@ -129,7 +142,7 @@ struct RawRegistrationRequest {
 impl<'de> Deserialize<'de> for RegistrationRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawRegistrationRequest::deserialize(deserializer)?;
-        if raw.wire_version != WIRE_VERSION || raw.capabilities != [Capability::InventoryBasicV1] {
+        if raw.wire_version != WIRE_VERSION || !supported_capabilities(&raw.capabilities) {
             return Err(D::Error::custom(WireError::InvalidValue));
         }
         Self::new(
@@ -137,19 +150,22 @@ impl<'de> Deserialize<'de> for RegistrationRequest {
             raw.enrollment_id,
             raw.password,
             raw.credential,
+            raw.capabilities,
         )
         .map_err(D::Error::custom)
     }
 }
 impl RegistrationRequest {
-    /// Construct the only V1 registration shape and inject its fixed version and capability.
+    /// Construct one supported V2 registration capability profile.
     pub fn new(
         operation_id: Uuid,
         enrollment_id: Uuid,
         password: Secret,
         credential: Secret,
+        capabilities: Vec<Capability>,
     ) -> Result<Self, WireError> {
-        if operation_id.is_nil() || enrollment_id.is_nil() {
+        if operation_id.is_nil() || enrollment_id.is_nil() || !supported_capabilities(&capabilities)
+        {
             return Err(WireError::InvalidValue);
         }
         Ok(Self {
@@ -158,7 +174,7 @@ impl RegistrationRequest {
             enrollment_id,
             password,
             credential,
-            capabilities: vec![Capability::InventoryBasicV1],
+            capabilities,
         })
     }
     /// Stable retry identity selected by the Agent.
@@ -236,7 +252,7 @@ impl<'de> Deserialize<'de> for RegistrationReceipt {
         if raw.wire_version != WIRE_VERSION
             || raw.generation == 0
             || raw.generation > i64::MAX as u64
-            || raw.capabilities != [Capability::InventoryBasicV1]
+            || !supported_capabilities(&raw.capabilities)
             || raw.device_id.trim().is_empty()
             || raw.device_id.chars().count() > 256
             || raw.device_id.chars().any(char::is_control)
@@ -304,7 +320,7 @@ pub enum FailureCode {
     CollectionFailed,
 }
 
-/// Closed V1 report body.
+/// Closed V2 report body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportBody {
     /// Complete coverage. Omitted fields are absent from this source.
@@ -357,7 +373,7 @@ impl<'de> Deserialize<'de> for ReportBody {
     }
 }
 
-/// Strict V1 inventory report.
+/// Strict V2 inventory report.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
@@ -388,7 +404,7 @@ impl<'de> Deserialize<'de> for ReportRequest {
     }
 }
 impl ReportRequest {
-    /// Construct and canonicalize one strict V1 report.
+    /// Construct and canonicalize one strict V2 report.
     pub fn new(
         report_id: Uuid,
         sequence: u64,
@@ -564,6 +580,12 @@ pub enum ErrorCode {
     InvalidIdentity,
     /// A referenced durable report does not exist for this principal.
     ReportNotFound,
+    /// The current task authorization was withdrawn or does not cover the operation.
+    PermissionDenied,
+    /// No task is visible at the supplied identity.
+    TaskNotFound,
+    /// The requested single byte range cannot be served.
+    RangeNotSatisfiable,
     /// An idempotent identity was reused with different semantic content.
     OperationConflict,
     /// Commit outcome is unknown; retry the exact request.

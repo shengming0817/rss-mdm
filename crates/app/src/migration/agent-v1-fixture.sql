@@ -1,0 +1,8 @@
+-- Test-only frozen V1 Agent history. The upgrade must neither rewrite nor delete it.
+INSERT INTO mdm_access.devices VALUES(current_setting('rss.tenant_id')::uuid,'upgrade-agent');
+INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES(current_setting('rss.tenant_id')::uuid,'66666666-6666-4666-8666-666666666666','previous-actor','previous-client','upgrade-agent','enrollment','consumed',clock_timestamp()+interval '60 seconds');
+INSERT INTO mdm_access.requests(tenant_id,id,grant_id,channel) VALUES(current_setting('rss.tenant_id')::uuid,'55555555-5555-4555-8555-555555555555','66666666-6666-4666-8666-666666666666','agent');
+INSERT INTO mdm_access.registrations VALUES(current_setting('rss.tenant_id')::uuid,'22222222-2222-4222-8222-222222222222','upgrade-agent','agent',1,'55555555-5555-4555-8555-555555555555','active');
+INSERT INTO mdm_access.credentials VALUES(current_setting('rss.tenant_id')::uuid,'44444444-4444-4444-8444-444444444444','22222222-2222-4222-8222-222222222222','agent',repeat('1',64),'active');
+INSERT INTO mdm_access.agent_bindings VALUES(current_setting('rss.tenant_id')::uuid,'22222222-2222-4222-8222-222222222222',1,'["inventory.basic.v1"]');
+INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at,batch,digest,delivery_pending) VALUES(current_setting('rss.tenant_id')::uuid,'77777777-7777-4777-8777-777777777777','22222222-2222-4222-8222-222222222222','agent.builtin','99999999-9999-4999-8999-999999999999','historical-scope',1,1,'{"fields":[]}','failed','complete',1000,convert_to('historical-batch','UTF8'),repeat('0',64),true);

@@ -14,3 +14,6 @@ rss-contract.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rss-request-context.workspace = true

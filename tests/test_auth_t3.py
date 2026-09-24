@@ -1,11 +1,18 @@
 import sys
 import tempfile
 import unittest
+import re
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'hack'))
 import auth_t3
 
 class ProofTests(unittest.TestCase):
+    def test_inventory_seed_tracks_the_canonical_projection_generation(self):
+        source=(Path(__file__).resolve().parents[1]/'crates/inventory-postgres/src/inventory.rs').read_text()
+        generation=re.search(r'const GENERATION: &str = "([^"]+)";',source)
+        self.assertIsNotNone(generation)
+        self.assertEqual(auth_t3.INVENTORY_GENERATION,generation.group(1))
+
     def test_missing_or_failed_scenario_cannot_pass(self):
         complete={name:True for name in auth_t3.SCENARIOS}
         auth_t3.validate_checks(complete)

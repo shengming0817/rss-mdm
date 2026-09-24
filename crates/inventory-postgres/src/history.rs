@@ -29,22 +29,30 @@ pub async fn read_at_in(
         "invalid history page"
     );
     ensure!(
-        scopes.iter().all(|s| s.tenant() == tenant
-            && s.dataset().as_str() == rss_mdm_inventory::DATASET
-            && rss_mdm_inventory::ReportSource::parse(s.source().as_str()).is_ok()),
+        scopes
+            .iter()
+            .all(|s| s.tenant() == tenant && rss_mdm_inventory::scope_coverage(s).is_ok()),
         "history source mismatch"
     );
     crate::reader::assert_tenant(c, tenant).await?;
+    let coverage = scopes
+        .iter()
+        .map(|s| {
+            Ok(serde_json::to_string(&rss_mdm_inventory::scope_coverage(
+                s,
+            )?)?)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let scopes = scopes
         .iter()
         .map(Scope::encode)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let projection = crate::projection_scope(tenant);
-    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
-    let rows = sqlx::query(r#"
+    let rows = sqlx::query(
+        r#"
       WITH requested AS (
-        SELECT sha256(convert_to(jsonb_build_array($2::text,$3::text,s,$4::text)::text,'UTF8')) AS digest
-        FROM unnest($5::text[]) s
+        SELECT sha256(convert_to(jsonb_build_array($2::text,$3::text,s,c)::text,'UTF8')) AS digest
+        FROM unnest($5::text[],$4::text[]) AS requested_scopes(s,c)
       ), latest AS (
         SELECT DISTINCT ON(h.scope_digest,h.field) h.scope_digest,h.field,h.document
         FROM mdm.inventory_history h JOIN requested r ON r.digest=h.scope_digest
@@ -54,8 +62,16 @@ pub async fn read_at_in(
       SELECT r.* FROM latest h
       CROSS JOIN LATERAL jsonb_populate_record(NULL::mdm.inventory,h.document) r
       WHERE h.document IS NOT NULL ORDER BY r.scope,r.field
-    "#).bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation())
-        .bind(coverage).bind(scopes).bind(watermark).fetch_all(c).await?;
+    "#,
+    )
+    .bind(tenant.to_string())
+    .bind(projection.source().source())
+    .bind(projection.generation())
+    .bind(coverage)
+    .bind(scopes)
+    .bind(watermark)
+    .fetch_all(c)
+    .await?;
     crate::reader::decode_rows(rows)
 }
 

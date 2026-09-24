@@ -764,60 +764,6 @@ impl PublicationService {
                 .await,
         )
     }
-    /// Historical references are retained; only a never-referenced version can be archived here.
-    pub async fn archive_resource(
-        &self,
-        r: &rss_mdm_resource_postgres::Request,
-        actor: &rel::ActorId,
-        cutoff: Deadline,
-    ) -> Result<rss_mdm_resource_postgres::Receipt> {
-        let rss_mdm_resource_postgres::Command::Archive { version, .. } = &r.command else {
-            return Err(Error::Input);
-        };
-        settle(
-            self.runtime
-                .local_tx_with_context(
-                    self.tenant(),
-                    budget(cutoff),
-                    (self, r, version, actor),
-                    |(s, r, v, actor), tx| {
-                        Box::pin(async move {
-                            tx.prepare_outbox_partitions(&[s
-                                .resources
-                                .partition(r.resource.as_str())?])
-                                .await?;
-                            input!(
-                                s.resources
-                                    .lock_version_in(tx, &r.resource, v)
-                                    .await?
-                                    .map_err(|cause| Error::Content
-                                        .context("service::archive_resource", cause))
-                            );
-                            let count =
-                                db::resource_reference_count(tx, r.resource.as_str(), v.as_str())
-                                    .await?;
-                            if count != 0 {
-                                return Ok(Err(Error::Blocked));
-                            }
-                            let receipt =
-                                input!(s.resources.execute_in(tx, r).await?.map_err(|cause| {
-                                    Error::Conflict.context("service::archive_resource", cause)
-                                }));
-                            db::audit(
-                                tx,
-                                actor,
-                                r.resource.as_str(),
-                                "software_archive",
-                                db::request_fact(r.id.as_str(), None, "resource-archive"),
-                            )
-                            .await?;
-                            Ok(Ok(receipt))
-                        })
-                    },
-                )
-                .await,
-        )
-    }
 }
 pub(super) fn operation(t: &Target) -> String {
     format!("p-{}-a-{}", hex(&t.publication), t.attempt)

@@ -104,7 +104,7 @@ fn restored_scope(row: &PgRow) -> Result<Scope, Error> {
         || scope.registration().as_str() != row.try_get::<String, _>("registration").map_err(db)?
         || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
         || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
-        || scope.dataset().as_str() != rss_mdm_inventory::DATASET
+        || rss_mdm_inventory::scope_coverage(&scope).is_err()
     {
         return Err(corrupt());
     }
@@ -125,7 +125,8 @@ fn restored_batch(row: &PgRow, scope: &Scope) -> Result<(Uuid, u64, Option<Batch
             if batch.encode() != b
                 || batch.id().as_str() != id.to_string()
                 || batch.sequence() != sequence
-                || batch.coverage() != &rss_mdm_inventory::coverage()
+                || batch.coverage()
+                    != &rss_mdm_inventory::scope_coverage(scope).map_err(|_| corrupt())?
                 || Some(digest) != row.try_get::<Option<String>, _>("digest").map_err(db)?
             {
                 return Err(corrupt());

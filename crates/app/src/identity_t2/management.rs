@@ -242,7 +242,7 @@ pub(super) async fn matrix(
         .await?;
     }
     let scope_receipt = call(&mut browser,&router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":target_group}],"limitations":[{"kind":"group","id":limit_group}],"exclusions":[{"kind":"device","id":second}]}})).await?;
-    let resource_path = format!("/api/v1/resources/{resource}");
+    let resource_path = format!("/api/v3/resources/{resource}");
     call(
         &mut browser,
         &router,
@@ -473,7 +473,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     publisher.cookies = session.cookies.clone();
     publisher.csrf = session.csrf.clone();
     let resource = uuid::Uuid::new_v4();
-    let resource_path = format!("/api/v1/resources/{resource}");
+    let resource_path = format!("/api/v3/resources/{resource}");
     call(
         &mut publisher,
         &router,
@@ -863,13 +863,13 @@ async fn permission_matrix(
         (
             "resource_read",
             Method::GET,
-            format!("/api/v1/resources/{id}"),
+            format!("/api/v3/resources/{id}"),
             None,
         ),
         (
             "resource_write",
             Method::POST,
-            format!("/api/v1/resources/{id}"),
+            format!("/api/v3/resources/{id}"),
             op(json!({"action":"activate","version":"missing"})),
         ),
         ("release_read", Method::GET, release.clone(), None),

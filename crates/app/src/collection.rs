@@ -305,3 +305,14 @@ fn corrupt() -> Error {
 
 #[cfg(test)]
 mod tests;
+
+/// Server-authored quality evidence for one fixed enterprise field.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EnterpriseAttempt {
+    pub field: FieldKey,
+    pub quality: Quality,
+    pub received_at: i64,
+    pub task_id: uuid::Uuid,
+    pub attempt_id: uuid::Uuid,
+}

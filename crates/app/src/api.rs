@@ -118,6 +118,20 @@ pub(crate) async fn application(
     access: Arc<AccessStore>,
     identity: Option<Identity>,
 ) -> Result<Router, Error> {
+    Ok(
+        application_fixture(config, clock, monotonic, access, identity)
+            .await?
+            .0,
+    )
+}
+#[cfg(test)]
+pub(crate) async fn application_fixture(
+    config: crate::config::Config,
+    clock: Arc<dyn Clock>,
+    monotonic: Arc<dyn rss_observation::Clock>,
+    access: Arc<AccessStore>,
+    identity: Option<Identity>,
+) -> Result<(Router, Arc<crate::commands::Commands>), Error> {
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access.clone(),
@@ -148,19 +162,22 @@ pub(crate) async fn application(
             .await?
         }
     };
-    Ok(from_compiled(
-        compiled,
-        AssemblyDependencies {
-            commands,
-            clock,
-            monotonic,
-            access,
-            runtime,
-            management,
-            identity,
-        },
-    )?
-    .browser)
+    Ok((
+        from_compiled(
+            compiled,
+            AssemblyDependencies {
+                commands: commands.clone(),
+                clock,
+                monotonic,
+                access,
+                runtime,
+                management,
+                identity,
+            },
+        )?
+        .browser,
+        commands,
+    ))
 }
 pub(crate) struct AssemblyDependencies {
     pub(crate) commands: Arc<crate::commands::Commands>,
@@ -248,7 +265,8 @@ pub(crate) fn from_state(
         .merge(crate::commands::routes())
         .merge(crate::management::routes_v2())
         .route_layer(middleware::from_fn_with_state(state.clone(), protect));
-    let protected_v3 = Router::new()
+    let protected_v3 = crate::management::resource_routes()
+        .merge(crate::commands::actions::http::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))
@@ -285,7 +303,7 @@ pub(crate) fn from_state(
     let browser = Router::new()
         .merge(host_context)
         .merge(crate::apple::browser_routes())
-        .nest("/api/agent/v1", crate::agent::routes())
+        .nest("/api/agent/v2", crate::agent::routes())
         .nest("/api/v1", protected_v1)
         .nest("/api/v2", protected_v2)
         .nest("/api/v3", protected_v3)
@@ -335,9 +353,9 @@ fn route_action(route: &str, native_identity: bool) -> &'static str {
         "/api/v3/enrollments/{id}/resume" => "enrollment_resume",
         "/api/v3/enrollments/{id}/cancel" => "enrollment_cancel",
         "/api/v3/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/agent/v1/registrations" => "agent_registration",
-        "/api/agent/v1/reports" => "agent_report",
-        "/api/agent/v1/reports/{id}" => "agent_report_read",
+        "/api/agent/v2/registrations" => "agent_registration",
+        "/api/agent/v2/reports" => "agent_report",
+        "/api/agent/v2/reports/{id}" => "agent_report_read",
         "/api/v2/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs" => "collection_start",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
@@ -370,7 +388,7 @@ pub(crate) async fn envelope(
         route.starts_with("/api/v2/tenants/") || route.starts_with("/api/v2/oidc/");
     let action = route_action(route, native_identity);
     let soap = route.starts_with("/EnrollmentServer/");
-    let agent_route = route.starts_with("/api/agent/v1/");
+    let agent_route = route.starts_with("/api/agent/v2/");
     let audit = Audit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
@@ -476,20 +494,18 @@ async fn bounded_body(
     } else {
         None
     };
-    let (parts, body) = request.into_parts();
-    match tokio::time::timeout(
-        Duration::from_secs(8),
-        axum::body::to_bytes(
-            body,
-            if agent {
-                rss_mdm_agent_wire::MAX_REQUEST_BYTES
-            } else {
-                2 * 1024 * 1024
-            },
-        ),
-    )
-    .await
+    let limit = match request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str())
     {
+        Some("/api/agent/v2/tasks/{id}/events") => rss_mdm_agent_wire::MAX_TASK_REQUEST_BYTES,
+        Some("/api/v3/resources/{id}/content") => 16_777_216,
+        _ if agent => rss_mdm_agent_wire::MAX_REQUEST_BYTES,
+        _ => 2 * 1024 * 1024,
+    };
+    let (parts, body) = request.into_parts();
+    match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
         Ok(Ok(bytes)) => {
             next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
                 .await

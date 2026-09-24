@@ -12,6 +12,15 @@ pub enum FieldKey {
     /// OS version reported by a trusted collector.
     #[serde(rename = "device.os.version")]
     OsVersion,
+    /// Corporate agent version reported by an approved script.
+    #[serde(rename = "custom.corporate_agent.version")]
+    CorporateAgentVersion,
+    /// Corporate agent health reported by an approved script.
+    #[serde(rename = "custom.corporate_agent.healthy")]
+    CorporateAgentHealthy,
+    /// Version from the fixed osquery info query.
+    #[serde(rename = "custom.osquery.version")]
+    OsqueryVersion,
     /// Organization asset tag.
     #[serde(rename = "custom.asset_tag")]
     AssetTag,
@@ -86,9 +95,12 @@ pub struct FieldDefinition {
 }
 impl FieldKey {
     /// Complete fixed catalog.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::Model,
         Self::OsVersion,
+        Self::CorporateAgentVersion,
+        Self::CorporateAgentHealthy,
+        Self::OsqueryVersion,
         Self::AssetTag,
         Self::OfficeFloor,
         Self::IsLoaner,
@@ -99,6 +111,9 @@ impl FieldKey {
         match self {
             Self::Model => "device.model",
             Self::OsVersion => "device.os.version",
+            Self::CorporateAgentVersion => "custom.corporate_agent.version",
+            Self::CorporateAgentHealthy => "custom.corporate_agent.healthy",
+            Self::OsqueryVersion => "custom.osquery.version",
             Self::AssetTag => "custom.asset_tag",
             Self::OfficeFloor => "custom.office_floor",
             Self::IsLoaner => "custom.is_loaner",
@@ -114,7 +129,23 @@ impl FieldKey {
     }
     /// Whether this key is assigned by a management principal.
     pub const fn is_manual(self) -> bool {
-        !matches!(self, Self::Model | Self::OsVersion)
+        matches!(
+            self,
+            Self::AssetTag | Self::OfficeFloor | Self::IsLoaner | Self::PurchaseDate
+        )
+    }
+    /// Fields collected through immutable enterprise tasks.
+    pub const ENTERPRISE: [Self; 3] = [
+        Self::CorporateAgentVersion,
+        Self::CorporateAgentHealthy,
+        Self::OsqueryVersion,
+    ];
+    /// Whether this is a task-owned field.
+    pub const fn is_enterprise(self) -> bool {
+        matches!(
+            self,
+            Self::CorporateAgentVersion | Self::CorporateAgentHealthy | Self::OsqueryVersion
+        )
     }
     /// Stable persisted collection slots. Reordering requires a new collection encoding.
     pub const OBSERVED: [Self; 2] = [Self::Model, Self::OsVersion];
@@ -128,9 +159,13 @@ impl FieldKey {
     pub fn definition(self) -> FieldDefinition {
         use Operator::*;
         let kind = match self {
-            Self::Model | Self::OsVersion | Self::AssetTag => Kind::String,
+            Self::Model
+            | Self::OsVersion
+            | Self::AssetTag
+            | Self::CorporateAgentVersion
+            | Self::OsqueryVersion => Kind::String,
             Self::OfficeFloor => Kind::Integer,
-            Self::IsLoaner => Kind::Boolean,
+            Self::IsLoaner | Self::CorporateAgentHealthy => Kind::Boolean,
             Self::PurchaseDate => Kind::Time,
         };
         let manual = self.is_manual();
@@ -150,6 +185,10 @@ impl FieldKey {
             manual,
             sources: if manual {
                 &[crate::Source::Manual]
+            } else if self == Self::OsqueryVersion {
+                &[crate::Source::AgentOsquery]
+            } else if self.is_enterprise() {
+                &[crate::Source::AgentScript]
             } else {
                 &[
                     crate::Source::MdmWindows,

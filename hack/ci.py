@@ -232,7 +232,7 @@ GATE_PACKAGES = {
     "group-t2": APP_INPUTS | {"rss-mdm-group-postgres"},
     "backend-t2": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
     "t2": APP_INPUTS | {"inventory-postgres-integration"},
-    **{name: APP_INPUTS for name in ("management-t2", "asset-t2", "apple-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
+    **{name: APP_INPUTS for name in ("management-t2", "task-t2", "apple-t2", "asset-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
 }
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
@@ -332,6 +332,7 @@ def main():
         ("t2",[sys.executable,"hack/t2.py"]),
         ("group-t2",[sys.executable,"hack/group-t2.py"]),
         ("management-t2",[sys.executable,"hack/management-t2.py"]),
+        ("task-t2",[sys.executable,"hack/task-t2.py"]),
         ("asset-t2",[sys.executable,"hack/asset-t2.py"]),
         ("command-catalog",[sys.executable,"hack/command_catalog.py","--check"]),
         ("command-t2",[sys.executable,"hack/command-t2.py"]),

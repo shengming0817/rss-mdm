@@ -114,8 +114,7 @@ fn all_kinds_are_data_and_boundaries_do_not_mutate_state() {
     for declaration in [
         Declaration::Script {
             artifact: Artifact::new(id("script"), 3, Digest::of(b"abc")).unwrap(),
-            interpreter: id("powershell"),
-            detect: id("exit-code"),
+            definition: script(),
         },
         Declaration::Configuration {
             artifact: Artifact::new(id("payload"), 3, Digest::of(b"abc")).unwrap(),
@@ -212,14 +211,6 @@ fn v1_digest_goldens_cover_declarations_and_optional_tags() {
             },
             "22f34d4f621bf28e19abd175570820418fc113cf1070fdef76170f3a3b2c20df",
         ),
-        (
-            Declaration::Script {
-                artifact: artifact.clone(),
-                interpreter: id("shell"),
-                detect: id("detect"),
-            },
-            "2e41740dffca1a9e1db83e3d0616b59f8997d5ef368d08505a88fd6911f1f928",
-        ),
     ] {
         let version = Version::new(
             tenant(),
@@ -239,4 +230,8 @@ fn v1_digest_goldens_cover_declarations_and_optional_tags() {
             Digest::parse(expected).unwrap().bytes()
         );
     }
+}
+
+fn script() -> ScriptDefinition {
+    serde_json::from_value(serde_json::json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object"},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1})).unwrap()
 }

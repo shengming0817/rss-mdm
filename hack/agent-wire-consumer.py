@@ -13,11 +13,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "agent-wire-consumer"
 PACKAGE = "rss-mdm-agent-wire"
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 SCHEMAS = [
-    "registration-request-v1.schema.json", "registration-receipt-v1.schema.json",
-    "report-request-v1.schema.json", "report-ack-v1.schema.json",
-    "report-status-v1.schema.json", "error-body-v1.schema.json",
+    "registration-request-v2.schema.json", "registration-receipt-v2.schema.json",
+    "report-request-v2.schema.json", "report-ack-v2.schema.json",
+    "report-status-v2.schema.json", "error-body-v2.schema.json",
+    "task-claim-request-v2.schema.json", "task-event-request-v2.schema.json",
+    "task-payload-v2.schema.json", "signed-task-v2.schema.json",
+    "task-claim-response-v2.schema.json", "task-event-ack-v2.schema.json",
 ]
 
 def require(condition, message):
@@ -39,33 +42,42 @@ edition = "2024"
 rss-mdm-agent-wire = {{ {dependency} }}
 serde_json = "1"
 uuid = {{ version = "1", features = ["v4"] }}
+base64 = "0.22"
+ring = "0.17"
 ''')
-    (base / "tests" / "contract.rs").write_text(r'''use rss_mdm_agent_wire::{Capability, ErrorBody, RegistrationReceipt, RegistrationRequest, ReportAck, ReportBody, ReportRequest, ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST, Secret};
+    (base / "tests" / "contract.rs").write_text(r'''use base64::Engine;
+use ring::signature::{Ed25519KeyPair, KeyPair};
+use rss_mdm_agent_wire::{Capability, ErrorBody, RegistrationReceipt, RegistrationRequest, ReportAck, ReportBody, ReportRequest, ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST, Secret};
 use serde_json::json;
 use uuid::Uuid;
 
 #[test]
-fn independent_agent_consumes_exact_v1() {
+fn independent_agent_consumes_exact_v2() {
     let secret = || Secret::parse("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let registration = RegistrationRequest::new(
-        Uuid::new_v4(), Uuid::new_v4(), secret(), secret()
+        Uuid::new_v4(), Uuid::new_v4(), secret(), secret(),
+        vec![Capability::InventoryBasicV2,Capability::TaskExecuteV2]
     ).unwrap();
-    assert_eq!(registration.capabilities(), &[Capability::InventoryBasicV1]);
+    assert_eq!(registration.capabilities(), &[Capability::InventoryBasicV2,Capability::TaskExecuteV2]);
+    let inventory_only=RegistrationRequest::new(
+        Uuid::new_v4(),Uuid::new_v4(),secret(),secret(),vec![Capability::InventoryBasicV2]
+    ).unwrap();
+    assert_eq!(inventory_only.capabilities(), &[Capability::InventoryBasicV2]);
     let report = ReportRequest::new(
         Uuid::new_v4(), 0, 1, ReportBody::Snapshot(vec![])
     ).unwrap();
     assert!(matches!(report.body(), ReportBody::Snapshot(_)));
-    assert_eq!(serde_json::to_value(&registration).unwrap()["wireVersion"], 1);
+    assert_eq!(serde_json::to_value(&registration).unwrap()["wireVersion"], 2);
     let operation = Uuid::new_v4();
     let registration_id = Uuid::new_v4();
     let epoch = Uuid::new_v4();
     let report_id = Uuid::new_v4();
     let _: RegistrationReceipt = serde_json::from_value(json!({
-        "wireVersion":1,"operationId":operation,"deviceId":"device-1",
+        "wireVersion":2,"operationId":operation,"deviceId":"device-1",
         "registrationId":registration_id,"generation":1,"source":"agent.builtin",
-        "epoch":epoch,"capabilities":["inventory.basic.v1"]
+        "epoch":epoch,"capabilities":["inventory.basic.v2","task.execute.v2"]
     })).unwrap();
-    let ack = json!({"wireVersion":1,"reportId":report_id,"receivedAt":1,"intake":"durable"});
+    let ack = json!({"wireVersion":2,"reportId":report_id,"receivedAt":1,"intake":"durable"});
     let _: ReportAck = serde_json::from_value(ack.clone()).unwrap();
     let _: ReportStatus = serde_json::from_value(json!({
         "ack":ack,"observation":"pending","projection":"pending"
@@ -73,6 +85,68 @@ fn independent_agent_consumes_exact_v1() {
     let _: ErrorBody = serde_json::from_value(json!({"code":"operation_unknown"})).unwrap();
     assert!(SCHEMA_MANIFEST.contains("RegistrationReceipt"));
     assert_eq!(SCHEMA_FINGERPRINT.len(), 64);
+    use rss_mdm_agent_wire::{ExecutionIdentity,ExecutorProfile,OutputQuality,SignedTask,TaskArchitecture,TaskClaimRequest,TaskClaimResponse,TaskContent,TaskEvent,TaskEventAck,TaskEventRequest,TaskResult,TaskDiagnostics,TaskFailure,TaskPayload,TaskPermit,TaskPlatform,TaskSpec,TaskVerification};
+    let claim=TaskClaimRequest::new(Uuid::new_v4()).unwrap();
+    assert_eq!(serde_json::to_value(claim).unwrap()["wireVersion"],2);
+    let key_document=Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+    let key=Ed25519KeyPair::from_pkcs8(key_document.as_ref()).unwrap();
+    let tenant=Uuid::new_v4();
+    let registration=Uuid::new_v4();
+    let task=Uuid::new_v4();
+    let attempt=Uuid::new_v4();
+    let offer_spec=TaskSpec {
+        wire_version:2,tenant_id:tenant,device_id:"device-1".into(),
+        platform:TaskPlatform::Macos,architecture:TaskArchitecture::Aarch64,
+        registration_id:registration,generation:1,task_id:task,attempt_id:attempt,
+        permit:TaskPermit::Offer,expires_at:200,resource_digest:[1;32],
+        content:TaskContent{length:3,sha256:[2;32]},profile:ExecutorProfile::PosixSh,
+        run_as:ExecutionIdentity::System,arguments:vec!["literal".into()],
+        environment:Default::default(),timeout_seconds:60,output_bytes:4096,max_rows:1,
+    };
+    let sign=|payload:TaskPayload| SignedTask {
+        signature:base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(key.sign(&payload.signing_bytes("fixture").unwrap()).as_ref()),
+        payload,key_id:"fixture".into(),
+    };
+    let signed_offer=sign(offer_spec.clone().try_into().unwrap());
+    let response:TaskClaimResponse=serde_json::from_value(serde_json::to_value(TaskClaimResponse::new(Some(signed_offer),vec![]).unwrap()).unwrap()).unwrap();
+    let offer=response.task().unwrap();
+    let context=TaskVerification {
+        key_id:"fixture",public_key:key.public_key().as_ref(),tenant_id:tenant,
+        device_id:"device-1",platform:TaskPlatform::Macos,architecture:TaskArchitecture::Aarch64,
+        registration_id:registration,generation:1,task_id:task,attempt_id:attempt,
+        permit:TaskPermit::Offer,now:100,
+    };
+    assert_eq!(offer.verify(&context).unwrap().payload().task_id,task);
+    let start_request=TaskEventRequest::new(Uuid::new_v4(),attempt,TaskEvent::Start).unwrap();
+    assert_eq!(serde_json::to_value(start_request).unwrap()["event"]["kind"],"start");
+    let mut start_spec:TaskSpec=offer.payload.clone().into();
+    start_spec.permit=TaskPermit::Start;
+    start_spec.expires_at=115;
+    let signed_start=sign(start_spec.try_into().unwrap());
+    let start_ack:TaskEventAck=serde_json::from_value(serde_json::to_value(TaskEventAck::new(Some(signed_start),false)).unwrap()).unwrap();
+    let start=start_ack.permit().unwrap();
+    assert!(start.verify(&TaskVerification{permit:TaskPermit::Start,now:100,..context}).is_ok());
+    for quality in [OutputQuality::Complete,OutputQuality::Truncated] {
+        let failure=if quality==OutputQuality::Truncated {Some(TaskFailure::OutputLimit)} else {None};
+        let diagnostics=TaskDiagnostics::new("version=1.2.3".into(),String::new(),5,100,failure).unwrap();
+        let result=TaskEventRequest::new(Uuid::new_v4(),attempt,TaskEvent::Result(
+            TaskResult::new(Some(0),quality,json!({"version":"1.2.3"}),diagnostics).unwrap()
+        )).unwrap();
+        let encoded=serde_json::to_value(result).unwrap();
+        assert_eq!(encoded["event"]["quality"],serde_json::to_value(quality).unwrap());
+        assert_eq!(encoded["event"]["diagnostics"]["stdout"],"version=1.2.3");
+        assert_eq!(encoded["event"]["diagnostics"]["durationMs"],5);
+        assert_eq!(encoded["event"]["diagnostics"]["executedAt"],100);
+        let decoded:TaskEventRequest=serde_json::from_value(encoded.clone()).unwrap();
+        let TaskEvent::Result(evidence)=decoded.event() else {panic!("result lost")};
+        assert_eq!(evidence.diagnostics().stdout(),"version=1.2.3");
+        let mut legacy=encoded;
+        legacy["event"].as_object_mut().unwrap().remove("diagnostics");
+        assert!(serde_json::from_value::<TaskEventRequest>(legacy).is_err());
+    }
+    assert!(serde_json::from_value::<TaskClaimRequest>(json!({"wireVersion":1,"operationId":Uuid::new_v4()})).is_err());
+    assert!(SCHEMA_MANIFEST.contains("SignedTask"));
 }
 ''')
     logs = []

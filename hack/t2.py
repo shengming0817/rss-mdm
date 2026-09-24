@@ -165,7 +165,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
+def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -213,9 +213,11 @@ def main(identity_only=False, asset_only=False, command_only=False, catalog_mode
             generate_apple(root, root/'server.crt', root/'server.key')
             env['MDM_APPLE_FIXTURES']=str(root)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
+            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
+            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_apple"], stdout=subprocess.DEVNULL, timeout=10)
             upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
+            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection_apple ... ok' in upgrade.stdout and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
             if catalog_mode:
                 from command_catalog import capture
@@ -233,6 +235,11 @@ def main(identity_only=False, asset_only=False, command_only=False, catalog_mode
                     require(result.returncode==0 and passed==expected and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in result.stdout,'Apple T2 failed or omitted required real protocol tests')
                 return
             env['MDM_TEST_PG_CONTAINER'] = name
+            if task_only:
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(result.stdout,flush=True)
+                require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
+                return
             if asset_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)

@@ -7,7 +7,7 @@ impl Client {
     async fn submit_product(&mut self, path: &str, body: Value) -> anyhow::Result<Value> {
         let route = format!(
             "/api/v{}/{path}",
-            if path.starts_with("resources/") { 1 } else { 2 }
+            if path.starts_with("resources/") { 3 } else { 2 }
         );
         let mut reply = self
             .browser
@@ -459,7 +459,7 @@ impl Client {
             .call(
                 &self.router,
                 Method::GET,
-                &format!("/api/v1/resources/{resource}"),
+                &format!("/api/v3/resources/{resource}"),
                 None,
             )
             .await?;

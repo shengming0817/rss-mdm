@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+jiff.workspace = true
 plist.workspace = true
 cms.workspace = true
 rss-mdm-agent-wire.workspace = true

@@ -12,4 +12,5 @@ Windows 协议监听、CA/保护密钥、升级顺序和恢复边界见 [Windows
 
 - [命令服务安装与版本切换](202609210000-2465-command-upgrade.md)：全新安装约束、最小角色与新配置切换。
 
+- [Agent V2 与企业任务升级](202609230002-2468-enterprise-task-upgrade.md)：精确基线、旧凭据退出及历史保留。
 - [#2471 Apple 外部依赖、配置与升级](202609230000-2471-apple-management.md)

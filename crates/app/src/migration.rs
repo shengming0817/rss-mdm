@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 40] {
+fn units() -> [(&'static str, &'static str); 46] {
     [
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -231,6 +231,30 @@ fn units() -> [(&'static str, &'static str); 40] {
             "apple-management-v1",
             include_str!("../migrations/0015_apple_management.sql"),
         ),
+        (
+            "agent-access-v2",
+            include_str!("../migrations/0015_agent_v2.sql"),
+        ),
+        (
+            "enterprise-tasks-v1",
+            include_str!("../migrations/0016_enterprise_tasks.sql"),
+        ),
+        (
+            "inventory-enterprise-v1",
+            rss_mdm_inventory_postgres::ENTERPRISE_MIGRATION_SQL,
+        ),
+        (
+            "enterprise-inventory-v1",
+            include_str!("../migrations/0017_enterprise_inventory.sql"),
+        ),
+        (
+            "action-polls-v1",
+            include_str!("../migrations/0018_action_polls.sql"),
+        ),
+        (
+            "enterprise-task-admission-v2",
+            include_str!("../migrations/0019_action_blocked_occurrence.sql"),
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -351,16 +375,58 @@ fn accepted_ledger(
     installed: &[(String, String, bool)],
     current: &[(&'static str, &'static str)],
 ) -> bool {
-    !(!installed.is_empty()
-        && ((installed.len() != current.len() && installed.len() != current.len() - 1)
-            || installed.iter().any(|(name, digest, complete)| {
-                !complete
-                    || !current[..installed.len().min(current.len())].iter().any(
-                        |(expected, sql)| {
-                            name == expected && digest == &format!("{:x}", Sha256::digest(sql))
-                        },
-                    )
-            })))
+    use std::collections::BTreeMap;
+    if installed.is_empty() {
+        return true;
+    }
+    if installed.iter().any(|(_, _, complete)| !complete) {
+        return false;
+    }
+    let actual = installed
+        .iter()
+        .map(|(name, digest, _)| (name.as_str(), digest.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    if actual.len() != installed.len() {
+        return false;
+    }
+    let candidate = current
+        .iter()
+        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
+        .collect::<BTreeMap<_, _>>();
+    if actual.len() == candidate.len()
+        && actual
+            .iter()
+            .all(|(name, digest)| candidate.get(name).is_some_and(|value| value == digest))
+    {
+        return true;
+    }
+    // The merged target's exact Apple ledger is also an accepted deployed baseline.
+    let apple_baseline = &units()[..40];
+    if actual.len() == apple_baseline.len()
+        && apple_baseline.iter().all(|(name, sql)| {
+            actual
+                .get(name)
+                .is_some_and(|digest| **digest == format!("{:x}", Sha256::digest(sql)))
+        })
+    {
+        return true;
+    }
+    #[derive(serde::Deserialize)]
+    struct Unit {
+        name: String,
+        sha256: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Baseline {
+        units: Vec<Unit>,
+    }
+    let baseline: Baseline = serde_json::from_str(include_str!("migration/baseline-a83f7876.json"))
+        .expect("fixed reviewed migration manifest");
+    baseline.units.len() == actual.len()
+        && baseline
+            .units
+            .iter()
+            .all(|unit| actual.get(unit.name.as_str()) == Some(&unit.sha256.as_str()))
 }
 
 async fn preflight_upgrade(
@@ -370,13 +436,12 @@ async fn preflight_upgrade(
     installed: &[(String, String, bool)],
     current: &[(&'static str, &'static str)],
 ) -> Result<()> {
-    if installed.len() + 1 == current.len()
+    if !installed.is_empty()
+        && !installed.iter().any(|unit| unit.0 == "apple-management-v1")
         && installed
             .iter()
             .any(|unit| unit.0 == "windows-configuration-v1")
-        && current
-            .last()
-            .is_some_and(|unit| unit.0 == "apple-management-v1")
+        && current.iter().any(|unit| unit.0 == "apple-management-v1")
     {
         verify_installation(conn, installation, instance).await?;
         let mut tx = conn
@@ -388,29 +453,21 @@ async fn preflight_upgrade(
             .await
             .map_err(|_| MigrationError::at("apple-management-v1", "preflight acknowledgement"))?;
     }
-    if installed.iter().any(|u| u.0 == "commands-v1")
-        && !installed.iter().any(|u| u.0 == "windows-configuration-v1")
-        && current
-            .last()
-            .is_some_and(|unit| unit.0 == "windows-configuration-v1")
+    if !installed.is_empty()
+        && !installed.iter().any(|unit| unit.0 == "agent-access-v2")
+        && current.iter().any(|unit| unit.0 == "agent-access-v2")
     {
         verify_installation(conn, installation, instance).await?;
         let mut preflight = conn
             .begin()
             .await
-            .map_err(|_| MigrationError::at("windows-configuration-v1", "preflight transaction"))?;
-        sqlx::raw_sql(include_str!("migration/windows-preflight.sql"))
-            .execute(&mut *preflight)
+            .map_err(|_| MigrationError::at("agent-access-v2", "preflight transaction"))?;
+        sqlx::raw_sql(include_str!("migration/tasks-preflight.sql"))
+            .execute(&mut *preflight).await.map_err(|_| MigrationError::at("agent-access-v2", "drain Agent reports, revoke V1 registrations and replace incomplete Script versions before upgrade"))?;
+        preflight
+            .commit()
             .await
-            .map_err(|_| {
-                MigrationError::at(
-                    "windows-configuration-v1",
-                    "quiesce old tasks, dispatch and sessions before upgrade",
-                )
-            })?;
-        preflight.commit().await.map_err(|_| {
-            MigrationError::at("windows-configuration-v1", "preflight acknowledgement")
-        })?;
+            .map_err(|_| MigrationError::at("agent-access-v2", "preflight acknowledgement"))?;
     }
     Ok(())
 }

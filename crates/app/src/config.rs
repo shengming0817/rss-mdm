@@ -80,6 +80,7 @@ pub struct Config {
     pub access_database: Database,
     pub runtime_database: Database,
     pub command_database: Database,
+    pub(crate) tasks: Option<crate::commands::actions::content::Config>,
     pub(crate) management: crate::management::Config,
     pub identity_management: Vec<IdentityManagementGrant>,
     pub native_protocols: NativeProtocols,

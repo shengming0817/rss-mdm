@@ -78,11 +78,20 @@ pub fn coverage() -> Coverage {
 /// [`FieldKey::validate`] with `rss_observation::ErrorKind::InvalidInput`.
 /// Deletions carry no value to validate. Does not mutate or authenticate the batch.
 pub fn validate(batch: &Batch) -> std::result::Result<(), Error> {
-    if batch.coverage() != &coverage() {
-        return Err(ErrorKind::InvalidInput.into());
-    }
+    let fields = if batch.coverage() == &coverage() {
+        FieldKey::OBSERVED.to_vec()
+    } else {
+        vec![
+            FieldKey::ENTERPRISE
+                .into_iter()
+                .find(|field| batch.coverage() == &enterprise_coverage(*field))
+                .ok_or_else(|| Error::from(ErrorKind::InvalidInput))?,
+        ]
+    };
     for change in batch.body().changes() {
-        let field = FieldKey::observed()
+        let field = fields
+            .iter()
+            .copied()
             .find(|key| key.as_str() == change.key().as_str())
             .ok_or_else(|| Error::from(ErrorKind::InvalidInput))?;
         if let Some(value) = change.value() {
@@ -91,4 +100,41 @@ pub fn validate(batch: &Batch) -> std::result::Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Each fixed enterprise field has its own snapshot scope and coverage.
+pub fn enterprise_coverage(field: FieldKey) -> Coverage {
+    assert!(field.is_enterprise(), "enterprise field required");
+    let id = |s| Id::new(s).expect("static valid identity");
+    Coverage::new(
+        id("enterprise-task"),
+        id("1"),
+        id(field.as_str()),
+        id("typed-v1"),
+    )
+}
+/// Validate the exact source/dataset pair and return its sole coverage.
+pub fn scope_coverage(scope: &rss_observation::Scope) -> Result<Coverage> {
+    if scope.dataset().as_str() == DATASET {
+        ReportSource::parse(scope.source().as_str())?;
+        return Ok(coverage());
+    }
+    let field = FieldKey::parse(scope.dataset().as_str())?;
+    let source = Source::parse(scope.source().as_str())?;
+    if !field.is_enterprise() || !field.definition().sources.contains(&source) {
+        return Err(Invalid::SourceNotAllowed);
+    }
+    Ok(enterprise_coverage(field))
+}
+/// The finite datasets owned by a trusted producer.
+pub fn datasets(source: Source) -> &'static [&'static str] {
+    match source {
+        Source::AgentBuiltin | Source::MdmWindows | Source::MdmApple => &[DATASET],
+        Source::AgentScript => &[
+            "custom.corporate_agent.version",
+            "custom.corporate_agent.healthy",
+        ],
+        Source::AgentOsquery => &["custom.osquery.version"],
+        Source::Manual => &[],
+    }
 }

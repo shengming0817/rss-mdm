@@ -74,11 +74,15 @@ fn provider(error: PgError) -> Error {
         _ => Error::Unavailable(Failure::CommandStorage),
     }
 }
-fn relay_diagnostic(phase: &str, id: Option<Uuid>, error: &Error) {
-    eprintln!(
-        "{}",
-        serde_json::json!({"event":"mdm_command_relay_failure","phase":phase,"messageId":id.map(|v|format!("dispatch.{v}")),"reason":if permanent(error){"invariant"}else if matches!(error, Error::CommitUnknown){"commit_unknown"}else{"transient"}})
-    );
+fn relay_diagnostic_value(
+    phase: &str,
+    message_id: Option<&str>,
+    error: &Error,
+) -> serde_json::Value {
+    serde_json::json!({"event":"mdm_command_relay_failure","phase":phase,"messageId":message_id,"reason":if permanent(error){"invariant"}else if matches!(error, Error::CommitUnknown){"commit_unknown"}else{"transient"}})
+}
+fn relay_diagnostic(phase: &str, message_id: Option<&str>, error: &Error) {
+    eprintln!("{}", relay_diagnostic_value(phase, message_id, error));
 }
 impl Commands {
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
@@ -170,20 +174,24 @@ impl Commands {
         claim: rss_transactional_messaging_postgres::PgOutboxClaim,
     ) -> std::result::Result<(), Error> {
         let message = PgOutboxStore::<()>::message(&claim);
-        let id = message
-            .message_id()
-            .as_str()
-            .strip_prefix("dispatch.")
+        let message_id = message.message_id().as_str().to_owned();
+        let action = message_id.starts_with("action.");
+        let id = message_id
+            .strip_prefix(if action { "action." } else { "dispatch." })
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or_else(|| {
                 let e = Error::Unavailable(Failure::CommandInvariant);
-                relay_diagnostic("identity", None, &e);
+                relay_diagnostic("identity", Some(&message_id), &e);
                 e
             })?;
         let fingerprint = message.fingerprint().as_bytes().to_vec();
-        let result = self.accept_dispatch(id, fingerprint).await;
+        let result = if action {
+            self.accept_action_dispatch(id, fingerprint).await
+        } else {
+            self.accept_dispatch(id, fingerprint).await
+        };
         if let Err(e) = &result {
-            relay_diagnostic("accept", Some(id), e);
+            relay_diagnostic("accept", Some(&message_id), e);
             // Preserve the claim and original message for repair; never retry poisoned facts.
             if permanent(e) {
                 return result;
@@ -200,7 +208,7 @@ impl Commands {
             .await
             .map_err(|e| {
                 let e = provider(e.into());
-                relay_diagnostic("settle", Some(id), &e);
+                relay_diagnostic("settle", Some(&message_id), &e);
                 e
             })?;
         result?;
@@ -247,6 +255,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
             let audit = Audit::new(self.tenant.to_string(), "management_read");
             let active=self.transact((self,claim.target().entity()),&audit,|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
+            if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::active(tx,id).await;}
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let mut after=Uuid::nil();
             loop {
@@ -282,6 +291,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
                 storage::admit(tx).await?;
+                if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::recover(service,tx,id).await;}
                 let Some(name)=device(tx,entity).await? else{return Ok(())};
                 storage::lock(tx,&name).await?;
                 let tenant=service.tenant.to_string();let key=name.clone();
@@ -324,6 +334,22 @@ async fn firewall_finished(tx: &mut PgTransaction<'_>, op: &storage::Operation) 
 
 #[cfg(test)]
 mod tests {
+    use crate::{Error, Failure};
+
+    #[test]
+    fn relay_diagnostic_preserves_complete_message_identity() {
+        let error = Error::Unavailable(Failure::CommandStorage);
+        for message_id in [
+            "action.11111111-1111-4111-8111-111111111111",
+            "dispatch.22222222-2222-4222-8222-222222222222",
+        ] {
+            let value = super::relay_diagnostic_value("accept", Some(message_id), &error);
+            assert_eq!(value["messageId"], message_id);
+            assert_eq!(value["reason"], "transient");
+        }
+        assert!(super::relay_diagnostic_value("claim", None, &error)["messageId"].is_null());
+    }
+
     #[tokio::test]
     async fn unbounded_control_is_cancellable() {
         let timer = super::Timer::new();

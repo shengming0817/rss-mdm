@@ -1,7 +1,8 @@
 {
+  "mdm_access.agent_bindings": "a9defb03153f1e39c0f29818fd622f53c390d5a7ca822556b8a19ff7613bf56d",
   "mdm_access.audit": "df0076815a01f9247544019a96b4ac5d32ec2e916c591aa66c85d3c9540e8055",
   "mdm_access.authorization_rules": "f2f5fdb64239ce56d7686f0b22d5d7a818d17fc79253ca893204b17e1cf8df00",
-  "mdm_access.collection_runs": "7c559b9c64191b62ad5704187ef701cb70e16125ea3bb26c375c86a9fc46633d",
+  "mdm_access.collection_runs": "25cc44febed9e18e4dd697c996843dd359c3ba8238e5e59e4d3b663cb88e2bc9",
   "mdm_access.credentials": "9b9b73f5680bc26e49c60d976c13103b91f398934c9758c6de10c8d5a37e675a",
   "mdm_access.devices": "23b6d5c6d787ca233c96090743af6a4e68dca60ca0731bb571417d471081979f",
   "mdm_access.enrollment_certificates": "af18dd656a4b1e9db6636700e52184dea4373d27fbfbdab0999d6648686813d7",
@@ -18,6 +19,8 @@
   "mdm_apple.scep_attempts": "bdecd84eff099ac54d91f7fcf83b84820997926b571660f8b9ef28428423ba7e",
   "mdm_management.plan_execution_admission(p_plan uuid)": "644956e5e9e7902c29e4c1f579827fd8d72c25f8c660f51bd8b0c4f6c5b9f613",
   "mdm_policy_projection.execution_admission(p_policy text, p_candidate text, p_revision bigint, p_saved boolean)": "67e30740db26df87bbebab8b1074d9556442a35c91a42b573de35ee08f63ebb2",
+  "mdm_resource.aggregates": "06b7a0e7004195e31e04e04cc6e88664e9fdf1b8835c01bec82a6512720930c3",
+  "mdm_resource.immutable": "f50ab0648b531cd941d802ae59032e0d9d88bd134c9d758f6f8bc5107636deb5",
   "rss_device_command.advance(t uuid, d uuid, g bigint, e bigint, ng bigint, ne bigint)": "ffc5353f187196a8876355251d31e3aecb1feed280f60bb1a3fa023073f5ccad",
   "rss_device_command.authorities": "1eef37fd69e7df0e23f539dcf9c652983e135725d99671eda0eb9cd62b1085ff",
   "rss_device_command.commands": "2894d230cc1f3126c2d2e1a045b55a5016f0e83d321c6aa1f8496d94344fefc2",

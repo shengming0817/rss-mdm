@@ -13,6 +13,8 @@ pub enum Permission {
     DeviceWipe,
     StateVerify,
     FirewallWrite,
+    ScriptExecute,
+    ScriptApprove,
     OperationRead,
     OperationCancel,
     AuthorizationRead,
@@ -52,6 +54,8 @@ impl Permission {
             | Self::DeviceWipe
             | Self::StateVerify
             | Self::FirewallWrite
+            | Self::ScriptExecute
+            | Self::ScriptApprove
             | Self::OperationRead
             | Self::OperationCancel => true,
             Self::AuthorizationRead

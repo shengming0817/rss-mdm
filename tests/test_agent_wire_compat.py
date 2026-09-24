@@ -1,4 +1,4 @@
-"""Regressions for the immutable Agent V1 contract gate."""
+"""Regressions for the immutable Agent V2 contract gate."""
 import importlib.util
 import json
 from pathlib import Path
@@ -34,7 +34,7 @@ class WireCompatibilityTests(unittest.TestCase):
             with self.subTest(schema=name, mutation=mutate), tempfile.TemporaryDirectory() as tmp:
                 schema = Path(tmp) / "schema"
                 shutil.copytree(ROOT / "crates/agent-wire/schema", schema)
-                path = schema / f"{name}-v1.schema.json"
+                path = schema / f"{name}-v2.schema.json"
                 value = json.loads(path.read_text())
                 mutate(value)
                 path.write_text(json.dumps(value))
@@ -58,7 +58,7 @@ class WireCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             schema = Path(tmp) / "schema"
             shutil.copytree(ROOT / "crates/agent-wire/schema", schema)
-            path = schema / "agent-v1.schema-manifest.json"
+            path = schema / "agent-v2.schema-manifest.json"
             value = json.loads(path.read_text())
             value["schemas"].pop()
             path.write_text(json.dumps(value))
