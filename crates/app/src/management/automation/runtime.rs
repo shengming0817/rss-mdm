@@ -204,7 +204,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                             }
                             match job {
                                 JobInput::AssetQuery { .. } => {
-                                    ctx.0.advance_asset_query_in(tx, id, &job, cursor).await
+                                    ctx.0
+                                        .assets
+                                        .advance_asset_query_in(tx, id, &job, cursor)
+                                        .await
                                 }
                                 JobInput::Group { group, .. } => {
                                     tx.prepare_outbox_partitions(&[ctx
@@ -299,8 +302,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                 .await
                                 .map_err(|e| fault(e, &Mutex::new(None)))?;
                         }
-                        service
-                            .finish_job_in(tx, id, terminal)
+                        crate::management::automation::jobs::finish_job_in(tx, id, terminal)
                             .await
                             .map_err(|e| fault(e, &Mutex::new(None)))
                     })

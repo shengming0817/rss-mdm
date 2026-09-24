@@ -118,7 +118,7 @@ impl Audit {
     pub fn snapshot(&self) -> Snapshot {
         self.0.state.lock().expect("audit lock").snapshot.clone()
     }
-    pub fn identify(&self, proof: &crate::identity::Principal) {
+    pub fn identify(&self, proof: &crate::authorization::context::AuthorizedPrincipal) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(proof.principal_id().into());
         state.snapshot.instance = Some(proof.instance_id().into());
@@ -223,6 +223,42 @@ impl Drop for Context {
             );
         }
     }
+}
+
+use crate::{Error, Failure};
+use sqlx::{Postgres, Transaction};
+pub(crate) async fn record(
+    database: &crate::database::Database,
+    audit: &Audit,
+    status: u16,
+    result: &str,
+) -> Result<(), Error> {
+    let mut tx = database.begin(audit.tenant()).await?;
+    crate::audit::append(&mut tx, audit, status, result, None).await?;
+    tx.commit()
+        .await
+        .map_err(|_| Error::Unavailable(Failure::Audit))
+}
+pub(crate) async fn append(
+    tx: &mut Transaction<'_, Postgres>,
+    audit: &Audit,
+    status: u16,
+    result: &str,
+    registration: Option<Uuid>,
+) -> Result<(), Error> {
+    append_on_connection(tx, audit, status, result, registration).await
+}
+pub(crate) async fn append_on_connection(
+    connection: &mut sqlx::PgConnection,
+    audit: &Audit,
+    status: u16,
+    result: &str,
+    registration: Option<Uuid>,
+) -> Result<(), Error> {
+    let f = audit.snapshot();
+    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,instance,target,operation_id,registration_request,action,result,status,registration_id,software,plan) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11,$12::uuid,$13::jsonb,$14::uuid)")
+        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.instance).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).bind(f.registration_id.map(|v|v.to_string())).bind(f.software.map(|v| serde_json::to_string(&v).expect("software fact serialization"))).bind(f.plan.map(|v|v.to_string())).execute(connection).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
+    Ok(())
 }
 #[cfg(test)]
 mod tests {

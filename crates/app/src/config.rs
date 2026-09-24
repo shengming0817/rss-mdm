@@ -1,6 +1,6 @@
 //! Configuration is read once; all changes require a process restart.
 use crate::ConfigIssue;
-use crate::{Error, access::IdentityManagementGrant};
+use crate::{Error, authorization::identity_management::IdentityManagementGrant};
 use serde::Deserialize;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 use std::{
@@ -87,7 +87,8 @@ pub struct Config {
 }
 pub(crate) struct Compiled {
     pub config: Config,
-    pub identity_management: Arc<crate::access::IdentityManagementPolicy>,
+    pub identity_management:
+        Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
 }
 impl Config {
     pub(crate) fn compile(mut self) -> Result<Compiled, Error> {
@@ -148,11 +149,12 @@ impl Config {
                 return Err(Error::Configuration(ConfigIssue::AppleListeners));
             }
         }
-        let identity_management = crate::access::IdentityManagementPolicy::new(
-            &self.identity.tenant_id,
-            &self.identity.instance_id,
-            std::mem::take(&mut self.identity_management),
-        )?;
+        let identity_management =
+            crate::authorization::identity_management::IdentityManagementPolicy::new(
+                &self.identity.tenant_id,
+                &self.identity.instance_id,
+                std::mem::take(&mut self.identity_management),
+            )?;
         Ok(Compiled {
             config: self,
             identity_management: Arc::new(identity_management),

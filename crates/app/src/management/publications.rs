@@ -1,7 +1,8 @@
 //! The browser actor authorizes work; the controlled driver owns external effects.
 use super::*;
-use crate::api::{App, RequestAuth};
 use crate::audit::ManagementResult as Effect;
+use crate::authorization::context::RequestAuth;
+use crate::management::http::HttpState;
 use crate::software_publication as service;
 use axum::{
     Extension, Json, Router,
@@ -101,14 +102,14 @@ fn failure(e: service::Error) -> Error {
         _ => Error::Unavailable(Failure::Runtime),
     }
 }
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new().route(
         "/software-sources/{source}/candidates/{id}",
         get(read).post(write),
     )
 }
 async fn read(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((source, id)): Path<(String, String)>,
@@ -138,7 +139,7 @@ async fn read(
     Ok(Json(view))
 }
 async fn write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((source, id)): Path<(String, String)>,
@@ -217,7 +218,8 @@ async fn write(
         expected_revision: request.expected_revision,
         as_of: at,
     };
-    let current = app.access.authorization_snapshot(&auth.proof).await?;
+    let current =
+        crate::authorization::store::authorization_snapshot(&app.access, &auth.proof).await?;
     current.require(&auth.proof, permission, None)?;
     if let Change::Approve {
         publisher_subject, ..

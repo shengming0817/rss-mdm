@@ -22,7 +22,7 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
         locator: [key; 32],
     }
 }
-pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Principal> {
+pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<AuthorizedPrincipal> {
     let identity = crate::identity_fixture::identity(tenant).await?;
     let login = match (tenant, token) {
         (A, "admin-a") | (B, "admin-b") => "admin",
@@ -41,8 +41,10 @@ pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Principal
             ),
         )
         .await?;
-    let access = AccessStore::connect(options("mdm_access")?).await?;
-    let proof = Principal::new(proof)?.load_authorization(&access).await?;
+    let access = Database::connect(options("mdm_access")?).await?;
+    let proof = AuthorizedPrincipal::new(proof)?
+        .load_authorization(&access)
+        .await?;
     access.close().await;
     Ok(proof)
 }
@@ -65,8 +67,8 @@ pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
     .ssl_root_cert(std::env::var("PG_CA_FILE")?))
 }
 async fn request(
-    store: &AccessStore,
-    admin: &Principal,
+    store: &Database,
+    admin: &AuthorizedPrincipal,
     device: &str,
     channel: Channel,
 ) -> anyhow::Result<Uuid> {
@@ -75,25 +77,25 @@ async fn request(
     audit.target(device);
     let key = Uuid::new_v4();
     audit.operation(key, "enrollment_create");
-    let receipt = store
-        .create_enrollment(
-            admin.enrollment(device)?,
-            &Password::new(crate::enrollment::random())?,
-            match channel {
-                Channel::Agent => ReportSource::AgentBuiltin,
-                Channel::Mdm => ReportSource::MdmWindows,
-            },
-            Uuid::new_v4(),
-            key,
-            &audit,
-        )
-        .await?;
+    let receipt = crate::enrollment::store::create_enrollment(
+        store,
+        admin.enrollment(device)?,
+        &Password::new(crate::enrollment::random())?,
+        match channel {
+            Channel::Agent => ReportSource::AgentBuiltin,
+            Channel::Mdm => ReportSource::MdmWindows,
+        },
+        Uuid::new_v4(),
+        key,
+        &audit,
+    )
+    .await?;
     audit.finalize(None);
     Ok(receipt.enrollment_id)
 }
 pub(crate) async fn bind(
     service: &DeviceService,
-    admin: &Principal,
+    admin: &AuthorizedPrincipal,
     proof: &VerifiedChannelCredential,
     device: &str,
     generation: i64,
@@ -125,7 +127,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     let other = admin(A, "other-a").await?;
     assert!(admin(B, "admin-a").await.is_err());
     let access = Arc::new(
-        AccessStore::connect(options("mdm_access")?)
+        Database::connect(options("mdm_access")?)
             .await
             .context("access store admission")?,
     );
@@ -246,7 +248,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         Err(Error::CommitUnknown)
     ));
     let restart_access = Arc::new(
-        AccessStore::connect(options("mdm_access")?)
+        Database::connect(options("mdm_access")?)
             .await
             .context("access store admission")?,
     );
@@ -504,7 +506,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
 // arbitrate this race: the database unique constraint must roll back the loser's retire.
 async fn credential_race(
     service: &DeviceService,
-    admin: &Principal,
+    admin: &AuthorizedPrincipal,
     root: &mut PgConnection,
 ) -> anyhow::Result<()> {
     let pa = proof(A, Channel::Mdm, 60);
@@ -596,7 +598,7 @@ async fn credential_race(
 
 async fn commit_deadlines(
     service: &DeviceService,
-    admin: &Principal,
+    admin: &AuthorizedPrincipal,
     root: &mut PgConnection,
 ) -> anyhow::Result<()> {
     let mut outcomes = Vec::new();

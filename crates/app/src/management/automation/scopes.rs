@@ -286,7 +286,9 @@ impl Management {
                     .await
             }
             "published" => self.propagate_scope_in(tx, id, scope, cursor).await,
-            "superseded" => self.finish_job_in(tx, id, Some("superseded")).await,
+            "superseded" => {
+                crate::management::automation::jobs::finish_job_in(tx, id, Some("superseded")).await
+            }
             _ => Err(Error::Unavailable(Failure::ManagementStorage).into()),
         }
     }
@@ -338,7 +340,10 @@ impl Management {
                 .insert(row.try_get::<i32, _>("source")? as usize);
         }
         let at = input(Timepoint::try_from(frozen.as_of))?;
-        let live = self.live_devices_at_in(tx, watermark, &devices).await?;
+        let live = self
+            .assets
+            .live_devices_at_in(tx, watermark, &devices)
+            .await?;
         let tenant = self.tenant.to_string();
         let selected = devices.clone();
         let identity:i64=tx.with_connection(move |c|Box::pin(async move {
@@ -465,7 +470,7 @@ impl Management {
                 .bind(tenant).bind(scope.to_string()).bind(task.to_string()).fetch_one(c).await
         })).await?;
         if !active {
-            return self.finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
         }
         let tenant = self.tenant.to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
@@ -483,7 +488,7 @@ impl Management {
                     .await?,
             )?
             .ok_or(Error::Conflict)?;
-            self.enqueue_job_in(
+            crate::management::automation::jobs::enqueue_job_in(
                 tx,
                 Uuid::new_v4(),
                 &JobInput::Policy {
@@ -501,7 +506,7 @@ impl Management {
             .await?;
         }
         if rows.len() <= 64 {
-            return self.finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
         }
         let tenant = self.tenant.to_string();
         let cursor: String = rows[63].try_get("policy")?;

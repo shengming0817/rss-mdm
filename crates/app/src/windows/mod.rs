@@ -1,7 +1,8 @@
 //! Product Windows enrollment/management assembly. TLS and authority stay outside the codec.
+pub(crate) mod storage_admission;
 use crate::native::{TlsEndpoint, TlsRouter, admission, tls};
 pub(crate) mod certificate;
-mod issuance;
+pub(crate) mod issuance;
 pub(crate) mod management;
 mod protection;
 pub(crate) mod retention;
@@ -12,7 +13,7 @@ mod tests;
 
 use crate::{
     ConfigIssue, Error, Failure,
-    api::{App, Envelope, authenticate, envelope},
+    api::{Envelope, authenticate, envelope},
     audit::Audit,
     enrollment::Password,
 };
@@ -110,11 +111,11 @@ impl Windows {
     }
 }
 pub(crate) fn routers(
-    app: Arc<App>,
+    app: Arc<HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
 ) -> Option<(TlsRouter, TlsRouter)> {
     let windows = app.windows.as_ref()?;
-    let wrap = |router: Router<Arc<App>>, origin: &str| {
+    let wrap = |router: Router<Arc<HttpState>>, origin: &str| {
         router
             .with_state(app.clone())
             .layer(DefaultBodyLimit::max(512 * 1024))
@@ -164,7 +165,7 @@ fn decode(
     bytes: &[u8],
     headers: &HeaderMap,
     op: Operation,
-    app: &App,
+    app: &HttpState,
     path: &str,
 ) -> Result<soap::Message, Error> {
     if headers.get_all("content-type").iter().count() != 1
@@ -243,7 +244,7 @@ pub(crate) fn fault(request: Option<&soap::Message>, error: Error) -> Response {
     r.extensions_mut().insert(error);
     r
 }
-async fn discover(State(app): State<Arc<App>>, headers: HeaderMap, bytes: Bytes) -> Response {
+async fn discover(State(app): State<Arc<HttpState>>, headers: HeaderMap, bytes: Bytes) -> Response {
     let windows = match app.windows() {
         Ok(windows) => windows,
         Err(e) => return fault(None, e),
@@ -276,7 +277,7 @@ async fn discover(State(app): State<Arc<App>>, headers: HeaderMap, bytes: Bytes)
     .unwrap_or_else(|e| fault(Some(&message), e))
 }
 async fn policy(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<Audit>,
     bytes: Bytes,
@@ -284,7 +285,7 @@ async fn policy(
     enrollment(app, headers, audit, bytes, false).await
 }
 async fn issue(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<Audit>,
     bytes: Bytes,
@@ -292,7 +293,7 @@ async fn issue(
     enrollment(app, headers, audit, bytes, true).await
 }
 async fn enrollment(
-    app: Arc<App>,
+    app: Arc<HttpState>,
     headers: HeaderMap,
     audit: Audit,
     bytes: Bytes,
@@ -316,10 +317,13 @@ async fn enrollment(
         let token = security.username.as_ref().ok_or(Error::Unauthorized)?;
         let id = Uuid::parse_str(&token.username.0).map_err(|_| Error::Unauthorized)?;
         let password = Password::new(token.password.0.clone()).map_err(|_| Error::Unauthorized)?;
-        let auth = app
-            .access
-            .enrollment_authorization(&app.identity.tenant.to_string(), id, &password)
-            .await?;
+        let auth = crate::enrollment::store::enrollment_authorization(
+            &app.access,
+            &app.identity.tenant.to_string(),
+            id,
+            &password,
+        )
+        .await?;
         if auth.source != rss_mdm_inventory::ReportSource::MdmWindows {
             return Err(Error::Unauthorized);
         }
@@ -329,7 +333,7 @@ async fn enrollment(
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Unavailable(Failure::Capacity))?;
-        let proof = authenticate(&app, credential).await?;
+        let proof = authenticate(&app.identity, &app.access, credential).await?;
         if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
             return Err(Error::Unauthorized);
         }
@@ -388,20 +392,21 @@ async fn enrollment(
             _ => return Err(Error::Malformed),
         };
         audit.operation(auth.operation, "enrollment_issue");
-        let intent = app
-            .access
-            .issuance_intent(
-                app.windows()?,
-                &auth,
-                &proof,
-                (&input.csr.0, enrollment_type),
-                now,
-            )
-            .await?;
-        let certificate = match app
-            .access
-            .issued_certificate(proof.tenant_id(), auth.id)
-            .await?
+        let intent = crate::windows::issuance::issuance_intent(
+            &app.access,
+            app.windows()?,
+            &auth,
+            &proof,
+            (&input.csr.0, enrollment_type),
+            now,
+        )
+        .await?;
+        let certificate = match crate::windows::issuance::issued_certificate(
+            &app.access,
+            proof.tenant_id(),
+            auth.id,
+        )
+        .await?
         {
             Some(certificate) => certificate,
             None => app.windows()?.ca.sign(&intent.tbs)?,
@@ -413,19 +418,24 @@ async fn enrollment(
             &auth,
             proof.tenant_id(),
         )?;
-        let proof = authenticate(&app, app.credentials.get(auth.credential_ref)?).await?;
+        let proof = authenticate(
+            &app.identity,
+            &app.access,
+            app.credentials.get(auth.credential_ref)?,
+        )
+        .await?;
         let _permission = proof.enrollment(&auth.device)?;
-        app.access
-            .complete_issuance(
-                app.windows()?,
-                &auth,
-                &proof,
-                &intent,
-                &certificate,
-                &audit,
-                app.clock.unix_seconds()?,
-            )
-            .await?;
+        crate::windows::issuance::complete_issuance(
+            &app.access,
+            app.windows()?,
+            &auth,
+            &proof,
+            &intent,
+            &certificate,
+            &audit,
+            app.clock.unix_seconds()?,
+        )
+        .await?;
         response(
             Some(&message),
             Body::IssueResponse(soap::IssueResponse {
@@ -439,4 +449,22 @@ async fn enrollment(
     }
     .await;
     result.unwrap_or_else(|e| fault(Some(&message), e))
+}
+
+pub(crate) struct HttpState {
+    pub(crate) access: std::sync::Arc<crate::database::Database>,
+    pub(crate) clock: std::sync::Arc<dyn crate::clock::Clock>,
+    pub(crate) commands: std::sync::Arc<crate::commands::Commands>,
+    pub(crate) credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
+    pub(crate) devices: std::sync::Arc<crate::device::DeviceService>,
+    pub(crate) identity: std::sync::Arc<crate::identity::Identity>,
+    pub(crate) requests: std::sync::Arc<tokio::sync::Semaphore>,
+    pub(crate) windows: Option<std::sync::Arc<crate::windows::Windows>>,
+}
+impl HttpState {
+    pub(crate) fn windows(
+        &self,
+    ) -> std::result::Result<&Arc<crate::windows::Windows>, crate::Error> {
+        self.windows.as_ref().ok_or(crate::Error::Unsupported)
+    }
 }

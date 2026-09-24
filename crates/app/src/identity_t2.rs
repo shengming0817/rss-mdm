@@ -237,16 +237,16 @@ impl Browser {
             .0)
     }
 }
-async fn access_store(value: &Value) -> Result<Arc<crate::AccessStore>> {
+async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     let config: Config = serde_json::from_value(value.clone())?;
     Ok(Arc::new(
-        crate::AccessStore::connect(config.access_database.options()?).await?,
+        crate::Database::connect(config.access_database.options()?).await?,
     ))
 }
 async fn app(value: &Value, _reader: Arc<InventoryReader>) -> Result<Router> {
-    app_with_access(value, access_store(value).await?).await
+    app_with_access(value, database(value).await?).await
 }
-async fn app_with_access(value: &Value, access: Arc<crate::AccessStore>) -> Result<Router> {
+async fn app_with_access(value: &Value, access: Arc<crate::Database>) -> Result<Router> {
     let c: Config = serde_json::from_value(value.clone())?;
     Ok(crate::api::application(
         c,
@@ -603,7 +603,7 @@ async fn wait_agent_status(
 }
 
 async fn agent_runtime(config: &Value) -> Result<Arc<crate::inventory_runtime::InventoryRuntime>> {
-    let access = access_store(config).await?;
+    let access = database(config).await?;
     let config: Config = serde_json::from_value(config.clone())?;
     Ok(crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
@@ -617,7 +617,7 @@ async fn agent_runtime(config: &Value) -> Result<Arc<crate::inventory_runtime::I
 async fn agent_matrix(
     router: &Router,
     config: &Value,
-    access: &Arc<crate::AccessStore>,
+    access: &Arc<crate::Database>,
     browser: &mut Browser,
 ) -> Result<()> {
     let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -1293,7 +1293,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         )?,
     )
     .await?;
-    let agent_access = access_store(&allowed).await?;
+    let agent_access = database(&allowed).await?;
     let authorized = app_with_access(&allowed, agent_access.clone()).await?;
     // Restarting the host preserves only the component credential, whose PG state is checked again.
     ensure!(
@@ -1432,7 +1432,7 @@ async fn native_accounts(
     pg("GRANT SELECT ON identity_authority.sessions TO mdm_identity_runtime")?;
     ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE && denied.1.get("roles").is_none());
     let identity = crate::identity_fixture::identity(TENANT).await?;
-    let credentials = crate::enrollment_credentials::Credentials::new(monotonic(), 16);
+    let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 16);
     let cache = |browser: &Browser| -> Result<uuid::Uuid> {
         Ok(
             credentials.insert(rss_identity_core::session::SessionSecret::parse(

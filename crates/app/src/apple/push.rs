@@ -273,7 +273,7 @@ impl Health {
 pub(crate) fn registration(
     apple: std::sync::Arc<super::Apple>,
     commands: std::sync::Arc<crate::commands::Commands>,
-    access: std::sync::Arc<crate::AccessStore>,
+    access: std::sync::Arc<crate::Database>,
     tenant: String,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("apple-apns", Duration::from_secs(8));

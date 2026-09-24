@@ -184,7 +184,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         serde_json::from_value(base.clone())?,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
-        access_store(&base).await?,
+        database(&base).await?,
         None,
     )
     .await?;

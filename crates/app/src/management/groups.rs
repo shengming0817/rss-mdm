@@ -78,7 +78,7 @@ impl Management {
                     return Err(Error::Malformed.into());
                 }
                 for device in add {
-                    storage::device(tx, device).await?;
+                    storage::require_device(tx, device).await?;
                 }
                 return self
                     .start_group_job_in(

@@ -24,7 +24,7 @@ struct QueryState {
     failure: Option<String>,
     ready: bool,
 }
-impl Management {
+impl AssetService {
     async fn query_state_in(
         &self,
         tx: &mut PgTransaction<'_>,

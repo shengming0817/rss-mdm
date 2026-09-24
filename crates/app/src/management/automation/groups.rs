@@ -131,7 +131,7 @@ impl Management {
                     .await?,
             )?;
         }
-        self.enqueue_job_in(
+        crate::management::automation::jobs::enqueue_job_in(
             tx,
             task,
             &JobInput::Group {
@@ -163,6 +163,7 @@ impl Management {
             let mut limit = 1000;
             loop {
                 let page = match self
+                    .assets
                     .asset_page_in(
                         tx,
                         watermark,
@@ -270,7 +271,7 @@ impl Management {
                 .await;
         }
         if !publish {
-            return self.finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
         }
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former watermark.
@@ -352,7 +353,7 @@ impl Management {
                 .bind(tenant).bind(group.to_string()).bind(after).fetch_all(c).await
         })).await?;
         for scope in rows.iter().take(64) {
-            self.enqueue_job_in(
+            crate::management::automation::jobs::enqueue_job_in(
                 tx,
                 Uuid::new_v4(),
                 &JobInput::Scope {
@@ -362,7 +363,7 @@ impl Management {
             .await?;
         }
         if rows.len() <= 64 {
-            return self.finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
         }
         let tenant = self.tenant.to_string();
         let cursor = rows[63].clone();

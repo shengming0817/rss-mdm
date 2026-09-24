@@ -74,17 +74,19 @@ impl ReadScope {
             devices: None,
         }
     }
-    pub(crate) fn from_proof(p: &crate::identity::Principal) -> std::result::Result<Self, Error> {
+    pub(crate) fn from_proof(
+        p: &crate::authorization::context::AuthorizedPrincipal,
+    ) -> std::result::Result<Self, Error> {
         Ok(Self {
             subject: format!("{}:{}", p.instance_id(), p.principal_id()),
             devices: p.authorization()?.inventory_devices(p)?,
         })
     }
-    pub(crate) fn full(&self) -> std::result::Result<(), Error> {
+    pub(crate) fn full(&self) -> std::result::Result<(), AssetError> {
         if self.devices.is_none() {
             Ok(())
         } else {
-            Err(Error::Forbidden)
+            Err(AssetError::RestrictedScope)
         }
     }
 }

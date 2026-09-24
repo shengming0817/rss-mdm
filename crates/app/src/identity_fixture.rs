@@ -19,11 +19,13 @@ pub(crate) fn config(tenant: &str) -> Result<Config> {
 }
 pub(crate) async fn identity(tenant: &str) -> Result<Identity> {
     let config = config(tenant)?;
-    let policy = Arc::new(crate::access::IdentityManagementPolicy::new(
-        tenant,
-        INSTANCE,
-        config.identity_management.clone(),
-    )?);
+    let policy = Arc::new(
+        crate::authorization::identity_management::IdentityManagementPolicy::new(
+            tenant,
+            INSTANCE,
+            config.identity_management.clone(),
+        )?,
+    );
     Ok(Identity::connect(&config, policy, |_| {}).await?)
 }
 pub(crate) async fn login(identity: &Identity, login: &str) -> Result<SessionSecret> {
@@ -70,11 +72,13 @@ async fn seed_accounts() -> Result<()> {
         "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     ] {
         let identity = identity(tenant).await?;
-        let access =
-            crate::AccessStore::connect(config(tenant)?.access_database.options()?).await?;
-        access
-            .initialize_authorization(user(tenant, ADMIN), uuid::Uuid::new_v4())
-            .await?;
+        let access = crate::Database::connect(config(tenant)?.access_database.options()?).await?;
+        crate::authorization::store::initialize_authorization(
+            &access,
+            user(tenant, ADMIN),
+            uuid::Uuid::new_v4(),
+        )
+        .await?;
         let secret = login(&identity, "admin").await?;
         save(&identity, "admin", &secret)?;
         let actor = identity
@@ -135,8 +139,8 @@ pub(crate) async fn set_grants(
 ) -> Result<()> {
     use crate::authorization::{Change, Permission, Rule, Subject};
     let identity = identity(tenant).await?;
-    let access = crate::AccessStore::connect(config(tenant)?.access_database.options()?).await?;
-    let principal = crate::identity::Principal::new(
+    let access = crate::Database::connect(config(tenant)?.access_database.options()?).await?;
+    let principal = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
             .inspect_session(
@@ -158,41 +162,41 @@ pub(crate) async fn set_grants(
         {
             let audit = crate::audit::Audit::new(tenant.into(), "authorization_write");
             audit.identify(&principal);
-            access
-                .change_rule(
-                    &principal,
-                    record.id,
-                    Change {
-                        operation_id: uuid::Uuid::new_v4(),
-                        expected_revision: record.revision,
-                        value: None,
-                    },
-                    &audit,
-                )
-                .await?;
+            crate::authorization::store::change_rule(
+                &access,
+                &principal,
+                record.id,
+                Change {
+                    operation_id: uuid::Uuid::new_v4(),
+                    expected_revision: record.revision,
+                    value: None,
+                },
+                &audit,
+            )
+            .await?;
             audit.finalize(None);
         }
     }
     if !grants.is_empty() {
         let audit = crate::audit::Audit::new(tenant.into(), "authorization_write");
         audit.identify(&principal);
-        access
-            .change_rule(
-                &principal,
-                uuid::Uuid::new_v4(),
-                Change {
-                    operation_id: uuid::Uuid::new_v4(),
-                    expected_revision: 0,
-                    value: Some(Rule {
-                        subject: Subject::User {
-                            user: user(tenant, subject),
-                        },
-                        grants,
-                    }),
-                },
-                &audit,
-            )
-            .await?;
+        crate::authorization::store::change_rule(
+            &access,
+            &principal,
+            uuid::Uuid::new_v4(),
+            Change {
+                operation_id: uuid::Uuid::new_v4(),
+                expected_revision: 0,
+                value: Some(Rule {
+                    subject: Subject::User {
+                        user: user(tenant, subject),
+                    },
+                    grants,
+                }),
+            },
+            &audit,
+        )
+        .await?;
         audit.finalize(None);
     }
     access.close().await;

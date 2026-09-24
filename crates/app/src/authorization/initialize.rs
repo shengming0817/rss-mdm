@@ -1,6 +1,6 @@
 use super::{Receipt, User, canonical_uuid};
 use crate::{
-    AccessStore, ConfigIssue, Error, Failure,
+    ConfigIssue, Database, Error, Failure,
     audit::{Audit, FailureReason},
     config, identity,
 };
@@ -78,7 +78,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
 struct Resources {
     runtime: Option<Arc<rss_transactional_messaging_postgres::PgRuntime>>,
     kdf: Arc<PasswordKdf>,
-    access: Option<AccessStore>,
+    access: Option<Database>,
 }
 pub(crate) async fn bounded<T>(
     audit: &Audit,
@@ -136,11 +136,13 @@ async fn initialize_owned(
         .as_ref()
         .ok_or(Error::Unavailable(Failure::Runtime))?;
     let user = async {
-        let policy = Arc::new(crate::access::IdentityManagementPolicy::new(
-            &config.user.tenant_id,
-            &config.user.instance_id,
-            vec![],
-        )?);
+        let policy = Arc::new(
+            crate::authorization::identity_management::IdentityManagementPolicy::new(
+                &config.user.tenant_id,
+                &config.user.instance_id,
+                vec![],
+            )?,
+        );
         let authority = Authority::connect_runtime(
             runtime.clone(),
             owned.kdf.clone(),
@@ -185,11 +187,15 @@ async fn initialize_owned(
         Ok(user)
     }
     .await?;
-    owned.access = Some(AccessStore::connect(config.database.options()?).await?);
-    owned
-        .access
-        .as_ref()
-        .ok_or(Error::Unavailable(Failure::AccessStore))?
-        .initialize_authorization_audited(user, config.operation_id, audit)
-        .await
+    owned.access = Some(Database::connect(config.database.options()?).await?);
+    crate::authorization::store::initialize_authorization_audited(
+        owned
+            .access
+            .as_ref()
+            .ok_or(Error::Unavailable(Failure::Database))?,
+        user,
+        config.operation_id,
+        audit,
+    )
+    .await
 }

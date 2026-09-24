@@ -1,13 +1,16 @@
 //! Product gateway seam. F04 owns cryptographic verification; I01 owns persistent binding.
 //! No network DTO can construct credential evidence or a device principal.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
+pub(crate) mod admission;
+pub(crate) mod coordinates;
+pub(crate) mod read;
 pub(crate) mod store;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
 use crate::audit::{FailureReason, WriteOutcome};
-use crate::identity::Principal;
-use crate::{AccessStore, Error, Failure, access::Coordinates, audit::Audit};
+use crate::authorization::context::AuthorizedPrincipal;
+use crate::{Database, Error, Failure, audit::Audit, device::coordinates::Coordinates};
 use rss_observation::{Epoch, Id, Registration, Scope};
 use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
@@ -131,11 +134,11 @@ pub struct RevocationReceipt {
 /// App-owned service; the router and trusted channel adapters share the same policy/store.
 /// The caller retains ownership of both pools; this service creates or closes none.
 pub struct DeviceService {
-    access: Arc<AccessStore>,
+    access: Arc<Database>,
     tenant: String,
 }
 impl DeviceService {
-    pub(crate) fn new(access: Arc<AccessStore>, tenant: String) -> Self {
+    pub(crate) fn new(access: Arc<Database>, tenant: String) -> Self {
         Self { access, tenant }
     }
     pub(crate) async fn management_principal(
@@ -149,7 +152,7 @@ impl DeviceService {
     #[cfg(test)]
     pub(crate) async fn bind(
         &self,
-        admin: &Principal,
+        admin: &AuthorizedPrincipal,
         credential: &VerifiedChannelCredential,
         command: BindRegistration,
     ) -> Result<RegistrationReceipt, Error> {
@@ -162,7 +165,7 @@ impl DeviceService {
     #[cfg(test)]
     pub(crate) async fn revoke(
         &self,
-        admin: &Principal,
+        admin: &AuthorizedPrincipal,
         device: &str,
         registration: Uuid,
         operation_id: Uuid,
@@ -213,7 +216,7 @@ impl DeviceService {
         if !matches!(
             tokio::time::timeout(
                 Duration::from_secs(2),
-                self.access.record(audit, status, outcome)
+                crate::audit::record(&self.access, audit, status, outcome)
             )
             .await,
             Ok(Ok(()))
@@ -233,7 +236,7 @@ pub(crate) fn scope(
     registration: Uuid,
     source: &str,
     epoch: Uuid,
-) -> Result<Scope, Error> {
+) -> Result<Scope, DeviceError> {
     scope_dataset(
         tenant,
         registration,
@@ -248,7 +251,7 @@ pub(crate) fn scope_dataset(
     source: &str,
     epoch: Uuid,
     dataset: &str,
-) -> Result<Scope, Error> {
+) -> Result<Scope, DeviceError> {
     Ok(Scope::new(
         tenant,
         // Lifecycle CAS is object-wide. Each independently activated fixed dataset
@@ -258,10 +261,25 @@ pub(crate) fn scope_dataset(
         } else {
             format!("{registration}:{dataset}")
         })
-        .map_err(|_| Error::Malformed)?,
-        Registration::new(registration.to_string()).map_err(|_| Error::Malformed)?,
-        Id::new(source).map_err(|_| Error::Malformed)?,
-        Id::new(dataset).map_err(|_| Error::Malformed)?,
-        Epoch::new(epoch.to_string()).map_err(|_| Error::Malformed)?,
+        .map_err(|_| DeviceError::InvalidSource)?,
+        Registration::new(registration.to_string()).map_err(|_| DeviceError::InvalidSource)?,
+        Id::new(source).map_err(|_| DeviceError::InvalidSource)?,
+        Id::new(dataset).map_err(|_| DeviceError::InvalidSource)?,
+        Epoch::new(epoch.to_string()).map_err(|_| DeviceError::InvalidSource)?,
     ))
 }
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub(crate) enum DeviceError {
+    #[error("invalid source identity")]
+    InvalidSource,
+}
+
+pub(crate) const IDENTITY_MIGRATION_SQL: &str =
+    include_str!("../migrations/0003_device_identity.sql");
+
+pub(crate) const AGENT_ACCESS_MIGRATION_SQL: &str =
+    include_str!("../migrations/0012_agent_access.sql");
+
+pub(crate) const AUTHORITY_HISTORY_MIGRATION_SQL: &str =
+    include_str!("../migrations/0012_asset_history.sql");

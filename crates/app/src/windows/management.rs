@@ -1,7 +1,8 @@
 //! Fixed APPSRV BASIC / CLIENT DIGEST initialization and durable exact-response replay.
 use super::*;
+use crate::windows::HttpState;
 use crate::{
-    access_store::db,
+    database::db,
     device::{DevicePrincipal, VerifiedChannelCredential},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -13,7 +14,7 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use zeroize::Zeroizing;
 pub(super) async fn manage(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<tls::Peer>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
@@ -107,7 +108,7 @@ pub(crate) async fn management_on(
     let message_id = i64::from(message.header.message_id);
     let digest = format!("{:x}", Sha256::digest(bytes));
     let tx = conn;
-    let scope = crate::collection::revalidate(tx, principal).await?;
+    let scope = crate::device::store::revalidate(tx, principal).await?;
     // One registration lock orders nonce changes across sessions and restarts.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2351))")
         .bind(format!("{tenant}:{registration}"))
@@ -123,8 +124,10 @@ pub(crate) async fn management_on(
         }
         SessionDecision::Continue(stored) => stored,
     };
-    let registration_data=sqlx::query("SELECT i.request_id::text,i.secrets,c.server_nonce FROM mdm_access.enrollment_intents i JOIN mdm_access.enrollment_certificates c ON (c.tenant_id,c.request_id)=(i.tenant_id,i.request_id) WHERE i.tenant_id=$1::uuid AND i.registration=$2::uuid FOR UPDATE OF c")
-            .bind(&tenant).bind(&registration).fetch_one(&mut *tx).await.map_err(db)?;
+    let registration_data =
+        crate::enrollment::protocol::registration(&mut *tx, &tenant, &registration)
+            .await
+            .map_err(db)?;
     let request = crate::enrollment::store::uuid(&registration_data, "request_id")?;
     let secrets = windows.protection.open(
         &tenant,
@@ -219,7 +222,7 @@ async fn collect(
         .map(|row| row.try_get::<Option<String>, _>("run_id").map_err(db))
         .transpose()?
         .flatten()
-        .map(|id| Uuid::parse_str(&id).map_err(|_| Error::Unavailable(Failure::AccessStore)))
+        .map(|id| Uuid::parse_str(&id).map_err(|_| Error::Unavailable(Failure::Database)))
         .transpose()?;
     if !authenticated_session
         && message
@@ -310,8 +313,9 @@ impl ServerAuthentication {
         message: &syncml::Message,
     ) -> Result<(), Error> {
         if let Some(nonce) = self.advertised_nonce(message) {
-            sqlx::query("UPDATE mdm_access.enrollment_certificates SET server_nonce=$3 WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
-                .bind(tenant).bind(request.to_string()).bind(nonce).execute(&mut *tx).await.map_err(db)?;
+            crate::enrollment::protocol::update_nonce(&mut *tx, tenant, request.to_string(), nonce)
+                .await
+                .map_err(db)?;
         }
         Ok(())
     }

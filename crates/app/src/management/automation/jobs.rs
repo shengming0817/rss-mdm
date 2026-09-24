@@ -118,38 +118,6 @@ impl Management {
             serde_json::json!({"execution":execution,"policy_revision":policy_revision,"failure_detail":failure_detail,"task":id,"kind":job.kind(),"target":job.target(),"status":status,"processed":processed,"members":members,"plan":plan,"failure":failure}),
         )
     }
-    pub(in crate::management) async fn enqueue_job_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        input: &JobInput,
-    ) -> Result<Value> {
-        let tenant = self.tenant.to_string();
-        let document = super::super::input(serde_json::to_string(input))?;
-        let kind = input.kind();
-        let target = input.target();
-        tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_management.automation_jobs(tenant_id,id,kind,target,input) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb)")
-                .bind(tenant).bind(id.to_string()).bind(kind).bind(target).bind(document).execute(c).await?;Ok(())
-        })).await?;
-        if let JobInput::Policy { policy, .. } = input {
-            let tenant = self.tenant.to_string();
-            let policy = policy.clone();
-            tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query("INSERT INTO mdm_management.candidate_heads(tenant_id,policy,desired) VALUES($1::uuid,$2,$3::uuid) ON CONFLICT(tenant_id,policy) DO UPDATE SET desired=excluded.desired")
-                    .bind(tenant).bind(policy).bind(id.to_string()).execute(c).await?;Ok(())
-            })).await?;
-        }
-        let status_url = match input {
-            JobInput::AssetQuery { .. } => format!("/api/v2/device-queries/{id}"),
-            JobInput::Group { group, .. } => format!("/api/v2/groups/{group}/tasks/{id}"),
-            JobInput::Scope { scope } => format!("/api/v2/scopes/{scope}/tasks/{id}"),
-            JobInput::Policy { .. } => format!("/api/v2/plan-previews/{id}"),
-        };
-        Ok(
-            serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"status_url":status_url}),
-        )
-    }
 
     pub(in crate::management) async fn forward_jobs(&self) -> std::result::Result<usize, Error> {
         // A policy cannot compute until its Scope is terminal. Keep the durable
@@ -196,54 +164,84 @@ impl Management {
             row.try_get("forwarded")?,
         ))
     }
-    pub(in crate::management) async fn finish_job_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        failure: Option<&str>,
-    ) -> Result<()> {
-        let tenant = self.tenant.to_string();
-        let action = match failure {
-            None => "automation_completed",
-            Some("superseded") => "automation_superseded",
-            Some(_) => "automation_failed",
-        };
-        let outcome = if failure.is_some() {
-            "failed"
-        } else {
-            "success"
-        };
-        let failure = failure.map(str::to_owned);
-        let target:Option<String>=tx.with_connection(move |c|Box::pin(async move {
+}
+
+pub(in crate::management) async fn enqueue_job_in(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    input: &JobInput,
+) -> Result<Value> {
+    let tenant = tx.tenant_id().to_string();
+    let document = super::super::input(serde_json::to_string(input))?;
+    let kind = input.kind();
+    let target = input.target();
+    tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_management.automation_jobs(tenant_id,id,kind,target,input) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb)")
+                .bind(tenant).bind(id.to_string()).bind(kind).bind(target).bind(document).execute(c).await?;Ok(())
+        })).await?;
+    if let JobInput::Policy { policy, .. } = input {
+        let tenant = tx.tenant_id().to_string();
+        let policy = policy.clone();
+        tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query("INSERT INTO mdm_management.candidate_heads(tenant_id,policy,desired) VALUES($1::uuid,$2,$3::uuid) ON CONFLICT(tenant_id,policy) DO UPDATE SET desired=excluded.desired")
+                    .bind(tenant).bind(policy).bind(id.to_string()).execute(c).await?;Ok(())
+            })).await?;
+    }
+    let status_url = match input {
+        JobInput::AssetQuery { .. } => format!("/api/v2/device-queries/{id}"),
+        JobInput::Group { group, .. } => format!("/api/v2/groups/{group}/tasks/{id}"),
+        JobInput::Scope { scope } => format!("/api/v2/scopes/{scope}/tasks/{id}"),
+        JobInput::Policy { .. } => format!("/api/v2/plan-previews/{id}"),
+    };
+    Ok(
+        serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"status_url":status_url}),
+    )
+}
+pub(in crate::management) async fn finish_job_in(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    failure: Option<&str>,
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let action = match failure {
+        None => "automation_completed",
+        Some("superseded") => "automation_superseded",
+        Some(_) => "automation_failed",
+    };
+    let outcome = if failure.is_some() {
+        "failed"
+    } else {
+        "success"
+    };
+    let failure = failure.map(str::to_owned);
+    let target:Option<String>=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_scalar("UPDATE mdm_management.automation_jobs SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT completed RETURNING target")
                 .bind(tenant).bind(id.to_string()).bind(failure).fetch_optional(c).await
         })).await?;
-        if target.is_none() {
-            let tenant = self.tenant.to_string();
-            let exists=tx.with_connection(move |c|Box::pin(async move {
+    if target.is_none() {
+        let tenant = tx.tenant_id().to_string();
+        let exists=tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_management.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid AND completed)")
                     .bind(tenant).bind(id.to_string()).fetch_one(c).await
             })).await?;
-            if !exists {
-                return Err(Error::NotFound.into());
-            }
+        if !exists {
+            return Err(Error::NotFound.into());
         }
-        if let Some(target) = target {
-            let audit = Audit::new(self.tenant.to_string(), action);
-            audit.identify_service("service:asset-automation");
-            audit.target(&target);
-            audit.operation(id, action);
-            tx.with_connection(move |c| {
-                Box::pin(async move {
-                    let result =
-                        crate::access_store::append_on_connection(c, &audit, 200, outcome, None)
-                            .await;
-                    audit.finalize(None);
-                    result.map_err(|_| sqlx::Error::Protocol("automation audit unavailable".into()))
-                })
-            })
-            .await?;
-        }
-        Ok(())
     }
+    if let Some(target) = target {
+        let audit = Audit::new(tx.tenant_id().to_string(), action);
+        audit.identify_service("service:asset-automation");
+        audit.target(&target);
+        audit.operation(id, action);
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                let result =
+                    crate::audit::append_on_connection(c, &audit, 200, outcome, None).await;
+                audit.finalize(None);
+                result.map_err(|_| sqlx::Error::Protocol("automation audit unavailable".into()))
+            })
+        })
+        .await?;
+    }
+    Ok(())
 }

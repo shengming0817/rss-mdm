@@ -97,9 +97,13 @@ impl Management {
                 let scope = stored(Uuid::parse_str(binding.try_get("scope")?))?;
                 let resolution = Uuid::new_v4();
                 let task = Uuid::new_v4();
-                self.enqueue_job_in(tx, resolution, &automation::JobInput::Scope { scope })
-                    .await?;
-                self.enqueue_job_in(
+                crate::management::automation::jobs::enqueue_job_in(
+                    tx,
+                    resolution,
+                    &automation::JobInput::Scope { scope },
+                )
+                .await?;
+                crate::management::automation::jobs::enqueue_job_in(
                     tx,
                     task,
                     &automation::JobInput::Policy {

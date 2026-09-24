@@ -1,9 +1,5 @@
 use super::*;
-use crate::{
-    Error,
-    api::{App, RequestAuth},
-    audit::Audit,
-};
+use crate::{Error, audit::Audit, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -14,7 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/authorization", get(effective))
         .route("/authorization/rules", get(rules))
@@ -77,7 +73,7 @@ async fn groups(
     Ok(Json(page(&groups, page_request.after)))
 }
 async fn rule_write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -85,13 +81,12 @@ async fn rule_write(
 ) -> Result<Json<Receipt>, Error> {
     audit.operation(change.operation_id, "authorization_write");
     audit.target(&id.to_string());
-    app.access
-        .change_rule(&auth.proof, id, change, &audit)
+    crate::authorization::store::change_rule(&app.access, &auth.proof, id, change, &audit)
         .await
         .map(Json)
 }
 async fn group_write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -99,8 +94,7 @@ async fn group_write(
 ) -> Result<Json<Receipt>, Error> {
     audit.operation(change.operation_id, "authorization_write");
     audit.target(&id.to_string());
-    app.access
-        .change_group(&auth.proof, id, change, &audit)
+    crate::authorization::store::change_group(&app.access, &auth.proof, id, change, &audit)
         .await
         .map(Json)
 }
@@ -167,4 +161,88 @@ async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Val
         Department::Expired => json!({"status":"expired"}),
     };
     Ok(Json(value))
+}
+
+pub(crate) struct HttpState {
+    pub(crate) access: std::sync::Arc<crate::database::Database>,
+}
+
+use crate::{Failure, authorization::context::AuthorizedPrincipal};
+use axum::{
+    extract::Request,
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
+use std::time::Duration;
+pub(crate) async fn protect(
+    State(app): State<Arc<AuthenticationState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    authenticate_and_run(app, request, next, true).await
+}
+pub(crate) async fn identity_only(
+    State(app): State<Arc<AuthenticationState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    authenticate_and_run(app, request, next, false).await
+}
+async fn authenticate_and_run(
+    app: Arc<AuthenticationState>,
+    request: Request,
+    next: Next,
+    authorization: bool,
+) -> Response {
+    let (mut parts, body) = request.into_parts();
+    let activity =
+        if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
+            rss_identity_http_axum::SessionActivity::Passive
+        } else {
+            rss_identity_http_axum::SessionActivity::Active
+        };
+    let _global = match app.requests.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return Error::Unavailable(Failure::Capacity).into_response(),
+    };
+    match app
+        .identity
+        .authenticate_request(&parts.headers, activity)
+        .await
+    {
+        Ok((proof, credential)) => {
+            let proof = AuthorizedPrincipal::from_identity(proof);
+            if let Some(audit) = parts.extensions.get::<Audit>() {
+                audit.identify(&proof);
+            }
+            // Authentication has settled. Authorization I/O and the handler share the host budget.
+            tokio::time::timeout(Duration::from_secs(8), async {
+                let proof = if authorization {
+                    match proof.load_authorization(&app.access).await {
+                        Ok(proof) => proof,
+                        Err(error) => return error.into_response(),
+                    }
+                } else {
+                    proof
+                };
+                parts
+                    .extensions
+                    .insert(crate::enrollment::credentials::SessionContinuation::new(
+                        credential,
+                    ));
+                parts.extensions.insert(RequestAuth {
+                    proof: Arc::new(proof),
+                });
+                next.run(Request::from_parts(parts, body)).await
+            })
+            .await
+            .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
+        }
+        Err(response) => response,
+    }
+}
+pub(crate) struct AuthenticationState {
+    pub(crate) identity: Arc<crate::identity::Identity>,
+    pub(crate) access: Arc<crate::database::Database>,
+    pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }

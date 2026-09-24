@@ -38,7 +38,7 @@ pub(crate) fn http_policy() -> rss_axum::Http1ServePolicy {
     )
     .expect("constant HTTP/1 limits are valid")
 }
-struct AccessResource(std::sync::Arc<crate::AccessStore>);
+struct AccessResource(std::sync::Arc<crate::Database>);
 impl ManagedResource for AccessResource {
     fn name(&self) -> &str {
         "access-store"
@@ -91,7 +91,7 @@ pub async fn serve(
                         automation,
                     ) = tokio::time::timeout(compiled.config.management.startup_budget(), async {
                         let access = Arc::new(
-                            crate::AccessStore::connect(
+                            crate::Database::connect(
                                 compiled.config.access_database.options().map_err(|e| {
                                     ProcessError::at("startup.access_configuration", e)
                                 })?,

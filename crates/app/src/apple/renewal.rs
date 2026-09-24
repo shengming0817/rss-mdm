@@ -1,9 +1,8 @@
 //! Replace the enrollment profile before expiry; switch authority only on new-key mTLS proof.
 //! ref: Apple Managing certificates for device management services and devices (2026-09-23)
 use super::{Apple, attempt, certificate, enrollment, profile, protocol};
-use crate::{
-    AccessStore, Error, access_store::db, api::App, audit::Audit, device::DevicePrincipal,
-};
+use crate::apple::HttpState;
+use crate::{Database, Error, audit::Audit, database::db, device::DevicePrincipal};
 use rss_mdm_inventory::Channel;
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
@@ -16,7 +15,7 @@ pub(super) fn due(before: i64, after: i64, now: i64) -> bool {
 }
 pub(super) async fn maintain(
     apple: &Apple,
-    access: &AccessStore,
+    access: &Database,
     tenant: &str,
     now: i64,
 ) -> Result<(), Error> {
@@ -40,7 +39,7 @@ pub(super) async fn maintain(
 }
 async fn prepare(
     apple: &Apple,
-    access: &AccessStore,
+    access: &Database,
     tenant: &str,
     now: i64,
     candidate: PgRow,
@@ -97,9 +96,7 @@ async fn prepare(
         Uuid::parse_str(&registration)
             .map_err(|_| Error::Unavailable(crate::Failure::AppleInvariant))?,
     );
-    access
-        .commit_audited_status(tx, &audit, Some(id), 202)
-        .await?;
+    crate::operations::commit_audited_status(access, tx, &audit, Some(id), 202).await?;
     audit.finalize(None);
     eprintln!(
         "{}",
@@ -126,7 +123,7 @@ async fn current(
     Ok(Some(row))
 }
 pub(super) async fn challenge(
-    app: &App,
+    app: &HttpState,
     csr: &certificate::Csr,
     secret: &str,
     transaction: &str,
@@ -152,13 +149,12 @@ pub(super) async fn challenge(
     }
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$3,csr_digest=$4,spki=$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(&tenant).bind(csr.attempt.to_string()).bind(transaction).bind(csr.digest.as_slice()).bind(csr.spki.as_slice()).execute(&mut *tx).await.map_err(db)?;
-    app.access
-        .commit_audited_status(tx, audit, Some(csr.attempt), 200)
+    crate::operations::commit_audited_status(&app.access, tx, audit, Some(csr.attempt), 200)
         .await?;
     Ok(true)
 }
 pub(super) async fn notify(
-    app: &App,
+    app: &HttpState,
     leaf: &certificate::CheckedLeaf,
     csr: &certificate::Csr,
     transaction: &str,
@@ -176,12 +172,11 @@ pub(super) async fn notify(
         return Err(Error::Unauthorized);
     }
     enrollment::persist_leaf(&mut tx, &tenant, leaf).await?;
-    app.access
-        .commit_audited_status(tx, audit, Some(leaf.attempt), 200)
+    crate::operations::commit_audited_status(&app.access, tx, audit, Some(leaf.attempt), 200)
         .await?;
     Ok(true)
 }
-fn verify(app: &App, row: &PgRow, leaf: &certificate::CheckedLeaf) -> Result<(), Error> {
+fn verify(app: &HttpState, row: &PgRow, leaf: &certificate::CheckedLeaf) -> Result<(), Error> {
     if row.try_get::<String, _>("state").map_err(db)? != "consumed"
         || crate::enrollment::store::uuid(row, "enrollment")? != leaf.enrollment
         || row.try_get::<Vec<u8>, _>("configuration").map_err(db)? != app.apple()?.configuration
@@ -196,7 +191,7 @@ fn verify(app: &App, row: &PgRow, leaf: &certificate::CheckedLeaf) -> Result<(),
     Ok(())
 }
 pub(super) async fn activate(
-    app: &App,
+    app: &HttpState,
     leaf: &certificate::CheckedLeaf,
     udid: &str,
 ) -> Result<(), Error> {
@@ -218,27 +213,26 @@ pub(super) async fn activate(
     let registration: String = row.try_get("registration").map_err(db)?;
     let old: String = row.try_get("renewal_of").map_err(db)?;
     // New credential ID fences principals authenticated before this transaction.
-    sqlx::query("UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active'").bind(&tenant).bind(&registration).execute(&mut *tx).await.map_err(db)?;
     let locator = leaf
         .fingerprint
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')").bind(&tenant).bind(Uuid::new_v4().to_string()).bind(&registration).bind(locator).execute(&mut *tx).await.map_err(db)?;
+    crate::device::store::replace_mdm_credential_in(&mut tx, &tenant, &registration, &locator)
+        .await?;
     enrollment::persist_leaf(&mut tx, &tenant, leaf).await?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state=CASE WHEN id=$2::uuid THEN 'bound' ELSE 'superseded' END WHERE tenant_id=$1::uuid AND id IN ($2::uuid,$3::uuid)").bind(&tenant).bind(leaf.attempt.to_string()).bind(old).execute(&mut *tx).await.map_err(db)?;
     let audit = Audit::new(tenant.clone(), "apple_renewal");
     audit.target(&row.try_get::<String, _>("device").map_err(db)?);
     audit.registration(Uuid::parse_str(&registration).map_err(|_| Error::Unauthorized)?);
-    app.access
-        .commit_audited_status(tx, &audit, Some(leaf.attempt), 200)
+    crate::operations::commit_audited_status(&app.access, tx, &audit, Some(leaf.attempt), 200)
         .await?;
     audit.finalize(None);
     Ok(())
 }
 
 pub(super) async fn management(
-    app: &App,
+    app: &HttpState,
     p: &DevicePrincipal,
     d: &plist::Dictionary,
     bytes: &[u8],
@@ -271,8 +265,6 @@ pub(super) async fn management(
     if result.is_none() {
         return Ok(None);
     }
-    app.access
-        .commit_audited_status(tx, audit, None, 200)
-        .await?;
+    crate::operations::commit_audited_status(&app.access, tx, audit, None, 200).await?;
     Ok(result)
 }

@@ -44,7 +44,7 @@ impl Management {
                     .bind(tenant).bind(consumed).bind(watermark).bind(cursor).fetch_all(c).await
             })).await?;
             for scope in scopes.iter().take(32) {
-                self.enqueue_job_in(
+                crate::management::automation::jobs::enqueue_job_in(
                     tx,
                     Uuid::new_v4(),
                     &JobInput::Scope {

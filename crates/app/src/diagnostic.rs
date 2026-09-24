@@ -90,7 +90,8 @@ pub enum Failure {
     IdentityDeadline,
     IdentityProtocol,
     InventoryPool,
-    AccessStore,
+    #[serde(rename = "access_store")]
+    Database,
     AccessAdmission,
     Audit,
     InventoryQuery,

@@ -3,7 +3,7 @@ use super::super::automation::JobInput;
 use super::*;
 use rss_mdm_group_postgres::core as g;
 use rss_mdm_inventory::State;
-impl Management {
+impl AssetService {
     pub(super) fn validate_query(&self, q: &Query) -> Result<()> {
         if q.select.len() > FieldKey::ALL.len()
             || q.select.iter().collect::<BTreeSet<_>>().len() != q.select.len()
@@ -34,7 +34,7 @@ impl Management {
                 })
             })
             .await?;
-        self.enqueue_job_in(
+        crate::management::automation::jobs::enqueue_job_in(
             tx,
             task,
             &JobInput::AssetQuery {
@@ -198,7 +198,7 @@ impl Management {
             return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
         }
         if done {
-            self.finish_job_in(tx, task, None).await?;
+            crate::management::automation::jobs::finish_job_in(tx, task, None).await?;
         }
         Ok(())
     }

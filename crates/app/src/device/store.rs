@@ -1,17 +1,14 @@
 use super::*;
-use crate::access_store::{Actor, Operation, db};
+use crate::{
+    database::db,
+    operations::{Actor, Operation},
+};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
-fn actor(proof: &Principal) -> Actor<'_> {
-    Actor {
-        tenant: proof.tenant_id(),
-        subject: proof.principal_id(),
-        instance: proof.instance_id(),
-    }
-}
+
 fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
     Uuid::parse_str(&row.try_get::<String, _>(name).map_err(db)?)
-        .map_err(|_| Error::Unavailable(Failure::AccessStore))
+        .map_err(|_| Error::Unavailable(Failure::Database))
 }
 fn digest(value: &impl Serialize) -> String {
     format!(
@@ -51,7 +48,7 @@ impl DeviceService {
     #[cfg(test)]
     pub(super) async fn bind_inner(
         &self,
-        admin: &Principal,
+        admin: &AuthorizedPrincipal,
         credential: &VerifiedChannelCredential,
         command: &BindRegistration,
         audit: &Audit,
@@ -85,13 +82,13 @@ impl DeviceService {
             locator(credential),
         ));
         let operation = Operation {
-            actor: actor(admin),
+            actor: Actor::from_authorized(admin),
             key: command.operation_id,
             digest: &digest,
         };
-        if let Some(old) = AccessStore::replay(&mut tx, &operation).await? {
+        if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
             let receipt: RegistrationReceipt =
-                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
+                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
             audit.registration(receipt.registration);
             tx.rollback().await.map_err(db)?;
             admin.enrollment(&device)?;
@@ -107,20 +104,20 @@ impl DeviceService {
         )
         .await?;
         audit.registration(receipt.registration);
-        self.access
-            .finish(
-                tx,
-                &operation,
-                &serde_json::to_string(&receipt).expect("closed receipt"),
-                audit,
-                Some(command.request_id),
-            )
-            .await?;
+        crate::operations::finish(
+            &self.access,
+            tx,
+            &operation,
+            &serde_json::to_string(&receipt).expect("closed receipt"),
+            audit,
+            Some(command.request_id),
+        )
+        .await?;
         Ok(receipt)
     }
     pub(crate) async fn revoke_inner(
         &self,
-        admin: &Principal,
+        admin: &AuthorizedPrincipal,
         device: &str,
         registration: Uuid,
         key: Uuid,
@@ -135,14 +132,14 @@ impl DeviceService {
         admin.credentials(device)?;
         let digest = digest(&("credential_revoke", device, registration));
         let operation = Operation {
-            actor: actor(admin),
+            actor: Actor::from_authorized(admin),
             key,
             digest: &digest,
         };
         let mut tx = self.access.begin(admin.tenant_id()).await?;
-        if let Some(old) = AccessStore::replay(&mut tx, &operation).await? {
+        if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
             let receipt =
-                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
+                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
             audit.registration(registration);
             tx.rollback().await.map_err(db)?;
             admin.credentials(device)?;
@@ -157,22 +154,23 @@ impl DeviceService {
         if row.try_get::<String, _>("state").map_err(db)? != "active" {
             return Err(Error::Conflict);
         }
-        retire(&mut tx, admin.tenant_id(), registration, "revoked").await?;
+        crate::registration_lifecycle::retire(&mut tx, admin.tenant_id(), registration, "revoked")
+            .await?;
         admin.credentials(device)?;
         audit.registration(registration);
         let receipt = RevocationReceipt {
             operation_id: key,
             registration,
         };
-        self.access
-            .finish(
-                tx,
-                &operation,
-                &serde_json::to_string(&receipt).expect("closed receipt"),
-                audit,
-                None,
-            )
-            .await?;
+        crate::operations::finish(
+            &self.access,
+            tx,
+            &operation,
+            &serde_json::to_string(&receipt).expect("closed receipt"),
+            audit,
+            None,
+        )
+        .await?;
         Ok(receipt)
     }
     pub(crate) async fn authorize_report(
@@ -237,7 +235,7 @@ impl DeviceService {
     }
     pub(crate) async fn current_scope(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         device: &str,
         coordinates: Coordinates,
     ) -> Result<Scope, Error> {
@@ -268,7 +266,7 @@ fn channel(row: &PgRow) -> Result<Channel, Error> {
     match row.try_get::<String, _>("channel").map_err(db)?.as_str() {
         "agent" => Ok(Channel::Agent),
         "mdm" => Ok(Channel::Mdm),
-        _ => Err(Error::Unavailable(Failure::AccessStore)),
+        _ => Err(Error::Unavailable(Failure::Database)),
     }
 }
 fn unique_or_db(error: sqlx::Error) -> Error {
@@ -281,7 +279,7 @@ fn unique_or_db(error: sqlx::Error) -> Error {
         db(error)
     }
 }
-pub(crate) async fn retire(
+pub(crate) async fn retire_state_in(
     tx: &mut Transaction<'_, Postgres>,
     tenant: &str,
     registration: Uuid,
@@ -298,16 +296,13 @@ pub(crate) async fn retire(
     .map_err(db)?;
     sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut **tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.devices SET state='retired',token=NULL,magic=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
-    crate::collection::terminate(tx, tenant, &registration.to_string(), state).await?;
     Ok(())
 }
 
-/// Borrow the AccessStore transaction; the caller commits binding, certificate and audit together.
+/// Borrow the Database transaction; the caller commits binding, certificate and audit together.
 pub(crate) async fn bind_in(
     tx: &mut Transaction<'_, Postgres>,
-    admin: &Principal,
+    admin: &AuthorizedPrincipal,
     credential: &VerifiedChannelCredential,
     command: &BindRegistration,
     device: String,
@@ -349,7 +344,13 @@ pub(crate) async fn bind_in(
     let active = sqlx::query("SELECT id::text AS id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND state='active' FOR UPDATE")
             .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_optional(&mut **tx).await.map_err(db)?;
     if let Some(row) = active {
-        retire(tx, admin.tenant_id(), uuid(&row, "id")?, "superseded").await?;
+        crate::registration_lifecycle::retire(
+            tx,
+            admin.tenant_id(),
+            uuid(&row, "id")?,
+            "superseded",
+        )
+        .await?;
     }
     sqlx::query(
         "INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING",
@@ -394,4 +395,63 @@ async fn enterprise_sources(
         }
     }
     Ok(())
+}
+
+pub(crate) async fn bind_agent_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &str,
+    registration: Uuid,
+    capabilities: &str,
+) -> Result<(), Error> {
+    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,$3)").bind(tenant).bind(registration.to_string()).bind(capabilities).execute(&mut **tx).await.map_err(db)?;
+    Ok(())
+}
+pub(crate) async fn replace_mdm_credential_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &str,
+    registration: &str,
+    locator: &str,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active'").bind(tenant).bind(registration).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')").bind(tenant).bind(Uuid::new_v4().to_string()).bind(registration).bind(locator).execute(&mut **tx).await.map_err(db)?;
+    Ok(())
+}
+
+pub(crate) async fn revalidate(
+    tx: &mut sqlx::PgConnection,
+    principal: &DevicePrincipal,
+) -> Result<Scope, Error> {
+    revalidate_source(tx, principal, rss_mdm_inventory::ReportSource::MdmWindows).await
+}
+pub(crate) async fn revalidate_source(
+    tx: &mut sqlx::PgConnection,
+    principal: &DevicePrincipal,
+    source: rss_mdm_inventory::ReportSource,
+) -> Result<Scope, Error> {
+    if principal.channel() != source.channel() {
+        return Err(Error::Forbidden);
+    }
+    let tenant = principal.tenant().to_string();
+    let registration = principal.registration().to_string();
+    crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
+        .await?;
+    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active'")
+        .bind(&tenant).bind(&registration).bind(principal.channel().as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    if live.try_get::<String, _>("device").map_err(db)? != principal.device()
+        || live.try_get::<i64, _>("generation").map_err(db)? != principal.generation()
+    {
+        return Err(Error::Unauthorized);
+    }
+    sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
+        .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND coverage=$4 FOR UPDATE")
+        .bind(&tenant).bind(&registration).bind(source.as_str()).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    crate::device::scope(
+        principal.tenant(),
+        principal.registration(),
+        source.as_str(),
+        Uuid::parse_str(&row.try_get::<String, _>("epoch").map_err(db)?)
+            .map_err(|_| Error::Unavailable(Failure::Database))?,
+    )
+    .map_err(Into::into)
 }

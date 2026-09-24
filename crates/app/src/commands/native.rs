@@ -1,6 +1,6 @@
 //! One durable native exchange for tasks and capability evidence. No transaction commits.
 use super::*;
-use crate::{access_store::db, authorization::Approval, device::DevicePrincipal};
+use crate::{authorization::Approval, database::db, device::DevicePrincipal};
 use rss_mdm_windows_mdm::{
     CodecLimits,
     configuration::{Firewall, Platform},
@@ -24,15 +24,7 @@ fn get(id: u32, uri: &str) -> Command {
         }],
     }
 }
-async fn allocate(
-    c: &mut PgConnection,
-    p: &DevicePrincipal,
-    count: i64,
-) -> std::result::Result<u32, Error> {
-    let n:i64=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_command=next_command+$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND enabled AND next_command<=$4 RETURNING next_command-$3")
- .bind(p.tenant().to_string()).bind(p.registration().to_string()).bind(count).bind(i64::from(u32::MAX)-count).fetch_one(c).await.map_err(db)?;
-    n.try_into().map_err(|_| protocol())
-}
+
 fn refs(c: &Command) -> Option<(u32, u32)> {
     match c {
         Command::Status(x) if x.command_ref != 0 => Some((x.message_ref, x.command_ref)),
@@ -254,7 +246,7 @@ pub(crate) async fn send_on(
     let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session=$3)").bind(&tenant).bind(&reg).bind(session).fetch_one(&mut *c).await.map_err(db)?;
     let mut pending = false;
     if !exists {
-        let id = allocate(c, p, 2).await?;
+        let id = crate::collection::store::allocate_commands_in(c, p, 2).await?;
         let mut request = response.clone();
         request.commands = vec![get(id, VERSION), get(id + 1, EDITION)];
         let wire = s::encode(&request, &CodecLimits::default()).map_err(|_| protocol())?;
@@ -282,7 +274,7 @@ pub(crate) async fn send_on(
         let Some((ordinal, phase)) = next else {
             continue;
         };
-        let native = allocate(c, p, 1).await?;
+        let native = crate::collection::store::allocate_commands_in(c, p, 1).await?;
         let Some(command) = command_for(c, p, &op.task, native, phase, session).await? else {
             continue;
         };

@@ -20,7 +20,7 @@ pub(crate) struct Client {
     browser: Browser,
     router: Router,
     server: tokio::task::JoinHandle<()>,
-    app: Arc<crate::api::App>,
+    app: Arc<crate::api::Assembly>,
     operation: Uuid,
     rule: Uuid,
     rule_revision: u64,
@@ -32,7 +32,10 @@ impl Drop for Client {
     }
 }
 impl Client {
-    pub(crate) async fn start(router: Router, app: Arc<crate::api::App>) -> anyhow::Result<Self> {
+    pub(crate) async fn start(
+        router: Router,
+        app: Arc<crate::api::Assembly>,
+    ) -> anyhow::Result<Self> {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -824,7 +827,7 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND session_id='900'").bind(TENANT).execute(&mut pg).await?;
-        ensure!(self.app.access.prune_management(TENANT).await? >= 1);
+        ensure!(crate::windows::retention::prune_management(&self.app.access, TENANT).await? >= 1);
         let read = self
             .call(Method::GET, &format!("/{}", self.operation), None)
             .await?;

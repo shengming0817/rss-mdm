@@ -1,7 +1,9 @@
 //! Bounded run summaries and separately authorized full execution evidence.
 use super::storage as db;
 use crate::commands::{Commands, storage};
-use crate::{Error, audit::Audit, authorization::Permission, identity::Principal};
+use crate::{
+    Error, audit::Audit, authorization::Permission, authorization::context::AuthorizedPrincipal,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -15,7 +17,7 @@ pub(super) struct Page {
 impl Commands {
     pub(super) async fn action_runs(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         id: Uuid,
         page: &Page,
         audit: &Audit,
@@ -44,7 +46,7 @@ impl Commands {
     }
     pub(super) async fn action_run(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         plan: Uuid,
         id: Uuid,
         audit: &Audit,

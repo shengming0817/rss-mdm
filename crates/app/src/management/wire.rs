@@ -55,7 +55,6 @@ view!(TaskRead {task:Uuid,kind:String,target:String,status:String,processed:u64,
 pub(super) enum Response {
     JobAccepted(JobAccepted),
     TaskRead(Box<TaskRead>),
-    Asset(assets::AssetEnvelope),
     GroupRead(GroupRead),
     GroupPage(pages::GroupPage),
     ScopePage(pages::ScopePage),

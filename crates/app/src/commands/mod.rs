@@ -4,7 +4,7 @@ pub(crate) mod actions;
 mod apple;
 mod apple_push;
 mod config;
-mod http;
+pub(crate) mod http;
 mod model;
 pub(crate) mod native;
 mod plans;
@@ -170,3 +170,9 @@ impl Commands {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+impl From<crate::authorization::error::AuthorizationError> for Fault {
+    fn from(error: crate::authorization::error::AuthorizationError) -> Self {
+        Error::from(error).into()
+    }
+}

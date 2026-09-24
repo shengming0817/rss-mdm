@@ -70,18 +70,19 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
         .runtime
         .local_tx_with_context(t, deadline(), &service, move |s, tx| {
             Box::pin(async move {
-                s.asset_page_in(
-                    tx,
-                    created,
-                    None,
-                    1,
-                    &assets::ReadScope {
-                        subject: "history".into(),
-                        devices: Some([scope_device.clone()].into()),
-                    },
-                )
-                .await
-                .map_err(|_| sqlx::Error::Protocol("frozen page rejected".into()).into())
+                s.assets
+                    .asset_page_in(
+                        tx,
+                        created,
+                        None,
+                        1,
+                        &assets::ReadScope {
+                            subject: "history".into(),
+                            devices: Some([scope_device.clone()].into()),
+                        },
+                    )
+                    .await
+                    .map_err(|_| sqlx::Error::Protocol("frozen page rejected".into()).into())
             })
         })
         .await
@@ -149,9 +150,9 @@ fn sql(statement: &str) -> String {
     );
     String::from_utf8(result.stdout).unwrap().trim().into()
 }
-async fn management(t: TenantId) -> Management {
+async fn runtime(t: TenantId) -> Arc<PgRuntime> {
     let c = fixture();
-    let runtime = Arc::new(
+    Arc::new(
         PgRuntime::connect_producer(
             PgConfig::new(
                 "localhost",
@@ -170,8 +171,10 @@ async fn management(t: TenantId) -> Management {
         )
         .await
         .unwrap(),
-    );
-    Management::new(runtime, t, Arc::new(crate::clock::SystemClock))
+    )
+}
+async fn management(t: TenantId) -> Management {
+    Management::new(runtime(t).await, t, Arc::new(crate::clock::SystemClock))
         .await
         .unwrap()
 }
@@ -179,6 +182,13 @@ async fn execute(m: &Management, c: &Command) -> std::result::Result<Value, Erro
     let audit = Audit::new(m.tenant.to_string(), "management_write");
     audit.identify_fixture("operator", "mdm");
     let result = m.execute(c, &audit, &|| Ok(())).await;
+    audit.finalize(None);
+    result
+}
+async fn execute_asset(m: &Management, c: &assets::Command) -> std::result::Result<Value, Error> {
+    let audit = Audit::new(m.tenant.to_string(), "management_write");
+    audit.identify_fixture("operator", "mdm");
+    let result = m.assets.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result
 }
@@ -297,20 +307,18 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         instance: Uuid::new_v4().to_string(),
         principal: Uuid::new_v4().to_string(),
     };
-    execute(
+    execute_asset(
         &service,
-        &Command::Asset {
-            command: assets::Command::Manual {
-                device: device.clone(),
-                field: assets::FieldKey::IsLoaner,
-                owner: owner.clone(),
-                change: operation(
-                    0,
-                    assets::ManualChange::Set {
-                        value: assets::Scalar::Boolean(true),
-                    },
-                ),
-            },
+        &assets::Command::Manual {
+            device: device.clone(),
+            field: assets::FieldKey::IsLoaner,
+            owner: owner.clone(),
+            change: operation(
+                0,
+                assets::ManualChange::Set {
+                    value: assets::Scalar::Boolean(true),
+                },
+            ),
         },
     )
     .await
@@ -396,28 +404,26 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         subject: "query-owner".into(),
         devices: Some([device.clone()].into()),
     };
-    let query = execute(
+    let query = execute_asset(
         &service,
-        &Command::Asset {
-            command: assets::Command::Search {
-                request: operation(
-                    0,
-                    assets::Query {
-                        criteria: Some(assets::Criteria::Predicate {
-                            field: assets::FieldKey::IsLoaner,
-                            op: assets::Operator::Eq,
-                            value: Some(assets::Scalar::Boolean(true)),
-                            values: None,
-                        }),
-                        select: vec![assets::FieldKey::IsLoaner],
-                        sort: Some(assets::Sort {
-                            field: assets::FieldKey::IsLoaner,
-                            descending: true,
-                        }),
-                    },
-                ),
-                scope: query_scope.clone(),
-            },
+        &assets::Command::Search {
+            request: operation(
+                0,
+                assets::Query {
+                    criteria: Some(assets::Criteria::Predicate {
+                        field: assets::FieldKey::IsLoaner,
+                        op: assets::Operator::Eq,
+                        value: Some(assets::Scalar::Boolean(true)),
+                        values: None,
+                    }),
+                    select: vec![assets::FieldKey::IsLoaner],
+                    sort: Some(assets::Sort {
+                        field: assets::FieldKey::IsLoaner,
+                        descending: true,
+                    }),
+                },
+            ),
+            scope: query_scope.clone(),
         },
     )
     .await
@@ -425,13 +431,11 @@ async fn durable_asset_group_scope_candidate_pipeline() {
     let query_task = Uuid::parse_str(query["asset"]["task"].as_str().unwrap()).unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let status = execute(
+            let status = execute_asset(
                 &service,
-                &Command::Asset {
-                    command: assets::Command::QueryStatus {
-                        task: query_task,
-                        scope: query_scope.clone(),
-                    },
+                &assets::Command::QueryStatus {
+                    task: query_task,
+                    scope: query_scope.clone(),
                 },
             )
             .await
@@ -445,15 +449,13 @@ async fn durable_asset_group_scope_candidate_pipeline() {
     })
     .await
     .unwrap();
-    let query_items = execute(
+    let query_items = execute_asset(
         &service,
-        &Command::Asset {
-            command: assets::Command::QueryItems {
-                task: query_task,
-                scope: query_scope.clone(),
-                limit: 1,
-                cursor: None,
-            },
+        &assets::Command::QueryItems {
+            task: query_task,
+            scope: query_scope.clone(),
+            limit: 1,
+            cursor: None,
         },
     )
     .await
@@ -468,30 +470,26 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         1
     );
     assert!(matches!(
-        execute(
+        execute_asset(
             &service,
-            &Command::Asset {
-                command: assets::Command::QueryItems {
-                    task: query_task,
-                    scope: assets::ReadScope::all(),
-                    limit: 1,
-                    cursor: None
-                }
+            &assets::Command::QueryItems {
+                task: query_task,
+                scope: assets::ReadScope::all(),
+                limit: 1,
+                cursor: None
             }
         )
         .await,
         Err(Error::Forbidden)
     ));
-    let facets = execute(
+    let facets = execute_asset(
         &service,
-        &Command::Asset {
-            command: assets::Command::QueryFacets {
-                task: query_task,
-                scope: query_scope.clone(),
-                facet: assets::Facet::AssetStates,
-                limit: 1,
-                cursor: None,
-            },
+        &assets::Command::QueryFacets {
+            task: query_task,
+            scope: query_scope.clone(),
+            facet: assets::Facet::AssetStates,
+            limit: 1,
+            cursor: None,
         },
     )
     .await
@@ -609,15 +607,13 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         )),
         "0"
     );
-    execute(
+    execute_asset(
         &service,
-        &Command::Asset {
-            command: assets::Command::Manual {
-                device: device.clone(),
-                field: assets::FieldKey::IsLoaner,
-                owner,
-                change: operation(1, assets::ManualChange::Delete {}),
-            },
+        &assets::Command::Manual {
+            device: device.clone(),
+            field: assets::FieldKey::IsLoaner,
+            owner,
+            change: operation(1, assets::ManualChange::Delete {}),
         },
     )
     .await
@@ -649,15 +645,13 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         preview.to_string(),
         "automation must not save its candidate"
     );
-    let frozen_query = execute(
+    let frozen_query = execute_asset(
         &service,
-        &Command::Asset {
-            command: assets::Command::QueryItems {
-                task: query_task,
-                scope: query_scope,
-                limit: 1,
-                cursor: None,
-            },
+        &assets::Command::QueryItems {
+            task: query_task,
+            scope: query_scope,
+            limit: 1,
+            cursor: None,
         },
     )
     .await
@@ -1453,33 +1447,29 @@ async fn asset_commit_unknown_recovers_original_receipts() {
     };
     let id = Uuid::new_v4();
     let commands = [
-        Command::Asset {
-            command: AssetCommand::Manual {
-                device: device.clone(),
-                field: FieldKey::AssetTag,
-                change: operation(
-                    0,
-                    ManualChange::Set {
-                        value: Scalar::String("retained".into()),
-                    },
-                ),
-                owner: owner.clone(),
-            },
+        AssetCommand::Manual {
+            device: device.clone(),
+            field: FieldKey::AssetTag,
+            change: operation(
+                0,
+                ManualChange::Set {
+                    value: Scalar::String("retained".into()),
+                },
+            ),
+            owner: owner.clone(),
         },
-        Command::Asset {
-            command: AssetCommand::SavedWrite {
-                id,
-                owner,
-                change: operation(
-                    0,
-                    SavedChange::Put {
-                        definition: SavedDefinition {
-                            name: "mine".into(),
-                            query: Query::default(),
-                        },
+        AssetCommand::SavedWrite {
+            id,
+            owner,
+            change: operation(
+                0,
+                SavedChange::Put {
+                    definition: SavedDefinition {
+                        name: "mine".into(),
+                        query: Query::default(),
                     },
-                ),
-            },
+                },
+            ),
         },
     ];
     for command in commands {
@@ -1487,11 +1477,11 @@ async fn asset_commit_unknown_recovers_original_receipts() {
             rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
         );
         assert!(matches!(
-            execute(&m, &command).await,
+            execute_asset(&m, &command).await,
             Err(Error::CommitUnknown)
         ));
-        let recovered = execute(&m, &command).await.unwrap();
-        assert_eq!(execute(&m, &command).await.unwrap(), recovered);
+        let recovered = execute_asset(&m, &command).await.unwrap();
+        assert_eq!(execute_asset(&m, &command).await.unwrap(), recovered);
     }
     assert_eq!(
         sql(&format!(
@@ -1516,11 +1506,9 @@ async fn asset_storage_failures_are_not_malformed() {
     let m = management(tenant()).await;
     let device = format!("storage-stages-{}", Uuid::new_v4());
     seed_device(&device);
-    let command = Command::Asset {
-        command: assets::Command::Detail {
-            device,
-            scope: assets::ReadScope::all(),
-        },
+    let command = assets::Command::Detail {
+        device,
+        scope: assets::ReadScope::all(),
     };
     for (table, expected) in [
         ("mdm.inventory", "inventory_query"),
@@ -1530,7 +1518,7 @@ async fn asset_storage_failures_are_not_malformed() {
         sql(&format!(
             "REVOKE SELECT ON {table} FROM mdm_management_runtime"
         ));
-        let outcome = execute(&m, &command).await;
+        let outcome = execute_asset(&m, &command).await;
         sql(&format!(
             "GRANT SELECT ON {table} TO mdm_management_runtime"
         ));
@@ -1699,4 +1687,65 @@ async fn saving_new_scope_replaces_automatic_candidate_binding() {
     );
     running.stop().await;
     m.runtime.close().await;
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "real PG: independently constructed asset service, no Management or App"]
+async fn asset_capability_owns_execution_and_receipt_recovery() {
+    let tenant = tenant();
+    let runtime = runtime(tenant).await;
+    let key = storage::cursor_key(&runtime, tenant).await.unwrap();
+    let service = assets::AssetService::new(
+        runtime.clone(),
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+    );
+    let device = format!("independent-{}", Uuid::new_v4());
+    seed_device(&device);
+    let command = assets::Command::Manual {
+        device,
+        field: assets::FieldKey::AssetTag,
+        change: operation(
+            0,
+            assets::ManualChange::Set {
+                value: assets::Scalar::String("independent".into()),
+            },
+        ),
+        owner: assets::Owner {
+            instance: "mdm".into(),
+            principal: "operator".into(),
+        },
+    };
+    let audit = || {
+        let audit = Audit::new(tenant.to_string(), "management_write");
+        audit.identify_fixture("operator", "mdm");
+        audit
+    };
+    runtime.inject_next_transaction_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    let first = audit();
+    assert!(matches!(
+        service.execute(&command, &first, &|| Ok(())).await,
+        Err(Error::CommitUnknown)
+    ));
+    first.finalize(None);
+    let replay = audit();
+    let receipt = service
+        .execute(&command, &replay, &|| Ok(()))
+        .await
+        .unwrap();
+    replay.finalize(None);
+    assert_eq!(receipt["asset"]["revision"], 1);
+    let denied = audit();
+    assert!(matches!(
+        service
+            .execute(&command, &denied, &|| Err(Error::Forbidden))
+            .await,
+        Err(Error::Forbidden)
+    ));
+    denied.finalize(None);
+    runtime.close().await;
 }

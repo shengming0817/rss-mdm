@@ -44,7 +44,7 @@ impl Management {
                     )?;
                 }
                 Reference::Device(id) => {
-                    storage::device(tx, &id).await?;
+                    storage::require_device(tx, &id).await?;
                 }
             }
         }
@@ -136,8 +136,12 @@ impl Management {
         )?;
         let task = if matches!(op.input, ScopeChange::Put { .. }) {
             let task = Uuid::new_v4();
-            self.enqueue_job_in(tx, task, &automation::JobInput::Scope { scope: id })
-                .await?;
+            crate::management::automation::jobs::enqueue_job_in(
+                tx,
+                task,
+                &automation::JobInput::Scope { scope: id },
+            )
+            .await?;
             Some(task)
         } else {
             None

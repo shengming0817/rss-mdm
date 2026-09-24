@@ -144,8 +144,7 @@ pub(super) async fn audit(
     audit.software(fact);
     tx.with_connection(move |c| {
         Box::pin(async move {
-            let result =
-                crate::access_store::append_on_connection(c, &audit, status, result, None).await;
+            let result = crate::audit::append_on_connection(c, &audit, status, result, None).await;
             audit.finalize(None);
             result.map_err(|_| sqlx::Error::Protocol("software audit unavailable".into()))
         })

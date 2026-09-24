@@ -3,7 +3,7 @@ use super::*;
 use crate::{PlanFailureReason as Reason, PlanStage};
 use crate::{
     authorization::Permission,
-    identity::Principal,
+    authorization::context::AuthorizedPrincipal,
     management::{
         configuration::Evidence,
         model::{FrozenIntent, PlanExecutionAdmission},
@@ -31,7 +31,7 @@ impl Execute {
 impl Commands {
     pub(super) async fn execute_plan(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         policy: &str,
         plan: Uuid,
         input: &Execute,
@@ -55,7 +55,7 @@ impl Commands {
     async fn execute_plan_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         policy: &str,
         plan: Uuid,
         input: &Execute,
@@ -106,7 +106,7 @@ impl Commands {
     async fn lock_plan_request(
         &self,
         tx: &mut PgTransaction<'_>,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         input: &Execute,
     ) -> Result<()> {
         storage::admit(tx).await?;
@@ -142,7 +142,7 @@ impl Commands {
     async fn cancel_intents(
         &self,
         tx: &mut PgTransaction<'_>,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         preview: &PlanExecutionAdmission,
     ) -> Result<Vec<Value>> {
         let mut results = Vec::new();
@@ -183,7 +183,7 @@ impl Commands {
     async fn admit_target(
         &self,
         tx: &mut PgTransaction<'_>,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         preview: &PlanExecutionAdmission,
         device: &str,
         input: &Execute,
@@ -279,7 +279,7 @@ impl Commands {
 }
 async fn validate_execute_plan(
     tx: &mut PgTransaction<'_>,
-    proof: &Principal,
+    proof: &AuthorizedPrincipal,
     policy: &str,
     plan: Uuid,
     expected_revision: i64,
@@ -378,7 +378,7 @@ async fn evidence(
 
 async fn authorize_plan(
     tx: &mut PgTransaction<'_>,
-    proof: &Principal,
+    proof: &AuthorizedPrincipal,
     preview: &PlanExecutionAdmission,
 ) -> Result<()> {
     let targets: std::collections::BTreeSet<&str> = preview
@@ -399,7 +399,7 @@ async fn authorize_plan(
 }
 async fn authorize_replay(
     tx: &mut PgTransaction<'_>,
-    proof: &Principal,
+    proof: &AuthorizedPrincipal,
     response: &Value,
 ) -> Result<()> {
     let id = response["plan"]
@@ -444,7 +444,7 @@ async fn load_saved_plan(
 
 async fn replay_execution(
     tx: &mut PgTransaction<'_>,
-    proof: &Principal,
+    proof: &AuthorizedPrincipal,
     request: Uuid,
     fingerprint: &[u8],
     audit: &Audit,

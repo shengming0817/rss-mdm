@@ -1,13 +1,14 @@
 use super::{certificate::Csr, *};
-use crate::identity::Principal;
+use crate::authorization::context::AuthorizedPrincipal;
 use crate::{
-    access_store::{Operation, db},
     audit::Audit,
+    database::db,
     device::{BindRegistration, VerifiedChannelCredential, store::bind_in},
     enrollment::{
         Authorization,
-        store::{actor, request, uuid},
+        store::{request, uuid},
     },
+    operations::Operation,
 };
 use rss_mdm_inventory::ReportSource;
 use rss_mdm_windows_mdm::provisioning::EnrollmentType;
@@ -49,163 +50,195 @@ fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
         sealed: row.try_get("secrets").map_err(db)?,
     })
 }
-impl crate::AccessStore {
-    pub(super) async fn issuance_intent(
-        &self,
-        windows: &Windows,
-        auth: &Authorization,
-        proof: &Principal,
-        input: (&[u8], EnrollmentType),
-        now: i64,
-    ) -> Result<Intent, Error> {
-        let (csr, enrollment_type) = input;
-        let verified = Csr::verify(csr)?;
-        let mut tx = self.begin(proof.tenant_id()).await?;
-        let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
-        current(&row, auth, proof)?;
-        if let Some(old) = sqlx::query("SELECT enrollment_type,csr,tbs,issuer,configuration,registration::text,credential::text,epoch::text,secrets FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
-            .bind(proof.tenant_id()).bind(auth.id.to_string()).fetch_optional(&mut *tx).await.map_err(db)? {
-            let old = intent(old)?;
-            if old.enrollment_type != enrollment_type || old.csr != csr || old.issuer != windows.ca.der || old.configuration != windows.configuration {
-                return Err(Error::Conflict);
-            }
-            return Ok(old);
-        }
-        if auth.state != "pending" {
-            return Err(Error::Conflict);
-        }
-        let registration = Uuid::new_v4();
-        let intent = Intent {
-            enrollment_type,
-            csr: csr.to_vec(),
-            tbs: windows.ca.intent(&verified, registration, now)?,
-            issuer: windows.ca.der.clone(),
-            configuration: windows.configuration.clone(),
-            registration,
-            credential: Uuid::new_v4(),
-            epoch: Uuid::new_v4(),
-            sealed: windows.protection.seal(
-                proof.tenant_id(),
-                auth.id,
-                &protection::Secrets::generate()?,
-            )?,
-        };
-        sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,tbs,issuer,configuration,registration,credential,epoch,secrets,enrollment_type) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7::uuid,$8::uuid,$9::uuid,$10,$11)")
-            .bind(proof.tenant_id()).bind(auth.id.to_string()).bind(&intent.csr).bind(&intent.tbs).bind(&intent.issuer).bind(&intent.configuration).bind(intent.registration.to_string()).bind(intent.credential.to_string()).bind(intent.epoch.to_string()).bind(&intent.sealed).bind(enrollment_type.as_str())
-            .execute(&mut *tx).await.map_err(db)?;
-        // An intent is not a completed enrollment. No success receipt/audit is published here.
-        tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-        Ok(intent)
-    }
-    pub(super) async fn issued_certificate(
-        &self,
-        tenant: &str,
-        id: Uuid,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        let mut tx = self.begin(tenant).await?;
-        sqlx::query_scalar("SELECT certificate FROM mdm_access.enrollment_certificates WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
-            .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)
-    }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit authorization, immutable intent and commit audit inputs"
-    )]
-    pub(super) async fn complete_issuance(
-        &self,
-        windows: &Windows,
-        auth: &Authorization,
-        proof: &Principal,
-        intent: &Intent,
-        certificate: &[u8],
-        audit: &Audit,
-        now: i64,
-    ) -> Result<(), Error> {
-        // The persisted intention is the only authority for the bytes being bound.
-        let issued = x509_cert::Certificate::from_der(certificate).map_err(|_| Error::Conflict)?;
-        if issued
-            .tbs_certificate
-            .to_der()
-            .map_err(|_| Error::Conflict)?
-            != intent.tbs
+
+pub(super) async fn issuance_intent(
+    database: &crate::database::Database,
+    windows: &Windows,
+    auth: &Authorization,
+    proof: &AuthorizedPrincipal,
+    input: (&[u8], EnrollmentType),
+    now: i64,
+) -> Result<Intent, Error> {
+    let (csr, enrollment_type) = input;
+    let verified = Csr::verify(csr)?;
+    let mut tx = database.begin(proof.tenant_id()).await?;
+    let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
+    current(&row, auth, proof)?;
+    if let Some(old) =
+        crate::enrollment::protocol::intent(&mut tx, proof.tenant_id(), auth.id.to_string())
+            .await
+            .map_err(db)?
+    {
+        let old = intent(old)?;
+        if old.enrollment_type != enrollment_type
+            || old.csr != csr
+            || old.issuer != windows.ca.der
+            || old.configuration != windows.configuration
         {
             return Err(Error::Conflict);
         }
-        let checked = windows
-            .ca
-            .verify(&[CertificateDer::from(certificate)], now)?;
-        let credential = VerifiedChannelCredential::windows(
-            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
-            &checked,
-        );
-        let digest = crate::enrollment::digest(&(
-            "enrollment_issue",
+        return Ok(old);
+    }
+    if auth.state != "pending" {
+        return Err(Error::Conflict);
+    }
+    let registration = Uuid::new_v4();
+    let intent = Intent {
+        enrollment_type,
+        csr: csr.to_vec(),
+        tbs: windows.ca.intent(&verified, registration, now)?,
+        issuer: windows.ca.der.clone(),
+        configuration: windows.configuration.clone(),
+        registration,
+        credential: Uuid::new_v4(),
+        epoch: Uuid::new_v4(),
+        sealed: windows.protection.seal(
+            proof.tenant_id(),
             auth.id,
-            &intent.csr,
-            &intent.configuration,
-        ));
-        let operation = Operation {
-            actor: actor(proof),
-            key: auth.operation,
-            digest: &digest,
-        };
-        let mut tx = self.begin(proof.tenant_id()).await?;
-        let old = Self::replay(&mut tx, &operation).await?;
-        let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
-        current(&row, auth, proof)?;
-        if old.is_some() {
-            self.active_windows_enrollment(&mut tx, proof.tenant_id(), auth.id)
-                .await?;
-            let old: Vec<u8> = sqlx::query_scalar("SELECT certificate FROM mdm_access.enrollment_certificates WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
-                .bind(proof.tenant_id()).bind(auth.id.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
-            if old != certificate {
-                return Err(Error::Conflict);
-            }
-            return Ok(());
-        }
-        if row.try_get::<String, _>("state").map_err(db)? != "pending" {
-            return Err(Error::Conflict);
-        }
-        let receipt = bind_in(
+            &protection::Secrets::generate()?,
+        )?,
+    };
+    crate::enrollment::protocol::insert_intent(
+        &mut tx,
+        proof.tenant_id(),
+        crate::enrollment::protocol::NewIntent {
+            request: auth.id.to_string(),
+            csr: &intent.csr,
+            tbs: &intent.tbs,
+            issuer: &intent.issuer,
+            configuration: &intent.configuration,
+            registration: intent.registration.to_string(),
+            credential: intent.credential.to_string(),
+            epoch: intent.epoch.to_string(),
+            secrets: &intent.sealed,
+            enrollment_type: enrollment_type.as_str(),
+        },
+    )
+    .await
+    .map_err(db)?;
+    // An intent is not a completed enrollment. No success receipt/audit is published here.
+    tx.commit().await.map_err(|_| Error::CommitUnknown)?;
+    Ok(intent)
+}
+pub(super) async fn issued_certificate(
+    database: &crate::database::Database,
+    tenant: &str,
+    id: Uuid,
+) -> Result<Option<Vec<u8>>, Error> {
+    let mut tx = database.begin(tenant).await?;
+    crate::enrollment::protocol::certificate(&mut tx, tenant, id.to_string())
+        .await
+        .map_err(db)
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit authorization, immutable intent and commit audit inputs"
+)]
+pub(super) async fn complete_issuance(
+    database: &crate::database::Database,
+    windows: &Windows,
+    auth: &Authorization,
+    proof: &AuthorizedPrincipal,
+    intent: &Intent,
+    certificate: &[u8],
+    audit: &Audit,
+    now: i64,
+) -> Result<(), Error> {
+    // The persisted intention is the only authority for the bytes being bound.
+    let issued = x509_cert::Certificate::from_der(certificate).map_err(|_| Error::Conflict)?;
+    if issued
+        .tbs_certificate
+        .to_der()
+        .map_err(|_| Error::Conflict)?
+        != intent.tbs
+    {
+        return Err(Error::Conflict);
+    }
+    let checked = windows
+        .ca
+        .verify(&[CertificateDer::from(certificate)], now)?;
+    let credential = VerifiedChannelCredential::windows(
+        TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
+        &checked,
+    );
+    let digest = crate::enrollment::digest(&(
+        "enrollment_issue",
+        auth.id,
+        &intent.csr,
+        &intent.configuration,
+    ));
+    let operation = Operation {
+        actor: crate::operations::Actor::from_authorized(proof),
+        key: auth.operation,
+        digest: &digest,
+    };
+    let mut tx = database.begin(proof.tenant_id()).await?;
+    let old = crate::operations::replay(&mut tx, &operation).await?;
+    let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
+    current(&row, auth, proof)?;
+    if old.is_some() {
+        crate::enrollment::store::active_windows_enrollment(&mut tx, proof.tenant_id(), auth.id)
+            .await?;
+        let old: Vec<u8> = crate::enrollment::protocol::required_certificate(
             &mut tx,
-            proof,
-            &credential,
-            &BindRegistration {
-                operation_id: auth.operation,
-                request_id: auth.id,
-                expected_generation: auth.expected_generation,
-                source: ReportSource::MdmWindows,
-            },
-            auth.device.clone(),
-            [intent.registration, intent.credential, intent.epoch],
-        )
-        .await?;
-        let secrets = windows
-            .protection
-            .open(proof.tenant_id(), auth.id, &intent.sealed)?;
-        sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2::uuid,$3,$4)")
-            .bind(proof.tenant_id()).bind(auth.id.to_string()).bind(certificate).bind(secrets.server_nonce.as_slice()).execute(&mut *tx).await.map_err(db)?;
-        // Evaluate again after channel/registration lock waits, immediately before committing.
-        let updated = sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND password_version=$3 AND expires_at>clock_timestamp()")
-            .bind(proof.tenant_id()).bind(auth.id.to_string()).bind(auth.version).execute(&mut *tx).await.map_err(db)?;
-        if updated.rows_affected() != 1 {
-            return Err(Error::Unauthorized);
-        }
-        audit.registration(receipt.registration);
-        proof.enrollment(&auth.device)?;
-        self.finish(
-            tx,
-            &operation,
-            &serde_json::to_string(&receipt).expect("closed receipt"),
-            audit,
-            Some(auth.id),
+            proof.tenant_id(),
+            auth.id.to_string(),
         )
         .await
+        .map_err(db)?;
+        if old != certificate {
+            return Err(Error::Conflict);
+        }
+        return Ok(());
     }
+    if row.try_get::<String, _>("state").map_err(db)? != "pending" {
+        return Err(Error::Conflict);
+    }
+    let receipt = bind_in(
+        &mut tx,
+        proof,
+        &credential,
+        &BindRegistration {
+            operation_id: auth.operation,
+            request_id: auth.id,
+            expected_generation: auth.expected_generation,
+            source: ReportSource::MdmWindows,
+        },
+        auth.device.clone(),
+        [intent.registration, intent.credential, intent.epoch],
+    )
+    .await?;
+    let secrets = windows
+        .protection
+        .open(proof.tenant_id(), auth.id, &intent.sealed)?;
+    crate::enrollment::protocol::insert_certificate(
+        &mut tx,
+        proof.tenant_id(),
+        auth.id.to_string(),
+        certificate,
+        secrets.server_nonce.as_slice(),
+    )
+    .await
+    .map_err(db)?;
+    // Evaluate again after channel/registration lock waits, immediately before committing.
+    crate::enrollment::store::mark_bound_in(&mut tx, proof.tenant_id(), auth, false).await?;
+    audit.registration(receipt.registration);
+    proof.enrollment(&auth.device)?;
+    crate::operations::finish(
+        database,
+        tx,
+        &operation,
+        &serde_json::to_string(&receipt).expect("closed receipt"),
+        audit,
+        Some(auth.id),
+    )
+    .await
 }
+
 fn current(
     row: &sqlx::postgres::PgRow,
     auth: &Authorization,
-    proof: &Principal,
+    proof: &AuthorizedPrincipal,
 ) -> Result<(), Error> {
     proof.enrollment(&auth.device)?;
     if auth.source != rss_mdm_inventory::ReportSource::MdmWindows

@@ -109,18 +109,6 @@ pub struct PreviewInput {
 pub struct SavePlan {
     pub preview: Uuid,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub struct Registration {
-    pub id: String,
-    pub channel: String,
-    pub generation: u64,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub struct DeviceIdentity {
-    pub revision: u64,
-    pub registrations: Vec<Registration>,
-}
-
 /// Closed missing-object categories for product management endpoints.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]

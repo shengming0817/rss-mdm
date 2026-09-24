@@ -5,7 +5,7 @@ use super::{
     admission::{Admission, ConnectionPermit, RequestGate},
 };
 use crate::{
-    AccessStore, ConfigIssue, Error,
+    ConfigIssue, Database, Error,
     audit::{Audit, FailureReason},
 };
 use axum::{
@@ -74,7 +74,7 @@ pub(crate) fn configuration(
 pub(crate) fn registration(
     listener: TcpListener,
     app: TlsRouter,
-    access: Arc<AccessStore>,
+    access: Arc<Database>,
     tenant: String,
     kind: super::NativeListenerKind,
 ) -> ManagedTaskRegistration {
@@ -108,7 +108,7 @@ async fn evidence(
 struct TlsTransport {
     acceptor: TlsAcceptor,
     admission: Arc<Admission>,
-    access: Arc<AccessStore>,
+    access: Arc<Database>,
     tenant: String,
     kind: super::NativeListenerKind,
 }
@@ -147,7 +147,7 @@ impl ConnectionTransport for TlsTransport {
                 let failed = !matches!(
                     tokio::time::timeout(
                         Duration::from_secs(2),
-                        self.access.record(&audit, 401, "denied")
+                        crate::audit::record(&self.access, &audit, 401, "denied")
                     )
                     .await,
                     Ok(Ok(()))

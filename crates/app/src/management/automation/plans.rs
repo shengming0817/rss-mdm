@@ -21,9 +21,13 @@ impl Management {
         }
         self.scope_definition(tx, scope).await?;
         let resolution = Uuid::new_v4();
-        self.enqueue_job_in(tx, resolution, &JobInput::Scope { scope })
-            .await?;
-        self.enqueue_job_in(
+        crate::management::automation::jobs::enqueue_job_in(
+            tx,
+            resolution,
+            &JobInput::Scope { scope },
+        )
+        .await?;
+        crate::management::automation::jobs::enqueue_job_in(
             tx,
             task,
             &JobInput::Policy {
@@ -112,9 +116,12 @@ impl Management {
             return Err(Error::Malformed.into());
         };
         if !self.scope_dependency_succeeded_in(tx, *resolution).await? {
-            return self
-                .finish_job_in(tx, task, Some("source_unavailable"))
-                .await;
+            return crate::management::automation::jobs::finish_job_in(
+                tx,
+                task,
+                Some("source_unavailable"),
+            )
+            .await;
         }
         self.revalidate_assignment_in(tx, policy, *scope, *assignment_revision)
             .await?;
@@ -175,10 +182,11 @@ impl Management {
                     sqlx::query("UPDATE mdm_management.candidate_heads SET candidate=$3::uuid WHERE tenant_id=$1::uuid AND policy=$2 AND desired=$3::uuid")
                         .bind(tenant).bind(policy).bind(task.to_string()).execute(c).await?;Ok(())
                 })).await?;
-                self.finish_job_in(tx, task, None).await
+                crate::management::automation::jobs::finish_job_in(tx, task, None).await
             }
             pg::CandidatePhase::Superseded => {
-                self.finish_job_in(tx, task, Some("superseded")).await
+                crate::management::automation::jobs::finish_job_in(tx, task, Some("superseded"))
+                    .await
             }
         }
     }

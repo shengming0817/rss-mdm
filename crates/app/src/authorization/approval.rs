@@ -1,6 +1,6 @@
 //! A task-scoped grant remembers authentic admission evidence, never browser secrets.
 use super::*;
-use crate::{Error, access_store::db, identity::Principal};
+use crate::{Error, authorization::context::AuthorizedPrincipal, database::db};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 
@@ -20,7 +20,7 @@ struct Basis {
 impl Approval {
     pub(crate) fn from_proof(
         snapshot: &Snapshot,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         device: &str,
         permission: Permission,
     ) -> Result<Self, Error> {
@@ -91,11 +91,11 @@ impl Approval {
 impl Snapshot {
     fn approval_bases(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         device: &str,
         permission: Permission,
     ) -> Result<Vec<Basis>, Error> {
-        self.effective(proof).map(|grants| {
+        self.effective(proof).map_err(Error::from).map(|grants| {
             grants
                 .into_iter()
                 .filter(|g| g.grant.covers(permission, Some(device)))

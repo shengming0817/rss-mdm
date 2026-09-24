@@ -19,7 +19,7 @@ async fn principal(tx: &mut PgTransaction<'_>, principal: &DevicePrincipal) -> R
     let checked = principal.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(crate::collection::revalidate_source(
+            Ok(crate::device::store::revalidate_source(
                 c,
                 &checked,
                 rss_mdm_inventory::ReportSource::AgentBuiltin,

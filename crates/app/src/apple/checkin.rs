@@ -2,16 +2,16 @@ use super::{
     enrollment,
     protocol::{self, CheckIn},
 };
+use crate::apple::HttpState;
 use crate::{
-    Error, access_store::db, api::App, audit::Audit, device::VerifiedChannelCredential,
-    native::tls::Peer,
+    Error, audit::Audit, database::db, device::VerifiedChannelCredential, native::tls::Peer,
 };
 use axum::{Extension, body::Bytes, extract::State, http::StatusCode};
 use sqlx::Row;
 use std::sync::Arc;
 
 pub(super) async fn checkin(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<Peer>,
     Extension(audit): Extension<Audit>,
     bytes: Bytes,
@@ -61,19 +61,22 @@ pub(super) async fn checkin(
                 .bind(&tenant).bind(&registration).bind(token).bind(magic).execute(&mut *tx).await.map_err(db)?;
         }
         CheckIn::CheckOut { .. } => {
-            crate::device::store::retire(&mut tx, &tenant, principal.registration(), "revoked")
-                .await?
+            crate::registration_lifecycle::retire(
+                &mut tx,
+                &tenant,
+                principal.registration(),
+                "revoked",
+            )
+            .await?
         }
         CheckIn::UserAuthenticate => unreachable!("handled before device mutations"),
     }
-    app.access
-        .commit_audited_status(tx, &audit, None, 200)
-        .await?;
+    crate::operations::commit_audited_status(&app.access, tx, &audit, None, 200).await?;
     Ok(StatusCode::OK)
 }
 
 pub(super) async fn manage(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<Peer>,
     Extension(audit): Extension<Audit>,
     bytes: Bytes,
@@ -117,7 +120,7 @@ pub(super) async fn manage(
         .into_response())
 }
 
-async fn bound(app: &App, leaf: &super::certificate::CheckedLeaf) -> Result<(), Error> {
+async fn bound(app: &HttpState, leaf: &super::certificate::CheckedLeaf) -> Result<(), Error> {
     let tenant = app.identity.tenant.to_string();
     let mut tx = app.access.begin(&tenant).await?;
     let row = enrollment::attempt(&mut tx, &tenant, app.apple()?, leaf).await?;
@@ -129,7 +132,7 @@ async fn bound(app: &App, leaf: &super::certificate::CheckedLeaf) -> Result<(), 
 }
 
 async fn authenticate(
-    app: &App,
+    app: &HttpState,
     leaf: &super::certificate::CheckedLeaf,
     udid: &str,
     audit: &Audit,

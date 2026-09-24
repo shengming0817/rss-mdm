@@ -107,17 +107,14 @@ fn units() -> [(&'static str, &'static str); 46] {
             "access-audit-request-index-v1",
             include_str!("../migrations/0002_audit_request_index.sql"),
         ),
-        (
-            "device-identity-v1",
-            include_str!("../migrations/0003_device_identity.sql"),
-        ),
+        ("device-identity-v1", crate::device::IDENTITY_MIGRATION_SQL),
         (
             "windows-enrollment-v1",
             include_str!("../migrations/0004_windows_enrollment.sql"),
         ),
         (
             "windows-collection-v1",
-            include_str!("../migrations/0005_collection.sql"),
+            crate::collection::COLLECTION_MIGRATION_SQL,
         ),
         (
             "transactional-messaging-v1",
@@ -168,7 +165,7 @@ fn units() -> [(&'static str, &'static str); 46] {
         ),
         (
             "authorization-v1",
-            include_str!("../migrations/0010_authorization.sql"),
+            crate::authorization::AUTHORIZATION_MIGRATION_SQL,
         ),
         (
             "device-command-v1",
@@ -185,12 +182,9 @@ fn units() -> [(&'static str, &'static str); 46] {
         ),
         (
             "assets-management-v1",
-            include_str!("../migrations/0011_assets.sql"),
+            crate::management::assets::ASSETS_MIGRATION_SQL,
         ),
-        (
-            "agent-access-v1",
-            include_str!("../migrations/0012_agent_access.sql"),
-        ),
+        ("agent-access-v1", crate::device::AGENT_ACCESS_MIGRATION_SQL),
         (
             "policy-candidates-v2",
             rss_mdm_policy_postgres::CANDIDATES_MIGRATION_SQL,
@@ -205,7 +199,7 @@ fn units() -> [(&'static str, &'static str); 46] {
         ),
         (
             "asset-authority-history-v1",
-            include_str!("../migrations/0012_asset_history.sql"),
+            crate::device::AUTHORITY_HISTORY_MIGRATION_SQL,
         ),
         (
             "automation-v1",
@@ -213,7 +207,7 @@ fn units() -> [(&'static str, &'static str); 46] {
         ),
         (
             "collection-history-v1",
-            include_str!("../migrations/0014_collection_history.sql"),
+            crate::collection::HISTORY_MIGRATION_SQL,
         ),
         (
             "group-reverse-index-v1",

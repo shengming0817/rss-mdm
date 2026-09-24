@@ -1,13 +1,14 @@
 //! One product asset composition; Inventory resolves facts, Group evaluates conditions.
+pub(crate) mod collection;
 use super::{
-    Audit, Error, Failure, Management, Operation, PgTransaction, Result, TenantId, Timepoint, Uuid,
-    Value, input, json, stored,
+    Audit, Error, Failure, Operation, PgTransaction, Result, TenantId, Timepoint, Uuid, Value,
+    input, json, stored,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 pub(in crate::management) mod criteria;
-mod http;
+pub(crate) mod http;
 mod model;
 mod quality;
 mod query;
@@ -24,8 +25,8 @@ fn digest(value: &(impl serde::Serialize + ?Sized)) -> Result<String> {
         Sha256::digest(input(serde_json::to_vec(value))?)
     ))
 }
-impl Management {
-    pub(super) async fn asset_dispatch(
+impl AssetService {
+    async fn dispatch(
         &self,
         tx: &mut PgTransaction<'_>,
         command: &Command,
@@ -129,6 +130,31 @@ pub(super) struct AssetEnvelope {
 mod tests {
     use super::*;
     #[test]
+    fn persisted_asset_fingerprint_keeps_its_original_encoding() {
+        let audit = Audit::new(
+            "11111111-1111-4111-8111-111111111111".into(),
+            "management_write",
+        );
+        audit.identify_fixture("operator", "mdm");
+        let id = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        let command = Command::Search {
+            request: Operation {
+                operation_id: id,
+                expected_revision: 0,
+                input: Query::default(),
+            },
+            scope: ReadScope {
+                subject: "operator".into(),
+                devices: None,
+            },
+        };
+        let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"criteria":null,"select":[],"sort":null}},"scope":{"subject":"operator","devices":null}}}]"#;
+        let (operation, digest) = operation_identity(&command, &audit).unwrap();
+        assert_eq!(operation, Some(id));
+        assert_eq!(digest, Sha256::digest(original).to_vec());
+        audit.finalize(None);
+    }
+    #[test]
     fn closed_manual_and_query_wire_rejects_legacy_deadlines() {
         for input in [
             serde_json::json!({"action":"delete","ttl":1}),
@@ -168,3 +194,112 @@ mod tests {
         assert!(rule(tenant, Uuid::new_v4(), &invalid).is_err());
     }
 }
+
+/// Asset algorithms and resources, independently constructible from management workflows.
+pub(crate) struct AssetService {
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: TenantId,
+    clock: Arc<dyn crate::clock::Clock>,
+    asset_cursor_key: ring::hmac::Key,
+}
+impl AssetService {
+    pub(crate) fn new(
+        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        tenant: TenantId,
+        clock: Arc<dyn crate::clock::Clock>,
+        cursor_key: &[u8],
+    ) -> Self {
+        Self {
+            runtime,
+            tenant,
+            clock,
+            asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
+        }
+    }
+    pub(crate) async fn execute(
+        &self,
+        command: &Command,
+        audit: &Audit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+    ) -> std::result::Result<Value, Error> {
+        authorize()?;
+        super::transaction::run(
+            &self.runtime,
+            self.tenant,
+            audit,
+            &(self, command, audit, authorize),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (service, command, audit, authorize) = *ctx;
+                    service.execute_in(tx, command, audit, authorize).await
+                })
+            },
+        )
+        .await
+    }
+    async fn execute_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        command: &Command,
+        audit: &Audit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+    ) -> Result<Value> {
+        super::storage::lock(tx).await?;
+        authorize()?;
+        let (operation, fingerprint) = operation_identity(command, audit)?;
+        if let Some(id) = operation
+            && let Some(old) = super::storage::replay(tx, id, &fingerprint).await?
+        {
+            stored(serde_json::from_value::<AssetEnvelope>(old.clone()))?;
+            audit.management_result(crate::audit::ManagementResult::Replayed);
+            super::storage::audit(tx, audit).await?;
+            authorize()?;
+            return Ok(old);
+        }
+        let at = self
+            .clock
+            .unix_seconds()
+            .map_err(|_| Error::Unavailable(Failure::Clock))?;
+        let value = self
+            .dispatch(tx, command, input(Timepoint::try_from(at))?)
+            .await?;
+        stored(serde_json::from_value::<AssetEnvelope>(value.clone()))?;
+        if let Some(id) = operation {
+            super::storage::receipt(tx, id, &fingerprint, &value).await?;
+        }
+        super::storage::audit(tx, audit).await?;
+        authorize()?;
+        Ok(value)
+    }
+}
+// The persisted operation fingerprint is independent of the internal dispatcher type.
+fn operation_identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>, Vec<u8>)> {
+    #[derive(serde::Serialize)]
+    struct Fingerprint<'a> {
+        kind: &'static str,
+        command: &'a Command,
+    }
+    let operation = command.operation();
+    if operation.is_some_and(|id| id.is_nil()) {
+        return Err(Error::Malformed.into());
+    }
+    let actor = audit.snapshot();
+    let bytes = input(serde_json::to_vec(&(
+        audit.tenant(),
+        actor.actor,
+        actor.instance,
+        Fingerprint {
+            kind: "Asset",
+            command,
+        },
+    )))?;
+    Ok((operation, Sha256::digest(bytes).to_vec()))
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub(crate) enum AssetError {
+    #[error("operation requires the full authorized inventory scope")]
+    RestrictedScope,
+}
+
+pub(crate) const ASSETS_MIGRATION_SQL: &str = include_str!("../../../migrations/0011_assets.sql");

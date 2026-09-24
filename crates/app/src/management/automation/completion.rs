@@ -64,9 +64,12 @@ impl DurableStore for Automation {
                         Box::pin(async move {
                             let result = match id {
                                 Some(id) => {
-                                    service
-                                        .finish_job_in(tx, id, Some("automation_suspended"))
-                                        .await
+                                    crate::management::automation::jobs::finish_job_in(
+                                        tx,
+                                        id,
+                                        Some("automation_suspended"),
+                                    )
+                                    .await
                                 }
                                 None if completion == Completion::Converged => {
                                     service.clear_ingress_failure_in(tx).await
@@ -132,8 +135,7 @@ impl Management {
             tx.with_connection(move |c| {
                 Box::pin(async move {
                     let result =
-                        crate::access_store::append_on_connection(c, &audit, 200, "failed", None)
-                            .await;
+                        crate::audit::append_on_connection(c, &audit, 200, "failed", None).await;
                     audit.finalize(None);
                     result.map_err(|_| sqlx::Error::Protocol("automation audit unavailable".into()))
                 })

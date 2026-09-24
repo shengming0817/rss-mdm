@@ -4,7 +4,7 @@ use super::*;
 use tokio_util::sync::CancellationToken;
 mod dispatch;
 mod groups;
-mod jobs;
+pub(in crate::management) mod jobs;
 mod model;
 mod plans;
 mod runtime;

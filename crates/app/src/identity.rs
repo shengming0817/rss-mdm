@@ -1,7 +1,7 @@
 //! Product assembly of the four public Identity components. The database is the authority.
 use crate::{
     ConfigIssue, Error, Failure,
-    access::IdentityManagementPolicy,
+    authorization::identity_management::IdentityManagementPolicy,
     config::{self, Config},
 };
 use axum::{
@@ -46,7 +46,6 @@ pub(crate) struct Principal {
     instance: String,
     tenant: String,
     principal: String,
-    authorization: Option<crate::authorization::Snapshot>,
 }
 impl Principal {
     pub(super) fn new(session: AuthenticatedSession) -> Result<Self, Error> {
@@ -56,37 +55,12 @@ impl Principal {
             tenant: session.account().tenant.to_string(),
             principal: session.account().principal.as_uuid().to_string(),
             session,
-            authorization: None,
         })
     }
     pub(crate) fn session(&self) -> &AuthenticatedSession {
         &self.session
     }
-    pub(crate) fn user(&self) -> crate::authorization::User {
-        crate::authorization::User {
-            instance_id: self.instance.clone(),
-            tenant_id: self.tenant.clone(),
-            principal_id: self.principal.clone(),
-        }
-    }
-    pub(crate) async fn load_authorization(
-        mut self,
-        access: &crate::AccessStore,
-    ) -> Result<Self, Error> {
-        self.authorization = Some(access.authorization_snapshot(&self).await?);
-        Ok(self)
-    }
-    pub(crate) fn authorization(&self) -> Result<&crate::authorization::Snapshot, Error> {
-        self.check_live()?;
-        self.authorization.as_ref().ok_or(Error::Unauthorized)
-    }
-    pub(crate) fn require(
-        &self,
-        operation: crate::authorization::Permission,
-        device: Option<&str>,
-    ) -> Result<(), Error> {
-        self.authorization()?.require(self, operation, device)
-    }
+
     pub(crate) fn check_live(&self) -> Result<(), Error> {
         self.session.assurance().map(|_| ()).map_err(failure)
     }

@@ -1,5 +1,6 @@
+use super::error::AuthorizationError;
 use super::*;
-use crate::{Error, Failure, identity::Principal};
+use crate::authorization::context::AuthorizedPrincipal;
 use rss_identity_postgres::{
     DepartmentAccessError, GroupAccessError, VerifiedDepartmentSnapshot, VerifiedGroups,
 };
@@ -32,8 +33,8 @@ pub(super) struct Observation {
     source_revision: Option<String>,
 }
 impl Snapshot {
-    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), Error> {
-        let invalid = || Error::Unavailable(Failure::AccessStore);
+    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
+        let invalid = || AuthorizationError::Corrupt;
         if self.rules.len() > 10000 || self.groups.len() > 10000 {
             return Err(invalid());
         }
@@ -55,8 +56,13 @@ impl Snapshot {
         }
         Ok(())
     }
-    pub(crate) fn effective(&self, proof: &Principal) -> Result<Vec<EffectiveGrant>, Error> {
-        proof.check_live()?;
+    pub(crate) fn effective(
+        &self,
+        proof: &AuthorizedPrincipal,
+    ) -> Result<Vec<EffectiveGrant>, AuthorizationError> {
+        proof
+            .check_live()
+            .map_err(|_| AuthorizationError::Unauthorized)?;
         let mut grants = Vec::new();
         for record in &self.rules {
             let Some(rule) = &record.value else { continue };
@@ -71,34 +77,42 @@ impl Snapshot {
                 observation: observation.clone(),
             }));
         }
-        proof.check_live()?;
+        proof
+            .check_live()
+            .map_err(|_| AuthorizationError::Unauthorized)?;
         Ok(grants)
     }
     pub(crate) fn require(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         operation: Permission,
         device: Option<&str>,
-    ) -> Result<(), Error> {
-        proof.check_live()?;
+    ) -> Result<(), AuthorizationError> {
+        proof
+            .check_live()
+            .map_err(|_| AuthorizationError::Unauthorized)?;
         if let Some(device) = device {
-            rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
+            rss_observation::Id::new(device).map_err(|_| AuthorizationError::Malformed)?;
         }
         for record in &self.rules {
             let Some(rule) = &record.value else { continue };
             if rule.grants.iter().any(|g| g.covers(operation, device))
                 && self.matches(proof, &rule.subject)?.is_some()
             {
-                return proof.check_live();
+                return proof
+                    .check_live()
+                    .map_err(|_| AuthorizationError::Unauthorized);
             }
         }
-        Err(Error::Forbidden)
+        Err(AuthorizationError::Forbidden)
     }
     pub(crate) fn inventory_devices(
         &self,
-        proof: &Principal,
-    ) -> Result<Option<std::collections::BTreeSet<String>>, Error> {
-        proof.check_live()?;
+        proof: &AuthorizedPrincipal,
+    ) -> Result<Option<std::collections::BTreeSet<String>>, AuthorizationError> {
+        proof
+            .check_live()
+            .map_err(|_| AuthorizationError::Unauthorized)?;
         let mut devices = std::collections::BTreeSet::new();
         let mut all = false;
         for record in &self.rules {
@@ -115,20 +129,22 @@ impl Snapshot {
                     Scope::Device { id } => {
                         devices.insert(id.clone());
                     }
-                    Scope::Tenant => return Err(Error::Forbidden),
+                    Scope::Tenant => return Err(AuthorizationError::Forbidden),
                 }
             }
         }
-        proof.check_live()?;
+        proof
+            .check_live()
+            .map_err(|_| AuthorizationError::Unauthorized)?;
         if all {
             Ok(None)
         } else if devices.is_empty() {
-            Err(Error::Forbidden)
+            Err(AuthorizationError::Forbidden)
         } else {
             Ok(Some(devices))
         }
     }
-    pub(crate) fn publisher(&self, user: &User) -> Result<(), Error> {
+    pub(crate) fn publisher(&self, user: &User) -> Result<(), AuthorizationError> {
         if self.rules.iter().filter_map(|r| r.value.as_ref()).any(|r| {
             matches!(&r.subject, Subject::User { user: candidate } if candidate == user)
                 && r.grants
@@ -137,14 +153,14 @@ impl Snapshot {
         }) {
             Ok(())
         } else {
-            Err(Error::Forbidden)
+            Err(AuthorizationError::Forbidden)
         }
     }
     fn matches(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         subject: &Subject,
-    ) -> Result<Option<Option<Observation>>, Error> {
+    ) -> Result<Option<Option<Observation>>, AuthorizationError> {
         match subject {
             Subject::User { user } => Ok((user == &proof.user()).then_some(None)),
             Subject::UserGroup { id } => Ok(self
@@ -158,8 +174,10 @@ impl Snapshot {
                 })
                 .then_some(None)),
             Subject::IdpGroup { source, id } => {
-                let VerifiedGroups::Available(groups) =
-                    proof.session().groups().map_err(|_| Error::Unauthorized)?
+                let VerifiedGroups::Available(groups) = proof
+                    .session()
+                    .groups()
+                    .map_err(|_| AuthorizationError::Unauthorized)?
                 else {
                     return Ok(None);
                 };
@@ -173,7 +191,9 @@ impl Snapshot {
                 let values = match groups.values() {
                     Ok(values) => values,
                     Err(GroupAccessError::SnapshotExpired) => return Ok(None),
-                    Err(GroupAccessError::ProofExpired) => return Err(Error::Unauthorized),
+                    Err(GroupAccessError::ProofExpired) => {
+                        return Err(AuthorizationError::Unauthorized);
+                    }
                 };
                 Ok(values.contains(id).then(|| {
                     Some(Observation {
@@ -192,7 +212,7 @@ impl Snapshot {
                 let VerifiedDepartmentSnapshot::Available(department) = proof
                     .session()
                     .department_snapshot()
-                    .map_err(|_| Error::Unauthorized)?
+                    .map_err(|_| AuthorizationError::Unauthorized)?
                 else {
                     return Ok(None);
                 };
@@ -206,7 +226,9 @@ impl Snapshot {
                 let snapshot = match department.snapshot() {
                     Ok(value) => value,
                     Err(DepartmentAccessError::SnapshotExpired) => return Ok(None),
-                    Err(DepartmentAccessError::ProofExpired) => return Err(Error::Unauthorized),
+                    Err(DepartmentAccessError::ProofExpired) => {
+                        return Err(AuthorizationError::Unauthorized);
+                    }
                 };
                 Ok(department_matches(snapshot, id, *matching).then(|| {
                     Some(Observation {

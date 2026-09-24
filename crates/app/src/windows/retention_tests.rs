@@ -1,5 +1,5 @@
 //! Real PG failure/role/concurrency tests, called by the native Windows T2 scenario.
-use crate::{AccessStore, Error, device::tests::options};
+use crate::{Database, Error, device::tests::options};
 use anyhow::ensure;
 use sqlx::{Connection, Executor, PgConnection};
 use std::{sync::Arc, time::Duration};
@@ -56,7 +56,7 @@ async fn messages(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<i64> {
     reason = "sequential real-PG failure and lifecycle acceptance matrix"
 )]
 pub(super) async fn verify(
-    store: &Arc<AccessStore>,
+    store: &Arc<Database>,
     tenant: &str,
     registration: Uuid,
 ) -> anyhow::Result<()> {
@@ -87,8 +87,7 @@ pub(super) async fn verify(
     tx.rollback().await?;
     seed(&mut pg, tenant, registration, 1256).await?;
     ensure!(
-        store
-            .prune_management("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        crate::windows::retention::prune_management(store, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
             .await?
             == 0
     );
@@ -96,18 +95,25 @@ pub(super) async fn verify(
     ensure!(queries(&mut pg, tenant).await? == 257);
     // A failure after deleting child rows rolls back both tables.
     pg.execute("CREATE FUNCTION mdm_access.reject_session_gc() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_session_gc BEFORE DELETE ON mdm_access.management_sessions FOR EACH ROW EXECUTE FUNCTION mdm_access.reject_session_gc()").await?;
-    ensure!(store.prune_management(tenant).await.is_err());
+    ensure!(
+        crate::windows::retention::prune_management(store, tenant)
+            .await
+            .is_err()
+    );
     ensure!(messages(&mut pg, tenant).await? == 257);
     ensure!(queries(&mut pg, tenant).await? == 257);
     pg.execute("DROP TRIGGER reject_session_gc ON mdm_access.management_sessions; DROP FUNCTION mdm_access.reject_session_gc()").await?;
     let (a, b) = tokio::join!(
-        store.prune_management(tenant),
-        store.prune_management(tenant)
+        crate::windows::retention::prune_management(store, tenant),
+        crate::windows::retention::prune_management(store, tenant)
     );
     let (a, b) = (a?, b?);
     ensure!(a <= 128 && b <= 128 && a + b == 256);
-    ensure!(store.prune_management(tenant).await? == 1);
-    ensure!(store.prune_management(tenant).await? == 0 && messages(&mut pg, tenant).await? == 0);
+    ensure!(crate::windows::retention::prune_management(store, tenant).await? == 1);
+    ensure!(
+        crate::windows::retention::prune_management(store, tenant).await? == 0
+            && messages(&mut pg, tenant).await? == 0
+    );
     ensure!(
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid"
@@ -120,9 +126,9 @@ pub(super) async fn verify(
     // Policy weakening is rejected at startup, even though tenant isolation remains installed.
     pg.execute("ALTER POLICY expired_only ON mdm_access.management_sessions USING(true)")
         .await?;
-    ensure!(AccessStore::connect(options("mdm_access")?).await.is_err());
+    ensure!(Database::connect(options("mdm_access")?).await.is_err());
     pg.execute("ALTER POLICY expired_only ON mdm_access.management_sessions USING(expires_at<clock_timestamp())").await?;
-    let restarted = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
+    let restarted = Arc::new(Database::connect(options("mdm_access")?).await?);
     seed(&mut pg, tenant, registration, 1000).await?;
     // The production ManagedTask performs cleanup and drains within its lifecycle owner.
     let mut scope = rss_runtime::LifecycleScope::<(), Error, std::io::Error>::try_new(
