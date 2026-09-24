@@ -114,7 +114,7 @@ async fn actual_rss_connection_failures_are_visible_without_payloads() {
 }
 
 pub(crate) async fn verify_tls_lifecycle(
-    access: Arc<Database>,
+    access: Arc<crate::Database>,
     tls: Arc<rustls::ServerConfig>,
     root: &std::path::Path,
 ) -> anyhow::Result<()> {
@@ -180,7 +180,9 @@ pub(crate) async fn verify_tls_lifecycle(
                 tls: tls.clone(),
                 router,
             },
-            access.clone(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
             "11111111-1111-4111-8111-111111111111".into(),
             crate::native::NativeListenerKind::WindowsEnrollment,
         ));

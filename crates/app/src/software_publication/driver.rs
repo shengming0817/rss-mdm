@@ -79,7 +79,7 @@ impl PublicationService {
                 rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_)
             )
         ) {
-            return Ok(p.outcome);
+            return self.recover_result(&call.target, cutoff).await;
         }
         if !call.attempted {
             self.verify(&prepared, cutoff).await?;
@@ -129,8 +129,10 @@ impl PublicationService {
             rel::PublicationOutcome::Reported(
                 rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_)
             )
-        ) || !call.attempted
-        {
+        ) {
+            return self.recover_result(&call.target, cutoff).await;
+        }
+        if !call.attempted {
             return Ok(p.outcome);
         }
         let inspection = tokio::time::timeout_at(
@@ -167,6 +169,98 @@ impl PublicationService {
         )
         .await
     }
+    async fn recover_result(
+        &self,
+        t: &Target,
+        cutoff: Deadline,
+    ) -> Result<rel::PublicationOutcome> {
+        settle(
+            self.runtime
+                .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
+                    Box::pin(async move {
+                        s.audit_store
+                            .lock_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
+                            .await?;
+                        let id = db::required(
+                            "recover_result",
+                            rel::CandidateId::new(s.tenant(), &t.candidate),
+                        )?;
+                        let c = input!(
+                            s.releases
+                                .lock_candidate_in(tx, &id)
+                                .await?
+                                .map_err(|_| Error::Conflict)
+                        );
+                        let p = input!(db::core_publication(&c, t));
+                        let rel::PublicationOutcome::Reported(result) = &p.outcome else {
+                            return Err(db::fault());
+                        };
+                        s.recover_record_in(tx, &c, t, result).await?;
+                        Ok(Ok(p.outcome))
+                    })
+                })
+                .await,
+        )
+    }
+    async fn recover_record_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        c: &rel::Candidate,
+        t: &Target,
+        result: &rel::PublicationResult,
+    ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+        let mut request = db::required(
+            "recover_record",
+            db::record_request(
+                c,
+                t,
+                &self.actors.backend,
+                result.clone(),
+                result.evidence().at,
+            ),
+        )?;
+        let old = db::required(
+            "recover_record",
+            self.releases.operation_in(tx, &request.id).await?,
+        )?
+        .ok_or_else(db::fault)?;
+        request.expected_revision = old.transition.ok_or_else(db::fault)?.before_revision;
+        db::required(
+            "recover_record",
+            self.releases
+                .transition_in(tx, &c.snapshot().id, &request)
+                .await?,
+        )?;
+        let outcome = match result {
+            rel::PublicationResult::Applied(_) => "applied",
+            rel::PublicationResult::NotApplied(_) => "not-applied",
+            rel::PublicationResult::Unknown(_) => "unknown",
+        };
+        let standard = rel::Digest::of(&db::encode(&serde_json::json!([1, t, outcome]))?);
+        let closed = rel::Digest::of(&db::encode(&serde_json::json!(["closed-before-call", t]))?);
+        let stage = if result.evidence().digest == standard {
+            "record_result"
+        } else if outcome == "not-applied" && result.evidence().digest == closed {
+            "cancel_unstarted"
+        } else {
+            return Err(db::fault());
+        };
+        let fact = db::fact(
+            tx.tenant_id(),
+            &self.actors.backend,
+            &t.candidate,
+            "software_result",
+            db::record_fact(&request, t, stage, outcome),
+            &db::request_fingerprint(&t.candidate, &request)?,
+        )?;
+        self.audit_store
+            .append_in(tx, &fact, true)
+            .await
+            .map_err(rss_transactional_messaging_postgres::PgError::from)
+    }
     async fn load_call(&self, table: Table, key: &str, cutoff: Deadline) -> Result<Call> {
         let call = settle(
             self.runtime
@@ -198,6 +292,10 @@ impl PublicationService {
                     (self, t),
                     move |(s, t), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let key = if matches!(table, Table::Publish) {
@@ -206,9 +304,32 @@ impl PublicationService {
                                 t.withdrawal_key()
                             };
                             let call = db::call(tx, table, &key).await?.ok_or_else(db::fault)?;
-                            if call.attempted || call.complete {
+                            if call.attempted {
+                                let fact = db::fact(
+                                    tx.tenant_id(),
+                                    &s.actors.backend,
+                                    &t.candidate,
+                                    "software_call",
+                                    db::call_fact(
+                                        t,
+                                        table,
+                                        call.generation,
+                                        "start_call",
+                                        "attempted",
+                                    ),
+                                    &db::encode(&(t, call.generation))?,
+                                )?;
+                                s.audit_store
+                                    .append_in(tx, &fact, true)
+                                    .await
+                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 return Ok(Ok(false));
                             }
+                            if call.complete {
+                                return Ok(Ok(false));
+                            }
+                            let generation =
+                                call.generation.checked_add(1).ok_or_else(db::fault)?;
                             if !call.prepared {
                                 return Ok(Err(Error::Blocked));
                             }
@@ -244,14 +365,18 @@ impl PublicationService {
                                 return Ok(Err(Error::Blocked));
                             }
                             db::mark(tx, table, &key, false, false).await?;
-                            db::audit(
-                                tx,
+                            let fact = db::fact(
+                                tx.tenant_id(),
                                 &s.actors.backend,
                                 &t.candidate,
                                 "software_call",
-                                db::target_fact(t, table, "start_call", "attempted"),
-                            )
-                            .await?;
+                                db::call_fact(t, table, generation, "start_call", "attempted"),
+                                &db::encode(&(t, generation))?,
+                            )?;
+                            s.audit_store
+                                .append_in(tx, &fact, false)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(true))
                         })
                     },
@@ -268,20 +393,38 @@ impl PublicationService {
                     (self, t),
                     move |(s, t), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             let key = if matches!(table, Table::Publish) {
                                 t.key()
                             } else {
                                 t.withdrawal_key()
                             };
+                            let call = db::call(tx, table, &key).await?.ok_or_else(db::fault)?;
+                            if !call.attempted {
+                                return Err(db::fault());
+                            }
                             db::mark(tx, table, &key, true, false).await?;
-                            db::audit(
-                                tx,
+                            let fact = db::fact(
+                                tx.tenant_id(),
                                 &s.actors.backend,
                                 &t.candidate,
                                 "software_call",
-                                db::target_fact(t, table, "acknowledge", "acknowledged"),
-                            )
-                            .await?;
+                                db::call_fact(
+                                    t,
+                                    table,
+                                    call.generation,
+                                    "acknowledge",
+                                    "acknowledged",
+                                ),
+                                &db::encode(&(t, call.generation))?,
+                            )?;
+                            s.audit_store
+                                .append_in(tx, &fact, call.acknowledged)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(()))
                         })
                     },
@@ -518,6 +661,10 @@ impl PublicationService {
                     (self, t),
                     move |(s, t), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
@@ -530,19 +677,6 @@ impl PublicationService {
                                 |cause| Error::Conflict.context("driver::record_result", cause)
                             ));
                             let current = input!(db::core_publication(&c, t));
-                            if matches!(
-                                current.outcome,
-                                rel::PublicationOutcome::Reported(
-                                    rel::PublicationResult::Applied(_)
-                                        | rel::PublicationResult::NotApplied(_)
-                                )
-                            ) {
-                                return Ok(Ok(current.outcome));
-                            }
-                            let slot = db::slot(tx, &t.binding, &t.slot).await?;
-                            if slot.operation.as_deref() != Some(&t.key()) {
-                                return Ok(Err(Error::Blocked));
-                            }
                             let evidence = rel::Evidence {
                                 actor: s.actors.backend.clone(),
                                 digest: rel::Digest::of(&db::encode(&serde_json::json!([
@@ -553,31 +687,64 @@ impl PublicationService {
                                 at,
                             };
                             let result = observed.result(evidence);
-                            let request = input!(db::record_request(
+                            let mut request = input!(db::record_request(
                                 &c,
                                 t,
                                 &s.actors.backend,
                                 result.clone(),
                                 at
                             ));
+                            let old = db::required(
+                                "driver::record_result",
+                                s.releases.operation_in(tx, &request.id).await?,
+                            )?;
+                            let replayed = old.is_some();
+                            if let Some(old) = old {
+                                request.expected_revision =
+                                    old.transition.ok_or_else(db::fault)?.before_revision;
+                            } else {
+                                if matches!(
+                                    current.outcome,
+                                    rel::PublicationOutcome::Reported(
+                                        rel::PublicationResult::Applied(_)
+                                            | rel::PublicationResult::NotApplied(_)
+                                    )
+                                ) {
+                                    let rel::PublicationOutcome::Reported(result) =
+                                        &current.outcome
+                                    else {
+                                        unreachable!()
+                                    };
+                                    s.recover_record_in(tx, &c, t, result).await?;
+                                    return Ok(Ok(current.outcome));
+                                }
+                                let slot = db::slot(tx, &t.binding, &t.slot).await?;
+                                if slot.operation.as_deref() != Some(&t.key()) {
+                                    return Ok(Err(Error::Blocked));
+                                }
+                            }
                             db::required(
                                 "driver::record_result",
                                 s.releases.transition_in(tx, &id, &request).await?,
                             )?;
-                            if matches!(observed, Observation::Applied) {
+                            if !replayed && matches!(observed, Observation::Applied) {
                                 db::project(tx, t, false).await?;
                                 db::release_slot(tx, t, &t.key(), t.commit.clone()).await?;
-                            } else if matches!(observed, Observation::NotSubmitted) {
+                            } else if !replayed && matches!(observed, Observation::NotSubmitted) {
                                 db::release_slot(tx, t, &t.key(), None).await?;
                             }
-                            db::audit(
-                                tx,
+                            let fact = db::fact(
+                                tx.tenant_id(),
                                 &s.actors.backend,
                                 &t.candidate,
                                 "software_result",
-                                db::target_fact(t, Table::Publish, "record_result", observed.tag()),
-                            )
-                            .await?;
+                                db::record_fact(&request, t, "record_result", observed.tag()),
+                                &db::request_fingerprint(&t.candidate, &request)?,
+                            )?;
+                            s.audit_store
+                                .append_in(tx, &fact, replayed)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(rel::PublicationOutcome::Reported(result)))
                         })
                     },
@@ -602,21 +769,36 @@ impl PublicationService {
                     (self, id, &r),
                     |(s, id, r), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
                                 .await?;
                             let result =
                                 input!(s.releases.transition_in(tx, id, r).await?.map_err(
                                     |cause| Error::Conflict.context("driver::withdraw", cause)
                                 ));
-                            if matches!(result, rel::Transition::Applied { .. }) {
-                                db::audit(
-                                    tx,
+                            {
+                                let fact = db::fact(
+                                    tx.tenant_id(),
                                     &r.actor,
                                     id.value(),
                                     "software_withdraw",
                                     db::request_fact(r.id.value(), Some(ring), "withdraw-request"),
-                                )
-                                .await?;
+                                    &db::encode(&(
+                                        db::request_fingerprint(id.value(), r)?,
+                                        ring as u8,
+                                    ))?,
+                                )?;
+                                s.audit_store
+                                    .append_in(
+                                        tx,
+                                        &fact,
+                                        matches!(result, rel::Transition::Replayed(_)),
+                                    )
+                                    .await
+                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             }
                             Ok(Ok(matches!(result, rel::Transition::Replayed(_))))
                         })
@@ -686,6 +868,10 @@ impl PublicationService {
                     (self, &key),
                     |(s, key), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             let Some(call) = db::call(tx, Table::Withdraw, key).await? else {
                                 return Ok(Ok(None));
                             };
@@ -730,20 +916,30 @@ impl PublicationService {
             self.runtime
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
+                        s.audit_store
+                            .lock_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         db::lock(tx, "withdrawal", &t.withdrawal_key()).await?;
-                        if db::call(tx, Table::Withdraw, &t.withdrawal_key())
+                        let replayed = db::call(tx, Table::Withdraw, &t.withdrawal_key())
                             .await?
-                            .is_none()
-                        {
+                            .is_some();
+                        if !replayed {
                             db::insert_call(tx, Table::Withdraw, t).await?;
-                            db::audit(
-                                tx,
+                        }
+                        {
+                            let fact = db::fact(
+                                tx.tenant_id(),
                                 &s.actors.backend,
                                 &t.candidate,
                                 "software_withdraw",
                                 db::target_fact(t, Table::Withdraw, "queue_withdrawal", "queued"),
-                            )
-                            .await?;
+                                &db::encode(t)?,
+                            )?;
+                            s.audit_store
+                                .append_in(tx, &fact, replayed)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         }
                         Ok(Ok(()))
                     })
@@ -760,6 +956,10 @@ impl PublicationService {
                     (self, t),
                     move |(s, t), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
@@ -802,19 +1002,18 @@ impl PublicationService {
                                     s.releases.transition_in(tx, &id, &r).await?,
                                 )?;
                                 db::release_slot(tx, t, &t.key(), None).await?;
-                                db::audit(
-                                    tx,
+                                let fact = db::fact(
+                                    tx.tenant_id(),
                                     &s.actors.backend,
                                     &t.candidate,
                                     "software_result",
-                                    db::target_fact(
-                                        t,
-                                        Table::Publish,
-                                        "cancel_unstarted",
-                                        "not-applied",
-                                    ),
-                                )
-                                .await?;
+                                    db::record_fact(&r, t, "cancel_unstarted", "not-applied"),
+                                    &db::request_fingerprint(&t.candidate, &r)?,
+                                )?;
+                                s.audit_store
+                                    .append_in(tx, &fact, false)
+                                    .await
+                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             }
                             db::complete_noop(tx, &t.withdrawal_key()).await?;
                             Ok(Ok(()))
@@ -880,12 +1079,16 @@ impl PublicationService {
                     (self, key),
                     |(s, key), tx| {
                         Box::pin(async move {
-                            db::complete_noop(tx, key).await?;
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             let call = db::call(tx, Table::Withdraw, key)
                                 .await?
                                 .ok_or_else(db::fault)?;
-                            db::audit(
-                                tx,
+                            db::complete_noop(tx, key).await?;
+                            let fact = db::fact(
+                                tx.tenant_id(),
                                 &s.actors.backend,
                                 &call.target.candidate,
                                 "software_withdraw",
@@ -895,8 +1098,12 @@ impl PublicationService {
                                     "complete_unpublished",
                                     "applied",
                                 ),
-                            )
-                            .await?;
+                                &db::encode(&call.target)?,
+                            )?;
+                            s.audit_store
+                                .append_in(tx, &fact, call.complete)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(()))
                         })
                     },
@@ -943,21 +1150,38 @@ impl PublicationService {
             self.runtime
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
+                        s.audit_store
+                            .lock_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot)).await?;
-                        db::reset_withdrawal_preflight(tx, &t.withdrawal_key()).await?;
-                        db::audit(
-                            tx,
+                        let call = db::call(tx, Table::Withdraw, &t.withdrawal_key())
+                            .await?
+                            .ok_or_else(db::fault)?;
+                        if call.generation == 0 || call.acknowledged {
+                            return Err(db::fault());
+                        }
+                        if call.attempted {
+                            db::reset_withdrawal_preflight(tx, &t.withdrawal_key()).await?;
+                        }
+                        let fact = db::fact(
+                            tx.tenant_id(),
                             &s.actors.backend,
                             &t.candidate,
                             "software_preflight",
-                            db::target_fact(
+                            db::call_fact(
                                 t,
                                 Table::Withdraw,
+                                call.generation,
                                 "reset_withdrawal_preflight",
                                 "not-applied",
                             ),
-                        )
-                        .await?;
+                            &db::encode(&(t, call.generation))?,
+                        )?;
+                        s.audit_store
+                            .append_in(tx, &fact, !call.attempted)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         Ok(Ok(()))
                     })
                 })
@@ -1054,14 +1278,21 @@ impl PublicationService {
                         (self, t),
                         |(s, t), tx| {
                             Box::pin(async move {
+                                s.audit_store
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                     .await?;
                                 if db::projection(tx, t).await?.as_deref() == Some(&t.publication) {
                                     return Ok(Err(Error::Conflict));
                                 }
+                                let call = db::call(tx, Table::Withdraw, &t.withdrawal_key())
+                                    .await?
+                                    .ok_or_else(db::fault)?;
                                 db::complete_noop(tx, &t.withdrawal_key()).await?;
-                                db::audit(
-                                    tx,
+                                let fact = db::fact(
+                                    tx.tenant_id(),
                                     &s.actors.backend,
                                     &t.candidate,
                                     "software_withdraw",
@@ -1071,8 +1302,12 @@ impl PublicationService {
                                         "prepare_withdrawal",
                                         "applied",
                                     ),
-                                )
-                                .await?;
+                                    &db::encode(t)?,
+                                )?;
+                                s.audit_store
+                                    .append_in(tx, &fact, call.complete)
+                                    .await
+                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 Ok(Ok(()))
                             })
                         },
@@ -1141,21 +1376,31 @@ impl PublicationService {
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), &prepared, |t, tx| {
-                    Box::pin(async move {
-                        db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot)).await?;
-                        let slot = db::slot(tx, &t.binding, &t.slot).await?;
-                        if slot.operation.is_some()
-                            || slot.cursor != t.base
-                            || db::projection(tx, t).await?.as_deref() != Some(&t.publication)
-                        {
-                            return Ok(Err(Error::Blocked));
-                        }
-                        db::prepare_withdrawal(tx, t).await?;
-                        db::reserve(tx, t, &t.withdrawal_key()).await?;
-                        Ok(Ok(()))
-                    })
-                })
+                .local_tx_with_context(
+                    self.tenant(),
+                    budget(cutoff),
+                    (self, &prepared),
+                    |(s, t), tx| {
+                        Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
+                                .await?;
+                            let slot = db::slot(tx, &t.binding, &t.slot).await?;
+                            if slot.operation.is_some()
+                                || slot.cursor != t.base
+                                || db::projection(tx, t).await?.as_deref() != Some(&t.publication)
+                            {
+                                return Ok(Err(Error::Blocked));
+                            }
+                            db::prepare_withdrawal(tx, t).await?;
+                            db::reserve(tx, t, &t.withdrawal_key()).await?;
+                            Ok(Ok(()))
+                        })
+                    },
+                )
                 .await,
         )?;
         Ok(true)
@@ -1165,6 +1410,10 @@ impl PublicationService {
             self.runtime
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
+                        s.audit_store
+                            .lock_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot)).await?;
                         let call = db::call(tx, Table::Withdraw, &t.withdrawal_key())
                             .await?
@@ -1182,14 +1431,18 @@ impl PublicationService {
                         .await?;
                         db::project(tx, t, true).await?;
                         db::release_slot(tx, t, &t.withdrawal_key(), t.commit.clone()).await?;
-                        db::audit(
-                            tx,
+                        let fact = db::fact(
+                            tx.tenant_id(),
                             &s.actors.backend,
                             &t.candidate,
                             "software_withdraw",
                             db::target_fact(t, Table::Withdraw, "finish_withdrawal", "applied"),
-                        )
-                        .await?;
+                            &db::encode(t)?,
+                        )?;
+                        s.audit_store
+                            .append_in(tx, &fact, false)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         Ok(Ok(()))
                     })
                 })

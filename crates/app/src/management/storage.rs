@@ -16,7 +16,7 @@ pub(super) async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
     .await?;
     Ok(())
 }
-pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>, Vec<u8>)> {
+pub(super) fn identity(command: &Command, audit: &RequestAudit) -> Result<(Option<Uuid>, Vec<u8>)> {
     let id = match command {
         Command::PublicationIntent { request, .. } => Some(request.operation_id),
         Command::Resource { change, .. } => Some(change.operation_id),
@@ -40,8 +40,13 @@ pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>
     )))?;
     Ok((id, Sha256::digest(bytes).to_vec()))
 }
-pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit) -> Result<()> {
-    let audit = audit.clone();
+pub(super) async fn audit(
+    tx: &mut PgTransaction<'_>,
+    store: &rss_mdm_audit_integration::AuditStore,
+    audit: &RequestAudit,
+    operation: Option<(Uuid, &[u8])>,
+    replayed: bool,
+) -> Result<()> {
     let admitted = audit
         .snapshot()
         .software
@@ -50,23 +55,23 @@ pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit) -> Result<(
     let (status, result) = if admitted {
         (202, "unknown")
     } else {
-        (
-            200,
-            audit
-                .snapshot()
-                .management_result
-                .map_or("success", |r| r.audit_tag()),
-        )
+        (200, "success")
     };
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            crate::audit::append_on_connection(c, &audit, status, result, None)
-                .await
-                .map_err(|_| sqlx::Error::Protocol("management audit failed".into()))
-        })
-    })
-    .await
-    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let result = if let Some((id, fingerprint)) = operation {
+        let fact = rss_mdm_audit_integration::Fact::business(
+            audit,
+            &format!("management:{id}"),
+            fingerprint,
+            status,
+            result,
+            None,
+        )
+        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+        store.append_in(tx, &fact, replayed).await
+    } else {
+        store.append_request_in(tx, audit, status, result).await
+    };
+    result.map_err(Error::from)?;
     Ok(())
 }
 pub(super) async fn replay(

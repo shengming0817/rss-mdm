@@ -101,22 +101,12 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
                 == StatusCode::BAD_REQUEST
         );
 
-        ensure!(
-            pg(&format!(
-                "SELECT count(*)>0 FROM mdm_access.audit a JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(a.tenant_id,a.registration_id) WHERE a.plan='{plan}' AND a.target='{task}' AND a.action='command_accept' AND r.device='{DEVICE_ID}'"
-            ))?
-            .trim()
-                == "t",
-            "task event audit lost task/plan/registration coordinates"
-        );
-        ensure!(
-            pg(&format!(
-                "SELECT count(*)>0 FROM mdm_access.audit WHERE plan='{plan}' AND action='command_approve'"
-            ))?
-            .trim()
-                == "t",
-            "approval audit lost its plan coordinate"
-        );
+        let records=audit_records()?;
+        let found=records.iter().find(|r|r.payload["plan"]==plan.to_string() && r.target()==task && r.action()=="command_accept").expect("task/plan audit coordinates");
+        let registration=found.payload["registration"].as_str().expect("task registration");
+        uuid::Uuid::parse_str(registration)?;
+        ensure!(pg(&format!("SELECT device FROM mdm_access.registrations WHERE tenant_id='{TENANT}' AND id='{registration}'"))?.trim()==DEVICE_ID);
+        ensure!(records.iter().any(|r|r.payload["plan"]==plan.to_string() && r.action()=="command_approve"),"approval audit lost its plan coordinate");
         Ok(())
     }
     .await;

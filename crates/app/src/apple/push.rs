@@ -274,6 +274,7 @@ pub(crate) fn registration(
     apple: std::sync::Arc<super::Apple>,
     commands: std::sync::Arc<crate::commands::Commands>,
     access: std::sync::Arc<crate::Database>,
+    audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("apple-apns", Duration::from_secs(8));
@@ -284,7 +285,7 @@ pub(crate) fn registration(
             if let Ok(now) = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock) { apple.report_certificate_health(now, &mut certificate_levels); }
             let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=async {
                 let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-                super::renewal::maintain(&apple, &access, &tenant, now).await?;
+                super::renewal::maintain(&apple, &access, &audit_store, &tenant, now).await?;
                 wake(&apple.push,&commands).await
             }=>result };
             let (ready, delay) = health.observe(&result);

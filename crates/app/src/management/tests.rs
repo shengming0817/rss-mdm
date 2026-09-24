@@ -114,6 +114,12 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
     );
     service.runtime.close().await;
 }
+fn audit_records() -> Vec<crate::audit_test_support::Record> {
+    crate::audit_test_support::decode_hex(&sql(
+        "SELECT encode(canonical,'hex') FROM rss_audit.records ORDER BY tenant_id,position",
+    ))
+    .unwrap()
+}
 fn sql(statement: &str) -> String {
     use std::io::Write;
     let config = fixture();
@@ -174,20 +180,25 @@ async fn runtime(t: TenantId) -> Arc<PgRuntime> {
     )
 }
 async fn management(t: TenantId) -> Management {
-    Management::new(runtime(t).await, t, Arc::new(crate::clock::SystemClock))
-        .await
-        .unwrap()
+    Management::new(
+        audit_store().await,
+        runtime(t).await,
+        t,
+        Arc::new(crate::clock::SystemClock),
+    )
+    .await
+    .unwrap()
 }
 async fn execute(m: &Management, c: &Command) -> std::result::Result<Value, Error> {
-    let audit = Audit::new(m.tenant.to_string(), "management_write");
-    audit.identify_fixture("operator", "mdm");
+    let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
+    audit.identify("operator", "mdm");
     let result = m.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result
 }
 async fn execute_asset(m: &Management, c: &assets::Command) -> std::result::Result<Value, Error> {
-    let audit = Audit::new(m.tenant.to_string(), "management_write");
-    audit.identify_fixture("operator", "mdm");
+    let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
+    audit.identify("operator", "mdm");
     let result = m.assets.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result
@@ -392,7 +403,7 @@ async fn durable_asset_group_scope_candidate_pipeline() {
     .await
     .unwrap();
     assert_eq!(continuation["page"]["items"], serde_json::json!([]));
-    let denied_audit = Audit::new(tenant().to_string(), "management_read");
+    let denied_audit = RequestAudit::new(tenant().to_string(), "management_read");
     assert!(matches!(
         service
             .execute(&page_command, &denied_audit, &|| Err(Error::Forbidden))
@@ -735,11 +746,15 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         );
     }
     assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{}' AND operation_id='{task}' AND action='automation_completed' AND actor='service:asset-automation' AND instance IS NULL",
-            tenant()
-        )),
-        "1"
+        audit_records()
+            .iter()
+            .filter(|r| r.decoded.event().identity().tenant() == tenant()
+                && r.operation() == Some(task.to_string().as_str())
+                && r.action() == "automation_completed"
+                && r.actor() == Some("service:asset-automation")
+                && r.payload["instance"].is_null())
+            .count(),
+        1
     );
     assert!(stack.shutdown().join().await.unwrap().is_clean());
     rss_runtime::ManagedResource::shutdown(&automation::Resource(automation))
@@ -933,7 +948,7 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     ));
     running.stop().await;
     let denied = Uuid::new_v4();
-    sql("REVOKE INSERT ON mdm_access.audit FROM mdm_management_runtime");
+    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_management_runtime");
     let result = execute(
         &m,
         &Command::Group {
@@ -949,7 +964,7 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
         },
     )
     .await;
-    sql("GRANT INSERT ON mdm_access.audit TO mdm_management_runtime");
+    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_management_runtime");
     assert!(matches!(result, Err(Error::Unavailable(Failure::Audit))));
     assert_eq!(
         sql(&format!(
@@ -1343,7 +1358,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     sql(&format!(
         "UPDATE mdm_management.operations SET response='[]' WHERE id='{operation}'"
     ));
-    let before = sql("SELECT count(*) FROM mdm_access.audit");
+    let before = sql("SELECT count(*) FROM rss_audit.records");
     assert!(
         matches!(
             execute(&m, &command).await,
@@ -1351,7 +1366,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
         ),
         "corrupt replay receipt must fail before success audit"
     );
-    assert_eq!(before, sql("SELECT count(*) FROM mdm_access.audit"));
+    assert_eq!(before, sql("SELECT count(*) FROM rss_audit.records"));
     let document = serde_json::to_string(&receipt).unwrap().replace('\'', "''");
     sql(&format!(
         "UPDATE mdm_management.operations SET response='{document}' WHERE id='{operation}'"
@@ -1398,8 +1413,8 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             .execute(&mut holder)
             .await
             .unwrap();
-        let audit = Audit::new(tenant().to_string(), "management_write");
-        audit.identify_fixture("operator", "mdm");
+        let audit = RequestAudit::new(tenant().to_string(), "management_write");
+        audit.identify("operator", "mdm");
         let expires = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             + Duration::from_millis(150);
         let authorize = || {
@@ -1697,6 +1712,7 @@ async fn asset_capability_owns_execution_and_receipt_recovery() {
     let runtime = runtime(tenant).await;
     let key = storage::cursor_key(&runtime, tenant).await.unwrap();
     let service = assets::AssetService::new(
+        audit_store().await,
         runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),
@@ -1719,8 +1735,8 @@ async fn asset_capability_owns_execution_and_receipt_recovery() {
         },
     };
     let audit = || {
-        let audit = Audit::new(tenant.to_string(), "management_write");
-        audit.identify_fixture("operator", "mdm");
+        let audit = RequestAudit::new(tenant.to_string(), "management_write");
+        audit.identify("operator", "mdm");
         audit
     };
     runtime.inject_next_transaction_fault(
@@ -1748,4 +1764,34 @@ async fn asset_capability_owns_execution_and_receipt_recovery() {
     ));
     denied.finalize(None);
     runtime.close().await;
+}
+
+async fn audit_store() -> Arc<rss_mdm_audit_integration::AuditStore> {
+    let config = fixture();
+    let options = sqlx::postgres::PgConnectOptions::new()
+        .host("localhost")
+        .port(config["port"].as_u64().unwrap() as u16)
+        .database("backend")
+        .username("mdm_access")
+        .password("access-fixture")
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(config["ca"].as_str().unwrap());
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline = Deadline::from_timeout(&timer, Duration::from_secs(2)).unwrap();
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    Arc::new(
+        rss_mdm_audit_integration::AuditStore::new(
+            pool,
+            rss_audit_postgres::Integrity::Plain,
+            &control,
+        )
+        .await
+        .unwrap(),
+    )
 }

@@ -1,9 +1,6 @@
 //! One protected path: current SDK proof -> MDM capability -> private data access.
 use crate::authorization::context::RequestAuth;
-use crate::{
-    ConfigIssue, Database, Failure,
-    audit::{Audit, FailureReason, WriteOutcome},
-};
+use crate::{ConfigIssue, Database, Failure};
 use crate::{
     Error, authorization::identity_management::IdentityManagementPolicy,
     device::coordinates::Coordinates, enrollment::credentials::Credentials, identity::Identity,
@@ -19,12 +16,14 @@ use axum::{
     routing::{get, post},
 };
 use rss_identity_core::session::SessionSecret;
+use rss_mdm_audit_integration::{FailureReason, RequestAudit, WriteOutcome};
 use serde::Deserialize;
 #[cfg(test)]
 use serde_json::Value;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub(crate) struct Assembly {
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) commands: Arc<crate::commands::Commands>,
     pub(crate) management: Arc<crate::management::Management>,
     pub(crate) identity: Arc<Identity>,
@@ -51,26 +50,13 @@ impl Assembly {
 }
 
 #[cfg(test)]
-pub(crate) async fn application(
-    config: crate::config::Config,
-    clock: Arc<dyn Clock>,
-    monotonic: Arc<dyn rss_observation::Clock>,
-    access: Arc<Database>,
-    identity: Option<Identity>,
-) -> Result<Router, Error> {
-    Ok(
-        application_fixture(config, clock, monotonic, access, identity)
-            .await?
-            .0,
-    )
-}
-#[cfg(test)]
 pub(crate) async fn application_fixture(
     config: crate::config::Config,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
     access: Arc<Database>,
     identity: Option<Identity>,
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> Result<(Router, Arc<crate::commands::Commands>), Error> {
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
@@ -83,13 +69,14 @@ pub(crate) async fn application_fixture(
     let management = config
         .management
         .open(
+            audit_store.clone(),
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
                 .map_err(|_| Error::Malformed)?,
             clock.clone(),
             |_| {},
         )
         .await?;
-    let commands = crate::commands::Commands::open(&config).await?;
+    let commands = crate::commands::Commands::open(&config, audit_store.clone()).await?;
     let compiled = config.compile()?;
     let identity = match identity {
         Some(identity) => identity,
@@ -106,6 +93,7 @@ pub(crate) async fn application_fixture(
         from_compiled(
             compiled,
             AssemblyDependencies {
+                audit_store,
                 commands: commands.clone(),
                 clock,
                 monotonic,
@@ -120,6 +108,7 @@ pub(crate) async fn application_fixture(
     ))
 }
 pub(crate) struct AssemblyDependencies {
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) commands: Arc<crate::commands::Commands>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
@@ -137,6 +126,7 @@ pub(crate) fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
+        audit_store,
         commands,
         clock,
         monotonic,
@@ -148,6 +138,7 @@ pub(crate) fn from_compiled(
     let devices = Arc::new(crate::device::DeviceService::new(
         access.clone(),
         config.identity.tenant_id.clone(),
+        audit_store.clone(),
     ));
     let host = config
         .product_origin
@@ -165,6 +156,7 @@ pub(crate) fn from_compiled(
         .map(|config| crate::apple::Apple::load(config, clock.unix_seconds()?).map(Arc::new))
         .transpose()?;
     let state = Arc::new(Assembly {
+        audit_store,
         apple,
         commands,
         management,
@@ -192,6 +184,7 @@ pub(crate) fn from_state(
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
     let agent = Arc::new(crate::agent::HttpState {
+        audit_store: state.audit_store.clone(),
         access: state.access.clone(),
         identity: state.identity.clone(),
         credentials: state.credentials.clone(),
@@ -212,9 +205,10 @@ pub(crate) fn from_state(
         assets: state.management.assets.clone(),
     });
     let authorization = Arc::new(crate::authorization::http::HttpState {
-        access: state.access.clone(),
+        audit_store: state.audit_store.clone(),
     });
     let apple_state = Arc::new(crate::apple::HttpState {
+        audit_store: state.audit_store.clone(),
         access: state.access.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),
@@ -225,6 +219,7 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
     });
     let windows_state = Arc::new(crate::windows::HttpState {
+        audit_store: state.audit_store.clone(),
         access: state.access.clone(),
         clock: state.clock.clone(),
         commands: state.commands.clone(),
@@ -235,7 +230,7 @@ pub(crate) fn from_state(
         windows: state.windows.clone(),
     });
     let collection = Arc::new(crate::collection::apple::HttpState {
-        access: state.access.clone(),
+        audit_store: state.audit_store.clone(),
         apple: state.apple.is_some(),
         tenant: state.identity.tenant,
     });
@@ -251,6 +246,7 @@ pub(crate) fn from_state(
         service: Arc::new(crate::enrollment::EnrollmentService::new(
             state.access.clone(),
             state.credentials.clone(),
+            state.audit_store.clone(),
         )),
         devices: state.devices.clone(),
         apple: state.apple.is_some(),
@@ -267,7 +263,7 @@ pub(crate) fn from_state(
     });
     let authentication = state.identity.routes();
     let audit_tenant = state.identity.tenant.to_string();
-    let access = state.access.clone();
+    let audit_store = state.audit_store.clone();
     let requests = state.requests.clone();
     let protected_v1 = Router::new()
         .merge(crate::management::routes().with_state(management.clone()))
@@ -347,7 +343,7 @@ pub(crate) fn from_state(
             Envelope {
                 host,
                 clock: monotonic,
-                access,
+                audit_store,
                 requests,
                 tenant: audit_tenant,
             },
@@ -364,7 +360,7 @@ pub(crate) fn from_state(
 pub(crate) struct Envelope {
     pub(crate) host: String,
     pub(crate) clock: Arc<dyn rss_observation::Clock>,
-    pub(crate) access: Arc<Database>,
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
     pub(crate) tenant: String,
 }
@@ -420,7 +416,7 @@ pub(crate) async fn envelope(
     let action = route_action(route, native_identity);
     let soap = route.starts_with("/EnrollmentServer/");
     let agent_route = route.starts_with("/api/agent/v2/");
-    let audit = Audit::new(envelope.tenant.clone(), action);
+    let audit = RequestAudit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
     // audit must not replace that settled response (including rotated credentials).
@@ -443,31 +439,38 @@ pub(crate) async fn envelope(
         response.extensions().get::<Error>(),
         Some(Error::Unavailable(Failure::RequestDeadline))
     ) {
-        response = snapshot.write_outcome.deadline_error().into_response();
+        response = crate::error_projection::audit_deadline(snapshot.write_outcome).into_response();
     }
     let mut audit_failure = matches!(
         response.extensions().get::<Error>(),
         Some(Error::Unavailable(Failure::Audit))
     )
     .then_some(FailureReason::Transaction);
-    if audited && snapshot.write_outcome != WriteOutcome::Committed {
+    if audited
+        && (snapshot.settle_request
+            || snapshot.write_outcome != WriteOutcome::Committed
+            || matches!(
+                snapshot.management_result,
+                Some(rss_mdm_audit_integration::ManagementResult::Replayed)
+            ))
+    {
         let status = response.status().as_u16();
         let result = audit_result(&response, &snapshot);
+        let timer = crate::lifecycle::RuntimeTimer;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
+            .expect("bounded audit settlement budget");
+        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        if let Err(error) = envelope
+            .audit_store
+            .settle_request(&audit, status, result, &control)
+            .await
         {
-            let store = &envelope.access;
-            if !matches!(
-                tokio::time::timeout(
-                    Duration::from_secs(2),
-                    crate::audit::record(store, &audit, status, result)
-                )
-                .await,
-                Ok(Ok(()))
-            ) {
-                audit_failure = Some(FailureReason::Persistent);
-                response = Error::Unavailable(Failure::Audit).into_response();
-            }
+            audit_failure = Some(FailureReason::Persistent);
+            response = Error::from(error).into_response();
         }
     }
+
     if soap
         && !response
             .headers()
@@ -555,11 +558,14 @@ async fn bounded_body(
     }
 }
 
-fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'static str {
+fn audit_result(
+    response: &Response,
+    snapshot: &rss_mdm_audit_integration::Snapshot,
+) -> &'static str {
     let status = response.status().as_u16();
     if matches!(
         response.extensions().get::<Error>(),
-        Some(Error::CommitUnknown)
+        Some(Error::CommitUnknown | Error::RollbackFailed)
     ) || snapshot.write_outcome == WriteOutcome::Unknown && status >= 500
     {
         "unknown"
@@ -622,7 +628,7 @@ struct Action {
 async fn action(
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
     if rss_observation::Id::new(&id).is_ok() {
@@ -654,7 +660,7 @@ fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
 }
 pub(crate) fn write_key(
     headers: &HeaderMap,
-    audit: &Audit,
+    audit: &RequestAudit,
     action: &'static str,
 ) -> Result<uuid::Uuid, Error> {
     let key = operation_key(headers)?;
@@ -687,7 +693,7 @@ async fn ready(State(app): State<Arc<ReadinessState>>) -> Response {
 async fn collection_run(
     State(app): State<Arc<CollectionState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     query: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<crate::management::assets::collection::CollectionResponse>, Error> {
@@ -743,12 +749,15 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "make t2: close an admitted Audit pool before protected response settlement"]
     async fn audit_failure_logs_preserve_action_and_origin() {
         use tower::ServiceExt;
         const CHILD: &str = "MDM_AUDIT_LOG_TEST";
         if let Ok(mode) = std::env::var(CHILD) {
-            let access = Arc::new(Database::unconnected());
-            access.close().await;
+            let (pool, audit_store) = crate::audit_integration_tests::request_store()
+                .await
+                .unwrap();
+            pool.close().await;
             let router = Router::new()
                 .route(
                     "/api/v2/devices/{id}/inventory",
@@ -764,7 +773,7 @@ mod tests {
                     Envelope {
                         host: "mdm.example.test".into(),
                         clock: monotonic(),
-                        access,
+                        audit_store,
                         requests: Arc::new(tokio::sync::Semaphore::new(4)),
                         tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },
@@ -790,6 +799,7 @@ mod tests {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "api::tests::audit_failure_logs_preserve_action_and_origin",
+                    "--ignored",
                     "--exact",
                     "--nocapture",
                 ])
@@ -822,8 +832,12 @@ mod tests {
         Arc::new(crate::Monotonic(std::time::Instant::now))
     }
     #[tokio::test]
+    #[ignore = "make t2: production envelope has an admitted Audit capability"]
     async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         use tower::ServiceExt;
+        let (pool, audit_store) = crate::audit_integration_tests::request_store()
+            .await
+            .unwrap();
         for reason in [
             Failure::RequestDeadline,
             Failure::IdentityStorage,
@@ -846,7 +860,7 @@ mod tests {
                     Envelope {
                         host: "mdm.example.test".to_owned(),
                         clock: monotonic(),
-                        access: Arc::new(Database::unconnected()),
+                        audit_store: audit_store.clone(),
                         requests: Arc::new(tokio::sync::Semaphore::new(4)),
                         tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },
@@ -881,5 +895,6 @@ mod tests {
                 json!({"code":"service_unavailable"})
             );
         }
+        pool.close().await;
     }
 }

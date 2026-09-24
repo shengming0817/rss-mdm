@@ -4,7 +4,7 @@ use crate::{
     operations::{Actor, Operation},
 };
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::{Row, postgres::PgRow};
 
 fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
     Uuid::parse_str(&row.try_get::<String, _>(name).map_err(db)?)
@@ -51,7 +51,7 @@ impl DeviceService {
         admin: &AuthorizedPrincipal,
         credential: &VerifiedChannelCredential,
         command: &BindRegistration,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> Result<RegistrationReceipt, Error> {
         if command.operation_id.is_nil()
             || command.request_id.is_nil()
@@ -65,55 +65,67 @@ impl DeviceService {
         {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.access.begin(admin.tenant_id()).await?;
-        // The accepted request supplies the target; its UUID alone never authorizes binding.
-        let request = sqlx::query("SELECT g.device,r.source FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
-            .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.principal_id()).bind(admin.instance_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
-        let device: String = request.try_get("device").map_err(db)?;
-        if request.try_get::<String, _>("source").map_err(db)? != command.source.as_str() {
-            return Err(Error::Forbidden);
-        }
-        let _permission = admin.enrollment(&device)?;
-        audit.target(&device);
-        let digest = digest(&(
-            "registration_bind",
-            command,
-            credential.channel,
-            locator(credential),
-        ));
-        let operation = Operation {
-            actor: Actor::from_authorized(admin),
-            key: command.operation_id,
-            digest: &digest,
-        };
-        if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
-            let receipt: RegistrationReceipt =
-                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
-            audit.registration(receipt.registration);
-            tx.rollback().await.map_err(db)?;
-            admin.enrollment(&device)?;
-            return Ok(receipt);
-        }
-        let receipt = bind_in(
-            &mut tx,
-            admin,
-            credential,
-            command,
-            device,
-            [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
-        )
-        .await?;
-        audit.registration(receipt.registration);
-        crate::operations::finish(
-            &self.access,
-            tx,
-            &operation,
-            &serde_json::to_string(&receipt).expect("closed receipt"),
-            audit,
-            Some(command.request_id),
-        )
-        .await?;
-        Ok(receipt)
+        let timer = crate::lifecycle::RuntimeTimer;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let deadline =
+            rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+                .map_err(|_| Error::Unavailable(Failure::Audit))?;
+        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        let attempt = self
+            .audit_store
+            .execute(
+                rss_request_context::TenantId::parse(admin.tenant_id())
+                    .map_err(|_| Error::Malformed)?,
+                &control,
+                (
+                    &self.audit_store,
+                    BindingInputs {
+                        admin,
+                        credential,
+                        command,
+                        audit,
+                        facts: Vec::new(),
+                    },
+                ),
+                |(store, inputs), tx| {
+                    Box::pin(async move {
+                        let (receipt, replayed, digest) = tx
+                            .with_connection_context(inputs, |inputs, c| {
+                                Box::pin(bind_on(c, inputs))
+                            })
+                            .await?;
+                        for fact in &inputs.facts {
+                            store.append(tx, fact, false).await.map_err(Error::from)?;
+                        }
+                        let fact = rss_mdm_audit_integration::Fact::business(
+                            inputs.audit,
+                            &format!(
+                                "registration_bind:{}:{}",
+                                inputs.admin.principal_id(),
+                                inputs.command.operation_id
+                            ),
+                            digest.as_bytes(),
+                            200,
+                            "success",
+                            Some(inputs.command.request_id),
+                        )
+                        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                        store
+                            .append(tx, &fact, replayed)
+                            .await
+                            .map_err(Error::from)?;
+                        if replayed {
+                            inputs.audit.management_result(
+                                rss_mdm_audit_integration::ManagementResult::Replayed,
+                            );
+                        }
+                        inputs.audit.mark_commit_started();
+                        Ok(receipt)
+                    })
+                },
+            )
+            .await;
+        crate::operations::settle(attempt, audit)
     }
     pub(crate) async fn revoke_inner(
         &self,
@@ -121,7 +133,7 @@ impl DeviceService {
         device: &str,
         registration: Uuid,
         key: Uuid,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> Result<RevocationReceipt, Error> {
         if key.is_nil() || registration.is_nil() || Id::new(device).is_err() {
             return Err(Error::Malformed);
@@ -136,42 +148,69 @@ impl DeviceService {
             key,
             digest: &digest,
         };
-        let mut tx = self.access.begin(admin.tenant_id()).await?;
-        if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
-            let receipt =
-                serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
-            audit.registration(registration);
-            tx.rollback().await.map_err(db)?;
-            admin.credentials(device)?;
-            return Ok(receipt);
-        }
-        let row = sqlx::query("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND device=$3")
-            .bind(admin.tenant_id()).bind(registration.to_string()).bind(device).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
-        let channel = channel(&row)?;
-        lock_channel(&mut tx, admin.tenant_id(), device, channel).await?;
-        let row = sqlx::query("SELECT state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
-            .bind(admin.tenant_id()).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
-        if row.try_get::<String, _>("state").map_err(db)? != "active" {
-            return Err(Error::Conflict);
-        }
-        crate::registration_lifecycle::retire(&mut tx, admin.tenant_id(), registration, "revoked")
-            .await?;
-        admin.credentials(device)?;
-        audit.registration(registration);
-        let receipt = RevocationReceipt {
-            operation_id: key,
-            registration,
-        };
-        crate::operations::finish(
-            &self.access,
-            tx,
-            &operation,
-            &serde_json::to_string(&receipt).expect("closed receipt"),
-            audit,
-            None,
-        )
-        .await?;
-        Ok(receipt)
+        let timer = crate::lifecycle::RuntimeTimer;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let deadline =
+            rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+                .map_err(|_| Error::Unavailable(Failure::Audit))?;
+        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        let attempt = self
+            .audit_store
+            .execute(
+                rss_request_context::TenantId::parse(admin.tenant_id())
+                    .map_err(|_| Error::Malformed)?,
+                &control,
+                (
+                    &self.audit_store,
+                    RevokeInputs {
+                        admin,
+                        device,
+                        registration,
+                        key,
+                        audit,
+                        operation: &operation,
+                        facts: Vec::new(),
+                    },
+                ),
+                |(store, inputs), tx| {
+                    Box::pin(async move {
+                        let (receipt, replayed) = tx
+                            .with_connection_context(inputs, |inputs, c| {
+                                Box::pin(revoke_on(c, inputs))
+                            })
+                            .await?;
+                        for fact in &inputs.facts {
+                            store.append(tx, fact, false).await.map_err(Error::from)?;
+                        }
+                        let fact = rss_mdm_audit_integration::Fact::business(
+                            inputs.audit,
+                            &format!(
+                                "credential_revoke:{}:{}",
+                                inputs.admin.principal_id(),
+                                inputs.key
+                            ),
+                            inputs.operation.digest.as_bytes(),
+                            200,
+                            "success",
+                            None,
+                        )
+                        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                        store
+                            .append(tx, &fact, replayed)
+                            .await
+                            .map_err(Error::from)?;
+                        if replayed {
+                            inputs.audit.management_result(
+                                rss_mdm_audit_integration::ManagementResult::Replayed,
+                            );
+                        }
+                        inputs.audit.mark_commit_started();
+                        Ok(receipt)
+                    })
+                },
+            )
+            .await;
+        crate::operations::settle(attempt, audit)
     }
     pub(crate) async fn authorize_report(
         &self,
@@ -280,7 +319,7 @@ fn unique_or_db(error: sqlx::Error) -> Error {
     }
 }
 pub(crate) async fn retire_state_in(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
     state: &str,
@@ -291,22 +330,23 @@ pub(crate) async fn retire_state_in(
     .bind(tenant)
     .bind(registration.to_string())
     .bind(state)
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await
     .map_err(db)?;
-    sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut **tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 
 /// Borrow the Database transaction; the caller commits binding, certificate and audit together.
 pub(crate) async fn bind_in(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     admin: &AuthorizedPrincipal,
     credential: &VerifiedChannelCredential,
     command: &BindRegistration,
     device: String,
     ids: [Uuid; 3],
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<RegistrationReceipt, Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
         .bind(format!(
@@ -314,17 +354,17 @@ pub(crate) async fn bind_in(
             admin.tenant_id(),
             command.request_id
         ))
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid)")
-            .bind(admin.tenant_id()).bind(command.request_id.to_string()).fetch_one(&mut **tx).await.map_err(db)? { return Err(Error::Conflict); }
+            .bind(admin.tenant_id()).bind(command.request_id.to_string()).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
     let request_source: String = sqlx::query_scalar(
         "SELECT source FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2::uuid",
     )
     .bind(admin.tenant_id())
     .bind(command.request_id.to_string())
-    .fetch_optional(&mut **tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(db)?
     .ok_or(Error::Forbidden)?;
@@ -333,19 +373,20 @@ pub(crate) async fn bind_in(
     }
     lock_channel(tx, admin.tenant_id(), &device, credential.channel).await?;
     let current:i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3")
-            .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut **tx).await.map_err(db)?;
+            .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
     if current != command.expected_generation {
         return Err(Error::Conflict);
     }
     let generation = current.checked_add(1).ok_or(Error::Conflict)?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND channel=$2 AND locator=$3)")
-            .bind(admin.tenant_id()).bind(credential.channel.as_str()).bind(locator(credential)).fetch_one(&mut **tx).await.map_err(db)? { return Err(Error::Conflict); }
+            .bind(admin.tenant_id()).bind(credential.channel.as_str()).bind(locator(credential)).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
     // Registration row locks serialize authorization and replacement in a consistent order.
     let active = sqlx::query("SELECT id::text AS id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND state='active' FOR UPDATE")
-            .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_optional(&mut **tx).await.map_err(db)?;
+            .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = active {
         crate::registration_lifecycle::retire(
             tx,
+            facts,
             admin.tenant_id(),
             uuid(&row, "id")?,
             "superseded",
@@ -357,7 +398,7 @@ pub(crate) async fn bind_in(
     )
     .bind(admin.tenant_id())
     .bind(&device)
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await
     .map_err(db)?;
     let receipt = RegistrationReceipt {
@@ -371,11 +412,11 @@ pub(crate) async fn bind_in(
         epoch: ids[2],
     };
     sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,'active')")
-            .bind(admin.tenant_id()).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).execute(&mut **tx).await.map_err(db)?;
+            .bind(admin.tenant_id()).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,'active')")
-            .bind(admin.tenant_id()).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut **tx).await.map_err(unique_or_db)?;
+            .bind(admin.tenant_id()).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut *tx).await.map_err(unique_or_db)?;
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,$5,true)")
-            .bind(admin.tenant_id()).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).bind(coverage_key()).execute(&mut **tx).await.map_err(db)?;
+            .bind(admin.tenant_id()).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).bind(coverage_key()).execute(&mut *tx).await.map_err(db)?;
     enterprise_sources(tx, admin.tenant_id(), &receipt).await?;
     Ok(receipt)
 }
@@ -398,22 +439,22 @@ async fn enterprise_sources(
 }
 
 pub(crate) async fn bind_agent_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
     capabilities: &str,
 ) -> Result<(), Error> {
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,$3)").bind(tenant).bind(registration.to_string()).bind(capabilities).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,$3)").bind(tenant).bind(registration.to_string()).bind(capabilities).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 pub(crate) async fn replace_mdm_credential_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: &str,
     locator: &str,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active'").bind(tenant).bind(registration).execute(&mut **tx).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')").bind(tenant).bind(Uuid::new_v4().to_string()).bind(registration).bind(locator).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active'").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')").bind(tenant).bind(Uuid::new_v4().to_string()).bind(registration).bind(locator).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 
@@ -454,4 +495,138 @@ pub(crate) async fn revalidate_source(
             .map_err(|_| Error::Unavailable(Failure::Database))?,
     )
     .map_err(Into::into)
+}
+
+struct RevokeInputs<'a> {
+    admin: &'a AuthorizedPrincipal,
+    device: &'a str,
+    registration: Uuid,
+    key: Uuid,
+    audit: &'a RequestAudit,
+    operation: &'a Operation<'a>,
+    facts: Vec<rss_mdm_audit_integration::Fact>,
+}
+async fn revoke_on(
+    tx: &mut sqlx::PgConnection,
+    inputs: &mut RevokeInputs<'_>,
+) -> Result<(RevocationReceipt, bool), Error> {
+    let RevokeInputs {
+        admin,
+        device,
+        registration,
+        key,
+        audit,
+        operation,
+        facts,
+    } = inputs;
+    let device = *device;
+    let admin = *admin;
+    let audit = *audit;
+    let operation = *operation;
+    let registration = *registration;
+    let key = *key;
+    if let Some(old) = crate::operations::replay(tx, operation).await? {
+        let receipt =
+            serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
+        audit.registration(registration);
+        admin.credentials(device)?;
+        return Ok((receipt, true));
+    }
+    let row = sqlx::query("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND device=$3")
+            .bind(admin.tenant_id()).bind(registration.to_string()).bind(device).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let channel = channel(&row)?;
+    lock_channel(tx, admin.tenant_id(), device, channel).await?;
+    let row = sqlx::query("SELECT state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
+            .bind(admin.tenant_id()).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
+    if row.try_get::<String, _>("state").map_err(db)? != "active" {
+        return Err(Error::Conflict);
+    }
+    crate::registration_lifecycle::retire(tx, facts, admin.tenant_id(), registration, "revoked")
+        .await?;
+    admin.credentials(device)?;
+    audit.registration(registration);
+    let receipt = RevocationReceipt {
+        operation_id: key,
+        registration,
+    };
+    crate::operations::save(
+        tx,
+        operation,
+        &serde_json::to_string(&receipt).expect("closed receipt"),
+        audit,
+    )
+    .await?;
+    Ok((receipt, false))
+}
+
+#[cfg(test)]
+struct BindingInputs<'a> {
+    admin: &'a AuthorizedPrincipal,
+    credential: &'a VerifiedChannelCredential,
+    command: &'a BindRegistration,
+    audit: &'a RequestAudit,
+    facts: Vec<rss_mdm_audit_integration::Fact>,
+}
+#[cfg(test)]
+async fn bind_on(
+    tx: &mut sqlx::PgConnection,
+    inputs: &mut BindingInputs<'_>,
+) -> Result<(RegistrationReceipt, bool, String), Error> {
+    let BindingInputs {
+        admin,
+        credential,
+        command,
+        audit,
+        facts,
+    } = inputs;
+    let admin = *admin;
+    let credential = *credential;
+    let command = *command;
+    let audit = *audit;
+    // The accepted request supplies the target; its UUID alone never authorizes binding.
+    let request = sqlx::query("SELECT g.device,r.source FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
+            .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.principal_id()).bind(admin.instance_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let device: String = request.try_get("device").map_err(db)?;
+    if request.try_get::<String, _>("source").map_err(db)? != command.source.as_str() {
+        return Err(Error::Forbidden);
+    }
+    let _permission = admin.enrollment(&device)?;
+    audit.target(&device);
+    let digest = digest(&(
+        "registration_bind",
+        command,
+        credential.channel,
+        locator(credential),
+    ));
+    let operation = Operation {
+        actor: Actor::from_authorized(admin),
+        key: command.operation_id,
+        digest: &digest,
+    };
+    if let Some(old) = crate::operations::replay(tx, &operation).await? {
+        let receipt: RegistrationReceipt =
+            serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
+        audit.registration(receipt.registration);
+        admin.enrollment(&device)?;
+        return Ok((receipt, true, digest));
+    }
+    let receipt = bind_in(
+        tx,
+        admin,
+        credential,
+        command,
+        device,
+        [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
+        facts,
+    )
+    .await?;
+    audit.registration(receipt.registration);
+    crate::operations::save(
+        tx,
+        &operation,
+        &serde_json::to_string(&receipt).expect("closed receipt"),
+        audit,
+    )
+    .await?;
+    Ok((receipt, false, digest))
 }

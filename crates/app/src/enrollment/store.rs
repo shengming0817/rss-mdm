@@ -1,11 +1,11 @@
 use super::*;
 use crate::authorization::context::AuthorizedPrincipal;
 use crate::{
-    Failure, audit::Audit, authorization::context::EnrollmentPermission, database::db,
+    Failure, authorization::context::EnrollmentPermission, database::db,
     device::store::lock_channel, operations::Actor, operations::Operation,
 };
 use rss_mdm_inventory::ReportSource;
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::{Row, postgres::PgRow};
 
 pub(crate) fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
     Uuid::parse_str(&row.try_get::<String, _>(name).map_err(db)?)
@@ -27,25 +27,25 @@ pub(crate) fn authorization(row: PgRow) -> Result<Authorization, Error> {
     })
 }
 pub(crate) async fn request(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
 ) -> Result<PgRow, Error> {
     // Cancelled legacy rows have no password or session and can never be resumed.
     sqlx::query("SELECT r.id::text,r.state,r.source,r.password_digest,r.password_version,r.expected_generation,r.credential_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at>clock_timestamp() AS live,g.actor,g.instance,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL FOR UPDATE OF r")
-        .bind(tenant).bind(id.to_string()).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Forbidden)
+        .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)
 }
 
 pub(crate) async fn create_enrollment(
-    database: &crate::database::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     permission: EnrollmentPermission<'_>,
     password: &Password,
     source: ReportSource,
     session: Uuid,
     key: Uuid,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
-    let proof = permission.proof();
+    let proof = permission.proof;
     proof.enrollment(permission.device())?;
     let device = permission.device();
     let password_digest = password.digest(proof.tenant_id(), device)?;
@@ -55,12 +55,100 @@ pub(crate) async fn create_enrollment(
         key,
         digest: &digest,
     };
-    let mut tx = database.begin(proof.tenant_id()).await?;
-    if let Some(old) = crate::operations::replay(&mut tx, &op).await? {
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline =
+        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+            .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let attempt = store
+        .execute(
+            rss_request_context::TenantId::parse(proof.tenant_id())
+                .map_err(|_| Error::Malformed)?,
+            &control,
+            (
+                store,
+                CreateInputs {
+                    permission,
+                    password_digest,
+                    source,
+                    session,
+                    key,
+                },
+                &op,
+                audit,
+            ),
+            |(store, inputs, op, audit), tx| {
+                Box::pin(async move {
+                    let (receipt, replayed) = tx
+                        .with_connection_context(
+                            &mut (&*inputs, *op, *audit),
+                            |(inputs, op, audit), c| {
+                                Box::pin(create_enrollment_on(c, inputs, op, audit))
+                            },
+                        )
+                        .await?;
+                    let fact = rss_mdm_audit_integration::Fact::business(
+                        audit,
+                        &format!(
+                            "enrollment_create:{}:{}",
+                            inputs.permission.proof.principal_id(),
+                            op.key
+                        ),
+                        op.digest.as_bytes(),
+                        200,
+                        "success",
+                        Some(receipt.enrollment_id),
+                    )
+                    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                    store
+                        .append(tx, &fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    audit.mark_commit_started();
+                    Ok(receipt)
+                })
+            },
+        )
+        .await;
+    crate::operations::settle(attempt, audit)
+}
+struct CreateInputs<'a> {
+    permission: EnrollmentPermission<'a>,
+    password_digest: String,
+    source: ReportSource,
+    session: Uuid,
+    key: Uuid,
+}
+async fn create_enrollment_on(
+    tx: &mut sqlx::PgConnection,
+    CreateInputs {
+        permission,
+        password_digest,
+        source,
+        session,
+        key,
+    }: &CreateInputs<'_>,
+    op: &Operation<'_>,
+    audit: &RequestAudit,
+) -> Result<(Receipt, bool), Error> {
+    let proof = permission.proof();
+    let device = permission.device();
+    let source = *source;
+    let session = *session;
+    let key = *key;
+    if let Some(old) = crate::operations::replay(tx, op).await? {
         proof.enrollment(permission.device())?;
-        return serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database));
+        return serde_json::from_str(&old)
+            .map(|receipt| (receipt, true))
+            .map_err(|_| Error::Unavailable(Failure::Database));
     }
-    lock_channel(&mut tx, proof.tenant_id(), device, source.channel()).await?;
+    lock_channel(tx, proof.tenant_id(), device, source.channel()).await?;
     let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3")
             .bind(proof.tenant_id()).bind(device).bind(source.channel().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
     let id = Uuid::new_v4();
@@ -78,16 +166,14 @@ pub(crate) async fn create_enrollment(
         source,
     };
     proof.enrollment(permission.device())?;
-    crate::operations::finish(
-        database,
+    crate::operations::save(
         tx,
-        &op,
+        op,
         &serde_json::to_string(&receipt).expect("closed receipt"),
         audit,
-        Some(id),
     )
     .await?;
-    Ok(receipt)
+    Ok((receipt, false))
 }
 pub(crate) async fn enrollment_target(
     database: &crate::database::Database,
@@ -100,14 +186,14 @@ pub(crate) async fn enrollment_target(
     row.try_get("device").map_err(db)
 }
 pub(crate) async fn change_enrollment(
-    database: &crate::database::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     permission: EnrollmentPermission<'_>,
     id: Uuid,
     resume: Option<(&Password, Uuid)>,
     key: Uuid,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
-    let proof = permission.proof();
+    let proof = permission.proof;
     proof.enrollment(permission.device())?;
     let password_digest = resume
         .map(|(p, _)| p.digest(proof.tenant_id(), permission.device()))
@@ -123,12 +209,98 @@ pub(crate) async fn change_enrollment(
         key,
         digest: &digest,
     };
-    let mut tx = database.begin(proof.tenant_id()).await?;
-    if let Some(old) = crate::operations::replay(&mut tx, &op).await? {
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline =
+        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+            .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let attempt = store
+        .execute(
+            rss_request_context::TenantId::parse(proof.tenant_id())
+                .map_err(|_| Error::Malformed)?,
+            &control,
+            (
+                store,
+                ChangeInputs {
+                    permission,
+                    password_digest,
+                    id,
+                    resume,
+                    key,
+                },
+                &op,
+                audit,
+            ),
+            |(store, inputs, op, audit), tx| {
+                Box::pin(async move {
+                    let (receipt, replayed) = tx
+                        .with_connection_context(
+                            &mut (&*inputs, *op, *audit),
+                            |(inputs, op, audit), c| {
+                                Box::pin(change_enrollment_on(c, inputs, op, audit))
+                            },
+                        )
+                        .await?;
+                    let fact = rss_mdm_audit_integration::Fact::business(
+                        audit,
+                        &format!(
+                            "enrollment_change:{}:{}",
+                            inputs.permission.proof.principal_id(),
+                            op.key
+                        ),
+                        op.digest.as_bytes(),
+                        200,
+                        "success",
+                        Some(receipt.enrollment_id),
+                    )
+                    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                    store
+                        .append(tx, &fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    audit.mark_commit_started();
+                    Ok(receipt)
+                })
+            },
+        )
+        .await;
+    crate::operations::settle(attempt, audit)
+}
+struct ChangeInputs<'a> {
+    permission: EnrollmentPermission<'a>,
+    password_digest: Option<String>,
+    id: Uuid,
+    resume: Option<(&'a Password, Uuid)>,
+    key: Uuid,
+}
+async fn change_enrollment_on(
+    tx: &mut sqlx::PgConnection,
+    ChangeInputs {
+        permission,
+        password_digest,
+        id,
+        resume,
+        key,
+    }: &ChangeInputs<'_>,
+    op: &Operation<'_>,
+    audit: &RequestAudit,
+) -> Result<(Receipt, bool), Error> {
+    let proof = permission.proof();
+    let id = *id;
+    let key = *key;
+    if let Some(old) = crate::operations::replay(tx, op).await? {
         proof.enrollment(permission.device())?;
-        return serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database));
+        return serde_json::from_str(&old)
+            .map(|receipt| (receipt, true))
+            .map_err(|_| Error::Unavailable(Failure::Database));
     }
-    let row = request(&mut tx, proof.tenant_id(), id).await?;
+    let row = request(tx, proof.tenant_id(), id).await?;
     same_actor(&row, proof)?;
     if row.try_get::<String, _>("device").map_err(db)? != permission.device() {
         return Err(Error::Forbidden);
@@ -138,7 +310,7 @@ pub(crate) async fn change_enrollment(
         return Err(Error::Conflict);
     }
     let registration = if state == "bound" {
-        Some(crate::enrollment::store::active_registration(&mut tx, proof.tenant_id(), id).await?)
+        Some(crate::enrollment::store::active_registration(tx, proof.tenant_id(), id).await?)
     } else {
         None
     };
@@ -173,16 +345,14 @@ pub(crate) async fn change_enrollment(
             .map_err(|_| Error::Unavailable(Failure::Database))?,
     };
     proof.enrollment(permission.device())?;
-    crate::operations::finish(
-        database,
+    crate::operations::save(
         tx,
-        &op,
+        op,
         &serde_json::to_string(&receipt).expect("closed receipt"),
         audit,
-        Some(id),
     )
     .await?;
-    Ok(receipt)
+    Ok((receipt, false))
 }
 pub(crate) async fn enrollment_authorization(
     database: &crate::database::Database,
@@ -206,21 +376,21 @@ pub(crate) async fn enrollment_authorization(
     authorization(row)
 }
 pub(crate) async fn active_registration(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
 ) -> Result<Uuid, Error> {
     let row = sqlx::query("SELECT r.id::text FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.request_id=$2::uuid AND r.state='active' AND c.state='active' FOR SHARE OF r,c")
-            .bind(tenant).bind(id.to_string()).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Conflict)?;
+            .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
     uuid(&row, "id")
 }
 pub(crate) async fn active_windows_enrollment(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
 ) -> Result<Uuid, Error> {
     let row = sqlx::query("SELECT r.id::text,e.certificate,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.enrollment_certificates e ON (e.tenant_id,e.request_id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.request_id=$2::uuid AND r.channel='mdm' AND r.state='active' AND c.state='active' FOR SHARE OF r,c")
-            .bind(tenant).bind(id.to_string()).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(Error::Conflict)?;
+            .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
     use x509_cert::der::Decode;
     let certificate: Vec<u8> = row.try_get("certificate").map_err(db)?;
     let certificate =
@@ -242,7 +412,7 @@ fn same_actor(row: &PgRow, proof: &AuthorizedPrincipal) -> Result<(), Error> {
 }
 
 pub(crate) async fn mark_bound_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     auth: &Authorization,
     agent: bool,
@@ -260,7 +430,7 @@ pub(crate) async fn mark_bound_in(
         statement = statement.bind(auth.credential_ref.to_string());
     }
     if statement
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(db)?
         .rows_affected()
@@ -270,3 +440,5 @@ pub(crate) async fn mark_bound_in(
     }
     Ok(())
 }
+
+use rss_mdm_audit_integration::RequestAudit;

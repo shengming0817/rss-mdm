@@ -74,7 +74,7 @@ pub(super) fn references(
     refs
 }
 impl Management {
-    /// Revalidate the frozen source identities in the serializable publication/save
+    /// Revalidate the frozen source identities in the head-locked publication/save
     /// transaction. The ingress worker may not have forwarded a committed change yet.
     pub(super) async fn scope_authority_current_in(
         &self,
@@ -287,7 +287,13 @@ impl Management {
             }
             "published" => self.propagate_scope_in(tx, id, scope, cursor).await,
             "superseded" => {
-                crate::management::automation::jobs::finish_job_in(tx, id, Some("superseded")).await
+                crate::management::automation::jobs::finish_job_in(
+                    tx,
+                    &self.audit_store,
+                    id,
+                    Some("superseded"),
+                )
+                .await
             }
             _ => Err(Error::Unavailable(Failure::ManagementStorage).into()),
         }
@@ -470,7 +476,13 @@ impl Management {
                 .bind(tenant).bind(scope.to_string()).bind(task.to_string()).fetch_one(c).await
         })).await?;
         if !active {
-            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(
+                tx,
+                &self.audit_store,
+                task,
+                None,
+            )
+            .await;
         }
         let tenant = self.tenant.to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
@@ -506,7 +518,13 @@ impl Management {
             .await?;
         }
         if rows.len() <= 64 {
-            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(
+                tx,
+                &self.audit_store,
+                task,
+                None,
+            )
+            .await;
         }
         let tenant = self.tenant.to_string();
         let cursor: String = rows[63].try_get("policy")?;

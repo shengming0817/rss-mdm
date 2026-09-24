@@ -139,7 +139,7 @@ impl Client {
         for _ in 0..16 {
             self.app.commands.relay_once().await?;
         }
-        let audit = Audit::new(TENANT.into(), "management_read");
+        let audit = RequestAudit::new(TENANT.into(), "management_read");
         let service = self.app.commands.as_ref();
         let result = service
             .transact((service, id), &audit, |ctx, tx| {

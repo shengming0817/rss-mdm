@@ -39,3 +39,25 @@ impl From<crate::management::assets::AssetError> for Error {
         }
     }
 }
+
+pub(crate) fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -> crate::Error {
+    match outcome {
+        rss_mdm_audit_integration::WriteOutcome::Unknown
+        | rss_mdm_audit_integration::WriteOutcome::Committed => crate::Error::CommitUnknown,
+        rss_mdm_audit_integration::WriteOutcome::RollbackFailed => crate::Error::RollbackFailed,
+        rss_mdm_audit_integration::WriteOutcome::RolledBack
+        | rss_mdm_audit_integration::WriteOutcome::CommitNotStarted => {
+            crate::Error::Unavailable(crate::Failure::RequestDeadline)
+        }
+    }
+}
+
+impl From<rss_mdm_audit_integration::Error> for Error {
+    fn from(error: rss_mdm_audit_integration::Error) -> Self {
+        match error {
+            rss_mdm_audit_integration::Error::CommitUnknown => Self::CommitUnknown,
+            rss_mdm_audit_integration::Error::RollbackFailed => Self::RollbackFailed,
+            _ => Self::Unavailable(crate::Failure::Audit),
+        }
+    }
+}

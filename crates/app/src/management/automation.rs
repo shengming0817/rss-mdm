@@ -65,18 +65,27 @@ impl Management {
         if !pending {
             return Ok(0);
         }
-        rss_reconcile_postgres::messaging::wake_with(
-            &self.runtime,
-            &asset_target(self.tenant),
-            &control,
-            (),
-            |_, tx| {
-                Box::pin(async move {
-                    let tenant = tx.tenant_id().to_string();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            sqlx::query(
-                                r#"
+        self.runtime
+            .local_tx_with_context(
+                self.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (self, asset_target(self.tenant).clone(), ()),
+                |(service, target, context), tx| {
+                    Box::pin(async move {
+                        service
+                            .audit_store
+                            .lock_in(tx)
+                            .await
+                            .map_err(PgError::from)?;
+                        rss_reconcile_postgres::messaging::wake_in(tx, target, context, |_, tx| {
+                            Box::pin(async move {
+                                let tenant = tx.tenant_id().to_string();
+                                tx.with_connection(move |c| {
+                                    Box::pin(async move {
+                                        sqlx::query(
+                                            r#"
                       WITH batch AS (
                         SELECT revision FROM mdm.asset_changes
                         WHERE tenant_id=$1::uuid AND NOT forwarded ORDER BY revision
@@ -84,25 +93,28 @@ impl Management {
                       ) UPDATE mdm.asset_changes c SET forwarded=true FROM batch b
                         WHERE c.tenant_id=$1::uuid AND c.revision=b.revision
                     "#,
-                            )
-                            .bind(tenant)
-                            .execute(c)
-                            .await
-                            .map(|r| r.rows_affected())
+                                        )
+                                        .bind(tenant)
+                                        .execute(c)
+                                        .await
+                                        .map(|r| r.rows_affected())
+                                    })
+                                })
+                                .await
+                            })
                         })
+                        .await
                     })
-                    .await
-                })
-            },
-        )
-        .await
-        .fold(
-            Ok,
-            |_| Err(Error::Unavailable(Failure::ManagementStorage)),
-            |_| Err(Error::Unavailable(Failure::ManagementStorage)),
-            |_| Err(Error::CommitUnknown),
-            |_| Err(Error::CommitUnknown),
-            |_| Err(Error::Unavailable(Failure::ManagementStorage)),
-        )
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+            )
     }
 }

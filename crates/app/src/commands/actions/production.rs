@@ -145,19 +145,39 @@ pub(super) async fn produce(
         {
             return Err(Error::Conflict.into());
         }
+        let fingerprint = digest.clone();
+        let registration = target.registration;
         let tenant = tx.tenant_id().to_string();
         let plan_id = plan.id.to_string();
         let state = invalid(serde_json::to_value(RunState::new(deadline, now)?))?;
         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,plan,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9,$10,$11,$12)").bind(tenant).bind(id.to_string()).bind(plan_id).bind(target.device).bind(target.registration.to_string()).bind(target.generation).bind(key).bind(occurrence.available_at).bind(deadline).bind(state).bind(digest).bind(now).execute(c).await?;Ok(())})).await?;
-        let audit = crate::audit::Audit::new(tx.tenant_id().to_string(), "command_accept");
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            tx.tenant_id().to_string(),
+            "command_accept",
+        );
         audit.operation(id, "command_accept");
-        audit.target(device);
-        let result = crate::commands::storage::audit(tx, &audit, 202).await;
+        audit.target(&id.to_string());
+        audit.identify_service("action-scheduler");
+        audit.plan(plan.id);
+        audit.registration(registration);
+        let result: Result<()> = async {
+            let fact = rss_mdm_audit_integration::Fact::business(
+                &audit,
+                &format!("action:{id}:accept"),
+                &fingerprint,
+                202,
+                "success",
+                None,
+            )?;
+            service.audit_store.append_in(tx, &fact, false).await?;
+            Ok(())
+        }
+        .await;
         audit.finalize(
             result
                 .as_ref()
                 .err()
-                .map(|_| crate::audit::FailureReason::Transaction),
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
         );
         result?;
         outcome = outcome.merge(ProduceOutcome::Produced);

@@ -11,6 +11,29 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+/// Explicit persistence mode. The host owns key files and the pool lifecycle.
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuditConfig {
+    Plain,
+    Ledger { key_id: String, key_file: PathBuf },
+}
+impl AuditConfig {
+    pub(crate) fn integrity(&self) -> Result<rss_audit_postgres::Integrity, Error> {
+        match self {
+            Self::Plain => Ok(rss_audit_postgres::Integrity::Plain),
+            Self::Ledger { key_id, key_file } => {
+                let key = read(key_file, 4096, true)?;
+                let id = rss_ledger::KeyId::parse(key_id)
+                    .map_err(|_| Error::Configuration(ConfigIssue::Audit))?;
+                let auth = rss_ledger::Authenticator::new(id, key.to_vec())
+                    .map_err(|_| Error::Configuration(ConfigIssue::Audit))?;
+                Ok(rss_audit_postgres::Integrity::Ledger(Arc::new(auth)))
+            }
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Database {
@@ -73,6 +96,7 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub audit: AuditConfig,
     pub listen: SocketAddr,
     pub product_origin: String,
     pub trusted_gateway: std::net::IpAddr,

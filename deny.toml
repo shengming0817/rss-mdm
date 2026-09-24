@@ -7,7 +7,7 @@ private = { ignore = true }
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://dev.azure.com/shengming0923/rss/_git/rss", "https://dev.azure.com/shengming0923/rss/_git/rss-identity"]
+allow-git = ["https://dev.azure.com/shengming0923/rss/_git/rss", "https://dev.azure.com/shengming0923/rss/_git/rss-identity", "https://dev.azure.com/shengming0923/rss/_git/rss-audit"]
 # Full revisions and exact package sets are enforced in hack/ci.py.
 [advisories]
 # #2365: MDM app -> rss-identity-oidc -> openidconnect -> rsa public verification.

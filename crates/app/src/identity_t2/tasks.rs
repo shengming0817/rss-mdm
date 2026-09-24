@@ -186,6 +186,10 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         monotonic(),
         database(&base).await?,
         None,
+        database(&base)
+            .await?
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
     )
     .await?;
     let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
@@ -336,7 +340,11 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
             == StatusCode::CONFLICT
     );
     let config: Config = serde_json::from_value(base.clone())?;
-    let worker = crate::commands::Commands::open(&config).await?;
+    let worker = crate::commands::Commands::open(
+        &config,
+        crate::identity_fixture::audit_store(&config).await?,
+    )
+    .await?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -546,7 +554,11 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     let before_runs = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
     let before_attempts = pg("SELECT count(*) FROM mdm_commands.action_attempts")?;
     let before_outbox = pg("SELECT count(*) FROM rss_transactional_messaging.outbox")?;
-    let restarted = crate::commands::Commands::open(&config).await?;
+    let restarted = crate::commands::Commands::open(
+        &config,
+        crate::identity_fixture::audit_store(&config).await?,
+    )
+    .await?;
     for plan in [timeout_plan, cancel_plan, queued_plan] {
         restarted.recover_action_fixture(plan).await?;
     }
@@ -793,7 +805,11 @@ async fn scheduled_matrix(
         )
         .await?;
         // Reopening the actual PG runtime restores the cursor; no in-memory deduplication.
-        let restarted = crate::commands::Commands::open(config).await?;
+        let restarted = crate::commands::Commands::open(
+            config,
+            crate::identity_fixture::audit_store(config).await?,
+        )
+        .await?;
         tokio::try_join!(
             commands.scan_action_fixture(id, at),
             restarted.scan_action_fixture(id, at)

@@ -3,9 +3,7 @@ use super::{
     protocol::{self, CheckIn},
 };
 use crate::apple::HttpState;
-use crate::{
-    Error, audit::Audit, database::db, device::VerifiedChannelCredential, native::tls::Peer,
-};
+use crate::{Error, database::db, device::VerifiedChannelCredential, native::tls::Peer};
 use axum::{Extension, body::Bytes, extract::State, http::StatusCode};
 use sqlx::Row;
 use std::sync::Arc;
@@ -13,7 +11,7 @@ use std::sync::Arc;
 pub(super) async fn checkin(
     State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<Peer>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Result<StatusCode, Error> {
     let apple = app.apple()?;
@@ -43,10 +41,79 @@ pub(super) async fn checkin(
     let principal = app.devices.management_principal(&credential).await?;
     audit.target(principal.device());
     audit.registration(principal.registration());
+    audit.identify_device(principal.registration());
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline =
+        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let attempt = app
+        .audit_store
+        .execute(
+            principal.tenant(),
+            &control,
+            (
+                &app.audit_store,
+                CheckinInputs {
+                    principal: &principal,
+                    udid,
+                    input,
+                    audit: &audit,
+                    digest: crate::enrollment::digest(&bytes.as_ref()),
+                    facts: Vec::new(),
+                },
+            ),
+            |(store, inputs), tx| {
+                Box::pin(async move {
+                    let request_result = tx
+                        .with_connection_context(inputs, |inputs, c| {
+                            Box::pin(checkin_on(c, inputs))
+                        })
+                        .await?;
+                    for fact in &inputs.facts {
+                        store.append(tx, fact, false).await.map_err(Error::from)?;
+                    }
+                    if let Some(result) = request_result {
+                        store
+                            .append_request(tx, inputs.audit, 200, result)
+                            .await
+                            .map_err(Error::from)?;
+                    }
+                    inputs.audit.mark_commit_started();
+                    Ok(())
+                })
+            },
+        )
+        .await;
+    crate::operations::settle(attempt, &audit)?;
+    Ok(StatusCode::OK)
+}
+struct CheckinInputs<'a> {
+    principal: &'a crate::device::DevicePrincipal,
+    udid: &'a str,
+    input: CheckIn<'a>,
+    audit: &'a RequestAudit,
+    digest: String,
+    facts: Vec<rss_mdm_audit_integration::Fact>,
+}
+async fn checkin_on(
+    tx: &mut sqlx::PgConnection,
+    inputs: &mut CheckinInputs<'_>,
+) -> Result<Option<&'static str>, Error> {
+    let CheckinInputs {
+        principal,
+        udid,
+        input,
+        audit,
+        digest,
+        facts,
+    } = inputs;
+    let principal = *principal;
+    let udid = *udid;
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
-    let mut tx = app.access.begin(&tenant).await?;
-    crate::device::store::lock_channel(&mut tx, &tenant, principal.device(), principal.channel())
+    crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
         .await?;
     // Recheck under the same registration lock used by revoke/replacement, before every mutation.
     let row=sqlx::query("SELECT a.udid,a.state FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.generation=$3 AND r.state='active' AND c.id=$4::uuid AND c.state='active' AND a.state<>'retired' FOR UPDATE OF r,a")
@@ -54,31 +121,53 @@ pub(super) async fn checkin(
     if row.try_get::<String, _>("udid").map_err(db)? != udid {
         return Err(Error::Unauthorized);
     }
-    match input {
-        CheckIn::Authenticate { .. } => {}
+    let (key, details) = match input {
+        CheckIn::Authenticate { .. } => return Ok(Some("success")),
         CheckIn::TokenUpdate { token, magic, .. } => {
-            sqlx::query("UPDATE mdm_apple.devices SET state='active',token=$3,magic=$4,token_revision=token_revision+1,next_push=clock_timestamp(),push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome=NULL,push_failures=0 WHERE tenant_id=$1::uuid AND registration=$2::uuid")
-                .bind(&tenant).bind(&registration).bind(token).bind(magic).execute(&mut *tx).await.map_err(db)?;
+            let revision: Option<i64> = sqlx::query_scalar("UPDATE mdm_apple.devices SET state='active',token=$3,magic=$4,token_revision=token_revision+1,next_push=clock_timestamp(),push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome=NULL,push_failures=0 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND (state<>'active' OR token IS DISTINCT FROM $3 OR magic IS DISTINCT FROM $4) RETURNING token_revision")
+                .bind(&tenant).bind(&registration).bind(*token).bind(*magic).fetch_optional(&mut *tx).await.map_err(db)?;
+            let Some(revision) = revision else {
+                return Ok(Some("replay"));
+            };
+            (
+                format!("apple-token:{registration}:{revision}"),
+                serde_json::json!({"tokenRevision":revision}),
+            )
         }
         CheckIn::CheckOut { .. } => {
             crate::registration_lifecycle::retire(
-                &mut tx,
+                tx,
+                facts,
                 &tenant,
                 principal.registration(),
                 "revoked",
             )
-            .await?
+            .await?;
+            (
+                format!("apple-checkout:{registration}"),
+                serde_json::json!({"state":"revoked"}),
+            )
         }
-        CheckIn::UserAuthenticate => unreachable!("handled before device mutations"),
-    }
-    crate::operations::commit_audited_status(&app.access, tx, &audit, None, 200).await?;
-    Ok(StatusCode::OK)
+        CheckIn::UserAuthenticate => return Err(Error::Malformed),
+    };
+    let fact = rss_mdm_audit_integration::Fact::business(
+        audit,
+        &key,
+        digest.as_bytes(),
+        200,
+        "success",
+        None,
+    )
+    .and_then(|fact| fact.with_details(details))
+    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+    facts.push(fact);
+    Ok(None)
 }
 
 pub(super) async fn manage(
     State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<Peer>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Result<axum::response::Response, Error> {
     use axum::response::IntoResponse;
@@ -135,7 +224,7 @@ async fn authenticate(
     app: &HttpState,
     leaf: &super::certificate::CheckedLeaf,
     udid: &str,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<bool, Error> {
     let tenant = app.identity.tenant.to_string();
     let mut tx = app.access.begin(&tenant).await?;
@@ -147,3 +236,5 @@ async fn authenticate(
     }
     Ok(consumed)
 }
+
+use rss_mdm_audit_integration::RequestAudit;

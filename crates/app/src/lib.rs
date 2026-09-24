@@ -2,7 +2,8 @@
 //! Embedded authentication assembly and product-owned device/resource authorization.
 #[cfg(test)]
 extern crate self as rss_mdm_app;
-mod audit;
+#[cfg(test)]
+mod audit_integration_tests;
 pub mod authorization;
 mod collection;
 mod commands;
@@ -65,6 +66,8 @@ pub enum Error {
     Conflict,
     #[error("commit outcome unknown; retry the same operation")]
     CommitUnknown,
+    #[error("rollback not acknowledged; original attempt remains unresolved")]
+    RollbackFailed,
     #[error("identity rejected")]
     Unauthorized,
     #[error("permission denied")]
@@ -84,6 +87,10 @@ impl IntoResponse for Error {
             Self::Plan(failure) => (StatusCode::CONFLICT, failure.reason.code()),
             Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
+            Self::RollbackFailed => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "operation_rollback_unconfirmed",
+            ),
             Self::ConfigurationTargetLimit => {
                 (StatusCode::BAD_REQUEST, "configuration_target_limit")
             }
@@ -148,3 +155,6 @@ pub enum PlanStage {
     Save,
     Execute,
 }
+
+#[cfg(test)]
+mod audit_test_support;

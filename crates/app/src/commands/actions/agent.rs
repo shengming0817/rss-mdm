@@ -5,7 +5,7 @@ use super::{
     storage as db,
 };
 use crate::commands::{Commands, Result, corrupt, invalid, storage};
-use crate::{Error, audit::Audit, device::DevicePrincipal};
+use crate::{Error, device::DevicePrincipal};
 use rss_mdm_agent_wire as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::{Value, json};
@@ -56,7 +56,7 @@ impl Commands {
         &self,
         p: &DevicePrincipal,
         input: &wire::TaskClaimRequest,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         self.transact((self,p,input,audit),audit,|ctx,tx|Box::pin(async move{
             let (service,p,input,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
@@ -68,7 +68,9 @@ impl Commands {
                     let run=db::load_run(tx,signed.payload.task_id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&run.id.to_string());let plan=db::load_plan(tx,run.plan).await?;
                     if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || signed.payload.expires_at<=now || run.state.attempt()!=Some(signed.payload.attempt_id) || !db::valid(tx,&plan,p.device(),now).await?{return Err(Error::Conflict.into());}
                 }
-                storage::audit(tx,audit,200).await?;return Ok(response);
+                audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:offer:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+                service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);
             }
             let tenant=tx.tenant_id().to_string();let device=p.device().to_owned();
             let plans=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.action_plans WHERE tenant_id=$1::uuid AND active AND reviewer IS NOT NULL AND (document->'input'->'schedule'->>'until')::bigint>$3 AND document->'input'->'devices' ? $2 AND document->'input'->'schedule'->'trigger'->>'kind' IN ('check_in','registration') ORDER BY id LIMIT 128").bind(tenant).bind(device).bind(now).fetch_all(c).await})).await?;
@@ -82,8 +84,10 @@ impl Commands {
             let mut offer=None;
             for id in ids {
                 let mut run=db::load_run(tx,corrupt(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_plan(tx,run.plan).await?;
+                let previous=run.state.clone();
                 run.state.expire(now,plan.frozen.definition.spec().timeout_seconds);
                 if !db::valid(tx,&plan,p.device(),now).await?{run.state.cancel();}
+                super::recovery::audit_recovery(service,tx,&run,&previous).await?;
                 if run.state.cancellation==Cancellation::None && run.available_at<=now {
                     let attempt=Uuid::new_v4();
                     if run.state.claim(attempt,now).is_ok(){
@@ -100,7 +104,12 @@ impl Commands {
             let cancellations=super::poll::cancellations(tx,p.registration()).await?;
             let has_offer=offer.is_some();
             let response=invalid(serde_json::to_value(invalid(wire::TaskClaimResponse::new(offer,cancellations))?))?;
-            if has_offer{db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;}storage::audit(tx,audit,200).await?;Ok(response)
+            if has_offer{
+                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:offer:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+                db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;
+                service.audit_store.append_in(tx,&fact,false).await?;
+            }else{service.audit_store.append_request_in(tx,audit,200,"success").await?;}
+            Ok(response)
         })).await
     }
     pub(super) async fn action_event(
@@ -108,7 +117,7 @@ impl Commands {
         p: &DevicePrincipal,
         id: Uuid,
         input: &wire::TaskEventRequest,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         self.transact((self,p,id,input,audit),audit,|ctx,tx|Box::pin(async move{
             let (service,p,id,input,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
@@ -119,7 +128,9 @@ impl Commands {
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(&(id,input))?;
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
                 if response.get("permit").filter(|p|!p.is_null()).and_then(|p|p["payload"]["expiresAt"].as_i64()).is_some_and(|expiry|expiry<=now){return Err(Error::Conflict.into());}
-                storage::audit(tx,audit,200).await?;return Ok(response);}
+                audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+                service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);}
             let mut permit=None;
             match input.event() {
                 wire::TaskEvent::Received=>run.state.received(input.attempt_id(),now)?,
@@ -128,7 +139,8 @@ impl Commands {
                     run.state.start(input.attempt_id(),now)?;
                     let signed=service.content.as_ref().ok_or(Error::Unsupported)?.sign(plan.frozen.task(invalid(Uuid::parse_str(&tx.tenant_id().to_string()))?,&run.target,id,input.attempt_id(),wire::TaskPermit::Start,(now+15).min(run.deadline))?)?;
                     let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id().to_string();let value=invalid(serde_json::to_value(&signed))?;
-                    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_attempts SET permit=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND permit IS NULL").bind(tenant).bind(attempt).bind(value).execute(c).await?;Ok(())})).await?;
+                    let changed=tx.with_connection(move|c|Box::pin(async move{Ok(sqlx::query("UPDATE mdm_commands.action_attempts SET permit=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND permit IS NULL").bind(tenant).bind(attempt).bind(value).execute(c).await?.rows_affected())})).await?;
+                    if changed!=1{return Err(Error::Conflict.into());}
                     permit=Some(signed);
                 },
                 wire::TaskEvent::Cancelled=>{run.state.cancel();run.state.cancelled(input.attempt_id())?;},
@@ -143,7 +155,9 @@ impl Commands {
                 },
             }
             db::save_run(tx,&run).await?;let response=invalid(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None)))?;
-            db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;storage::audit(tx,audit,200).await?;Ok(response)
+            let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+            db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;
+            service.audit_store.append_in(tx,&fact,false).await?;Ok(response)
         })).await
     }
     pub(super) async fn action_content(
@@ -151,7 +165,7 @@ impl Commands {
         p: &DevicePrincipal,
         id: Uuid,
         attempt: Uuid,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<(Vec<u8>, String), Error> {
         self.transact((self,p,id,attempt,audit),audit,|ctx,tx|Box::pin(async move{
             let (service,p,id,attempt,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
@@ -161,7 +175,9 @@ impl Commands {
             if now>=expiry{return Err(Error::Forbidden.into());}
             let artifact=plan.frozen.artifact()?;let etag=format!("\"{}\"",artifact.digest().bytes().iter().map(|v|format!("{v:02x}")).collect::<String>());let content=service.content.clone().ok_or(Error::Unsupported)?;
             let bytes=tokio::task::spawn_blocking(move||content.read(&artifact)).await.map_err(|_|Error::Unavailable(crate::Failure::CommandStorage))??;
-            storage::audit(tx,audit,200).await?;Ok((bytes,etag))
+            service.audit_store.append_request_in(tx,audit,200,"success").await?;Ok((bytes,etag))
         })).await
     }
 }
+
+use rss_mdm_audit_integration::RequestAudit;

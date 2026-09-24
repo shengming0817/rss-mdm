@@ -9,7 +9,7 @@ impl Commands {
         principal: &DevicePrincipal,
         message: &rss_mdm_windows_mdm::syncml::Message,
         bytes: &[u8],
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Vec<u8>, Error> {
         self.transact(
             (self, windows, principal, message, bytes, audit),
@@ -53,8 +53,22 @@ impl Commands {
                         })
                         .await??;
                     settle_reports(s, tx, p, m.header.session_id).await?;
-                    storage::audit(tx, a, 200).await?;
-                    Ok(reply.into_bytes())
+                    if !matches!(
+                        a.snapshot().management_result,
+                        Some(rss_mdm_audit_integration::ManagementResult::Replayed)
+                    ) {
+                        s.audit_store
+                            .append_request_in(tx, a, 200, "success")
+                            .await?;
+                    }
+                    let (bytes, facts) = reply.into_parts();
+                    for fact in &facts {
+                        s.audit_store
+                            .append_in(tx, fact, false)
+                            .await
+                            .map_err(Error::from)?;
+                    }
+                    Ok(bytes)
                 })
             },
         )

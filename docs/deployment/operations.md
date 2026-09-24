@@ -2,24 +2,21 @@
 
 ## 版本切换
 
-允许升级的旧基线为 `a83f7876289f15f294940964df69579d62126557` 的固定 name+SHA-256 ledger，或安装器明确接受的 Apple 基线。空库可安装，当前完整 ledger 可重放；其他前缀、缺失、未知、修改摘要、未完成单元均拒绝。基线清单固定在 `crates/app/src/migration/baseline-a83f7876.json`。历史 SQL 不改写。
+当前版本只支持空库安装，以及完全一致的当前安装记录重放。旧版本、前缀、缺失、未知、摘要修改或未完成的迁移记录均拒绝；不提供旧审计表导入或兼容迁移。拒绝时保留数据库及安装记录，不自动清库或重写摘要。
 
-1. 在旧版本正常运行时排空 Agent 待投递报告，撤销旧 Agent registration 及 credential。Agent 能力声明遵循 [协议包](../../crates/agent-wire/README.md)。
-2. 检查旧 Script 版本。旧声明不含完整执行接口，安装器拒绝推断默认值或迁移它；必须显式重新建模和规划数据迁移，不能删除历史记录来绕过检查。
-3. 从前 Apple 基线升级时，还须排空旧非终态命令、未发布 Outbox、有效 Windows 会话、未封存或未投递采集与旧 reconcile 工作及租约；两组前置检查均通过后才安装新单元。停止旧服务，备份数据库和本地制品，使用受控 owner 执行 migrate。新增的 nullable `mdm_commands.action_plans.blocked_at` 保存容量阻塞的原 occurrence 坐标；升级不从 `scan_at` 推断或回填它。预检遍历全部已安装租户，RLS 不会隐藏未清理状态。
-4. 部署新服务和可信签名配置，通过新的 Enrollment 授权重新注册 Agent。每个 tenant 制品目录必须允许服务创建并锁定 `.upload.lock`；启动会在持有该跨实例独占锁时删除精确命名的 `.upload-<canonical hyphenated UUID>` 残留普通文件，失败则以 CommandStorage 阻止启动。旧凭据即使数据库状态误留 active，也不能用于 V2；不保留候选兼容解码，也没有 V1 路由或双协议降级。
-5. Inventory 使用 inventory-v3 从原 Observation journal 重放。原事实、历史和基础报告保留，重放完成前不把视图完整性当作已确认。
+部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v3`、Commands `/api/v2`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
 
-数据库版本、服务代码和 Agent wire 必须整体切换。失败前置检查不会删除账本、自动撤销身份或清空业务证据。完成迁移后的回退使用成套数据库/制品备份和对应旧服务，不能仅降级二进制。
-
-管理客户端同时切换 Enrollment 整组 `/api/v3`、Commands 整组 `/api/v2`（含计划执行）。内部 dispatch 使用 `mdm.command-dispatch/v2`、route `device.command`，消息/reconcile 域为 `mdm.commands.v2`；旧消息只作历史，不被新 decoder 消费。候选已绑定对应 UI，其它外部 API 消费者须在同一停写窗口升级，不存在旧路由别名、双写或双协议降级。
-
+每个 tenant 制品目录必须允许服务创建并锁定 `.upload.lock`；启动持有跨实例独占锁时清理精确命名的 `.upload-<canonical hyphenated UUID>` 残留普通文件，失败则阻止启动。回退使用配套数据库、制品、密钥备份和服务，不能仅降级二进制。
 
 ## 就绪、停机与恢复
 
 /livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
 SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
+
+审计恢复要求各产品运行连接使用 `READ COMMITTED`；启动与每次借用事务均检查，组件不替调用方修改隔离级别。业务事务先取得 Audit head，以及 Ledger 模式下固定审计链的 head，再取得业务和 Outbox 锁。提交未知后使用原操作身份和原请求重试，锁后的新语句快照同时核对业务回执、产品审计回执与组件记录；恢复原 canonical bytes 和 recorded_at，不生成新的事件身份。单边缺失、指纹或字节冲突均拒绝并要求修复，不能补造记录。两者都不存在也只有在成功取得同一锁、确认先前数据库事务已结束后才允许重新判定业务；这不证明设备或软件源的外部副作用回滚。锁或读取超时继续保留未知状态。
+
+Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID 配错密钥也拒绝启动。新空链没有历史密钥认证证据，部署方仍须保管最初配置的秘密。运行时不自动生成密钥、轮转或降级 Plain；当前部署不支持更换既有审计完整性模式。请求拒绝、查询、重放与未知结果使用独立请求事件，在受保护响应释放前完成结算。`RollbackFailed` 与 `CommitUnknown` 均不是成功回滚证明，日志也不替代持久审计。
 
 监控 mdm_inventory_progress、mdm_management_retention_failure、mdm_shutdown_failure、mdm_maintenance_shutdown_failure 和 audit_failure；日志记录闭合类别与操作坐标，不打印凭据或协议正文。提交未知按原操作查询恢复，不更换幂等键或删除 ledger。
 

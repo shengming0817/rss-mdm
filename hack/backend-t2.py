@@ -38,7 +38,7 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
             sql(((source/'crates/app/schema/software-publication-roles.sql').read_text()+(source/'crates/app/schema/management-roles.sql').read_text()+(source/'crates/app/schema/commands-roles.sql').read_text()))
             for schema in SCHEMAS:sql(f"ALTER ROLE {schema}_runtime LOGIN PASSWORD 'backend-fixture';")
             if app:
-                sql((source/'crates/app/schema/identity-roles.sql').read_text())
+                sql((source/'crates/app/schema/identity-roles.sql').read_text()+(source/'crates/app/schema/audit-roles.sql').read_text())
                 sql("ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'backend-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'backend-fixture';")
                 sql("ALTER ROLE mdm_software_driver LOGIN PASSWORD 'backend-fixture'; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS;")
                 password=root/'owner-password';password.write_text('owner-fixture');password.chmod(0o600)

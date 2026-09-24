@@ -52,13 +52,9 @@ GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.o
 GRANT SELECT,INSERT,UPDATE,DELETE ON rss_transactional_messaging.inbox TO mdm_command_runtime;
 GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),rss_transactional_messaging.prepare_outbox_partitions(jsonb),rss_transactional_messaging.append_outbox(bytea,jsonb),rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint),rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid),rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid) TO mdm_command_runtime;
 GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.credentials,mdm_access.report_sources,mdm_access.enrollment_intents,mdm_access.enrollment_certificates,mdm_access.management_sessions,mdm_access.management_messages,mdm_access.collection_runs,mdm_access.authorization_rules,mdm_access.user_groups TO mdm_command_runtime;
-GRANT INSERT ON mdm_access.management_sessions,mdm_access.management_messages,mdm_access.collection_runs,mdm_access.audit TO mdm_command_runtime;
+GRANT INSERT ON mdm_access.management_sessions,mdm_access.management_messages,mdm_access.collection_runs TO mdm_command_runtime;
 GRANT UPDATE(next_sequence,next_command) ON mdm_access.report_sources TO mdm_command_runtime;
 GRANT UPDATE(server_nonce) ON mdm_access.enrollment_certificates TO mdm_command_runtime;
 GRANT UPDATE(state,last_message,client_authenticated,correlation,nonce,run_id) ON mdm_access.management_sessions TO mdm_command_runtime;
 GRANT UPDATE(attempts,result,reason,batch,digest,sealed_at,delivery_pending) ON mdm_access.collection_runs TO mdm_command_runtime;
-ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
-ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
-('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
-'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save','authorization_write','authorization_initialize','authorization_effective_read','authorization_rules_read','authorization_groups_read','authorization_members_read','authorization_departments_read','command_accept','command_read','command_cancel','command_approve','command_dispatch'));
 COMMIT;

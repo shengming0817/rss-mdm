@@ -286,6 +286,7 @@ impl InventoryRuntime {
         observation: Arc<Observation<Clock>>,
         projection: Arc<Projection>,
         access: Arc<Database>,
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Clock,
         readiness: Arc<Readiness>,
@@ -293,7 +294,7 @@ impl InventoryRuntime {
         Self {
             observation,
             projection,
-            delivery: crate::collection::store::Delivery::new(access),
+            delivery: crate::collection::store::Delivery::new(access, audit_store),
             tenant,
             clock,
             readiness,
@@ -554,7 +555,10 @@ impl InventoryRuntime {
         Ok(Arc::new(Self::new(
             observation.store,
             projection.store,
-            access,
+            access.clone(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
             tenant,
             clock,
             Arc::new(Readiness::default()),

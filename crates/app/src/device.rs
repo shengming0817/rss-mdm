@@ -7,10 +7,10 @@ pub(crate) mod read;
 pub(crate) mod store;
 #[cfg(test)]
 pub(crate) mod tests;
-#[cfg(test)]
-use crate::audit::{FailureReason, WriteOutcome};
 use crate::authorization::context::AuthorizedPrincipal;
-use crate::{Database, Error, Failure, audit::Audit, device::coordinates::Coordinates};
+use crate::{Database, Error, Failure, device::coordinates::Coordinates};
+#[cfg(test)]
+use rss_mdm_audit_integration::{FailureReason, WriteOutcome};
 use rss_observation::{Epoch, Id, Registration, Scope};
 use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
@@ -134,12 +134,21 @@ pub struct RevocationReceipt {
 /// App-owned service; the router and trusted channel adapters share the same policy/store.
 /// The caller retains ownership of both pools; this service creates or closes none.
 pub struct DeviceService {
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     access: Arc<Database>,
     tenant: String,
 }
 impl DeviceService {
-    pub(crate) fn new(access: Arc<Database>, tenant: String) -> Self {
-        Self { access, tenant }
+    pub(crate) fn new(
+        access: Arc<Database>,
+        tenant: String,
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    ) -> Self {
+        Self {
+            access,
+            tenant,
+            audit_store,
+        }
     }
     pub(crate) async fn management_principal(
         &self,
@@ -156,8 +165,8 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         command: BindRegistration,
     ) -> Result<RegistrationReceipt, Error> {
-        let audit = Audit::new(admin.tenant_id().into(), "registration_bind");
-        audit.identify(admin);
+        let audit = RequestAudit::new(admin.tenant_id().into(), "registration_bind");
+        audit.identify(admin.principal_id(), admin.instance_id());
         audit.operation(command.operation_id, "registration_bind");
         self.audited(&audit, self.bind_inner(admin, credential, &command, &audit))
             .await
@@ -170,8 +179,8 @@ impl DeviceService {
         registration: Uuid,
         operation_id: Uuid,
     ) -> Result<RevocationReceipt, Error> {
-        let audit = Audit::new(admin.tenant_id().into(), "credential_revoke");
-        audit.identify(admin);
+        let audit = RequestAudit::new(admin.tenant_id().into(), "credential_revoke");
+        audit.identify(admin.principal_id(), admin.instance_id());
         audit.operation(operation_id, "credential_revoke");
         audit.target(device);
         self.audited(
@@ -183,13 +192,22 @@ impl DeviceService {
     #[cfg(test)]
     async fn audited<T>(
         &self,
-        audit: &Audit,
+        audit: &RequestAudit,
         work: impl std::future::Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
         let result = tokio::time::timeout(Duration::from_secs(8), work)
             .await
-            .unwrap_or_else(|_| Err(audit.snapshot().write_outcome.deadline_error()));
-        if audit.snapshot().write_outcome == WriteOutcome::Committed {
+            .unwrap_or_else(|_| {
+                Err(crate::error_projection::audit_deadline(
+                    audit.snapshot().write_outcome,
+                ))
+            });
+        if audit.snapshot().write_outcome == WriteOutcome::Committed
+            && !matches!(
+                audit.snapshot().management_result,
+                Some(rss_mdm_audit_integration::ManagementResult::Replayed)
+            )
+        {
             audit.finalize(None);
             return result;
         }
@@ -199,7 +217,7 @@ impl DeviceService {
     #[cfg(test)]
     async fn record_result<T>(
         &self,
-        audit: &Audit,
+        audit: &RequestAudit,
         result: Result<T, Error>,
         success: &'static str,
     ) -> Result<T, Error> {
@@ -213,16 +231,15 @@ impl DeviceService {
             Err(Error::Malformed) => (400, "denied"),
             Err(_) => (503, "failed"),
         };
-        if !matches!(
-            tokio::time::timeout(
-                Duration::from_secs(2),
-                crate::audit::record(&self.access, audit, status, outcome)
-            )
-            .await,
-            Ok(Ok(()))
-        ) {
+        let store = &self.audit_store;
+        let timer = crate::lifecycle::RuntimeTimer;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
+            .expect("bounded fixture settlement");
+        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        if let Err(error) = store.settle_request(audit, status, outcome, &control).await {
             audit.finalize(Some(FailureReason::Persistent));
-            return Err(Error::Unavailable(Failure::Audit));
+            return Err(error.into());
         }
         audit.finalize(None);
         result
@@ -283,3 +300,5 @@ pub(crate) const AGENT_ACCESS_MIGRATION_SQL: &str =
 
 pub(crate) const AUTHORITY_HISTORY_MIGRATION_SQL: &str =
     include_str!("../migrations/0012_asset_history.sql");
+
+use rss_mdm_audit_integration::RequestAudit;

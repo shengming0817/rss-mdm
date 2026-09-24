@@ -162,6 +162,7 @@ pub(crate) enum EnrollmentError {
 pub(crate) struct EnrollmentService {
     access: std::sync::Arc<crate::database::Database>,
     credentials: std::sync::Arc<credentials::Credentials>,
+    audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
 }
 pub(crate) struct ResumeCommand<'a> {
     pub id: Uuid,
@@ -172,10 +173,12 @@ impl EnrollmentService {
     pub(crate) fn new(
         access: std::sync::Arc<crate::database::Database>,
         credentials: std::sync::Arc<credentials::Credentials>,
+        audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     ) -> Self {
         Self {
             access,
             credentials,
+            audit_store,
         }
     }
     async fn create(
@@ -184,13 +187,13 @@ impl EnrollmentService {
         input: &Create,
         continuation: &credentials::SessionContinuation,
         key: Uuid,
-        audit: &crate::audit::Audit,
+        audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
         let permission = proof.enrollment(&input.device_id)?;
         audit.target(&input.device_id);
         let reference = continuation.retain(&self.credentials)?;
         store::create_enrollment(
-            &self.access,
+            &self.audit_store,
             permission,
             &input.password,
             input.source,
@@ -205,14 +208,14 @@ impl EnrollmentService {
         proof: &crate::authorization::context::AuthorizedPrincipal,
         command: ResumeCommand<'_>,
         continuation: &credentials::SessionContinuation,
-        audit: &crate::audit::Audit,
+        audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
         let device = store::enrollment_target(&self.access, proof, command.id).await?;
         let permission = proof.enrollment(&device)?;
         audit.target(&device);
         let reference = continuation.retain(&self.credentials)?;
         store::change_enrollment(
-            &self.access,
+            &self.audit_store,
             permission,
             command.id,
             Some((command.password, reference)),

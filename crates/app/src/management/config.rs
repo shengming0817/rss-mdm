@@ -46,6 +46,7 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
         mut acquire: impl FnMut(Resource),
@@ -77,7 +78,7 @@ impl Config {
             runtime: runtime.clone(),
             role: Role::Management,
         });
-        match Management::new(runtime.clone(), tenant, clock).await {
+        match Management::new(audit_store, runtime.clone(), tenant, clock).await {
             Ok(mut service) => {
                 if !self.sources.is_empty() {
                     let setup = self
@@ -140,7 +141,7 @@ impl Config {
             )
             .map_err(|_| invalid())?;
             let service = p::PublicationService::connect(
-                runtime.clone(),
+                (runtime.clone(), management.audit_store.clone()),
                 tenant,
                 source.name.clone(),
                 source.rings.clone(),

@@ -1,6 +1,5 @@
 {
   "mdm_access.agent_bindings": "a9defb03153f1e39c0f29818fd622f53c390d5a7ca822556b8a19ff7613bf56d",
-  "mdm_access.audit": "df0076815a01f9247544019a96b4ac5d32ec2e916c591aa66c85d3c9540e8055",
   "mdm_access.authorization_rules": "f2f5fdb64239ce56d7686f0b22d5d7a818d17fc79253ca893204b17e1cf8df00",
   "mdm_access.collection_runs": "25cc44febed9e18e4dd697c996843dd359c3ba8238e5e59e4d3b663cb88e2bc9",
   "mdm_access.credentials": "9b9b73f5680bc26e49c60d976c13103b91f398934c9758c6de10c8d5a37e675a",

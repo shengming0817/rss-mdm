@@ -154,13 +154,7 @@ async fn effects(pg: &mut sqlx::PgConnection) -> anyhow::Result<Vec<String>> {
         "mdm_commands.firewall_owners",
         "mdm_commands.plan_executions",
         "mdm_commands.requests",
-        "mdm_access.audit",
     ] {
-        let filter = if table == "mdm_access.audit" {
-            " AND result='success' AND action IN('command_accept','plan_execute')"
-        } else {
-            ""
-        };
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'[]') FROM ",
         );
@@ -168,9 +162,19 @@ async fn effects(pg: &mut sqlx::PgConnection) -> anyhow::Result<Vec<String>> {
             .push(table)
             .push(" t WHERE tenant_id=")
             .push_bind(TENANT)
-            .push("::uuid")
-            .push(filter);
+            .push("::uuid");
         effects.push(query.build_query_scalar().fetch_one(&mut *pg).await?);
     }
+    let audit = crate::audit_test_support::read(pg)
+        .await?
+        .into_iter()
+        .filter(|r| {
+            r.source() == "mdm.business"
+                && r.result() == "success"
+                && matches!(r.action(), "command_accept" | "plan_execute")
+        })
+        .map(|r| serde_json::json!([r.decoded.event().identity().event_id().as_str(), r.payload]))
+        .collect::<Vec<_>>();
+    effects.push(serde_json::to_string(&audit)?);
     Ok(effects)
 }

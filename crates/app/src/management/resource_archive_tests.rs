@@ -46,7 +46,9 @@ async fn candidate_reference_blocks_archive_and_race_is_atomic() {
                 .unwrap()
                 .is_some()
         ),
-        (Err(PublicationError::Conflict), Ok(_)) => assert!(
+        // Archive may win before the first immutable-version read, in which case
+        // the version is no longer usable content. Either ordering must leave no candidate.
+        (Err(PublicationError::Conflict | PublicationError::Content), Ok(_)) => assert!(
             publication
                 .candidate(&racing.candidate, pg::cutoff())
                 .await

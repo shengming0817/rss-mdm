@@ -33,14 +33,27 @@ impl Fixture {
         // Move only the scheduling clock into the renewal window. Certificates and TLS remain real.
         let due = after - ((after - before) / 3).min(7 * 86400) + 1;
         for _ in 0..2 {
-            super::super::renewal::maintain(self.app.apple()?, &self.app.access, TENANT, due)
-                .await?;
+            super::super::renewal::maintain(
+                self.app.apple()?,
+                &self.app.access,
+                &self.app.audit_store,
+                TENANT,
+                due,
+            )
+            .await?;
         }
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE renewal_of IS NOT NULL AND state='prepared'").fetch_one(&mut pg).await?;
         ensure!(count == 1, "renewal scheduling duplicated an issuance");
         let expired: String = sqlx::query_scalar("SELECT id::text FROM mdm_apple.scep_attempts WHERE renewal_of IS NOT NULL AND state='prepared'").fetch_one(&mut pg).await?;
         sqlx::query("UPDATE mdm_apple.scep_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(&expired).execute(&mut pg).await?;
-        super::super::renewal::maintain(self.app.apple()?, &self.app.access, TENANT, due).await?;
+        super::super::renewal::maintain(
+            self.app.apple()?,
+            &self.app.access,
+            &self.app.audit_store,
+            TENANT,
+            due,
+        )
+        .await?;
         let state: String =
             sqlx::query_scalar("SELECT state FROM mdm_apple.attempts WHERE id=$1::uuid")
                 .bind(&expired)
@@ -170,7 +183,7 @@ impl Fixture {
             "renewal activation {}",
             accepted.0
         );
-        let audit = crate::audit::Audit::new(TENANT.into(), "apple_management");
+        let audit = rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "apple_management");
         let stale = self
             .app
             .commands

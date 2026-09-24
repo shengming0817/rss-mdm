@@ -56,10 +56,4 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION mdm_access.immutable_collection() FROM PUBLIC;
 CREATE TRIGGER immutable_collection BEFORE UPDATE ON mdm_access.collection_runs FOR EACH ROW EXECUTE FUNCTION mdm_access.immutable_collection();
-ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
-ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
- ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
-  'protected_request','registration_bind','credential_revoke','device_report',
-  'enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read',
-  'windows_discovery','windows_policy','windows_management','collection_read','collection_finish'));
 COMMIT;

@@ -55,17 +55,31 @@ impl DurableStore for Automation {
                 if id.is_none() && entity != "changes" {
                     return Err(ReconcileError::new(ErrorKind::Invariant));
                 }
-                rss_reconcile_postgres::messaging::protect(
-                    &self.service.runtime,
-                    claim,
-                    control,
-                    &self.service,
-                    |service, tx| {
-                        Box::pin(async move {
-                            let result = match id {
+                self.service
+                    .runtime
+                    .local_tx_with_context(
+                        self.service.tenant,
+                        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                            control.remaining(),
+                        ),
+                        (&self.service, claim, &self.service),
+                        |(service, claim, context), tx| {
+                            Box::pin(async move {
+                                service
+                                    .audit_store
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(PgError::from)?;
+                                rss_reconcile_postgres::messaging::protect_in(
+                                    tx,
+                                    claim,
+                                    context,
+                                    |service, tx| {
+                                        Box::pin(async move {
+                                            let result = match id {
                                 Some(id) => {
                                     crate::management::automation::jobs::finish_job_in(
-                                        tx,
+                                        tx, &service.audit_store,
                                         id,
                                         Some("automation_suspended"),
                                     )
@@ -76,19 +90,23 @@ impl DurableStore for Automation {
                                 }
                                 None => service.fail_ingress_in(tx).await,
                             };
-                            result.map_err(|e| fault(e, &Mutex::new(None)))
-                        })
-                    },
-                )
-                .await
-                .fold(
-                    Ok,
-                    |_| Err(ReconcileError::new(ErrorKind::Transient)),
-                    |_| Err(ReconcileError::new(ErrorKind::Transient)),
-                    |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
-                    |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
-                    |_| Err(ReconcileError::new(ErrorKind::Transient)),
-                )?;
+                                            result.map_err(|e| fault(e, &Mutex::new(None)))
+                                        })
+                                    },
+                                )
+                                .await
+                            })
+                        },
+                    )
+                    .await
+                    .fold(
+                        Ok,
+                        |_| Err(ReconcileError::new(ErrorKind::Transient)),
+                        |_| Err(ReconcileError::new(ErrorKind::Transient)),
+                        |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
+                        |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
+                        |_| Err(ReconcileError::new(ErrorKind::Transient)),
+                    )?;
             }
             self.store.finish(claim, completion, control).await?;
             if let Completion::Suspended { failures } = completion {
@@ -124,23 +142,30 @@ impl Management {
     }
     async fn fail_ingress_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
         let tenant = self.tenant.to_string();
-        let changed=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_management.asset_dispatch(tenant_id,failure) VALUES($1::uuid,'automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure WHERE asset_dispatch.failure IS NULL")
-                .bind(tenant).execute(c).await.map(|r|r.rows_affected())
+        let generation: Option<i64> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("INSERT INTO mdm_management.asset_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=asset_dispatch.failure_generation+1 WHERE asset_dispatch.failure IS NULL RETURNING failure_generation")
+                .bind(tenant).fetch_optional(c).await
         })).await?;
-        if changed > 0 {
-            let audit = Audit::new(self.tenant.to_string(), "automation_failed");
+        if let Some(generation) = generation {
+            let audit = RequestAudit::new(self.tenant.to_string(), "automation_failed");
             audit.identify_service("service:asset-automation");
             audit.target("asset_ingress");
-            tx.with_connection(move |c| {
-                Box::pin(async move {
-                    let result =
-                        crate::audit::append_on_connection(c, &audit, 200, "failed", None).await;
-                    audit.finalize(None);
-                    result.map_err(|_| sqlx::Error::Protocol("automation audit unavailable".into()))
-                })
-            })
-            .await?;
+            let fact = rss_mdm_audit_integration::Fact::business(
+                &audit,
+                &format!("asset-ingress:{generation}:failed"),
+                &generation.to_be_bytes(),
+                200,
+                "failed",
+                None,
+            )
+            .map_err(|_| Error::Unavailable(Failure::Audit))?;
+            let result = self
+                .audit_store
+                .append_in(tx, &fact, false)
+                .await
+                .map_err(Error::from);
+            audit.finalize(None);
+            result?;
         }
         Ok(())
     }

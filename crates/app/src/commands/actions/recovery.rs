@@ -39,6 +39,7 @@ pub(in crate::commands) async fn recover(
     let next = runs.last().cloned();
     for id in runs {
         let mut run = db::load_run(tx, corrupt(Uuid::parse_str(&id))?).await?;
+        let previous = run.state.clone();
         let stale = stale_registration(tx, &run.target).await?;
         if stale || !db::valid(tx, &plan, &run.target.device, now).await? {
             run.state.cancel();
@@ -51,9 +52,46 @@ pub(in crate::commands) async fn recover(
             run.state.cancel();
         }
         db::save_run(tx, &run).await?;
+        audit_recovery(service, tx, &run, &previous).await?;
     }
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_plans SET recovery_after=$3::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).bind(next).execute(c).await?;Ok(())})).await?;
+    Ok(())
+}
+pub(super) async fn audit_recovery(
+    service: &Commands,
+    tx: &mut PgTransaction<'_>,
+    run: &db::Run,
+    previous: &super::state::RunState,
+) -> Result<()> {
+    if *previous != run.state {
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            tx.tenant_id().to_string(),
+            "command_reconcile",
+        );
+        audit.identify_service("command-recovery");
+        audit.operation(run.id, "command_reconcile");
+        audit.plan(run.plan);
+        audit.target(&run.target.device);
+        audit.registration(run.target.registration);
+        let bytes = crate::commands::invalid(serde_json::to_vec(&(&previous, &run.state)))?;
+        use sha2::Digest;
+        let fact = rss_mdm_audit_integration::Fact::business(
+            &audit,
+            &format!(
+                "action:{}:recover:{:x}",
+                run.id,
+                sha2::Sha256::digest(&bytes)
+            ),
+            &bytes,
+            200,
+            "success",
+            None,
+        )?
+        .with_details(serde_json::json!({"before":previous,"after":run.state}))?;
+        audit.finalize(None);
+        service.audit_store.append_in(tx, &fact, false).await?;
+    }
     Ok(())
 }
 impl Commands {
@@ -62,15 +100,30 @@ impl Commands {
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), crate::Error> {
-        let audit = crate::audit::Audit::new(self.tenant.to_string(), "command_dispatch");
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            self.tenant.to_string(),
+            "command_dispatch",
+        );
         audit.operation(id, "command_dispatch");
-        let result=self.transact((id,fingerprint,&audit),&audit,|ctx,tx|Box::pin(async move{
-            let (id,fingerprint,audit)=ctx;let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
-            let changed=tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3").bind(tenant).bind(id).bind(fingerprint).execute(c).await})).await?.rows_affected();
-            if changed!=1{return Err(crate::Error::Unavailable(crate::Failure::CommandInvariant).into());}
-            storage::audit(tx,audit,200).await?;Ok(())
+        audit.identify_service("command-dispatch");
+        let result=self.transact((self,id,fingerprint,&audit),&audit,|ctx,tx|Box::pin(async move{
+            let (service,id,fingerprint,audit)=ctx;
+            let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("action:{id}:dispatch"),fingerprint,200,"success",None)?;
+            let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
+            let old=tx.with_connection(move|c|Box::pin(async move{
+                let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
+                if old==Some(false){sqlx::query("UPDATE mdm_commands.action_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).execute(c).await?;}
+                Ok(old)
+            })).await?.ok_or(crate::Error::Unavailable(crate::Failure::CommandInvariant))?;
+            if old{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
+            service.audit_store.append_in(tx,&fact,old).await?;Ok(())
         })).await;
-        audit.finalize(None);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
         result
     }
 }
@@ -82,7 +135,10 @@ impl Commands {
         &self,
         id: Uuid,
     ) -> std::result::Result<(), crate::Error> {
-        let audit = crate::audit::Audit::new(self.tenant.to_string(), "management_write");
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            self.tenant.to_string(),
+            "management_write",
+        );
         let result = self
             .transact((self, id), &audit, |ctx, tx| {
                 Box::pin(async move {
@@ -91,7 +147,12 @@ impl Commands {
                 })
             })
             .await;
-        audit.finalize(None);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
         result
     }
 
@@ -101,7 +162,10 @@ impl Commands {
         id: Uuid,
         now: i64,
     ) -> std::result::Result<(), crate::Error> {
-        let audit = crate::audit::Audit::new(self.tenant.to_string(), "management_write");
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            self.tenant.to_string(),
+            "management_write",
+        );
         let result = self
             .transact((self, id, now), &audit, |ctx, tx| {
                 Box::pin(async move {
@@ -112,7 +176,12 @@ impl Commands {
                 })
             })
             .await;
-        audit.finalize(None);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
         result
     }
 }

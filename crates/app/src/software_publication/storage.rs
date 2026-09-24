@@ -59,6 +59,7 @@ impl Target {
 pub(super) struct Call {
     pub target: Target,
     pub attempted: bool,
+    pub generation: i64,
     pub acknowledged: bool,
     pub complete: bool,
     pub prepared: bool,
@@ -116,17 +117,18 @@ pub(super) async fn lock(
     })
     .await
 }
-pub(super) async fn audit(
-    tx: &mut PgTransaction<'_>,
+pub(super) fn fact(
+    tenant: rss_request_context::TenantId,
     actor: &rel::ActorId,
     target: &str,
     action: &'static str,
-    fact: crate::audit::SoftwareFact,
-) -> std::result::Result<(), PgError> {
-    if actor.tenant() != tx.tenant_id() {
+    software: rss_mdm_audit_integration::SoftwareFact,
+    fingerprint: &[u8],
+) -> std::result::Result<rss_mdm_audit_integration::Fact, PgError> {
+    if actor.tenant() != tenant {
         return Err(fault());
     }
-    let audit = crate::audit::Audit::new(tx.tenant_id().to_string(), action);
+    let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.to_string(), action);
     if let Ok((instance, subject)) = serde_json::from_str::<(String, String)>(actor.value()) {
         if instance.len() > 255 || subject.len() > 255 {
             return Err(fault());
@@ -136,22 +138,100 @@ pub(super) async fn audit(
         audit.identify_service(actor.value());
     }
     audit.target(target);
-    let (status, result) = match fact.outcome {
+    let (status, result) = match software.outcome {
         "unknown" | "attempted" => (202, "unknown"),
         "not-applied" => (200, "failed"),
         _ => (200, "success"),
     };
-    audit.software(fact);
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            let result = crate::audit::append_on_connection(c, &audit, status, result, None).await;
-            audit.finalize(None);
-            result.map_err(|_| sqlx::Error::Protocol("software audit unavailable".into()))
-        })
-    })
-    .await
+    let key = format!("software:{}:{}", software.operation, software.stage);
+    audit.software(software);
+    let result =
+        rss_mdm_audit_integration::Fact::business(&audit, &key, fingerprint, status, result, None)
+            .map_err(|_| fault());
+    audit.finalize(None);
+    result
+}
+/// App-owned binding of the complete public release request, independent of the component codec.
+pub(super) fn request_fingerprint(
+    candidate: &str,
+    r: &rel::Request,
+) -> std::result::Result<Vec<u8>, PgError> {
+    use serde_json::json;
+    let actor = |a: &rel::ActorId| json!([a.tenant().to_string(), a.value()]);
+    let evidence =
+        |e: &rel::Evidence| json!([actor(&e.actor), e.digest.bytes(), e.at.unix_seconds()]);
+    let operation = match &r.operation {
+        rel::Operation::Replace(c) => json!(["replace", c.digest().bytes()]),
+        rel::Operation::Validate(v) => json!([
+            "validate",
+            v.candidate.tenant().to_string(),
+            v.candidate.value(),
+            v.content.bytes(),
+            v.ring as u8,
+            evidence(&v.evidence),
+            match v.verdict {
+                rel::Verdict::Passed => "passed",
+                rel::Verdict::Failed => "failed",
+                rel::Verdict::Unknown => "unknown",
+            }
+        ]),
+        rel::Operation::Approve {
+            ring,
+            publisher,
+            policy,
+        } => json!([
+            "approve",
+            *ring as u8,
+            actor(publisher),
+            match policy {
+                rel::ActorPolicy::Separate => "separate",
+                rel::ActorPolicy::AllowSameActor => "allow-same",
+            }
+        ]),
+        rel::Operation::Authorize { ring, approval } => {
+            json!(["authorize", *ring as u8, approval.bytes()])
+        }
+        rel::Operation::Retry {
+            ring,
+            publication,
+            attempt,
+        } => json!(["retry", *ring as u8, publication.digest().bytes(), attempt]),
+        rel::Operation::Record {
+            ring,
+            publication,
+            attempt,
+            outcome,
+        } => json!([
+            "record",
+            *ring as u8,
+            publication.digest().bytes(),
+            attempt,
+            result_tag(outcome),
+            evidence(outcome.evidence())
+        ]),
+        rel::Operation::Quarantine => json!(["quarantine"]),
+        rel::Operation::Deprecate => json!(["deprecate"]),
+    };
+    encode(&json!([
+        "mdm.software.audit.request/v1",
+        candidate,
+        r.id.tenant().to_string(),
+        r.id.value(),
+        actor(&r.actor),
+        r.expected_revision,
+        r.as_of.unix_seconds(),
+        operation
+    ]))
+}
+fn result_tag(result: &rel::PublicationResult) -> &'static str {
+    match result {
+        rel::PublicationResult::Unknown(_) => "unknown",
+        rel::PublicationResult::Applied(_) => "applied",
+        rel::PublicationResult::NotApplied(_) => "not-applied",
+    }
 }
 pub(super) async fn register(
+    audit_store: &rss_mdm_audit_integration::AuditStore,
     tx: &mut PgTransaction<'_>,
     sources: &Sources,
     heads: &[Option<String>; 3],
@@ -203,16 +283,24 @@ pub(super) async fn register(
             })
             .await?;
         }
-        if created {
-            audit(
-                tx,
-                actor,
+        let fact = fact(
+            tx.tenant_id(),
+            actor,
+            &sources.logical,
+            "software_binding",
+            binding_fact(&b.identity, i as u8),
+            &encode(&(
+                "binding/v1",
                 &sources.logical,
-                "software_binding",
-                binding_fact(&b.identity, i as u8),
-            )
-            .await?;
-        }
+                i,
+                &b.identity,
+                &b.configuration,
+            ))?,
+        )?;
+        audit_store
+            .append_in(tx, &fact, !created)
+            .await
+            .map_err(PgError::from)?;
     }
     Ok(Ok(()))
 }
@@ -439,10 +527,10 @@ pub(super) async fn call(
     let (t, id) = (tx.tenant_id().to_string(), id.to_owned());
     let q = match table {
         Table::Publish => {
-            "SELECT document,digest,attempted,acknowledged,false AS complete,true AS prepared FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id=$2"
+            "SELECT document,digest,attempted,call_generation,acknowledged,false AS complete,true AS prepared FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id=$2"
         }
         Table::Withdraw => {
-            "SELECT coalesce(t.document,w.document) AS document,coalesce(t.digest,w.digest) AS digest,coalesce(t.attempted,false) AS attempted,coalesce(t.acknowledged,false) AS acknowledged,w.complete,t.id IS NOT NULL AS prepared FROM mdm_software_composition.withdrawals w LEFT JOIN mdm_software_composition.targets t ON t.tenant_id=w.tenant_id AND t.id=w.id WHERE w.tenant_id=$1::uuid AND w.id=$2"
+            "SELECT coalesce(t.document,w.document) AS document,coalesce(t.digest,w.digest) AS digest,coalesce(t.attempted,false) AS attempted,coalesce(t.call_generation,0) AS call_generation,coalesce(t.acknowledged,false) AS acknowledged,w.complete,t.id IS NOT NULL AS prepared FROM mdm_software_composition.withdrawals w LEFT JOIN mdm_software_composition.targets t ON t.tenant_id=w.tenant_id AND t.id=w.id WHERE w.tenant_id=$1::uuid AND w.id=$2"
         }
     };
     let row = tx
@@ -465,6 +553,7 @@ pub(super) async fn call(
         Ok(Call {
             target,
             attempted: r.try_get("attempted")?,
+            generation: r.try_get("call_generation")?,
             acknowledged: r.try_get("acknowledged")?,
             complete: r.try_get("complete")?,
             prepared: r.try_get("prepared")?,
@@ -617,9 +706,28 @@ pub(super) fn record_request(
     result: rel::PublicationResult,
     at: Timepoint,
 ) -> Result<rel::Request> {
+    let evidence = result.evidence();
+    let identity = serde_json::to_vec(&(
+        "mdm.software.record/v1",
+        actor.tenant().to_string(),
+        actor.value(),
+        &t.candidate,
+        t.publication,
+        t.attempt,
+        t.ring,
+        result_tag(&result),
+        evidence.actor.value(),
+        evidence.digest.bytes(),
+        evidence.at.unix_seconds(),
+        at.unix_seconds(),
+    ))
+    .map_err(|_| Error::Identity)?;
     Ok(rel::Request {
-        id: rel::RequestId::new(actor.tenant(), uuid::Uuid::new_v4().simple().to_string())
-            .map_err(|_| Error::Identity)?,
+        id: rel::RequestId::new(
+            actor.tenant(),
+            format!("record/{:x}", Sha256::digest(identity)),
+        )
+        .map_err(|_| Error::Identity)?,
         actor: actor.clone(),
         expected_revision: c.snapshot().revision,
         as_of: at,
@@ -713,8 +821,8 @@ pub(super) fn request_fact(
     id: &str,
     ring: Option<rel::Ring>,
     stage: &'static str,
-) -> crate::audit::SoftwareFact {
-    crate::audit::SoftwareFact {
+) -> rss_mdm_audit_integration::SoftwareFact {
+    rss_mdm_audit_integration::SoftwareFact {
         operation: super::hex(&Sha256::digest(id.as_bytes())),
         publication: None,
         attempt: None,
@@ -728,8 +836,8 @@ pub(super) fn request_fact(
         outcome: "applied",
     }
 }
-fn binding_fact(binding: &[u8], ring: u8) -> crate::audit::SoftwareFact {
-    crate::audit::SoftwareFact {
+fn binding_fact(binding: &[u8], ring: u8) -> rss_mdm_audit_integration::SoftwareFact {
+    rss_mdm_audit_integration::SoftwareFact {
         operation: super::hex(binding),
         publication: None,
         attempt: None,
@@ -739,13 +847,34 @@ fn binding_fact(binding: &[u8], ring: u8) -> crate::audit::SoftwareFact {
         outcome: "applied",
     }
 }
+pub(super) fn call_fact(
+    t: &Target,
+    table: Table,
+    generation: i64,
+    stage: &'static str,
+    outcome: &'static str,
+) -> rss_mdm_audit_integration::SoftwareFact {
+    let mut fact = target_fact(t, table, stage, outcome);
+    fact.operation = format!("{}:call:{generation}", fact.operation);
+    fact
+}
+pub(super) fn record_fact(
+    r: &rel::Request,
+    t: &Target,
+    stage: &'static str,
+    outcome: &'static str,
+) -> rss_mdm_audit_integration::SoftwareFact {
+    let mut fact = target_fact(t, Table::Publish, stage, outcome);
+    fact.operation = request_fact(r.id.value(), None, stage).operation;
+    fact
+}
 pub(super) fn target_fact(
     t: &Target,
     table: Table,
     stage: &'static str,
     outcome: &'static str,
-) -> crate::audit::SoftwareFact {
-    crate::audit::SoftwareFact {
+) -> rss_mdm_audit_integration::SoftwareFact {
+    rss_mdm_audit_integration::SoftwareFact {
         operation: match table {
             Table::Publish => t.key(),
             Table::Withdraw => t.withdrawal_key(),
@@ -758,7 +887,10 @@ pub(super) fn target_fact(
         outcome,
     }
 }
-pub(super) fn transition_fact(r: &rel::Request, stage: &'static str) -> crate::audit::SoftwareFact {
+pub(super) fn transition_fact(
+    r: &rel::Request,
+    stage: &'static str,
+) -> rss_mdm_audit_integration::SoftwareFact {
     let ring = match &r.operation {
         rel::Operation::Validate(v) => Some(v.ring),
         rel::Operation::Approve { ring, .. } | rel::Operation::Authorize { ring, .. } => {
@@ -779,7 +911,7 @@ const SET_AUTHORITY_SQL: &str = "INSERT INTO mdm_software_composition.authoritie
 const SLOT_SQL: &str = "SELECT operation,cursor FROM mdm_software_composition.slots WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
 const RESERVE_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,operation,cursor) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding,coordinate) DO UPDATE SET operation=EXCLUDED.operation WHERE mdm_software_composition.slots.operation IS NULL AND mdm_software_composition.slots.cursor IS NOT DISTINCT FROM EXCLUDED.cursor";
 const RELEASE_SLOT_SQL: &str = "UPDATE mdm_software_composition.slots SET operation=NULL,cursor=coalesce($5,cursor) WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3 AND operation=$4";
-const MARK_ATTEMPT_SQL: &str = "UPDATE mdm_software_composition.targets SET attempted=true,acknowledged=acknowledged OR $3 WHERE tenant_id=$1::uuid AND id=$2";
+const MARK_ATTEMPT_SQL: &str = "UPDATE mdm_software_composition.targets SET call_generation=call_generation+CASE WHEN attempted THEN 0 ELSE 1 END,attempted=true,acknowledged=acknowledged OR $3 WHERE tenant_id=$1::uuid AND id=$2";
 const COMPLETE_WITHDRAWAL_SQL: &str = "UPDATE mdm_software_composition.withdrawals SET complete=true WHERE tenant_id=$1::uuid AND id=$2";
 const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
 const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
@@ -807,4 +939,104 @@ pub(super) async fn reset_withdrawal_preflight(
         return Err(fault());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    use rss_request_context::TenantId;
+    fn tenant() -> TenantId {
+        TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap()
+    }
+    fn target() -> Target {
+        Target {
+            format: 1,
+            candidate: "candidate".into(),
+            publication: [1; 32],
+            attempt: 1,
+            ring: 0,
+            binding: vec![2; 32],
+            coordinate: "software".into(),
+            slot: "slot".into(),
+            base: None,
+            commit: None,
+            at: 10,
+            commit_at: 10,
+        }
+    }
+    #[test]
+    fn software_request_fingerprint_binds_cas_actor_time_and_operation() {
+        let r = rel::Request {
+            id: rel::RequestId::new(tenant(), "request").unwrap(),
+            actor: rel::ActorId::new(tenant(), "actor").unwrap(),
+            expected_revision: 3,
+            as_of: Timepoint::try_from(10).unwrap(),
+            operation: rel::Operation::Quarantine,
+        };
+        let original = request_fingerprint("candidate", &r).unwrap();
+        assert_eq!(
+            original,
+            request_fingerprint("candidate", &r.clone()).unwrap()
+        );
+        let mut changed = r.clone();
+        changed.expected_revision += 1;
+        assert_ne!(
+            original,
+            request_fingerprint("candidate", &changed).unwrap()
+        );
+        changed = r.clone();
+        changed.actor = rel::ActorId::new(tenant(), "other").unwrap();
+        assert_ne!(
+            original,
+            request_fingerprint("candidate", &changed).unwrap()
+        );
+        changed = r.clone();
+        changed.as_of = Timepoint::try_from(11).unwrap();
+        assert_ne!(
+            original,
+            request_fingerprint("candidate", &changed).unwrap()
+        );
+        changed = r;
+        changed.operation = rel::Operation::Deprecate;
+        assert_ne!(
+            original,
+            request_fingerprint("candidate", &changed).unwrap()
+        );
+    }
+    #[test]
+    fn new_external_call_has_new_fact_but_same_call_replay_keeps_identity() {
+        let t = target();
+        let actor = rel::ActorId::new(tenant(), "service").unwrap();
+        let make = |generation| {
+            fact(
+                tenant(),
+                &actor,
+                &t.candidate,
+                "software_call",
+                call_fact(&t, Table::Withdraw, generation, "start_call", "attempted"),
+                &encode(&(&t, generation)).unwrap(),
+            )
+            .unwrap()
+        };
+        let first = make(1);
+        let retry = make(1);
+        let next = make(2);
+        assert_eq!(
+            first.identity().event_id().as_str(),
+            retry.identity().event_id().as_str()
+        );
+        assert_eq!(first.fingerprint(), retry.fingerprint());
+        assert_ne!(
+            first.identity().event_id().as_str(),
+            next.identity().event_id().as_str()
+        );
+        assert_eq!(
+            first
+                .event(Timepoint::try_from(10).unwrap())
+                .unwrap()
+                .facts()
+                .outcome(),
+            rss_audit_core::Outcome::Unknown
+        );
+    }
 }

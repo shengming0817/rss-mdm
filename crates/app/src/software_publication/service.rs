@@ -44,6 +44,7 @@ impl ServiceRequest {
 }
 pub struct PublicationService {
     pub(super) runtime: Arc<PgRuntime>,
+    pub(super) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(super) resources: ResourceStore,
     pub(super) releases: ReleaseStore,
     pub(super) sources: Sources,
@@ -52,7 +53,7 @@ pub struct PublicationService {
 }
 impl PublicationService {
     pub async fn connect(
-        runtime: Arc<PgRuntime>,
+        persistence: (Arc<PgRuntime>, Arc<rss_mdm_audit_integration::AuditStore>),
         tenant: TenantId,
         logical_source: String,
         config: RingSources,
@@ -60,6 +61,7 @@ impl PublicationService {
         actors: ServiceIdentity,
         cutoff: Deadline,
     ) -> Result<Self> {
+        let (runtime, audit_store) = persistence;
         actors.check(tenant)?;
         let sources = tokio::time::timeout_at(
             cutoff.instant().into(),
@@ -84,13 +86,22 @@ impl PublicationService {
                 .local_tx_with_context(
                     tenant,
                     budget(cutoff),
-                    (&sources, &heads, &actors.backend),
-                    |(s, h, a), tx| Box::pin(async move { db::register(tx, s, h, a).await }),
+                    (&audit_store, &sources, &heads, &actors.backend),
+                    |(audit, s, h, a), tx| {
+                        Box::pin(async move {
+                            audit
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            db::register(audit, tx, s, h, a).await
+                        })
+                    },
                 )
                 .await,
         )?;
         Ok(Self {
             runtime,
+            audit_store,
             resources,
             releases,
             sources,
@@ -162,6 +173,10 @@ impl PublicationService {
                     (self, input, &candidate, &subject),
                     |(s, i, c, subject), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
@@ -180,12 +195,36 @@ impl PublicationService {
         c: &rel::Candidate,
         subject: &Subject,
     ) -> InTransaction<(rss_mdm_software_release_postgres::OperationReceipt, bool)> {
+        let fingerprint = db::encode(&(
+            "candidate/v1",
+            i.actor.value(),
+            i.candidate.value(),
+            i.request.value(),
+            i.resource.as_str(),
+            i.version.as_str(),
+            i.expected_resource_revision,
+            c.snapshot().content.digest().bytes(),
+            subject,
+            i.as_of.unix_seconds(),
+        ))?;
+        let fact = db::fact(
+            tx.tenant_id(),
+            &i.actor,
+            i.candidate.value(),
+            "software_candidate",
+            db::request_fact(i.request.value(), None, "candidate-create"),
+            &fingerprint,
+        )?;
         let key = db::software_key(&c.snapshot().content)?;
         db::lock(tx, "authority", &hex(&key)).await?;
         if let Some(old) = db::subject(tx, i.candidate.value()).await? {
             if db::encode(&old)? != db::encode(subject)? {
                 return Ok(Err(Error::Conflict));
             }
+            self.audit_store
+                .append_in(tx, &fact, true)
+                .await
+                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
             return Ok(Ok((
                 db::required(
                     "service::create_in",
@@ -223,14 +262,10 @@ impl PublicationService {
         )?;
         db::insert_subject(tx, i.candidate.value(), subject).await?;
         db::set_authority(tx, key, material, i.candidate.value()).await?;
-        db::audit(
-            tx,
-            &i.actor,
-            i.candidate.value(),
-            "software_candidate",
-            db::request_fact(i.request.value(), None, "candidate-create"),
-        )
-        .await?;
+        self.audit_store
+            .append_in(tx, &fact, false)
+            .await
+            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
         Ok(Ok((receipt, false)))
     }
     async fn retired_owner(&self, tx: &mut PgTransaction<'_>, owner: &str) -> InTransaction<()> {
@@ -457,10 +492,38 @@ impl PublicationService {
                     (self, c, subject, r, &target),
                     |(s, c, subject, r, target), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
                                 .await?;
+                            if db::required(
+                                "authorize replay",
+                                s.releases.operation_in(tx, &r.id).await?,
+                            )?
+                            .is_some()
+                            {
+                                let result = db::required(
+                                    "authorize replay",
+                                    s.releases.transition_in(tx, &c.snapshot().id, r).await?,
+                                )?;
+                                let fact = db::fact(
+                                    tx.tenant_id(),
+                                    &r.actor,
+                                    &target.candidate,
+                                    "software_authorize",
+                                    db::transition_fact(r, "software_authorize"),
+                                    &db::request_fingerprint(&target.candidate, r)?,
+                                )?;
+                                s.audit_store
+                                    .append_in(tx, &fact, true)
+                                    .await
+                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                                return Ok(Ok(result));
+                            }
                             db::lock(
                                 tx,
                                 "source",
@@ -495,19 +558,22 @@ impl PublicationService {
                             )?;
                             db::reserve(tx, target, &target.key()).await?;
                             db::insert_call(tx, db::Table::Publish, target).await?;
-                            db::audit(
-                                tx,
+                            let fact = db::fact(
+                                tx.tenant_id(),
                                 &r.actor,
                                 &target.candidate,
                                 "software_authorize",
-                                db::target_fact(
-                                    target,
-                                    db::Table::Publish,
-                                    "authorize_request",
-                                    "applied",
-                                ),
-                            )
-                            .await?;
+                                db::transition_fact(r, "software_authorize"),
+                                &db::request_fingerprint(&target.candidate, r)?,
+                            )?;
+                            s.audit_store
+                                .append_in(
+                                    tx,
+                                    &fact,
+                                    matches!(result, rel::Transition::Replayed(_)),
+                                )
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(result))
                         })
                     },
@@ -628,11 +694,50 @@ impl PublicationService {
         {
             return Err(Error::Conflict);
         }
-        Ok(Some(
-            self.releases
-                .transition(id, &original, budget(cutoff))
-                .await?,
-        ))
+        let action = match kind {
+            "validate" => "software_validate",
+            "approve" => "software_approve",
+            _ => "software_authorize",
+        };
+        let result = settle(
+            self.runtime
+                .local_tx_with_context(
+                    self.tenant(),
+                    budget(cutoff),
+                    (self, id, &original),
+                    move |(s, id, r), tx| {
+                        Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
+                                .await?;
+                            let transition = input!(
+                                s.releases
+                                    .transition_in(tx, id, r)
+                                    .await?
+                                    .map_err(|_| Error::Conflict)
+                            );
+                            let fact = db::fact(
+                                tx.tenant_id(),
+                                &r.actor,
+                                id.value(),
+                                action,
+                                db::transition_fact(r, action),
+                                &db::request_fingerprint(id.value(), r)?,
+                            )?;
+                            s.audit_store
+                                .append_in(tx, &fact, true)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            Ok(Ok(transition))
+                        })
+                    },
+                )
+                .await,
+        )?;
+        Ok(Some(result))
     }
     pub(super) async fn context(
         &self,
@@ -646,6 +751,10 @@ impl PublicationService {
             self.runtime
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, id), |(s, id), tx| {
                     Box::pin(async move {
+                        s.audit_store
+                            .lock_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         let Some(c) = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
                             Error::Conflict.context("service::context", cause)
                         })) else {
@@ -728,6 +837,10 @@ impl PublicationService {
                     (self, c, subject, r),
                     move |(s, c, subject, r), tx| {
                         Box::pin(async move {
+                            s.audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
@@ -747,16 +860,22 @@ impl PublicationService {
                                     .map_err(|cause| Error::Conflict
                                         .context("service::transition_audited", cause))
                             );
-                            if matches!(result, rel::Transition::Applied { .. }) {
-                                db::audit(
+                            let fact = db::fact(
+                                tx.tenant_id(),
+                                &r.actor,
+                                c.snapshot().id.value(),
+                                action,
+                                db::transition_fact(r, action),
+                                &db::request_fingerprint(c.snapshot().id.value(), r)?,
+                            )?;
+                            s.audit_store
+                                .append_in(
                                     tx,
-                                    &r.actor,
-                                    c.snapshot().id.value(),
-                                    action,
-                                    db::transition_fact(r, action),
+                                    &fact,
+                                    matches!(result, rel::Transition::Replayed(_)),
                                 )
-                                .await?;
-                            }
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(result))
                         })
                     },

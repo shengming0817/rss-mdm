@@ -1,6 +1,6 @@
 //! Registration routes receive only the enrollment lifecycle dependencies.
 use super::{Create, Resume};
-use crate::{Error, api::write_key, audit::Audit, authorization::context::RequestAuth};
+use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -12,7 +12,7 @@ async fn create_enrollment(
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::enrollment::credentials::SessionContinuation>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;
@@ -34,7 +34,7 @@ async fn create_enrollment(
 async fn enrollment_status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<crate::enrollment::read::Status>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
@@ -49,7 +49,7 @@ async fn enrollment_status(
 async fn registrations(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     query: Result<Query<crate::enrollment::read::Page>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<crate::enrollment::read::Registrations>, Error> {
@@ -65,7 +65,7 @@ async fn resume_enrollment(
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::enrollment::credentials::SessionContinuation>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
@@ -90,7 +90,7 @@ async fn cancel_enrollment(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
@@ -102,7 +102,7 @@ async fn cancel_enrollment(
     let permission = auth.proof.enrollment(&device)?;
     audit.target(&device);
     crate::enrollment::store::change_enrollment(
-        &app.service.access,
+        &app.service.audit_store,
         permission,
         id,
         None,
@@ -116,7 +116,7 @@ async fn revoke_registration(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
@@ -161,3 +161,5 @@ pub(crate) fn routes() -> axum::Router<Arc<HttpState>> {
             post(revoke_registration),
         )
 }
+
+use rss_mdm_audit_integration::RequestAudit;

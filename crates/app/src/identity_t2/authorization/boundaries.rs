@@ -10,14 +10,19 @@ fn members(count: u128) -> Vec<Value> {
 fn no_write(id: Uuid, operation: Uuid, table: &str) -> Result<()> {
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}' AND id='{id}'"))?.trim() == "0");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{operation}'"))?.trim() == "0");
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{TENANT}' AND operation_id='{operation}' AND result='success'"))?.trim() == "0");
+    ensure!(
+        audit_count(|r| r.source() == "mdm.business"
+            && r.operation() == Some(operation.to_string().as_str())
+            && r.result() == "success")?
+            == 0
+    );
     Ok(())
 }
 pub(super) async fn verify(
     router: &Router,
     admin: &mut Browser,
     member: &mut Browser,
-    store: &crate::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
 ) -> Result<()> {
     let id = Uuid::new_v4();
     let path = format!("/api/v1/authorization/user-groups/{id}");
@@ -57,7 +62,12 @@ pub(super) async fn verify(
     );
     ensure!(member.call(router, Method::GET, &page, None).await?.0 == StatusCode::FORBIDDEN);
     for status in [200, 403] {
-        ensure!(pg(&format!("SELECT count(*)>0 FROM mdm_access.audit WHERE action='authorization_members_read' AND target='{id}' AND status={status}"))?.trim()=="t");
+        ensure!(
+            audit_count(|r| r.action() == "authorization_members_read"
+                && r.target() == id.to_string()
+                && r.status() == status)?
+                > 0
+        );
     }
     ensure!(
         put(
@@ -237,12 +247,16 @@ pub(super) async fn verify(
     no_write(id, operation, "user_groups")?;
 
     // The same command deadline projection is used before COMMIT and after a durable but unacknowledged COMMIT.
-    for fault in [3, 4] {
+    for (fault, committed) in [
+        (rss_audit_postgres::PgFault::BeforeCommitPending, false),
+        (rss_audit_postgres::PgFault::CommitUnknownAfterAck, true),
+    ] {
         let mut user = crate::identity_fixture::user(TENANT, ADMIN);
         user.instance_id = Uuid::new_v4().to_string();
         let key = Uuid::new_v4();
-        let audit = crate::audit::Audit::new(TENANT.into(), "authorization_initialize");
-        store.fail_next(fault);
+        let audit =
+            rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "authorization_initialize");
+        store.inject_next_fault(fault);
         let deadline = rss_request_context::Deadline::from_timeout(
             &crate::lifecycle::RuntimeTimer,
             std::time::Duration::from_millis(100),
@@ -258,13 +272,13 @@ pub(super) async fn verify(
             ),
         )
         .await;
-        audit.finalize(Some(crate::audit::FailureReason::Transaction));
+        audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Transaction));
         ensure!(matches!(outcome, Err(crate::Error::CommitUnknown)));
         let durable = pg(&format!(
             "SELECT count(*) FROM mdm_access.authorization_initializations WHERE tenant_id='{TENANT}' AND instance='{}'",
             user.instance_id
         ))?;
-        ensure!(durable.trim() == if fault == 4 { "1" } else { "0" });
+        ensure!(durable.trim() == if committed { "1" } else { "0" });
         let receipt =
             crate::authorization::store::initialize_authorization(store, user.clone(), key).await?;
         ensure!(
@@ -274,7 +288,8 @@ pub(super) async fn verify(
                 == receipt.id
         );
     }
-    let audit = crate::audit::Audit::new(TENANT.into(), "authorization_initialize");
+    let audit =
+        rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "authorization_initialize");
     let deadline = rss_request_context::Deadline::from_timeout(
         &crate::lifecycle::RuntimeTimer,
         std::time::Duration::from_millis(10),
@@ -282,7 +297,7 @@ pub(super) async fn verify(
     let before: Result<(), crate::Error> =
         crate::authorization::bounded_initialization(&audit, deadline, std::future::pending())
             .await;
-    audit.finalize(Some(crate::audit::FailureReason::Transaction));
+    audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Transaction));
     ensure!(matches!(
         before,
         Err(crate::Error::Unavailable(crate::Failure::RequestDeadline))

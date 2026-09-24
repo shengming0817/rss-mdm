@@ -7,6 +7,7 @@ use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
 impl Commands {
     pub(crate) async fn open(
         config: &crate::config::Config,
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     ) -> std::result::Result<Arc<Self>, Error> {
         let bad = || Error::Configuration(crate::ConfigIssue::Commands);
         let database = &config.command_database;
@@ -102,6 +103,7 @@ impl Commands {
                 }
             };
             Ok(Arc::new(Self {
+                audit_store,
                 runtime: runtime.clone(),
                 outbox,
                 store,

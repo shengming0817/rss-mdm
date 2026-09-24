@@ -2,9 +2,10 @@
 use super::*;
 use std::{future::Future, pin::Pin};
 pub(super) async fn run<C: Sync>(
+    audit_store: &rss_mdm_audit_integration::AuditStore,
     runtime: &PgRuntime,
     tenant: TenantId,
-    audit: &Audit,
+    audit: &RequestAudit,
     context: &C,
     execute: impl for<'a, 'tx> Fn(
         &'a C,
@@ -17,9 +18,14 @@ pub(super) async fn run<C: Sync>(
         .local_tx_with_context(
             tenant,
             deadline(),
-            (context, audit, &failure, &execute),
-            |(context, audit, failure, execute), tx| {
+            (audit_store, context, audit, &failure, &execute),
+            |(audit_store, context, audit, failure, execute), tx| {
                 Box::pin(async move {
+                    if let Err(error) = audit_store.lock_in(tx).await {
+                        *failure.lock().expect("request failure lock") =
+                            Some(Error::Unavailable(Failure::Audit));
+                        return Err(PgError::from(error));
+                    }
                     match execute(context, tx).await {
                         Ok(v) => {
                             audit.mark_commit_started();
@@ -62,12 +68,16 @@ pub(super) async fn run<C: Sync>(
         },
         |_| Err(Error::Unavailable(Failure::Runtime)),
         |_| {
+            audit.mark_rolled_back();
             Err(failure
                 .into_inner()
                 .expect("request failure lock")
                 .unwrap_or(Error::Unavailable(Failure::Runtime)))
         },
-        |_| Err(Error::CommitUnknown),
+        |_| {
+            audit.mark_rollback_failed();
+            Err(Error::RollbackFailed)
+        },
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::Unavailable(Failure::Runtime)),
     )

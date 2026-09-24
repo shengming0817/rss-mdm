@@ -41,6 +41,9 @@ class DependencyPolicy(unittest.TestCase):
         identity_source = f'git+{identity_url}?rev={revision}#{revision}'
         extra = [{'id':name,'name':name,'version':version,'source':registry} for name,version in [('openidconnect','4.0.1'),('rsa','0.9.10')]]
         extra += [{'id':name,'name':name,'source':identity_source} for name in ci.IDENTITY_PACKAGES]
+        audit_url, revision = ci.audit_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
+        audit_source = f'git+{audit_url}?rev={revision}#{revision}'
+        extra += [{'id':name,'name':name,'source':audit_source} for name in ci.AUDIT_PACKAGES]
         data['packages'][-2:-2] = extra
         for node in data['resolve']['nodes']: node['deps'] = []
         next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')['deps'] = [{'pkg':name} for name in ci.IDENTITY_PACKAGES]
@@ -48,7 +51,7 @@ class DependencyPolicy(unittest.TestCase):
         for kind in ('policy', 'resource', 'software-release'):
             next(n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres')['deps'].append({'pkg':'rss-mdm-backend-postgres-support'})
         ci.verify_metadata(data,root,"normal",pin)
-        for name in ci.IDENTITY_PACKAGES:
+        for name in ci.IDENTITY_PACKAGES | ci.AUDIT_PACKAGES:
             target = next(p for p in data['packages'] if p['name']==name)
             previous=target['source'];target['source']='path+file:///untrusted'
             with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)

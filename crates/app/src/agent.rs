@@ -3,7 +3,6 @@
 use crate::{
     Error, Failure,
     api::authenticate,
-    audit::Audit,
     database::db,
     device::{BindRegistration, VerifiedChannelCredential, store::bind_in},
     enrollment::Password,
@@ -19,6 +18,7 @@ use axum::{
     routing::{get, post},
 };
 use rss_mdm_agent_wire as wire;
+use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_inventory::{FieldKey, ReportSource as InventorySource};
 use rss_observation::{Batch, Body, Change, Id};
 use rss_request_context::TenantId;
@@ -54,7 +54,9 @@ impl IntoResponse for AgentError {
                     | Error::CertificateRequest
                     | Error::ConfigurationTargetLimit => wire::ErrorCode::MalformedRequest,
                     Error::Conflict | Error::Plan(_) => wire::ErrorCode::OperationConflict,
-                    Error::CommitUnknown => wire::ErrorCode::OperationUnknown,
+                    Error::CommitUnknown | Error::RollbackFailed => {
+                        wire::ErrorCode::OperationUnknown
+                    }
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
                     Error::NotFound | Error::ManagementNotFound(_) => {
                         wire::ErrorCode::ReportNotFound
@@ -109,7 +111,7 @@ pub(crate) fn ingress_error(code: wire::ErrorCode) -> Response {
 
 async fn register(
     State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::RegistrationReceipt>), AgentError> {
@@ -119,7 +121,7 @@ async fn register(
 }
 async fn register_inner(
     app: &HttpState,
-    audit: &Audit,
+    audit: &RequestAudit,
     body: Bytes,
 ) -> Result<(StatusCode, Json<wire::RegistrationReceipt>), AgentError> {
     let input = parse_registration(&body)?;
@@ -146,7 +148,7 @@ async fn register_inner(
         return Err(Error::Unauthorized.into());
     }
     proof.enrollment(&auth.device)?;
-    audit.identify(&proof);
+    audit.identify(proof.principal_id(), proof.instance_id());
     audit.target(&auth.device);
     let credential = VerifiedChannelCredential::agent(
         TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
@@ -158,24 +160,121 @@ async fn register_inner(
         key: input.operation_id(),
         digest: &digest,
     };
-    let mut tx = app.access.begin(proof.tenant_id()).await?;
-    if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
+        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let attempt = app
+        .audit_store
+        .execute(
+            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+            &control,
+            (
+                &app.audit_store,
+                RegistrationInputs {
+                    proof: &proof,
+                    auth: &auth,
+                    input: &input,
+                    credential: &credential,
+                    operation: &operation,
+                    audit,
+                    facts: Vec::new(),
+                },
+            ),
+            |(store, inputs), tx| {
+                Box::pin(async move {
+                    let (receipt, replayed) = tx
+                        .with_connection_context(inputs, |inputs, c| {
+                            Box::pin(register_on(c, inputs))
+                        })
+                        .await?;
+                    for fact in &inputs.facts {
+                        store.append(tx, fact, false).await.map_err(Error::from)?;
+                    }
+                    let fact = rss_mdm_audit_integration::Fact::business(
+                        inputs.audit,
+                        &format!(
+                            "agent-registration:{}:{}",
+                            inputs.proof.principal_id(),
+                            inputs.operation.key
+                        ),
+                        inputs.operation.digest.as_bytes(),
+                        201,
+                        "success",
+                        Some(inputs.auth.id),
+                    )
+                    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                    store
+                        .append(tx, &fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        inputs.audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    inputs.audit.mark_commit_started();
+                    Ok((
+                        if replayed {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::CREATED
+                        },
+                        receipt,
+                    ))
+                })
+            },
+        )
+        .await;
+    let (status, receipt) = crate::operations::settle(attempt, audit)?;
+    Ok((status, Json(receipt)))
+}
+
+struct RegistrationInputs<'a> {
+    proof: &'a crate::authorization::context::AuthorizedPrincipal,
+    auth: &'a crate::enrollment::Authorization,
+    input: &'a wire::RegistrationRequest,
+    credential: &'a VerifiedChannelCredential,
+    operation: &'a Operation<'a>,
+    audit: &'a RequestAudit,
+    facts: Vec<rss_mdm_audit_integration::Fact>,
+}
+async fn register_on(
+    tx: &mut sqlx::PgConnection,
+    context: &mut RegistrationInputs<'_>,
+) -> Result<(wire::RegistrationReceipt, bool), Error> {
+    let RegistrationInputs {
+        proof,
+        auth,
+        input,
+        credential,
+        operation,
+        audit,
+        facts,
+    } = context;
+    let proof = *proof;
+    let auth = *auth;
+    let input = *input;
+    let credential = *credential;
+    let audit = *audit;
+    let operation = *operation;
+    if let Some(old) = crate::operations::replay(tx, operation).await? {
         let receipt: wire::RegistrationReceipt =
             serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
-        if crate::enrollment::store::active_registration(&mut tx, proof.tenant_id(), auth.id)
-            .await?
+        if crate::enrollment::store::active_registration(tx, proof.tenant_id(), auth.id).await?
             != receipt.registration_id
         {
-            return Err(Error::Conflict.into());
+            return Err(Error::Conflict);
         }
-        tx.rollback().await.map_err(db)?;
         proof.enrollment(&auth.device)?;
-        return Ok((StatusCode::OK, Json(receipt)));
+        audit.registration(receipt.registration_id);
+        return Ok((receipt, true));
     }
     let receipt = bind_in(
-        &mut tx,
-        &proof,
-        &credential,
+        tx,
+        proof,
+        credential,
         &BindRegistration {
             operation_id: input.operation_id(),
             request_id: input.enrollment_id(),
@@ -184,18 +283,14 @@ async fn register_inner(
         },
         auth.device.clone(),
         [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
+        facts,
     )
     .await?;
     let capabilities = serde_json::to_string(input.capabilities())
         .map_err(|_| Error::Unavailable(Failure::Database))?;
-    crate::device::store::bind_agent_in(
-        &mut tx,
-        proof.tenant_id(),
-        receipt.registration,
-        &capabilities,
-    )
-    .await?;
-    crate::enrollment::store::mark_bound_in(&mut tx, proof.tenant_id(), &auth, true).await?;
+    crate::device::store::bind_agent_in(tx, proof.tenant_id(), receipt.registration, &capabilities)
+        .await?;
+    crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth, true).await?;
     proof.enrollment(&auth.device)?;
     audit.registration(receipt.registration);
     let output = wire::RegistrationReceipt {
@@ -211,22 +306,19 @@ async fn register_inner(
         epoch: receipt.epoch,
         capabilities: input.capabilities().to_vec(),
     };
-    crate::operations::finish_status(
-        &app.access,
+    crate::operations::save(
         tx,
-        &operation,
+        operation,
         &serde_json::to_string(&output).expect("closed receipt"),
         audit,
-        Some(auth.id),
-        201,
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(output)))
+    Ok((output, false))
 }
 
 async fn report(
     State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
@@ -236,7 +328,7 @@ async fn report(
 }
 async fn report_inner(
     app: &HttpState,
-    audit: &Audit,
+    audit: &RequestAudit,
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
@@ -251,17 +343,29 @@ async fn report_inner(
     audit.registration(principal.registration());
     audit.target(principal.device());
     let batch = batch(&input)?;
-    let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
-    let (received_at, fresh) =
-        crate::collection::agent::accept_in(&mut tx, &principal, &scope, &input, &batch).await?;
-    if !fresh {
-        tx.rollback().await.map_err(db)?;
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(ack(input.report_id(), received_at)),
-        ));
-    }
-    crate::operations::commit_audited_status(&app.access, tx, audit, None, 202).await?;
+    let fingerprint = batch.fingerprint(&scope).map_err(|_| Error::Malformed)?;
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
+        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let attempt = app.audit_store.execute(principal.tenant(), &control,
+        (&app.audit_store, &principal, &scope, &input, &batch, audit, &fingerprint),
+        |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
+            let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
+                |(principal, scope, input, batch), c| Box::pin(crate::collection::agent::accept_in(c, principal, scope, input, batch))).await?;
+            let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
+            let fact = rss_mdm_audit_integration::Fact::business(audit,
+                &format!("agent-report:{}", input.report_id()), fingerprint.as_slice(), 202, "success", None)
+                .and_then(|fact| fact.with_details(serde_json::json!({"reportId":input.report_id(),"collectionResult":result,"receivedAt":received_at})))
+                .map_err(|_| Error::Unavailable(Failure::Audit))?;
+            store.append(tx, &fact, !fresh).await.map_err(Error::from)?;
+            if !fresh { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
+            audit.mark_commit_started();
+            Ok(received_at)
+        }),
+    ).await;
+    let received_at = crate::operations::settle(attempt, audit)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(ack(input.report_id(), received_at)),
@@ -270,7 +374,7 @@ async fn report_inner(
 
 async fn status(
     State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
@@ -280,7 +384,7 @@ async fn status(
 }
 async fn status_inner(
     app: &HttpState,
-    audit: &Audit,
+    audit: &RequestAudit,
     headers: &HeaderMap,
     id: Uuid,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
@@ -471,6 +575,7 @@ fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
 }
 
 pub(crate) struct HttpState {
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) access: std::sync::Arc<crate::database::Database>,
     pub(crate) identity: std::sync::Arc<crate::identity::Identity>,
     pub(crate) credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,

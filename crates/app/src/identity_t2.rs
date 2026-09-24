@@ -54,6 +54,14 @@ fn command(args: &[&str], input: Option<&str>) -> Result<String> {
 fn pg(sql: &str) -> Result<String> {
     pg_tenant(TENANT, sql)
 }
+fn audit_records() -> Result<Vec<crate::audit_test_support::Record>> {
+    crate::audit_test_support::decode_hex(&pg(&format!(
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY position"
+    ))?)
+}
+fn audit_count(predicate: impl Fn(&crate::audit_test_support::Record) -> bool) -> Result<usize> {
+    Ok(audit_records()?.iter().filter(|r| predicate(r)).count())
+}
 fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
     uuid::Uuid::parse_str(tenant)?;
     command(
@@ -244,22 +252,30 @@ async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     ))
 }
 async fn app(value: &Value, _reader: Arc<InventoryReader>) -> Result<Router> {
-    app_with_access(value, database(value).await?).await
+    Ok(app_with_access(value, database(value).await?).await?.0)
 }
-async fn app_with_access(value: &Value, access: Arc<crate::Database>) -> Result<Router> {
+async fn app_with_access(
+    value: &Value,
+    access: Arc<crate::Database>,
+) -> Result<(Router, Arc<rss_mdm_audit_integration::AuditStore>)> {
     let c: Config = serde_json::from_value(value.clone())?;
-    Ok(crate::api::application(
+    let audit_store = access.audit_store(&c.audit).await?;
+    let (router, _) = crate::api::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
         access,
         None,
+        audit_store.clone(),
     )
     .await
-    .map_err(|error| anyhow::anyhow!("fixture application admission: {error:?}"))?
-    .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-        "127.0.0.1".parse()?,
-    ))))
+    .map_err(|error| anyhow::anyhow!("fixture application admission: {error:?}"))?;
+    Ok((
+        router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+            "127.0.0.1".parse()?,
+        ))),
+        audit_store,
+    ))
 }
 
 fn monotonic() -> Arc<dyn rss_observation::Clock> {
@@ -275,9 +291,12 @@ async fn start_automation(value: &Value) -> Result<rss_runtime::ShutdownStack> {
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
+    let access = crate::Database::connect(config.access_database.options()?).await?;
+    let audit_store = access.audit_store(&config.audit).await?;
     let service = config
         .management
         .open(
+            audit_store,
             rss_request_context::TenantId::parse(TENANT)?,
             Arc::new(crate::clock::SystemClock),
             |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
@@ -488,12 +507,12 @@ async fn enrollment_matrix(
             .0
             == StatusCode::CONFLICT
     );
-    // Audit is mandatory for both reads and denied requests; never disclose assets on failure.
-    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access,mdm_management_runtime")?;
+    // RequestAudit is mandatory for both reads and denied requests; never disclose assets on failure.
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_management_runtime")?;
     let read = browser.call(router, Method::GET, query, None).await?;
     let mut anonymous = Browser::default();
     let denied = anonymous.call(router, Method::GET, query, None).await?;
-    pg("GRANT INSERT ON mdm_access.audit TO mdm_access,mdm_management_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_management_runtime")?;
     ensure!(read.0 == StatusCode::SERVICE_UNAVAILABLE && read.1.get("asset").is_none());
     ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE);
     browser.operation = None;
@@ -511,7 +530,13 @@ async fn enrollment_matrix(
             .0
             == StatusCode::UNAUTHORIZED
     );
-    ensure!(pg("SELECT count(*) FROM mdm_access.audit WHERE action='enrollment_create' AND result='denied' AND actor IS NULL")?.trim().parse::<i64>()?>0,"preauthentication denial lost action");
+    ensure!(
+        audit_count(|r| r.action() == "enrollment_create"
+            && r.result() == "denied"
+            && r.actor().is_none())?
+            > 0,
+        "preauthentication denial lost action"
+    );
     revoke_http_matrix(config, reader, browser).await?;
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
     Ok(())
@@ -617,7 +642,7 @@ async fn agent_runtime(config: &Value) -> Result<Arc<crate::inventory_runtime::I
 async fn agent_matrix(
     router: &Router,
     config: &Value,
-    access: &Arc<crate::Database>,
+    audit_store: &rss_mdm_audit_integration::AuditStore,
     browser: &mut Browser,
 ) -> Result<()> {
     let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -969,7 +994,7 @@ async fn agent_matrix(
     ensure!(status == StatusCode::OK);
     let next_operation = uuid::Uuid::new_v4();
     let next_registration = json!({"wireVersion":2,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"capabilities":["inventory.basic.v2"]});
-    access.fail_next(1);
+    audit_store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     let rolled_back = agent_call(
         router,
         Method::POST,
@@ -980,10 +1005,10 @@ async fn agent_matrix(
     .await?;
     ensure!(
         rolled_back.0 == StatusCode::SERVICE_UNAVAILABLE
-            && rolled_back.1["code"] == "service_unavailable"
+            && rolled_back.1["code"] == "operation_unknown"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'"))?.trim() == "0", "rolled-back registration persisted");
-    access.fail_next(2);
+    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let unknown = agent_call(
         router,
         Method::POST,
@@ -1023,10 +1048,14 @@ async fn agent_matrix(
         .await?
         .0 == StatusCode::UNAUTHORIZED
     );
-    for (fault, expected) in [(1, "service_unavailable"), (2, "operation_unknown")] {
+    for (number, fault, committed) in [
+        (1, rss_audit_postgres::PgFault::BeforeCommitPending, false),
+        (2, rss_audit_postgres::PgFault::CommitUnknownAfterAck, true),
+    ] {
+        let expected = "operation_unknown";
         let fault_report = uuid::Uuid::new_v4();
-        let body = json!({"wireVersion":2,"reportId":fault_report,"sequence":100+fault,"observedAt":100+fault,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
-        access.fail_next(fault);
+        let body = json!({"wireVersion":2,"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        audit_store.inject_next_fault(fault);
         let failed = agent_call(
             router,
             Method::POST,
@@ -1039,7 +1068,7 @@ async fn agent_matrix(
         let persisted = pg(&format!(
             "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'"
         ))?;
-        ensure!(persisted.trim() == if fault == 1 { "0" } else { "1" });
+        ensure!(persisted.trim() == if committed { "1" } else { "0" });
         let retry = agent_call(
             router,
             Method::POST,
@@ -1215,10 +1244,11 @@ async fn revoke_http_matrix(
         ))?.trim() == "1"
     );
     ensure!(
-        pg(&format!(
-            "SELECT count(*) FROM mdm_access.audit WHERE tenant_id='{TENANT}' AND operation_id='{}' AND action='credential_revoke' AND result='success'",
-            browser.operation.unwrap()
-        ))?.trim() == "1"
+        audit_count(|r| r.source() == "mdm.business"
+            && r.operation() == Some(browser.operation.unwrap().to_string().as_str())
+            && r.action() == "credential_revoke"
+            && r.result() == "success")?
+            == 1
     );
     Ok(())
 }
@@ -1294,7 +1324,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     )
     .await?;
     let agent_access = database(&allowed).await?;
-    let authorized = app_with_access(&allowed, agent_access.clone()).await?;
+    let (authorized, agent_audit) = app_with_access(&allowed, agent_access.clone()).await?;
     // Restarting the host preserves only the component credential, whose PG state is checked again.
     ensure!(
         browser
@@ -1306,7 +1336,7 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     Box::pin(agent_matrix(
         &authorized,
         &allowed,
-        &agent_access,
+        &agent_audit,
         &mut browser,
     ))
     .await?;
@@ -1577,7 +1607,7 @@ async fn native_accounts(
     );
     // The component owns its atomic security event; a second product audit cannot
     // overwrite a committed account mutation or discard the native response.
-    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access,mdm_management_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_management_runtime")?;
     let created = admin
         .call(
             admin_router,
@@ -1586,7 +1616,7 @@ async fn native_accounts(
             Some(json!({"login":"managed-user","password":PASSWORD})),
         )
         .await;
-    pg("GRANT INSERT ON mdm_access.audit TO mdm_access,mdm_management_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_management_runtime")?;
     let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();

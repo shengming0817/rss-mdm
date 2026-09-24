@@ -172,7 +172,7 @@ def run(candidate, tools_image, output):
                               runner_sha256=sha(primary.root/'browser.mjs'),candidate_sha256=sha(candidate/'candidate.json'),
                               fixture='synthetic device-1 Model-2364, real product authorization and inventory query',
                               exclusions=['real device enrollment/commands/wipe','other IdP profiles','production capacity','legacy environment retirement'])
-                events=json.loads(primary.sql("SELECT COALESCE(json_agg(e),'[]')::text FROM (SELECT id,request_id,actor,target,operation_id,action,result,status FROM mdm_access.audit ORDER BY recorded_at,id) e"))
+                events=json.loads(primary.sql("SELECT COALESCE(json_agg(e),'[]')::text FROM (SELECT tenant_id,source_id,event_id,position,recorded_at,ledger_sequence,encode(sha256(canonical),'hex') AS canonical_sha256 FROM rss_audit.records ORDER BY tenant_id,position) e"))
                 require(len(events)>0,'product audit evidence absent')
                 (output/'audit.json').write_text(json.dumps(safe_evidence(events,private),indent=2)+'\n')
                 result['audit_sha256']=sha(output/'audit.json')

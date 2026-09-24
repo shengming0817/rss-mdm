@@ -55,7 +55,7 @@ fn exposes_inventory(command: &Command) -> bool {
 async fn run(
     app: &HttpState,
     auth: &RequestAuth,
-    audit: &Audit,
+    audit: &RequestAudit,
     permission: Permission,
     command: Command,
 ) -> std::result::Result<Response, Error> {
@@ -120,7 +120,7 @@ macro_rules! read {
         async fn $handler(
             State(app): State<Arc<HttpState>>,
             Extension(auth): Extension<RequestAuth>,
-            Extension(audit): Extension<Audit>,
+            Extension(audit): Extension<RequestAudit>,
             Path(id): Path<$id>,
         ) -> std::result::Result<Response, Error> {
             run(
@@ -142,7 +142,7 @@ read!(plan_read, Uuid, PolicyRead, PlanRead);
 async fn group_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<GroupChange>>,
 ) -> std::result::Result<Response, Error> {
@@ -164,7 +164,7 @@ async fn group_write(
 async fn scope_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<ScopeChange>>,
 ) -> std::result::Result<Response, Error> {
@@ -181,7 +181,7 @@ async fn scope_write(
 async fn policy_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     payload: BodyInput<Operation<PolicyChange>>,
 ) -> std::result::Result<Response, Error> {
@@ -198,7 +198,7 @@ async fn policy_write(
 async fn preview(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     payload: BodyInput<Operation<PreviewInput>>,
 ) -> std::result::Result<Response, Error> {
@@ -218,7 +218,7 @@ async fn preview(
 async fn save(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     payload: BodyInput<Operation<SavePlan>>,
 ) -> std::result::Result<Response, Error> {
@@ -235,7 +235,7 @@ async fn save(
 async fn group_preview(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<EmptyInput>>,
 ) -> std::result::Result<Response, Error> {
@@ -257,7 +257,7 @@ async fn group_preview(
 async fn resource_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     payload: BodyInput<Operation<resources::Change>>,
 ) -> std::result::Result<Response, Error> {
@@ -275,7 +275,7 @@ async fn resource_write(
 async fn group_task(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((group, task)): Path<(Uuid, Uuid)>,
 ) -> std::result::Result<Response, Error> {
     run(
@@ -294,7 +294,7 @@ async fn group_task(
 async fn scope_task(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((scope, task)): Path<(Uuid, Uuid)>,
 ) -> std::result::Result<Response, Error> {
     run(
@@ -314,7 +314,7 @@ async fn scope_task(
 async fn group_page(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((group, result, kind)): Path<(Uuid, Uuid, pages::GroupPageKind)>,
     Query(query): Query<pages::PageQuery>,
 ) -> std::result::Result<Response, Error> {
@@ -336,7 +336,7 @@ async fn group_page(
 async fn scope_page(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((scope, result, projection)): Path<(Uuid, Uuid, pages::ScopePageKind)>,
     Query(query): Query<pages::PageQuery>,
 ) -> std::result::Result<Response, Error> {
@@ -357,7 +357,7 @@ async fn scope_page(
 async fn policy_page(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((policy, result, projection)): Path<(String, Uuid, pages::PolicyPageKind)>,
     Query(query): Query<pages::PageQuery>,
 ) -> std::result::Result<Response, Error> {

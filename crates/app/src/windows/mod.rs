@@ -14,7 +14,6 @@ mod tests;
 use crate::{
     ConfigIssue, Error, Failure,
     api::{Envelope, authenticate, envelope},
-    audit::Audit,
     enrollment::Password,
 };
 use axum::{
@@ -123,7 +122,7 @@ pub(crate) fn routers(
                 Envelope {
                     host: origin.trim_start_matches("https://").into(),
                     clock: clock.clone(),
-                    access: app.access.clone(),
+                    audit_store: app.audit_store.clone(),
                     requests: app.requests.clone(),
                     tenant: app.identity.tenant.to_string(),
                 },
@@ -279,7 +278,7 @@ async fn discover(State(app): State<Arc<HttpState>>, headers: HeaderMap, bytes: 
 async fn policy(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Response {
     enrollment(app, headers, audit, bytes, false).await
@@ -287,7 +286,7 @@ async fn policy(
 async fn issue(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Response {
     enrollment(app, headers, audit, bytes, true).await
@@ -295,7 +294,7 @@ async fn issue(
 async fn enrollment(
     app: Arc<HttpState>,
     headers: HeaderMap,
-    audit: Audit,
+    audit: RequestAudit,
     bytes: Bytes,
     issuing: bool,
 ) -> Response {
@@ -338,7 +337,7 @@ async fn enrollment(
             return Err(Error::Unauthorized);
         }
         let _permission = proof.enrollment(&auth.device)?;
-        audit.identify(&proof);
+        audit.identify(proof.principal_id(), proof.instance_id());
         audit.target(&auth.device);
         let now = app.clock.unix_seconds()?;
         if let Some(t) = &security.timestamp {
@@ -426,7 +425,7 @@ async fn enrollment(
         .await?;
         let _permission = proof.enrollment(&auth.device)?;
         crate::windows::issuance::complete_issuance(
-            &app.access,
+            &app.audit_store,
             app.windows()?,
             &auth,
             &proof,
@@ -452,6 +451,7 @@ async fn enrollment(
 }
 
 pub(crate) struct HttpState {
+    pub(crate) audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) access: std::sync::Arc<crate::database::Database>,
     pub(crate) clock: std::sync::Arc<dyn crate::clock::Clock>,
     pub(crate) commands: std::sync::Arc<crate::commands::Commands>,
@@ -468,3 +468,5 @@ impl HttpState {
         self.windows.as_ref().ok_or(crate::Error::Unsupported)
     }
 }
+
+use rss_mdm_audit_integration::RequestAudit;

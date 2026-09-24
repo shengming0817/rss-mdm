@@ -130,7 +130,7 @@ pub(crate) fn router(
                     .trim_start_matches("https://")
                     .into(),
                 clock: clock.clone(),
-                access: app.access.clone(),
+                audit_store: app.audit_store.clone(),
                 requests: app.requests.clone(),
                 tenant: app.identity.tenant.to_string(),
             },
@@ -215,6 +215,7 @@ impl Apple {
 }
 
 pub(crate) struct HttpState {
+    pub(crate) audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) access: std::sync::Arc<crate::database::Database>,
     pub(crate) apple: Option<std::sync::Arc<crate::apple::Apple>>,
     pub(crate) clock: std::sync::Arc<dyn crate::clock::Clock>,
@@ -231,13 +232,13 @@ impl HttpState {
 }
 
 pub(crate) async fn retire_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: uuid::Uuid,
 ) -> Result<(), Error> {
     use crate::database::db;
-    sqlx::query("UPDATE mdm_apple.devices SET state='retired',token=NULL,magic=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.devices SET state='retired',token=NULL,magic=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 #[cfg(test)]

@@ -71,10 +71,14 @@ async fn seed_accounts() -> Result<()> {
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     ] {
-        let identity = identity(tenant).await?;
-        let access = crate::Database::connect(config(tenant)?.access_database.options()?).await?;
+        let identity = identity(tenant)
+            .await
+            .map_err(|e| anyhow::anyhow!("identity seed admission: {e:?}"))?;
+        let access = crate::Database::connect(config(tenant)?.access_database.options()?)
+            .await
+            .map_err(|e| anyhow::anyhow!("access seed admission: {e:?}"))?;
         crate::authorization::store::initialize_authorization(
-            &access,
+            access.audit_store(&config(tenant)?.audit).await?.as_ref(),
             user(tenant, ADMIN),
             uuid::Uuid::new_v4(),
         )
@@ -160,10 +164,11 @@ pub(crate) async fn set_grants(
                 .iter()
                 .any(|g| g.operation == Permission::AuthorizationWrite)
         {
-            let audit = crate::audit::Audit::new(tenant.into(), "authorization_write");
-            audit.identify(&principal);
+            let audit =
+                rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
+            audit.identify(principal.principal_id(), principal.instance_id());
             crate::authorization::store::change_rule(
-                &access,
+                access.audit_store(&config(tenant)?.audit).await?.as_ref(),
                 &principal,
                 record.id,
                 Change {
@@ -178,10 +183,11 @@ pub(crate) async fn set_grants(
         }
     }
     if !grants.is_empty() {
-        let audit = crate::audit::Audit::new(tenant.into(), "authorization_write");
-        audit.identify(&principal);
+        let audit =
+            rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
+        audit.identify(principal.principal_id(), principal.instance_id());
         crate::authorization::store::change_rule(
-            &access,
+            access.audit_store(&config(tenant)?.audit).await?.as_ref(),
             &principal,
             uuid::Uuid::new_v4(),
             Change {
@@ -201,4 +207,13 @@ pub(crate) async fn set_grants(
     }
     access.close().await;
     Ok(())
+}
+
+pub(crate) async fn audit_store(
+    config: &crate::config::Config,
+) -> anyhow::Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>> {
+    Ok(crate::Database::connect(config.access_database.options()?)
+        .await?
+        .audit_store(&config.audit)
+        .await?)
 }

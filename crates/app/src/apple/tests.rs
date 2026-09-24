@@ -65,6 +65,9 @@ impl Fixture {
         let devices = Arc::new(crate::device::DeviceService::new(
             access.clone(),
             TENANT.into(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
         ));
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
             config.runtime_database.options()?,
@@ -76,12 +79,21 @@ impl Fixture {
         let management = config
             .management
             .open(
+                access
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?,
                 rss_request_context::TenantId::parse(TENANT)?,
                 clock.clone(),
                 |_| {},
             )
             .await?;
-        let commands = crate::commands::Commands::open(config).await?;
+        let commands = crate::commands::Commands::open(
+            config,
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
+        )
+        .await?;
         let identity = crate::identity::Identity::connect(
             config,
             compiled.identity_management.clone(),
@@ -90,6 +102,9 @@ impl Fixture {
         .await?;
         let config = compiled.config;
         let app = Arc::new(Assembly {
+            audit_store: access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
             commands: commands.clone(),
             management,
             identity: Arc::new(identity),
@@ -172,7 +187,9 @@ impl Fixture {
                 tls::registration(
                     manage,
                     native,
-                    access.clone(),
+                    access
+                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .await?,
                     TENANT.into(),
                     crate::native::NativeListenerKind::AppleManagement,
                 )
@@ -182,7 +199,9 @@ impl Fixture {
                 tls::registration(
                     webhook,
                     hooks,
-                    access,
+                    access
+                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .await?,
                     TENANT.into(),
                     crate::native::NativeListenerKind::AppleWebhookFixture,
                 )

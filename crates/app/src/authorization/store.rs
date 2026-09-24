@@ -1,11 +1,11 @@
 use super::*;
 use crate::{
-    Error, Failure, audit::Audit, authorization::context::AuthorizedPrincipal, database::db,
-    operations::Actor, operations::Operation,
+    Error, Failure, authorization::context::AuthorizedPrincipal, database::db, operations::Actor,
+    operations::Operation,
 };
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::Row;
 use uuid::Uuid;
 
 pub(crate) async fn authorization_snapshot(
@@ -40,32 +40,25 @@ pub(crate) async fn authorization_snapshot(
     result.map_err(|_| Error::Unavailable(Failure::RequestDeadline))?
 }
 pub(crate) async fn change_rule(
-    database: &crate::database::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     proof: &AuthorizedPrincipal,
     id: Uuid,
     change: Change<Rule>,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
     proof.require(Permission::AuthorizationWrite, None)?;
     if let Some(value) = &change.value {
         value.validate(proof.tenant_id(), proof.instance_id())?;
     }
-    crate::authorization::store::change_authorization(
-        database,
-        proof,
-        Table::Rules,
-        id,
-        change,
-        audit,
-    )
-    .await
+    crate::authorization::store::change_authorization(store, proof, Table::Rules, id, change, audit)
+        .await
 }
 pub(crate) async fn change_group(
-    database: &crate::database::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     proof: &AuthorizedPrincipal,
     id: Uuid,
     change: Change<UserGroup>,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
     proof.require(Permission::UserGroupWrite, None)?;
     proof.require(Permission::AuthorizationWrite, None)?;
@@ -73,7 +66,7 @@ pub(crate) async fn change_group(
         value.validate(proof.tenant_id(), proof.instance_id())?;
     }
     crate::authorization::store::change_authorization(
-        database,
+        store,
         proof,
         Table::Groups,
         id,
@@ -82,13 +75,13 @@ pub(crate) async fn change_group(
     )
     .await
 }
-async fn change_authorization<T: serde::Serialize>(
-    database: &crate::database::Database,
+async fn change_authorization<T: serde::Serialize + Sync>(
+    store: &rss_mdm_audit_integration::AuditStore,
     proof: &AuthorizedPrincipal,
     table: Table,
     id: Uuid,
     change: Change<T>,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
     if id.is_nil() || change.operation_id.is_nil() || change.expected_revision >= i64::MAX as u64 {
         return Err(Error::Malformed);
@@ -115,14 +108,96 @@ async fn change_authorization<T: serde::Serialize>(
     };
     audit.operation(change.operation_id, "authorization_write");
     audit.target(&id.to_string());
-    let mut tx = database.begin(proof.tenant_id()).await?;
-    lock(&mut tx, proof.tenant_id(), proof.instance_id()).await?;
-    let replay = crate::operations::replay(&mut tx, &operation).await?;
+    let fact = rss_mdm_audit_integration::Fact::business(
+        audit,
+        &format!(
+            "authorization_write:{}:{}",
+            proof.principal_id(),
+            change.operation_id
+        ),
+        digest.as_bytes(),
+        200,
+        "success",
+        None,
+    )
+    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline =
+        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+            .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let context = ChangeContext {
+        proof,
+        table,
+        id,
+        change: &change,
+        value: &value,
+        operation: &operation,
+        audit,
+    };
+    let attempt = store
+        .execute(
+            rss_request_context::TenantId::parse(proof.tenant_id())
+                .map_err(|_| Error::Malformed)?,
+            &control,
+            (store, context, fact),
+            |(store, context, fact), tx| {
+                Box::pin(async move {
+                    let (receipt, replayed) = tx
+                        .with_connection_context(context, |context, c| {
+                            Box::pin(change_authorization_on(c, context))
+                        })
+                        .await?;
+                    store
+                        .append(tx, fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        context.audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    context.audit.mark_commit_started();
+                    Ok(receipt)
+                })
+            },
+        )
+        .await;
+    crate::operations::settle(attempt, audit)
+}
+
+struct ChangeContext<'a, T> {
+    proof: &'a AuthorizedPrincipal,
+    table: Table,
+    id: Uuid,
+    change: &'a Change<T>,
+    value: &'a Option<String>,
+    operation: &'a Operation<'a>,
+    audit: &'a RequestAudit,
+}
+async fn change_authorization_on<T: serde::Serialize + Sync>(
+    tx: &mut sqlx::PgConnection,
+    context: &ChangeContext<'_, T>,
+) -> Result<(Receipt, bool), Error> {
+    let ChangeContext {
+        proof,
+        table,
+        id,
+        change,
+        value,
+        operation,
+        audit,
+    } = context;
+    let table = *table;
+    let id = *id;
+    lock(tx, proof.tenant_id(), proof.instance_id()).await?;
+    let replay = crate::operations::replay(tx, operation).await?;
     // The tenant/instance lock serializes writes; authorize the version now locked.
-    let current = read_snapshot(&mut tx, proof).await?;
+    let current = read_snapshot(tx, proof).await?;
     authorize_change(&current, proof, table)?;
     if let Some(result) = replay {
-        return decode(&result);
+        return Ok((decode(&result)?, true));
     }
     let query = format!(
         "SELECT revision,document IS NULL AS deleted FROM mdm_access.{} WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3::uuid FOR UPDATE",
@@ -184,20 +259,18 @@ async fn change_authorization<T: serde::Serialize>(
         revision: (revision + 1) as u64,
         deleted: change.value.is_none(),
     };
-    crate::operations::finish(
-        database,
+    crate::operations::save(
         tx,
-        &operation,
+        operation,
         &serde_json::to_string(&receipt).map_err(|_| Error::Malformed)?,
         audit,
-        None,
     )
     .await?;
-    Ok(receipt)
+    Ok((receipt, false))
 }
 
 async fn read_snapshot(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
 ) -> Result<Snapshot, Error> {
     let snapshot = snapshot_on(tx, proof.tenant_id(), proof.instance_id()).await?;
@@ -260,27 +333,27 @@ pub(crate) async fn lock(
 
 #[cfg(test)]
 pub(crate) async fn initialize_authorization(
-    database: &crate::database::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     user: User,
     key: Uuid,
 ) -> Result<Receipt, Error> {
-    let audit = Audit::new(user.tenant_id.clone(), "authorization_initialize");
+    let audit = RequestAudit::new(user.tenant_id.clone(), "authorization_initialize");
     let result =
-        crate::authorization::store::initialize_authorization_audited(database, user, key, &audit)
+        crate::authorization::store::initialize_authorization_audited(store, user, key, &audit)
             .await;
     audit.finalize(
         result
             .as_ref()
             .err()
-            .map(|_| crate::audit::FailureReason::Transaction),
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
     );
     result
 }
 pub(crate) async fn initialize_authorization_audited(
-    database: &crate::database::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     user: User,
     key: Uuid,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
     canonical_uuid(&user.instance_id)?;
     canonical_uuid(&user.tenant_id)?;
@@ -302,10 +375,63 @@ pub(crate) async fn initialize_authorization_audited(
         key,
         digest: &digest,
     };
-    let mut tx = database.begin(&user.tenant_id).await?;
-    lock(&mut tx, &user.tenant_id, &user.instance_id).await?;
-    if let Some(receipt) = crate::operations::replay(&mut tx, &operation).await? {
-        return decode(&receipt);
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline =
+        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+            .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let fact = rss_mdm_audit_integration::Fact::business(
+        audit,
+        &format!("authorization_initialize:{}:{}", user.principal_id, key),
+        digest.as_bytes(),
+        200,
+        "success",
+        None,
+    )
+    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    let attempt = store
+        .execute(
+            rss_request_context::TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?,
+            &control,
+            (store, &user, &operation, audit, fact),
+            |(store, user, operation, audit, fact), tx| {
+                Box::pin(async move {
+                    let (receipt, replayed) = tx
+                        .with_connection_context(
+                            &mut (*user, *operation, *audit),
+                            |(user, operation, audit), c| {
+                                Box::pin(initialize_on(c, user, operation, audit))
+                            },
+                        )
+                        .await?;
+                    store
+                        .append(tx, fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    audit.mark_commit_started();
+                    Ok(receipt)
+                })
+            },
+        )
+        .await;
+    crate::operations::settle(attempt, audit)
+}
+async fn initialize_on(
+    tx: &mut sqlx::PgConnection,
+    user: &User,
+    operation: &Operation<'_>,
+    audit: &RequestAudit,
+) -> Result<(Receipt, bool), Error> {
+    let key = operation.key;
+    lock(tx, &user.tenant_id, &user.instance_id).await?;
+    if let Some(receipt) = crate::operations::replay(tx, operation).await? {
+        return Ok((decode(&receipt)?, true));
     }
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid)").bind(&user.tenant_id).bind(&user.instance_id).fetch_one(&mut *tx).await.map_err(db)?;
     if exists {
@@ -335,15 +461,14 @@ pub(crate) async fn initialize_authorization_audited(
         revision: 1,
         deleted: false,
     };
-    let result = crate::operations::finish(
-        database,
+    crate::operations::save(
         tx,
-        &operation,
+        operation,
         &serde_json::to_string(&receipt).map_err(|_| Error::Malformed)?,
         audit,
-        None,
     )
-    .await;
-    result?;
-    Ok(receipt)
+    .await?;
+    Ok((receipt, false))
 }
+
+use rss_mdm_audit_integration::RequestAudit;

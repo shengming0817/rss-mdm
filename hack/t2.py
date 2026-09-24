@@ -58,9 +58,7 @@ def verify_migrations(container, binary, config, root, env):
     migrate(admin_config,accepted=False)
     require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
     migrate(); migrate()
-    # Force index eligibility on the tiny fixture; this is not a throughput claim.
-    plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
-    require('request_id' in json.dumps(plan[0]['Plan'].get('Index Cond', '')), 'request-id lookup lacks an index condition')
+    require(sql("SELECT to_regclass('mdm_access.audit') IS NULL") == "t", "retired product audit table was installed")
     original = sql("SELECT digest FROM public.mdm_migrations WHERE name='inventory-v1'")
     import hashlib
     require(original == hashlib.sha256((ROOT/'crates/inventory-postgres/migrations/0001_inventory.sql').read_bytes()).hexdigest(), "migration invariant rejected")
@@ -174,6 +172,7 @@ def configure_identity(root, port, binary, env):
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
 def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
+    installation_only = sys.argv[1:] == ["--installation"]
     foundation_only = sys.argv[1:] == ["--foundation"]
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
@@ -205,7 +204,7 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text())
+            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text()+(ROOT/'crates/app/schema/audit-roles.sql').read_text())
             sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
@@ -223,11 +222,16 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             env['MDM_APPLE_FIXTURES']=str(root)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
-            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_apple"], stdout=subprocess.DEVNULL, timeout=10)
+            run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="GRANT CREATE ON DATABASE mdm_installation,mdm_installation_tasks TO mdm_audit_owner,mdm_ledger_owner;", stdout=subprocess.DEVNULL, timeout=10)
             upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection_apple ... ok' in upgrade.stdout and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
+            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
+            run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "audit_integration_tests::installed_audit_receipts_replay_and_atomicity", "--", "--ignored", "--exact"], cwd=ROOT, env=env)
+            for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
+                run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", audit_test, "--", "--ignored", "--exact"], cwd=ROOT, env=env)
+            if installation_only:
+                return
             if catalog_mode:
                 from command_catalog import capture
                 capture(name, catalog_mode)

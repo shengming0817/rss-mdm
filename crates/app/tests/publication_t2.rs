@@ -132,11 +132,11 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
         .unwrap()
         .unwrap();
     let r = request(&c);
-    sql("REVOKE INSERT ON mdm_access.audit FROM mdm_software_driver");
+    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_software_driver");
     let failed = service
         .authorize(&input.candidate, rel::Ring::Test, &r, cutoff())
         .await;
-    sql("GRANT INSERT ON mdm_access.audit TO mdm_software_driver");
+    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_software_driver");
     assert!(failed.is_err());
     assert_eq!(
         service
@@ -362,13 +362,14 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
         Some(Withdrawal::PreflightRetryable)
     );
     assert_eq!(server.state.lock().unwrap().deletes, 0);
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(DISTINCT software->>'binding') FROM mdm_access.audit WHERE target='{}' AND software->>'stage'='record_result'",
-            input.candidate.value()
-        )),
-        "2"
-    );
+    let bindings = audit_records()
+        .iter()
+        .filter(|r| r.event().facts().resource().id().as_str() == input.candidate.value())
+        .map(audit_payload)
+        .filter(|p| p["software"]["stage"] == "record_result")
+        .map(|p| p["software"]["binding"].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(bindings.len(), 2);
     server.state.lock().unwrap().drop_delete_response = true;
     let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let writer = logs.clone();
@@ -427,6 +428,7 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
 #[tokio::test]
 #[ignore = "real PG + HTTPS: publication-t2"]
 async fn complete_variant_mapping_and_resource_reference_protection() {
+    let audit_store = audit_store().await;
     let server = Server::new().await;
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
@@ -460,7 +462,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     same.pilot = same.test.clone();
     assert!(
         PublicationService::connect(
-            runtime.clone(),
+            (runtime.clone(), audit_store.clone()),
             tenant(),
             server.logical.clone(),
             same,
@@ -473,7 +475,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     );
     let connect = || {
         PublicationService::connect(
-            runtime.clone(),
+            (runtime.clone(), audit_store.clone()),
             tenant(),
             server.logical.clone(),
             server.winget(),
@@ -486,20 +488,20 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     let extra = connect().await;
     sql("REVOKE SELECT ON mdm_access.credentials FROM mdm_software_driver");
     assert!(extra.is_err());
-    sql("GRANT INSERT ON mdm_access.audit TO mdm_software_driver WITH GRANT OPTION");
+    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_software_driver WITH GRANT OPTION");
     let delegation = connect().await;
-    sql("REVOKE GRANT OPTION FOR INSERT ON mdm_access.audit FROM mdm_software_driver");
+    sql("REVOKE GRANT OPTION FOR INSERT ON mdm_audit.receipts FROM mdm_software_driver");
     assert!(delegation.is_err());
-    sql("ALTER POLICY tenant ON mdm_access.audit USING(true) WITH CHECK(true)");
+    sql("ALTER POLICY tenant ON mdm_audit.receipts USING(true) WITH CHECK(true)");
     let broad = connect().await;
     sql(
-        "ALTER POLICY tenant ON mdm_access.audit USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+        "ALTER POLICY tenant ON mdm_audit.receipts USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
     );
     assert!(broad.is_err());
     assert!(connect().await.is_ok());
     assert!(
         PublicationService::connect(
-            runtime.clone(),
+            (runtime.clone(), audit_store.clone()),
             tenant(),
             format!("{}-alias", server.logical),
             server.winget(),
@@ -514,7 +516,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     std::mem::swap(&mut swapped.test, &mut swapped.pilot);
     assert!(
         PublicationService::connect(
-            runtime.clone(),
+            (runtime.clone(), audit_store.clone()),
             tenant(),
             server.logical.clone(),
             swapped,
@@ -674,11 +676,12 @@ async fn publication_result_commit_unknown_recovers_one_external_call_and_audit(
     ));
     assert_eq!(server.state.lock().unwrap().posts, 1);
     assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm_access.audit WHERE action='software_result' AND target='{}'",
-            input.candidate.value()
-        )),
-        "1"
+        audit_records()
+            .iter()
+            .filter(|r| r.event().facts().action().as_str() == "software_result"
+                && r.event().facts().resource().id().as_str() == input.candidate.value())
+            .count(),
+        1
     );
     let target:serde_json::Value=serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE candidate='{}' AND left(id,2)='p:'",input.candidate.value()))).unwrap();
     let binding = target["binding"]
@@ -710,13 +713,18 @@ fn assert_publication_audit(p: &rel::Publication, outcome: &str) {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let rows: serde_json::Value = serde_json::from_str(&sql(&format!(
-        "SELECT json_agg(json_build_object('fact',software,'result',result,'status',status)) FROM mdm_access.audit WHERE software->>'publication'='{digest}' AND software->>'stage'='record_result' AND software->>'outcome'='{outcome}'"
-    ))).unwrap();
-    let rows = rows.as_array().expect("durable publication audit");
+    let rows = audit_records()
+        .iter()
+        .map(audit_payload)
+        .filter(|p| {
+            p["software"]["publication"] == digest
+                && p["software"]["stage"] == "record_result"
+                && p["software"]["outcome"] == outcome
+        })
+        .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
-    let fact = &rows[0]["fact"];
-    assert_eq!(fact["operation"], format!("p:{digest}:{}", p.attempt));
+    let fact = &rows[0]["software"];
+    assert_eq!(fact["operation"].as_str().unwrap().len(), 64);
     assert_eq!(fact["publication"], digest);
     assert_eq!(fact["attempt"], p.attempt);
     assert_eq!(fact["ring"], 0);

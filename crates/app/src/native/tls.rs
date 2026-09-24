@@ -4,10 +4,7 @@ use super::{
     TlsEndpoint, TlsRouter,
     admission::{Admission, ConnectionPermit, RequestGate},
 };
-use crate::{
-    ConfigIssue, Database, Error,
-    audit::{Audit, FailureReason},
-};
+use crate::{ConfigIssue, Error};
 use axum::{
     Extension,
     extract::Request,
@@ -74,7 +71,7 @@ pub(crate) fn configuration(
 pub(crate) fn registration(
     listener: TcpListener,
     app: TlsRouter,
-    access: Arc<Database>,
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
     kind: super::NativeListenerKind,
 ) -> ManagedTaskRegistration {
@@ -84,7 +81,7 @@ pub(crate) fn registration(
         TlsTransport {
             acceptor: TlsAcceptor::from(app.tls),
             admission: app.admission,
-            access,
+            audit_store,
             tenant,
             kind,
         },
@@ -108,7 +105,7 @@ async fn evidence(
 struct TlsTransport {
     acceptor: TlsAcceptor,
     admission: Arc<Admission>,
-    access: Arc<Database>,
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
     kind: super::NativeListenerKind,
 }
@@ -143,15 +140,18 @@ impl ConnectionTransport for TlsTransport {
                 };
                 // Emit before the bounded audit so cancellation cannot hide the diagnosed failure.
                 eprintln!("{}", event(self.kind.name(), kind));
-                let audit = Audit::new(self.tenant.clone(), self.kind.audit_action());
-                let failed = !matches!(
-                    tokio::time::timeout(
-                        Duration::from_secs(2),
-                        crate::audit::record(&self.access, &audit, 401, "denied")
-                    )
-                    .await,
-                    Ok(Ok(()))
-                );
+                let audit = RequestAudit::new(self.tenant.clone(), self.kind.audit_action());
+                let timer = crate::lifecycle::RuntimeTimer;
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let deadline =
+                    rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
+                        .expect("bounded TLS audit budget");
+                let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+                let failed = self
+                    .audit_store
+                    .settle_request(&audit, 401, "denied", &control)
+                    .await
+                    .is_err();
                 audit.finalize(failed.then_some(FailureReason::Persistent));
                 return Err(kind);
             }
@@ -201,3 +201,5 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use tests::verify_tls_lifecycle;
+
+use rss_mdm_audit_integration::{FailureReason, RequestAudit};

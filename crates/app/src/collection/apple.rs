@@ -3,7 +3,6 @@ use super::{Attempts, store};
 use crate::{
     Error,
     apple::protocol as wire,
-    audit::Audit,
     authorization::context::RequestAuth,
     authorization::{Approval, Permission},
     database::db,
@@ -32,7 +31,7 @@ pub(crate) async fn create(
     State(app): State<Arc<HttpState>>,
     Path(device): Path<String>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
@@ -42,13 +41,83 @@ pub(crate) async fn create(
     }
     let proof = &auth.proof;
     proof.require(Permission::InventoryCollect, Some(&device))?;
-    let tenant = proof.tenant_id();
     audit.operation(input.request_id, "collection_start");
     audit.target(&device);
-    let mut tx = app.access.begin(tenant).await?;
-    crate::authorization::lock_on(&mut tx, tenant, proof.instance_id()).await?;
-    let snapshot = crate::authorization::snapshot_on(&mut tx, tenant, proof.instance_id()).await?;
-    snapshot.require(proof, Permission::InventoryCollect, Some(&device))?;
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline =
+        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
+            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let attempt = app
+        .audit_store
+        .execute(
+            app.tenant,
+            &control,
+            (
+                &app.audit_store,
+                proof,
+                device.as_str(),
+                &input,
+                &audit,
+                app.tenant,
+            ),
+            |(store, proof, device, input, audit, tenant), tx| {
+                Box::pin(async move {
+                    let (receipt, replayed, digest) = tx
+                        .with_connection_context(
+                            &mut (*proof, *device, *input, *audit, *tenant),
+                            |(proof, device, input, audit, tenant), c| {
+                                Box::pin(create_on(c, proof, device, input, audit, *tenant))
+                            },
+                        )
+                        .await?;
+                    let fact = rss_mdm_audit_integration::Fact::business(
+                        audit,
+                        &format!(
+                            "apple-collection:{}:{}",
+                            proof.principal_id(),
+                            input.request_id
+                        ),
+                        digest.as_bytes(),
+                        202,
+                        "success",
+                        None,
+                    )
+                    .and_then(|fact| fact.with_details(receipt.clone()))
+                    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    store
+                        .append(tx, &fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    audit.mark_commit_started();
+                    Ok(receipt)
+                })
+            },
+        )
+        .await;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(crate::operations::settle(attempt, &audit)?),
+    ))
+}
+async fn create_on(
+    tx: &mut PgConnection,
+    proof: &crate::authorization::context::AuthorizedPrincipal,
+    device: &str,
+    input: &Create,
+    audit: &RequestAudit,
+    tenant_id: rss_request_context::TenantId,
+) -> Result<(serde_json::Value, bool, String), Error> {
+    let tenant = proof.tenant_id();
+    crate::authorization::lock_on(tx, tenant, proof.instance_id()).await?;
+    let snapshot = crate::authorization::snapshot_on(tx, tenant, proof.instance_id()).await?;
+    snapshot.require(proof, Permission::InventoryCollect, Some(device))?;
     let digest =
         crate::enrollment::digest(&("mdm.apple.collection-create/v1", &device, input.source));
     let operation = Operation {
@@ -56,22 +125,22 @@ pub(crate) async fn create(
         key: input.request_id,
         digest: &digest,
     };
-    if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
+    if let Some(old) = crate::operations::replay(tx, &operation).await? {
         return Ok((
-            StatusCode::ACCEPTED,
-            Json(serde_json::from_str(&old).map_err(|_| super::corrupt())?),
+            serde_json::from_str(&old).map_err(|_| super::corrupt())?,
+            true,
+            digest,
         ));
     }
-    crate::device::store::lock_channel(&mut tx, tenant, &device, rss_mdm_inventory::Channel::Mdm)
-        .await?;
+    crate::device::store::lock_channel(tx, tenant, device, rss_mdm_inventory::Channel::Mdm).await?;
     let row=sqlx::query("SELECT r.id::text,r.generation,s.epoch::text FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND c.state='active' AND s.source='mdm.apple' AND s.enabled AND s.coverage=$3 AND a.state='active' FOR SHARE OF r,c,a FOR UPDATE OF s")
-        .bind(tenant).bind(&device).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
+        .bind(tenant).bind(device).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
     let registration = uuid(&row, "id")?;
-    let scope = crate::device::scope(app.tenant, registration, "mdm.apple", uuid(&row, "epoch")?)?;
+    let scope = crate::device::scope(tenant_id, registration, "mdm.apple", uuid(&row, "epoch")?)?;
     let sequence:i64=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.apple' AND next_sequence<9223372036854775807 RETURNING next_sequence-1")
         .bind(tenant).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
     let id = Uuid::new_v4();
-    let approval = Approval::from_proof(&snapshot, proof, &device, Permission::InventoryCollect)?;
+    let approval = Approval::from_proof(&snapshot, proof, device, Permission::InventoryCollect)?;
     let request = wire::command(
         id,
         wire::dictionary([
@@ -89,20 +158,15 @@ pub(crate) async fn create(
         .bind(tenant).bind(id.to_string()).bind(row.try_get::<i64,_>("generation").map_err(db)?).bind(request).execute(&mut *tx).await.map_err(db)?;
     let receipt = serde_json::json!({"runId":id,"result":"pending"});
     proof.check_live()?;
-    crate::operations::finish_status(
-        &app.access,
-        tx,
-        &operation,
-        &receipt.to_string(),
-        &audit,
-        None,
-        202,
-    )
-    .await?;
-    Ok((StatusCode::ACCEPTED, Json(receipt)))
+    crate::operations::save(tx, &operation, &receipt.to_string(), audit).await?;
+    Ok((receipt, false, digest))
 }
 
-pub(crate) async fn expire(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
+pub(crate) async fn expire(
+    c: &mut PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    tenant: &str,
+) -> Result<(), Error> {
     let ids=sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline<=clock_timestamp() ORDER BY apple_deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
         .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
     for id in ids {
@@ -112,7 +176,7 @@ pub(crate) async fn expire(c: &mut PgConnection, tenant: &str) -> Result<(), Err
             Uuid::parse_str(&id).map_err(|_| super::corrupt())?,
         )
         .await?;
-        store::seal(c, &mut run, "timeout").await?;
+        facts.extend(store::seal(c, &mut run, "timeout").await?);
     }
     Ok(())
 }
@@ -133,6 +197,7 @@ async fn approved(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, 
 }
 pub(crate) async fn receive(
     c: &mut PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     p: &DevicePrincipal,
     id: Uuid,
     status: wire::Status,
@@ -166,7 +231,7 @@ pub(crate) async fn receive(
             None
         };
         run.attempts = Attempts::apple(values, now);
-        store::seal(c, &mut run, "complete").await?;
+        facts.extend(store::seal(c, &mut run, "complete").await?);
     }
     Ok(true)
 }
@@ -188,7 +253,7 @@ pub(crate) async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Ve
 }
 
 pub(crate) struct HttpState {
-    pub(crate) access: std::sync::Arc<crate::database::Database>,
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) apple: bool,
     pub(crate) tenant: rss_request_context::TenantId,
 }
@@ -197,3 +262,5 @@ impl HttpState {
         self.apple.then_some(()).ok_or(crate::Error::Unsupported)
     }
 }
+
+use rss_mdm_audit_integration::RequestAudit;

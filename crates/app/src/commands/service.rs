@@ -21,32 +21,52 @@ impl Commands {
         proof: &AuthorizedPrincipal,
         device: &str,
         input: &Create,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.require(input.task.permission(), Some(device))?;
         let failure = Mutex::new(None);
         let timer = recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        let attempt = rss_reconcile_postgres::messaging::wake_with(
-            &self.runtime,
-            &target(self.tenant, device),
-            &control,
-            (self, proof, device, input, audit, &failure),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, proof, device, input, audit, failure) = *ctx;
-                    match service.create_in(tx, proof, device, input, audit).await {
-                        Ok(v) => {
-                            audit.mark_commit_started();
-                            Ok(v)
+        let attempt = self
+            .runtime
+            .local_tx_with_context(
+                self.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (
+                    self,
+                    target(self.tenant, device).clone(),
+                    (self, proof, device, input, audit, &failure),
+                ),
+                |(service, target, context), tx| {
+                    Box::pin(async move {
+                        if let Err(error) = service.audit_store.lock_in(tx).await {
+                            return Err(rejection(Error::from(error).into(), context.5));
                         }
-                        Err(e) => Err(rejection(e, failure)),
-                    }
-                })
-            },
-        )
-        .await;
+                        rss_reconcile_postgres::messaging::wake_in(
+                            tx,
+                            target,
+                            context,
+                            |ctx, tx| {
+                                Box::pin(async move {
+                                    let (service, proof, device, input, audit, failure) = **ctx;
+                                    match service.create_in(tx, proof, device, input, audit).await {
+                                        Ok(v) => {
+                                            audit.mark_commit_started();
+                                            Ok(v)
+                                        }
+                                        Err(e) => Err(rejection(e, failure)),
+                                    }
+                                })
+                            },
+                        )
+                        .await
+                    })
+                },
+            )
+            .await;
         settle(attempt, audit, failure)
     }
     pub(super) async fn create_in(
@@ -55,7 +75,7 @@ impl Commands {
         proof: &AuthorizedPrincipal,
         device: &str,
         input: &Create,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> Result<Value> {
         storage::admit(tx).await?;
         require_tenant(self.tenant, proof)?;
@@ -64,8 +84,16 @@ impl Commands {
         storage::lock(tx, device).await?;
         let fingerprint = create_fingerprint(proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint).await? {
-            audit.management_result(crate::audit::ManagementResult::Replayed);
-            storage::audit(tx, audit, 202).await?;
+            audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+            let fact = rss_mdm_audit_integration::Fact::business(
+                audit,
+                &format!("command:{0}:accept", input.operation_id),
+                &fingerprint,
+                202,
+                "success",
+                None,
+            )?;
+            self.audit_store.append_in(tx, &fact, true).await?;
             return Ok(value);
         }
         let now = storage::now(tx).await?;
@@ -94,7 +122,14 @@ impl Commands {
         let digest = fingerprint.clone();
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).execute(c).await?;Ok(())})).await?;
         apple::own(tx, device, registration, input).await?;
-        let response = created(tx, audit, input.operation_id, fingerprint).await?;
+        let response = created(
+            tx,
+            &self.audit_store,
+            audit,
+            input.operation_id,
+            fingerprint,
+        )
+        .await?;
         proof.check_live()?;
         Ok(response)
     }
@@ -103,7 +138,7 @@ impl Commands {
         proof: &AuthorizedPrincipal,
         device: &str,
         id: Uuid,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         self.transact((self,proof,device,id,audit),audit,|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,audit) = *ctx;
@@ -113,7 +148,7 @@ impl Commands {
             let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(tx,&op,now).await?;
             let observation=protocol::observation(tx,&op,command.status()).await?;
-            storage::audit(tx,audit,200).await?;
+            service.audit_store.append_request_in(tx,audit,200,"success").await?;
             Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
         })).await
     }
@@ -124,7 +159,7 @@ impl Commands {
         id: Uuid,
         change: &Change,
         approve: bool,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         if change.request_id.is_nil() || change.expected_revision < 1 {
             return Err(Error::Malformed);
@@ -136,7 +171,7 @@ impl Commands {
             let auth=storage::authorized(tx,proof,device,permission).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
             let fingerprint=Sha256::digest(invalid(serde_json::to_vec(&("mdm.command-change/v2",proof.user(),device,id,change,approve)))?).to_vec();
-            if let Some(value)=replay(tx,change.request_id,&fingerprint).await? {audit.management_result(crate::audit::ManagementResult::Replayed);storage::audit(tx,audit,200).await?;return Ok(value);}
+            if let Some(value)=replay(tx,change.request_id,&fingerprint).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("command-change:{}", change.request_id), &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
             let op=storage::load(tx,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
@@ -154,7 +189,7 @@ impl Commands {
             let approval=invalid(serde_json::to_string(&approval))?;let tenant=service.tenant.to_string();let operation_key=id.to_string();
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET approval=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(approval).execute(c).await?;Ok(())})).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
-            receipt(tx,change.request_id,id,fingerprint,&result).await?;storage::audit(tx,audit,200).await?;proof.check_live()?;Ok(result)
+            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("command-change:{}", change.request_id), &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result).await?;proof.check_live()?;Ok(result)
         })).await
     }
 }
@@ -273,12 +308,21 @@ fn require_tenant(
 
 async fn created(
     tx: &mut PgTransaction<'_>,
-    audit: &Audit,
+    store: &rss_mdm_audit_integration::AuditStore,
+    audit: &RequestAudit,
     id: Uuid,
     fingerprint: Vec<u8>,
 ) -> Result<Value> {
     let response = json!({"operationId":id,"commandId":id,"revision":1,"accepted":true});
+    let fact = rss_mdm_audit_integration::Fact::business(
+        audit,
+        &format!("command:{id}:accept"),
+        &fingerprint,
+        202,
+        "success",
+        None,
+    )?;
+    store.append_in(tx, &fact, false).await?;
     receipt(tx, id, id, fingerprint, &response).await?;
-    storage::audit(tx, audit, 202).await?;
     Ok(response)
 }

@@ -249,7 +249,17 @@ impl Client {
         );
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
-        let audit: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE plan=$1::uuid AND operation_id=$2::uuid AND action='plan_execute' AND result='success'").bind(preview.to_string()).bind(request["operationId"].as_str().unwrap()).fetch_one(&mut pg).await?;
+        let audit = crate::audit_test_support::read(&mut pg)
+            .await?
+            .iter()
+            .filter(|r| {
+                r.source() == "mdm.business"
+                    && r.payload["plan"] == preview.to_string()
+                    && r.operation() == request["operationId"].as_str()
+                    && r.action() == "plan_execute"
+                    && r.result() == "success"
+            })
+            .count();
         ensure!(audit == 1, "missing or duplicate plan audit: {audit}");
         if cancellation {
             self.without_firewall_write(&mut pg, &path, &request)

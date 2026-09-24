@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-audit-integration": "crates/audit-integration",
     "rss-mdm-agent-wire": "crates/agent-wire",
     "rss-mdm-backend-postgres-support": "crates/backend-postgres-support",
     "rss-mdm-policy-postgres":"crates/policy-postgres",
@@ -43,6 +44,18 @@ LOCAL_PACKAGES = {
 
 IDENTITY_PACKAGES = {"rss-identity-core", "rss-identity-postgres", "rss-identity-http-axum", "rss-identity-oidc"}
 
+AUDIT_PACKAGES = {"rss-audit-core", "rss-audit-postgres"}
+
+def audit_dependency(dep):
+    require(isinstance(dep, dict) and set(dep) <= {'git','rev','features','default-features'} and {'git','rev'} <= set(dep), 'invalid Audit dependency')
+    return identity_dependency({key:dep[key] for key in ('git','rev')})
+
+def audit_pin(manifest):
+    deps = manifest['workspace']['dependencies']
+    pairs = {audit_dependency(deps[name]) for name in AUDIT_PACKAGES}
+    require(len(pairs) == 1, 'Audit packages must share exact source')
+    return next(iter(pairs))
+
 def identity_dependency(dep):
     require(isinstance(dep, dict) and set(dep)=={'git','rev'}, 'invalid Identity dependency')
     url=urlsplit(dep['git'])
@@ -60,8 +73,8 @@ def verify_policy(policy, manifest):
     require(policy['advisories']['ignore']==['RUSTSEC-2023-0071'], 'unapproved advisory exception')
     require(policy['advisories']['unused-ignored-advisory']=='deny', 'expired advisory exception must fail')
     require(policy['sources']['unknown-git']=='deny' and policy['sources']['unknown-registry']=='deny', 'unknown sources must fail')
-    urls={rss_pin(manifest)[0],identity_pin(manifest)[0]}
-    require(len(urls)==2 and set(policy['sources']['allow-git'])==urls, 'source permissions must match distinct reviewed repositories')
+    urls={rss_pin(manifest)[0],identity_pin(manifest)[0],audit_pin(manifest)[0]}
+    require(len(urls)==3 and set(policy['sources']['allow-git'])==urls, 'source permissions must match distinct reviewed repositories')
 
 def require(condition, message):
     if not condition:
@@ -76,6 +89,9 @@ def rss_pin(manifest, required=True):
                 name = dependency.get("package", alias) if isinstance(dependency, dict) else alias
                 if name in LOCAL_PACKAGES:
                     require(dependency == {"path": LOCAL_PACKAGES[name]}, f"invalid local member source: {alias}")
+                    continue
+                if name in AUDIT_PACKAGES:
+                    audit_dependency(dependency)
                     continue
                 if name in IDENTITY_PACKAGES:
                     identity_dependency(dependency)
@@ -96,6 +112,7 @@ def workspace_pin(root):
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
     pin = rss_pin(manifest)
     identity_pin(manifest)
+    audit_pin(manifest)
     verify_policy(tomllib.loads((root / "deny.toml").read_text()),manifest)
     shared = manifest["workspace"]["dependencies"]
     for member in manifest["workspace"]["members"]:
@@ -112,7 +129,7 @@ def workspace_pin(root):
             for section in ("dependencies", "dev-dependencies", "build-dependencies"):
                 for alias, dep in owner.get(section, {}).items():
                     name = dep.get('package', alias) if isinstance(dep, dict) else alias
-                    if name in IDENTITY_PACKAGES: require(dep == shared[name], 'Identity source mismatch')
+                    if name in IDENTITY_PACKAGES | AUDIT_PACKAGES: require(dep == shared[name], 'component source mismatch')
         require(rss_pin(package, required=False) in (None, pin), f"RSS source differs in {member}")
     return pin
 
@@ -153,6 +170,9 @@ def verify_metadata(data, root, mode, pin):
         elif package["name"] in IDENTITY_PACKAGES:
             identity_url,revision = identity_pin(tomllib.loads((root / 'Cargo.toml').read_text()))
             require(package['source'] == f'git+{identity_url}?rev={revision}#{revision}', 'Identity source drift')
+        elif package["name"] in AUDIT_PACKAGES:
+            audit_url, revision = audit_pin(tomllib.loads((root / 'Cargo.toml').read_text()))
+            require(package['source'] == f'git+{audit_url}?rev={revision}#{revision}', 'Audit source drift')
         elif package["name"].startswith("rss-"):
             require(package['source'] == expected, (package['name'], package['source']))
         else:
@@ -162,7 +182,7 @@ def verify_metadata(data, root, mode, pin):
     features = {packages[n["id"]]: n["features"] for n in data["resolve"]["nodes"]}
     for name in ("rss-observation-postgres", "rss-projection-postgres"):
         require(("integration" in features[name]) == (mode == "integration"), f"unexpected {mode} features for {name}")
-    require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES, 'Identity components missing')
+    require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES | AUDIT_PACKAGES, 'Identity/Audit components missing')
     require(("test-support" in features["rss-identity-oidc"]) == (mode == "integration"), "OIDC fixture transport feature drift")
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     verify_backend_support(data)

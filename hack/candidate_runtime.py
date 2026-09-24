@@ -123,7 +123,7 @@ def inputs(root, example, gateway_file):
     config["management"]["database"]=database(runtime,"mdm_management_runtime")
     config["management"]["publication_database"]=database(runtime,"mdm_software_driver")
     config["identity_management"]=[dict(tenant_id=TENANT,instance_id=INSTANCE,principal_id=ADMIN,permissions=["accounts"])]
-    write(operator,"authorization.json",dict(database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
+    write(operator,"authorization.json",dict(audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),installation=installation()))
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,principal_id=ADMIN,

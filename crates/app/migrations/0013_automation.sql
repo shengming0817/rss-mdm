@@ -27,6 +27,7 @@ CREATE TABLE mdm_management.asset_dispatch (
  tenant_id uuid PRIMARY KEY, consumed bigint NOT NULL DEFAULT 0,
  watermark bigint NOT NULL DEFAULT 0, group_cursor uuid,
  failure text CHECK(failure='automation_suspended'),
+ failure_generation bigint NOT NULL DEFAULT 0 CHECK(failure_generation>=0),
  phase text NOT NULL DEFAULT 'groups' CHECK(phase IN('groups','devices')),
  CHECK(consumed>=0 AND watermark>=consumed)
 );
@@ -104,7 +105,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 GRANT UPDATE(forwarded,completed,failure,cursor,authority_revision) ON mdm_management.automation_jobs TO mdm_management_runtime;
-GRANT UPDATE(consumed,watermark,group_cursor,phase,failure) ON mdm_management.asset_dispatch TO mdm_management_runtime;
+GRANT UPDATE(consumed,watermark,group_cursor,phase,failure,failure_generation) ON mdm_management.asset_dispatch TO mdm_management_runtime;
 GRANT UPDATE(phase,source_index,source_cursor,evaluation_cursor,object_count,member_count,identity_revision,result_fingerprint) ON mdm_management.scope_runs TO mdm_management_runtime;
 GRANT UPDATE(resolution,resolution_revision) ON mdm_management.scopes TO mdm_management_runtime;
 GRANT UPDATE(scope,revision) ON mdm_management.policy_assignments TO mdm_management_runtime;
@@ -112,8 +113,4 @@ GRANT UPDATE(desired,candidate) ON mdm_management.candidate_heads TO mdm_managem
 GRANT DELETE ON mdm_management.group_fields,mdm_management.scope_sources TO mdm_management_runtime;
 GRANT UPDATE(total,matched,unknown) ON mdm_management.asset_query_runs TO mdm_management_runtime;
 GRANT UPDATE(total) ON mdm_management.asset_query_facets TO mdm_management_runtime;
-ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
-ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
-('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
-'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save','authorization_write','authorization_initialize','authorization_effective_read','authorization_rules_read','authorization_groups_read','authorization_members_read','authorization_departments_read','command_accept','command_read','command_cancel','command_approve','command_dispatch','agent_registration','agent_report','agent_report_read','automation_completed','automation_superseded','automation_failed'));
 COMMIT;

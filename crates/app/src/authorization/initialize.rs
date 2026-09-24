@@ -1,9 +1,5 @@
 use super::{Receipt, User, canonical_uuid};
-use crate::{
-    ConfigIssue, Database, Error, Failure,
-    audit::{Audit, FailureReason},
-    config, identity,
-};
+use crate::{ConfigIssue, Database, Error, Failure, config, identity};
 use rss_identity_core::{
     InstanceId,
     account::{LoginKey, Password, PasswordKdf},
@@ -17,6 +13,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Initialize {
     pub database: config::Database,
+    pub audit: config::AuditConfig,
     pub identity_database: config::Database,
     pub installation: crate::migration::Installation,
     pub login: String,
@@ -30,7 +27,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     let clock = crate::lifecycle::RuntimeTimer;
     let deadline =
         Deadline::from_timeout(&clock, Duration::from_secs(30)).expect("bounded command budget");
-    let audit = Audit::new(config.user.tenant_id.clone(), "authorization_initialize");
+    let audit = RequestAudit::new(config.user.tenant_id.clone(), "authorization_initialize");
     audit.operation(config.operation_id, "authorization_initialize");
     let mut owned = Resources {
         runtime: None,
@@ -69,7 +66,9 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
             serde_json::json!({"event":"mdm_authorization_shutdown_failure","operation_id":audit.snapshot().operation_id,"write_outcome":audit.snapshot().write_outcome})
         );
         if result.is_ok() {
-            result = Err(audit.snapshot().write_outcome.deadline_error());
+            result = Err(crate::error_projection::audit_deadline(
+                audit.snapshot().write_outcome,
+            ));
         }
     }
     audit.finalize(result.as_ref().err().map(|_| FailureReason::Transaction));
@@ -81,18 +80,22 @@ struct Resources {
     access: Option<Database>,
 }
 pub(crate) async fn bounded<T>(
-    audit: &Audit,
+    audit: &RequestAudit,
     deadline: Deadline,
     work: impl std::future::Future<Output = Result<T, Error>>,
 ) -> Result<T, Error> {
     tokio::time::timeout_at(deadline.instant().into(), work)
         .await
-        .unwrap_or_else(|_| Err(audit.snapshot().write_outcome.deadline_error()))
+        .unwrap_or_else(|_| {
+            Err(crate::error_projection::audit_deadline(
+                audit.snapshot().write_outcome,
+            ))
+        })
 }
 async fn initialize_owned(
     config: Initialize,
     owned: &mut Resources,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
     if config.database.user != "mdm_access" {
         return Err(Error::Configuration(ConfigIssue::AccessDatabase));
@@ -192,10 +195,15 @@ async fn initialize_owned(
         owned
             .access
             .as_ref()
-            .ok_or(Error::Unavailable(Failure::Database))?,
+            .ok_or(Error::Unavailable(Failure::Database))?
+            .audit_store(&config.audit)
+            .await?
+            .as_ref(),
         user,
         config.operation_id,
         audit,
     )
     .await
 }
+
+use rss_mdm_audit_integration::{FailureReason, RequestAudit};

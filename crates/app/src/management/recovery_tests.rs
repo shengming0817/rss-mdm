@@ -265,7 +265,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
     // Failure of the companion audit must leave both job and RSS claim retryable.
-    sql("REVOKE INSERT ON mdm_access.audit FROM mdm_management_runtime");
+    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_management_runtime");
     let result = worker
         .finish(
             &claim,
@@ -273,7 +273,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
             &control,
         )
         .await;
-    sql("GRANT INSERT ON mdm_access.audit TO mdm_management_runtime");
+    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_management_runtime");
     assert!(result.is_err());
     assert_eq!(
         serde_json::from_str::<Value>(&snapshot(task)).unwrap()[1],
@@ -332,10 +332,12 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     sql("GRANT INSERT ON mdm_management.asset_query_results TO mdm_management_runtime");
     assert_eq!(state.unwrap()["failure"], "automation_suspended");
     assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm_access.audit WHERE action='automation_failed' AND operation_id='{task}'"
-        )),
-        "1"
+        audit_records()
+            .iter()
+            .filter(|r| r.action() == "automation_failed"
+                && r.operation() == Some(task.to_string().as_str()))
+            .count(),
+        1
     );
     rss_runtime::ManagedResource::shutdown(&automation::Resource(worker))
         .await
