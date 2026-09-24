@@ -2,6 +2,24 @@ use super::*;
 use rss_mdm_scope as s;
 use sqlx::Row;
 use std::collections::{BTreeMap, BTreeSet};
+
+fn check_scope_page(processed: usize, added: usize) -> std::result::Result<(), Error> {
+    match processed.checked_add(added) {
+        Some(total) if total <= 1_000_000 => Ok(()),
+        _ => Err(Error::Unavailable(Failure::AssetObjectLimit)),
+    }
+}
+
+#[test]
+fn scope_page_budget_is_inclusive_and_rejects_overflow() {
+    assert!(check_scope_page(999_999, 1).is_ok());
+    for (processed, added) in [(1_000_000, 1), (usize::MAX, 1)] {
+        assert!(matches!(
+            check_scope_page(processed, added),
+            Err(Error::Unavailable(Failure::AssetObjectLimit))
+        ));
+    }
+}
 fn fingerprint(revision: u64, frozen: &ScopeInput) -> Result<Vec<u8>> {
     use sha2::Digest;
     let sources: Vec<_> = frozen
@@ -306,9 +324,7 @@ impl Management {
         })).await?;
         let more = devices.len() > limit;
         devices.truncate(limit);
-        if processed + devices.len() > 1_000_000 {
-            return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
-        }
+        check_scope_page(processed, devices.len())?;
         let tenant = self.tenant.to_string();
         let selected = devices.clone();
         let rows=tx.with_connection(move |c|Box::pin(async move {

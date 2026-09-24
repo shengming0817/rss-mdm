@@ -252,6 +252,24 @@ class CiImpactContract(unittest.TestCase):
         _, decision = self.repo.select()
         self.assert_decision(decision, full=False, packages=[], reason="docs-only")
 
+    def test_current_source_includes_staged_unstaged_new_and_deleted_inputs(self):
+        for mode in ("staged", "unstaged", "new", "deleted"):
+            with self.subTest(mode=mode):
+                self.repo.git("reset", "--hard", self.repo.base)
+                self.repo.git("clean", "-fd")
+                path = self.repo.root / "crates/leaf/src/obsolete.rs"
+                if mode == "deleted":
+                    path.unlink()
+                elif mode == "new":
+                    (path.parent / "new.rs").write_text("pub const NEW: bool = true;\n")
+                else:
+                    path.write_text("pub const CHANGED: bool = true;\n")
+                    if mode == "staged":
+                        self.repo.git("add", str(path))
+                _, decision = self.repo.select()
+                self.assertFalse(decision["full"])
+                self.assertEqual(decision["packages"], ["leaf", "leaf-integration"])
+
     def test_no_changes_is_empty_and_stable(self) -> None:
         first, decision = self.repo.select(head=self.repo.base)
         second, _ = self.repo.select(head=self.repo.base)

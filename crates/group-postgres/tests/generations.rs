@@ -503,7 +503,9 @@ async fn durable_recalculation_no_change_fences_stale_run() {
     assert_eq!(published.group.member_count, 1);
     assert!(matches!(
         builds::publish(&runtime, &s, &stale).await,
-        Err(rss_mdm_group_postgres::Error::Rejected(Rejection::VersionConflict))
+        Err(rss_mdm_group_postgres::Error::Rejected(
+            Rejection::VersionConflict
+        ))
     ));
     let next = builds::request(&published, None);
     builds::prepare(&runtime, &s, &next, &page).await.unwrap();

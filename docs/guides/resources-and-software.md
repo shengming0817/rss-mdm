@@ -75,4 +75,4 @@ pkg 必须提供非空、唯一、精确 pkgutil receipt ID 清单；渲染带�
 
 ## 来源
 
-WinGet 样本、schema 提取过程与许可见 [fixture 来源](../README.md)。Brew 格式参考 [Homebrew 固定源码](https://github.com/Homebrew/brew/tree/4ef2edc123233e30f94c4a6d21bcb019806f1945)，Git CAS 参考 [Git refs.c](https://github.com/git/git/blob/v2.51.0/refs.c)。安装和故障诊断见 [运维](../deployment/operations.md)。源 Published 不表示设备安装成功。
+WinGet 样本、schema 提取过程与许可见 [fixture 来源](../../crates/winget-source/tests/fixtures/README.md)。Brew 格式参考 [Homebrew 固定源码](https://github.com/Homebrew/brew/tree/4ef2edc123233e30f94c4a6d21bcb019806f1945)，Git CAS 参考 [Git refs.c](https://github.com/git/git/blob/v2.51.0/refs.c)。安装和故障诊断见 [运维](../deployment/operations.md)。源 Published 不表示设备安装成功。

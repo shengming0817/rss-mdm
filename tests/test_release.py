@@ -58,6 +58,21 @@ class CandidatePublication(unittest.TestCase):
 
 
 class WorkingSource(unittest.TestCase):
+    def test_private_header_in_source_is_rejected_before_docker(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'repo'; root.mkdir()
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
+            (root / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n')
+            (root / 'deployment').mkdir()
+            header = root / 'deployment/azure-header'
+            header.write_text('synthetic authorization'); header.chmod(0o600)
+            with mock.patch.object(release, 'ROOT', root), mock.patch.object(release, 'run', return_value='revision'), mock.patch.object(release, 'snapshot_ui') as ui:
+                with self.assertRaisesRegex(ValueError, 'credential file'):
+                    release.build(Path(temporary) / 'candidate', header, 'sha256:'+'a'*64)
+                ui.assert_not_called()
+            self.assertFalse((Path(temporary) / 'candidate').exists())
+
     def test_copy_uses_working_bytes_and_ignores_unrelated_files(self):
         import subprocess
         with tempfile.TemporaryDirectory() as temporary:
@@ -69,11 +84,13 @@ class WorkingSource(unittest.TestCase):
             (root / 'crates/app').mkdir(parents=True)
             (root / 'crates/app/old.rs').write_text('old')
             subprocess.run(['/usr/bin/git', '-C', str(root), 'add', '.'], check=True)
+            (root / 'Cargo.lock').write_text('version = 4\n# current working bytes\n')
             (root / 'crates/app/old.rs').unlink()
             (root / 'crates/app/new.rs').write_text('unsubmitted')
             (root / 'private-secret').write_text('must not enter context')
             destination = Path(temporary) / 'source'
             release.copy_source(root, destination)
+            self.assertEqual((destination / 'Cargo.lock').read_text(), 'version = 4\n# current working bytes\n')
             self.assertEqual((destination / 'crates/app/new.rs').read_text(), 'unsubmitted')
             self.assertFalse((destination / 'crates/app/old.rs').exists())
             self.assertFalse((destination / 'private-secret').exists())
@@ -82,7 +99,7 @@ class WorkingSource(unittest.TestCase):
                 release.copy_source(root, Path(temporary) / 'bad-source')
 
     def test_ui_revision_is_information_not_admission(self):
-        value = {'Id':'sha256:'+'a'*64,'Os':'linux','Architecture':'arm64','Config':{'User':'10001:10001'}}
+        value = {'Id':'sha256:'+'a'*64,'Os':'linux','Architecture':'arm64','Config':{'User':'10001:10001','Labels':None}}
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'ui.tar'; output.write_bytes(b'image')
             with mock.patch.object(release, 'run', return_value=json.dumps([value])), mock.patch.object(release.subprocess, 'run'):

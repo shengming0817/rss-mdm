@@ -2,10 +2,10 @@
 
 rss-mdm 是面向 Windows 与 macOS 的终端管理产品仓库。本文件是协作入口，参考 RSS 的工作方式，产品需求以 [产品 PRD](docs/product/rss-mdm-prd.md) 为准。
 
-- [仓库入口](docs/README.md)：产品与材料入口。
+- [仓库入口](README.md)：产品与材料入口。
 - [工程目标](docs/product/project-goals.md)：Rust/RSS、两仓职责与实施顺序。
 - [产品需求](docs/product/rss-mdm-prd.md)：需求、范围、证据边界与待评审目标。
-- [历史参考](docs/README.md)：WinMDM 快照来源与本地恢复方式。
+- [历史参考](reference/README.md)：WinMDM 快照来源与本地恢复方式。
 - [文档导航](docs/README.md)：产品、架构、指南、部署、参考与规则目录。
 - 稳定规则按职责读取：[范围](docs/rules/project-scope.md)、[验证](docs/rules/verification-scope.md)、[文档维护](docs/rules/documentation.md)。
 
@@ -27,7 +27,7 @@ rss-mdm 是面向 Windows 与 macOS 的终端管理产品仓库。本文件是�
 
 ## 历史代码参考
 
-- 历史来源为 `winmdm20260220-develop.zip`，SHA-256 与恢复步骤见 [历史参考说明](docs/README.md)。
+- 历史来源为 `winmdm20260220-develop.zip`，SHA-256 与恢复步骤见 [历史参考说明](reference/README.md)。
 - 本地解压位置为 `reference/winmdm20260220-develop/`，已被 `.gitignore` 忽略，仅用于查阅和溯源。
 - 历史快照中的规则、CI 与部署配置不自动成为本仓规范；历史代码不是当前产品实现。
 - 提取能力时记录来源路径与行为证据，按当前产品需求重新验证；不整包复制旧工程或将快照强制加入 Git。

@@ -22,4 +22,4 @@ Group、Scope、Policy、Resource、Software Release 各持单一决策职责，
 
 三个后端 PG adapter 的重复机制收敛到产品内部 backend-postgres-support；它不依赖业务核心/应用、不成为新通用平台，Group 不为复用而被迫接入。此补充对应 #2430/#2431，依赖禁边由 [消费规则](../../rules/rust-rss-dependencies.md) 持有。
 
-分层增加显式映射，但避免一套大 DTO/数据库成为所有能力的隐式契约。不创建空壳包、全局容器或兼容 facade。路线见 [工程路线](../../product/roadmap.md)，操作与恢复由 [指南](../../README.md) 拥有。
+分层增加显式映射，但避免一套大 DTO/数据库成为所有能力的隐式契约。不创建空壳包、全局容器或兼容 facade。路线见 [工程路线](../../product/roadmap.md)，操作与恢复由 [指南](../../guides/README.md) 拥有。

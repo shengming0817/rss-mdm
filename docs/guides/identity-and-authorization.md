@@ -18,6 +18,6 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 通过 `/api/v1/authorization` 读取当前权限，通过对应 rules、user-groups、departments 入口维护规则与主体。写入携带稳定 operationId 与 expectedRevision；删除保留墓碑，UUID 不复用。提交未知按原身份精确重放；历史回执不会恢复已删除权限。分页版本变化时重新读取，禁止混合成员快照。
 
-`initialize-authorization` 仅显式执行一次，核对真实 Identity 主体后初始化管理规则。`serve` 不补种子；删除末位管理员权限后不能靠重启或重放初始化恢复。部署恢复须由受控运维流程处理。
+`initialize-authorization` 仅显式执行一次，核对真实 Identity 主体后初始化管理规则。`serve` 不补种子；删除前必须先交接另一条有效管理员授权。当前没有内建的授权恢复或重新种子入口，重启、重放初始化和密码恢复都不能恢复已删除的 MDM grant。
 
 旧中央身份、会话与新实例不自动映射；历史审计保留原含义。授权设计原因见 [持久授权 ADR](../architecture/adr/202609200002-2363-persistent-authorization.md)，HTTP 形态由 [应用源码](../../crates/app/src) 持有。

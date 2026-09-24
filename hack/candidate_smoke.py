@@ -19,7 +19,7 @@ from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 TENANT = TENANTS[0]
 PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 
-from candidate_runtime import Candidate, Stage, docker, require, wait
+from candidate_runtime import Candidate, Stage, docker, failure_evidence, require, wait
 
 class Browser:
     def __init__(self, port, ca):
@@ -54,6 +54,7 @@ def run_smoke(directory):
         pg,gateway,server=deployed.pg,deployed.gateway,deployed.server
         sql=deployed.sql
         browser=Browser(deployed.port,deployed.root/"ca.crt")
+        require(browser.call("GET", "/livez") == (200, {"alive": True}), "candidate liveness failed")
         tenant="/api/v2/tenants/"+TENANT
         require(browser.call("GET","/api/v1/authorization")[0]==401,"anonymous candidate accepted")
         require(browser.call("POST",tenant+"/login",dict(login="admin",password=PASSWORD))[0]==200,"local candidate login failed")
@@ -104,9 +105,11 @@ def smoke(directory):
             staged_marker.write_text(json.dumps(result, indent=2) + "\n")
             os.replace(staged_log, log)
             os.replace(staged_marker, marker)
-    except BaseException:
+    except BaseException as error:
         marker.unlink(missing_ok=True)
         log.unlink(missing_ok=True)
+        if not (directory / "smoke-failure.json").exists():
+            failure_evidence(directory, [], set(), error)
         raise
     print("candidate smoke: " + str(directory / "smoke.json"))
 

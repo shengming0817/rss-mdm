@@ -21,7 +21,11 @@ smoke 启动实际 OCI、自有 TLS PostgreSQL 与 HTTPS 网关，验证迁移�
 
 使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。仅接受安装器明确支持的基线；升级前置与失败恢复见 [运维](operations.md)。
 
-按[认证指南](../guides/identity-and-authorization.md)准备数据库基础角色，再按顺序安装候选目录 deployment/ 中的 `software-publication-roles.sql`、`management-roles.sql`、`identity-roles.sql`、`commands-roles.sql`。为各运行角色配置独立登录秘密。`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 权限，脚本成功不代表角色准入成功。
+由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
+
+再按顺序安装候选目录 deployment/ 中的 `software-publication-roles.sql`、`management-roles.sql`、`identity-roles.sql`、`commands-roles.sql`。脚本创建的 NOLOGIN profile 保持为权限角色；仅对实际配置的连接角色启用 LOGIN 并设置独立秘密，不额外授予继承权限。Identity runtime/maintenance 不继承 owner；owner 的准入检查所需切换关系由随附 SQL 设置。
+
+`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 权限，脚本成功不代表角色准入成功。
 
 迁移输入含 database 和 installation；installation 固定 instance_id、target、lineage、epoch 和所有租户。初始化输入另含 tenant_id、principal_id、login、password_file；通过组件维护接口初始化，日常账户与 IdP 管理使用受保护公共 HTTP 接口。
 
@@ -34,6 +38,18 @@ docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runt
 ~~~
 
 IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
+
+## 管理员密码恢复
+
+准备独立 recover.json，沿用初始化配置的 installation、tenant_id 与既有 principal_id；`login` 必须为 null，`password_file` 指向新密码文件，database 使用 mdm_identity_maintenance。该操作轮换密码并撤销旧会话，不创建主体，也不恢复 MDM 业务授权。
+
+```sh
+docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE recover-password --config /run/mdm/recover.json
+```
+
+配置与秘密为 owner 独占的普通 0600 文件，末级路径不得为符号链接；CA 为可读 PEM。maintenance 密码与恢复文件仅挂入 operator 容器，不挂入运行服务。恢复后验证新登录并按受控秘密管理流程处置临时密码文件。
+
+## 运行配置与网络
 
 运行配置从交付的 mdm-config.example.json 填写：实例、租户、产品域名、数据库地址、独立秘密、Windows CA/协议密钥和 TLS 输入。各数据库角色连接同一 MDM 数据库。OIDC 可不配置，本地认证无需参考应用或企业 IdP；企业接入使用产品自己的 `/api/v2/oidc/callback`。账户坐标及旧、新主体不自动对应的边界见认证指南。
 

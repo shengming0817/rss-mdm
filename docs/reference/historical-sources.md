@@ -1,6 +1,6 @@
 # 历史来源索引
 
-D01–D16、C01–C32 的路径均相对本地 `reference/winmdm20260220-develop/`，已核对文件存在。快照由 Git 忽略，恢复方式见 [历史参考说明](../README.md)。描述继承原 PRD 的静态分析，不代表本次完成运行验证。
+D01–D16、C01–C32 的路径均相对本地 `reference/winmdm20260220-develop/`，已核对文件存在。快照由 Git 忽略，恢复方式见 [历史参考说明](../../reference/README.md)。描述继承原 PRD 的静态分析，不代表本次完成运行验证。
 
 原 D17–D19 指向未随归档提供的外部附件，不能作为可查阅源文件。产品与 RSS 的职责、需求分级和 T3 约束已明确写入本仓 [范围规则](../rules/project-scope.md) 与 [验证规则](../rules/verification-scope.md)，正文改为引用这些规则，不伪造缺失附件。
 

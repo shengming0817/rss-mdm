@@ -271,7 +271,7 @@ def clear_execution_evidence(gate_names):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
-    require(head.returncode == 0, "cannot resolve tested HEAD")
+    require(head.returncode == 0, "cannot resolve base revision")
     start_head = head.stdout.strip()
     gates = [
         ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_*.py"]),
@@ -339,7 +339,7 @@ def main():
             (OUT / f"{name}.log").write_text(str(error))
             results[name] = "failed"
         print(f"{name}: {results[name]}", flush=True)
-    evidence = {"selection":selection, "head":start_head, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
+    evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")

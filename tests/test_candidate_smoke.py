@@ -80,6 +80,7 @@ class SmokeCompletion(unittest.TestCase):
             with mock.patch.object(smoke, "run_smoke", return_value=({"revision": "fixture"}, "logs")), mock.patch.object(candidate.os, "replace", side_effect=OSError("disk failure")):
                 with self.assertRaisesRegex(OSError, "disk failure"):
                     smoke.smoke(directory)
+            # The mocked os.replace also rejects failure evidence publication.
             self.assertEqual(list(directory.iterdir()), [])
 
     def test_cleanup_preserves_primary_and_records_cleanup_failure(self):
@@ -94,6 +95,16 @@ class SmokeCompletion(unittest.TestCase):
 
 
 class RuntimeOwnership(unittest.TestCase):
+    def test_constructor_failure_has_closed_diagnostics_and_no_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'candidate.json').write_text('{"format_version":2}')
+            with self.assertRaisesRegex(RuntimeError, 'V3 required'):
+                smoke.smoke(root)
+            record = json.loads((root / 'smoke-failure.json').read_text())
+            self.assertEqual(record, {'status':'failed', 'error_class':'RuntimeError', 'containers':{}})
+            self.assertFalse((root / 'smoke.json').exists())
+
     def test_operator_preserves_exact_stage(self):
         owner=candidate.Candidate.__new__(candidate.Candidate)
         owner.pg,owner.operator_volume,owner.image='pg','operator','image'
@@ -179,6 +190,14 @@ class CandidateInputs(unittest.TestCase):
                 docker.assert_not_called()
                 path.unlink()
                 with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
+                path.symlink_to(root / 'deployment/identity-roles.sql')
+                with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
+                docker.assert_not_called()
+                path.unlink()
+                path.write_text('fixture')
+                manifest['deployment']['../outside.sql'] = 'not-allowed'
+                (root / 'candidate.json').write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(RuntimeError, 'deployment inputs'): candidate.verify_candidate(root)
                 manifest['format_version'] = 2
                 (root / 'candidate.json').write_text(json.dumps(manifest))
                 with self.assertRaisesRegex(RuntimeError, 'V3 required'): candidate.verify_candidate(root)

@@ -51,7 +51,7 @@ def immutable_image(reference):
     return reference
 
 def image_metadata(value):
-    result={"id":value["Id"], "revision":value["Config"].get("Labels",{}).get("org.opencontainers.image.revision"),
+    result={"id":value["Id"], "revision":(value["Config"].get("Labels") or {}).get("org.opencontainers.image.revision"),
             "os":value["Os"], "architecture":value["Architecture"]}
     if value.get('Variant'):result['variant']=value['Variant']
     return result
@@ -80,8 +80,8 @@ DEPLOYMENT_FILES = ("mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 
-def copy_source(root, destination):
-    """Copy current build inputs once, including new source, without copying secrets or outputs."""
+def copy_source(root, destination, header=None):
+    """Copy current build inputs; reject credentials among ordinary source files."""
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
     members = manifest["workspace"]["members"]
     paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "fixtures", "deployment", *members]
@@ -92,6 +92,8 @@ def copy_source(root, destination):
     destination.mkdir(parents=True)
     for name in sorted(set(os.fsdecode(result).split("\0")) - {""}):
         source = root / name
+        if (header is not None and source.resolve() == header.resolve()) or name in (".cargo/credentials", ".cargo/credentials.toml"):
+            raise ValueError("credential file among build inputs; move it outside the source tree")
         if source.is_symlink() or any(parent.is_symlink() for parent in source.parents if parent != root and parent.is_relative_to(root)):
             raise ValueError("symlink build input")
         if not source.exists():  # Preserve tracked deletions.
@@ -114,7 +116,7 @@ def build_staged(out, header, web_image):
     with tempfile.TemporaryDirectory(prefix="mdm-candidate-") as temporary:
         context = Path(temporary)
         source = context / "source"
-        copy_source(ROOT, source)
+        copy_source(ROOT, source, header)
         providers = json.loads((source / "deployment/providers.lock.json").read_text())
         if any("@sha256:" not in image for image in providers.values()):
             raise ValueError("build providers must be pinned")

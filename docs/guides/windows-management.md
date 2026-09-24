@@ -10,7 +10,7 @@ Windows UsernameToken 使用 enrollmentId 与一次性口令。签发期间持�
 
 管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定注册世代、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后新准入立即拒绝。
 
-真实 TCP peer 承担连接/速率限制，NAT 后设备可能共享预算；接入拒绝不放大数据库审计。过期临时会话可清理，凭据、签发与审计事实仍保留。协议字段及预算由 [codec](../../crates/windows-mdm/src) 与 [应用](../../crates/app/src) 持有；原始样本来源见 [fixtures](../README.md)。
+真实 TCP peer 承担连接/速率限制，NAT 后设备可能共享预算；接入拒绝不放大数据库审计。过期临时会话可清理，凭据、签发与审计事实仍保留。协议字段及预算由 [codec](../../crates/windows-mdm/src) 与 [应用](../../crates/app/src) 持有；原始样本来源见 [fixtures](../../crates/windows-mdm/tests/fixtures/README.md)。
 
 ## 采集与恢复
 
