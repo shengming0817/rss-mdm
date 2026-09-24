@@ -44,6 +44,5 @@ schedule 包含 notBefore/until、jitterSeconds、可选 window、misfire（skip
 
 采集模板是 collection purpose 加固定字段 JSON Pointer 映射，不另建模板版本体系。只允许 corporate_agent.version（字符串）、corporate_agent.healthy（布尔）、osquery.version（字符串），完整键名均以 `custom.` 开头。前两项来源 agent.script，第三项来源 agent.osquery。完整、exitCode=0、schema 与字段类型均有效且权限仍有效、未超过任务或运行超时且未取消时，通过 CollectionRun → Observation → Inventory 发布。部分、截断、失败和非法输出只增加质量证据，保留可信事实及 lastKnown 的原始来源时间。没有 TTL。
 
-`make t2-tasks` 使用真实 TLS PostgreSQL、Identity 和产品 Router 验证服务端闭环；独立 wire 消费由 `python3 hack/agent-wire-consumer.py` 在已提交固定源码上手动运行，不属于 CI。
 
 归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。审批、取消和执行事件的审计包含 plan；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。

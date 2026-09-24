@@ -447,7 +447,7 @@ impl PolicyStore {
         {
             return Ok(Err(Rejection::Conflict));
         }
-        if candidate.target_count.saturating_add(devices.len() as u64) > 1_000_000 {
+        if !targets_fit(candidate.target_count, devices.len() as u64) {
             return Ok(Err(Rejection::BudgetExceeded));
         }
         let tenant = self.tenant.to_string();
@@ -830,4 +830,19 @@ fn source_pending() -> PgError {
         std::io::Error::other("source input pending"),
     )
     .into()
+}
+
+fn targets_fit(current: u64, added: u64) -> bool {
+    current.saturating_add(added) <= 1_000_000
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::targets_fit;
+    #[test]
+    fn target_limit_rejects_overflow_without_allocating_targets() {
+        assert!(targets_fit(999_999, 1));
+        assert!(!targets_fit(1_000_000, 1));
+        assert!(!targets_fit(u64::MAX, 1));
+    }
 }

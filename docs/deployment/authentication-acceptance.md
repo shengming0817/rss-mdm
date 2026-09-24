@@ -1,21 +1,19 @@
-# 产品认证浏览器验收（#2364）
+# 产品认证浏览器验收
 
 本入口独立运行正式 MDM binary、rss-web 认证镜像、自有 TLS PostgreSQL、同源网关与私网 Keycloak。
 不运行 Identity 参考应用或其数据库，不以 T1/T2 或脚本检查代替浏览器结果。
 
 ## 执行
 
-先提交受测源码，按候选部署指南运行 release.py。UI 固定 rss-web `a0e5ac61e98677ae96c6c80d3680d5f75c4fbbfb`，
-浏览器使用固定 Playwright 1.60.0 工具镜像（包摘要与 Web lock 相同）；可复用已构建的 reference-tools 镜像，运行时不依赖参考应用。
-使用当前 Docker 默认平台，不指定 CPU 架构。镜像须已存在，UI 由产品候选归档持有；工具输入仅接受不可变 image ID 或 repository digest，启动前导出 browser-tools.image.tar 并记录摘要，不接受 tag。
+按 [安装指南](installation.md) 构建 V3 候选。使用与验收工具匹配的固定浏览器镜像，版本由 auth_t3.py 校验；运行不依赖源码 checkout。使用当前 Docker 默认平台。镜像须已存在，UI 由产品候选归档持有；工具输入仅接受不可变 image ID 或 repository digest，启动前导出 browser-tools.image.tar 并记录摘要，不接受 tag。
 
 ```sh
-make t3-auth MDM_CANDIDATE=/absolute/candidate MDM_BROWSER_IMAGE="$MDM_BROWSER_IMAGE_ID" MDM_T3_OUTPUT=/absolute/new-result
+python3 hack/auth_t3.py --candidate /absolute/candidate --tools-image "$MDM_BROWSER_IMAGE_ID" --output /absolute/new-result
 ```
 
 输出目录必须全新。失败不生成 result.json；成功记录只在全部场景及资源清理完成后写入。
 requests.json 保存 origin、路径、状态及产品请求 ID，audit.json 保存产品审计关联，product.log 按容器保存安全产品/网关日志；不保存请求正文、密码、cookie、code 或 client secret。
-result.json 绑定候选、lock、schema、UI、工具/浏览器版本、域名、CA、配置和日志摘要。
+result.json 记录候选、UI、工具/浏览器版本、域名、CA、配置和日志摘要。
 故障注入限于随机命名的本任务容器与网络，结束逐一清理，不执行全局 prune。
 
 ## 证明边界
@@ -25,7 +23,7 @@ result.json 绑定候选、lock、schema、UI、工具/浏览器版本、域名�
 management 覆盖真实组创建/读取与拒绝无效果；publisher 覆盖显式 release_read 许可到资源查找及拒绝，不宣称实际软件发布。
 历史策略为全新实例，不自动映射旧主体；旧审计保持原含义，不转换、不删除。安装坐标错配验证拒绝且账户和账本不变；不证明真实旧环境已经退役。
 
-此处描述可执行验收，实际通过与否以绑定 revision 的运行记录和 PR 证据为准。
+此处描述可执行验收，实际通过与否以本次运行记录和 PR 证据为准。
 
 PG 故障可能先产生产品 503，再触发关键任务失败关闭，网关随后返回 502。两者均须拒绝授权；UI 保留失败/结果未确认提示。恢复 PG 后由部署 owner 重启 MDM，再检查持久会话并明确退出。
 

@@ -4,7 +4,7 @@ Inventory 是唯一字段目录和来源解析 owner，应用把解析结果送�
 
 ## 字段与状态
 
-固定目录：device.model / device.os.version 为采集文本；custom.asset_tag 为人工文本，custom.office_floor 为整数，custom.is_loaner 为布尔，custom.purchase_date 为 UTC Unix 秒。文本非空、最多 256 UTF-8 字节且无控制字符；值不隐式转换。Manual 可显式置空，标准字段禁止人工覆盖。
+字段目录、类型及可用操作以 `/api/v2/asset-fields` 为准；值不隐式转换。Manual 可显式置空，标准字段禁止人工覆盖。
 
 known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial/Failed 保留最后完整事实，最新 CollectionRun 质量另行呈现。
 
@@ -53,16 +53,9 @@ inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配�
 个人保存查询使用当前 inventory_read，并按 tenant/instance/principal 限定本人。put 的 input 为 `{action:"put",definition:{name:"…",query:{…}}}`；不保存 cursor、结果或授权集合。删除 UUID 不复用；执行重新验证当前目录与权限。
 
 查询返回 202 和任务入口，以已提交水位分批计算并保存不可变结果。应用保留采集质量历史，查询页与详情复用同一投影；分页期间新质量记录不改写旧结果。成员、排序和全结果汇总不加载全租户到内存。
-每页最多 1000 对象、16 MiB；排序按类型化值和 DeviceId，未知值置后。游标由宿主签名，绑定主体、授权集合、结果与分页投影。
+分页有界；排序按类型化值和 DeviceId，未知值置后。游标由宿主签名，绑定主体、授权集合、结果与分页投影。
 每页重新验证权限；权限集合变更返回 403，重新发起查询。事实变化不改写已完成结果。签名密钥由产品按租户持久保存，多实例与宿主重启后可继续使用同一游标；游标仍绑定结果和授权范围。
-当前设备上限为 1,000,000，同时遵守树/字节/访问/解释预算；单对象超限明确失败，不截断为完整结果。没有字段时钟触发。
+超过树、字节、访问或解释预算明确失败，不截断为完整结果。没有字段时钟触发。
 
-## 安装与验证
 
-当前单一投影身份为 inventory-v3，由 #2468 加入三个固定采集字段并从同一 journal 重放。旧六字段的类型和操作语义不变，字典格式身份仍为 assets-v1。升级仅接受明确基线，见 [企业任务升级](../deployment/202609230002-2468-enterprise-task-upgrade.md)。不提供旧 Script 或 Agent wire 的兼容解码。
-
-`make t2-assets` 使用正式 TLS PostgreSQL migration、权威 Identity 和真实 Router，覆盖四类值、Group、CAS/重放、来源冲突/删除/旧注册、个人查询、分页撤权和审计回滚。`hack/inventory_consumer.py` 在固定提交的独立 workspace 验证核心及 PG 公共消费；`make ci` 汇总最终 HEAD 的各项结果。受控来源 fixture 不代表真实 Agent 或设备 T3。
-
-采集来源、通道绑定和资产来源均由 Inventory 的封闭类型持有。内部 Observation coverage 为 `device-basics/2/model-os/typed-v2`，值只接受 `known` 非空文本或 `unsupported`；旧文本 payload 不解码。设备侧仍使用现有 Get 协议：明确的 501（未实现）对应 Unsupported；404、500、缺失和超时属于非完整采集质量，不推断不支持。全部字段为成功或明确不支持时才形成完整 Snapshot；Partial/Failed 继续保留最后完整事实。Unsupported 保留 lastKnown，普通比较为 Unknown，Group 不入组。
-
-汇总的 `assetStates` 是匹配设备的资产字段状态计数，分母不是设备数；`matched`、`unknown`、`total` 分别统计匹配、未知和授权候选设备。当前没有设备健康或合规评估 owner，接口不输出推测的合规结论。采集质量记录显式包含 source/channel、registration/generation/epoch。异步任务超过容量或单对象预算时进入失败状态并提供安全类别；详情的合法数据超限为 503。诊断不输出资产值，不截断结果。
+汇总 assetStates 统计字段状态，分母不是设备数；matched、unknown、total 分别统计匹配、未知和授权候选设备。没有合规评估事实时不从资产缺失推断合规。采集完整性见 [Windows 管理](windows-management.md)，升级见 [运维](../deployment/operations.md)。

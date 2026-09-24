@@ -182,6 +182,8 @@ members = [
         head: str = "HEAD",
         environment: dict[str, str] | None = None,
     ) -> tuple[bytes, dict]:
+        if head != "HEAD":
+            self.git("checkout", "--detach", head)
         process_environment = os.environ.copy()
         process_environment.update(environment or {})
         result = subprocess.run(
@@ -189,8 +191,6 @@ members = [
                 *selector_command(),
                 "--base",
                 base or self.base,
-                "--head",
-                head,
             ],
             cwd=self.root,
             check=False,
@@ -246,6 +246,11 @@ class CiImpactContract(unittest.TestCase):
         self.assertEqual(decision["full"], full)
         self.assertEqual(decision["packages"], packages)
         self.assertIn(reason, decision["reasons"])
+
+    def test_unsubmitted_documentation_is_selected(self):
+        (self.repo.root / "README.md").write_text("unsubmitted documentation\n")
+        _, decision = self.repo.select()
+        self.assert_decision(decision, full=False, packages=[], reason="docs-only")
 
     def test_no_changes_is_empty_and_stable(self) -> None:
         first, decision = self.repo.select(head=self.repo.base)

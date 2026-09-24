@@ -8,8 +8,8 @@
 
 - [内嵌权威认证与 MDM 请求授权](202609091750-2343-identity-authorization.md)（#2343，由 #2437 修订）
 
-- [管理员注册许可与持久审计](202609090001-2347-enrollment-audit.md)（#2347）
+- [管理员注册许可与持久审计](../../guides/device-enrollment.md)（#2347）
 
-- [通道中立注册主体与报告授权](202609100445-2348-device-principal.md)（#2348）
+- [通道中立注册主体与报告授权](../../guides/device-enrollment.md)（#2348）
 
 - [#2363 四类主体与持久化授权](202609200002-2363-persistent-authorization.md)

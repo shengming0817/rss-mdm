@@ -9,7 +9,7 @@
 | RSS | `1b650c16628ca84834b1b2b4784170dd85e2319e` | 以下 R 路径相对该 commit；父目录未提交的 verification-scope 修改及本地分析文档未作为固定基线 |
 | rss-mdm | `e64d76048d5e825ab6700e48382770662ecf49df` | 已合并初始文档；没有产品 Rust workspace |
 | rss-mdm-agent | `f423420236804a468b7c7fc54fce38f65ea7710c` | 空初始提交，没有可运行 Agent |
-| WinMDM 归档 | SHA-256 `bb08749e671080dd96a3d61dd31c662730604cd288303fa67e7917aaf9778e67` | G 路径相对本地历史快照；恢复见 [来源说明](../../reference/README.md) |
+| WinMDM 归档 | SHA-256 `bb08749e671080dd96a3d61dd31c662730604cd288303fa67e7917aaf9778e67` | G 路径相对本地历史快照；恢复见 [来源说明](../README.md) |
 
 RSS 固定版本可从 [Azure DevOps](https://dev.azure.com/shengming0923/rss/_git/rss?version=GC1b650c16628ca84834b1b2b4784170dd85e2319e) 查阅。在 RSS checkout 使用 `/usr/bin/git show 1b650c16628ca84834b1b2b4784170dd85e2319e:<path>` 可复核，不依赖产品访问父目录。
 

@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from candidate_runtime import Candidate, Stage, ROOT, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait, safe_evidence, run_owned, immutable_image, failure_evidence, verify_source
+from candidate_runtime import Candidate, Stage, TENANT, ADMIN, INSTANCE, docker, image_identity, require, sha, wait, safe_evidence, run_owned, immutable_image, failure_evidence
 from candidate_smoke import Browser
 
 SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','refresh','logout','logout_all',
@@ -66,13 +66,16 @@ def seed_inventory(stack):
     coverage=json.dumps(dict(id='device-basics',version='2',definition='model-os',format='typed-v2'),separators=(',',':'))
     scope=json.dumps(dict(tenant=TENANT,object=registration,registration=registration,source='mdm.windows',dataset='inventory',epoch=epoch),separators=(',',':'))
     stack.sql(f"""
+    BEGIN;
+    SET LOCAL rss.tenant_id = '{TENANT}';
     INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','2364-synthetic-read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-    INSERT INTO mdm_access.requests(tenant_id,id,grant_id) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993');
+    INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm.windows');
     INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
     INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
     INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','{registration}','mdm',repeat('a',64),'active');
     INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);
     INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','{INVENTORY_GENERATION}','{scope}','{coverage}','device.model','Model-2364','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}');
+    COMMIT;
     """)
 
 def prepare_member(stack):
@@ -88,7 +91,7 @@ def prepare_member(stack):
         else:stack.sso_member=principal
         grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=principal)),grants=[dict(operation='inventory_read',scope=dict(kind='device',id='device-1'))])
         require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit member inventory authorization')
-    grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='tenant')) for operation in ['group_read','group_write','release_read']])
+    grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='tenant')) for operation in ['group_read','group_write','release_read']]+[dict(operation='inventory_read',scope=dict(kind='all_devices'))])
     require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit administrator management authorization')
     require(browser.call('POST',f'/api/v2/tenants/{TENANT}/session/logout')[0]==204,'bootstrap logout')
 
@@ -143,7 +146,7 @@ def run(candidate, tools_image, output):
                             runtimeVolume=primary.runtime_volume,runtimeImage=primary.providers['runtime'])
                 (primary.root/'browser-input.json').write_text(json.dumps(params));(primary.root/'browser-input.json').chmod(0o600)
                 (primary.root/'other-ca.crt').write_bytes((other.root/'ca.crt').read_bytes())
-                (primary.root/'browser.mjs').write_bytes((ROOT/'hack/auth_t3_browser.mjs').read_bytes())
+                (primary.root/'browser.mjs').write_bytes(Path(__file__).with_name('auth_t3_browser.mjs').read_bytes())
                 browser_name=primary.name+'-browser';primary.created.append(browser_name)
                 script='mkdir -p /root/.pki/nssdb; certutil -N --empty-password -d sql:/root/.pki/nssdb; certutil -A -d sql:/root/.pki/nssdb -n mdm -t "C,," -i /fixture/ca.crt; certutil -A -d sql:/root/.pki/nssdb -n other -t "C,," -i /fixture/other-ca.crt; exec node /fixture/browser.mjs'
                 try:
@@ -177,7 +180,6 @@ def run(candidate, tools_image, output):
                 (output/'product.log').write_text(json.dumps(logs,indent=2)+'\n')
                 result['log_sha256']=sha(output/'product.log');result['requests_sha256']=sha(output/'requests.json')
         # Resource owners have completed cleanup before publishing success.
-        verify_source(result['mdm']['revision'])
         result['status']='passed'
         staged=output/'.result.json'
         staged.write_text(json.dumps(safe_evidence(result,private),indent=2)+'\n')

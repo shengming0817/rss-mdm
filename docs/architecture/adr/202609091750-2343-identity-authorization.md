@@ -17,6 +17,6 @@ Windows 注册仅保留容量 10000、最长 300 秒、不续期、可零化的�
 
 不读取旧 cookie，不保留中央协议、远程 validate、MDM 独立浏览器会话、旧配置、候选 fixture 或回退开关。旧主体坐标与新实例坐标不自动对应；外部 subject 保持不透明，不按邮箱自动关联。旧审计保留历史含义，旧会话和非终态业务不续接。回退仅指停止新部署后恢复旧独立部署及其一致备份。
 
-HTTPS 网关按真实 peer 限流并覆盖来源头；后端只在实际 TCP peer 匹配 trusted_gateway 后读取单一转发地址，浏览器监听保持 loopback。构建及实际候选使用 Docker 默认平台，平台身份取实际 OCI 元数据。配置和操作见[认证指南](../../guides/202609091600-2343-mdm-identity.md)与[候选部署](../../deployment/202609120000-2353-candidate-deployment.md)。
+HTTPS 网关按真实 peer 限流并覆盖来源头；后端只在实际 TCP peer 匹配 trusted_gateway 后读取单一转发地址，浏览器监听保持 loopback。构建及实际候选使用 Docker 默认平台，平台身份取实际 OCI 元数据。配置和操作见[认证指南](../../guides/identity-and-authorization.md)与[候选部署](../../deployment/installation.md)。
 
 组件 pin 和 lock 为依赖真源；普通及测试闭包必须分别验证唯一来源/revision，不能通过跨仓 path/patch 消除类型边界。#2365 对最终 RSA 公钥验签路径要求独立限定接受，旧接受不继承；#2364 持有部署浏览器验收。真实 PG、Keycloak 与 MDM OCI T2 不替代生产或设备 T3。

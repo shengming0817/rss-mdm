@@ -136,12 +136,7 @@ def verify_startup_deadlines(binary, root, env):
             child.terminate();child.communicate(timeout=10)
     print('database and Identity startup stalls rejected within budget with safe stage diagnostics',flush=True)
 
-INSTANCE = '33333333-3333-4333-8333-333333333333'
-ADMIN = '44444444-4444-4444-8444-444444444444'
-TENANTS = ['11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb']
-
-def installation():
-    return dict(instance_id=INSTANCE,target=[1]*16,lineage=[2]*16,epoch=1,tenants=TENANTS)
+from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 
 def configure_identity(root, port, binary, env):
     def write(name, value):

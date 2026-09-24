@@ -1,4 +1,4 @@
-//! Independently executable public adapter proof. The host supplies the tenant transaction.
+//! Manual inventory transaction behavior. The host supplies the tenant transaction.
 use rss_mdm_inventory::{Evidence, FieldKey, KnownValue, Scalar, Source, SourceFact, State};
 use rss_mdm_inventory_postgres as pg;
 use sqlx::{
@@ -6,7 +6,7 @@ use sqlx::{
     postgres::{PgConnectOptions, PgSslMode},
 };
 #[tokio::test]
-#[ignore = "inventory_consumer.py: real TLS PostgreSQL"]
+#[ignore = "management-t2: real TLS PostgreSQL"]
 async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn std::error::Error>>
 {
     let config: serde_json::Value =
@@ -27,7 +27,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         registration: None,
         registration_generation: None,
         epoch: None,
-        snapshot_id: "independent-operation".into(),
+        snapshot_id: "manual-operation".into(),
         observed_at: 1,
         received_at: 2,
         actor: Some("fixture-authority".into()),
@@ -46,20 +46,36 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .execute(&mut *tx)
         .await?;
     assert!(
-        pg::manual_in(&mut tx, foreign, &["consumer".into()])
+        pg::manual_in(&mut tx, foreign, &["manual-device".into()])
             .await
             .is_err()
     );
     assert_eq!(
-        pg::assign_in(&mut tx, tenant, "consumer", FieldKey::OfficeFloor, 0, &fact).await?,
+        pg::assign_in(
+            &mut tx,
+            tenant,
+            "manual-device",
+            FieldKey::OfficeFloor,
+            0,
+            &fact
+        )
+        .await?,
         Some(1)
     );
     assert_eq!(
-        pg::assign_in(&mut tx, tenant, "consumer", FieldKey::OfficeFloor, 0, &fact).await?,
+        pg::assign_in(
+            &mut tx,
+            tenant,
+            "manual-device",
+            FieldKey::OfficeFloor,
+            0,
+            &fact
+        )
+        .await?,
         None
     );
     assert_eq!(
-        pg::manual_in(&mut tx, tenant, &["consumer".into()]).await?[0].fact,
+        pg::manual_in(&mut tx, tenant, &["manual-device".into()]).await?[0].fact,
         fact
     );
     tx.rollback().await?;
@@ -69,7 +85,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .execute(&mut *tx)
         .await?;
     assert!(
-        pg::manual_in(&mut tx, tenant, &["consumer".into()])
+        pg::manual_in(&mut tx, tenant, &["manual-device".into()])
             .await?
             .is_empty()
     );

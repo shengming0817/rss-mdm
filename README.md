@@ -1,50 +1,11 @@
-# rss-mdm
+# RSS MDM
 
-面向 Windows 与 macOS 的企业私有化终端管理产品仓库。默认分支为 `develop`。F01 提供基于 RSS 的独立 Rust Inventory 组合和本地 CI；其它产品目标仍按路线分期实现。
+面向 Windows 与 macOS 的企业终端管理产品。服务端拥有设备身份、可信采集、统一资产、组/范围/策略、软件发布及管理 API；终端 Agent、Web 与 Identity 按独立产品边界协作。产品目标与实际支持矩阵分别以 PRD 和交付验收记录为准。
 
-- [项目目标](docs/product/project-goals.md)：基于 RSS 的 Rust 服务端与独立 Rust Agent，保留现有前端。
-- [实施路线](docs/product/202609072231-002-rust-rewrite-roadmap.md)：第一项消费验证与真实 Windows 只读闭环。
-- [产品需求](docs/product/rss-mdm-prd.md)：v0.2 评审草案、需求与验收目标。
-- [文档导航](docs/README.md)：产品、架构、指南、部署、参考、评审与稳定规则。
-- [协作规则](AGENTS.md)：开发与交付约定。
-- [历史参考](reference/README.md)：本地 WinMDM 快照来源与恢复方式，代码由 Git 忽略。
-
-历史能力与产品目标不代表本仓已经实现或完成验证。
-
-- [F01 本地运行与验证](docs/guides/202609080000-2346-local-inventory.md)：固定 Git 依赖、迁移、fixture 接收、投影与恢复。
-
-## 代码布局
-
-采用与 RSS 一致的扁平 Cargo workspace，按能力和消费边界组织：
-
-| 目录 | 职责 |
-|---|---|
-| `crates/scope` | [完整集合解析与来源解释](crates/scope/README.md)，独立纯核心 |
-| `crates/policy` | [不可变版本、生命周期与计划差分](crates/policy/README.md)，独立纯核心 |
-| `crates/software-release` | [审批快照、逐环晋级、撤回与未知发布恢复](crates/software-release/README.md)，独立纯核心 |
-| `crates/inventory` | `rss-mdm-inventory`：资产字段、coverage 和报告校验；不依赖 PostgreSQL 或示例授权 |
-| `crates/inventory-postgres` | `rss-mdm-inventory-postgres`：资产投影、SQL schema 与运行角色/RLS 检查；消费 Inventory 核心和 RSS 公共适配 |
-| `crates/app` | `rss-mdm-app`：唯一生产 binary、内嵌认证/可选 OIDC、静态资源授权、Enrollment/签发、HTTPS/mTLS 管理与迁移装配 |
-| `crates/examples` | `rss-mdm-examples`：fixture CLI、受信操作员 scope、组件装配、配置、时钟及关闭；不是生产 MDM 服务 |
-| `tests/inventory-postgres-integration` | 独立真实 PostgreSQL T2 入口；启用 examples 的故障场景支撑 |
-| `tests/test_ci.py`、`hack/` | CI 脚本测试与本地验证入口 |
-| `fixtures/` | 从仓库根目录运行示例 CLI 的输入样本 |
-
-根目录 `Cargo.toml` 统一管理 workspace members、元数据、依赖和 lint。依赖方向为
-app → inventory-postgres/inventory/Identity 四个公开组件；examples → inventory-postgres → inventory；核心和适配均不依赖 examples 或集成测试包。
-本仓成员使用 workspace 内部 path，RSS 上游公共库继续固定 Git revision；两者不混同。
-
-根目录 `cargo run --locked -p rss-mdm-examples -- ...` 运行名为 `rss-mdm-fixture` 的示例 CLI。
-`make test` 验证全部成员的 T1，`make t2` 运行真实 PostgreSQL 组合，`make ci` 按影响范围运行 T1 与必要 T2，`make ci-full` 执行全部 CI gate，`make ci-plan` 查看选择计划。模拟独立消费者仅在明确的消费者验收任务中手动运行；规则见 [验证范围](docs/rules/verification-scope.md)。
-故障注入矩阵留在 examples 的 `integration` feature 下以访问示例内部状态，不编译进普通示例或产品能力库。
-
-## 独立资源与软件源
-
-`rss-mdm-resource`、`rss-mdm-winget-source`、`rss-mdm-brew-source` 分别提供不可变资源、WinGet 元数据和受控 Tap 能力，三个 package 无相互业务依赖。使用与验证见 [指南](docs/guides/202609090000-2383-resource-sources.md)。
-
-管理员接入与生产命令见 [MDM Identity 接入](docs/guides/202609091600-2343-mdm-identity.md)。
-
-Windows 注册与首次管理会话的当前范围、配置和 T3 边界见 [使用指南](docs/guides/202609111146-2350-windows-enrollment-management.md)。
-
-企业脚本、采集模板与持久任务服务端见 [任务指南](docs/guides/202609230001-2468-enterprise-tasks.md)；Agent wire V2 和数据库升级见 [部署步骤](docs/deployment/202609230002-2468-enterprise-task-upgrade.md)。真实终端 runner 按 #2475/#2476 另行验收。
-Apple 手动注册、DeviceInformation 和防火墙 Profile 的服务端范围与受控 T2 见 [Apple 管理指南](docs/guides/202609230000-2471-apple-management.md)；真实 Mac/组织 APNs 验收由 #2482 持有。
+- [产品需求](docs/product/rss-mdm-prd.md)
+- [本地开发](docs/guides/local-development.md)
+- [构建与安装](docs/deployment/installation.md)
+- [任务指南](docs/README.md)
+- [文档导航](docs/README.md)
+- [协作规则](AGENTS.md)
+- [历史来源与恢复](docs/README.md)
