@@ -8,19 +8,21 @@ use uuid::Uuid;
 async fn history(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<Vec<String>> {
     let mut hashes = Vec::new();
     for table in [
-        "grants",
-        "requests",
-        "operations",
-        "audit",
-        "devices",
-        "registrations",
-        "credentials",
-        "report_sources",
-        "enrollment_intents",
-        "enrollment_certificates",
+        "mdm_access.grants",
+        "mdm_access.requests",
+        "mdm_access.operations",
+        "mdm_access.devices",
+        "mdm_access.registrations",
+        "mdm_access.credentials",
+        "mdm_access.report_sources",
+        "mdm_access.enrollment_intents",
+        "mdm_access.enrollment_certificates",
+        "rss_audit.records",
+        "mdm_audit.receipts",
+        "rss_ledger.entries",
     ] {
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM mdm_access.",
+            "SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM ",
         );
         query
             .push(table)

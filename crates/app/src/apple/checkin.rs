@@ -124,7 +124,7 @@ async fn checkin_on(
     let (key, details) = match input {
         CheckIn::Authenticate { .. } => return Ok(Some("success")),
         CheckIn::TokenUpdate { token, magic, .. } => {
-            let revision: Option<i64> = sqlx::query_scalar("UPDATE mdm_apple.devices SET state='active',token=$3,magic=$4,token_revision=token_revision+1,next_push=clock_timestamp(),push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome=NULL,push_failures=0 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND (state<>'active' OR token IS DISTINCT FROM $3 OR magic IS DISTINCT FROM $4) RETURNING token_revision")
+            let revision: Option<i64> = sqlx::query_scalar("UPDATE mdm_apple.devices SET state='active',token=$3,magic=$4,token_revision=token_revision+1,next_push=clock_timestamp(),push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome=NULL,push_failures=0 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND (state<>'active' OR token IS DISTINCT FROM $3 OR magic IS DISTINCT FROM $4 OR push_outcome='rejected') RETURNING token_revision")
                 .bind(&tenant).bind(&registration).bind(*token).bind(*magic).fetch_optional(&mut *tx).await.map_err(db)?;
             let Some(revision) = revision else {
                 return Ok(Some("replay"));

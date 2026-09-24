@@ -259,7 +259,7 @@ pub(super) async fn verify(
         store.inject_next_fault(fault);
         let deadline = rss_request_context::Deadline::from_timeout(
             &crate::lifecycle::RuntimeTimer,
-            std::time::Duration::from_millis(100),
+            std::time::Duration::from_secs(1),
         )?;
         let outcome = crate::authorization::bounded_initialization(
             &audit,

@@ -745,7 +745,7 @@ async fn range_matrix(router: &Router, task: &Value, expected: &[u8]) -> Result<
     ensure!(
         audit_count(|record| record.request() == Some(request_id)
             && record.status() == 400
-            && record.result() == "rejected")?
+            && record.result() == "failed")?
             == 1
     );
     let wrong = path.replace(

@@ -539,8 +539,8 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Force both contenders past the locator precheck. Different device locks cannot
-// arbitrate this race: the database unique constraint must roll back the loser's retire.
+// Hold both business rows. The first contender must wait there while the second
+// waits on the earlier Audit head; after release exactly one credential bind wins.
 async fn credential_race(
     service: &DeviceService,
     admin: &AuthorizedPrincipal,
@@ -566,14 +566,14 @@ async fn credential_race(
     let release = async {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let blocked:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE 'SELECT id::text AS id FROM mdm_access.registrations%'")
+                let (business,audit):(i64,i64)=sqlx::query_as("SELECT count(*) FILTER(WHERE query LIKE 'SELECT id::text AS id FROM mdm_access.registrations%'),count(*) FILTER(WHERE query LIKE '%rss_audit.reserve%') FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock'")
                     .fetch_one(&mut *hold).await?;
-                if blocked == 2 { return Ok::<_, sqlx::Error>(()); }
+                if business == 1 && audit == 1 { return Ok::<_, sqlx::Error>(()); }
                 // Clear the transaction-local statistics snapshot before the next poll.
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await.context("both credential contenders must pass precheck")??;
+        }).await.context("Audit head must serialize contenders before their business locks")??;
         hold.commit().await?;
         Ok::<_, anyhow::Error>(())
     };
