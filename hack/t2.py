@@ -22,6 +22,19 @@ def require(condition,message):
 def run(args, **kw):
     return subprocess.run(args, check=True, text=True, **kw)
 
+def run_foundation_tests(env):
+    for selected in ["identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity", "device::tests::postgres_boundary", "inventory_runtime::tests::durable_report_recovery_and_projection"]:
+        try:
+            result = run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib",selected,"--","--ignored","--exact","--test-threads=1"],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as error:
+            print(error.stdout or "", flush=True)
+            raise
+        print(result.stdout, flush=True)
+        passed = re.findall(r'^test (\S+) \.\.\. ok$', result.stdout, re.MULTILINE)
+        require(result.returncode == 0 and passed == [selected]
+                and re.search(r'^test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout, re.MULTILINE),
+                'foundation T2 did not execute exactly the selected test: ' + selected)
+
 def verify_windows_result(output):
     expected={
         'windows::tests::issuance_recovery_and_enrollment_boundaries',
@@ -232,8 +245,7 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 return
             env['MDM_TEST_PG_CONTAINER'] = name
             if foundation_only:
-                for selected in ["identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity", "device::tests::postgres_boundary", "inventory_runtime::tests::durable_report_recovery_and_projection"]:
-                    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib",selected,"--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
+                run_foundation_tests(env)
                 return
             if task_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
