@@ -154,11 +154,7 @@ async fn register_inner(
     );
     let digest = registration_digest(&input);
     let operation = Operation {
-        actor: Actor {
-            tenant: proof.tenant_id(),
-            subject: proof.principal_id(),
-            instance: proof.instance_id(),
-        },
+        actor: Actor::from_authorized(&proof),
         key: input.operation_id(),
         digest: &digest,
     };

@@ -6,7 +6,7 @@ use crate::{
     device::{BindRegistration, VerifiedChannelCredential, store::bind_in},
     enrollment::{
         Authorization,
-        store::{actor, request, uuid},
+        store::{request, uuid},
     },
     operations::Operation,
 };
@@ -168,7 +168,7 @@ pub(super) async fn complete_issuance(
         &intent.configuration,
     ));
     let operation = Operation {
-        actor: actor(proof),
+        actor: crate::operations::Actor::from_authorized(proof),
         key: auth.operation,
         digest: &digest,
     };

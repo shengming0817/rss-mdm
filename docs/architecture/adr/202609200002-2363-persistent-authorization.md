@@ -12,7 +12,7 @@ Identity #2451 拥有完整组织快照与签名/会话/存储校验。MDM 只�
 
 请求获得权威身份后，单 SQL 读取当前规则和成员的一致快照；进程没有授权缓存。Windows 每次续接/最终绑定、延迟发布执行前重读，事务等待后重新检查来源与证明期限。操作/范围按同一 grant 匹配，随后取并集，默认拒绝。所有业务和授权管理使用此路径，Identity 管理保留其宿主独立策略。
 
-授权写入复用 AccessStore 的角色/RLS、事务、operation receipt 和审计。每实例/租户 advisory lock 串行化 CAS/容量判断，锁后重读当前授权；本地组写入同时要求授权管理权，成员变更不能成为隐式授权委派；唯一操作身份检测重复载荷，永久 tombstone 禁止复用，重放只返回历史结果。新库由显式 initialize-authorization 先通过当前安装的 Identity 本地认证核对主体，再原子写入持久标记与首条管理规则；serve 永不种子。保留有界文档和分页，避免每请求快照无界增长。
+授权 store 拥有规则与成员写入；私有 Database 提供连接、租户事务配置及组合准入检查，宿主 operations 与 audit 负责既有回执、提交和事务内审计。每实例/租户 advisory lock 串行化 CAS/容量判断，锁后重读当前授权；本地组写入同时要求授权管理权，成员变更不能成为隐式授权委派；唯一操作身份检测重复载荷，永久 tombstone 禁止复用，重放只返回历史结果。新库由显式 initialize-authorization 先通过当前安装的 Identity 本地认证核对主体，再原子写入持久标记与首条管理规则；serve 永不种子。保留有界文档和分页，避免每请求快照无界增长。
 
 ## 取舍与影响
 
@@ -23,4 +23,4 @@ Identity #2451 拥有完整组织快照与签名/会话/存储校验。MDM 只�
 ## 上游源码依据
 
 - [Kubernetes v1.35.0 rbac.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/auth/authorizer/rbac/rbac.go)：阅读 RulesAllow/RuleAllows，将操作与资源限制在同一规则内求值；未复制角色或聚合框架。
-- [SQLx v0.9.0 transaction.rs](https://github.com/launchbadge/sqlx/blob/v0.9.0/sqlx-core/src/transaction.rs)：阅读 commit/rollback/Drop，沿用现有 AccessStore 事务与失败回滚，不建立第二套审计/事务机制。
+- [SQLx v0.9.0 transaction.rs](https://github.com/launchbadge/sqlx/blob/v0.9.0/sqlx-core/src/transaction.rs)：阅读 commit/rollback/Drop，沿用宿主受控事务与失败回滚，不建立第二套审计/事务机制。

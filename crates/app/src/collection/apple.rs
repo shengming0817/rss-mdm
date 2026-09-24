@@ -8,7 +8,7 @@ use crate::{
     authorization::{Approval, Permission},
     database::db,
     device::DevicePrincipal,
-    enrollment::store::{actor, uuid},
+    enrollment::store::uuid,
     operations::Operation,
 };
 use axum::{
@@ -52,7 +52,7 @@ pub(crate) async fn create(
     let digest =
         crate::enrollment::digest(&("mdm.apple.collection-create/v1", &device, input.source));
     let operation = Operation {
-        actor: actor(proof),
+        actor: crate::operations::Actor::from_authorized(proof),
         key: input.request_id,
         digest: &digest,
     };

@@ -380,13 +380,11 @@ fn route_action(route: &str, native_identity: bool) -> &'static str {
         }
         "/api/v3/enrollments" => "enrollment_create",
         "/api/v3/enrollments/{id}" => "enrollment_read",
-        "/api/v3/devices/{device}/crate::enrollment::http::registrations" => "registration_read",
+        "/api/v3/devices/{device}/registrations" => "registration_read",
         "/api/v3/enrollments/{id}/resume" => "enrollment_resume",
         "/api/v3/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v3/devices/{device}/crate::enrollment::http::registrations/{registration}/revoke" => {
-            "credential_revoke"
-        }
-        "/api/agent/v2/crate::enrollment::http::registrations" => "agent_registration",
+        "/api/v3/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
+        "/api/agent/v2/registrations" => "agent_registration",
         "/api/agent/v2/reports" => "agent_report",
         "/api/agent/v2/reports/{id}" => "agent_report_read",
         "/api/v2/devices/{id}/inventory" => "inventory_read",
@@ -718,6 +716,23 @@ struct ReadinessState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registration_routes_keep_audit_identity_before_handler_rejections() {
+        for (route, action) in [
+            (
+                "/api/v3/devices/{device}/registrations",
+                "registration_read",
+            ),
+            (
+                "/api/v3/devices/{device}/registrations/{registration}/revoke",
+                "credential_revoke",
+            ),
+            ("/api/agent/v2/registrations", "agent_registration"),
+        ] {
+            assert_eq!(route_action(route, false), action);
+        }
+    }
+
     use super::*;
     #[test]
     fn collection_creation_has_a_business_action_before_authorization() {

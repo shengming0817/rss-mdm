@@ -115,36 +115,17 @@ pub(super) async fn receipt(
     .await?;
     Ok(())
 }
-pub(super) async fn device(tx: &mut PgTransaction<'_>, id: &str) -> Result<DeviceIdentity> {
+pub(super) async fn require_device(tx: &mut PgTransaction<'_>, id: &str) -> Result<()> {
     input(rss_mdm_scope::DeviceId::new(tx.tenant_id(), id))?;
     let tenant = tx.tenant_id().to_string();
     let id = id.to_owned();
-    let rows=tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("SELECT id::text,generation,channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active' ORDER BY id")
-            .bind(tenant).bind(id).fetch_all(c).await
-    })).await?;
-    if rows.is_empty() {
+    let registered = tx
+        .with_connection(move |c| Box::pin(crate::device::read::registered(c, tenant, id)))
+        .await?;
+    if !registered {
         return Err(Error::ManagementNotFound(Missing::Device).into());
     }
-    let registrations = rows
-        .into_iter()
-        .map(|row| {
-            Ok(Registration {
-                id: row.try_get("id")?,
-                channel: row.try_get("channel")?,
-                generation: row.try_get::<i64, _>("generation")? as u64,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let revision = registrations
-        .iter()
-        .map(|r| r.generation)
-        .max()
-        .ok_or(Error::ManagementNotFound(Missing::Device))?;
-    Ok(DeviceIdentity {
-        revision,
-        registrations,
-    })
+    Ok(())
 }
 
 pub(super) async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result::Result<(), Error> {

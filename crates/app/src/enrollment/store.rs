@@ -7,13 +7,6 @@ use crate::{
 use rss_mdm_inventory::ReportSource;
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 
-pub(crate) fn actor(proof: &AuthorizedPrincipal) -> Actor<'_> {
-    Actor {
-        tenant: proof.tenant_id(),
-        subject: proof.principal_id(),
-        instance: proof.instance_id(),
-    }
-}
 pub(crate) fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
     Uuid::parse_str(&row.try_get::<String, _>(name).map_err(db)?)
         .map_err(|_| Error::Unavailable(Failure::Database))
@@ -58,7 +51,7 @@ pub(crate) async fn create_enrollment(
     let password_digest = password.digest(proof.tenant_id(), device)?;
     let digest = digest(&("enrollment_create.v3", device, source, &password_digest));
     let op = Operation {
-        actor: actor(proof),
+        actor: Actor::from_authorized(proof),
         key,
         digest: &digest,
     };
@@ -126,7 +119,7 @@ pub(crate) async fn change_enrollment(
     };
     let digest = digest(&("enrollment_change.v3", action, id, &password_digest));
     let op = Operation {
-        actor: actor(proof),
+        actor: Actor::from_authorized(proof),
         key,
         digest: &digest,
     };

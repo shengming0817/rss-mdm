@@ -5,13 +5,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
-fn actor(proof: &AuthorizedPrincipal) -> Actor<'_> {
-    Actor {
-        tenant: proof.tenant_id(),
-        subject: proof.principal_id(),
-        instance: proof.instance_id(),
-    }
-}
+
 fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
     Uuid::parse_str(&row.try_get::<String, _>(name).map_err(db)?)
         .map_err(|_| Error::Unavailable(Failure::Database))
@@ -88,7 +82,7 @@ impl DeviceService {
             locator(credential),
         ));
         let operation = Operation {
-            actor: actor(admin),
+            actor: Actor::from_authorized(admin),
             key: command.operation_id,
             digest: &digest,
         };
@@ -138,7 +132,7 @@ impl DeviceService {
         admin.credentials(device)?;
         let digest = digest(&("credential_revoke", device, registration));
         let operation = Operation {
-            actor: actor(admin),
+            actor: Actor::from_authorized(admin),
             key,
             digest: &digest,
         };

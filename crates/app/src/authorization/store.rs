@@ -109,7 +109,7 @@ async fn change_authorization<T: serde::Serialize>(
         )
     );
     let operation = Operation {
-        actor: actor(proof),
+        actor: Actor::from_authorized(proof),
         key: change.operation_id,
         digest: &digest,
     };
@@ -227,13 +227,7 @@ fn authorize_change(
     }
     Ok(())
 }
-fn actor(proof: &AuthorizedPrincipal) -> Actor<'_> {
-    Actor {
-        tenant: proof.tenant_id(),
-        subject: proof.principal_id(),
-        instance: proof.instance_id(),
-    }
-}
+
 #[derive(Clone, Copy)]
 // SQL identifiers originate only from this closed enum; every request value is bound.
 enum Table {
@@ -304,11 +298,7 @@ pub(crate) async fn initialize_authorization_audited(
         )
     );
     let operation = Operation {
-        actor: Actor {
-            tenant: &user.tenant_id,
-            instance: &user.instance_id,
-            subject: &user.principal_id,
-        },
+        actor: Actor::for_initialization(&user),
         key,
         digest: &digest,
     };

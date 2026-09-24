@@ -44,7 +44,7 @@ impl Management {
                     )?;
                 }
                 Reference::Device(id) => {
-                    storage::device(tx, &id).await?;
+                    storage::require_device(tx, &id).await?;
                 }
             }
         }

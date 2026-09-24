@@ -117,3 +117,11 @@ pub(crate) async fn sources_at(
                 ORDER BY r.device,s.identity LIMIT 2001
             "#).bind(tenant).bind(devices).bind(watermark).fetch_all(c).await
 }
+
+pub(crate) async fn registered(
+    c: &mut sqlx::PgConnection,
+    tenant: String,
+    device: String,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active')").bind(tenant).bind(device).fetch_one(c).await
+}

@@ -124,12 +124,32 @@ pub(crate) async fn commit_audited_status(
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Actor<'a> {
-    pub tenant: &'a str,
-    pub subject: &'a str,
-    pub instance: &'a str,
+    tenant: &'a str,
+    subject: &'a str,
+    instance: &'a str,
 }
 pub(crate) struct Operation<'a> {
     pub actor: Actor<'a>,
     pub key: Uuid,
     pub digest: &'a str,
+}
+
+impl<'a> Actor<'a> {
+    pub(crate) fn from_authorized(
+        proof: &'a crate::authorization::context::AuthorizedPrincipal,
+    ) -> Self {
+        Self {
+            tenant: proof.tenant_id(),
+            subject: proof.principal_id(),
+            instance: proof.instance_id(),
+        }
+    }
+    /// Used only after the maintenance initializer has authenticated the initial manager.
+    pub(crate) fn for_initialization(user: &'a crate::authorization::User) -> Self {
+        Self {
+            tenant: &user.tenant_id,
+            subject: &user.principal_id,
+            instance: &user.instance_id,
+        }
+    }
 }
