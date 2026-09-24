@@ -11,7 +11,6 @@ import re
 import shutil
 from pathlib import Path
 import subprocess
-import tempfile
 import time
 import tomllib
 from urllib.parse import urlsplit
@@ -185,54 +184,25 @@ def verify_metadata(data, root, mode, pin):
         require(parents == {parent}, 'OIDC public-verification root drift')
     return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES and p["name"] not in IDENTITY_PACKAGES)
 
-def isolate():
-    # HEAD is the proof input; refuse an uncommitted tracked implementation.
-    status = command(['/usr/bin/git', 'status', '--porcelain'])
-    require(status.returncode == 0 and not status.stdout.strip(), 'commit all implementation inputs before final CI')
-    with tempfile.TemporaryDirectory(prefix="mdm-isolated-", dir="/tmp") as directory:
-        base = Path(directory).resolve()
-        checkout = base / "checkout"
-        result = command(["/usr/bin/git", "clone", "--quiet", "--no-hardlinks", str(ROOT), str(checkout)])
-        require(result.returncode == 0, result.stdout)
-        for parent in [checkout, *checkout.parents]:
-            for filename in ["config", "config.toml"]:
-                path = parent / ".cargo" / filename
-                require(not path.exists() or parent == checkout, f'ancestor Cargo config: {path}')
-        env = {k:v for k,v in os.environ.items() if not k.startswith("CARGO_") and k not in ("CLIPPY_CONF_DIR", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")}
-        env.update(CARGO_HOME=str(base / "cargo-home"), CARGO_TARGET_DIR=str(base / "target"))
-        pin = workspace_pin(checkout)
-        logs = []
-        for extra in [[], ["--workspace", "--all-features"]]:
-            args = ["cargo", "clippy", "--locked", "--all-targets", *extra, "--", "-D", "warnings"]
-            result = command(args, checkout, env)
-            logs.append(result.stdout)
-            (OUT / "isolated-build.log").write_text("\n".join(logs))
-            require(result.returncode == 0, 'isolated locked build failed; see isolated-build.log')
-        for mode, extra in [("normal", []), ("integration", ["--all-features"])]:
-            result = subprocess.run(["cargo","metadata","--locked","--format-version","1", *extra], cwd=checkout, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, capture_output=True)
-            (OUT / f"metadata-{mode}.stderr.log").write_text(result.stderr)
-            require(result.returncode == 0, result.stderr)
-            data = json.loads(result.stdout)
-            closure = verify_metadata(data, checkout, mode, pin)
-            (OUT / f"metadata-{mode}.json").write_text(result.stdout)
-            tree = command(["cargo","tree","--locked","-e","features", *extra], checkout, env)
-            require(tree.returncode == 0, tree.stdout)
-            (OUT / f"tree-{mode}.txt").write_text(tree.stdout)
-            print(f"isolated {mode}: {', '.join(closure)}", flush=True)
-        return "clean checkout, fresh Cargo home/target, both feature graphs passed"
+def dependency_graphs(pin):
+    for mode, extra in [("normal", []), ("integration", ["--all-features"])]:
+        result = command(["cargo", "metadata", "--locked", "--format-version", "1", *extra], separate_stderr=True)
+        require(result.returncode == 0, result.stderr)
+        verify_metadata(json.loads(result.stdout), ROOT, mode, pin)
 
 
 # T2 scripts also read fixture/source files outside Cargo edges. Keep those
 # inputs explicit; unclassified new CI gates run conservatively.
 APP_INPUTS = {"rss-mdm-app", "rss-mdm-examples"}
 GATE_PACKAGES = {
+    "management-t2": APP_INPUTS | {"rss-mdm-inventory-postgres"},
     "agent-wire-compat": {"rss-mdm-agent-wire"},
     "source-t2": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
     "source-t2-oracle": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
     "group-t2": APP_INPUTS | {"rss-mdm-group-postgres"},
     "backend-t2": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
     "t2": APP_INPUTS | {"inventory-postgres-integration"},
-    **{name: APP_INPUTS for name in ("management-t2", "task-t2", "apple-t2", "asset-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
+    **{name: APP_INPUTS for name in ("task-t2", "apple-t2", "asset-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
 }
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
@@ -252,7 +222,7 @@ def select_impact(head):
             merge = command(["/usr/bin/git", "merge-base", base, head])
             require(merge.returncode == 0, "base-unavailable")
             selection["mergeBase"] = merge.stdout.strip()
-            result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"], "--head", head], separate_stderr=True)
+            result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"]], separate_stderr=True)
             require(result.returncode == 0, "selector-failed")
             decision = json.loads(result.stdout)
             require(type(decision["full"]) is bool and isinstance(decision["packages"], list)
@@ -261,9 +231,6 @@ def select_impact(head):
             selection.update(decision)
             if getattr(result, "stderr", "").strip():
                 selection["diagnostic"] = result.stderr.strip()
-        status = command(["/usr/bin/git", "status", "--porcelain"])
-        if status.returncode != 0 or status.stdout.strip():
-            selection.update(full=True, packages=[], reasons=["dirty-input"])
     except Exception as error:
         selection.update(full=True, packages=[], reasons=["selection-unavailable: " + str(error)])
     return selection
@@ -287,28 +254,12 @@ def gate_command(name, args, selection):
 
 
 # Gate-owned, regenerable evidence only; retain unrelated archives and T3 results.
-EXTRA_EVIDENCE = {
-    "pin": ("pin.log",),
-    "isolation": ("isolation-error.txt", "isolated-build.log", "metadata-normal.json",
-                  "metadata-integration.json", "metadata-normal.stderr.log",
-                  "metadata-integration.stderr.log", "tree-normal.txt", "tree-integration.txt"),
-}
-
-# Old CI-owned consumer receipts must not survive as apparent current CI proof.
-# Explicit consumer acceptance now writes outside artifacts/local-ci.
-LEGACY_CONSUMER_EVIDENCE = (
-    "core-consumers", "inventory-consumers", "backend-consumers", "group-postgres-consumers",
-    "group-consumer-error.txt", "group-consumer.log", "group-consumer.json",
-    "group-consumer.lock", "group-metadata.json", "group-tree.txt",
-    "core-consumers.log", "inventory-consumers.log", "backend-consumers.log",
-    "group-postgres-consumers.log", "source-consumers.log", "agent-wire-consumer.log",
-)
+EXTRA_EVIDENCE = {"pin": ("pin.log",)}
 
 
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
     paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
-    paths.update(OUT / name for name in LEGACY_CONSUMER_EVIDENCE)
     paths.update({OUT / "result.json", OUT / "selection.json"})
     for path in paths:
         if path.is_dir() and not path.is_symlink():
@@ -317,10 +268,28 @@ def clear_execution_evidence(gate_names):
             path.unlink(missing_ok=True)
 
 
+def working_source_state():
+    """Detect edits during CI without requiring a clean or committed tree."""
+    names = subprocess.check_output(["/usr/bin/git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT)
+    state = {}
+    for name in sorted(set(os.fsdecode(names).split("\0")) - {""}):
+        path = ROOT / name
+        try:
+            before = path.lstat()
+            data = os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes()
+            after = path.lstat()
+        except FileNotFoundError:
+            state[name] = None
+            continue
+        require(before == after, "source changed while reading CI inputs")
+        state[name] = (hashlib.sha256(data).hexdigest(), after.st_mode, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)
+    return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
-    require(head.returncode == 0, "cannot resolve tested HEAD")
+    require(head.returncode == 0, "cannot resolve base revision")
     start_head = head.stdout.strip()
     gates = [
         ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_*.py"]),
@@ -347,6 +316,7 @@ def main():
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
+    source_state = working_source_state()
     selection = select_impact(start_head)
     plan = {"selection": selection, "gates": {
         name: {"selected": selected_gate(name, selection), "command": gate_command(name, args, selection)}
@@ -354,10 +324,9 @@ def main():
     }}
     for name, description in {
         "pin": "Check workspace RSS/Identity pins and dependency source policy",
-        "identity": "Verify final HEAD equals starting HEAD and Git status is clean",
-        "isolation": "Clean Git clone, fresh Cargo home/target, locked clippy and both feature graphs",
+        "source-stability": "Reject working input changes during CI",
     }.items():
-        plan["gates"][name] = {"selected": name in {"pin", "identity"} or selected_gate(name, selection),
+        plan["gates"][name] = {"selected": True,
                                "check": description}
     print(json.dumps(plan, indent=2), flush=True)
     if os.environ.get("CI_PLAN", "0") == "1":
@@ -369,6 +338,8 @@ def main():
     pin = None
     try:
         pin = workspace_pin(ROOT)
+        if selection["full"] or selection["packages"]:
+            dependency_graphs(pin)
         results["pin"] = "passed"
     except Exception as error:
         (OUT / "pin.log").write_text(str(error))
@@ -389,21 +360,12 @@ def main():
             results[name] = "failed"
         print(f"{name}: {results[name]}", flush=True)
     try:
-        if selected_gate("isolation", selection):
-            print("local CI: isolated product build", flush=True)
-            isolate()
-            results["isolation"] = "passed"
-        else:
-            results["isolation"] = "skipped"
+        require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
+        results["source-stability"] = "passed"
     except Exception as error:
-        (OUT / "isolation-error.txt").write_text(str(error))
-        results["isolation"] = "failed"
-    for name in ("pin", "isolation"):
-        print(f"{name}: {results[name]}", flush=True)
-    end_head = command(["/usr/bin/git", "rev-parse", "HEAD"])
-    status = command(["/usr/bin/git", "status", "--porcelain"])
-    results["identity"] = "passed" if end_head.returncode == 0 and end_head.stdout.strip() == start_head and status.returncode == 0 and not status.stdout.strip() else "failed"
-    evidence = {"selection":selection, "head":start_head, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
+        (OUT / "source-stability.log").write_text(str(error))
+        results["source-stability"] = "failed"
+    evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")

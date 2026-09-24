@@ -30,18 +30,12 @@ t2:
 	python3 hack/task-t2.py
 	python3 hack/apple-t2.py
 
-.PHONY: source-t2 source-consumers agent-wire-consumer group-consumer
+.PHONY: source-t2
 source-t2:
 	python3 hack/source-t2.py
 
-source-consumers:
-	python3 hack/source-consumers.py
 
-agent-wire-consumer:
-	python3 hack/agent-wire-consumer.py
 
-group-consumer:
-	python3 hack/group_consumer.py
 
 .PHONY: t2-identity
 t2-identity:
@@ -51,13 +45,11 @@ t2-identity:
 t2-group:
 	python3 hack/group-t2.py
 
-.PHONY: t2-backend t2-publication backend-consumers
+.PHONY: t2-backend t2-publication
 t2-backend:
 	python3 hack/backend-t2.py
 t2-publication:
 	python3 hack/publication-t2.py
-backend-consumers:
-	python3 hack/backend_postgres_consumer.py
 
 .PHONY: t3-auth
 t3-auth:

@@ -1,57 +1,15 @@
 # 验证范围
 
-验证按改动风险选择，不以数量或静态记录代替行为证明。
+按行为风险选择最小有效验证：T1 验证模型与边界，T2 使用真实依赖验证持久化、权限、协议与恢复，T3 在独立产品任务中验证真实设备与支持矩阵。文档检查内容、链接、来源和 diff。缺依赖或未运行不能宣布通过。
 
-- 文档与配置：检查内容、链接、引用、diff 和忽略范围；本地材料不误入 Git。
-- T1：验证模型、状态机和组件行为。
-- T2：验证真实数据库、消息、存储、协议适配等依赖接缝。
-- T3：在产品仓以独立、限定范围的 issue/PR 验证真实设备上的业务闭环、权限、升级和故障恢复；明确需求、设备矩阵、输入输出与故障范围。
+编辑循环使用受影响 package/tests 与 T2；最终 `make ci CI_BASE=origin/develop` 按影响范围运行，`make ci-full` 强制全量。一次收集失败后集中修复，精确复验失败项及受影响行为，不反复跑完整 CI。不执行父仓 CI 代替产品验证，不新增远端 CI。
 
-F01 的验证入口为本地 `make ci`，模型测试为 `make test`，真实 PostgreSQL 组合为 `make t2`。本期不建立远端 CI；不执行父仓库 CI 充当产品验证。结果绑定受测 HEAD，未完成的 gate 不得宣布通过。
+CI 直接验证当前工作区，不要求预先提交、clean HEAD 或冷构建。`make ci-plan` 仅预览；选择器比较基线 merge-base 与当前修改，计入未跟踪且非忽略的输入。docs/root Markdown 不贡献 Rust package seed，crate README 可参与 rustdoc。manifest/lock、工具链、CI 配置、rename/copy、未知路径或分析失败保守全量；存在脏文件本身不触发全量。CI 在选择前与执行后核对当前文件集合、内容及状态，运行期间输入变化则失败，避免将旧测试结果用于新源码。
 
-Make 入口通过 Git common directory 将所有本仓 worktree 的 Cargo 产物统一写入主 checkout 的
-`target/`；可选 sccache 位于主 checkout 的 `.cache/sccache/`，不与 RSS 或其它产品仓共享。
-显式 `CARGO_TARGET_DIR`、`SCCACHE_DIR` 仍可覆盖本地默认值；隔离消费验证保留独立临时目录。
+选中 Rust 包后检查当前 normal/all-features metadata 与依赖来源、必要 T1/T2；不克隆独立消费者、不重新打包逐 crate、不另起隔离冷构建或百万容量脚手架。功能预算边界仍用小输入或算术边界验证；规模与性能承诺须另立有场景的验证任务。
 
-发布记录绑定版本、OS/架构、注册方式、权限与外部依赖、实际请求和结果。模拟终端、组件测试、历史代码或厂商能力不替代真实产品证据；未测试的组合不得宣称支持。
+Make 默认缓存行为由 Makefile/hack 持有。需要隔离 worktree 产物时显式设置 CARGO_TARGET_DIR/SCCACHE_DIR；本次规则不改变默认缓存布局。缓存与工具链记录是诊断信息，不是通过证明。
 
-性能容量、兼容窗口与 RPO/RTO 在发布前按场景冻结并验证，不沿用冲突的历史指标。未覆盖的验证项如实记录。
+artifacts/local-ci 中 selection/result 记录选中 gate、命令及 passed/failed/skipped；skipped 不表示通过，affected 不称为全量。计划不覆盖正式结果，正式执行清理本入口自有旧记录。源码版本、lock 与工具链可作普通运行记录，不作“干净提交”准入。
 
-可选缓存不可用（无 Git 元数据、目录无法创建、sccache 执行失败）时直接执行 rustc；
-sccache 失败最多直接重试一次，最终保留 rustc 退出码，编译错误可能输出两次。
-默认 socket 位于有效 `SCCACHE_DIR` 内；显式 `SCCACHE_SERVER_UDS` 覆盖时由调用方保证
-服务与缓存配置一致，修改同一服务的缓存配置需重启该服务。
-
-## 本地 CI 影响范围
-
-`make ci` 默认比较 `CI_BASE=origin/develop` 与受测 HEAD 的 merge-base，在任务分支按影响范围
-运行；`develop` 分支、`make ci-full` 或 `CI_FULL=1` 执行全部 gate。缺失基线、rename/copy、
-Cargo manifest/lock、工具链、CI 脚本/配置、未知路径、未知删除或分析异常保守回退全量。
-正式 `make ci`/`make ci-full` 会关闭继承的 `CI_PLAN`，只有 `make ci-plan` 启用预览。
-`make ci CI_BASE=<ref>` 可指定基线；`make ci-plan` 只输出计划，不运行 gate，也不产生通过证明。
-应先提交受测源码；脏工作区计划回退全量，正式执行的 HEAD/clean identity gate 仍会失败。
-
-`hack/ci-impact.py` 参考 RSS 同名选择器，以 Cargo all-features metadata 的 normal/dev/build/
-optional 反向依赖闭包选择包。已识别根文档、docs 与技能 Markdown 不贡献 package seed；混合
-文档与源码按源码闭包选择。crate 内 README 可能参与 rustdoc，仍作为所属包输入。
-check/clippy/T1/doc-test 使用选中包；T2 按 `hack/ci.py` 的 gate 映射选择，
-包含 Cargo 图外的应用 schema、迁移和 fixture 输入。新 gate 未映射时，有包变更即保守执行。
-选中任何 Rust 包仍执行真实产品的隔离构建与来源/feature 图验证；advisories 仅在全量模式运行。
-模拟独立消费者不属于 `make ci`、`make ci-full` 或 `make ci-plan`，仅在明确的消费者验收任务中显式运行。纯文档或无变更跳过 Rust/T2 和产品隔离构建，但保留脚本测试、fmt、pin 与 HEAD 身份检查。
-
-`artifacts/local-ci/selection.json` 记录正式执行的基线、merge-base、HEAD、选择原因、包和所有 gate 的命令或内部检查说明；
-计划模式仅写 `plan.json`，不覆盖正式执行的 selection/result。正式执行开始时清理 CI gate 自有的旧日志、metadata/tree 和旧版 CI 留下的模拟消费者记录；
-手动消费者的验收产物不归 CI 清理，CI 结果也不记录消费者的 passed/skipped；
-`result.json` 的 gates 区分 passed/failed/skipped，skipped 不代表通过。完整入口始终收集所有
-选中 gate 的失败后再返回非零；不得把 affected 结果描述为全量验证或产品 T3。
-
-选择器未知内部异常使用 `selector-internal` 原因，并在 stderr 记录阶段和异常类型，不记录异常原文。
-runner 分离读取 stdout JSON 与 stderr 诊断，将诊断保存在选择记录的 diagnostic 字段；已知错误原因保持不变。
-
-## 人工授权的容量验证
-
-百万设备容量测试不属于 `make ci`、`make ci-full` 或 `make ci-plan`，普通 CI 不运行或清理其独立证据。
-仅在用户明确授权本次容量运行后执行 `python3 hack/capacity.py --human-authorized`，可用 `--case` 限定范围。
-脚本缺少授权确认参数时，在创建产物、启动 Docker 或构建之前拒绝执行。参数仅记录调用方确认，不验证人的身份。
-AI 与自动化不得从 ship、review、CI 或一般测试任务推断此授权，也不得自行添加参数绕过要求。
-完整运行可能耗时数十分钟；未获授权时只记录未运行，不作为普通 CI 失败。
+真实候选用一次正式 OCI 构建及随附部署输入验证安装、启动和认证，不依赖 matching checkout。候选 smoke/浏览器不替代真机；发布声明绑定实际 OS/架构、注册方式、权限、依赖、故障范围及结果。未测组合如实保留，性能、RPO/RTO 不继承历史数字。

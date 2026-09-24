@@ -19,31 +19,11 @@ def result(stdout='', returncode=0):
 
 
 class Selection(unittest.TestCase):
-    def test_ci_plan_never_registers_manual_consumers(self):
-        manual = {
-            'core-consumers', 'inventory-consumers', 'backend-consumers',
-            'group-postgres-consumers', 'source-consumers', 'agent-wire-consumer',
-            'group-consumer',
-        }
-        for selection in (
-            {'full': True, 'packages': [], 'reasons': ['global-input']},
-            {'full': False, 'packages': ['rss-mdm-app'], 'reasons': ['package-change']},
-            {'full': False, 'packages': [], 'reasons': ['docs-only']},
-        ):
-            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as directory:
-                out = Path(directory)
-                with patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', return_value=result('head')), patch.dict(ci.os.environ, {'CI_PLAN': '1'}), contextlib.redirect_stdout(io.StringIO()):
-                    self.assertEqual(ci.main(), 0)
-                gates = json.loads((out / 'plan.json').read_text())['gates']
-                self.assertFalse(manual & gates.keys())
-                self.assertEqual(gates['t2']['selected'], selection['full'] or 'rss-mdm-app' in selection['packages'])
-
     def test_merge_base_and_fallbacks(self):
         cases = [
             ('0', [result('develop'), result()], True, 'develop'),
             ('1', [result('topic'), result()], True, 'explicit-full'),
             ('0', [result('topic'), result(returncode=1)], True, 'selection-unavailable'),
-            ('0', [result('topic'), result('base'), result('{"full":false,"packages":[],"reasons":[]}'), result(' M file')], True, 'dirty-input'),
             ('0', [result('topic'), result('base'), result('{"full":false,"packages":["unknown"],"reasons":[]}')], True, 'selection-unavailable'),
             ('0', [result('topic'), result('base'), result('{"full":false,"packages":["rss-mdm-group"],"reasons":["package-change"]}'), result()], False, 'package-change'),
         ]
@@ -54,13 +34,13 @@ class Selection(unittest.TestCase):
                 self.assertTrue(selected['reasons'][0].startswith(reason))
                 if not expected:
                     self.assertEqual(command.call_args_list[1].args[0], ['/usr/bin/git', 'merge-base', 'origin/develop', 'head'])
-                    self.assertEqual(command.call_args_list[2].args[0][-4:], ['--base', 'base', '--head', 'head'])
+                    self.assertEqual(command.call_args_list[2].args[0][-2:], ['--base', 'base'])
 
     def test_package_commands_and_external_fixture_inputs(self):
         selection = {'full': False, 'packages': ['rss-mdm-winget-source']}
         args = ['cargo', 'test', '--locked', '--workspace', '--lib']
         self.assertEqual(ci.gate_command('t1', args, selection), ['cargo', 'test', '--locked', '-p', 'rss-mdm-winget-source', '--lib'])
-        for name in ['source-t2', 'isolation', 'new-gate']:
+        for name in ['source-t2', 'new-gate']:
             self.assertTrue(ci.selected_gate(name, selection), name)
         for name in ['group-t2', 'advisories']:
             self.assertFalse(ci.selected_gate(name, selection), name)
@@ -72,16 +52,9 @@ class Selection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             (out / 't1.log').write_text('stale passed')
-            stale_paths = [out / name for name in (
-                'isolated-build.log', 'metadata-normal.json', 'metadata-integration.json',
-                'metadata-normal.stderr.log', 'metadata-integration.stderr.log',
-                'tree-normal.txt', 'tree-integration.txt', 'pin.log')]
-            source_out = out / 'separate-source-consumers'
-            legacy_paths = [out / 'core-consumers/result.json', out / 'group-consumer.log']
-            manual_paths = [source_out / 'result.json']
-            for path in stale_paths + legacy_paths + manual_paths:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('old-head passed')
+            stale_paths = [out / 'pin.log']
+            for path in stale_paths:
+                path.write_text('previous run')
             output = io.StringIO()
             calls = []
             def command(args, **kwargs):
@@ -91,23 +64,18 @@ class Selection(unittest.TestCase):
                 if '-m' in args: return result('failure', 1)
                 return result()
             selection = {'full': False, 'packages': [], 'reasons': ['docs-only']}
-            with patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'isolate') as isolation, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
+            with patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'dependency_graphs') as graphs, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((out / 'result.json').read_text())
             self.assertEqual(evidence['gates']['script-tests'], 'failed')
             self.assertEqual(evidence['gates']['fmt'], 'passed')
             self.assertEqual(evidence['gates']['t1'], 'skipped')
-            self.assertEqual(evidence['gates']['identity'], 'passed')
             self.assertFalse((out / 't1.log').exists())
-            for path in stale_paths + legacy_paths:
+            for path in stale_paths:
                 self.assertFalse(path.exists(), str(path))
-            for path in manual_paths:
-                self.assertEqual(path.read_text(), 'old-head passed')
             plan = json.loads((out / 'selection.json').read_text())
             self.assertEqual(set(plan['gates']), set(evidence['gates']))
-            self.assertNotIn('local CI: isolated Git consumer', output.getvalue())
-            self.assertIn('isolation: skipped', output.getvalue())
-            isolation.assert_not_called()
+            graphs.assert_not_called()
             self.assertFalse(any('test' in args for args in calls))
 
     def test_cleanup_preserves_unowned_evidence_and_does_not_follow_symlinks(self):
@@ -120,21 +88,13 @@ class Selection(unittest.TestCase):
             external = Path(directory) / 'external'
             external.mkdir()
             (external / 'result.json').write_text('external proof')
-            (out / 'isolated-build.log').symlink_to(external / 'result.json')
-            manual = out / 'core-consumers'
-            manual.mkdir()
-            (manual / 'result.json').write_text('manual proof')
-            source = Path(directory) / 'source-consumers'
-            source.mkdir()
-            (source / 'result.json').write_text('stale proof')
+            (out / 'pin.log').symlink_to(external / 'result.json')
             with patch.object(ci, 'OUT', out):
                 ci.clear_execution_evidence(['t1'])
                 ci.clear_execution_evidence(['t1'])
             self.assertTrue(retained.exists())
             self.assertEqual((external / 'result.json').read_text(), 'external proof')
-            self.assertFalse((out / 'isolated-build.log').is_symlink())
-            self.assertFalse(manual.exists())
-            self.assertTrue((source / 'result.json').exists())
+            self.assertFalse((out / 'pin.log').is_symlink())
 
     def test_plan_does_not_execute_or_erase_previous_result(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,7 +108,7 @@ class Selection(unittest.TestCase):
             self.assertEqual((out / 'selection.json').read_text(), 'previous selection')
             plan = json.loads((out / 'plan.json').read_text())
             self.assertTrue(all(gate['selected'] for gate in plan['gates'].values()))
-            for name in ('pin', 'identity', 'isolation'):
+            for name in ('pin',):
                 self.assertTrue(plan['gates'][name]['check'])
 
 
@@ -177,7 +137,7 @@ class EntryModes(unittest.TestCase):
         impact = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(impact)
         stdout, stderr = io.StringIO(), io.StringIO()
-        with patch.object(impact.sys,'argv',['ci-impact.py','--base','base','--head','HEAD']), patch.object(impact,'run',return_value=SimpleNamespace(returncode=0,stdout=str(ci.ROOT).encode())), patch.object(impact,'select',side_effect=RuntimeError('private-error-text')), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        with patch.object(impact.sys,'argv',['ci-impact.py','--base','base']), patch.object(impact,'run',return_value=SimpleNamespace(returncode=0,stdout=str(ci.ROOT).encode())), patch.object(impact,'select',side_effect=RuntimeError('private-error-text')), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             impact.main()
         self.assertEqual(json.loads(stdout.getvalue()),{'full':True,'packages':[],'reasons':['selector-internal']})
         self.assertIn('phase=selection',stderr.getvalue())

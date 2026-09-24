@@ -80,6 +80,7 @@ class SmokeCompletion(unittest.TestCase):
             with mock.patch.object(smoke, "run_smoke", return_value=({"revision": "fixture"}, "logs")), mock.patch.object(candidate.os, "replace", side_effect=OSError("disk failure")):
                 with self.assertRaisesRegex(OSError, "disk failure"):
                     smoke.smoke(directory)
+            # The mocked os.replace also rejects failure evidence publication.
             self.assertEqual(list(directory.iterdir()), [])
 
     def test_cleanup_preserves_primary_and_records_cleanup_failure(self):
@@ -94,6 +95,16 @@ class SmokeCompletion(unittest.TestCase):
 
 
 class RuntimeOwnership(unittest.TestCase):
+    def test_constructor_failure_has_closed_diagnostics_and_no_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'candidate.json').write_text('{"format_version":2}')
+            with self.assertRaisesRegex(RuntimeError, 'V3 required'):
+                smoke.smoke(root)
+            record = json.loads((root / 'smoke-failure.json').read_text())
+            self.assertEqual(record, {'status':'failed', 'error_class':'RuntimeError', 'containers':{}})
+            self.assertFalse((root / 'smoke.json').exists())
+
     def test_operator_preserves_exact_stage(self):
         owner=candidate.Candidate.__new__(candidate.Candidate)
         owner.pg,owner.operator_volume,owner.image='pg','operator','image'
@@ -146,7 +157,7 @@ class ExternalReviewRegressions(unittest.TestCase):
     def test_host_fixture_keeps_private_directory_and_tls_key(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
-            candidate.inputs(root,candidate.ROOT/'fixtures/mdm-config.example.json')
+            candidate.inputs(root,Path(__file__).resolve().parents[1]/'fixtures/mdm-config.example.json',Path(__file__).resolve().parents[1]/'deployment/nginx.conf')
             self.assertEqual(root.stat().st_mode & 0o077,0)
             self.assertEqual((root/'server.key').stat().st_mode & 0o077,0)
 
@@ -157,3 +168,40 @@ class ExternalReviewRegressions(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'UI archive mismatch'):
                     candidate.load_ui(root,{'archive':{'file':'ui.tar','sha256':'0'*64}})
                 command.assert_not_called()
+
+class CandidateInputs(unittest.TestCase):
+    def test_v3_uses_only_delivered_files_and_rejects_missing_or_changed_inputs(self):
+        import release
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / 'server.oci.tar'; archive.write_bytes(b'oci')
+            deployment = {}
+            for name in release.DEPLOYMENT_FILES:
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(name)
+                deployment[name] = release.sha(path)
+            manifest = {'format_version':3, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment}
+            (root / 'candidate.json').write_text(json.dumps(manifest))
+            with mock.patch.object(candidate, 'oci_identity', return_value=('sha256:fixture', {'os':'linux','architecture':'arm64'})), mock.patch.object(candidate, 'docker') as docker:
+                candidate.verify_candidate(root)
+                docker.assert_called_once()
+                docker.reset_mock()
+                path = root / 'deployment/management-roles.sql'; path.write_text('changed')
+                with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
+                docker.assert_not_called()
+                path.unlink()
+                with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
+                path.symlink_to(root / 'deployment/identity-roles.sql')
+                with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
+                docker.assert_not_called()
+                path.unlink()
+                path.write_text('fixture')
+                manifest['deployment']['../outside.sql'] = 'not-allowed'
+                (root / 'candidate.json').write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(RuntimeError, 'deployment inputs'): candidate.verify_candidate(root)
+                manifest['format_version'] = 2
+                (root / 'candidate.json').write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(RuntimeError, 'V3 required'): candidate.verify_candidate(root)
+                docker.assert_not_called()
+
+if __name__ == "__main__":
+    unittest.main()

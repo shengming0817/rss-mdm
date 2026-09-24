@@ -4,13 +4,13 @@ Windows + macOS｜统一执行、双通道管理与私有软件仓库
 
 **版本：v0.2｜日期：2026-09-07｜状态：评审草案**
 
-工程目标见 [项目目标](project-goals.md)，实施切片见 [Rust 重写路线](202609072231-002-rust-rewrite-roadmap.md)。自有服务端与 Agent 使用 Rust，直接消费 RSS；功能需求与本文件的验收编号继续保持稳定。
+工程目标见 [项目目标](project-goals.md)，实施切片见 [Rust 重写路线](roadmap.md)。自有服务端与 Agent 使用 Rust，直接消费 RSS；功能需求与本文件的验收编号继续保持稳定。
 
 ## 阅读说明
 
 本文定义 rss-mdm 的产品目标，包含 144 项 WMD-* 需求、22 个功能模块及相应验收场景。需求编号保持稳定；数量不代表完成度。
 
-当前仓库尚未实现这些产品能力。表中的“历史基础”仅描述 WinMDM 快照中的 Windows 实现或规划，不代表 rss-mdm 已完成，也不自动延伸到 macOS。所有发布能力须在当前产品中取得验证证据。
+本文件定义产品目标，不登记逐项实现进度。表中的“历史基础”仅描述 WinMDM 快照中的 Windows 实现或规划，不代表 rss-mdm 已完成，也不自动延伸到 macOS。所有发布能力须在当前产品中取得验证证据。
 
 历史实现、旧批次和旧性能指标见 [WinMDM 历史基线](../reference/winmdm-baseline.md)；代码与文档出处见 [历史来源索引](../reference/historical-sources.md)；厂商资料见 [外部参考来源](../reference/external-sources.md)。缺少运行证据的目标不得宣称已支持。
 
@@ -140,13 +140,13 @@ MDM 原生通道和 Agent 通道分别承担适用的管理能力，共用产品
 | R2：企业软件与管理闭环 | WinGet/Brew 私有源审批发布及完整生命周期；ADE、DDM、FileVault/令牌、更新、字段驱动策略；继承 Windows LAPS/BitLocker、应用、Webhook/合规包。 | 两类私有源都经过真实端消费、撤销/恢复验证；各承诺 macOS/Windows 企业用例均有界面、API、运行与故障证据。 |
 | R3：可选深化 | 自助、Platform SSO、复杂多用户/源码构建、第三方源连接器、osquery 扩展、远程桌面、MSP 等。 | 单项批准范围、支持矩阵及必要性；不以这些增强阻塞已冻结的 R1/R2。 |
 
-Windows MDM 只读纵切 V1 是 R0/R1 的基础增量，不代替 R0 的 Windows Agent 真执行退出条件。具体依赖按 [实施路线](202609072231-002-rust-rewrite-roadmap.md) 推进；工程先后顺序不降低 macOS、三类采集与 WinGet/Brew 的正式范围。
+Windows MDM 只读纵切 V1 是 R0/R1 的基础增量，不代替 R0 的 Windows Agent 真执行退出条件。具体依赖按 [实施路线](roadmap.md) 推进；工程先后顺序不降低 macOS、三类采集与 WinGet/Brew 的正式范围。
 
 ## 自底向上的依赖顺序
 
 已接纳 RSS 库/成熟外部依赖 → 产品共享契约与持久任务 → Windows/macOS 通道适配和 Agent 执行器 → 能力预检、单一写 owner 与计划 → 统一采集/字段、软件源控制面 → 组/策略/安装/更新/合规 → 控制台、部署与产品 T3。
 
-macOS MDM 与 Agent 可并行建设；ADE 依赖 Apple 组织接入，不依赖 WinGet；Brew/WinGet 的终端执行闭环依赖可信 Agent、产物授权和应用模型；Group/Scope/Policy、Resource、软件源元数据与发布后端可按 N01–N12 提前独立交付，不等待 Agent 或 V1 真机验收；DDM 依赖 Apple 注册与声明/状态服务；更新环不依赖 Windows LAPS。不能把每个节点强行串成单条瀑布，也不能越过任务/身份/结果的基础依赖。
+macOS MDM 与 Agent 可并行建设；ADE 依赖 Apple 组织接入，不依赖 WinGet；Brew/WinGet 的终端执行闭环依赖可信 Agent、产物授权和应用模型；Group/Scope/Policy、Resource、软件源元数据与发布后端可按核心契约、持久化适配、应用装配与授权 API 的依赖顺序提前独立交付，不等待 Agent 或 V1 真机验收；DDM 依赖 Apple 注册与声明/状态服务；更新环不依赖 Windows LAPS。不能把每个节点强行串成单条瀑布，也不能越过任务/身份/结果的基础依赖。
 
 R2 可按“私有软件源闭环”“Apple 自动化与安全”“Windows 企业闭环”分别交付，但每个子发布都必须列出已承诺矩阵。日期、人员和生产容量未给定，不在 PRD 中编造工期。产品 T3 的 issue/PR 与功能开发 PR 分开、与 RSS 组件验证分开。[验证规则](../rules/verification-scope.md)
 
@@ -223,7 +223,7 @@ AC-D01-02　模拟一个通道失败和证书不可恢复，API/界面显示部�
 | WMD-Q01<br>标准资产采集 | 采集已承诺的硬件、OS、网络与软件/安全信息；字段带类型、来源及采集时间，不支持字段显示未知。 | 已有<br>一级 |
 | WMD-Q02<br>采集模板 / 刷新 | 支持配置可读 CSP 模板、DDF 节点导入和按需刷新；展示排队/等待签入/部分结果，避免同步读取假象。 | 已有<br>一级 |
 | WMD-Q03<br>组合搜索 | 支持字段发现、AND/OR 嵌套、类型匹配运算符、选列、排序和分页；合法字段以当前注册表为准。 | 已有<br>一级 |
-| WMD-Q04<br>保存搜索 / 汇总 | 命名保存查询、版本冲突提示、删除与重用。#2463 当前交付授权匹配/Unknown 数量、通道覆盖、OS 和资产字段质量汇总；设备健康与合规汇总待相应 canonical 评估能力实现，不从缺失资产或字段时间推导。 | 已有<br>一级 |
+| WMD-Q04<br>保存搜索 / 汇总 | 命名保存查询、版本冲突提示、删除与重用。提供授权匹配/Unknown 数量、通道覆盖、OS 和资产字段质量汇总；设备健康与合规汇总依赖相应 canonical 评估能力，不从缺失资产或字段时间推导。 | 已有<br>一级 |
 | WMD-Q05<br>外部获取资产 | 通过授权 API 获取资产与查询结果；保留机器可读数据消费，不实现 UI 导出或 CSV 导入导出。 | 已有基础<br>一级 |
 
 ## 关键规则与边界
@@ -522,7 +522,7 @@ AC-U01-02　设备离线、等待重启、安装失败和没有评估数据时�
 
 # 06.13　F-A：账户、SSO、会话与权限
 
-当前接入边界见 [#2437 修订的认证指南](../guides/202609091600-2343-mdm-identity.md)：首期单租户、持久化四类主体授权、真实资产查询与危险动作授权拒绝。规则、用户组启停及成员由受保护 API 管理；操作与资源范围成对匹配、并集生效、默认拒绝，详见 [#2363 授权指南](../guides/202609200002-2363-authorization.md)。危险动作有权时仍返回不支持，不表示命令执行已交付；管理员注册许可与持久审计见 [F02 指南](../guides/202609090001-2347-enrollment-audit.md)：统一 Enrollment 创建/恢复/取消与独立凭据撤销，授权、签发意图及原子绑定形成闭环，查询/拒绝审计失败不放行。[Windows 接入](../guides/202609111146-2350-windows-enrollment-management.md) 覆盖 HTTPS Discovery/XCEP/WSTEP、mTLS 与首次 SyncML 认证初始化；pending 不代表完成，T1/T2 证据由 #2350/#2351 单 PR 绑定，Windows T3 独立验收。
+认证与资源授权的操作说明见 [身份指南](../guides/identity-and-authorization.md)，注册与设备准入见 [注册指南](../guides/device-enrollment.md)。发布支持须有对应产品验收证据。
 
 *主要用户：系统管理员、安全管理员、集成系统。*
 

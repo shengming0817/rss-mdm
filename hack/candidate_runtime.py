@@ -14,8 +14,8 @@ import sys
 import tempfile
 import time
 import uuid
-from release import ROOT, oci_identity, platform, sha, image_metadata, immutable_image
-from t2 import INSTANCE, ADMIN, TENANTS, installation
+from release import oci_identity, platform, sha, image_metadata, immutable_image, DEPLOYMENT_FILES, ROLE_NAMES
+from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 
 TENANT = TENANTS[0]
 PASSWORD = "Candidate-only-correct-horse-battery-2026!"
@@ -87,7 +87,7 @@ def wait(check, stage, seconds=45):
         time.sleep(.2)
     raise RuntimeError("candidate deadline: " + stage)
 
-def inputs(root, example):
+def inputs(root, example, gateway_file):
     """Runtime and operator get separate mounts; the server never receives maintenance credentials."""
     runtime, operator = root/"runtime", root/"operator"
     runtime.mkdir(); operator.mkdir()
@@ -128,7 +128,7 @@ def inputs(root, example):
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),installation=installation()))
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
-    gateway=(ROOT/"deployment/nginx.conf").read_text().replace("listen 443 ssl;","listen 8445 ssl;")
+    gateway=gateway_file.read_text().replace("listen 443 ssl;","listen 8445 ssl;")
     gateway=gateway.replace("/run/config/ui.json","/certs/ui.json")
     gateway=gateway.replace("/private/mdm-tls.crt","/certs/server.crt").replace("/private/mdm-tls.key","/certs/server.key")
     (root/"nginx.conf").write_text(gateway)
@@ -222,20 +222,19 @@ def load_ui(directory, ui):
     require(actual=={key:value for key,value in ui.items() if key!='archive'},'UI artifact differs from candidate')
     return actual
 
-def verify_source(revision):
-    current=subprocess.check_output(["/usr/bin/git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
-    require(current==revision and not subprocess.check_output(["/usr/bin/git","status","--porcelain"],cwd=ROOT,text=True).strip(),"candidate requires clean matching source")
-
 def verify_candidate(directory):
     manifest=json.loads((directory/"candidate.json").read_text())
-    require(manifest.get("format_version")==2,"current product candidate format required")
+    require(manifest.get("format_version")==3,"candidate V3 required; rebuild the candidate")
     archive=directory/manifest["archive"]["file"]
     require(archive.parent==directory and not archive.is_symlink() and sha(archive)==manifest["archive"]["sha256"],"candidate archive mismatch")
     digest,config=oci_identity(archive)
-    require(digest==manifest["archive"]["manifest_digest"] and config["config"]["Labels"]["org.opencontainers.image.revision"]==manifest["revision"] and platform(config)==manifest["platform"],"candidate image mismatch")
-    verify_source(manifest["revision"])
-    require(sha(directory/"mdm-config.example.json")==manifest["config_sha256"],"candidate configuration mismatch")
-    require(sha(ROOT/"Cargo.lock")==manifest["cargo_lock_sha256"],"candidate lock mismatch")
+    require(digest==manifest["archive"]["manifest_digest"] and platform(config)==manifest["platform"],"candidate image mismatch")
+    require(set(manifest["deployment"]) == set(DEPLOYMENT_FILES), "candidate deployment inputs mismatch")
+    for name, digest in manifest["deployment"].items():
+        path = directory / name
+        require(not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(directory.resolve())
+                and not any(parent.is_symlink() for parent in path.parents if parent != directory and parent.is_relative_to(directory))
+                and sha(path) == digest, "candidate deployment input mismatch")
     docker("load","--input",archive,stage=Stage.LOAD)
     return manifest
 
@@ -247,7 +246,7 @@ class Candidate:
         self.diagnostics=diagnostics or directory
         self.manifest=verify_candidate(directory)
         artifact=image_identity(self.manifest["image"])
-        require(artifact["revision"]==self.manifest["revision"] and self.manifest["image"].endswith("@"+self.manifest["archive"]["manifest_digest"]),"runtime image differs from candidate")
+        require(self.manifest["image"].endswith("@"+self.manifest["archive"]["manifest_digest"]),"runtime image differs from candidate")
         self.image=artifact["id"]
         self.web=load_ui(directory,self.manifest["ui"])
         self.providers=self.manifest["providers"]
@@ -296,7 +295,7 @@ class Candidate:
         try:
             self.temporary=tempfile.TemporaryDirectory(prefix=self.name+"-")
             self.root=Path(self.temporary.name)
-            self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json")
+            self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json",self.directory/"deployment/nginx.conf")
             if self.own_network:
                 self.network_created=True
                 self.command("network","create",self.network,stage=Stage.NETWORK)
@@ -328,7 +327,7 @@ class Candidate:
             wait(lambda:subprocess.run(["docker","exec",self.pg,"pg_isready","-h","127.0.0.1","-U","postgres"],capture_output=True,timeout=5).returncode==0,"PostgreSQL")
             roles="".join("CREATE ROLE "+r+" LOGIN PASSWORD '"+r+"-fixture' NOSUPERUSER NOBYPASSRLS;" for r in ["mdm_owner","mdm_api","mdm_access","mdm_runtime"])
             roles+="GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            for owner in ["software-publication","management","identity","commands"]:roles+=(ROOT/f"crates/app/schema/{owner}-roles.sql").read_text()
+            for owner in ROLE_NAMES:roles+=(self.directory/f"deployment/{owner}-roles.sql").read_text()
             for role in ["mdm_command_runtime","mdm_management_runtime","mdm_software_driver","mdm_identity_runtime","mdm_identity_maintenance"]:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.runtime_volume,self.operator_volume=self.name+"-runtime",self.name+"-operator"

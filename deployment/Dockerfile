@@ -18,17 +18,8 @@ RUN --mount=type=cache,id=mdm-registry-${TARGETPLATFORM},target=/usr/local/cargo
 RUN --network=none --mount=type=cache,id=mdm-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=mdm-git-${TARGETPLATFORM},target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=mdm-target-${TARGETPLATFORM}-rust196,target=/build/target,sharing=locked \
-    cargo build --offline --locked --release -p rss-mdm-app --bin rss-mdm && mkdir /out && cp /build/target/release/rss-mdm /out/rss-mdm
-RUN --network=none --mount=type=cache,id=mdm-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=mdm-git-${TARGETPLATFORM},target=/usr/local/cargo/git,sharing=locked cargo metadata --offline --locked --format-version=1 > /metadata.json
-RUN rustc -vV > /toolchain.txt
+    rustc -vV && cargo build --offline --locked --release -p rss-mdm-app --bin rss-mdm && mkdir /out && cp /build/target/release/rss-mdm /out/rss-mdm
 FROM ${RUNTIME_IMAGE} AS server
-ARG MDM_REVISION
-LABEL org.opencontainers.image.revision=${MDM_REVISION}
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/rss-mdm"]
-FROM scratch AS evidence
-COPY --from=build /toolchain.txt /toolchain.txt
-COPY --from=build /metadata.json /metadata.json
-COPY --from=build /out/rss-mdm /rss-mdm

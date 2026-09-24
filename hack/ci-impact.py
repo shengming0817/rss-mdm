@@ -69,12 +69,10 @@ def run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
         raise SelectionError("diff-unavailable") from error
 
 
-def parse_args(arguments: list[str]) -> tuple[str, str]:
-    if len(arguments) != 4 or arguments[0] != "--base" or arguments[2] != "--head":
+def parse_args(arguments: list[str]) -> str:
+    if len(arguments) != 2 or arguments[0] != "--base" or not arguments[1]:
         raise SelectionError("invalid-arguments")
-    if not arguments[1] or not arguments[3]:
-        raise SelectionError("invalid-arguments")
-    return arguments[1], arguments[3]
+    return arguments[1]
 
 
 def valid_path(raw: str) -> bool:
@@ -82,7 +80,7 @@ def valid_path(raw: str) -> bool:
     return bool(raw) and not path.is_absolute() and ".." not in path.parts
 
 
-def changed_paths(root: Path, base: str, head: str) -> list[tuple[str, str]]:
+def changed_paths(root: Path, base: str) -> list[tuple[str, str]]:
     result = run(
         [
             "/usr/bin/git",
@@ -93,7 +91,6 @@ def changed_paths(root: Path, base: str, head: str) -> list[tuple[str, str]]:
             "--find-copies",
             "--find-copies-harder",
             base,
-            head,
             "--",
         ],
         cwd=root,
@@ -124,7 +121,18 @@ def changed_paths(root: Path, base: str, head: str) -> list[tuple[str, str]]:
         if status[0] in "RC":
             raise SelectionError("rename-or-copy")
         changes.append((status[0], paths[0]))
-    return changes
+    untracked = run(["/usr/bin/git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=root)
+    if untracked.returncode:
+        raise SelectionError("diff-unavailable")
+    try:
+        paths = untracked.stdout.decode("utf-8").split("\0")
+    except UnicodeDecodeError as error:
+        raise SelectionError("diff-invalid") from error
+    for path in filter(None, paths):
+        if not valid_path(path):
+            raise SelectionError("invalid-path")
+        changes.append(("A", path))
+    return sorted(set(changes))
 
 
 def is_global(path: str) -> bool:
@@ -242,8 +250,8 @@ def reverse_closure(seeds: set[str], reverse: dict[str, set[str]]) -> set[str]:
     return selected
 
 
-def select(root: Path, base: str, head: str) -> tuple[bool, set[str], set[str]]:
-    changes = changed_paths(root, base, head)
+def select(root: Path, base: str) -> tuple[bool, set[str], set[str]]:
+    changes = changed_paths(root, base)
     if not changes:
         return False, set(), {"no-changes"}
     if any(is_global(path) for _, path in changes):
@@ -267,7 +275,7 @@ def select(root: Path, base: str, head: str) -> tuple[bool, set[str], set[str]]:
 def main() -> None:
     phase = "arguments"
     try:
-        base, head = parse_args(sys.argv[1:])
+        base = parse_args(sys.argv[1:])
         phase = "repository"
         root_result = run(["/usr/bin/git", "rev-parse", "--show-toplevel"], cwd=Path.cwd())
         if root_result.returncode != 0:
@@ -277,7 +285,7 @@ def main() -> None:
         except (OSError, ValueError) as error:
             raise SelectionError("invalid-path") from error
         phase = "selection"
-        full, packages, reasons = select(root, base, head)
+        full, packages, reasons = select(root, base)
         emit(full, packages, reasons)
     except SelectionError as error:
         emit(True, set(), {error.reason})

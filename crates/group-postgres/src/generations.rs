@@ -338,7 +338,7 @@ impl GroupStore {
         if build.input_sealed || build.cursor.as_deref() != page.after.map(|k| k.id()) {
             return Ok(Err(Rejection::InvalidInput));
         }
-        if build.objects.saturating_add(page.objects.len()) > MAX_MEMBERS {
+        if !page_fits(build.objects, page.objects.len()) {
             return Ok(Err(Rejection::CapacityExceeded));
         }
         let mut ids = Vec::new();
@@ -438,14 +438,7 @@ impl GroupStore {
         }
         let added = values.iter().filter(|v| **v).count();
         let removed = values.len() - added;
-        let members = input!(
-            group
-                .member_count
-                .checked_add(added)
-                .and_then(|n| n.checked_sub(removed))
-                .filter(|n| *n <= MAX_MEMBERS)
-                .ok_or(Rejection::CapacityExceeded)
-        );
+        let members = input!(member_count_after_patch(group.member_count, added, removed));
         let tenant = self.tenant.to_string();
         let group_id = group.id.to_string();
         let revision = input!(group.revision.next()).get();
@@ -694,5 +687,45 @@ impl GroupStore {
             sqlx::query_scalar("SELECT object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND matched AND object_id>coalesce($3::text,'') COLLATE \"C\" ORDER BY object_id LIMIT $4")
                 .bind(tenant).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
         })).await?))
+    }
+}
+
+fn page_fits(current: usize, added: usize) -> bool {
+    current.saturating_add(added) <= MAX_MEMBERS
+}
+
+fn member_count_after_patch(
+    current: usize,
+    added: usize,
+    removed: usize,
+) -> std::result::Result<usize, Rejection> {
+    current
+        .checked_add(added)
+        .and_then(|n| n.checked_sub(removed))
+        .filter(|n| *n <= MAX_MEMBERS)
+        .ok_or(Rejection::CapacityExceeded)
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    #[test]
+    fn member_limits_reject_overflow_without_allocating_members() {
+        assert!(page_fits(MAX_MEMBERS - 1, 1));
+        assert!(!page_fits(MAX_MEMBERS, 1));
+        assert!(!page_fits(usize::MAX, 1));
+        assert_eq!(member_count_after_patch(MAX_MEMBERS, 1, 1), Ok(MAX_MEMBERS));
+        assert_eq!(
+            member_count_after_patch(MAX_MEMBERS, 1, 0),
+            Err(Rejection::CapacityExceeded)
+        );
+        assert_eq!(
+            member_count_after_patch(0, 0, 1),
+            Err(Rejection::CapacityExceeded)
+        );
+        assert_eq!(
+            member_count_after_patch(usize::MAX, 1, 1),
+            Err(Rejection::CapacityExceeded)
+        );
     }
 }

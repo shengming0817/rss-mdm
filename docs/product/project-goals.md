@@ -1,6 +1,6 @@
 # 项目目标
 
-本文件拥有工程目标与交付方向；功能需求、排除项与需求编号仍由 [PRD](rss-mdm-prd.md) 拥有。F01 已建立独立 Rust Inventory 组合；实际验证结果以产品 PR 的本地 CI 受测 HEAD 为准，其余目标仍按路线交付。
+本文件拥有工程目标与交付方向；功能需求、排除项与需求编号仍由 [PRD](rss-mdm-prd.md) 拥有。实现进度与验证结果由 tracker 和交付 PR 持有。
 
 ## 已确定的方向
 
@@ -13,16 +13,9 @@
 
 ## 什么算成功
 
-- 第一项实施产物：锁定 RSS 精确 Git revision、Cargo.lock 与实际 feature 闭包，在独立 Rust 消费者和真实 PostgreSQL 中验证 Observation 到 Inventory 的原子投影与重放。
+- 基础组合在真实 PostgreSQL 验证 Observation 到 Inventory 的原子投影与恢复。
 - 第一条产品垂直闭环：授权 Windows MDM 注册、可信只读采集、可靠报告、资产投影和授权查询；真实设备验证独立作为 T3。
 - 随后形成可核实的原生策略闭环、Rust Agent 执行和升级；按 PRD 并行推进 Mac 与三类采集，并完成软件源与双平台管理。
 - 旧设备切换有身份映射、派发停写、未确定任务处置和回退边界；自有 Go 服务与 Agent 迁移后退出，不长期保留两个控制 owner。
 
 目标不以 crate 数、Provider 数或框架数量验收。未发布、未运行和未验证分别记录，experimental 组件可经精确依赖与风险验证用于研发，不等待全体 RSS GA。
-
-## 当前 PR 的边界
-
-本项实现 F01：固定 Git 依赖、产品 Inventory schema、迁移与最低运行角色、fixture 接收、
-原子投影/查询、故障恢复与本地 CI。不创建空壳业务 crate，不建立远端 CI，不迁移生产数据，
-不宣称完成设备认证或真机 T3。后续按 [实施路线](202609072231-002-rust-rewrite-roadmap.md)
-推进；运行边界见 [F01 指南](../guides/202609080000-2346-local-inventory.md)。

@@ -1,6 +1,6 @@
-# #2464 资产变化与持久计划
+# 资产变化与持久计划
 
-状态：实施及真实 PostgreSQL 验证中；最终证据以干净 HEAD 的 CI 产物为准。
+固定输入水位与分批不可变结果使计算可恢复，避免跨页长事务与全量复制。
 
 ## 行为边界
 
@@ -41,51 +41,6 @@ Policy 的引用令牌由其 adapter 持有，源发布事务同步推进令牌�
 不能只检查本地聚合 revision，也不能等待逐策略后台循环结束后才失效。
 后台只更新当前候选指针；显式保存重新核对授权及全部版本。
 
-## 替换与验证
-
-最终删除旧全量求值、同步预览、整份快照/计划 blob、旧编解码和保存时的
-执行事实生成路径。同一交付切换 HTTP、独立消费者与测试，不保留兼容回退。
-新迁移追加到 immutable migration units；旧安装仍拒绝，未扩展历史部署升级。
-
-验收覆盖真实 PG 原子性、重放、提交未知、旧 worker、分页中变更、重启、
-跨租户与权限撤销，以及静态组/动态组/Scope/Policy 百万设备运行。
-测量硬件、内存、耗时、事务/锁等待、SQL 数与数据库增长，不先承诺固定耗时。
-完整本地 CI 绑定 clean HEAD，一次收集全部失败后集中修复；T1/T2 不代表真机 T3。
-
-参考：RSS `crates/reconcile-postgres/src/messaging.rs`，固定 revision
-`ec67bd142d70cb8f0d56feae636ac9471e7471fc`；该版本的公开事务组合保持 transaction owner 唯一。
-
-## 当前分页契约
-
-管理集合接口迁移至 `/api/v2`。组预览使用 `POST /groups/{id}/previews`；
-组重算与策略预览返回 `202` 和任务身份。不可变结果分别从以下入口读取：
-
-- `/groups/{group}/results/{result}/{members|changes|decisions}`
-- `/scopes/{scope}/results/{result}/{members|decisions}`
-- `/policies/{policy}/results/{result}/{targets|add|supersede|retain|cancel|predecessors}`
-
-Group 读取与写入回执、Group/Scope 任务、所有 Group/Scope/Policy 结果页和计划任务摘要
-除各自管理权限外都要求完整 InventoryRead；部分设备授权不能读取租户级派生计数或解释。
-动态创建/规则修改同样在入口和事务内校验；已有游标不能绕过收缩后的权限。
-定义获授权保存后由服务推进后台计算，不保存发起人的授权快照；候选不会自动保存或执行。
-
-每页重新授权，结果 owner 必须匹配路径；签名游标绑定租户、owner、结果身份与
-分页类型。`limit` 为 1–1,000，解释和意图还按正文预算缩小。`nextCursor`
-指示继续位置；尾页可为空。组和 Scope 返回总数与当前结果标记，历史页不会
-因新版本发布、组删除或 Scope 删除而改变；删除后的历史结果标记 current=false。签名密钥按租户持久化并在所有实例间共享，重启后可续页。解释不包含原始资产值。
-
-资产查询使用 `/api/v2/device-queries` 异步受理，随后读取固定结果与汇总页，详情和 Manual 保持短事务。
-旧同步 Group/Policy 预览、核心全量求值、旧运行表与计划格式已经替换；历史迁移摘要保留，新安装只暴露当前 schema。
-
-## 容量证据入口
-
-获得用户对本次运行的明确授权后，以 `python3 hack/capacity.py --human-authorized` 实际执行静态组、动态组、Scope 和 Policy 各 1,000,000 当前设备及 1,000,001 拒绝。
-覆盖零变化、单设备、1% 与全量变化，以及 1,001,000 条多版本执行事实。Scope 使用正式 RSS worker；设备身份为合成 fixture。
-Policy 每轮保存前后核对执行事实总数，使用不同页大小核对同一规范摘要。
-`artifacts/capacity/` 保存硬件、Docker 配额、HEAD、进程峰值 RSS、用时、SQL 数/耗时/WAL、数据库增长、事务持续时间及锁等待采样。
-采样不是逐事件锁轨迹，进程 RSS 不含 PostgreSQL；无固定耗时或无限存储承诺。统计扩展仅测试管理员可访问。
-该入口纳入完整 CI；独立 consumer、T1/T2、容量测试都不能替代真实 Windows/macOS T3。
-
 ## 失败诊断与恢复
 
 RSS 作出 Suspended 决定后，产品先在 `messaging::protect` 中保存任务失败
@@ -103,3 +58,5 @@ RSS 目标；提交未知沿原 claim/任务身份恢复，不把未知结果当
 后台固定输入中的损坏时间、游标、规则、事实或编码按内部存储失败处理，由 RSS 恢复策略处理，
 不把已接受任务误记为客户端 `invalid_input`。正常入口的非法输入仍按原请求错误返回。
 借用事务参考：[SQLx v0.8.6 transaction.rs](https://github.com/launchbadge/sqlx/blob/v0.8.6/sqlx-core/src/transaction.rs)。
+
+操作与分页见 [组、范围与计划](../guides/groups-scopes-policies.md)。容量目标须由独立性能验证给出证据，功能边界测试不作规模证明。

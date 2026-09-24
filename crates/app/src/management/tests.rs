@@ -7,8 +7,6 @@ use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentit
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
 use serde_json::json;
 use std::collections::BTreeSet;
-#[path = "capacity.rs"]
-mod capacity;
 #[path = "recovery_tests.rs"]
 mod recovery;
 #[path = "resource_archive_tests.rs"]

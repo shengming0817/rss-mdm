@@ -16,4 +16,12 @@ for test in sorted(EXPECTED):
             pg.verify_tests(result.stdout,{test})
         except Exception:
             failures.append(test)
+with pg.fixture(app=True) as (env, sql):
+    result = subprocess.run(['cargo', 'test', '--locked', '-p', 'rss-mdm-inventory-postgres', '--test', 'manual', '--', '--ignored'], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(result.stdout, flush=True)
+    try:
+        pg.require(result.returncode == 0, 'manual inventory T2 failed')
+        pg.verify_tests(result.stdout, {'public_manual_cas_rollback_and_tenant_isolation'})
+    except Exception:
+        failures.append('inventory/manual')
 pg.require(not failures,'management T2 failed: '+','.join(failures))

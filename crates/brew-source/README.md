@@ -1,5 +1,3 @@
 # rss-mdm-brew-source
 
-独立后端能力；公共 API 位于 `src/lib.rs`，公共消费测试位于 `tests/`。
-
-契约、支持矩阵、调用顺序、失败语义及证据边界见 [使用指南](../../docs/guides/202609090000-2383-resource-sources.md)。
+受控 Brew 文档与本地 Git 提交。公共契约由 [源码与 rustdoc](src/lib.rs) 持有，使用流程见 [任务指南](../../docs/guides/resources-and-software.md)。

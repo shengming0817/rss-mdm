@@ -25,7 +25,6 @@ EXPECTED = {
     "atomic_event_failure_rls_and_large_member_ids",
     "admitted_input_and_command_commit_unknown_recover_by_original_identity"}
 
-CONSUMER_TESTS = {"static_commands_replay_and_borrowed_rollback", "durable_recalculation_no_change_fences_stale_run"}
 
 def verify_tests(output, expected=EXPECTED):
     passed = set(re.findall(r'^test (\S+) \.\.\. ok$', output, re.MULTILINE))
@@ -33,7 +32,7 @@ def verify_tests(output, expected=EXPECTED):
     require(f'test result: ok. {len(expected)} passed; 0 failed; 0 ignored;' in output, 'Group T2 false green')
 
 @contextlib.contextmanager
-def fixture(migrations=None,metrics=False):
+def fixture(migrations=None):
     with tempfile.TemporaryDirectory(prefix='mdm-group-pg-') as directory:
         root = Path(directory)
         quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
@@ -46,14 +45,14 @@ def fixture(migrations=None,metrics=False):
         def sql(statement):
             return run(['docker','exec','-i',name,'psql','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','group_test'],input=statement,capture_output=True,timeout=30).stdout.strip()
         try:
-            run(['docker','run','-d','--rm','--name',name,'-p','127.0.0.1::5432','-v',f'{root}:/certs:ro','-e','POSTGRES_PASSWORD=admin-fixture','-e','POSTGRES_DB=group_test',IMAGE,'sh','-c','cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'+(' -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all' if metrics else '')],stdout=subprocess.DEVNULL,timeout=120)
+            run(['docker','run','-d','--rm','--name',name,'-p','127.0.0.1::5432','-v',f'{root}:/certs:ro','-e','POSTGRES_PASSWORD=admin-fixture','-e','POSTGRES_DB=group_test',IMAGE,'sh','-c','cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key'],stdout=subprocess.DEVNULL,timeout=120)
             until=time.monotonic()+45
             while True:
                 result=subprocess.run(['docker','exec',name,'pg_isready','-h','127.0.0.1','-U','postgres','-d','group_test'],capture_output=True,timeout=5)
                 if result.returncode==0: break
                 if time.monotonic()>until: raise RuntimeError('Group PG startup deadline')
                 time.sleep(.2)
-            if metrics: sql('CREATE SCHEMA capacity_metrics; REVOKE ALL ON SCHEMA capacity_metrics FROM PUBLIC; CREATE EXTENSION pg_stat_statements WITH SCHEMA capacity_metrics; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA capacity_metrics FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA capacity_metrics FROM PUBLIC;')
+
             port=int(run(['docker','port',name,'5432'],capture_output=True,timeout=5).stdout.strip().rsplit(':',1)[1])
             sql("CREATE ROLE rss_tmsg_relay NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; CREATE ROLE mdm_group_owner NOLOGIN NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_group_runtime LOGIN PASSWORD 'group-fixture' NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; GRANT CREATE ON DATABASE group_test TO mdm_group_owner; GRANT rss_tmsg_relay TO mdm_group_owner;")
             if migrations is None:
@@ -75,13 +74,9 @@ def main():
         print(result.stdout,flush=True)
         require(result.returncode==0,'Group PG behavioral suite failed')
         verify_tests(result.stdout)
-        consumer = subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--test','consumer','--','--ignored','--test-threads=1'], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        print(consumer.stdout, flush=True)
-        require(consumer.returncode == 0, 'Group public consumer failed')
-        verify_tests(consumer.stdout, CONSUMER_TESTS)
         generations = subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--test','generations','--','--ignored','--test-threads=1'], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(generations.stdout, flush=True)
         require(generations.returncode == 0, 'Group immutable generations failed')
-        verify_tests(generations.stdout, {'staged_pages_publish_atomically_and_replay_without_duplicate_members','static_patches_use_the_same_sealed_publication_and_preserve_old_sets'})
+        verify_tests(generations.stdout, {'staged_pages_publish_atomically_and_replay_without_duplicate_members','static_patches_use_the_same_sealed_publication_and_preserve_old_sets', 'static_commands_replay_and_borrowed_rollback', 'durable_recalculation_no_change_fences_stale_run'})
         print(json.dumps({'provider':IMAGE,'tls':'verify-full','tests':sorted(EXPECTED),'T3':'not run'}))
 if __name__=='__main__': main()

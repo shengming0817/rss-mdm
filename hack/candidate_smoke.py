@@ -13,13 +13,13 @@ import sys
 import tempfile
 import time
 import uuid
-from release import ROOT, oci_identity, platform, sha
-from t2 import INSTANCE, ADMIN, TENANTS, installation
+from release import sha
+from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 
 TENANT = TENANTS[0]
 PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 
-from candidate_runtime import Candidate, Stage, docker, require, wait, verify_source
+from candidate_runtime import Candidate, Stage, docker, failure_evidence, require, wait
 
 class Browser:
     def __init__(self, port, ca):
@@ -50,10 +50,11 @@ class Browser:
 def run_smoke(directory):
     with Candidate(directory, diagnostic_filename="smoke-failure.json") as deployed:
         manifest=deployed.manifest
-        revision=manifest["revision"];digest=manifest["archive"]["manifest_digest"];archive=directory/manifest["archive"]["file"]
+        digest=manifest["archive"]["manifest_digest"];archive=directory/manifest["archive"]["file"]
         pg,gateway,server=deployed.pg,deployed.gateway,deployed.server
         sql=deployed.sql
         browser=Browser(deployed.port,deployed.root/"ca.crt")
+        require(browser.call("GET", "/livez") == (200, {"alive": True}), "candidate liveness failed")
         tenant="/api/v2/tenants/"+TENANT
         require(browser.call("GET","/api/v1/authorization")[0]==401,"anonymous candidate accepted")
         require(browser.call("POST",tenant+"/login",dict(login="admin",password=PASSWORD))[0]==200,"local candidate login failed")
@@ -84,10 +85,9 @@ def run_smoke(directory):
         logs=docker("logs",server,stage=Stage.LOGS)
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
-        result=dict(revision=revision,candidate_sha256=sha(directory/"candidate.json"),ui=deployed.web,manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],dependencies=manifest["dependencies"],
+        result=dict(source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),ui=deployed.web,manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
                     checks=["migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
-    verify_source(revision)
     return result,logs+"\n"
 
 def smoke(directory):
@@ -105,9 +105,11 @@ def smoke(directory):
             staged_marker.write_text(json.dumps(result, indent=2) + "\n")
             os.replace(staged_log, log)
             os.replace(staged_marker, marker)
-    except BaseException:
+    except BaseException as error:
         marker.unlink(missing_ok=True)
         log.unlink(missing_ok=True)
+        if not (directory / "smoke-failure.json").exists():
+            failure_evidence(directory, [], set(), error)
         raise
     print("candidate smoke: " + str(directory / "smoke.json"))
 
