@@ -41,7 +41,7 @@ fn status(id: u32, command_ref: u32, command: CommandName, code: u16) -> Command
 }
 pub(crate) async fn report(
     service: &DeviceService,
-    access: &AccessStore,
+    access: &Database,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
 ) -> Result<Run> {
@@ -56,14 +56,14 @@ pub(crate) async fn report(
 }
 pub(crate) async fn report_statuses(
     service: &DeviceService,
-    access: &AccessStore,
+    access: &Database,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
     statuses: [u16; 2],
 ) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
     let mut tx = access.begin(&principal.tenant().to_string()).await?;
-    let scope = collection::revalidate(&mut tx, &principal).await?;
+    let scope = crate::device::store::revalidate(&mut tx, &principal).await?;
     let mut request = Message {
         header: Header {
             session_id: 1,
@@ -129,9 +129,13 @@ pub(crate) async fn report_statuses(
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
     audit.target(principal.device());
-    access.commit_audited(tx, &audit, None).await?;
+    crate::operations::commit_audited(access, tx, &audit, None).await?;
     audit.finalize(None);
-    Ok(access.collection(&scope, Some(id)).await?.unwrap())
+    Ok(
+        crate::collection::store::collection(access, &scope, Some(id))
+            .await?
+            .unwrap(),
+    )
 }
 pub(crate) async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownStack> {
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -159,7 +163,7 @@ pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run)
     .await??;
     Ok(())
 }
-async fn open(access: Arc<AccessStore>) -> Result<Arc<InventoryRuntime>> {
+async fn open(access: Arc<Database>) -> Result<Arc<InventoryRuntime>> {
     Ok(InventoryRuntime::fixture(
         options("mdm_runtime")?,
         access,
@@ -220,7 +224,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .await
             .is_err()
     );
-    let access = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
+    let access = Arc::new(Database::connect(options("mdm_access")?).await?);
     let service = Arc::new(DeviceService::new(access.clone(), A.into()));
     let admin = admin(A, "admin-a").await?;
     let credential = proof(A, Channel::Mdm, 121);
@@ -244,8 +248,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         "mdm.windows",
         corrupt_epoch,
     )?;
-    let read = access.collection(&corrupt_scope, Some(first.id)).await;
-    let pending = access.pending_reports(A).await;
+    let read = crate::collection::store::collection(&access, &corrupt_scope, Some(first.id)).await;
+    let pending = crate::collection::store::Delivery::new(access.clone())
+        .pending_reports(A)
+        .await;
     sqlx::query("UPDATE mdm_access.collection_runs SET epoch=$1::uuid WHERE tenant_id=$2::uuid AND id=$3::uuid")
         .bind(first.scope.epoch().as_str()).bind(A).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
     corrupt_root
@@ -259,7 +265,9 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let canonical = first.batch().unwrap().encode().to_vec();
     let runtime = open(access.clone()).await?;
     ensure!(runtime.inspect(&first).await?.receipt.is_none());
-    let reports = access.pending_reports(A).await?;
+    let reports = crate::collection::store::Delivery::new(access.clone())
+        .pending_reports(A)
+        .await?;
     let durable = reports
         .iter()
         .find(|r| r.batch().id().as_str() == first.id.to_string())
@@ -276,7 +284,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         .await?;
     ensure!(service.management_principal(&credential).await.is_err());
     let mut tx = access.begin(A).await?;
-    ensure!(collection::revalidate(&mut tx, &stale).await.is_err());
+    ensure!(
+        crate::device::store::revalidate(&mut tx, &stale)
+            .await
+            .is_err()
+    );
     tx.rollback().await?;
     #[cfg(feature = "integration")]
     {
@@ -306,7 +318,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             );
             ensure!(runtime.inspect(&first).await?.receipt.is_none());
             ensure!(
-                access
+                crate::collection::store::Delivery::new(access.clone())
                     .pending_reports(A)
                     .await?
                     .iter()
@@ -331,8 +343,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             && received.projection == crate::inventory_runtime::ProjectionStatus::Pending
     );
     ensure!(
-        access
-            .collection(&first.scope, Some(first.id))
+        crate::collection::store::collection(&access, &first.scope, Some(first.id))
             .await?
             .unwrap()
             .batch()
@@ -341,18 +352,18 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             == canonical
     );
     ensure!(
-        access
-            .collection(
-                &crate::device::scope(
-                    TenantId::parse(B)?,
-                    registration.registration,
-                    "mdm.windows",
-                    registration.epoch
-                )?,
-                Some(first.id)
-            )
-            .await?
-            .is_none()
+        crate::collection::store::collection(
+            &access,
+            &crate::device::scope(
+                TenantId::parse(B)?,
+                registration.registration,
+                "mdm.windows",
+                registration.epoch
+            )?,
+            Some(first.id)
+        )
+        .await?
+        .is_none()
     );
     // A process restart between receipt and projection uses the original journal and definition.
     runtime.close_fixture().await?;

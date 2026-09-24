@@ -144,23 +144,21 @@ async fn query_job(service: &Management, count: usize) -> Uuid {
         tenant()
     ));
     let task = Uuid::new_v4();
-    execute(
+    execute_asset(
         service,
-        &Command::Asset {
-            command: assets::Command::Search {
-                request: Operation {
-                    operation_id: task,
-                    expected_revision: 0,
-                    input: assets::Query::default(),
-                },
-                scope: assets::ReadScope {
-                    subject: prefix.to_string(),
-                    devices: Some(
-                        (1..=count)
-                            .map(|n| format!("resume-{prefix}-{n:04}"))
-                            .collect(),
-                    ),
-                },
+        &assets::Command::Search {
+            request: Operation {
+                operation_id: task,
+                expected_revision: 0,
+                input: assets::Query::default(),
+            },
+            scope: assets::ReadScope {
+                subject: prefix.to_string(),
+                devices: Some(
+                    (1..=count)
+                        .map(|n| format!("resume-{prefix}-{n:04}"))
+                        .collect(),
+                ),
             },
         },
     )
@@ -681,6 +679,7 @@ async fn frozen_device(service: &Management, device: &str, watermark: i64) -> Va
         .local_tx_with_context(tenant(), deadline(), service, move |m, tx| {
             Box::pin(async move {
                 let page = m
+                    .assets
                     .asset_page_in(
                         tx,
                         watermark,
@@ -731,18 +730,16 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
         "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{t}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','device.model','Old','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}'); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,'history',1,1024,decode('01','hex'),1,'{attempts}','pending')"
     ));
     let service = management(t).await;
-    let manual = |revision, input| Command::Asset {
-        command: assets::Command::Manual {
-            device: device.into(),
-            field: assets::FieldKey::IsLoaner,
-            owner: assets::Owner {
-                instance: "history".into(),
-                principal: "operator".into(),
-            },
-            change: operation(revision, input),
+    let manual = |revision, input| assets::Command::Manual {
+        device: device.into(),
+        field: assets::FieldKey::IsLoaner,
+        owner: assets::Owner {
+            instance: "history".into(),
+            principal: "operator".into(),
         },
+        change: operation(revision, input),
     };
-    execute(
+    execute_asset(
         &service,
         &manual(
             0,
@@ -801,7 +798,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     assert_eq!(changed["quality"][0]["fields"][0]["quality"], "failed");
     assert_eq!(changed["quality"][0]["fields"][0]["status"], 500);
     assert_eq!(frozen_device(&service, device, old_watermark).await, before);
-    execute(&service, &manual(2, assets::ManualChange::Delete {}))
+    execute_asset(&service, &manual(2, assets::ManualChange::Delete {}))
         .await
         .unwrap();
     sql(&format!(

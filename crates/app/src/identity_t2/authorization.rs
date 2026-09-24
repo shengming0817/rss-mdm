@@ -60,11 +60,14 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     );
     ensure!(member.login(&router, "authorization-member").await? == StatusCode::OK);
     let subject = browser_subject(&member, &router).await?;
-    let store = access_store(&base).await?;
+    let store = database(&base).await?;
     ensure!(matches!(
-        store
-            .initialize_authorization(crate::identity_fixture::user(TENANT, ADMIN), Uuid::new_v4())
-            .await,
+        crate::authorization::store::initialize_authorization(
+            &store,
+            crate::identity_fixture::user(TENANT, ADMIN),
+            Uuid::new_v4()
+        )
+        .await,
         Err(crate::Error::Conflict)
     ));
     ensure!(
@@ -329,9 +332,9 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     isolated.instance_id = Uuid::new_v4().to_string();
     let init_key = Uuid::new_v4();
     pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
-    let failed = store
-        .initialize_authorization(isolated.clone(), init_key)
-        .await;
+    let failed =
+        crate::authorization::store::initialize_authorization(&store, isolated.clone(), init_key)
+            .await;
     pg("GRANT INSERT ON mdm_access.audit TO mdm_access")?;
     ensure!(failed.is_err());
     for table in [
@@ -343,28 +346,33 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     }
     store.fail_next(2);
     ensure!(matches!(
-        store
-            .initialize_authorization(isolated.clone(), init_key)
+        crate::authorization::store::initialize_authorization(&store, isolated.clone(), init_key)
             .await,
         Err(crate::Error::CommitUnknown)
     ));
-    let initial = store
-        .initialize_authorization(isolated.clone(), init_key)
-        .await?;
+    let initial =
+        crate::authorization::store::initialize_authorization(&store, isolated.clone(), init_key)
+            .await?;
     // Simulate the persisted result of deleting the seed, without changing its marker/receipt.
     pg(&format!(
         "UPDATE mdm_access.authorization_rules SET revision=2,document=NULL WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'",
         isolated.instance_id, initial.id
     ))?;
-    let reopened = access_store(&base).await?;
-    let replayed = reopened
-        .initialize_authorization(isolated.clone(), init_key)
-        .await?;
+    let reopened = database(&base).await?;
+    let replayed = crate::authorization::store::initialize_authorization(
+        &reopened,
+        isolated.clone(),
+        init_key,
+    )
+    .await?;
     ensure!(replayed.id == initial.id && replayed.revision == initial.revision);
     ensure!(matches!(
-        reopened
-            .initialize_authorization(isolated.clone(), Uuid::new_v4())
-            .await,
+        crate::authorization::store::initialize_authorization(
+            &reopened,
+            isolated.clone(),
+            Uuid::new_v4()
+        )
+        .await,
         Err(crate::Error::Conflict)
     ));
     ensure!(pg(&format!("SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'", isolated.instance_id, initial.id))?.trim() == "t");
@@ -393,7 +401,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
             None,
         )
         .await?;
-    let reconnect = crate::AccessStore::connect(config.access_database.options()?).await;
+    let reconnect = crate::Database::connect(config.access_database.options()?).await;
     pg("GRANT SELECT ON mdm_access.authorization_rules TO mdm_access")?;
     ensure!(
         denied.0 == StatusCode::SERVICE_UNAVAILABLE
@@ -449,7 +457,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         .0 == StatusCode::OK
     );
     let identity = crate::identity_fixture::identity(TENANT).await?;
-    let stale = crate::identity::Principal::new(
+    let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
             .inspect_session(
@@ -477,7 +485,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     );
     let audit = crate::audit::Audit::new(TENANT.into(), "authorization_write");
     audit.identify(&stale);
-    let rejected = store.change_rule(&stale, Uuid::new_v4(), crate::authorization::Change {
+    let rejected = crate::authorization::store::change_rule(&store, &stale, Uuid::new_v4(), crate::authorization::Change {
         operation_id:Uuid::new_v4(), expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
     }, &audit).await;
     audit.finalize(None);
@@ -547,7 +555,10 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         anyhow::Ok(())
     };
     let (stalled, frozen) = tokio::join!(
-        tokio::time::timeout(Duration::from_secs(4), store.authorization_snapshot(&stale)),
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            crate::authorization::store::authorization_snapshot(&store, &stale)
+        ),
         freeze
     );
     frozen?;
@@ -567,5 +578,158 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     );
     tokio::time::timeout(Duration::from_secs(8), store.close()).await?;
     println!("MDM_DYNAMIC_AUTHORIZATION_PG_HTTP_PASSED");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "real Identity + PG with independently constructed capability routers"]
+async fn capability_routes_without_application_preserve_revocation_and_atomicity() -> Result<()> {
+    use crate::authorization::http::{AuthenticationState, HttpState};
+    use crate::enrollment::{EnrollmentService, credentials::Credentials};
+    use axum::middleware;
+    let config = crate::identity_fixture::config(TENANT)?;
+    let identity = Arc::new(crate::identity_fixture::identity(TENANT).await?);
+    let access =
+        Arc::new(crate::database::Database::connect(config.access_database.options()?).await?);
+    let monotonic: Arc<dyn rss_observation::Clock> = Arc::new(crate::Monotonic(|| {
+        rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+    }));
+    let requests = Arc::new(tokio::sync::Semaphore::new(4));
+    let authentication = Arc::new(AuthenticationState {
+        identity: identity.clone(),
+        access: access.clone(),
+        requests: requests.clone(),
+    });
+    let enrollment = Arc::new(crate::enrollment::http::HttpState {
+        service: Arc::new(EnrollmentService::new(
+            access.clone(),
+            Arc::new(Credentials::new(monotonic.clone(), 16)),
+        )),
+        devices: Arc::new(crate::device::DeviceService::new(
+            access.clone(),
+            TENANT.into(),
+        )),
+        apple: false,
+        windows: false,
+    });
+    let protected = Router::new()
+        .nest(
+            "/api/v1",
+            crate::authorization::http::routes().with_state(Arc::new(HttpState {
+                access: access.clone(),
+            })),
+        )
+        .nest(
+            "/api/v3",
+            crate::enrollment::http::routes().with_state(enrollment),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            authentication,
+            crate::authorization::http::protect,
+        ));
+    let router = protected
+        .merge(identity.routes())
+        .layer(middleware::from_fn_with_state(
+            crate::api::Envelope {
+                host: "mdm.example.test".into(),
+                clock: monotonic,
+                access: access.clone(),
+                requests,
+                tenant: TENANT.into(),
+            },
+            crate::api::envelope,
+        ));
+    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+        "127.0.0.1".parse()?,
+    )));
+    let mut anonymous = Browser::default();
+    ensure!(
+        anonymous
+            .call(&router, Method::GET, "/api/v1/authorization", None)
+            .await?
+            .0
+            == StatusCode::UNAUTHORIZED
+    );
+    let mut admin = Browser::default();
+    ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
+    ensure!(
+        admin
+            .call(
+                &router,
+                Method::POST,
+                &format!("/api/v2/tenants/{TENANT}/accounts"),
+                Some(json!({"login":"foundation-member","password":PASSWORD}))
+            )
+            .await?
+            .0
+            == StatusCode::CREATED
+    );
+    let mut member = Browser::default();
+    ensure!(member.login(&router, "foundation-member").await? == StatusCode::OK);
+    let subject = browser_subject(&member, &router).await?;
+    crate::identity_fixture::set_grants(
+        TENANT,
+        &subject,
+        crate::identity_fixture::device_grants(
+            Some("foundation-device"),
+            &["enrollment", "credentials"],
+        )?,
+    )
+    .await?;
+    let payload = json!({"deviceId":"foundation-device","password":crate::enrollment::random(),"source":"agent.builtin"});
+    member.operation = Some(Uuid::new_v4());
+    let created = member
+        .call(
+            &router,
+            Method::POST,
+            "/api/v3/enrollments",
+            Some(payload.clone()),
+        )
+        .await?;
+    ensure!(
+        created.0 == StatusCode::OK,
+        "enrollment creation: {created:?}"
+    );
+    let path = format!(
+        "/api/v3/enrollments/{}",
+        created.1["enrollmentId"].as_str().unwrap()
+    );
+    ensure!(
+        member
+            .call(
+                &router,
+                Method::POST,
+                "/api/v3/enrollments",
+                Some(payload.clone())
+            )
+            .await?
+            .1
+            == created.1
+    );
+    ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::OK);
+    // Failed audit rolls the lifecycle mutation back, even through the narrow router.
+    member.operation = Some(Uuid::new_v4());
+    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_access")?;
+    let rejected = member
+        .call(
+            &router,
+            Method::POST,
+            &format!("{path}/cancel"),
+            Some(json!({})),
+        )
+        .await;
+    pg("GRANT INSERT ON mdm_access.audit TO mdm_access")?;
+    ensure!(rejected?.0 == StatusCode::SERVICE_UNAVAILABLE);
+    ensure!(member.call(&router, Method::GET, &path, None).await?.1["status"] == "pending");
+    crate::identity_fixture::set_grants(TENANT, &subject, vec![]).await?;
+    ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(
+        member
+            .call(&router, Method::POST, "/api/v3/enrollments", Some(payload))
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    access.close().await;
     Ok(())
 }

@@ -1,12 +1,14 @@
 //! Strict Agent V2 HTTP adapter. Wire values never carry tenant, device or generation authority.
 
 use crate::{
-    AccessStore, Error, Failure,
-    access_store::{Actor, Operation, db},
-    api::{App, authenticate},
+    Error, Failure,
+    api::authenticate,
     audit::Audit,
+    database::db,
     device::{BindRegistration, VerifiedChannelCredential, store::bind_in},
     enrollment::Password,
+    operations::Actor,
+    operations::Operation,
 };
 use axum::{
     Extension, Json, Router,
@@ -22,14 +24,11 @@ use rss_observation::{Batch, Body, Change, Id};
 use rss_request_context::TenantId;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::Row;
 use std::{future::Future, sync::Arc, time::Duration};
 use uuid::Uuid;
-const MAX_PENDING_REPORTS_PER_REGISTRATION: i64 = 32;
 
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .merge(crate::commands::actions::http::agent_routes())
         .route("/registrations", post(register))
         .route("/reports", post(report))
         .route("/reports/{id}", get(status))
@@ -91,7 +90,6 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
 }
 
 pub(crate) async fn bounded<T>(
-    _app: &Arc<App>,
     work: impl Future<Output = Result<T, AgentError>>,
 ) -> Result<T, AgentError> {
     bounded_for(Duration::from_secs(8), work).await
@@ -110,17 +108,17 @@ pub(crate) fn ingress_error(code: wire::ErrorCode) -> Response {
 }
 
 async fn register(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::RegistrationReceipt>), AgentError> {
     json_content_type(&headers)?;
     let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(&app, register_inner(&app, &audit, body)).await
+    bounded(register_inner(&app, &audit, body)).await
 }
 async fn register_inner(
-    app: &App,
+    app: &HttpState,
     audit: &Audit,
     body: Bytes,
 ) -> Result<(StatusCode, Json<wire::RegistrationReceipt>), AgentError> {
@@ -128,18 +126,22 @@ async fn register_inner(
     audit.set_action("agent_registration");
     audit.operation(input.operation_id(), "agent_registration");
     let password = Password::new(input.password().expose().to_owned())?;
-    let auth = app
-        .access
-        .enrollment_authorization(
-            &app.identity.tenant.to_string(),
-            input.enrollment_id(),
-            &password,
-        )
-        .await?;
+    let auth = crate::enrollment::store::enrollment_authorization(
+        &app.access,
+        &app.identity.tenant.to_string(),
+        input.enrollment_id(),
+        &password,
+    )
+    .await?;
     if auth.source != InventorySource::AgentBuiltin {
         return Err(Error::Unauthorized.into());
     }
-    let proof = authenticate(app, app.credentials.get(auth.credential_ref)?).await?;
+    let proof = authenticate(
+        &app.identity,
+        &app.access,
+        app.credentials.get(auth.credential_ref)?,
+    )
+    .await?;
     if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
         return Err(Error::Unauthorized.into());
     }
@@ -161,12 +163,10 @@ async fn register_inner(
         digest: &digest,
     };
     let mut tx = app.access.begin(proof.tenant_id()).await?;
-    if let Some(old) = AccessStore::replay(&mut tx, &operation).await? {
+    if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
         let receipt: wire::RegistrationReceipt =
-            serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::AccessStore))?;
-        if app
-            .access
-            .active_registration(&mut tx, proof.tenant_id(), auth.id)
+            serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
+        if crate::enrollment::store::active_registration(&mut tx, proof.tenant_id(), auth.id)
             .await?
             != receipt.registration_id
         {
@@ -191,14 +191,15 @@ async fn register_inner(
     )
     .await?;
     let capabilities = serde_json::to_string(input.capabilities())
-        .map_err(|_| Error::Unavailable(Failure::AccessStore))?;
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,$3)")
-        .bind(proof.tenant_id()).bind(receipt.registration.to_string()).bind(capabilities).execute(&mut *tx).await.map_err(db)?;
-    let changed = sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND source='agent.builtin' AND password_version=$3 AND credential_ref=$4::uuid AND expires_at>clock_timestamp()")
-        .bind(proof.tenant_id()).bind(auth.id.to_string()).bind(auth.version).bind(auth.credential_ref.to_string()).execute(&mut *tx).await.map_err(db)?;
-    if changed.rows_affected() != 1 {
-        return Err(Error::Unauthorized.into());
-    }
+        .map_err(|_| Error::Unavailable(Failure::Database))?;
+    crate::device::store::bind_agent_in(
+        &mut tx,
+        proof.tenant_id(),
+        receipt.registration,
+        &capabilities,
+    )
+    .await?;
+    crate::enrollment::store::mark_bound_in(&mut tx, proof.tenant_id(), &auth, true).await?;
     proof.enrollment(&auth.device)?;
     audit.registration(receipt.registration);
     let output = wire::RegistrationReceipt {
@@ -209,42 +210,42 @@ async fn register_inner(
         generation: receipt
             .generation
             .try_into()
-            .map_err(|_| Error::Unavailable(Failure::AccessStore))?,
+            .map_err(|_| Error::Unavailable(Failure::Database))?,
         source: wire::ReportSource::AgentBuiltin,
         epoch: receipt.epoch,
         capabilities: input.capabilities().to_vec(),
     };
-    app.access
-        .finish_status(
-            tx,
-            &operation,
-            &serde_json::to_string(&output).expect("closed receipt"),
-            audit,
-            Some(auth.id),
-            201,
-        )
-        .await?;
+    crate::operations::finish_status(
+        &app.access,
+        tx,
+        &operation,
+        &serde_json::to_string(&output).expect("closed receipt"),
+        audit,
+        Some(auth.id),
+        201,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(output)))
 }
 
 async fn report(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
     json_content_type(&headers)?;
     let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(&app, report_inner(&app, &audit, &headers, body)).await
+    bounded(report_inner(&app, &audit, &headers, body)).await
 }
 async fn report_inner(
-    app: &App,
+    app: &HttpState,
     audit: &Audit,
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
     let input = parse_report(&body)?;
-    let credential = agent_credential(app, headers)?;
+    let credential = agent_credential(app.identity.tenant, headers)?;
     let (principal, scope) = app
         .devices
         .authorize_report(&credential, InventorySource::AgentBuiltin)
@@ -254,63 +255,17 @@ async fn report_inner(
     audit.registration(principal.registration());
     audit.target(principal.device());
     let batch = batch(&input)?;
-    let digest = fingerprint(&batch, &scope)?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
-    let live_scope =
-        crate::collection::revalidate_source(&mut tx, &principal, InventorySource::AgentBuiltin)
-            .await?;
-    if live_scope != scope {
-        return Err(Error::Unauthorized.into());
-    }
-    // V1 report ids are tenant-global. This lock covers the absent-row case across registrations;
-    // revalidate_source already holds the channel lock that serializes capacity and retention.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2467))")
-        .bind(format!("{}:{}", principal.tenant(), input.report_id()))
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
-    if let Some(row) = sqlx::query("SELECT registration::text,source,epoch::text,digest,sealed_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR SHARE")
-        .bind(principal.tenant().to_string()).bind(input.report_id().to_string()).fetch_optional(&mut *tx).await.map_err(db)? {
-        if row.try_get::<String, _>("registration").map_err(db)? != principal.registration().to_string()
-            || row.try_get::<String, _>("source").map_err(db)? != InventorySource::AgentBuiltin.as_str()
-            || row.try_get::<String, _>("epoch").map_err(db)? != scope.epoch().as_str()
-            || row.try_get::<String, _>("digest").map_err(db)? != digest {
-            return Err(Error::Conflict.into());
-        }
-        let ack = ack(input.report_id(), row.try_get("sealed_at").map_err(db)?);
+    let (received_at, fresh) =
+        crate::collection::agent::accept_in(&mut tx, &principal, &scope, &input, &batch).await?;
+    if !fresh {
         tx.rollback().await.map_err(db)?;
-        return Ok((StatusCode::ACCEPTED, Json(ack)));
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(ack(input.report_id(), received_at)),
+        ));
     }
-    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND delivery_pending")
-        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
-    if pending >= MAX_PENDING_REPORTS_PER_REGISTRATION {
-        return Err(Error::Unavailable(Failure::Capacity).into());
-    }
-    let _: i64 = sqlx::query_scalar("SELECT mdm_access.prune_agent_collections($1::uuid,$2::uuid)")
-        .bind(principal.registration().to_string())
-        .bind(scope.epoch().as_str())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-    let received_at: i64 =
-        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
-    let result = match input.body() {
-        wire::ReportBody::Snapshot(_) => "snapshot",
-        wire::ReportBody::Partial(_) => "partial",
-        wire::ReportBody::Failed { .. } => "failed",
-    };
-    let attempts = crate::collection::Attempts::agent(input.body(), received_at)?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,NULL,NULL,NULL,NULL,$9,$11,$10,'complete',$7,$8,$9,true)")
-        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(input.report_id().to_string())
-        .bind(i64::try_from(input.sequence()).map_err(|_| Error::Malformed)?).bind(scope.encode().map_err(|_| Error::Malformed)?)
-        .bind(batch.encode()).bind(&digest).bind(received_at).bind(result)
-        .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
-    app.access
-        .commit_audited_status(tx, audit, None, 202)
-        .await?;
+    crate::operations::commit_audited_status(&app.access, tx, audit, None, 202).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(ack(input.report_id(), received_at)),
@@ -318,17 +273,17 @@ async fn report_inner(
 }
 
 async fn status(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     let id =
         Uuid::parse_str(&id).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(&app, status_inner(&app, &audit, &headers, id)).await
+    bounded(status_inner(&app, &audit, &headers, id)).await
 }
 async fn status_inner(
-    app: &App,
+    app: &HttpState,
     audit: &Audit,
     headers: &HeaderMap,
     id: Uuid,
@@ -336,7 +291,7 @@ async fn status_inner(
     if id.is_nil() {
         return Err(Error::Malformed.into());
     }
-    let credential = agent_credential(app, headers)?;
+    let credential = agent_credential(app.identity.tenant, headers)?;
     let (principal, scope) = app
         .devices
         .authorize_report(&credential, InventorySource::AgentBuiltin)
@@ -347,12 +302,12 @@ async fn status_inner(
     audit.target(principal.device());
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     let live_scope =
-        crate::collection::revalidate_source(&mut tx, &principal, InventorySource::AgentBuiltin)
+        crate::device::store::revalidate_source(&mut tx, &principal, InventorySource::AgentBuiltin)
             .await?;
     if live_scope != scope {
         return Err(Error::Unauthorized.into());
     }
-    let (report, received_at) = AccessStore::agent_report_in(&mut tx, &scope, id)
+    let (report, received_at) = crate::collection::store::agent_report_in(&mut tx, &scope, id)
         .await?
         .ok_or(AgentError::Wire(wire::ErrorCode::ReportNotFound))?;
     tx.commit().await.map_err(db)?;
@@ -432,7 +387,7 @@ fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
 }
 pub(crate) fn agent_credential(
-    app: &App,
+    tenant: TenantId,
     headers: &HeaderMap,
 ) -> Result<VerifiedChannelCredential, AgentError> {
     if headers.get_all(header::AUTHORIZATION).iter().count() != 1 {
@@ -447,10 +402,7 @@ pub(crate) fn agent_credential(
         return Err(Error::Unauthorized.into());
     }
     let secret = wire::Secret::parse(secret).map_err(|_| Error::Unauthorized)?;
-    Ok(VerifiedChannelCredential::agent(
-        TenantId::parse(&app.identity.tenant.to_string()).map_err(|_| Error::Unauthorized)?,
-        &secret,
-    ))
+    Ok(VerifiedChannelCredential::agent(tenant, &secret))
 }
 fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
     let changes = input
@@ -494,11 +446,7 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
     )
     .map_err(|_| Error::Malformed.into())
 }
-fn fingerprint(batch: &Batch, scope: &rss_observation::Scope) -> Result<String, AgentError> {
-    Ok(hex(batch
-        .fingerprint(scope)
-        .map_err(|_| Error::Malformed)?))
-}
+
 fn hex(bytes: impl AsRef<[u8]>) -> String {
     bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -523,6 +471,20 @@ fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
         report_id,
         received_at,
         intake: wire::IntakeStatus::Durable,
+    }
+}
+
+pub(crate) struct HttpState {
+    pub(crate) access: std::sync::Arc<crate::database::Database>,
+    pub(crate) identity: std::sync::Arc<crate::identity::Identity>,
+    pub(crate) credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
+    pub(crate) devices: std::sync::Arc<crate::device::DeviceService>,
+    pub(crate) collection: std::sync::Arc<crate::management::assets::collection::CollectionService>,
+}
+
+impl From<crate::enrollment::EnrollmentError> for AgentError {
+    fn from(error: crate::enrollment::EnrollmentError) -> Self {
+        Error::from(error).into()
     }
 }
 

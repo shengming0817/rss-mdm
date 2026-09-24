@@ -192,7 +192,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     pg(&format!(
         "UPDATE mdm_access.credentials SET locator=repeat('79',32) WHERE registration='{registration}'"
     ))?;
-    let access = access_store(base).await?;
+    let access = database(base).await?;
     let service = crate::device::DeviceService::new(access.clone(), TENANT.into());
     let proof = crate::device::tests::proof(TENANT, rss_mdm_inventory::Channel::Mdm, 121);
     let config: Config = serde_json::from_value(base.clone())?;

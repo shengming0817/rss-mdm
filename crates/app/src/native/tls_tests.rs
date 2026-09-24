@@ -114,7 +114,7 @@ async fn actual_rss_connection_failures_are_visible_without_payloads() {
 }
 
 pub(crate) async fn verify_tls_lifecycle(
-    access: Arc<AccessStore>,
+    access: Arc<Database>,
     tls: Arc<rustls::ServerConfig>,
     root: &std::path::Path,
 ) -> anyhow::Result<()> {

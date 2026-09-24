@@ -90,7 +90,7 @@ pub enum Failure {
     IdentityDeadline,
     IdentityProtocol,
     InventoryPool,
-    AccessStore,
+    Database,
     AccessAdmission,
     Audit,
     InventoryQuery,

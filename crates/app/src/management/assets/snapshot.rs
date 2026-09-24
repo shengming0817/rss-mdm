@@ -7,7 +7,7 @@ pub(in crate::management) struct AssetPage {
     pub devices: Vec<DeviceView>,
     pub next: Option<String>,
 }
-impl Management {
+impl AssetService {
     pub(in crate::management) async fn live_devices_at_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -22,27 +22,7 @@ impl Management {
         let rows: Vec<String> = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query_scalar(
-                        r#"
-                WITH latest AS (
-                    SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
-                    FROM mdm_access.asset_authority_history
-                    WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
-                      AND kind IN('registration','credential','source')
-                    ORDER BY kind,identity,revision DESC
-                ), live AS (
-                    SELECT device,registration FROM latest GROUP BY device,registration
-                    HAVING bool_or(kind='registration' AND document->>'state'='active')
-                       AND bool_or(kind='credential' AND document->>'state'='active')
-                       AND bool_or(kind='source' AND document->>'enabled'='true')
-                ) SELECT DISTINCT device FROM live
-            "#,
-                    )
-                    .bind(tenant)
-                    .bind(devices)
-                    .bind(watermark)
-                    .fetch_all(c)
-                    .await
+                    crate::device::read::live_at(c, tenant, devices, watermark).await
                 })
             })
             .await?;
@@ -70,26 +50,15 @@ impl Management {
         let mut ids: Vec<String> = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query_scalar(
-                        r#"
-              WITH latest AS (
-                SELECT DISTINCT ON(identity COLLATE "C") identity,document
-                FROM mdm_access.asset_authority_history
-                WHERE tenant_id=$1::uuid AND kind='device' AND revision<=$2
-                  AND identity COLLATE "C">coalesce($3::text,'') COLLATE "C"
-                  AND ($4 OR identity=ANY($5))
-                ORDER BY identity COLLATE "C",revision DESC
-              ) SELECT identity FROM latest WHERE document IS NOT NULL
-                ORDER BY identity COLLATE "C" LIMIT $6
-            "#,
+                    crate::device::read::page_at(
+                        c,
+                        tenant,
+                        watermark,
+                        after,
+                        all,
+                        allowed,
+                        (limit + 1) as i64,
                     )
-                    .bind(tenant)
-                    .bind(watermark)
-                    .bind(after)
-                    .bind(all)
-                    .bind(allowed)
-                    .bind((limit + 1) as i64)
-                    .fetch_all(c)
                     .await
                 })
             })
@@ -124,23 +93,13 @@ impl Management {
             .collect();
         let tenant = self.tenant.to_string();
         let selected = ids.to_vec();
-        let rows = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query(r#"
-              WITH latest AS (
-                SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
-                FROM mdm_access.asset_authority_history
-                WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
-                  AND kind IN('registration','credential','source')
-                ORDER BY kind,identity,revision DESC
-              ) SELECT r.device,r.identity AS registration,r.document->>'generation' AS generation,
-                  r.document->>'channel' AS channel,s.document->>'source' AS source,s.document->>'epoch' AS epoch
-                FROM latest r JOIN latest s ON s.registration=r.registration AND s.kind='source'
-                JOIN latest c ON c.registration=r.registration AND c.kind='credential'
-                WHERE r.kind='registration' AND r.document->>'state'='active'
-                  AND c.document->>'state'='active' AND s.document->>'enabled'='true'
-                ORDER BY r.device,s.identity LIMIT 2001
-            "#).bind(tenant).bind(selected).bind(watermark).fetch_all(c).await
-        })).await?;
+        let rows = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    crate::device::read::sources_at(c, tenant, selected, watermark).await
+                })
+            })
+            .await?;
         if rows.len() > 2000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
@@ -222,24 +181,7 @@ impl Management {
         let quality = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query(
-                        r#"
-                WITH latest AS (
-                  SELECT DISTINCT ON(scope,run) scope,sequence,run,document
-                  FROM mdm_access.collection_history
-                  WHERE tenant_id=$1::uuid AND scope=ANY($2) AND revision<=$3
-                  ORDER BY scope,run,revision DESC
-                ) SELECT DISTINCT ON(scope) scope,sequence,run::text AS id,
-                    document->>'result' AS result,document->>'attempts' AS attempts,
-                    (document->>'delivery_pending')::boolean AS delivery_pending
-                  FROM latest WHERE document IS NOT NULL ORDER BY scope,sequence DESC,run DESC
-            "#,
-                    )
-                    .bind(tenant)
-                    .bind(keys)
-                    .bind(watermark)
-                    .fetch_all(c)
-                    .await
+                    crate::collection::read::quality_at(c, tenant, keys, watermark).await
                 })
             })
             .await?;

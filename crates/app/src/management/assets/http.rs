@@ -1,6 +1,6 @@
 use super::*;
-use crate::api::{App, RequestAuth};
 use crate::authorization::Permission;
+use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query as Params, State},
@@ -20,7 +20,7 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
     v.map(|v| v.0).map_err(|_| Error::Malformed)
 }
 
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/asset-fields", get(fields))
         .route("/device-queries", post(search))
@@ -62,7 +62,7 @@ fn authorize(auth: &RequestAuth, command: &Command) -> std::result::Result<(), E
     }
 }
 async fn run(
-    app: &App,
+    app: &HttpState,
     auth: &RequestAuth,
     audit: &Audit,
     command: Command,
@@ -87,14 +87,8 @@ async fn run(
     }
     authorize(auth, &command)?;
     let value = app
-        .management
-        .execute(
-            &super::super::Command::Asset {
-                command: command.clone(),
-            },
-            audit,
-            &|| authorize(auth, &command),
-        )
+        .assets
+        .execute(&command, audit, &|| authorize(auth, &command))
         .await?;
     let envelope: AssetEnvelope = serde_json::from_value(value)
         .map_err(|_| Error::Unavailable(Failure::ManagementStorage))?;
@@ -106,7 +100,7 @@ async fn run(
     Ok((status, Json(envelope)).into_response())
 }
 async fn fields(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
 ) -> std::result::Result<HttpResponse, Error> {
@@ -119,7 +113,7 @@ struct Page {
     limit: Option<usize>,
 }
 async fn search(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     payload: BodyInput<Operation<Query>>,
@@ -132,7 +126,7 @@ async fn search(
 #[serde(deny_unknown_fields)]
 struct Empty {}
 async fn detail(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(device): Path<String>,
@@ -143,7 +137,7 @@ async fn detail(
     run(&app, &auth, &audit, Command::Detail { device, scope }).await
 }
 async fn manual(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((device, key)): Path<(String, String)>,
@@ -170,7 +164,7 @@ struct After {
     after: Option<Uuid>,
 }
 async fn saved_list(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     parameters: ParamInput<After>,
@@ -188,7 +182,7 @@ async fn saved_list(
     .await
 }
 async fn saved_read(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -205,7 +199,7 @@ async fn saved_read(
     .await
 }
 async fn saved_write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -225,7 +219,7 @@ async fn saved_write(
     .await
 }
 async fn saved_execute(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -248,7 +242,7 @@ async fn saved_execute(
 }
 
 async fn query_status(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(task): Path<Uuid>,
@@ -265,7 +259,7 @@ async fn query_status(
     .await
 }
 async fn query_items(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(task): Path<Uuid>,
@@ -286,7 +280,7 @@ async fn query_items(
     .await
 }
 async fn query_facets(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((task, facet)): Path<(Uuid, Facet)>,
@@ -306,4 +300,8 @@ async fn query_facets(
         },
     )
     .await
+}
+
+pub(crate) struct HttpState {
+    pub(crate) assets: std::sync::Arc<super::AssetService>,
 }

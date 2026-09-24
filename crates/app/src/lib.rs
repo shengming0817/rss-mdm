@@ -2,16 +2,16 @@
 //! Embedded authentication assembly and product-owned device/resource authorization.
 #[cfg(test)]
 extern crate self as rss_mdm_app;
-mod access;
-mod access_store;
 mod audit;
 pub mod authorization;
 mod collection;
 mod commands;
+mod database;
 pub mod device;
 mod enrollment;
 mod inventory_runtime;
 mod management;
+mod operations;
 #[cfg(test)]
 #[allow(
     dead_code,
@@ -19,16 +19,17 @@ mod management;
 )]
 #[path = "../tests/publication_support/mod.rs"]
 mod publication_support;
-pub use access_store::AccessStore;
+mod registration_lifecycle;
+use database::Database;
 pub use management::Missing as ManagementObject;
 mod diagnostic;
+mod error_projection;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 mod agent;
 mod api;
 mod apple;
 mod clock;
 pub mod config;
-mod enrollment_credentials;
 mod identity;
 #[cfg(test)]
 mod identity_fixture;

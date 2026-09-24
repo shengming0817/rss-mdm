@@ -17,7 +17,7 @@ pub(super) async fn verify(
     router: &Router,
     admin: &mut Browser,
     member: &mut Browser,
-    store: &crate::AccessStore,
+    store: &crate::Database,
 ) -> Result<()> {
     let id = Uuid::new_v4();
     let path = format!("/api/v1/authorization/user-groups/{id}");
@@ -250,7 +250,12 @@ pub(super) async fn verify(
         let outcome = crate::authorization::bounded_initialization(
             &audit,
             deadline,
-            store.initialize_authorization_audited(user.clone(), key, &audit),
+            crate::authorization::store::initialize_authorization_audited(
+                store,
+                user.clone(),
+                key,
+                &audit,
+            ),
         )
         .await;
         audit.finalize(Some(crate::audit::FailureReason::Transaction));
@@ -260,8 +265,14 @@ pub(super) async fn verify(
             user.instance_id
         ))?;
         ensure!(durable.trim() == if fault == 4 { "1" } else { "0" });
-        let receipt = store.initialize_authorization(user.clone(), key).await?;
-        ensure!(store.initialize_authorization(user, key).await?.id == receipt.id);
+        let receipt =
+            crate::authorization::store::initialize_authorization(store, user.clone(), key).await?;
+        ensure!(
+            crate::authorization::store::initialize_authorization(store, user, key)
+                .await?
+                .id
+                == receipt.id
+        );
     }
     let audit = crate::audit::Audit::new(TENANT.into(), "authorization_initialize");
     let deadline = rss_request_context::Deadline::from_timeout(

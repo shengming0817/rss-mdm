@@ -5,7 +5,7 @@ mod config;
 pub(crate) mod configuration;
 pub(crate) mod execution;
 mod groups;
-mod http;
+pub(crate) mod http;
 pub(crate) mod model;
 mod pages;
 mod plans;
@@ -13,6 +13,7 @@ mod publications;
 mod resources;
 mod scopes;
 mod storage;
+mod transaction;
 mod wire;
 use crate::{Error, Failure, audit::Audit};
 pub(crate) use config::Config;
@@ -31,6 +32,7 @@ pub(crate) struct Management {
     pub(crate) automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     runtime: Arc<PgRuntime>,
     asset_cursor_key: ring::hmac::Key,
+    pub(crate) assets: Arc<assets::AssetService>,
     tenant: TenantId,
     clock: Arc<dyn crate::clock::Clock>,
     groups: rss_mdm_group_postgres::GroupStore,
@@ -91,6 +93,12 @@ impl Management {
         Ok(Self {
             automation_task: std::sync::OnceLock::new(),
             asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+            assets: Arc::new(assets::AssetService::new(
+                runtime.clone(),
+                tenant,
+                clock.clone(),
+                &key,
+            )),
             runtime,
             tenant,
             clock,
@@ -110,75 +118,28 @@ impl Management {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
-        let failure = std::sync::Mutex::new(None);
-        let attempt = self
-            .runtime
-            .local_tx_with_context(
-                self.tenant,
-                deadline(),
-                (self, command, audit, &failure, authorize),
-                |(s, command, audit, failure, authorize), tx| {
-                    Box::pin(async move {
-                        let partitions = match command {
-                            Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
-                            Command::Resource { id, .. } => vec![s.resources.partition(id)?],
-                            Command::Policy { id, .. } | Command::Save { id, .. } => {
-                                vec![s.policies.partition(id)?]
-                            }
-                            _ => Vec::new(),
-                        };
-                        tx.prepare_outbox_partitions(&partitions).await?;
-                        match s.execute_in(tx, command, audit, authorize).await {
-                            Ok(v) => {
-                                audit.mark_commit_started();
-                                Ok(v)
-                            }
-                            Err(e) => {
-                                let (reason, db) = match e {
-                                    Fault::Request(e) => (
-                                        e,
-                                        sqlx::Error::Protocol("management rejected".into()).into(),
-                                    ),
-                                    Fault::Storage(e) => {
-                                        (Error::Unavailable(Failure::ManagementStorage), e)
-                                    }
-                                    Fault::Sql(e) => {
-                                        let reason = if e
-                                            .as_database_error()
-                                            .and_then(|d| d.code())
-                                            .is_some_and(|c| c == "40001" || c == "40P01")
-                                        {
-                                            Error::Conflict
-                                        } else {
-                                            Error::Unavailable(Failure::Runtime)
-                                        };
-                                        (reason, e.into())
-                                    }
-                                };
-                                *failure.lock().expect("request failure lock") = Some(reason);
-                                Err(db)
-                            }
+        transaction::run(
+            &self.runtime,
+            self.tenant,
+            audit,
+            &(self, command, audit, authorize),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (s, command, audit, authorize) = *ctx;
+                    let partitions = match command {
+                        Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
+                        Command::Resource { id, .. } => vec![s.resources.partition(id)?],
+                        Command::Policy { id, .. } | Command::Save { id, .. } => {
+                            vec![s.policies.partition(id)?]
                         }
-                    })
-                },
-            )
-            .await;
-        attempt.fold(
-            |v| {
-                audit.mark_committed();
-                Ok(v)
+                        _ => Vec::new(),
+                    };
+                    tx.prepare_outbox_partitions(&partitions).await?;
+                    s.execute_in(tx, command, audit, authorize).await
+                })
             },
-            |_| Err(Error::Unavailable(Failure::Runtime)),
-            |_| {
-                Err(failure
-                    .into_inner()
-                    .expect("request failure lock")
-                    .unwrap_or(Error::Unavailable(Failure::Runtime)))
-            },
-            |_| Err(Error::CommitUnknown),
-            |_| Err(Error::CommitUnknown),
-            |_| Err(Error::Unavailable(Failure::Runtime)),
         )
+        .await
     }
     async fn execute_in(
         &self,
@@ -230,7 +191,6 @@ impl Management {
         at: Timepoint,
     ) -> Result<Value> {
         match command {
-            Command::Asset { command } => self.asset_dispatch(tx, command, at).await,
             Command::PublicationIntent { .. } => Ok(serde_json::json!({"as_of":at.unix_seconds()})),
             Command::Resource { id, change } => self.resource_change(tx, id, change, at).await,
             Command::ResourceRead { id } => self.resource_read(tx, id).await,
@@ -293,9 +253,6 @@ impl Management {
 #[derive(serde::Serialize)]
 #[serde(tag = "kind")]
 enum Command {
-    Asset {
-        command: assets::Command,
-    },
     PublicationIntent {
         source: String,
         id: String,
@@ -388,4 +345,16 @@ fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>
         rss_mdm_group_postgres::Rejection::InvalidInput => Error::Malformed.into(),
         _ => Error::Conflict.into(),
     })
+}
+
+impl From<crate::authorization::error::AuthorizationError> for Fault {
+    fn from(error: crate::authorization::error::AuthorizationError) -> Self {
+        Error::from(error).into()
+    }
+}
+
+impl From<crate::device::DeviceError> for Fault {
+    fn from(error: crate::device::DeviceError) -> Self {
+        Error::from(error).into()
+    }
 }

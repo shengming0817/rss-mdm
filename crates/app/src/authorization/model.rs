@@ -1,4 +1,4 @@
-use crate::Error;
+use super::error::AuthorizationError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -99,12 +99,12 @@ pub struct Grant {
     pub scope: Scope,
 }
 impl Grant {
-    pub(crate) fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), AuthorizationError> {
         if self.operation.device() == matches!(self.scope, Scope::Tenant) {
-            return Err(Error::Malformed);
+            return Err(AuthorizationError::Malformed);
         }
         if let Scope::Device { id } = &self.scope {
-            rss_observation::Id::new(id).map_err(|_| Error::Malformed)?;
+            rss_observation::Id::new(id).map_err(|_| AuthorizationError::Malformed)?;
         }
         Ok(())
     }
@@ -125,9 +125,9 @@ pub struct User {
     pub principal_id: String,
 }
 impl User {
-    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), Error> {
+    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
         if self.tenant_id != tenant || self.instance_id != instance {
-            return Err(Error::Malformed);
+            return Err(AuthorizationError::Malformed);
         }
         canonical_uuid(&self.principal_id)?;
         Ok(())
@@ -141,13 +141,13 @@ pub struct Source {
     pub configuration_version: i64,
 }
 impl Source {
-    fn validate(&self) -> Result<(), Error> {
+    fn validate(&self) -> Result<(), AuthorizationError> {
         if self.provider_id.is_nil() || self.configuration_version < 1 {
-            return Err(Error::Malformed);
+            return Err(AuthorizationError::Malformed);
         }
-        crate::config::https_url(&self.issuer).map_err(|_| Error::Malformed)?;
+        crate::config::https_url(&self.issuer).map_err(|_| AuthorizationError::Malformed)?;
         if self.issuer.len() > 2048 {
-            return Err(Error::Malformed);
+            return Err(AuthorizationError::Malformed);
         }
         Ok(())
     }
@@ -194,23 +194,23 @@ pub struct Rule {
     pub grants: Vec<Grant>,
 }
 impl Rule {
-    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), Error> {
+    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
         match &self.subject {
             Subject::User { user } => user.validate(tenant, instance)?,
             Subject::IdpGroup { source, id } | Subject::Department { source, id, .. } => {
                 source.validate()?;
                 exact_id(id)?;
             }
-            Subject::UserGroup { id } if id.is_nil() => return Err(Error::Malformed),
+            Subject::UserGroup { id } if id.is_nil() => return Err(AuthorizationError::Malformed),
             Subject::UserGroup { .. } => {}
         }
         if self.grants.is_empty() || self.grants.len() > 256 {
-            return Err(Error::Malformed);
+            return Err(AuthorizationError::Malformed);
         }
         for (index, grant) in self.grants.iter().enumerate() {
             grant.validate()?;
             if self.grants[..index].contains(grant) {
-                return Err(Error::Malformed);
+                return Err(AuthorizationError::Malformed);
             }
         }
         Ok(())
@@ -224,16 +224,16 @@ pub struct UserGroup {
     pub members: Vec<User>,
 }
 impl UserGroup {
-    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), Error> {
+    pub(crate) fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
         exact_id(&self.name)?;
         if self.members.len() > 10000 {
-            return Err(Error::Malformed);
+            return Err(AuthorizationError::Malformed);
         }
         let mut unique = std::collections::BTreeSet::new();
         for member in &self.members {
             member.validate(tenant, instance)?;
             if !unique.insert(member) {
-                return Err(Error::Malformed);
+                return Err(AuthorizationError::Malformed);
             }
         }
         Ok(())
@@ -264,20 +264,20 @@ pub struct Receipt {
     pub revision: u64,
     pub deleted: bool,
 }
-pub(crate) fn exact_id(value: &str) -> Result<(), Error> {
+pub(crate) fn exact_id(value: &str) -> Result<(), AuthorizationError> {
     if value.is_empty()
         || value.len() > 256
         || value.trim() != value
         || value.chars().any(char::is_control)
     {
-        return Err(Error::Malformed);
+        return Err(AuthorizationError::Malformed);
     }
     Ok(())
 }
-pub(crate) fn canonical_uuid(value: &str) -> Result<(), Error> {
-    let id = Uuid::parse_str(value).map_err(|_| Error::Malformed)?;
+pub(crate) fn canonical_uuid(value: &str) -> Result<(), AuthorizationError> {
+    let id = Uuid::parse_str(value).map_err(|_| AuthorizationError::Malformed)?;
     if id.is_nil() || id.to_string() != value {
-        return Err(Error::Malformed);
+        return Err(AuthorizationError::Malformed);
     }
     Ok(())
 }

@@ -74,7 +74,7 @@ pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit, status: u16
         .map_or("success", |r| r.audit_tag());
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(crate::access_store::append_on_connection(c, &audit, status, outcome, None).await)
+            Ok(crate::audit::append_on_connection(c, &audit, status, outcome, None).await)
         })
     })
     .await??;
@@ -82,7 +82,7 @@ pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit, status: u16
 }
 pub(super) async fn authorized(
     tx: &mut PgTransaction<'_>,
-    proof: &crate::identity::Principal,
+    proof: &crate::authorization::context::AuthorizedPrincipal,
     device: &str,
     permission: crate::authorization::Permission,
 ) -> Result<crate::authorization::Snapshot> {

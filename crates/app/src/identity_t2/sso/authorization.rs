@@ -263,7 +263,7 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
     );
     // A proof's own deadline removes every capability, including direct-user and local-group grants.
     let identity = crate::identity_fixture::identity(TENANT).await?;
-    let access = crate::AccessStore::connect(
+    let access = crate::Database::connect(
         crate::identity_fixture::config(TENANT)?
             .access_database
             .options()?,
@@ -282,7 +282,7 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
             ),
         )
         .await?;
-    let proof = crate::identity::Principal::new(session)?
+    let proof = crate::authorization::context::AuthorizedPrincipal::new(session)?
         .load_authorization(&access)
         .await?;
     tokio::time::sleep(Duration::from_millis(300)).await;

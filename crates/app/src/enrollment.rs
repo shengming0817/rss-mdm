@@ -1,4 +1,8 @@
 //! Enrollment is the single lifecycle owner; the grant retains immutable authorization origin.
+pub(crate) mod admission;
+pub(crate) mod credentials;
+pub(crate) mod http;
+pub(crate) mod protocol;
 pub(crate) mod read;
 pub(crate) mod store;
 use crate::Error;
@@ -28,15 +32,15 @@ impl Password {
     pub(crate) fn expose(&self) -> &str {
         self.0.as_str()
     }
-    pub(crate) fn new(value: String) -> Result<Self, Error> {
+    pub(crate) fn new(value: String) -> Result<Self, EnrollmentError> {
         if !valid(&value) {
-            return Err(Error::Malformed);
+            return Err(EnrollmentError::InvalidPassword);
         }
         Ok(Self(Zeroizing::new(value)))
     }
-    pub(crate) fn digest(&self, tenant: &str, device: &str) -> Result<String, Error> {
+    pub(crate) fn digest(&self, tenant: &str, device: &str) -> Result<String, EnrollmentError> {
         if !valid(&self.0) {
-            return Err(Error::Malformed);
+            return Err(EnrollmentError::InvalidPassword);
         }
         Ok(digest(&(
             "mdm.enrollment.password.v1",
@@ -145,5 +149,76 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<Create>(value).is_err());
         }
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub(crate) enum EnrollmentError {
+    #[error("invalid enrollment password")]
+    InvalidPassword,
+}
+
+/// Registration request workflows own the short-lived browser credential handoff.
+pub(crate) struct EnrollmentService {
+    access: std::sync::Arc<crate::database::Database>,
+    credentials: std::sync::Arc<credentials::Credentials>,
+}
+pub(crate) struct ResumeCommand<'a> {
+    pub id: Uuid,
+    pub password: &'a Password,
+    pub operation: Uuid,
+}
+impl EnrollmentService {
+    pub(crate) fn new(
+        access: std::sync::Arc<crate::database::Database>,
+        credentials: std::sync::Arc<credentials::Credentials>,
+    ) -> Self {
+        Self {
+            access,
+            credentials,
+        }
+    }
+    async fn create(
+        &self,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+        input: &Create,
+        continuation: &credentials::SessionContinuation,
+        key: Uuid,
+        audit: &crate::audit::Audit,
+    ) -> Result<Receipt, Error> {
+        let permission = proof.enrollment(&input.device_id)?;
+        audit.target(&input.device_id);
+        let reference = continuation.retain(&self.credentials)?;
+        store::create_enrollment(
+            &self.access,
+            permission,
+            &input.password,
+            input.source,
+            reference,
+            key,
+            audit,
+        )
+        .await
+    }
+    async fn resume(
+        &self,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+        command: ResumeCommand<'_>,
+        continuation: &credentials::SessionContinuation,
+        audit: &crate::audit::Audit,
+    ) -> Result<Receipt, Error> {
+        let device = store::enrollment_target(&self.access, proof, command.id).await?;
+        let permission = proof.enrollment(&device)?;
+        audit.target(&device);
+        let reference = continuation.retain(&self.credentials)?;
+        store::change_enrollment(
+            &self.access,
+            permission,
+            command.id,
+            Some((command.password, reference)),
+            command.operation,
+            audit,
+        )
+        .await
     }
 }

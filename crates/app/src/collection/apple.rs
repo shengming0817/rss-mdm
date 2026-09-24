@@ -2,13 +2,14 @@
 use super::{Attempts, store};
 use crate::{
     Error,
-    access_store::{Operation, db},
-    api::{App, RequestAuth},
     apple::protocol as wire,
     audit::Audit,
+    authorization::context::RequestAuth,
     authorization::{Approval, Permission},
+    database::db,
     device::DevicePrincipal,
     enrollment::store::{actor, uuid},
+    operations::Operation,
 };
 use axum::{
     Extension, Json,
@@ -28,7 +29,7 @@ pub(crate) struct Create {
     request_id: Uuid,
 }
 pub(crate) async fn create(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Path(device): Path<String>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
@@ -55,7 +56,7 @@ pub(crate) async fn create(
         key: input.request_id,
         digest: &digest,
     };
-    if let Some(old) = crate::AccessStore::replay(&mut tx, &operation).await? {
+    if let Some(old) = crate::operations::replay(&mut tx, &operation).await? {
         return Ok((
             StatusCode::ACCEPTED,
             Json(serde_json::from_str(&old).map_err(|_| super::corrupt())?),
@@ -66,12 +67,7 @@ pub(crate) async fn create(
     let row=sqlx::query("SELECT r.id::text,r.generation,s.epoch::text FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND c.state='active' AND s.source='mdm.apple' AND s.enabled AND s.coverage=$3 AND a.state='active' FOR SHARE OF r,c,a FOR UPDATE OF s")
         .bind(tenant).bind(&device).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
     let registration = uuid(&row, "id")?;
-    let scope = crate::device::scope(
-        app.identity.tenant,
-        registration,
-        "mdm.apple",
-        uuid(&row, "epoch")?,
-    )?;
+    let scope = crate::device::scope(app.tenant, registration, "mdm.apple", uuid(&row, "epoch")?)?;
     let sequence:i64=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.apple' AND next_sequence<9223372036854775807 RETURNING next_sequence-1")
         .bind(tenant).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
     let id = Uuid::new_v4();
@@ -93,9 +89,16 @@ pub(crate) async fn create(
         .bind(tenant).bind(id.to_string()).bind(row.try_get::<i64,_>("generation").map_err(db)?).bind(request).execute(&mut *tx).await.map_err(db)?;
     let receipt = serde_json::json!({"runId":id,"result":"pending"});
     proof.check_live()?;
-    app.access
-        .finish_status(tx, &operation, &receipt.to_string(), &audit, None, 202)
-        .await?;
+    crate::operations::finish_status(
+        &app.access,
+        tx,
+        &operation,
+        &receipt.to_string(),
+        &audit,
+        None,
+        202,
+    )
+    .await?;
     Ok((StatusCode::ACCEPTED, Json(receipt)))
 }
 
@@ -182,4 +185,15 @@ pub(crate) async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Ve
         return row.try_get("request").map_err(db);
     }
     Ok(Vec::new())
+}
+
+pub(crate) struct HttpState {
+    pub(crate) access: std::sync::Arc<crate::database::Database>,
+    pub(crate) apple: bool,
+    pub(crate) tenant: rss_request_context::TenantId,
+}
+impl HttpState {
+    pub(crate) fn apple(&self) -> std::result::Result<(), crate::Error> {
+        self.apple.then_some(()).ok_or(crate::Error::Unsupported)
+    }
 }

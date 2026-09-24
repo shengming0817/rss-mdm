@@ -1,7 +1,7 @@
 use super::*;
 use rss_mdm_inventory::{Evidence, SourceFact, State};
 use sqlx::Row;
-impl Management {
+impl AssetService {
     pub(super) async fn asset_detail_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -11,15 +11,7 @@ impl Management {
         let requested = device.to_owned();
         let id: Option<String> = tx
             .with_connection(move |c| {
-                Box::pin(async move {
-                    sqlx::query_scalar(
-                        "SELECT id FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
-                    )
-                    .bind(tenant)
-                    .bind(requested)
-                    .fetch_optional(c)
-                    .await
-                })
+                Box::pin(async move { crate::device::read::find(c, tenant, requested).await })
             })
             .await
             .map_err(|_| Error::Unavailable(Failure::AssetCandidates))?;
@@ -41,10 +33,14 @@ impl Management {
             .collect();
         let tenant = self.tenant.to_string();
         let selected = ids.clone();
-        let rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT r.device,r.id::text AS registration,r.generation,r.channel,s.source,s.epoch::text FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=ANY($2) AND r.state='active' AND s.enabled AND c.state='active' ORDER BY r.device,s.source")
-                .bind(tenant).bind(selected).fetch_all(c).await
-        })).await.map_err(|_| Error::Unavailable(Failure::AssetSources))?;
+        let rows = tx
+            .with_connection(move |c| {
+                Box::pin(
+                    async move { crate::device::read::active_sources(c, tenant, selected).await },
+                )
+            })
+            .await
+            .map_err(|_| Error::Unavailable(Failure::AssetSources))?;
         if rows.len() > 20_000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
@@ -128,10 +124,14 @@ impl Management {
         }
         let tenant = self.tenant.to_string();
         let keys: Vec<_> = subjects.keys().cloned().collect();
-        let quality=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT DISTINCT ON(scope) scope,id::text,sequence,result,attempts,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) ORDER BY scope,sequence DESC,id DESC")
-                .bind(tenant).bind(keys).fetch_all(c).await
-        })).await.map_err(|_| Error::Unavailable(Failure::CollectionQuery))?;
+        let quality = tx
+            .with_connection(move |c| {
+                Box::pin(
+                    async move { crate::collection::read::latest_quality(c, tenant, keys).await },
+                )
+            })
+            .await
+            .map_err(|_| Error::Unavailable(Failure::CollectionQuery))?;
         for row in quality {
             let scope: String = row.try_get("scope")?;
             let device = subjects.get(&scope).ok_or(Error::Malformed)?;
@@ -181,7 +181,11 @@ impl Management {
         input(rss_observation::Id::new(device))?;
         let tenant = self.tenant.to_string();
         let id = device.to_owned();
-        let exists:bool=tx.with_connection(move |c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(id).fetch_one(c).await})).await?;
+        let exists: bool = tx
+            .with_connection(move |c| {
+                Box::pin(async move { crate::device::read::exists(c, tenant, id).await })
+            })
+            .await?;
         if !exists {
             return Err(Error::NotFound.into());
         }

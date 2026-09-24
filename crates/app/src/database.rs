@@ -1,20 +1,20 @@
-//! One owner for enrollment transactions, operation recovery and persistent audit.
+//! Private connection ownership and tenant transaction configuration.
+//! Capability admission checks are composed here on the same connection.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
-use crate::{Error, Failure, audit::Audit};
+use crate::{Error, Failure};
 use sqlx::{
-    PgPool, Postgres, Row, Transaction,
+    PgPool, Postgres, Transaction,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use uuid::Uuid;
-pub struct AccessStore {
+pub(crate) struct Database {
     pool: PgPool,
     #[cfg(test)]
-    fault: std::sync::atomic::AtomicU8,
+    pub(crate) fault: std::sync::atomic::AtomicU8,
 }
-impl AccessStore {
+impl Database {
     pub async fn connect(options: PgConnectOptions) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -60,150 +60,11 @@ impl AccessStore {
             .bind(tenant).execute(&mut **tx).await.map_err(db)?;
         Ok(())
     }
-    pub(crate) async fn record(
-        &self,
-        audit: &Audit,
-        status: u16,
-        result: &str,
-    ) -> Result<(), Error> {
-        let mut tx = self.begin(audit.tenant()).await?;
-        append(&mut tx, audit, status, result, None).await?;
-        tx.commit()
-            .await
-            .map_err(|_| Error::Unavailable(Failure::Audit))
-    }
-    pub(crate) async fn replay(
-        tx: &mut Transaction<'_, Postgres>,
-        operation: &Operation<'_>,
-    ) -> Result<Option<String>, Error> {
-        let Operation {
-            actor: proof,
-            key,
-            digest,
-        } = operation;
-        let lock = format!(
-            "{}:{}:{}:{}",
-            proof.tenant,
-            proof.subject.len(),
-            proof.subject,
-            key
-        );
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2347))")
-            .bind(lock)
-            .execute(&mut **tx)
-            .await
-            .map_err(db)?;
-        let old = sqlx::query("SELECT digest,result,instance FROM mdm_access.operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).fetch_optional(&mut **tx).await.map_err(db)?;
-        old.map(|old| {
-            if old.try_get::<String, _>("digest").map_err(db)? != *digest
-                || old.try_get::<String, _>("instance").map_err(db)? != proof.instance
-            {
-                return Err(Error::Conflict);
-            }
-            old.try_get("result").map_err(db)
-        })
-        .transpose()
-    }
-    pub(crate) async fn finish(
-        &self,
-        tx: Transaction<'_, Postgres>,
-        operation: &Operation<'_>,
-        result: &str,
-        audit: &Audit,
-        request: Option<Uuid>,
-    ) -> Result<(), Error> {
-        self.finish_status(tx, operation, result, audit, request, 200)
-            .await
-    }
-    pub(crate) async fn finish_status(
-        &self,
-        mut tx: Transaction<'_, Postgres>,
-        operation: &Operation<'_>,
-        result: &str,
-        audit: &Audit,
-        request: Option<Uuid>,
-        status: u16,
-    ) -> Result<(), Error> {
-        let Operation {
-            actor: proof,
-            key,
-            digest,
-        } = operation;
-        let facts = audit.snapshot();
-        if audit.tenant() != proof.tenant
-            || facts.actor.as_deref() != Some(proof.subject)
-            || facts.instance.as_deref() != Some(proof.instance)
-            || facts.operation_id != Some(*key)
-        {
-            return Err(Error::Forbidden);
-        }
-        sqlx::query("INSERT INTO mdm_access.operations(tenant_id,actor,operation_id,digest,result,instance) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.instance).execute(&mut *tx).await.map_err(db)?;
-        self.commit_audited_status(tx, audit, request, status).await
-    }
-    #[cfg(test)]
-    pub(crate) async fn commit_audited(
-        &self,
-        tx: Transaction<'_, Postgres>,
-        audit: &Audit,
-        request: Option<Uuid>,
-    ) -> Result<(), Error> {
-        self.commit_audited_status(tx, audit, request, 200).await
-    }
-    pub(crate) async fn commit_audited_status(
-        &self,
-        mut tx: Transaction<'_, Postgres>,
-        audit: &Audit,
-        request: Option<Uuid>,
-        status: u16,
-    ) -> Result<(), Error> {
-        append(&mut tx, audit, status, "success", request).await?;
-        #[cfg(test)]
-        if self
-            .fault
-            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            tx.rollback().await.map_err(db)?;
-            return Err(Error::Unavailable(Failure::AccessStore));
-        }
-        audit.mark_commit_started();
-        #[cfg(test)]
-        if self
-            .fault
-            .compare_exchange(3, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            // Cancel at COMMIT entry; Drop can still roll this transaction back.
-            std::future::pending::<()>().await;
-        }
-        tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-        #[cfg(test)]
-        match self.fault.swap(0, Ordering::AcqRel) {
-            2 => return Err(Error::CommitUnknown),
-            // Real COMMIT succeeded; its acknowledgement never reaches the caller.
-            4 => std::future::pending::<()>().await,
-            _ => {}
-        }
-        audit.mark_committed();
-        Ok(())
-    }
+
     #[cfg(test)]
     pub(crate) fn fail_next(&self, point: u8) {
         self.fault.store(point, Ordering::Release);
     }
-}
-#[derive(Clone, Copy)]
-pub(crate) struct Actor<'a> {
-    pub tenant: &'a str,
-    pub subject: &'a str,
-    pub instance: &'a str,
-}
-pub(crate) struct Operation<'a> {
-    pub actor: Actor<'a>,
-    pub key: Uuid,
-    pub digest: &'a str,
 }
 
 pub(crate) fn db(error: sqlx::Error) -> Error {
@@ -213,29 +74,9 @@ pub(crate) fn db(error: sqlx::Error) -> Error {
         error.as_database_error().and_then(|e| e.code())
     );
     let _ = error;
-    Error::Unavailable(Failure::AccessStore)
+    Error::Unavailable(Failure::Database)
 }
-pub(crate) async fn append(
-    tx: &mut Transaction<'_, Postgres>,
-    audit: &Audit,
-    status: u16,
-    result: &str,
-    registration: Option<Uuid>,
-) -> Result<(), Error> {
-    append_on_connection(tx, audit, status, result, registration).await
-}
-pub(crate) async fn append_on_connection(
-    connection: &mut sqlx::PgConnection,
-    audit: &Audit,
-    status: u16,
-    result: &str,
-    registration: Option<Uuid>,
-) -> Result<(), Error> {
-    let f = audit.snapshot();
-    sqlx::query("INSERT INTO mdm_access.audit(tenant_id,id,request_id,actor,instance,target,operation_id,registration_request,action,result,status,registration_id,software,plan) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,$8::uuid,$9,$10,$11,$12::uuid,$13::jsonb,$14::uuid)")
-        .bind(audit.tenant()).bind(Uuid::new_v4().to_string()).bind(audit.request_id().to_string()).bind(f.actor).bind(f.instance).bind(f.target).bind(f.operation_id.map(|v|v.to_string())).bind(registration.map(|v|v.to_string())).bind(f.action).bind(result).bind(i32::from(status)).bind(f.registration_id.map(|v|v.to_string())).bind(f.software.map(|v| serde_json::to_string(&v).expect("software fact serialization"))).bind(f.plan.map(|v|v.to_string())).execute(connection).await.map_err(|_| Error::Unavailable(Failure::Audit))?;
-    Ok(())
-}
+
 async fn admission(pool: &PgPool) -> Result<(), Error> {
     let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("SET LOCAL statement_timeout='1s'")
@@ -253,16 +94,6 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND (CASE WHEN c.relname NOT IN ('audit','asset_authority_history','collection_history') THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')=(c.relname NOT IN('asset_authority_history','collection_history'))
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
  AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
- AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.'||t,col,'UPDATE')) FROM unnest(ARRAY['authorization_rules','user_groups']) t CROSS JOIN unnest(ARRAY['revision','document']) col)
- AND NOT has_column_privilege(current_user,'mdm_access.grants','state','UPDATE')
- AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.requests',col,'UPDATE')) FROM unnest(ARRAY['state','password_digest','password_version','credential_ref','expires_at']) col)
- AND has_column_privilege(current_user,'mdm_access.enrollment_certificates','server_nonce','UPDATE')
- AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.management_sessions',col,'UPDATE')) FROM unnest(ARRAY['state','last_message','correlation','nonce','client_authenticated','run_id']) col)
- AND has_column_privilege(current_user,'mdm_access.registrations','state','UPDATE')
- AND has_column_privilege(current_user,'mdm_access.credentials','state','UPDATE')
- AND has_column_privilege(current_user,'mdm_access.report_sources','enabled','UPDATE')
- AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.report_sources',col,'UPDATE')) FROM unnest(ARRAY['next_command','next_sequence']) col)
- AND (SELECT bool_and(has_column_privilege(current_user,'mdm_access.collection_runs',col,'UPDATE')) FROM unnest(ARRAY['attempts','result','reason','batch','digest','sealed_at','delivery_pending']) col)
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname IN ('enabled','next_command','next_sequence') OR c.relname='requests' AND a.attname IN ('state','password_digest','password_version','credential_ref','expires_at') OR c.relname='management_sessions' AND a.attname IN ('state','last_message','correlation','nonce','client_authenticated','run_id') OR c.relname='collection_runs' AND a.attname IN ('attempts','result','reason','batch','digest','sealed_at','delivery_pending') OR c.relname='enrollment_certificates' AND a.attname='server_nonce' OR c.relname IN ('authorization_rules','user_groups') AND a.attname IN ('revision','document')) AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
@@ -275,7 +106,22 @@ SELECT current_user='mdm_access' AND session_user=current_user
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-    if !valid || !apple {
+    let authorization = crate::authorization::admission::verify(&mut tx)
+        .await
+        .map_err(db)?;
+    let enrollment = crate::enrollment::admission::verify(&mut tx)
+        .await
+        .map_err(db)?;
+    let device = crate::device::admission::verify(&mut tx)
+        .await
+        .map_err(db)?;
+    let collection = crate::collection::admission::verify(&mut tx)
+        .await
+        .map_err(db)?;
+    let windows = crate::windows::storage_admission::verify(&mut tx)
+        .await
+        .map_err(db)?;
+    if !valid || !apple || !authorization || !enrollment || !device || !collection || !windows {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     // Canonical catalog rendering must not depend on the role's default "$user" search path.

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AccessStore, access_store::db, device::DevicePrincipal};
+use crate::{database::db, device::DevicePrincipal};
 use rss_mdm_windows_mdm::{
     CodecLimits,
     syncml::{self, Command, Item},
@@ -16,43 +16,6 @@ macro_rules! selection {
 }
 
 /// Recheck the principal inside the transaction accepting device input. Lock order matches revoke.
-pub(crate) async fn revalidate(
-    tx: &mut sqlx::PgConnection,
-    principal: &DevicePrincipal,
-) -> Result<Scope, Error> {
-    revalidate_source(tx, principal, rss_mdm_inventory::ReportSource::MdmWindows).await
-}
-
-pub(crate) async fn revalidate_source(
-    tx: &mut sqlx::PgConnection,
-    principal: &DevicePrincipal,
-    source: rss_mdm_inventory::ReportSource,
-) -> Result<Scope, Error> {
-    if principal.channel() != source.channel() {
-        return Err(Error::Forbidden);
-    }
-    let tenant = principal.tenant().to_string();
-    let registration = principal.registration().to_string();
-    crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
-        .await?;
-    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active'")
-        .bind(&tenant).bind(&registration).bind(principal.channel().as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    if live.try_get::<String, _>("device").map_err(db)? != principal.device()
-        || live.try_get::<i64, _>("generation").map_err(db)? != principal.generation()
-    {
-        return Err(Error::Unauthorized);
-    }
-    sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
-        .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND coverage=$4 FOR UPDATE")
-        .bind(&tenant).bind(&registration).bind(source.as_str()).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
-    crate::device::scope(
-        principal.tenant(),
-        principal.registration(),
-        source.as_str(),
-        Uuid::parse_str(&row.try_get::<String, _>("epoch").map_err(db)?).map_err(|_| corrupt())?,
-    )
-}
 
 #[derive(PartialEq, Eq)]
 pub(crate) struct Run {
@@ -315,7 +278,7 @@ pub(super) async fn seal(
     let audit = crate::audit::Audit::new(run.scope.tenant().to_string(), "collection_finish");
     audit.operation(run.id, "collection_finish");
     audit.registration(Uuid::parse_str(run.scope.registration().as_str()).map_err(|_| corrupt())?);
-    let result = crate::access_store::append_on_connection(tx, &audit, 200, "success", None).await;
+    let result = crate::audit::append_on_connection(tx, &audit, 200, "success", None).await;
     audit.finalize(
         result
             .as_ref()
@@ -361,58 +324,34 @@ impl DurableReport {
         &self.batch
     }
 }
-impl AccessStore {
-    pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
-        let mut tx = self.begin(tenant).await?;
-        super::apple::expire(&mut tx, tenant).await?;
-        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
-            .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
-        let reports: Vec<DurableReport> = rows
-            .into_iter()
-            .map(durable_report)
-            .collect::<Result<_, Error>>()?;
-        tx.commit().await.map_err(db)?;
-        Ok(reports)
-    }
 
-    pub(crate) async fn agent_report_in(
-        connection: &mut sqlx::PgConnection,
-        scope: &Scope,
-        id: Uuid,
-    ) -> Result<Option<(DurableReport, i64)>, Error> {
-        let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid"))
+pub(crate) async fn agent_report_in(
+    connection: &mut sqlx::PgConnection,
+    scope: &Scope,
+    id: Uuid,
+) -> Result<Option<(DurableReport, i64)>, Error> {
+    let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid"))
             .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.to_string())
             .fetch_optional(connection).await.map_err(db)?;
-        row.map(|row| {
-            let received_at = row.try_get("sealed_at").map_err(db)?;
-            Ok((durable_report(row)?, received_at))
-        })
-        .transpose()
-    }
-    pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
-        let mut tx = self.begin(&report.scope.tenant().to_string()).await?;
-        sqlx::query("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending")
-            .bind(report.scope.tenant().to_string())
-            .bind(report.batch.id().as_str())
-            .bind(fingerprint(&report.batch, &report.scope)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
-    }
-    pub(crate) async fn collection(
-        &self,
-        scope: &Scope,
-        id: Option<Uuid>,
-    ) -> Result<Option<Run>, Error> {
-        let mut tx = self.begin(&scope.tenant().to_string()).await?;
-        let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1"))
+    row.map(|row| {
+        let received_at = row.try_get("sealed_at").map_err(db)?;
+        Ok((durable_report(row)?, received_at))
+    })
+    .transpose()
+}
+
+pub(crate) async fn collection(
+    database: &crate::database::Database,
+    scope: &Scope,
+    id: Option<Uuid>,
+) -> Result<Option<Run>, Error> {
+    let mut tx = database.begin(&scope.tenant().to_string()).await?;
+    let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1"))
             .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.map(|v| v.to_string()))
             .fetch_optional(&mut *tx).await.map_err(db)?;
-        let run = row.map(Run::from_row).transpose()?;
-        tx.commit().await.map_err(db)?;
-        Ok(run)
-    }
+    let run = row.map(Run::from_row).transpose()?;
+    tx.commit().await.map_err(db)?;
+    Ok(run)
 }
 
 fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
@@ -442,4 +381,51 @@ pub(super) async fn load_on(
             .await
             .map_err(db)?,
     )
+}
+
+/// The durable delivery queue consumed by the Inventory worker.
+pub(crate) struct Delivery {
+    database: std::sync::Arc<crate::database::Database>,
+}
+impl Delivery {
+    pub(crate) fn new(database: std::sync::Arc<crate::database::Database>) -> Self {
+        Self { database }
+    }
+    pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
+        let mut tx = self.database.begin(tenant).await?;
+        crate::collection::apple::expire(&mut tx, tenant).await?;
+        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
+            .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
+        let reports: Vec<DurableReport> = rows
+            .into_iter()
+            .map(durable_report)
+            .collect::<Result<_, Error>>()?;
+        tx.commit().await.map_err(db)?;
+        Ok(reports)
+    }
+    pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
+        let mut tx = self
+            .database
+            .begin(&report.scope.tenant().to_string())
+            .await?;
+        sqlx::query("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending")
+            .bind(report.scope.tenant().to_string())
+            .bind(report.batch.id().as_str())
+            .bind(fingerprint(&report.batch, &report.scope)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)
+    }
+}
+
+pub(crate) async fn allocate_commands_in(
+    c: &mut sqlx::PgConnection,
+    p: &DevicePrincipal,
+    count: i64,
+) -> std::result::Result<u32, Error> {
+    let n:i64=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_command=next_command+$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows' AND enabled AND next_command<=$4 RETURNING next_command-$3")
+ .bind(p.tenant().to_string()).bind(p.registration().to_string()).bind(count).bind(i64::from(u32::MAX)-count).fetch_one(c).await.map_err(db)?;
+    n.try_into()
+        .map_err(|_| Error::Unavailable(crate::Failure::Protocol))
 }

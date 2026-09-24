@@ -1,12 +1,16 @@
 //! Persistent MDM authorization. Identity facts supply subjects, never product permissions.
+pub(crate) mod admission;
 mod approval;
+pub(crate) mod context;
+pub(crate) mod error;
 mod evaluate;
+pub(crate) mod identity_management;
 pub(crate) use approval::Approval;
 pub(crate) use store::{lock as lock_on, snapshot_on};
-mod http;
+pub(crate) mod http;
 mod initialize;
 mod model;
-mod store;
+pub(crate) mod store;
 pub(crate) use evaluate::Snapshot;
 #[cfg(test)]
 use evaluate::department_matches;
@@ -17,3 +21,6 @@ pub use initialize::{Initialize, initialize};
 pub use model::*;
 #[cfg(test)]
 mod tests;
+
+pub(crate) const AUTHORIZATION_MIGRATION_SQL: &str =
+    include_str!("../../migrations/0010_authorization.sql");

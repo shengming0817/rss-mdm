@@ -1,14 +1,16 @@
 //! Native collection is the durable product intake; RSS owns receipts and projection.
+pub(crate) mod admission;
+pub(crate) mod agent;
+pub(crate) mod enterprise;
+pub(crate) mod read;
 use crate::{Error, Failure};
 use rss_mdm_inventory::FieldKey;
 use rss_observation::{Body, Change, Id};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 pub(crate) mod apple;
-mod store;
-pub(crate) use store::{
-    DurableReport, Run, accept, create, revalidate, revalidate_source, terminate, terminate_session,
-};
+pub(crate) mod store;
+pub(crate) use store::{DurableReport, Run, accept, create, terminate, terminate_session};
 
 const FIELD_COUNT: usize = FieldKey::OBSERVED_COUNT;
 fn uri(key: FieldKey) -> &'static str {
@@ -158,18 +160,18 @@ impl Attempts {
         Ok(attempts)
     }
 
-    fn status(&mut self, index: usize, code: u16) -> Result<(), Error> {
+    fn status(&mut self, index: usize, code: u16) -> Result<(), CollectionError> {
         let field = &mut self.fields[index];
         if field.status.is_some_and(|old| old != code)
             || (!(200..300).contains(&code) && field.value_digest.is_some())
         {
-            return Err(Error::Conflict);
+            return Err(CollectionError::CorrelationConflict);
         }
         field.status = Some(code);
         self.refresh(index);
         Ok(())
     }
-    fn value(&mut self, index: usize, value: String) -> Result<(), Error> {
+    fn value(&mut self, index: usize, value: String) -> Result<(), CollectionError> {
         let field = &mut self.fields[index];
         let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
         if field
@@ -178,7 +180,7 @@ impl Attempts {
             .is_some_and(|old| old != &digest)
             || field.status.is_some_and(|code| !(200..300).contains(&code))
         {
-            return Err(Error::Conflict);
+            return Err(CollectionError::CorrelationConflict);
         }
         field.value_digest = Some(digest);
         field.value = FieldKey::observed()
@@ -264,7 +266,7 @@ impl Attempts {
         message: u32,
         first: u32,
         received_at: i64,
-    ) -> Result<(), Error> {
+    ) -> Result<(), CollectionError> {
         for status in &correlated.statuses {
             if status.command_id == 0 {
                 continue;
@@ -282,15 +284,16 @@ impl Attempts {
                 || !result.explicit_command_ref
                 || result.reference.message_id != message
             {
-                return Err(Error::Conflict);
+                return Err(CollectionError::CorrelationConflict);
             }
-            let index = field_index(result.reference.command_id, first).ok_or(Error::Conflict)?;
+            let index = field_index(result.reference.command_id, first)
+                .ok_or(CollectionError::CorrelationConflict)?;
             if result.reference.uri
                 != uri(FieldKey::observed()
                     .nth(index)
                     .expect("collection field index"))
             {
-                return Err(Error::Conflict);
+                return Err(CollectionError::CorrelationConflict);
             }
             self.value(index, result.value.0.clone())?;
             self.fields[index].received_at = Some(received_at);
@@ -300,7 +303,7 @@ impl Attempts {
 }
 
 fn corrupt() -> Error {
-    Error::Unavailable(Failure::AccessStore)
+    Error::Unavailable(Failure::Database)
 }
 
 #[cfg(test)]
@@ -316,3 +319,14 @@ pub(crate) struct EnterpriseAttempt {
     pub task_id: uuid::Uuid,
     pub attempt_id: uuid::Uuid,
 }
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub(crate) enum CollectionError {
+    #[error("report correlation or value conflict")]
+    CorrelationConflict,
+}
+
+pub(crate) const COLLECTION_MIGRATION_SQL: &str = include_str!("../migrations/0005_collection.sql");
+
+pub(crate) const HISTORY_MIGRATION_SQL: &str =
+    include_str!("../migrations/0014_collection_history.sql");

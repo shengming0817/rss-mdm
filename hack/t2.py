@@ -161,6 +161,7 @@ def configure_identity(root, port, binary, env):
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
 def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
+    foundation_only = sys.argv[1:] == ["--foundation"]
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
     build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
@@ -230,6 +231,10 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                     require(result.returncode==0 and passed==expected and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in result.stdout,'Apple T2 failed or omitted required real protocol tests')
                 return
             env['MDM_TEST_PG_CONTAINER'] = name
+            if foundation_only:
+                for selected in ["identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity", "device::tests::postgres_boundary", "inventory_runtime::tests::durable_report_recovery_and_projection"]:
+                    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib",selected,"--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
+                return
             if task_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)

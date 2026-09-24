@@ -173,11 +173,13 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         "return_targets":{"home":"https://mdm.example.test/done"},
         "private_providers":[], "assurance_profiles":[{"tenant_id":TENANT,"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
     let config: Config = serde_json::from_value(base.clone())?;
-    let policy = Arc::new(crate::access::IdentityManagementPolicy::new(
-        TENANT,
-        INSTANCE,
-        config.identity_management.clone(),
-    )?);
+    let policy = Arc::new(
+        crate::authorization::identity_management::IdentityManagementPolicy::new(
+            TENANT,
+            INSTANCE,
+            config.identity_management.clone(),
+        )?,
+    );
     let identity = crate::identity::Identity::for_oidc_fixture(&config, policy).await?;
     let reader = Arc::new(
         InventoryReader::connect(
@@ -193,7 +195,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         config,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
-        access_store(&base).await?,
+        database(&base).await?,
         Some(identity),
     )
     .await?

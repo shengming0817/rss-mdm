@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::{App, RequestAuth};
+use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::Value;
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/policies/{policy}/plans/{plan}/execute",
@@ -19,7 +19,7 @@ pub(crate) fn routes() -> Router<Arc<App>> {
         .route("/devices/{device}/operations/{id}/approve", post(approve))
 }
 async fn create(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(device): Path<String>,
@@ -46,7 +46,7 @@ async fn create(
         .map(|v| (StatusCode::ACCEPTED, Json(v)))
 }
 async fn read(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((device, id)): Path<(String, Uuid)>,
@@ -59,7 +59,7 @@ async fn read(
         .map(Json)
 }
 async fn cancel(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((device, id)): Path<(String, Uuid)>,
@@ -74,7 +74,7 @@ async fn cancel(
         .map(Json)
 }
 async fn approve(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((device, id)): Path<(String, Uuid)>,
@@ -90,7 +90,7 @@ async fn approve(
 }
 
 async fn execute_plan(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((policy, plan)): Path<(String, Uuid)>,
@@ -104,4 +104,21 @@ async fn execute_plan(
         .execute_plan(&auth.proof, &policy, plan, &body, &audit)
         .await
         .map(|v| (StatusCode::ACCEPTED, Json(v)))
+}
+
+pub(crate) struct HttpState {
+    pub(crate) commands: std::sync::Arc<crate::commands::Commands>,
+    pub(crate) devices: std::sync::Arc<crate::device::DeviceService>,
+    pub(crate) apple: bool,
+    pub(crate) windows: bool,
+}
+impl HttpState {
+    pub(crate) fn apple(&self) -> std::result::Result<(), crate::Error> {
+        self.apple.then_some(()).ok_or(crate::Error::Unsupported)
+    }
+}
+impl HttpState {
+    pub(crate) fn windows(&self) -> std::result::Result<(), crate::Error> {
+        self.windows.then_some(()).ok_or(crate::Error::Unsupported)
+    }
 }

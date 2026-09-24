@@ -1,6 +1,6 @@
 //! ref: axum 0.8.9 axum/src/routing/mod.rs (protected tree composition).
 use super::*;
-use crate::api::{App, RequestAuth};
+use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
@@ -12,15 +12,14 @@ type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonR
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value.map(|v| v.0).map_err(|_| Error::Malformed)
 }
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
     publications::routes()
 }
-pub(crate) fn resource_routes() -> Router<Arc<App>> {
+pub(crate) fn resource_routes() -> Router<Arc<HttpState>> {
     Router::new().route("/resources/{id}", get(resource_read).post(resource_write))
 }
-pub(crate) fn routes_v2() -> Router<Arc<App>> {
+pub(crate) fn routes_v2() -> Router<Arc<HttpState>> {
     Router::new()
-        .merge(assets::routes())
         .route("/groups/{id}", get(group_read).post(group_write))
         .route("/groups/{id}/previews", post(group_preview))
         .route("/groups/{group}/results/{result}/{kind}", get(group_page))
@@ -54,14 +53,13 @@ fn exposes_inventory(command: &Command) -> bool {
     )
 }
 async fn run(
-    app: &App,
+    app: &HttpState,
     auth: &RequestAuth,
     audit: &Audit,
     permission: Permission,
     command: Command,
 ) -> std::result::Result<Response, Error> {
     match &command {
-        Command::Asset { .. } => return Err(Error::Malformed),
         Command::Group { id, .. }
         | Command::GroupRead { id }
         | Command::GroupPreview { id, .. }
@@ -120,7 +118,7 @@ async fn run(
 macro_rules! read {
     ($handler:ident,$id:ty,$permission:ident,$command:ident) => {
         async fn $handler(
-            State(app): State<Arc<App>>,
+            State(app): State<Arc<HttpState>>,
             Extension(auth): Extension<RequestAuth>,
             Extension(audit): Extension<Audit>,
             Path(id): Path<$id>,
@@ -142,7 +140,7 @@ read!(scope_read, Uuid, ScopeRead, ScopeRead);
 read!(policy_read, String, PolicyRead, PolicyRead);
 read!(plan_read, Uuid, PolicyRead, PlanRead);
 async fn group_write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -164,7 +162,7 @@ async fn group_write(
     .await
 }
 async fn scope_write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -181,7 +179,7 @@ async fn scope_write(
     .await
 }
 async fn policy_write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
@@ -198,7 +196,7 @@ async fn policy_write(
     .await
 }
 async fn preview(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
@@ -218,7 +216,7 @@ async fn preview(
     .await
 }
 async fn save(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
@@ -235,7 +233,7 @@ async fn save(
     .await
 }
 async fn group_preview(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -257,7 +255,7 @@ async fn group_preview(
 }
 
 async fn resource_write(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,
@@ -275,7 +273,7 @@ async fn resource_write(
 }
 
 async fn group_task(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((group, task)): Path<(Uuid, Uuid)>,
@@ -294,7 +292,7 @@ async fn group_task(
     .await
 }
 async fn scope_task(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((scope, task)): Path<(Uuid, Uuid)>,
@@ -314,7 +312,7 @@ async fn scope_task(
 }
 
 async fn group_page(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((group, result, kind)): Path<(Uuid, Uuid, pages::GroupPageKind)>,
@@ -336,7 +334,7 @@ async fn group_page(
 }
 
 async fn scope_page(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((scope, result, projection)): Path<(Uuid, Uuid, pages::ScopePageKind)>,
@@ -357,7 +355,7 @@ async fn scope_page(
     .await
 }
 async fn policy_page(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((policy, result, projection)): Path<(String, Uuid, pages::PolicyPageKind)>,
@@ -376,4 +374,9 @@ async fn policy_page(
         },
     )
     .await
+}
+
+pub(crate) struct HttpState {
+    pub(crate) management: std::sync::Arc<crate::management::Management>,
+    pub(crate) access: std::sync::Arc<crate::database::Database>,
 }

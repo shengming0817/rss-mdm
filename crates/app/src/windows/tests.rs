@@ -1,11 +1,12 @@
 use super::*;
+use crate::api::Assembly;
 use crate::{
-    AccessStore,
-    access::CollectionService,
+    Database,
     device::tests::{admin, options},
     enrollment::{Authorization, Password},
+    management::assets::collection::CollectionService,
 };
-use crate::{clock::Clock, identity::Principal};
+use crate::{authorization::context::AuthorizedPrincipal, clock::Clock};
 use anyhow::ensure;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
@@ -36,7 +37,7 @@ fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
     Ok(Windows::load(config, now())?)
 }
-fn audit(proof: &Principal, key: Uuid, device: &str, action: &'static str) -> Audit {
+fn audit(proof: &AuthorizedPrincipal, key: Uuid, device: &str, action: &'static str) -> Audit {
     let a = Audit::new(proof.tenant_id().into(), action);
     a.identify(proof);
     a.target(device);
@@ -44,39 +45,39 @@ fn audit(proof: &Principal, key: Uuid, device: &str, action: &'static str) -> Au
     a
 }
 async fn create(
-    store: &AccessStore,
-    proof: &Principal,
+    store: &Database,
+    proof: &AuthorizedPrincipal,
     device: &str,
     password: &Password,
     reference: Uuid,
     key: Uuid,
 ) -> anyhow::Result<crate::enrollment::Receipt> {
     let a = audit(proof, key, device, "enrollment_create");
-    let receipt = store
-        .create_enrollment(
-            proof.enrollment(device)?,
-            password,
-            rss_mdm_inventory::ReportSource::MdmWindows,
-            reference,
-            key,
-            &a,
-        )
-        .await;
+    let receipt = crate::enrollment::store::create_enrollment(
+        store,
+        proof.enrollment(device)?,
+        password,
+        rss_mdm_inventory::ReportSource::MdmWindows,
+        reference,
+        key,
+        &a,
+    )
+    .await;
     a.finalize(None);
     Ok(receipt?)
 }
 async fn complete(
-    store: &AccessStore,
+    store: &Database,
     w: &Windows,
     auth: &Authorization,
-    proof: &Principal,
+    proof: &AuthorizedPrincipal,
     intent: &issuance::Intent,
     cert: &[u8],
 ) -> Result<(), Error> {
     let a = audit(proof, auth.operation, &auth.device, "enrollment_issue");
-    let result = store
-        .complete_issuance(w, auth, proof, intent, cert, &a, now())
-        .await;
+    let result =
+        crate::windows::issuance::complete_issuance(store, w, auth, proof, intent, cert, &a, now())
+            .await;
     a.finalize(None);
     result
 }
@@ -149,7 +150,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     );
     let proof = admin(TENANT, "admin-a").await?;
     let other = admin(TENANT, "other-a").await?;
-    let store = AccessStore::connect(options("mdm_access")?).await?;
+    let store = Database::connect(options("mdm_access")?).await?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
     let password = Password::new(crate::enrollment::random())?;
     let key = Uuid::new_v4();
@@ -180,78 +181,81 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .is_err()
     );
     ensure!(
-        store
-            .enrollment_target(&other, receipt.enrollment_id)
+        crate::enrollment::store::enrollment_target(&store, &other, receipt.enrollment_id)
             .await
             .is_err()
     );
     ensure!(
-        store
-            .enrollment_authorization(
-                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                receipt.enrollment_id,
-                &password
-            )
-            .await
-            .is_err()
+        crate::enrollment::store::enrollment_authorization(
+            &store,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            receipt.enrollment_id,
+            &password
+        )
+        .await
+        .is_err()
     );
     ensure!(
-        store
-            .enrollment_authorization(
-                TENANT,
-                receipt.enrollment_id,
-                &Password::new(crate::enrollment::random())?
-            )
-            .await
-            .is_err()
+        crate::enrollment::store::enrollment_authorization(
+            &store,
+            TENANT,
+            receipt.enrollment_id,
+            &Password::new(crate::enrollment::random())?
+        )
+        .await
+        .is_err()
     );
-    let auth = store
-        .enrollment_authorization(TENANT, receipt.enrollment_id, &password)
-        .await?;
-    let intent = store
-        .issuance_intent(
+    let auth = crate::enrollment::store::enrollment_authorization(
+        &store,
+        TENANT,
+        receipt.enrollment_id,
+        &password,
+    )
+    .await?;
+    let intent = crate::windows::issuance::issuance_intent(
+        &store,
+        &w,
+        &auth,
+        &proof,
+        (
+            &csr,
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+        ),
+        now(),
+    )
+    .await?;
+    let cert = w.ca.sign(&intent.tbs)?;
+    ensure!(cert == w.ca.sign(&intent.tbs)?);
+    // CSR, enrollment context and protocol protection identity are immutable on retry.
+    ensure!(
+        crate::windows::issuance::issuance_intent(
+            &store,
+            &w,
+            &auth,
+            &proof,
+            (
+                &absent.to_der()?,
+                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
+            ),
+            now()
+        )
+        .await
+        .is_err()
+    );
+    ensure!(
+        crate::windows::issuance::issuance_intent(
+            &store,
             &w,
             &auth,
             &proof,
             (
                 &csr,
-                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+                rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
             ),
-            now(),
+            now()
         )
-        .await?;
-    let cert = w.ca.sign(&intent.tbs)?;
-    ensure!(cert == w.ca.sign(&intent.tbs)?);
-    // CSR, enrollment context and protocol protection identity are immutable on retry.
-    ensure!(
-        store
-            .issuance_intent(
-                &w,
-                &auth,
-                &proof,
-                (
-                    &absent.to_der()?,
-                    rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
-                ),
-                now()
-            )
-            .await
-            .is_err()
-    );
-    ensure!(
-        store
-            .issuance_intent(
-                &w,
-                &auth,
-                &proof,
-                (
-                    &csr,
-                    rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
-                ),
-                now()
-            )
-            .await
-            .is_err()
+        .await
+        .is_err()
     );
     ensure!(
         w.protection
@@ -310,20 +314,20 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .is_err()
     );
     ensure!(service.management_principal(&credential).await.is_err());
-    let restarted = AccessStore::connect(options("mdm_access")?).await?;
+    let restarted = Database::connect(options("mdm_access")?).await?;
     let restarted_ca = windows()?;
-    let saved = restarted
-        .issuance_intent(
-            &restarted_ca,
-            &auth,
-            &proof,
-            (
-                &csr,
-                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
-            ),
-            now(),
-        )
-        .await?;
+    let saved = crate::windows::issuance::issuance_intent(
+        &restarted,
+        &restarted_ca,
+        &auth,
+        &proof,
+        (
+            &csr,
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+        ),
+        now(),
+    )
+    .await?;
     ensure!(
         saved.tbs == intent.tbs
             && saved.registration == intent.registration
@@ -355,21 +359,25 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             Uuid::new_v4(),
         )
         .await?;
-        let a = access
-            .enrollment_authorization(TENANT, r.enrollment_id, &password)
-            .await?;
-        let i = access
-            .issuance_intent(
-                &w,
-                &a,
-                &proof,
-                (
-                    &csr,
-                    rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
-                ),
-                now(),
-            )
-            .await?;
+        let a = crate::enrollment::store::enrollment_authorization(
+            &access,
+            TENANT,
+            r.enrollment_id,
+            &password,
+        )
+        .await?;
+        let i = crate::windows::issuance::issuance_intent(
+            &access,
+            &w,
+            &a,
+            &proof,
+            (
+                &csr,
+                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+            ),
+            now(),
+        )
+        .await?;
         let c = w.ca.sign(&i.tbs)?;
         access.fail_next(fault);
         ensure!(
@@ -394,19 +402,18 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let next = Password::new(crate::enrollment::random())?;
     let resume_key = Uuid::new_v4();
     let a = audit(&proof, resume_key, "windows-device", "enrollment_resume");
-    access
-        .change_enrollment(
-            proof.enrollment("windows-device")?,
-            auth.id,
-            Some((&next, Uuid::new_v4())),
-            resume_key,
-            &a,
-        )
-        .await?;
+    crate::enrollment::store::change_enrollment(
+        &access,
+        proof.enrollment("windows-device")?,
+        auth.id,
+        Some((&next, Uuid::new_v4())),
+        resume_key,
+        &a,
+    )
+    .await?;
     a.finalize(None);
     ensure!(
-        access
-            .enrollment_authorization(TENANT, auth.id, &password)
+        crate::enrollment::store::enrollment_authorization(&access, TENANT, auth.id, &password)
             .await
             .is_err()
     );
@@ -415,9 +422,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .await
             .is_err()
     );
-    let resumed = access
-        .enrollment_authorization(TENANT, auth.id, &next)
-        .await?;
+    let resumed =
+        crate::enrollment::store::enrollment_authorization(&access, TENANT, auth.id, &next).await?;
     ensure!(
         resumed.operation == auth.operation
             && resumed.expected_generation == auth.expected_generation
@@ -438,27 +444,37 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             Uuid::new_v4(),
         )
         .await?;
-        let auth = access
-            .enrollment_authorization(TENANT, pending.enrollment_id, &password)
-            .await?;
-        let intent = access
-            .issuance_intent(
-                &w,
-                &auth,
-                &proof,
-                (
-                    &csr,
-                    rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
-                ),
-                now(),
-            )
-            .await?;
+        let auth = crate::enrollment::store::enrollment_authorization(
+            &access,
+            TENANT,
+            pending.enrollment_id,
+            &password,
+        )
+        .await?;
+        let intent = crate::windows::issuance::issuance_intent(
+            &access,
+            &w,
+            &auth,
+            &proof,
+            (
+                &csr,
+                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+            ),
+            now(),
+        )
+        .await?;
         if cause == "cancel" {
             let key = Uuid::new_v4();
             let a = audit(&proof, key, device, "enrollment_cancel");
-            access
-                .change_enrollment(proof.enrollment(device)?, auth.id, None, key, &a)
-                .await?;
+            crate::enrollment::store::change_enrollment(
+                &access,
+                proof.enrollment(device)?,
+                auth.id,
+                None,
+                key,
+                &a,
+            )
+            .await?;
             a.finalize(None);
         } else if cause == "expiry" {
             sqlx::query("UPDATE mdm_access.requests SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(TENANT).bind(auth.id.to_string()).execute(&mut pg).await?;
@@ -505,26 +521,30 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         Uuid::new_v4(),
     )
     .await?;
-    let a = access
-        .enrollment_authorization(TENANT, r.enrollment_id, &password)
-        .await?;
-    let i = access
-        .issuance_intent(
-            &w,
-            &a,
-            &proof,
-            (
-                &csr,
-                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
-            ),
-            now(),
-        )
-        .await?;
+    let a = crate::enrollment::store::enrollment_authorization(
+        &access,
+        TENANT,
+        r.enrollment_id,
+        &password,
+    )
+    .await?;
+    let i = crate::windows::issuance::issuance_intent(
+        &access,
+        &w,
+        &a,
+        &proof,
+        (
+            &csr,
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+        ),
+        now(),
+    )
+    .await?;
     let c = w.ca.sign(&i.tbs)?;
     pg.execute("REVOKE INSERT ON mdm_access.audit FROM mdm_access")
         .await?;
     let failed = complete(&access, &w, &a, &proof, &i, &c).await;
-    ensure!(AccessStore::connect(options("mdm_access")?).await.is_err());
+    ensure!(Database::connect(options("mdm_access")?).await.is_err());
     pg.execute("GRANT INSERT ON mdm_access.audit TO mdm_access")
         .await?;
     ensure!(matches!(failed, Err(Error::Unavailable(Failure::Audit))));
@@ -548,36 +568,44 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         Uuid::new_v4(),
     )
     .await?;
-    let a1 = access
-        .enrollment_authorization(TENANT, first.enrollment_id, &password)
-        .await?;
-    let a2 = access
-        .enrollment_authorization(TENANT, second.enrollment_id, &password)
-        .await?;
-    let i1 = access
-        .issuance_intent(
-            &w,
-            &a1,
-            &proof,
-            (
-                &csr,
-                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
-            ),
-            now(),
-        )
-        .await?;
-    let i2 = access
-        .issuance_intent(
-            &w,
-            &a2,
-            &proof,
-            (
-                &csr,
-                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
-            ),
-            now(),
-        )
-        .await?;
+    let a1 = crate::enrollment::store::enrollment_authorization(
+        &access,
+        TENANT,
+        first.enrollment_id,
+        &password,
+    )
+    .await?;
+    let a2 = crate::enrollment::store::enrollment_authorization(
+        &access,
+        TENANT,
+        second.enrollment_id,
+        &password,
+    )
+    .await?;
+    let i1 = crate::windows::issuance::issuance_intent(
+        &access,
+        &w,
+        &a1,
+        &proof,
+        (
+            &csr,
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+        ),
+        now(),
+    )
+    .await?;
+    let i2 = crate::windows::issuance::issuance_intent(
+        &access,
+        &w,
+        &a2,
+        &proof,
+        (
+            &csr,
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+        ),
+        now(),
+    )
+    .await?;
     let (c1, c2) = (w.ca.sign(&i1.tbs)?, w.ca.sign(&i2.tbs)?);
     let (r1, r2) = tokio::join!(
         complete(&access, &w, &a1, &proof, &i1, &c1),
@@ -602,16 +630,16 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let key = Uuid::new_v4();
     let a = audit(&proof, key, "windows-device", "enrollment_resume");
     ensure!(
-        access
-            .change_enrollment(
-                proof.enrollment("windows-device")?,
-                auth.id,
-                Some((&password, Uuid::new_v4())),
-                key,
-                &a
-            )
-            .await
-            .is_err()
+        crate::enrollment::store::change_enrollment(
+            &access,
+            proof.enrollment("windows-device")?,
+            auth.id,
+            Some((&password, Uuid::new_v4())),
+            key,
+            &a
+        )
+        .await
+        .is_err()
     );
     a.finalize(None);
     for (grant, revoke) in [
@@ -629,7 +657,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         ),
     ] {
         pg.execute(grant).await?;
-        let rejected = AccessStore::connect(options("mdm_access")?).await.is_err();
+        let rejected = Database::connect(options("mdm_access")?).await.is_err();
         pg.execute(revoke).await?;
         ensure!(rejected);
     }
@@ -671,7 +699,7 @@ impl IngressClock {
 
 async fn ingress_burst(
     client: &reqwest::Client,
-    app: &App,
+    app: &Assembly,
     clock: &IngressClock,
 ) -> anyhow::Result<()> {
     let url = format!(
@@ -750,7 +778,7 @@ impl Running {
 )]
 async fn discover_and_policy(
     client: &reqwest::Client,
-    app: &App,
+    app: &Assembly,
     enrollment: Uuid,
     password: &str,
 ) -> anyhow::Result<()> {
@@ -954,19 +982,21 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     value["command_database"]["user"] = "mdm_command_runtime".into();
     let config: crate::config::Config = serde_json::from_value(value)?;
     let clock = Arc::new(crate::clock::SystemClock);
-    let identity_management = Arc::new(crate::access::IdentityManagementPolicy::new(
-        TENANT,
-        crate::identity_fixture::INSTANCE,
-        config.identity_management.clone(),
-    )?);
+    let identity_management = Arc::new(
+        crate::authorization::identity_management::IdentityManagementPolicy::new(
+            TENANT,
+            crate::identity_fixture::INSTANCE,
+            config.identity_management.clone(),
+        )?,
+    );
     let identity =
         crate::identity::Identity::connect(&config, identity_management.clone(), |_| {}).await?;
     let secret = crate::identity_fixture::login(&identity, "admin").await?;
-    let credentials = crate::enrollment_credentials::Credentials::new(monotonic(), 100);
+    let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 100);
     let reference = credentials.insert(rss_identity_core::session::SessionSecret::parse(
         secret.expose().into(),
     )?)?;
-    let store = Arc::new(AccessStore::connect(options("mdm_access")?).await?);
+    let store = Arc::new(Database::connect(options("mdm_access")?).await?);
     let devices = Arc::new(crate::device::DeviceService::new(
         store.clone(),
         TENANT.into(),
@@ -992,15 +1022,19 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     let commands = crate::commands::Commands::open(&config)
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
-    let app = Arc::new(App {
+    let app = Arc::new(Assembly {
         apple: None,
         commands,
         management,
-        identity,
-        credentials,
+        identity: Arc::new(identity),
+        credentials: Arc::new(credentials),
         clock,
         identity_management,
-        collection: CollectionService::new(devices.clone(), store.clone(), runtime.clone()),
+        collection: Arc::new(CollectionService::new(
+            devices.clone(),
+            store.clone(),
+            runtime.clone(),
+        )),
         readiness: runtime.readiness.clone(),
         devices,
         access: store.clone(),
@@ -1163,22 +1197,26 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
         panic!()
     };
     ensure!(replay.provisioning == result.provisioning);
-    let auth = store
-        .enrollment_authorization(TENANT, receipt.enrollment_id, &password)
-        .await?;
+    let auth = crate::enrollment::store::enrollment_authorization(
+        &store,
+        TENANT,
+        receipt.enrollment_id,
+        &password,
+    )
+    .await?;
     let csr = std::fs::read(root.join("device.csr"))?;
-    let intent = store
-        .issuance_intent(
-            app.windows()?,
-            &auth,
-            &proof,
-            (
-                &csr,
-                rss_mdm_windows_mdm::provisioning::EnrollmentType::Device,
-            ),
-            now(),
-        )
-        .await?;
+    let intent = crate::windows::issuance::issuance_intent(
+        &store,
+        app.windows()?,
+        &auth,
+        &proof,
+        (
+            &csr,
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Device,
+        ),
+        now(),
+    )
+    .await?;
     let cert = app.windows()?.ca.sign(&intent.tbs)?;
     let cert_pem = x509_cert::Certificate::from_der(&cert)?.to_pem(LineEnding::LF)?;
     let identity = reqwest::Identity::from_pem(
@@ -1471,12 +1509,14 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
         .current_scope(
             &proof,
             "tls-device",
-            crate::access::Coordinates {
+            crate::device::coordinates::Coordinates {
                 source: rss_mdm_inventory::ReportSource::MdmWindows,
             },
         )
         .await?;
-    let pending = store.collection(&scope, None).await?.unwrap();
+    let pending = crate::collection::store::collection(&store, &scope, None)
+        .await?
+        .unwrap();
     ensure!(pending.result == crate::collection::RunResult::Pending && pending.batch().is_none());
     ensure!(
         reader
@@ -1513,13 +1553,14 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
             .iter()
             .any(|c| matches!(c, Command::Status(s) if s.command == CommandName::Results))
     );
-    let sealed = store.collection(&scope, None).await?.unwrap();
+    let sealed = crate::collection::store::collection(&store, &scope, None)
+        .await?
+        .unwrap();
     ensure!(sealed.id == pending.id && sealed.result == crate::collection::RunResult::Snapshot);
     let bytes = sealed.batch().unwrap().encode().to_vec();
     ensure!(post(final_fragment).send().await?.status() == StatusCode::OK);
     ensure!(
-        store
-            .collection(&scope, None)
+        crate::collection::store::collection(&store, &scope, None)
             .await?
             .unwrap()
             .batch()

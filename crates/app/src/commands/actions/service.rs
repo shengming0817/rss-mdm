@@ -3,8 +3,8 @@ use crate::commands::{Commands, Result, invalid, recovery, rejection, settle, st
 use crate::{
     Error,
     audit::Audit,
+    authorization::context::AuthorizedPrincipal,
     authorization::{Approval, Permission},
-    identity::Principal,
 };
 use rss_mdm_resource as r;
 use serde_json::{Value, json};
@@ -25,7 +25,7 @@ pub(super) fn target(tenant: rss_request_context::TenantId, id: Uuid) -> rss_rec
 impl Commands {
     pub(super) async fn create_action_plan(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         input: &Create,
         audit: &Audit,
     ) -> std::result::Result<Value, Error> {
@@ -65,7 +65,7 @@ impl Commands {
     }
     pub(super) async fn approve_action_plan(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         id: Uuid,
         change: &Change,
         audit: &Audit,
@@ -101,7 +101,7 @@ impl Commands {
     }
     pub(super) async fn read_action_plan(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         id: Uuid,
         audit: &Audit,
     ) -> std::result::Result<Value, Error> {
@@ -113,7 +113,7 @@ impl Commands {
     }
     pub(super) async fn cancel_action_plan(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         id: Uuid,
         change: &Change,
         audit: &Audit,

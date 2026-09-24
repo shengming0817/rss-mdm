@@ -15,7 +15,7 @@ mod renewal_cycle;
 mod scep;
 use super::*;
 use crate::{
-    api::App,
+    api::Assembly,
     clock::Clock,
     identity_t2::Browser,
     native::{self, tls},
@@ -33,7 +33,7 @@ use uuid::Uuid;
 const TENANT: &str = "11111111-1111-4111-8111-111111111111";
 const DEVICE: &str = "apple-native-mac";
 struct Fixture {
-    app: Arc<App>,
+    app: Arc<Assembly>,
     browser: Browser,
     router: Router,
     owner: rss_runtime::ShutdownStack,
@@ -61,8 +61,7 @@ impl Fixture {
         let config = &compiled.config;
         let clock = Arc::new(crate::clock::SystemClock);
         let monotonic: Arc<dyn rss_observation::Clock> = fixture_clock();
-        let access =
-            Arc::new(crate::AccessStore::connect(config.access_database.options()?).await?);
+        let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
         let devices = Arc::new(crate::device::DeviceService::new(
             access.clone(),
             TENANT.into(),
@@ -90,17 +89,22 @@ impl Fixture {
         )
         .await?;
         let config = compiled.config;
-        let app = Arc::new(App {
+        let app = Arc::new(Assembly {
             commands: commands.clone(),
             management,
-            identity,
-            credentials: crate::enrollment_credentials::Credentials::new(monotonic.clone(), 100),
+            identity: Arc::new(identity),
+            credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
+                monotonic.clone(),
+                100,
+            )),
             clock,
             identity_management: compiled.identity_management,
-            collection: crate::access::CollectionService::new(
-                devices.clone(),
-                access.clone(),
-                runtime.clone(),
+            collection: Arc::new(
+                crate::management::assets::collection::CollectionService::new(
+                    devices.clone(),
+                    access.clone(),
+                    runtime.clone(),
+                ),
             ),
             readiness: runtime.readiness.clone(),
             devices,

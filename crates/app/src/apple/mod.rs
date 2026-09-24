@@ -95,7 +95,7 @@ fn webhook_key(config: &config::Webhook) -> Result<ring::hmac::Key, Error> {
     Ok(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &secret))
 }
 mod checkin;
-pub(crate) fn browser_routes() -> axum::Router<Arc<crate::api::App>> {
+pub(crate) fn browser_routes() -> axum::Router<Arc<crate::apple::HttpState>> {
     use axum::routing::post;
     axum::Router::new()
         .route(
@@ -107,7 +107,7 @@ pub(crate) fn browser_routes() -> axum::Router<Arc<crate::api::App>> {
         .layer(axum::extract::DefaultBodyLimit::max(128 * 1024))
 }
 pub(crate) fn router(
-    app: Arc<crate::api::App>,
+    app: Arc<crate::apple::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
 ) -> Option<crate::native::TlsRouter> {
     use crate::{
@@ -212,6 +212,33 @@ impl Apple {
             *last = Some(item.level);
         }
     }
+}
+
+pub(crate) struct HttpState {
+    pub(crate) access: std::sync::Arc<crate::database::Database>,
+    pub(crate) apple: Option<std::sync::Arc<crate::apple::Apple>>,
+    pub(crate) clock: std::sync::Arc<dyn crate::clock::Clock>,
+    pub(crate) commands: std::sync::Arc<crate::commands::Commands>,
+    pub(crate) credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
+    pub(crate) devices: std::sync::Arc<crate::device::DeviceService>,
+    pub(crate) identity: std::sync::Arc<crate::identity::Identity>,
+    pub(crate) requests: std::sync::Arc<tokio::sync::Semaphore>,
+}
+impl HttpState {
+    pub(crate) fn apple(&self) -> std::result::Result<&Arc<crate::apple::Apple>, crate::Error> {
+        self.apple.as_ref().ok_or(crate::Error::Unsupported)
+    }
+}
+
+pub(crate) async fn retire_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &str,
+    registration: uuid::Uuid,
+) -> Result<(), Error> {
+    use crate::database::db;
+    sqlx::query("UPDATE mdm_apple.devices SET state='retired',token=NULL,magic=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut **tx).await.map_err(db)?;
+    Ok(())
 }
 #[cfg(test)]
 mod health_tests {

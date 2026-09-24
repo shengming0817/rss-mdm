@@ -1,9 +1,6 @@
 use super::model::{Change, Create};
-use crate::{
-    Error,
-    api::{App, RequestAuth},
-    audit::Audit,
-};
+use crate::commands::http::HttpState;
+use crate::{Error, audit::Audit, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     body::Bytes,
@@ -22,7 +19,7 @@ type Body<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonReject
 fn body<T>(v: Body<T>) -> Result<T, Error> {
     v.map(|v| v.0).map_err(|_| Error::Malformed)
 }
-pub(crate) fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/script-plans", post(create))
         .route("/script-plans/{id}", get(read))
@@ -35,7 +32,7 @@ pub(crate) fn routes() -> Router<Arc<App>> {
             post(upload).layer(DefaultBodyLimit::max(16_777_216)),
         )
 }
-pub(crate) fn agent_routes() -> Router<Arc<App>> {
+pub(crate) fn agent_routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/tasks/claim", post(claim))
         .route(
@@ -45,7 +42,7 @@ pub(crate) fn agent_routes() -> Router<Arc<App>> {
         .route("/tasks/{id}/content", get(download))
 }
 async fn create(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     input: Body<Create>,
@@ -59,7 +56,7 @@ async fn create(
         .map(|v| (StatusCode::ACCEPTED, Json(v)))
 }
 async fn read(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -72,7 +69,7 @@ async fn read(
         .map(Json)
 }
 async fn runs(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -86,7 +83,7 @@ async fn runs(
         .map(Json)
 }
 async fn run(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path((id, task)): Path<(Uuid, Uuid)>,
@@ -100,7 +97,7 @@ async fn run(
         .map(Json)
 }
 async fn approve(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -115,7 +112,7 @@ async fn approve(
         .map(Json)
 }
 async fn cancel(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<Uuid>,
@@ -130,11 +127,11 @@ async fn cancel(
         .map(Json)
 }
 async fn authenticate(
-    app: &App,
+    app: &HttpState,
     headers: &HeaderMap,
     audit: &Audit,
 ) -> Result<crate::device::DevicePrincipal, crate::agent::AgentError> {
-    let credential = crate::agent::agent_credential(app, headers)?;
+    let credential = crate::agent::agent_credential(app.commands.tenant, headers)?;
     let principal = app
         .devices
         .authorize_task(&credential)
@@ -155,12 +152,12 @@ fn task_error(error: Error) -> crate::agent::AgentError {
     }
 }
 async fn claim(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
     input: Body<wire::TaskClaimRequest>,
 ) -> Result<Json<Value>, crate::agent::AgentError> {
-    crate::agent::bounded(&app, async {
+    crate::agent::bounded(async {
         let input = body(input)?;
         let principal = authenticate(&app, &headers, &audit).await?;
         audit.operation(input.operation_id(), "command_read");
@@ -174,13 +171,13 @@ async fn claim(
     .await
 }
 async fn event(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     input: Body<wire::TaskEventRequest>,
 ) -> Result<Json<Value>, crate::agent::AgentError> {
-    crate::agent::bounded(&app, async {
+    crate::agent::bounded(async {
         let input = body(input)?;
         let principal = authenticate(&app, &headers, &audit).await?;
         audit.operation(input.operation_id(), "command_accept");
@@ -199,13 +196,13 @@ struct Download {
     attempt: Uuid,
 }
 async fn download(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<Audit>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(query): Query<Download>,
 ) -> Result<Response, crate::agent::AgentError> {
-    crate::agent::bounded(&app, async {
+    crate::agent::bounded(async {
         let principal = authenticate(&app, &headers, &audit).await?;
         audit.operation(id, "command_read");
         let (bytes, etag) = app
@@ -291,7 +288,7 @@ struct Upload {
     architecture: super::model::Architecture,
 }
 async fn upload(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     Path(id): Path<String>,

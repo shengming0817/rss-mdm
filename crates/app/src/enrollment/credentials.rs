@@ -86,3 +86,16 @@ mod tests {
         assert!(cache.insert(secret()).is_ok());
     }
 }
+
+/// Enrollment-only continuation of the current authenticated browser session.
+#[derive(Clone)]
+pub(crate) struct SessionContinuation(Arc<SessionSecret>);
+impl SessionContinuation {
+    pub(crate) fn new(secret: SessionSecret) -> Self {
+        Self(Arc::new(secret))
+    }
+    pub(super) fn retain(&self, credentials: &Credentials) -> Result<Uuid, Error> {
+        credentials
+            .insert(SessionSecret::parse(self.0.expose().into()).map_err(|_| Error::Unauthorized)?)
+    }
+}

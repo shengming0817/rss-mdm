@@ -1,16 +1,15 @@
 //! One protected path: current SDK proof -> MDM capability -> private data access.
+use crate::authorization::context::RequestAuth;
 use crate::{
-    AccessStore, ConfigIssue, Failure,
+    ConfigIssue, Database, Failure,
     audit::{Audit, FailureReason, WriteOutcome},
-    enrollment::{Create, Resume},
 };
 use crate::{
-    Error,
-    access::{CollectionService, Coordinates, IdentityManagementPolicy},
-    enrollment_credentials::Credentials,
-    identity::Identity,
+    Error, authorization::identity_management::IdentityManagementPolicy,
+    device::coordinates::Coordinates, enrollment::credentials::Credentials, identity::Identity,
+    management::assets::collection::CollectionService,
 };
-use crate::{clock::Clock, identity::Principal};
+use crate::{authorization::context::AuthorizedPrincipal, clock::Clock};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
@@ -25,23 +24,24 @@ use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
-pub(crate) struct App {
+pub(crate) struct Assembly {
     pub(crate) commands: Arc<crate::commands::Commands>,
     pub(crate) management: Arc<crate::management::Management>,
-    pub(crate) identity: Identity,
-    pub(crate) credentials: Credentials,
+    pub(crate) identity: Arc<Identity>,
+    pub(crate) credentials: Arc<Credentials>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) identity_management: Arc<IdentityManagementPolicy>,
-    pub(crate) collection: CollectionService,
+    pub(crate) collection: Arc<CollectionService>,
     pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) apple: Option<Arc<crate::apple::Apple>>,
     pub(crate) windows: Option<Arc<crate::windows::Windows>>,
-    pub(crate) access: Arc<AccessStore>,
+    pub(crate) access: Arc<Database>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
 
-impl App {
+#[cfg(test)]
+impl Assembly {
     pub(crate) fn apple(&self) -> Result<&Arc<crate::apple::Apple>, Error> {
         self.apple.as_ref().ok_or(Error::Unsupported)
     }
@@ -50,72 +50,12 @@ impl App {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct RequestAuth {
-    pub(crate) proof: Arc<Principal>,
-    credential: Arc<SessionSecret>,
-}
-async fn protect(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
-    authenticate_and_run(app, request, next, true).await
-}
-async fn identity_only(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
-    authenticate_and_run(app, request, next, false).await
-}
-async fn authenticate_and_run(
-    app: Arc<App>,
-    request: Request,
-    next: Next,
-    authorization: bool,
-) -> Response {
-    let (mut parts, body) = request.into_parts();
-    let activity =
-        if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
-            rss_identity_http_axum::SessionActivity::Passive
-        } else {
-            rss_identity_http_axum::SessionActivity::Active
-        };
-    let _global = match app.requests.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => return Error::Unavailable(Failure::Capacity).into_response(),
-    };
-    match app
-        .identity
-        .authenticate_request(&parts.headers, activity)
-        .await
-    {
-        Ok((proof, credential)) => {
-            if let Some(audit) = parts.extensions.get::<Audit>() {
-                audit.identify(&proof);
-            }
-            // Authentication has settled. Authorization I/O and the handler share the host budget.
-            tokio::time::timeout(Duration::from_secs(8), async {
-                let proof = if authorization {
-                    match proof.load_authorization(&app.access).await {
-                        Ok(proof) => proof,
-                        Err(error) => return error.into_response(),
-                    }
-                } else {
-                    proof
-                };
-                parts.extensions.insert(RequestAuth {
-                    proof: Arc::new(proof),
-                    credential: Arc::new(credential),
-                });
-                next.run(Request::from_parts(parts, body)).await
-            })
-            .await
-            .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
-        }
-        Err(response) => response,
-    }
-}
-
 #[cfg(test)]
 pub(crate) async fn application(
     config: crate::config::Config,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
-    access: Arc<AccessStore>,
+    access: Arc<Database>,
     identity: Option<Identity>,
 ) -> Result<Router, Error> {
     Ok(
@@ -129,7 +69,7 @@ pub(crate) async fn application_fixture(
     config: crate::config::Config,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn rss_observation::Clock>,
-    access: Arc<AccessStore>,
+    access: Arc<Database>,
     identity: Option<Identity>,
 ) -> Result<(Router, Arc<crate::commands::Commands>), Error> {
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
@@ -183,7 +123,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) commands: Arc<crate::commands::Commands>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
-    pub(crate) access: Arc<AccessStore>,
+    pub(crate) access: Arc<Database>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub(crate) management: Arc<crate::management::Management>,
     pub(crate) identity: Identity,
@@ -224,17 +164,21 @@ pub(crate) fn from_compiled(
         .apple
         .map(|config| crate::apple::Apple::load(config, clock.unix_seconds()?).map(Arc::new))
         .transpose()?;
-    let state = Arc::new(App {
+    let state = Arc::new(Assembly {
         apple,
         commands,
         management,
         windows,
         access: access.clone(),
-        identity,
-        credentials: Credentials::new(monotonic.clone(), 10000),
+        identity: Arc::new(identity),
+        credentials: Arc::new(Credentials::new(monotonic.clone(), 10000)),
         clock,
         identity_management,
-        collection: CollectionService::new(devices.clone(), access.clone(), runtime.clone()),
+        collection: Arc::new(CollectionService::new(
+            devices.clone(),
+            access.clone(),
+            runtime.clone(),
+        )),
         readiness: runtime.readiness.clone(),
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -243,43 +187,123 @@ pub(crate) fn from_compiled(
 }
 
 pub(crate) fn from_state(
-    state: Arc<App>,
+    state: Arc<Assembly>,
     host: String,
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
+    let agent = Arc::new(crate::agent::HttpState {
+        access: state.access.clone(),
+        identity: state.identity.clone(),
+        credentials: state.credentials.clone(),
+        devices: state.devices.clone(),
+        collection: state.collection.clone(),
+    });
+    let commands = Arc::new(crate::commands::http::HttpState {
+        commands: state.commands.clone(),
+        devices: state.devices.clone(),
+        apple: state.apple.is_some(),
+        windows: state.windows.is_some(),
+    });
+    let management = Arc::new(crate::management::http::HttpState {
+        management: state.management.clone(),
+        access: state.access.clone(),
+    });
+    let assets = Arc::new(crate::management::assets::http::HttpState {
+        assets: state.management.assets.clone(),
+    });
+    let authorization = Arc::new(crate::authorization::http::HttpState {
+        access: state.access.clone(),
+    });
+    let apple_state = Arc::new(crate::apple::HttpState {
+        access: state.access.clone(),
+        apple: state.apple.clone(),
+        clock: state.clock.clone(),
+        commands: state.commands.clone(),
+        credentials: state.credentials.clone(),
+        devices: state.devices.clone(),
+        identity: state.identity.clone(),
+        requests: state.requests.clone(),
+    });
+    let windows_state = Arc::new(crate::windows::HttpState {
+        access: state.access.clone(),
+        clock: state.clock.clone(),
+        commands: state.commands.clone(),
+        credentials: state.credentials.clone(),
+        devices: state.devices.clone(),
+        identity: state.identity.clone(),
+        requests: state.requests.clone(),
+        windows: state.windows.clone(),
+    });
+    let collection = Arc::new(crate::collection::apple::HttpState {
+        access: state.access.clone(),
+        apple: state.apple.is_some(),
+        tenant: state.identity.tenant,
+    });
+    let authentication_state = Arc::new(crate::authorization::http::AuthenticationState {
+        identity: state.identity.clone(),
+        access: state.access.clone(),
+        requests: state.requests.clone(),
+    });
+    let identity_context_state = Arc::new(IdentityContextState {
+        identity_management: state.identity_management.clone(),
+    });
+    let enrollment = Arc::new(crate::enrollment::http::HttpState {
+        service: Arc::new(crate::enrollment::EnrollmentService::new(
+            state.access.clone(),
+            state.credentials.clone(),
+        )),
+        devices: state.devices.clone(),
+        apple: state.apple.is_some(),
+        windows: state.windows.is_some(),
+    });
+    let collection_read = Arc::new(CollectionState {
+        collection: state.collection.clone(),
+    });
+    let readiness = Arc::new(ReadinessState {
+        readiness: state.readiness.clone(),
+        apple: state.apple.clone(),
+        clock: state.clock.clone(),
+        management: state.management.clone(),
+    });
     let authentication = state.identity.routes();
     let audit_tenant = state.identity.tenant.to_string();
     let access = state.access.clone();
     let requests = state.requests.clone();
     let protected_v1 = Router::new()
-        .merge(crate::management::routes())
-        .merge(crate::authorization::routes())
+        .merge(crate::management::routes().with_state(management.clone()))
+        .merge(crate::authorization::routes().with_state(authorization))
         .route(
             "/devices/{id}/collection-runs",
-            post(crate::collection::apple::create),
+            post(crate::collection::apple::create).with_state(collection),
         )
-        .route("/devices/{id}/collection-runs/{run}", get(collection_run))
-        .route("/devices/{id}/actions", post(action))
-        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
-    let protected_v2 = Router::new()
-        .merge(crate::commands::routes())
-        .merge(crate::management::routes_v2())
-        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
-    let protected_v3 = crate::management::resource_routes()
-        .merge(crate::commands::actions::http::routes())
-        .route("/enrollments", post(create_enrollment))
-        .route("/enrollments/{id}", get(enrollment_status))
-        .route("/devices/{device}/registrations", get(registrations))
-        .route("/enrollments/{id}/resume", post(resume_enrollment))
-        .route("/enrollments/{id}/cancel", post(cancel_enrollment))
         .route(
-            "/devices/{device}/registrations/{registration}/revoke",
-            post(revoke_registration),
+            "/devices/{id}/collection-runs/{run}",
+            get(collection_run).with_state(collection_read),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), protect));
+        .route("/devices/{id}/actions", post(action))
+        .route_layer(middleware::from_fn_with_state(
+            authentication_state.clone(),
+            crate::authorization::http::protect,
+        ));
+    let protected_v2 = Router::new()
+        .merge(crate::commands::routes().with_state(commands.clone()))
+        .merge(crate::management::routes_v2().with_state(management.clone()))
+        .merge(crate::management::assets::routes().with_state(assets))
+        .route_layer(middleware::from_fn_with_state(
+            authentication_state.clone(),
+            crate::authorization::http::protect,
+        ));
+    let protected_v3 = crate::management::resource_routes()
+        .with_state(management)
+        .merge(crate::commands::actions::http::routes().with_state(commands.clone()))
+        .merge(crate::enrollment::http::routes().with_state(enrollment))
+        .route_layer(middleware::from_fn_with_state(
+            authentication_state.clone(),
+            crate::authorization::http::protect,
+        ));
     let mut listeners = Vec::new();
     if let Some((enrollment, management)) =
-        crate::windows::routers(state.clone(), monotonic.clone())
+        crate::windows::routers(windows_state, monotonic.clone())
     {
         listeners.push((
             crate::native::NativeListenerKind::WindowsEnrollment,
@@ -290,26 +314,33 @@ pub(crate) fn from_state(
             management,
         ));
     }
-    if let Some(apple) = crate::apple::router(state.clone(), monotonic.clone()) {
+    if let Some(apple) = crate::apple::router(apple_state.clone(), monotonic.clone()) {
         listeners.push((crate::native::NativeListenerKind::AppleManagement, apple));
     }
     let host_context = Router::new()
         .route(
             "/api/identity-host/v1/tenants/{tenant}/context",
-            get(identity_context),
+            get(identity_context).with_state(identity_context_state),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), identity_only));
+        .route_layer(middleware::from_fn_with_state(
+            authentication_state.clone(),
+            crate::authorization::http::identity_only,
+        ));
     let apple = state.apple.clone();
     let browser = Router::new()
         .merge(host_context)
-        .merge(crate::apple::browser_routes())
-        .nest("/api/agent/v2", crate::agent::routes())
+        .merge(crate::apple::browser_routes().with_state(apple_state))
+        .nest(
+            "/api/agent/v2",
+            crate::agent::routes()
+                .with_state(agent)
+                .merge(crate::commands::actions::http::agent_routes().with_state(commands)),
+        )
         .nest("/api/v1", protected_v1)
         .nest("/api/v2", protected_v2)
         .nest("/api/v3", protected_v3)
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
-        .route("/readyz", get(ready))
-        .with_state(state)
+        .route("/readyz", get(ready).with_state(readiness))
         .merge(authentication)
         .layer(DefaultBodyLimit::max(16384))
         .layer(middleware::from_fn_with_state(
@@ -333,7 +364,7 @@ pub(crate) fn from_state(
 pub(crate) struct Envelope {
     pub(crate) host: String,
     pub(crate) clock: Arc<dyn rss_observation::Clock>,
-    pub(crate) access: Arc<AccessStore>,
+    pub(crate) access: Arc<Database>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
     pub(crate) tenant: String,
 }
@@ -349,11 +380,13 @@ fn route_action(route: &str, native_identity: bool) -> &'static str {
         }
         "/api/v3/enrollments" => "enrollment_create",
         "/api/v3/enrollments/{id}" => "enrollment_read",
-        "/api/v3/devices/{device}/registrations" => "registration_read",
+        "/api/v3/devices/{device}/crate::enrollment::http::registrations" => "registration_read",
         "/api/v3/enrollments/{id}/resume" => "enrollment_resume",
         "/api/v3/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v3/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/agent/v2/registrations" => "agent_registration",
+        "/api/v3/devices/{device}/crate::enrollment::http::registrations/{registration}/revoke" => {
+            "credential_revoke"
+        }
+        "/api/agent/v2/crate::enrollment::http::registrations" => "agent_registration",
         "/api/agent/v2/reports" => "agent_report",
         "/api/agent/v2/reports/{id}" => "agent_report_read",
         "/api/v2/devices/{id}/inventory" => "inventory_read",
@@ -425,8 +458,11 @@ pub(crate) async fn envelope(
         {
             let store = &envelope.access;
             if !matches!(
-                tokio::time::timeout(Duration::from_secs(2), store.record(&audit, status, result))
-                    .await,
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    crate::audit::record(store, &audit, status, result)
+                )
+                .await,
                 Ok(Ok(()))
             ) {
                 audit_failure = Some(FailureReason::Persistent);
@@ -547,11 +583,13 @@ fn audit_result(response: &Response, snapshot: &crate::audit::Snapshot) -> &'sta
         "success"
     }
 }
-pub(crate) async fn authenticate(app: &App, secret: SessionSecret) -> Result<Principal, Error> {
-    app.identity
-        .authenticate(secret)
-        .await?
-        .load_authorization(&app.access)
+pub(crate) async fn authenticate(
+    identity: &Identity,
+    access: &Database,
+    secret: SessionSecret,
+) -> Result<AuthorizedPrincipal, Error> {
+    AuthorizedPrincipal::from_identity(identity.authenticate(secret).await?)
+        .load_authorization(access)
         .await
 }
 #[derive(serde::Serialize)]
@@ -560,10 +598,10 @@ struct IdentityHostContext {
     tenant_id: String,
     principal_id: String,
     session_id: String,
-    navigation: crate::access::IdentityNavigation,
+    navigation: crate::authorization::identity_management::IdentityNavigation,
 }
 async fn identity_context(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<IdentityContextState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(tenant): Path<String>,
 ) -> Result<Json<IdentityHostContext>, Error> {
@@ -616,7 +654,7 @@ fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
     }
     Ok(id)
 }
-fn write_key(
+pub(crate) fn write_key(
     headers: &HeaderMap,
     audit: &Audit,
     action: &'static str,
@@ -625,137 +663,8 @@ fn write_key(
     audit.operation(key, action);
     Ok(key)
 }
-async fn create_enrollment(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
-    input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let key = write_key(&headers, &audit, "enrollment_create")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
-    match input.source {
-        rss_mdm_inventory::ReportSource::MdmWindows => {
-            app.windows()?;
-        }
-        rss_mdm_inventory::ReportSource::MdmApple => {
-            app.apple()?;
-        }
-        rss_mdm_inventory::ReportSource::AgentBuiltin => {}
-    }
-    let permission = auth.proof.enrollment(&input.device_id)?;
-    audit.target(&input.device_id);
-    let reference = app.credentials.insert(
-        SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
-    )?;
-    app.access
-        .create_enrollment(
-            permission,
-            &input.password,
-            input.source,
-            reference,
-            key,
-            &audit,
-        )
-        .await
-        .map(Json)
-}
-async fn enrollment_status(
-    State(app): State<Arc<App>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
-    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
-) -> Result<Json<crate::enrollment::read::Status>, Error> {
-    let Path(id) = path.map_err(|_| Error::Malformed)?;
-    let device = app.access.enrollment_target(&auth.proof, id).await?;
-    let permission = auth.proof.enrollment(&device)?;
-    audit.target(&device);
-    app.access.enrollment_status(permission, id).await.map(Json)
-}
-async fn registrations(
-    State(app): State<Arc<App>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
-    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
-    query: Result<Query<crate::enrollment::read::Page>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<crate::enrollment::read::Registrations>, Error> {
-    let Path(device) = path.map_err(|_| Error::Malformed)?;
-    let Query(page) = query.map_err(|_| Error::Malformed)?;
-    audit.target(&device);
-    app.access
-        .registration_list(&auth.proof, &device, page)
-        .await
-        .map(Json)
-}
-async fn resume_enrollment(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
-    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
-    input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let Path(id) = path.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &audit, "enrollment_resume")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
-    let device = app.access.enrollment_target(&auth.proof, id).await?;
-    let permission = auth.proof.enrollment(&device)?;
-    audit.target(&device);
-    let reference = app.credentials.insert(
-        SessionSecret::parse(auth.credential.expose().into()).map_err(|_| Error::Unauthorized)?,
-    )?;
-    app.access
-        .change_enrollment(
-            permission,
-            id,
-            Some((&input.password, reference)),
-            key,
-            &audit,
-        )
-        .await
-        .map(Json)
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EmptyRequest {}
-async fn cancel_enrollment(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
-    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
-    input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let Path(id) = path.map_err(|_| Error::Malformed)?;
-    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &audit, "enrollment_cancel")?;
-    let device = app.access.enrollment_target(&auth.proof, id).await?;
-    let permission = auth.proof.enrollment(&device)?;
-    audit.target(&device);
-    app.access
-        .change_enrollment(permission, id, None, key, &audit)
-        .await
-        .map(Json)
-}
-async fn revoke_registration(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
-    path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
-    input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<crate::device::RevocationReceipt>, Error> {
-    let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
-    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
-    let key = write_key(&headers, &audit, "credential_revoke")?;
-    audit.target(&device);
-    app.devices
-        .revoke_inner(&auth.proof, &device, registration, key, &audit)
-        .await
-        .map(Json)
-}
 
-async fn ready(State(app): State<Arc<App>>) -> Response {
+async fn ready(State(app): State<Arc<ReadinessState>>) -> Response {
     if app.readiness.ready()
         && app
             .apple
@@ -778,18 +687,33 @@ async fn ready(State(app): State<Arc<App>>) -> Response {
     }
 }
 async fn collection_run(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<CollectionState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<Audit>,
     path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     query: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<crate::access::CollectionResponse>, Error> {
+) -> Result<Json<crate::management::assets::collection::CollectionResponse>, Error> {
     let Path((device, run)) = path.map_err(|_| Error::Malformed)?;
     let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
     audit.target(&device);
     audit.set_action("collection_read");
     let grant = auth.proof.inventory(&device, coordinates)?;
     Ok(Json(app.collection.run(grant, run).await?))
+}
+
+struct IdentityContextState {
+    identity_management: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
+}
+
+struct CollectionState {
+    collection: Arc<crate::management::assets::collection::CollectionService>,
+}
+
+struct ReadinessState {
+    readiness: Arc<crate::inventory_runtime::Readiness>,
+    apple: Option<Arc<crate::apple::Apple>>,
+    clock: Arc<dyn crate::clock::Clock>,
+    management: Arc<crate::management::Management>,
 }
 
 #[cfg(test)]
@@ -808,7 +732,7 @@ mod tests {
         use tower::ServiceExt;
         const CHILD: &str = "MDM_AUDIT_LOG_TEST";
         if let Ok(mode) = std::env::var(CHILD) {
-            let access = Arc::new(AccessStore::unconnected());
+            let access = Arc::new(Database::unconnected());
             access.close().await;
             let router = Router::new()
                 .route(
@@ -907,7 +831,7 @@ mod tests {
                     Envelope {
                         host: "mdm.example.test".to_owned(),
                         clock: monotonic(),
-                        access: Arc::new(AccessStore::unconnected()),
+                        access: Arc::new(Database::unconnected()),
                         requests: Arc::new(tokio::sync::Semaphore::new(4)),
                         tenant: "11111111-1111-4111-8111-111111111111".into(),
                     },

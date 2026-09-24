@@ -18,7 +18,6 @@ pub(super) async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
 }
 pub(super) fn identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>, Vec<u8>)> {
     let id = match command {
-        Command::Asset { command } => command.operation(),
         Command::PublicationIntent { request, .. } => Some(request.operation_id),
         Command::Resource { change, .. } => Some(change.operation_id),
         Command::Group { change, .. } => Some(change.operation_id),
@@ -61,7 +60,7 @@ pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit) -> Result<(
     };
     tx.with_connection(move |c| {
         Box::pin(async move {
-            crate::access_store::append_on_connection(c, &audit, status, result, None)
+            crate::audit::append_on_connection(c, &audit, status, result, None)
                 .await
                 .map_err(|_| sqlx::Error::Protocol("management audit failed".into()))
         })

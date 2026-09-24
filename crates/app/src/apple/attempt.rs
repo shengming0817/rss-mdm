@@ -1,6 +1,6 @@
 //! One owner for authenticated native response replay and durable transitions.
 use super::protocol::Status;
-use crate::{Error, access_store::db, device::DevicePrincipal};
+use crate::{Error, database::db, device::DevicePrincipal};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;

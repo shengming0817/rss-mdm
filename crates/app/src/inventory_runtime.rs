@@ -1,6 +1,6 @@
 //! The sole production Observation -> Inventory runner. No product claim or checkpoint engine.
 use crate::{
-    AccessStore, Error, Failure,
+    Database, Error, Failure,
     collection::{DurableReport, Run},
 };
 use rss_observation::{
@@ -276,7 +276,7 @@ enum WorkerFailure {
 pub(crate) struct InventoryRuntime {
     observation: Arc<Observation<Clock>>,
     projection: Arc<Projection>,
-    access: Arc<AccessStore>,
+    delivery: crate::collection::store::Delivery,
     tenant: TenantId,
     clock: Clock,
     pub readiness: Arc<Readiness>,
@@ -285,7 +285,7 @@ impl InventoryRuntime {
     pub(crate) fn new(
         observation: Arc<Observation<Clock>>,
         projection: Arc<Projection>,
-        access: Arc<AccessStore>,
+        access: Arc<Database>,
         tenant: TenantId,
         clock: Clock,
         readiness: Arc<Readiness>,
@@ -293,7 +293,7 @@ impl InventoryRuntime {
         Self {
             observation,
             projection,
-            access,
+            delivery: crate::collection::store::Delivery::new(access),
             tenant,
             clock,
             readiness,
@@ -349,7 +349,7 @@ impl InventoryRuntime {
             .map_err(|_| WorkerFailure::ObservationReceive)?;
         // A lost acknowledgement leaves this true. Restart repeats the exact batch; lookup None
         // is never interpreted as proof of rollback.
-        tokio::time::timeout_at(deadline.instant().into(), self.access.delivered(report))
+        tokio::time::timeout_at(deadline.instant().into(), self.delivery.delivered(report))
             .await
             .map_err(|_| WorkerFailure::DeliveryProgress)?
             .map_err(|_| WorkerFailure::DeliveryProgress)
@@ -404,7 +404,7 @@ impl InventoryRuntime {
             let deadline = self.clock.deadline();
             let reports = tokio::time::timeout_at(
                 deadline.instant().into(),
-                self.access.pending_reports(&self.tenant.to_string()),
+                self.delivery.pending_reports(&self.tenant.to_string()),
             )
             .await
             .map_err(|_| WorkerFailure::PendingReports)?
@@ -536,7 +536,7 @@ fn stream_correlation(scope: &Scope) -> String {
 impl InventoryRuntime {
     pub(crate) async fn fixture(
         options: PgConnectOptions,
-        access: Arc<AccessStore>,
+        access: Arc<Database>,
         tenant: TenantId,
         monotonic: Arc<dyn rss_observation::Clock>,
     ) -> Result<Arc<Self>, Error> {

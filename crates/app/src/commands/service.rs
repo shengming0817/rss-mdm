@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
+    authorization::context::AuthorizedPrincipal,
     authorization::{Approval, Permission},
-    identity::Principal,
 };
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_transactional_messaging::{message::*, outbox::PendingMessage};
@@ -18,7 +18,7 @@ pub(super) fn target(tenant: TenantId, device: &str) -> rss_reconcile::Target {
 impl Commands {
     pub(super) async fn create(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         device: &str,
         input: &Create,
         audit: &Audit,
@@ -52,7 +52,7 @@ impl Commands {
     pub(super) async fn create_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         device: &str,
         input: &Create,
         audit: &Audit,
@@ -100,7 +100,7 @@ impl Commands {
     }
     pub(super) async fn read(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         device: &str,
         id: Uuid,
         audit: &Audit,
@@ -119,7 +119,7 @@ impl Commands {
     }
     pub(super) async fn change(
         &self,
-        proof: &Principal,
+        proof: &AuthorizedPrincipal,
         device: &str,
         id: Uuid,
         change: &Change,
@@ -247,7 +247,11 @@ pub(super) fn status(status: dc::Status) -> &'static str {
     }
 }
 
-fn create_fingerprint(proof: &Principal, device: &str, input: &Create) -> Result<Vec<u8>> {
+fn create_fingerprint(
+    proof: &AuthorizedPrincipal,
+    device: &str,
+    input: &Create,
+) -> Result<Vec<u8>> {
     Ok(Sha256::digest(invalid(serde_json::to_vec(&(
         "mdm.command-create/v2",
         proof.user(),
@@ -257,7 +261,10 @@ fn create_fingerprint(proof: &Principal, device: &str, input: &Create) -> Result
     .to_vec())
 }
 
-fn require_tenant(tenant: rss_request_context::TenantId, proof: &Principal) -> Result<()> {
+fn require_tenant(
+    tenant: rss_request_context::TenantId,
+    proof: &AuthorizedPrincipal,
+) -> Result<()> {
     if proof.tenant_id() != tenant.to_string() {
         return Err(Error::Forbidden.into());
     }

@@ -1,15 +1,16 @@
 //! A consumed challenge is never re-authorized, including identical CA transport retries.
 use super::{Apple, certificate, profile, webhook};
+use crate::apple::HttpState;
 use crate::{
     Error,
-    access_store::db,
-    api::{App, authenticate},
+    api::authenticate,
     audit::Audit,
+    authorization::context::AuthorizedPrincipal,
+    database::db,
     enrollment::{
         Authorization, Password, Resume,
         store::{request, uuid},
     },
-    identity::Principal,
 };
 use axum::{
     Extension, Json,
@@ -22,7 +23,7 @@ use sqlx::{Row, postgres::PgRow};
 use std::sync::Arc;
 use uuid::Uuid;
 
-fn current(row: &PgRow, auth: &Authorization, proof: &Principal) -> Result<(), Error> {
+fn current(row: &PgRow, auth: &Authorization, proof: &AuthorizedPrincipal) -> Result<(), Error> {
     proof.enrollment(&auth.device)?;
     if auth.source != rss_mdm_inventory::ReportSource::MdmApple
         || auth.actor != proof.principal_id()
@@ -37,16 +38,24 @@ fn current(row: &PgRow, auth: &Authorization, proof: &Principal) -> Result<(), E
     Ok(())
 }
 async fn authorized(
-    app: &App,
+    app: &HttpState,
     id: Uuid,
     password: &Password,
     audit: &Audit,
-) -> Result<(Authorization, Principal), Error> {
-    let auth = app
-        .access
-        .enrollment_authorization(&app.identity.tenant.to_string(), id, password)
-        .await?;
-    let proof = authenticate(app, app.credentials.get(auth.credential_ref)?).await?;
+) -> Result<(Authorization, AuthorizedPrincipal), Error> {
+    let auth = crate::enrollment::store::enrollment_authorization(
+        &app.access,
+        &app.identity.tenant.to_string(),
+        id,
+        password,
+    )
+    .await?;
+    let proof = authenticate(
+        &app.identity,
+        &app.access,
+        app.credentials.get(auth.credential_ref)?,
+    )
+    .await?;
     if auth.source != rss_mdm_inventory::ReportSource::MdmApple
         || auth.actor != proof.principal_id()
         || auth.instance != proof.instance_id()
@@ -59,7 +68,7 @@ async fn authorized(
     Ok((auth, proof))
 }
 pub(super) async fn download(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     Path(id): Path<Uuid>,
     Extension(audit): Extension<Audit>,
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
@@ -81,9 +90,7 @@ pub(super) async fn download(
         &profile::enrollment(&apple.config, id, attempt, input.password.expose())?,
         app.clock.unix_seconds()?,
     )?;
-    app.access
-        .commit_audited_status(tx, &audit, Some(id), 200)
-        .await?;
+    crate::operations::commit_audited_status(&app.access, tx, &audit, Some(id), 200).await?;
     Ok((
         [
             ("content-type", "application/x-apple-aspen-config"),
@@ -119,7 +126,7 @@ async fn prepared(
     Ok(id)
 }
 pub(super) async fn challenge(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<Audit>,
     bytes: Bytes,
@@ -157,16 +164,14 @@ pub(super) async fn challenge(
     if consumed.rows_affected() != 1 {
         return Err(Error::Unauthorized);
     }
-    app.access
-        .commit_audited_status(tx, &audit, Some(auth.id), 200)
-        .await?;
+    crate::operations::commit_audited_status(&app.access, tx, &audit, Some(auth.id), 200).await?;
     Ok(Json(
         serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment,csr.attempt)}}),
     ))
 }
 
 pub(super) async fn notify(
-    State(app): State<Arc<App>>,
+    State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<Audit>,
     bytes: Bytes,
@@ -211,8 +216,7 @@ pub(super) async fn notify(
         return Err(Error::Unauthorized);
     }
     persist_leaf(&mut tx, &tenant, &leaf).await?;
-    app.access
-        .commit_audited_status(tx, &audit, Some(leaf.enrollment), 200)
+    crate::operations::commit_audited_status(&app.access, tx, &audit, Some(leaf.enrollment), 200)
         .await?;
     Ok(Json(serde_json::json!({"allow":true})))
 }
@@ -249,7 +253,7 @@ pub(super) async fn persist_leaf(
 }
 
 pub(super) async fn bind(
-    app: &App,
+    app: &HttpState,
     leaf: &certificate::CheckedLeaf,
     udid: &str,
     audit: &Audit,
@@ -260,7 +264,12 @@ pub(super) async fn bind(
     let row = request(&mut tx, &tenant, leaf.enrollment).await?;
     let auth = crate::enrollment::store::authorization(row)?;
     tx.rollback().await.map_err(db)?;
-    let proof = authenticate(app, app.credentials.get(auth.credential_ref)?).await?;
+    let proof = authenticate(
+        &app.identity,
+        &app.access,
+        app.credentials.get(auth.credential_ref)?,
+    )
+    .await?;
     let mut tx = app.access.begin(&tenant).await?;
     current(&request(&mut tx, &tenant, auth.id).await?, &auth, &proof)?;
     let attempt = attempt(&mut tx, &tenant, app.apple()?, leaf).await?;
@@ -289,15 +298,9 @@ pub(super) async fn bind(
         .bind(&tenant).bind(leaf.attempt.to_string()).bind(receipt.registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state) VALUES($1::uuid,$2::uuid,$3,'pending_token')")
         .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).execute(&mut *tx).await.map_err(db)?;
-    let updated=sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND password_version=$3 AND expires_at>clock_timestamp()")
-        .bind(&tenant).bind(auth.id.to_string()).bind(auth.version).execute(&mut *tx).await.map_err(db)?;
-    if updated.rows_affected() != 1 {
-        return Err(Error::Unauthorized);
-    }
+    crate::enrollment::store::mark_bound_in(&mut tx, &tenant, &auth, false).await?;
     audit.identify(&proof);
     audit.target(&auth.device);
     audit.registration(receipt.registration);
-    app.access
-        .commit_audited_status(tx, audit, Some(auth.id), 200)
-        .await
+    crate::operations::commit_audited_status(&app.access, tx, audit, Some(auth.id), 200).await
 }

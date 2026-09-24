@@ -16,7 +16,7 @@ pub(crate) async fn read_on(
         .bind(id.to_string())
         .fetch_optional(c)
         .await
-        .map_err(crate::access_store::db)?;
+        .map_err(crate::database::db)?;
     row.map(|r| {
         let invalid = || Error::Unavailable(Failure::ManagementStorage);
         let plan: PlanExecutionAdmission =
