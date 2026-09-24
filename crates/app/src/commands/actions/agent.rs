@@ -167,6 +167,7 @@ impl Commands {
         attempt: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<(Vec<u8>, String), Error> {
+        audit.require_request_settlement();
         self.transact((self,p,id,attempt,audit),audit,|ctx,tx|Box::pin(async move{
             let (service,p,id,attempt,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
             let run=db::load_run(tx,id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&id.to_string());let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
@@ -175,7 +176,7 @@ impl Commands {
             if now>=expiry{return Err(Error::Forbidden.into());}
             let artifact=plan.frozen.artifact()?;let etag=format!("\"{}\"",artifact.digest().bytes().iter().map(|v|format!("{v:02x}")).collect::<String>());let content=service.content.clone().ok_or(Error::Unsupported)?;
             let bytes=tokio::task::spawn_blocking(move||content.read(&artifact)).await.map_err(|_|Error::Unavailable(crate::Failure::CommandStorage))??;
-            service.audit_store.append_request_in(tx,audit,200,"success").await?;Ok((bytes,etag))
+            Ok((bytes,etag))
         })).await
     }
 }

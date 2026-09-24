@@ -407,9 +407,19 @@ impl InventoryRuntime {
                 deadline.instant().into(),
                 self.delivery.pending_reports(&self.tenant.to_string()),
             )
-            .await
-            .map_err(|_| WorkerFailure::PendingReports)?
-            .map_err(|_| WorkerFailure::PendingReports)?;
+            .await;
+            let reports = match reports {
+                Ok(Ok(reports)) => reports,
+                // A contended Audit head or uncertain settlement leaves durable work
+                // pending. The next pass acquires the same locks and reads fresh state.
+                Err(_)
+                | Ok(Err(
+                    Error::CommitUnknown
+                    | Error::RollbackFailed
+                    | Error::Unavailable(crate::Failure::RequestDeadline),
+                )) => continue,
+                Ok(Err(_)) => return Err(WorkerFailure::PendingReports),
+            };
             let pending_count = reports.len();
             for report in reports {
                 if deadline.remaining(self.clock.now.now()).is_none() {

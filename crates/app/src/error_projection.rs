@@ -57,7 +57,68 @@ impl From<rss_mdm_audit_integration::Error> for Error {
         match error {
             rss_mdm_audit_integration::Error::CommitUnknown => Self::CommitUnknown,
             rss_mdm_audit_integration::Error::RollbackFailed => Self::RollbackFailed,
+            rss_mdm_audit_integration::Error::Audit(rss_audit_postgres::Error::Deadline(_)) => {
+                Self::Unavailable(crate::Failure::RequestDeadline)
+            }
             _ => Self::Unavailable(crate::Failure::Audit),
+        }
+    }
+}
+
+/// Independent request settlement cannot overwrite the protected operation's certainty.
+pub(crate) fn audit_settlement(
+    original: Option<&Error>,
+    outcome: rss_mdm_audit_integration::WriteOutcome,
+) -> Error {
+    match original {
+        Some(Error::CommitUnknown) => Error::CommitUnknown,
+        Some(Error::RollbackFailed) => Error::RollbackFailed,
+        _ => match outcome {
+            rss_mdm_audit_integration::WriteOutcome::Unknown
+            | rss_mdm_audit_integration::WriteOutcome::Committed => Error::CommitUnknown,
+            rss_mdm_audit_integration::WriteOutcome::RollbackFailed => Error::RollbackFailed,
+            _ => Error::Unavailable(crate::Failure::Audit),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rss_mdm_audit_integration::WriteOutcome::*;
+    #[test]
+    fn request_settlement_preserves_business_certainty() {
+        for state in [
+            CommitNotStarted,
+            RolledBack,
+            Unknown,
+            Committed,
+            RollbackFailed,
+        ] {
+            assert!(matches!(
+                audit_settlement(Some(&Error::CommitUnknown), state),
+                Error::CommitUnknown
+            ));
+            assert!(matches!(
+                audit_settlement(Some(&Error::RollbackFailed), state),
+                Error::RollbackFailed
+            ));
+        }
+        for state in [Unknown, Committed] {
+            assert!(matches!(
+                audit_settlement(None, state),
+                Error::CommitUnknown
+            ));
+        }
+        assert!(matches!(
+            audit_settlement(None, RollbackFailed),
+            Error::RollbackFailed
+        ));
+        for state in [CommitNotStarted, RolledBack] {
+            assert!(matches!(
+                audit_settlement(Some(&Error::Forbidden), state),
+                Error::Unavailable(crate::Failure::Audit)
+            ));
         }
     }
 }

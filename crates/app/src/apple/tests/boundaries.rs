@@ -176,6 +176,10 @@ impl Fixture {
             result == ("failed".into(), "revoked".into(), true),
             "retirement left collection pending"
         );
+        let terminal = crate::audit_test_support::read(&mut pg).await?;
+        ensure!(terminal.iter().any(|r| r.action() == "collection_finish"
+            && r.operation() == Some(run.to_string().as_str())
+            && r.actor() == Some("service:collection-finalizer")));
         let active: i64 =
             sqlx::query_scalar("SELECT count(*) FROM mdm_apple.devices WHERE state='active'")
                 .fetch_one(&mut pg)
@@ -410,6 +414,10 @@ impl Fixture {
             terminal,
             "unreported collection did not expire without an Observation report"
         );
+        let terminal = crate::audit_test_support::read(&mut pg).await?;
+        ensure!(terminal.iter().any(|r| r.action() == "collection_finish"
+            && r.operation() == Some(run.to_string().as_str())
+            && r.actor() == Some("service:collection-finalizer")));
         pg.close().await?;
         crate::identity_fixture::set_grants(
             TENANT,

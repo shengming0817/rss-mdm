@@ -715,11 +715,39 @@ async fn range_matrix(router: &Router, task: &Value, expected: &[u8]) -> Result<
             "range {range}: {}",
             response.status()
         );
+        let request_id = response.headers()["x-request-id"].to_str()?;
+        ensure!(
+            audit_count(|record| record.request() == Some(request_id)
+                && record.source() == "mdm.request"
+                && record.status() == status.as_u16())?
+                == 1
+        );
+        ensure!(audit_count(|record| record.request() == Some(request_id))? == 1);
         if status.is_success() {
             ensure!(response.headers().contains_key("etag"));
             ensure!(response.into_body().collect().await?.to_bytes().as_ref() == bytes);
         }
     }
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header("host", "mdm.example.test")
+                .header("authorization", format!("Bearer {CREDENTIAL}"))
+                .header("range", "bytes=0-3")
+                .header("range", "bytes=4-7")
+                .body(Body::empty())?,
+        )
+        .await?;
+    ensure!(response.status() == StatusCode::BAD_REQUEST);
+    let request_id = response.headers()["x-request-id"].to_str()?;
+    ensure!(
+        audit_count(|record| record.request() == Some(request_id)
+            && record.status() == 400
+            && record.result() == "rejected")?
+            == 1
+    );
     let wrong = path.replace(
         task["payload"]["attemptId"].as_str().unwrap(),
         &Uuid::new_v4().to_string(),

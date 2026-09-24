@@ -285,9 +285,7 @@ pub(super) async fn seal(
     );
     audit.operation(run.id, "collection_finish");
     audit.registration(Uuid::parse_str(run.scope.registration().as_str()).map_err(|_| corrupt())?);
-    audit.identify_device(
-        Uuid::parse_str(run.scope.registration().as_str()).map_err(|_| corrupt())?,
-    );
+    audit.identify_service("service:collection-finalizer");
     let details = serde_json::json!({"collectionResult":result,"reason":reason,"batchDigest":digest,"sealedAt":now});
     let fingerprint = serde_json::to_vec(&details).expect("closed collection outcome");
     let fact = rss_mdm_audit_integration::Fact::business(

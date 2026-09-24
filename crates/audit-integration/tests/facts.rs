@@ -61,3 +61,23 @@ fn business_retries_ignore_new_request_identity_but_detect_changed_facts() {
     first.finalize(None);
     second.finalize(None);
 }
+
+#[test]
+fn detail_replacement_depends_only_on_final_facts() {
+    let audit = RequestAudit::new(
+        "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
+        "device_action",
+    );
+    let fact =
+        || Fact::business(&audit, "operation.phase", b"request", 200, "success", None).unwrap();
+    let direct = fact()
+        .with_details(serde_json::json!({"value": 2}))
+        .unwrap();
+    let replaced = fact()
+        .with_details(serde_json::json!({"value": 1}))
+        .unwrap()
+        .with_details(serde_json::json!({"value": 2}))
+        .unwrap();
+    assert_eq!(direct.fingerprint(), replaced.fingerprint());
+    audit.finalize(None);
+}

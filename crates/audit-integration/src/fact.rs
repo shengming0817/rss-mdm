@@ -12,6 +12,7 @@ pub struct Fact {
     request: Option<Uuid>,
     payload: Vec<u8>,
     fingerprint: [u8; 32],
+    base_fingerprint: [u8; 32],
     outcome: Outcome,
 }
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +43,7 @@ impl Fact {
         hash.update(fact.fingerprint);
         hash.update(request_fingerprint);
         fact.fingerprint = hash.finalize().into();
+        fact.base_fingerprint = fact.fingerprint;
         Ok(fact)
     }
     pub fn request(context: &RequestAudit, status: u16, result: &str) -> Result<Self, InvalidFact> {
@@ -113,6 +115,7 @@ impl Fact {
             request,
             payload,
             fingerprint,
+            base_fingerprint: fingerprint,
             outcome,
         })
     }
@@ -123,7 +126,7 @@ impl Fact {
         payload["details"] = details;
         self.payload = serde_json::to_vec(&payload).map_err(|_| InvalidFact)?;
         let mut hash = Sha256::new();
-        hash.update(self.fingerprint);
+        hash.update(self.base_fingerprint);
         hash.update(&self.payload);
         self.fingerprint = hash.finalize().into();
         Ok(self)

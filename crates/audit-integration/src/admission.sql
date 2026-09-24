@@ -8,7 +8,8 @@ SELECT
  AND NOT has_schema_privilege(current_user,'mdm_audit','CREATE')
  AND (SELECT relrowsecurity AND relforcerowsecurity
   AND NOT pg_has_role(current_user,relowner,'MEMBER')
-  AND has_table_privilege(current_user,oid,'SELECT,INSERT')
+  AND has_table_privilege(current_user,oid,'SELECT')
+  AND has_table_privilege(current_user,oid,'INSERT')
   AND NOT has_table_privilege(current_user,oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
   AND NOT has_any_column_privilege(current_user,oid,'UPDATE,REFERENCES') FROM relation)
  AND (SELECT array_agg(a.attname::text ORDER BY a.attnum)=ARRAY['tenant_id','source_id','event_id','fingerprint','canonical']

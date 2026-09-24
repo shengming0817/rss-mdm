@@ -461,13 +461,17 @@ pub(crate) async fn envelope(
         let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
             .expect("bounded audit settlement budget");
         let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
-        if let Err(error) = envelope
+        if let Err(_error) = envelope
             .audit_store
             .settle_request(&audit, status, result, &control)
             .await
         {
             audit_failure = Some(FailureReason::Persistent);
-            response = Error::from(error).into_response();
+            response = crate::error_projection::audit_settlement(
+                response.extensions().get::<Error>(),
+                snapshot.write_outcome,
+            )
+            .into_response();
         }
     }
 

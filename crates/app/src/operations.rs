@@ -76,20 +76,17 @@ pub(crate) fn settle<R>(
             }
             Ok(value.into_value())
         },
-        |_| Err(Error::Unavailable(crate::Failure::Audit)),
+        |error| Err(transaction_error(error)),
         |error| {
             audit.mark_rolled_back();
-            Err(match error {
-                rss_audit_postgres::TransactionError::Operation(error) => error,
-                _ => Error::Unavailable(crate::Failure::Audit),
-            })
+            Err(transaction_error(error))
         },
         |_| {
             audit.mark_rollback_failed();
             Err(Error::RollbackFailed)
         },
         |_| Err(Error::CommitUnknown),
-        |_| Err(Error::Unavailable(crate::Failure::Audit)),
+        |error| Err(transaction_error(error)),
     )
 }
 
@@ -126,3 +123,13 @@ impl<'a> Actor<'a> {
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+fn transaction_error(error: rss_audit_postgres::TransactionError<Error>) -> Error {
+    match error {
+        rss_audit_postgres::TransactionError::Operation(error) => error,
+        rss_audit_postgres::TransactionError::Audit(error) => {
+            rss_mdm_audit_integration::Error::from(error).into()
+        }
+        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+    }
+}
