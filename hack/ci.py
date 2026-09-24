@@ -268,6 +268,24 @@ def clear_execution_evidence(gate_names):
             path.unlink(missing_ok=True)
 
 
+def working_source_state():
+    """Detect edits during CI without requiring a clean or committed tree."""
+    names = subprocess.check_output(["/usr/bin/git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT)
+    state = {}
+    for name in sorted(set(os.fsdecode(names).split("\0")) - {""}):
+        path = ROOT / name
+        try:
+            before = path.lstat()
+            data = os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes()
+            after = path.lstat()
+        except FileNotFoundError:
+            state[name] = None
+            continue
+        require(before == after, "source changed while reading CI inputs")
+        state[name] = (hashlib.sha256(data).hexdigest(), after.st_mode, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)
+    return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
@@ -298,6 +316,7 @@ def main():
         ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
+    source_state = working_source_state()
     selection = select_impact(start_head)
     plan = {"selection": selection, "gates": {
         name: {"selected": selected_gate(name, selection), "command": gate_command(name, args, selection)}
@@ -305,8 +324,9 @@ def main():
     }}
     for name, description in {
         "pin": "Check workspace RSS/Identity pins and dependency source policy",
+        "source-stability": "Reject working input changes during CI",
     }.items():
-        plan["gates"][name] = {"selected": name == "pin" or selected_gate(name, selection),
+        plan["gates"][name] = {"selected": True,
                                "check": description}
     print(json.dumps(plan, indent=2), flush=True)
     if os.environ.get("CI_PLAN", "0") == "1":
@@ -339,7 +359,13 @@ def main():
             (OUT / f"{name}.log").write_text(str(error))
             results[name] = "failed"
         print(f"{name}: {results[name]}", flush=True)
-    evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
+    try:
+        require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
+        results["source-stability"] = "passed"
+    except Exception as error:
+        (OUT / "source-stability.log").write_text(str(error))
+        results["source-stability"] = "failed"
+    evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")

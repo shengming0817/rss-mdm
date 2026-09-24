@@ -64,6 +64,7 @@ class WorkingSource(unittest.TestCase):
             root = Path(temporary) / 'repo'; root.mkdir()
             subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
             (root / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n')
+            subprocess.run(['/usr/bin/git', '-C', str(root), 'add', 'Cargo.toml'], check=True)
             (root / 'deployment').mkdir()
             header = root / 'deployment/azure-header'
             header.write_text('synthetic authorization'); header.chmod(0o600)
@@ -87,6 +88,7 @@ class WorkingSource(unittest.TestCase):
             (root / 'Cargo.lock').write_text('version = 4\n# current working bytes\n')
             (root / 'crates/app/old.rs').unlink()
             (root / 'crates/app/new.rs').write_text('unsubmitted')
+            subprocess.run(['/usr/bin/git', '-C', str(root), 'add', 'crates/app/new.rs'], check=True)
             (root / 'private-secret').write_text('must not enter context')
             destination = Path(temporary) / 'source'
             release.copy_source(root, destination)
@@ -97,6 +99,33 @@ class WorkingSource(unittest.TestCase):
             (root / 'crates/app/escape').symlink_to(root / 'private-secret')
             with self.assertRaises(ValueError):
                 release.copy_source(root, Path(temporary) / 'bad-source')
+
+    def test_unknown_input_is_rejected(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'repo'; root.mkdir()
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
+            (root / 'Cargo.toml').write_text('[workspace]\nmembers=["crates/app"]\n')
+            (root / 'crates/app').mkdir(parents=True)
+            subprocess.run(['/usr/bin/git', '-C', str(root), 'add', '.'], check=True)
+            (root / 'crates/app/operator-token.pem').write_text('synthetic private token')
+            with self.assertRaisesRegex(ValueError, 'untracked build input'):
+                release.copy_source(root, Path(temporary) / 'source')
+
+    def test_change_during_copy_is_rejected(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'repo'; root.mkdir()
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
+            (root / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n')
+            subprocess.run(['/usr/bin/git', '-C', str(root), 'add', '.'], check=True)
+            original = release.shutil.copy2
+            def changing_copy(source, target):
+                original(source, target)
+                source.write_text(source.read_text() + '# changed\n')
+            with mock.patch.object(release.shutil, 'copy2', side_effect=changing_copy):
+                with self.assertRaisesRegex(ValueError, 'changed during'):
+                    release.copy_source(root, Path(temporary) / 'source')
 
     def test_ui_revision_is_information_not_admission(self):
         value = {'Id':'sha256:'+'a'*64,'Os':'linux','Architecture':'arm64','Config':{'User':'10001:10001','Labels':None}}

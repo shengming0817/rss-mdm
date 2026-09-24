@@ -146,7 +146,7 @@ Windows MDM 只读纵切 V1 是 R0/R1 的基础增量，不代替 R0 的 Windows
 
 已接纳 RSS 库/成熟外部依赖 → 产品共享契约与持久任务 → Windows/macOS 通道适配和 Agent 执行器 → 能力预检、单一写 owner 与计划 → 统一采集/字段、软件源控制面 → 组/策略/安装/更新/合规 → 控制台、部署与产品 T3。
 
-macOS MDM 与 Agent 可并行建设；ADE 依赖 Apple 组织接入，不依赖 WinGet；Brew/WinGet 的终端执行闭环依赖可信 Agent、产物授权和应用模型；Group/Scope/Policy、Resource、软件源元数据与发布后端可按 N01–N12 提前独立交付，不等待 Agent 或 V1 真机验收；DDM 依赖 Apple 注册与声明/状态服务；更新环不依赖 Windows LAPS。不能把每个节点强行串成单条瀑布，也不能越过任务/身份/结果的基础依赖。
+macOS MDM 与 Agent 可并行建设；ADE 依赖 Apple 组织接入，不依赖 WinGet；Brew/WinGet 的终端执行闭环依赖可信 Agent、产物授权和应用模型；Group/Scope/Policy、Resource、软件源元数据与发布后端可按核心契约、持久化适配、应用装配与授权 API 的依赖顺序提前独立交付，不等待 Agent 或 V1 真机验收；DDM 依赖 Apple 注册与声明/状态服务；更新环不依赖 Windows LAPS。不能把每个节点强行串成单条瀑布，也不能越过任务/身份/结果的基础依赖。
 
 R2 可按“私有软件源闭环”“Apple 自动化与安全”“Windows 企业闭环”分别交付，但每个子发布都必须列出已承诺矩阵。日期、人员和生产容量未给定，不在 PRD 中编造工期。产品 T3 的 issue/PR 与功能开发 PR 分开、与 RSS 组件验证分开。[验证规则](../rules/verification-scope.md)
 

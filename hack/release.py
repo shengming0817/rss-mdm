@@ -80,29 +80,54 @@ DEPLOYMENT_FILES = ("mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 
-def copy_source(root, destination, header=None):
-    """Copy current build inputs; reject credentials among ordinary source files."""
+def source_inputs(root, header=None):
+    """Git index admits paths; bytes always come from the current working tree."""
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
-    members = manifest["workspace"]["members"]
-    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "fixtures", "deployment", *members]
+    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "fixtures", "deployment", *manifest["workspace"]["members"]]
     for path in paths:
         if Path(path).is_absolute() or ".." in Path(path).parts:
             raise ValueError("build input outside repository")
-    result = subprocess.check_output(["/usr/bin/git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *paths], cwd=root)
-    destination.mkdir(parents=True)
-    for name in sorted(set(os.fsdecode(result).split("\0")) - {""}):
+    def names(*flags):
+        result = subprocess.check_output(["/usr/bin/git", "ls-files", "-z", *flags, "--", *paths], cwd=root)
+        return set(os.fsdecode(result).split("\0")) - {""}
+    tracked = names("--cached")
+    unknown = names("--others", "--exclude-standard")
+    inputs = {}
+    for name in sorted(tracked | unknown):
         source = root / name
         if (header is not None and source.resolve() == header.resolve()) or name in (".cargo/credentials", ".cargo/credentials.toml"):
             raise ValueError("credential file among build inputs; move it outside the source tree")
         if source.is_symlink() or any(parent.is_symlink() for parent in source.parents if parent != root and parent.is_relative_to(root)):
             raise ValueError("symlink build input")
-        if not source.exists():  # Preserve tracked deletions.
+        if name in unknown:
+            raise ValueError("untracked build input; review and add intended source paths to the Git index")
+        if not source.exists():
             continue
         if not source.is_file() or not source.resolve().is_relative_to(root.resolve()):
             raise ValueError("invalid build input")
+        before = source.stat()
+        digest = sha(source)
+        after = source.stat()
+        if before != after:
+            raise ValueError("source changed during snapshot")
+        inputs[name] = (digest, after.st_mode, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)
+    return inputs
+
+
+def copy_source(root, destination, header=None):
+    inputs = source_inputs(root, header)
+    destination.mkdir(parents=True)
+    for name, state in inputs.items():
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        shutil.copy2(root / name, target)
+        if sha(target) != state[0] or target.stat().st_mode != state[1]:
+            raise ValueError("source changed during copy")
+    if source_inputs(root, header) != inputs:
+        raise ValueError("source changed during copy")
+    # Record exactly the copied content and modes, independent of Git commit state.
+    content = {name: state[:2] for name, state in inputs.items()}
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
 def build_staged(out, header, web_image):
@@ -110,13 +135,11 @@ def build_staged(out, header, web_image):
         raise ValueError("candidate output must be new")
     if header.is_symlink() or not header.is_file() or header.stat().st_mode & 0o077:
         raise ValueError("Git authorization header must be a private regular file")
-    revision = run(["/usr/bin/git", "rev-parse", "HEAD"], cwd=ROOT)
-    dirty = bool(run(["/usr/bin/git", "status", "--porcelain"], cwd=ROOT))
     out.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix="mdm-candidate-") as temporary:
         context = Path(temporary)
         source = context / "source"
-        copy_source(ROOT, source, header)
+        inputs_sha256 = copy_source(ROOT, source, header)
         providers = json.loads((source / "deployment/providers.lock.json").read_text())
         if any("@sha256:" not in image for image in providers.values()):
             raise ValueError("build providers must be pinned")
@@ -149,7 +172,7 @@ def build_staged(out, header, web_image):
             shutil.copy(source / name, build / name)
         manifest = {
             "format_version": 3, "ui": ui,
-            "source": {"base_revision": revision, "dirty": dirty},
+            "source": {"inputs_sha256": inputs_sha256},
             "version": version, "platform": platform(config), "migrations": migrations,
             "image": image + "@" + digest,
             "archive": {"file": output.name, "sha256": sha(output), "manifest_digest": digest},

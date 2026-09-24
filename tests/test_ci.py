@@ -152,3 +152,50 @@ class AdvisoryPolicy(unittest.TestCase):
         changed=copy.deepcopy(policy);changed['sources']['allow-git'].append('https://example.com/unapproved')
         with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
 
+
+class WorkingTreeStability(unittest.TestCase):
+    def test_ci_accepts_stable_dirty_inputs(self):
+        self.run_ci_with_edit(False)
+
+    def test_ci_fails_if_source_changes_during_a_gate(self):
+        self.run_ci_with_edit(True)
+
+    def run_ci_with_edit(self, edit):
+        from unittest import mock
+        import subprocess
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
+            (root / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n')
+            (root / 'Cargo.lock').write_text('version = 4\n')
+            (root / '.gitignore').write_text('/artifacts/\n')
+            source = root / 'source.rs'; source.write_text('before')
+            def command(args):
+                if edit and args[0] != '/usr/bin/git':
+                    source.write_text('after')
+                return subprocess.CompletedProcess(args, 0, 'revision')
+            selection = {'full': False, 'packages': []}
+            with mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'identity_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN':'0'}):
+                self.assertEqual(ci.main(), int(edit))
+            result = json.loads((root / 'artifacts/result.json').read_text())
+            self.assertEqual(result['gates']['source-stability'], 'failed' if edit else 'passed')
+
+    def test_state_covers_working_file_lifecycle(self):
+        from unittest import mock
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
+            source = root / 'source.rs'; source.write_text('initial')
+            subprocess.run(['/usr/bin/git', '-C', str(root), 'add', '.'], check=True)
+            with mock.patch.object(ci, 'ROOT', root):
+                state = ci.working_source_state()
+                for action in (lambda: source.write_text('unstaged'),
+                               lambda: (root / 'new.rs').write_text('untracked'),
+                               lambda: source.unlink()):
+                    action()
+                    updated = ci.working_source_state()
+                    self.assertNotEqual(state, updated)
+                    state = updated
+                self.assertEqual(state, ci.working_source_state())

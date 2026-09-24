@@ -1,6 +1,6 @@
 # 设备注册与凭据
 
-管理员注册授权与设备身份是两个阶段。创建 pending Enrollment 不代表设备已绑定；bound 表示原子绑定事实，当前凭据是否有效仍由注册状态和管理准入决定。身份与通道世代边界见 [ADR](device-enrollment.md)。
+管理员注册授权与设备身份是两个阶段。创建 pending Enrollment 不代表设备已绑定；bound 表示原子绑定事实，当前凭据是否有效仍由注册状态和管理准入决定。身份与通道世代边界见 [ADR](../architecture/adr/202609100445-2348-device-principal.md)。
 
 ## 创建、续接与撤销
 

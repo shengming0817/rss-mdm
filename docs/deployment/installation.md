@@ -2,7 +2,7 @@
 
 ## 构建 V3 候选
 
-构建使用当前工作区源码，包含未提交修改、新增非忽略文件及删除；源码路径由 workspace 成员与构建输入限定。Git revision 与 dirty 仅作记录，不作为运行准入证明。构建机需要 Docker Buildx、私有 Git 只读凭据和不可变 rss-web image ID/repository digest。
+构建使用当前工作区源码，包含未提交修改、已加入 Git 索引的新文件及删除；源码路径由 workspace 成员与构建输入限定。范围内未跟踪文件默认拒绝，新增源码须先逐项检查并加入索引，不要求 commit 或 clean HEAD。复制前后核对文件内容与状态，变化则终止构建；candidate 记录实际复制输入的摘要，运行验收不依赖源码 checkout。构建机需要 Docker Buildx、私有 Git 只读凭据和不可变 rss-web image ID/repository digest。
 
 ```sh
 python3 hack/release.py --output artifacts/candidate --git-auth-header-file /private/azure-header --web-image "$MDM_UI_IMAGE_ID"
