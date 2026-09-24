@@ -124,14 +124,44 @@ impl Fixture {
         let queued = self
             .create_operation(json!({"kind":"profile_install","enabled":true}))
             .await?;
-        peer.token().await?;
+        peer.token_value(43).await?;
+        let mut token_observer =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let revision: i64 =
+            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.devices WHERE state='active'")
+                .fetch_one(&mut token_observer)
+                .await?;
+        let facts_before = crate::audit_test_support::read(&mut token_observer)
+            .await?
+            .into_iter()
+            .filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin")
+            .count();
+        peer.token_value(43).await?;
+        ensure!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT token_revision FROM mdm_apple.devices WHERE state='active'"
+            )
+            .fetch_one(&mut token_observer)
+            .await?
+                == revision
+        );
+        ensure!(
+            crate::audit_test_support::read(&mut token_observer)
+                .await?
+                .into_iter()
+                .filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin")
+                .count()
+                == facts_before,
+            "unchanged TokenUpdate duplicated business facts"
+        );
+        token_observer.close().await?;
         let old = self
             .app
             .commands
             .apple_wake(&self.app.apple()?.push.configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing wake"))?;
-        peer.token().await?;
+        peer.token_value(44).await?;
         self.app
             .commands
             .apple_pushed(&old, Some(410), push::Outcome::Unregistered)
