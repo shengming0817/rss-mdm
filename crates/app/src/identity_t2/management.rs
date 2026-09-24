@@ -567,41 +567,63 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     .await?;
     let publication = &authorized["rings"][0]["publication"];
     let request = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":authorized["revision"],"input":{"action":"publish","ring":"test","publication":publication["id"],"attempt":publication["attempt"]}});
-    // Hold the actual management lock after HTTP admission, revoke, then let the intent finish.
+    // Let revocation own Audit before publication starts. Hold its authorization
+    // lock until publication is visibly waiting on Audit, then release in lock order.
     use sqlx::Connection;
     let mut holder =
         sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
-    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2390))")
-        .bind(TENANT)
+    let authorization_key = format!("{TENANT}:{INSTANCE}");
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2363))")
+        .bind(&authorization_key)
         .execute(&mut holder)
         .await?;
     let posts_before = server.state.lock().unwrap().posts;
     let mut delayed = publisher.clone();
-    let revoke = async {
-        let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-            + Duration::from_millis(750);
-        loop {
-            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_management_runtime' AND wait_event='advisory')").fetch_one(&mut holder).await?;
-            if waiting {
-                break;
-            }
-            ensure!(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < deadline,
-                "publication did not wait at management lock"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
+    let begin_publication = tokio::sync::Notify::new();
+    let release = async {
+        for (phase, query) in [
+            (
+                "revocation authorization lock",
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE '%2363%')",
+            ),
+            (
+                "publication Audit lock",
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_management_runtime' AND wait_event_type='Lock' AND query LIKE '%rss_audit.reserve%')",
+            ),
+        ] {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if sqlx::query_scalar::<_, bool>(query)
+                        .fetch_one(&mut holder)
+                        .await?
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Ok::<_, sqlx::Error>(())
+            })
+            .await
+            .with_context(|| format!("missing barrier: {phase}"))??;
+            begin_publication.notify_one();
         }
-        set_management_grants(&member, json!([])).await?;
-        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2390))")
-            .bind(TENANT)
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2363))")
+            .bind(&authorization_key)
             .execute(&mut holder)
             .await?;
         anyhow::Ok(())
     };
-    let (delayed, revoked) = tokio::join!(
-        delayed.call(&router, Method::POST, &path, Some(request.clone())),
-        revoke
+    let (delayed, revoked, released) = tokio::join!(
+        async {
+            begin_publication.notified().await;
+            delayed
+                .call(&router, Method::POST, &path, Some(request.clone()))
+                .await
+        },
+        set_management_grants(&member, json!([])),
+        release,
     );
+    released?;
     holder.close().await?;
     revoked?;
     set_management_grants(&member, publisher_grants).await?;

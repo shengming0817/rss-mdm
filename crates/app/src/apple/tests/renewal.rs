@@ -18,7 +18,7 @@ impl Fixture {
             &[tokio_rustls::rustls::pki_types::CertificateDer::from(
                 row.try_get::<Vec<u8>, _>("certificate")?,
             )],
-            now,
+            self.app.clock.unix_seconds()?,
         )?;
         let old_principal = self
             .app
@@ -95,7 +95,7 @@ impl Fixture {
         let request = reused.request(
             &self.root.join("apple-issuer.pem"),
             &Uuid::new_v4().to_string(),
-            now,
+            self.app.clock.unix_seconds()?,
         )?;
         ensure!(
             reused
@@ -112,7 +112,7 @@ impl Fixture {
         let request = device.request(
             &self.root.join("apple-issuer.pem"),
             &Uuid::new_v4().to_string(),
-            now,
+            self.app.clock.unix_seconds()?,
         )?;
         self.lose_notify
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -226,7 +226,7 @@ impl Fixture {
             &[tokio_rustls::rustls::pki_types::CertificateDer::from(
                 der.clone(),
             )],
-            now,
+            self.app.clock.unix_seconds()?,
         )?;
         ensure!(
             self.app

@@ -20,6 +20,7 @@ use crate::{
     identity_t2::Browser,
     native::{self, tls},
 };
+use anyhow::Context;
 use anyhow::{Result, ensure};
 use axum::{
     Router,
@@ -370,10 +371,18 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
     f.push_cycle(&peer).await?;
     f.collection_cycle(&peer).await?;
     f.profile_cycle(&peer).await?;
-    let (renewed, renewed_device) = f.renewal_cycle(&peer, &device).await?;
-    let replacement = f.replace(&renewed, &renewed_device).await?;
-    f.native_boundaries(&replacement).await?;
-    f.production().await
+    let (renewed, renewed_device) = f
+        .renewal_cycle(&peer, &device)
+        .await
+        .context("Apple renewal cycle")?;
+    let replacement = f
+        .replace(&renewed, &renewed_device)
+        .await
+        .context("Apple replacement cycle")?;
+    f.native_boundaries(&replacement)
+        .await
+        .context("Apple boundaries")?;
+    f.production().await.context("Apple production startup")
 }
 
 #[allow(clippy::disallowed_methods, reason = "test composition root")]
