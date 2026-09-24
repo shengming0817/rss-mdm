@@ -57,7 +57,7 @@ impl From<rss_mdm_audit_integration::Error> for Error {
         match error {
             rss_mdm_audit_integration::Error::CommitUnknown => Self::CommitUnknown,
             rss_mdm_audit_integration::Error::RollbackFailed => Self::RollbackFailed,
-            rss_mdm_audit_integration::Error::Audit(rss_audit_postgres::Error::Deadline(_)) => {
+            rss_mdm_audit_integration::Error::Audit(error) if error.is_interrupted() => {
                 Self::Unavailable(crate::Failure::RequestDeadline)
             }
             _ => Self::Unavailable(crate::Failure::Audit),
@@ -86,6 +86,31 @@ pub(crate) fn audit_settlement(
 mod tests {
     use super::*;
     use rss_mdm_audit_integration::WriteOutcome::*;
+    #[test]
+    fn audit_and_ledger_interruptions_share_the_host_deadline_projection() {
+        use rss_transactional_messaging::transaction::LocalTxDeadlineStage as Stage;
+        for cause in [
+            rss_audit_postgres::Error::Deadline(Stage::Operation),
+            rss_audit_postgres::Error::Cancelled(Stage::Operation),
+            rss_audit_postgres::Error::Ledger(rss_ledger_postgres::Error::Deadline(
+                Stage::Operation,
+            )),
+            rss_audit_postgres::Error::Ledger(rss_ledger_postgres::Error::Cancelled(
+                Stage::Operation,
+            )),
+        ] {
+            assert!(matches!(
+                Error::from(rss_mdm_audit_integration::Error::Audit(cause)),
+                Error::Unavailable(crate::Failure::RequestDeadline)
+            ));
+        }
+        assert!(matches!(
+            Error::from(rss_mdm_audit_integration::Error::Audit(
+                rss_audit_postgres::Error::Ledger(rss_ledger_postgres::Error::StorageContract)
+            )),
+            Error::Unavailable(crate::Failure::Audit)
+        ));
+    }
     #[test]
     fn request_settlement_preserves_business_certainty() {
         for state in [
