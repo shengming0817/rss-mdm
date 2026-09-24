@@ -97,7 +97,7 @@ pub async fn serve(
                                 })?,
                             )
                             .await
-                            .map_err(|e| ProcessError::at("startup.database", e))?,
+                            .map_err(|e| ProcessError::at("startup.access_store", e))?,
                         );
                         startup.stage_resource(DynManagedResource::new_box(AccessResource(
                             access.clone(),

@@ -651,7 +651,20 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             == StatusCode::UNAUTHORIZED
     );
     let mut admin = Browser::default();
-    ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
+    // Reuse the real seed session: this scenario does not test login and must not
+    // consume the shared administrator's bounded password-attempt allowance.
+    let secret = crate::identity_fixture::credential(&identity, "admin")?;
+    admin
+        .cookies
+        .insert("__Host-identity-session".into(), secret.expose().into());
+    admin.csrf = Some(secret.csrf());
+    ensure!(
+        admin
+            .call(&router, Method::GET, "/api/v1/authorization", None)
+            .await?
+            .0
+            == StatusCode::OK
+    );
     ensure!(
         admin
             .call(

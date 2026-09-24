@@ -52,7 +52,7 @@ pub(crate) fn registration(access: Arc<Database>, tenant: String) -> ManagedTask
                 Ok(Ok(count)) => { failures=0; if count>0 { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention","sessions":count})); } }
                 failed => {
                     failures=failures.saturating_add(1);
-                    if failures.is_power_of_two() { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention_failure","kind":if failed.is_err() { "deadline" } else { "database" },"count":failures})); }
+                    if failures.is_power_of_two() { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention_failure","kind":if failed.is_err() { "deadline" } else { "access_store" },"count":failures})); }
                 }
             }
         }
