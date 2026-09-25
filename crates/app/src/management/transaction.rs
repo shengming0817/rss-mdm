@@ -22,8 +22,7 @@ pub(super) async fn run<C: Sync>(
             |(audit_store, context, audit, failure, execute), tx| {
                 Box::pin(async move {
                     if let Err(error) = audit_store.lock_in(tx).await {
-                        *failure.lock().expect("request failure lock") =
-                            Some(Error::Unavailable(Failure::Audit));
+                        *failure.lock().expect("request failure lock") = Some(Error::from(&error));
                         return Err(PgError::from(error));
                     }
                     match execute(context, tx).await {

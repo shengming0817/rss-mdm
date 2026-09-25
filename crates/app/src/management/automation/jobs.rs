@@ -252,7 +252,7 @@ pub(in crate::management) async fn finish_job_in(
             outcome,
             None,
         )
-        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+        .map_err(Error::from)?;
         let result = store.append_in(tx, &fact, false).await.map_err(Error::from);
         audit.finalize(
             result

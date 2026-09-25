@@ -120,13 +120,9 @@ async fn change_authorization<T: serde::Serialize + Sync>(
         "success",
         None,
     )
-    .map_err(|_| Error::Unavailable(Failure::Audit))?;
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    .map_err(Error::from)?;
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let context = ChangeContext {
         proof,
         table,
@@ -361,7 +357,7 @@ pub(crate) async fn initialize_authorization_audited(
     if key.is_nil() {
         return Err(Error::Malformed);
     }
-    audit.identify_operator(&user.principal_id, &user.instance_id);
+    audit.set_principal(&user.principal_id, &user.instance_id);
     audit.operation(key, "authorization_initialize");
     let digest = format!(
         "{:x}",
@@ -375,12 +371,8 @@ pub(crate) async fn initialize_authorization_audited(
         key,
         digest: &digest,
     };
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         &format!("authorization_initialize:{}:{}", user.principal_id, key),
@@ -389,7 +381,7 @@ pub(crate) async fn initialize_authorization_audited(
         "success",
         None,
     )
-    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+    .map_err(Error::from)?;
     let attempt = store
         .execute(
             rss_request_context::TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?,

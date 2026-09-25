@@ -166,7 +166,7 @@ pub(crate) async fn set_grants(
         {
             let audit =
                 rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
-            audit.identify(principal.principal_id(), principal.instance_id());
+            principal.bind_audit(&audit)?;
             crate::authorization::store::change_rule(
                 access.audit_store(&config(tenant)?.audit).await?.as_ref(),
                 &principal,
@@ -185,7 +185,7 @@ pub(crate) async fn set_grants(
     if !grants.is_empty() {
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
-        audit.identify(principal.principal_id(), principal.instance_id());
+        principal.bind_audit(&audit)?;
         crate::authorization::store::change_rule(
             access.audit_store(&config(tenant)?.audit).await?.as_ref(),
             &principal,

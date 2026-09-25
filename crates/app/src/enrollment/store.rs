@@ -55,12 +55,8 @@ pub(crate) async fn create_enrollment(
         key,
         digest: &digest,
     };
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let attempt = store
         .execute(
             rss_request_context::TenantId::parse(proof.tenant_id())
@@ -100,7 +96,7 @@ pub(crate) async fn create_enrollment(
                         "success",
                         Some(receipt.enrollment_id),
                     )
-                    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                    .map_err(Error::from)?;
                     store
                         .append(tx, &fact, replayed)
                         .await
@@ -209,12 +205,8 @@ pub(crate) async fn change_enrollment(
         key,
         digest: &digest,
     };
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let attempt = store
         .execute(
             rss_request_context::TenantId::parse(proof.tenant_id())
@@ -254,7 +246,7 @@ pub(crate) async fn change_enrollment(
                         "success",
                         Some(receipt.enrollment_id),
                     )
-                    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                    .map_err(Error::from)?;
                     store
                         .append(tx, &fact, replayed)
                         .await

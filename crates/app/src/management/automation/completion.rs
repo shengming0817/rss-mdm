@@ -158,7 +158,7 @@ impl Management {
                 "failed",
                 None,
             )
-            .map_err(|_| Error::Unavailable(Failure::Audit))?;
+            .map_err(Error::from)?;
             let result = self
                 .audit_store
                 .append_in(tx, &fact, false)

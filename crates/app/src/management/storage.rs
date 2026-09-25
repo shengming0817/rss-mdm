@@ -66,7 +66,7 @@ pub(super) async fn audit(
             result,
             None,
         )
-        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+        .map_err(Error::from)?;
         store.append_in(tx, &fact, replayed).await
     } else {
         store.append_request_in(tx, audit, status, result).await

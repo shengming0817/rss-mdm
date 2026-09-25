@@ -44,7 +44,7 @@ fn audit(
     action: &'static str,
 ) -> RequestAudit {
     let a = RequestAudit::new(proof.tenant_id().into(), action);
-    a.identify(proof.principal_id(), proof.instance_id());
+    proof.bind_audit(&a).unwrap();
     a.target(device);
     a.operation(key, action);
     a
@@ -602,7 +602,10 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     pg.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
         .await?;
     ensure!(rejected);
-    ensure!(matches!(failed, Err(Error::Unavailable(Failure::Audit))));
+    ensure!(matches!(
+        failed,
+        Err(Error::Unavailable(Failure::AuditAdmission))
+    ));
     complete(&audit_store, &w, &a, &proof, &i, &c).await?;
     // Two accepted enrollments freeze the same base; only one final generation can win.
     let first = create(

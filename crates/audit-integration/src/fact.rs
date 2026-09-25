@@ -15,9 +15,32 @@ pub struct Fact {
     base_fingerprint: [u8; 32],
     outcome: Outcome,
 }
-#[derive(Debug, thiserror::Error)]
-#[error("invalid product audit fact")]
-pub struct InvalidFact;
+/// Closed producer-contract errors; never contain tenant, actor, key or payload values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidFact {
+    #[error("invalid audit tenant")]
+    Tenant,
+    #[error("invalid audit identity")]
+    Identity,
+    #[error("invalid audit status")]
+    Status,
+    #[error("invalid audit outcome")]
+    Outcome,
+    #[error("missing audit request fingerprint")]
+    Fingerprint,
+    #[error("invalid audit actor")]
+    Actor,
+    #[error("invalid audit action")]
+    Action,
+    #[error("invalid audit resource")]
+    Resource,
+    #[error("invalid audit coordinates")]
+    Coordinates,
+    #[error("invalid audit payload")]
+    Payload,
+    #[error("invalid audit source contract")]
+    Contract,
+}
 impl Fact {
     pub fn business(
         context: &RequestAudit,
@@ -37,7 +60,7 @@ impl Fact {
             registration,
         )?;
         if request_fingerprint.is_empty() {
-            return Err(InvalidFact);
+            return Err(InvalidFact::Fingerprint);
         }
         let mut hash = Sha256::new();
         hash.update(fact.fingerprint);
@@ -66,8 +89,11 @@ impl Fact {
         result: &str,
         registration: Option<Uuid>,
     ) -> Result<Self, InvalidFact> {
-        if key.is_empty() || key.len() > 4096 || !(100..=599).contains(&status) {
-            return Err(InvalidFact);
+        if key.is_empty() || key.len() > 4096 {
+            return Err(InvalidFact::Identity);
+        }
+        if !(100..=599).contains(&status) {
+            return Err(InvalidFact::Status);
         }
         let snapshot = context.snapshot();
         let payload = serde_json::to_vec(&serde_json::json!({
@@ -78,7 +104,7 @@ impl Fact {
             "writeOutcome": request.map(|_| snapshot.write_outcome),
             "details": null,
         }))
-        .map_err(|_| InvalidFact)?;
+        .map_err(|_| InvalidFact::Payload)?;
         let facts = serde_json::to_vec(&(
             context.tenant(),
             source,
@@ -89,25 +115,25 @@ impl Fact {
             snapshot.target.as_deref(),
             &payload,
         ))
-        .map_err(|_| InvalidFact)?;
+        .map_err(|_| InvalidFact::Payload)?;
         let fingerprint = Sha256::digest(&facts).into();
-        let source = SourceIdentity::new(SourceId::parse(source).map_err(|_| InvalidFact)?, SourceContract::new(
-            ContractId::parse("mdm.audit.fact").map_err(|_| InvalidFact)?,
-            ContractVersion::from_major(1).map_err(|_| InvalidFact)?,
-            SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details"))).map_err(|_| InvalidFact)?,
+        let source = SourceIdentity::new(SourceId::parse(source).map_err(|_| InvalidFact::Contract)?, SourceContract::new(
+            ContractId::parse("mdm.audit.fact").map_err(|_| InvalidFact::Contract)?,
+            ContractVersion::from_major(1).map_err(|_| InvalidFact::Contract)?,
+            SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details"))).map_err(|_| InvalidFact::Contract)?,
         ));
         let identity = RecordIdentity::new(
-            TenantId::parse(context.tenant()).map_err(|_| InvalidFact)?,
+            TenantId::parse(context.tenant()).map_err(|_| InvalidFact::Tenant)?,
             source,
             EventId::parse(&format!("e-{:x}", Sha256::digest(key.as_bytes())))
-                .map_err(|_| InvalidFact)?,
+                .map_err(|_| InvalidFact::Identity)?,
         );
         let outcome = match result {
             "unknown" => Outcome::Unknown,
             "denied" | "rejected" if status == 401 || status == 403 => Outcome::Denied,
             "failed" | "denied" | "rejected" => Outcome::Failed,
             "success" | "replay" => Outcome::Succeeded,
-            _ => return Err(InvalidFact),
+            _ => return Err(InvalidFact::Outcome),
         };
         Ok(Self {
             identity,
@@ -122,9 +148,9 @@ impl Fact {
     /// Add source-owned, safe business fields before preparing immutable canonical bytes.
     pub fn with_details(mut self, details: serde_json::Value) -> Result<Self, InvalidFact> {
         let mut payload: serde_json::Value =
-            serde_json::from_slice(&self.payload).map_err(|_| InvalidFact)?;
+            serde_json::from_slice(&self.payload).map_err(|_| InvalidFact::Payload)?;
         payload["details"] = details;
-        self.payload = serde_json::to_vec(&payload).map_err(|_| InvalidFact)?;
+        self.payload = serde_json::to_vec(&payload).map_err(|_| InvalidFact::Payload)?;
         let mut hash = Sha256::new();
         hash.update(self.base_fingerprint);
         hash.update(&self.payload);
@@ -144,13 +170,13 @@ impl Fact {
             self.identity.clone(),
             EventFacts::new(
                 ActorRef::new(
-                    ActorKind::parse(self.snapshot.actor_kind).map_err(|_| InvalidFact)?,
-                    ActorId::parse(actor).map_err(|_| InvalidFact)?,
+                    ActorKind::parse(self.snapshot.actor_kind).map_err(|_| InvalidFact::Actor)?,
+                    ActorId::parse(actor).map_err(|_| InvalidFact::Actor)?,
                 ),
-                Action::parse(self.snapshot.action).map_err(|_| InvalidFact)?,
+                Action::parse(self.snapshot.action).map_err(|_| InvalidFact::Action)?,
                 ResourceRef::new(
-                    ResourceKind::parse("mdm").map_err(|_| InvalidFact)?,
-                    ResourceId::parse(resource).map_err(|_| InvalidFact)?,
+                    ResourceKind::parse("mdm").map_err(|_| InvalidFact::Resource)?,
+                    ResourceId::parse(resource).map_err(|_| InvalidFact::Resource)?,
                 ),
                 self.outcome,
                 observed_at,
@@ -161,14 +187,14 @@ impl Fact {
                     self.request
                         .map(|v| RequestId::parse(&v.to_string()))
                         .transpose()
-                        .map_err(|_| InvalidFact)?,
+                        .map_err(|_| InvalidFact::Coordinates)?,
                     self.snapshot
                         .operation_id
                         .map(|v| OperationId::parse(&v.to_string()))
                         .transpose()
-                        .map_err(|_| InvalidFact)?,
+                        .map_err(|_| InvalidFact::Coordinates)?,
                 ),
-                AuditPayload::new(self.payload.clone()).map_err(|_| InvalidFact)?,
+                AuditPayload::new(self.payload.clone()).map_err(|_| InvalidFact::Payload)?,
             ),
         ))
     }

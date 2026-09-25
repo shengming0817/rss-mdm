@@ -166,7 +166,7 @@ impl DeviceService {
         command: BindRegistration,
     ) -> Result<RegistrationReceipt, Error> {
         let audit = RequestAudit::new(admin.tenant_id().into(), "registration_bind");
-        audit.identify(admin.principal_id(), admin.instance_id());
+        admin.bind_audit(&audit)?;
         audit.operation(command.operation_id, "registration_bind");
         self.audited(&audit, self.bind_inner(admin, credential, &command, &audit))
             .await
@@ -180,7 +180,7 @@ impl DeviceService {
         operation_id: Uuid,
     ) -> Result<RevocationReceipt, Error> {
         let audit = RequestAudit::new(admin.tenant_id().into(), "credential_revoke");
-        audit.identify(admin.principal_id(), admin.instance_id());
+        admin.bind_audit(&audit)?;
         audit.operation(operation_id, "credential_revoke");
         audit.target(device);
         self.audited(
@@ -232,11 +232,8 @@ impl DeviceService {
             Err(_) => (503, "failed"),
         };
         let store = &self.audit_store;
-        let timer = crate::lifecycle::RuntimeTimer;
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
-            .expect("bounded fixture settlement");
-        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+        let control = budget.control();
         if let Err(error) = store.settle_request(audit, status, outcome, &control).await {
             audit.finalize(Some(FailureReason::Persistent));
             return Err(error.into());

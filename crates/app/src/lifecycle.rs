@@ -132,21 +132,11 @@ pub async fn serve(
                             .audit_store(&compiled.config.audit)
                             .await
                             .map_err(|e| ProcessError::at("startup.audit", e))?;
-                        let audit_deadline = rss_request_context::Deadline::from_timeout(
-                            &RuntimeTimer,
+                        let audit_budget = crate::audit_budget::AuditBudget::with_cancellation(
                             Duration::from_secs(5),
-                        )
-                        .map_err(|_| {
-                            ProcessError::at(
-                                "startup.audit",
-                                crate::Error::Unavailable(crate::Failure::Audit),
-                            )
-                        })?;
-                        let audit_control = rss_audit_postgres::Control::new(
-                            &RuntimeTimer,
-                            audit_deadline,
-                            &startup_cancel,
+                            startup_cancel.clone(),
                         );
+                        let audit_control = audit_budget.control();
                         audit_store
                             .validate_tenant(
                                 rss_request_context::TenantId::parse(

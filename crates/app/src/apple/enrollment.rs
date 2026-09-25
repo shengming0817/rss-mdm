@@ -62,7 +62,7 @@ async fn authorized(
         return Err(Error::Unauthorized);
     }
     proof.enrollment(&auth.device)?;
-    audit.identify(proof.principal_id(), proof.instance_id());
+    proof.bind_audit(audit)?;
     audit.target(&auth.device);
     Ok((auth, proof))
 }
@@ -75,12 +75,8 @@ pub(super) async fn download(
     let input = input.map_err(|_| Error::Malformed)?.0;
     let apple = app.apple()?;
     let (auth, proof) = authorized(&app, id, &input.password, &audit).await?;
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = app.audit_store.execute(app.identity.tenant, &control,
         (&app, apple, &auth, &proof, &input, &audit, id),
         |(app, apple, auth, proof, input, audit, id), tx| Box::pin(async move {
@@ -105,7 +101,7 @@ pub(super) async fn download(
                 })).await?;
             let fingerprint = crate::enrollment::digest(&(auth.id, auth.version, attempt, &apple.configuration));
             let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-profile:{attempt}"),
-                fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(Error::from)?;
             app.audit_store.append(tx, &fact, replayed).await.map_err(Error::from)?;
             if replayed { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();
@@ -175,12 +171,8 @@ pub(super) async fn challenge(
         ));
     }
     let (auth, proof) = authorized(&app, csr.enrollment, &password, &audit).await?;
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = app.audit_store.execute(app.identity.tenant, &control,
         (&app.audit_store, apple, &auth, &proof, &csr, input.transaction.as_str(), &audit),
         |(store, apple, auth, proof, csr, transaction, audit), tx| Box::pin(async move {
@@ -202,7 +194,7 @@ pub(super) async fn challenge(
                 })).await?;
             let fingerprint = crate::enrollment::digest(&(auth.id, auth.version, transaction, csr.digest, csr.spki));
             let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-scep:{}:consume", csr.attempt),
-                fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(Error::from)?;
             store.append(tx, &fact, false).await.map_err(Error::from)?;
             audit.mark_commit_started();
             Ok(())
@@ -243,12 +235,8 @@ pub(super) async fn notify(
     if super::renewal::notify(&app, &leaf, &csr, &input.transaction, &audit).await? {
         return Ok(Json(serde_json::json!({"allow":true})));
     }
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = app
         .audit_store
         .execute(
@@ -318,7 +306,7 @@ pub(super) async fn notify(
                         "success",
                         Some(leaf.enrollment),
                     )
-                    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    .map_err(Error::from)?;
                     app.audit_store
                         .append(tx, &fact, replayed)
                         .await
@@ -389,14 +377,9 @@ pub(super) async fn bind(
     .await?;
     let fingerprint =
         crate::enrollment::digest(&(leaf.attempt, leaf.fingerprint, udid, auth.operation));
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline = rss_request_context::Deadline::from_timeout(
-        &timer,
-        crate::registration_lifecycle::TRANSACTION_BUDGET,
-    )
-    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget =
+        crate::audit_budget::AuditBudget::new(crate::registration_lifecycle::TRANSACTION_BUDGET);
+    let control = budget.control();
     let attempt = app
         .audit_store
         .execute(
@@ -433,7 +416,7 @@ pub(super) async fn bind(
                         "success",
                         Some(inputs.auth.id),
                     )
-                    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    .map_err(Error::from)?;
                     app.audit_store
                         .append(tx, &fact, false)
                         .await
@@ -501,7 +484,7 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state) VALUES($1::uuid,$2::uuid,$3,'pending_token')")
         .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).execute(&mut *tx).await.map_err(db)?;
     crate::enrollment::store::mark_bound_in(tx, &tenant, auth, false).await?;
-    audit.identify(proof.principal_id(), proof.instance_id());
+    proof.bind_audit(audit)?;
     audit.target(&auth.device);
     audit.registration(receipt.registration);
     Ok(())

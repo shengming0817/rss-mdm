@@ -196,14 +196,14 @@ async fn management(t: TenantId) -> Management {
 }
 async fn execute(m: &Management, c: &Command) -> std::result::Result<Value, Error> {
     let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
-    audit.identify("operator", "mdm");
+    audit.set_principal("operator", "mdm");
     let result = m.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result
 }
 async fn execute_asset(m: &Management, c: &assets::Command) -> std::result::Result<Value, Error> {
     let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
-    audit.identify("operator", "mdm");
+    audit.set_principal("operator", "mdm");
     let result = m.assets.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result
@@ -972,7 +972,10 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     )
     .await;
     sql("GRANT INSERT ON mdm_audit.receipts TO mdm_management_runtime");
-    assert!(matches!(result, Err(Error::Unavailable(Failure::Audit))));
+    assert!(matches!(
+        result,
+        Err(Error::Unavailable(Failure::AuditAdmission))
+    ));
     assert_eq!(
         sql(&format!(
             "SELECT count(*) FROM mdm_group.groups WHERE id='{denied}'"
@@ -1421,7 +1424,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             .await
             .unwrap();
         let audit = RequestAudit::new(tenant().to_string(), "management_write");
-        audit.identify("operator", "mdm");
+        audit.set_principal("operator", "mdm");
         let expires = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             + Duration::from_millis(150);
         let authorize = || {
@@ -1760,7 +1763,7 @@ async fn asset_capability_owns_execution_and_receipt_recovery() {
         };
         let audit = || {
             let audit = RequestAudit::new(tenant.to_string(), "management_write");
-            audit.identify("operator", "mdm");
+            audit.set_principal("operator", "mdm");
             audit
         };
         runtime.inject_next_transaction_fault(

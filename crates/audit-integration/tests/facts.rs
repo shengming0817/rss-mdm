@@ -95,3 +95,44 @@ fn detail_replacement_depends_only_on_final_facts() {
     assert_eq!(payload["details"], serde_json::json!({"value": 2}));
     audit.finalize(None);
 }
+
+#[test]
+fn invalid_facts_expose_closed_categories_without_input_values() {
+    use rss_mdm_audit_integration::InvalidFact;
+    let context = RequestAudit::new("bad-secret-tenant".into(), "valid_action");
+    assert!(matches!(
+        Fact::request(&context, 200, "success"),
+        Err(InvalidFact::Tenant)
+    ));
+    let valid = RequestAudit::new(
+        "11111111-1111-4111-8111-111111111111".into(),
+        "valid_action",
+    );
+    assert!(matches!(
+        Fact::request(&valid, 600, "success"),
+        Err(InvalidFact::Status)
+    ));
+    assert!(matches!(
+        Fact::request(&valid, 200, "secret-result"),
+        Err(InvalidFact::Outcome)
+    ));
+    assert!(matches!(
+        Fact::business(&valid, "", b"fingerprint", 200, "success", None),
+        Err(InvalidFact::Identity)
+    ));
+    assert!(matches!(
+        Fact::business(&valid, "key", b"", 200, "success", None),
+        Err(InvalidFact::Fingerprint)
+    ));
+    for error in [
+        InvalidFact::Tenant,
+        InvalidFact::Status,
+        InvalidFact::Outcome,
+        InvalidFact::Identity,
+        InvalidFact::Fingerprint,
+    ] {
+        assert!(!format!("{error:?}: {error}").contains("secret"));
+    }
+    context.finalize(None);
+    valid.finalize(None);
+}

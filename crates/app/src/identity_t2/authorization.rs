@@ -502,7 +502,17 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
         .0 == StatusCode::OK
     );
     let audit = rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "authorization_write");
-    audit.identify(stale.principal_id(), stale.instance_id());
+    let foreign_audit = rss_mdm_audit_integration::RequestAudit::new(
+        Uuid::new_v4().to_string(),
+        "authorization_write",
+    );
+    ensure!(matches!(
+        stale.bind_audit(&foreign_audit),
+        Err(crate::Error::Forbidden)
+    ));
+    ensure!(foreign_audit.snapshot().actor.is_none());
+    foreign_audit.finalize(None);
+    stale.bind_audit(&audit).unwrap();
     let rejected = crate::authorization::store::change_rule(store.audit_store(&crate::config::AuditConfig::Plain).await?.as_ref(), &stale, Uuid::new_v4(), crate::authorization::Change {
         operation_id:Uuid::new_v4(), expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
     }, &audit).await;
@@ -755,7 +765,9 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         )
         .await;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access")?;
-    ensure!(rejected?.0 == StatusCode::SERVICE_UNAVAILABLE);
+    let rejected = rejected?;
+    ensure!(rejected.0 == StatusCode::INTERNAL_SERVER_ERROR);
+    ensure!(rejected.1["code"] == "audit_contract_error");
     ensure!(member.call(&router, Method::GET, &path, None).await?.1["status"] == "pending");
     crate::identity_fixture::set_grants(TENANT, &subject, vec![]).await?;
     ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);

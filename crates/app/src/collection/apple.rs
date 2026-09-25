@@ -43,12 +43,8 @@ pub(crate) async fn create(
     proof.require(Permission::InventoryCollect, Some(&device))?;
     audit.operation(input.request_id, "collection_start");
     audit.target(&device);
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let attempt = app
         .audit_store
         .execute(
@@ -85,7 +81,7 @@ pub(crate) async fn create(
                         None,
                     )
                     .and_then(|fact| fact.with_details(receipt.clone()))
-                    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    .map_err(Error::from)?;
                     store
                         .append(tx, &fact, replayed)
                         .await

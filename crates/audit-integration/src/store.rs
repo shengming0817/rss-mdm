@@ -16,6 +16,8 @@ pub enum Error {
     Receipt,
     #[error("audit recovery requires READ COMMITTED isolation")]
     Isolation,
+    #[error("audit receipt admission failed")]
+    Admission,
     #[error("audit commit result is unconfirmed")]
     CommitUnknown,
     #[error("audit rollback is unconfirmed")]
@@ -31,9 +33,11 @@ impl From<Error> for PgError {
         match e {
             Error::Audit(e) => e.into(),
             Error::Fact(_) => rss_audit_postgres::Error::InvalidBound.into(),
-            Error::Receipt | Error::Isolation | Error::CommitUnknown | Error::RollbackFailed => {
-                rss_audit_postgres::Error::StorageContract.into()
-            }
+            Error::Receipt
+            | Error::Isolation
+            | Error::Admission
+            | Error::CommitUnknown
+            | Error::RollbackFailed => rss_audit_postgres::Error::StorageContract.into(),
         }
     }
 }
@@ -90,11 +94,6 @@ impl AuditStore {
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
         let ledger = self.ledger;
-        let failure = |error| match error {
-            rss_audit_postgres::TransactionError::Operation(error) => error,
-            rss_audit_postgres::TransactionError::Audit(error) => error.into(),
-            rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
-        };
         self.execute(tenant, control, (), move |_, tx| {
             Box::pin(async move {
                 let page = tx
@@ -119,11 +118,11 @@ impl AuditStore {
         .await
         .fold(
             |_| Ok(()),
-            |error| Err(failure(error)),
-            |error| Err(failure(error)),
+            |error| Err(transaction_error(error)),
+            |error| Err(transaction_error(error)),
             |_| Err(Error::RollbackFailed),
             |_| Err(Error::CommitUnknown),
-            |error| Err(failure(error)),
+            |error| Err(transaction_error(error)),
         )?;
         if ledger {
             self.adapter
@@ -416,7 +415,7 @@ async fn admit_receipts(c: &mut PgConnection) -> Result<(), Error> {
         .fetch_one(c)
         .await?;
     if valid != Some(true) {
-        return Err(rss_audit_postgres::Error::StorageContract.into());
+        return Err(Error::Admission);
     }
     Ok(())
 }

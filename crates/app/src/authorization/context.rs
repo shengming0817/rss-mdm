@@ -19,6 +19,18 @@ impl AuthorizedPrincipal {
     pub(crate) fn new(session: AuthenticatedSession) -> Result<Self, Error> {
         Ok(Self::from_identity(Principal::new(session)?))
     }
+    /// Bind authenticated identity to the same tenant's audit facts, including denied requests.
+    /// Expiry/authorization is checked by the operation; recording the known actor is not a grant.
+    pub(crate) fn bind_audit(
+        &self,
+        audit: &rss_mdm_audit_integration::RequestAudit,
+    ) -> Result<(), Error> {
+        if audit.tenant() != self.tenant_id() {
+            return Err(Error::Forbidden);
+        }
+        audit.set_principal(self.principal_id(), self.instance_id());
+        Ok(())
+    }
     pub(crate) fn session(&self) -> &AuthenticatedSession {
         self.identity.session()
     }

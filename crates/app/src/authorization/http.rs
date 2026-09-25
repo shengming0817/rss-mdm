@@ -212,8 +212,10 @@ async fn authenticate_and_run(
     {
         Ok((proof, credential)) => {
             let proof = AuthorizedPrincipal::from_identity(proof);
-            if let Some(audit) = parts.extensions.get::<RequestAudit>() {
-                audit.identify(proof.principal_id(), proof.instance_id());
+            if let Some(audit) = parts.extensions.get::<RequestAudit>()
+                && let Err(error) = proof.bind_audit(audit)
+            {
+                return error.into_response();
             }
             // Authentication has settled. Authorization I/O and the handler share the host budget.
             tokio::time::timeout(Duration::from_secs(8), async {

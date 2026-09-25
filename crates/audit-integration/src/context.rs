@@ -129,14 +129,10 @@ impl RequestAudit {
     pub fn snapshot(&self) -> Snapshot {
         self.0.state.lock().expect("audit lock").snapshot.clone()
     }
-    /// Caller must establish actor, instance and tenant authenticity before supplying these facts.
-    pub fn identify(&self, actor: &str, instance: &str) {
-        let mut state = self.0.state.lock().expect("audit lock");
-        state.snapshot.actor = Some(actor.into());
-        state.snapshot.actor_kind = "principal";
-        state.snapshot.instance = Some(instance.into());
-    }
-    pub fn identify_operator(&self, actor: &str, instance: &str) {
+    /// Set neutral principal coordinates supplied by an authenticated or durable source owner.
+    /// This setter is data, not an authentication proof. The host authorization owner binds
+    /// live principals; recovery producers validate their persisted actor/tenant before use.
+    pub fn set_principal(&self, actor: &str, instance: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
         state.snapshot.actor_kind = "principal";
@@ -302,7 +298,7 @@ mod tests {
         a.operation(key, "enrollment_create");
         a.registration(registration);
         a.target("sensitive-target-not-for-logs");
-        a.identify("sensitive-actor", "sensitive-instance");
+        a.set_principal("sensitive-actor", "sensitive-instance");
         let event = |reason| a.0.failure_event(&a.snapshot(), reason);
         assert_eq!(
             event(FailureReason::Cancelled)["write_outcome"],

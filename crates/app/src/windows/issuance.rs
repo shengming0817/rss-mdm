@@ -171,14 +171,9 @@ pub(super) async fn complete_issuance(
         key: auth.operation,
         digest: &digest,
     };
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline = rss_request_context::Deadline::from_timeout(
-        &timer,
-        crate::registration_lifecycle::TRANSACTION_BUDGET,
-    )
-    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget =
+        crate::audit_budget::AuditBudget::new(crate::registration_lifecycle::TRANSACTION_BUDGET);
+    let control = budget.control();
     let attempt = store
         .execute(
             TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
@@ -219,7 +214,7 @@ pub(super) async fn complete_issuance(
                         "success",
                         Some(inputs.auth.id),
                     )
-                    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    .map_err(Error::from)?;
                     store
                         .append(tx, &fact, replayed)
                         .await

@@ -193,7 +193,7 @@ impl From<rss_mdm_audit_integration::Error> for Fault {
     }
 }
 impl From<rss_mdm_audit_integration::InvalidFact> for Fault {
-    fn from(_: rss_mdm_audit_integration::InvalidFact) -> Self {
-        Self::Request(Error::Unavailable(Failure::Audit))
+    fn from(error: rss_mdm_audit_integration::InvalidFact) -> Self {
+        Self::Request(rss_mdm_audit_integration::Error::Fact(error).into())
     }
 }

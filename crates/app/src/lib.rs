@@ -23,6 +23,7 @@ mod publication_support;
 mod registration_lifecycle;
 use database::Database;
 pub use management::Missing as ManagementObject;
+mod audit_budget;
 mod diagnostic;
 mod error_projection;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};

@@ -225,3 +225,17 @@ class AuditSurface(unittest.TestCase):
             source = path.read_text()
             self.assertNotIn("mdm_access.audit", source, str(path))
             self.assertNotIn("append_on_connection", source, str(path))
+
+class PrincipalBindingBoundary(unittest.TestCase):
+    def test_browser_and_native_producers_use_authorization_owner(self):
+        owners = {'authorization/context.rs', 'authorization/store.rs', 'software_publication/storage.rs'}
+        actual = set()
+        for path in ROOT.rglob('*.rs'):
+            relative = path.relative_to(ROOT).as_posix()
+            if 'tests' in relative or 'identity_fixture' in relative or 'identity_t2' in relative:
+                continue
+            source = path.read_text().split('#[cfg(test)]\nmod tests')[0]
+            self.assertNotRegex(source, r'\.identify(?:_operator)?\(')
+            if '.set_principal(' in source:
+                actual.add(relative)
+        self.assertEqual(actual, owners)

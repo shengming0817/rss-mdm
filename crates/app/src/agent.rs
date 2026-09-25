@@ -148,7 +148,7 @@ async fn register_inner(
         return Err(Error::Unauthorized.into());
     }
     proof.enrollment(&auth.device)?;
-    audit.identify(proof.principal_id(), proof.instance_id());
+    proof.bind_audit(audit)?;
     audit.target(&auth.device);
     let credential = VerifiedChannelCredential::agent(
         TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
@@ -160,11 +160,8 @@ async fn register_inner(
         key: input.operation_id(),
         digest: &digest,
     };
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
-        .map_err(|_| Error::Unavailable(Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+    let control = budget.control();
     let attempt = app
         .audit_store
         .execute(
@@ -204,7 +201,7 @@ async fn register_inner(
                         "success",
                         Some(inputs.auth.id),
                     )
-                    .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                    .map_err(Error::from)?;
                     store
                         .append(tx, &fact, replayed)
                         .await
@@ -344,11 +341,8 @@ async fn report_inner(
     audit.target(principal.device());
     let batch = batch(&input)?;
     let fingerprint = batch.fingerprint(&scope).map_err(|_| Error::Malformed)?;
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
-        .map_err(|_| Error::Unavailable(Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+    let control = budget.control();
     let attempt = app.audit_store.execute(principal.tenant(), &control,
         (&app.audit_store, &principal, &scope, &input, &batch, audit, &fingerprint),
         |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
@@ -358,7 +352,7 @@ async fn report_inner(
             let fact = rss_mdm_audit_integration::Fact::business(audit,
                 &format!("agent-report:{}", input.report_id()), fingerprint.as_slice(), 202, "success", None)
                 .and_then(|fact| fact.with_details(serde_json::json!({"reportId":input.report_id(),"collectionResult":result,"receivedAt":received_at})))
-                .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                .map_err(Error::from)?;
             store.append(tx, &fact, !fresh).await.map_err(Error::from)?;
             if !fresh { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();

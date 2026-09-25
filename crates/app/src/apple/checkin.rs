@@ -42,14 +42,9 @@ pub(super) async fn checkin(
     audit.target(principal.device());
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline = rss_request_context::Deadline::from_timeout(
-        &timer,
-        crate::registration_lifecycle::TRANSACTION_BUDGET,
-    )
-    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget =
+        crate::audit_budget::AuditBudget::new(crate::registration_lifecycle::TRANSACTION_BUDGET);
+    let control = budget.control();
     let attempt = app
         .audit_store
         .execute(
@@ -161,7 +156,7 @@ async fn checkin_on(
         None,
     )
     .and_then(|fact| fact.with_details(details))
-    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+    .map_err(Error::from)?;
     facts.push(fact);
     Ok(None)
 }

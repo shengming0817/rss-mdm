@@ -65,14 +65,10 @@ impl DeviceService {
         {
             return Err(Error::Forbidden);
         }
-        let timer = crate::lifecycle::RuntimeTimer;
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let deadline = rss_request_context::Deadline::from_timeout(
-            &timer,
+        let budget = crate::audit_budget::AuditBudget::new(
             crate::registration_lifecycle::TRANSACTION_BUDGET,
-        )
-        .map_err(|_| Error::Unavailable(Failure::Audit))?;
-        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        );
+        let control = budget.control();
         let attempt = self
             .audit_store
             .execute(
@@ -111,7 +107,7 @@ impl DeviceService {
                             "success",
                             Some(inputs.command.request_id),
                         )
-                        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                        .map_err(Error::from)?;
                         store
                             .append(tx, &fact, replayed)
                             .await
@@ -150,14 +146,10 @@ impl DeviceService {
             key,
             digest: &digest,
         };
-        let timer = crate::lifecycle::RuntimeTimer;
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let deadline = rss_request_context::Deadline::from_timeout(
-            &timer,
+        let budget = crate::audit_budget::AuditBudget::new(
             crate::registration_lifecycle::TRANSACTION_BUDGET,
-        )
-        .map_err(|_| Error::Unavailable(Failure::Audit))?;
-        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        );
+        let control = budget.control();
         let attempt = self
             .audit_store
             .execute(
@@ -198,7 +190,7 @@ impl DeviceService {
                             "success",
                             None,
                         )
-                        .map_err(|_| Error::Unavailable(Failure::Audit))?;
+                        .map_err(Error::from)?;
                         store
                             .append(tx, &fact, replayed)
                             .await

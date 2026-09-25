@@ -52,8 +52,19 @@ pub(crate) fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -
     }
 }
 
+impl From<rss_mdm_audit_integration::InvalidFact> for Error {
+    fn from(error: rss_mdm_audit_integration::InvalidFact) -> Self {
+        Self::from(rss_mdm_audit_integration::Error::Fact(error))
+    }
+}
+
 impl From<rss_mdm_audit_integration::Error> for Error {
     fn from(error: rss_mdm_audit_integration::Error) -> Self {
+        Self::from(&error)
+    }
+}
+impl From<&rss_mdm_audit_integration::Error> for Error {
+    fn from(error: &rss_mdm_audit_integration::Error) -> Self {
         match error {
             rss_mdm_audit_integration::Error::CommitUnknown => Self::CommitUnknown,
             rss_mdm_audit_integration::Error::RollbackFailed => Self::RollbackFailed,
@@ -62,6 +73,9 @@ impl From<rss_mdm_audit_integration::Error> for Error {
             }
             rss_mdm_audit_integration::Error::Receipt => {
                 Self::Unavailable(crate::Failure::AuditIntegrity)
+            }
+            rss_mdm_audit_integration::Error::Admission => {
+                Self::Unavailable(crate::Failure::AuditAdmission)
             }
             rss_mdm_audit_integration::Error::Isolation => {
                 Self::Unavailable(crate::Failure::AuditIsolation)
@@ -165,6 +179,12 @@ mod tests {
             ),
             (
                 rss_mdm_audit_integration::Error::Isolation,
+                "audit_contract_error",
+            ),
+            (
+                rss_mdm_audit_integration::Error::Fact(
+                    rss_mdm_audit_integration::InvalidFact::Actor,
+                ),
                 "audit_contract_error",
             ),
         ] {

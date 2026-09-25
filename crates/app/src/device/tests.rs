@@ -73,7 +73,7 @@ async fn request(
     channel: Channel,
 ) -> anyhow::Result<Uuid> {
     let audit = RequestAudit::new(admin.tenant_id().into(), "enrollment_create");
-    audit.identify(admin.principal_id(), admin.instance_id());
+    admin.bind_audit(&audit).unwrap();
     audit.target(device);
     let key = Uuid::new_v4();
     audit.operation(key, "enrollment_create");

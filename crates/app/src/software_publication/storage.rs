@@ -133,7 +133,7 @@ pub(super) fn fact(
         if instance.len() > 255 || subject.len() > 255 {
             return Err(fault());
         }
-        audit.identify_operator(&subject, &instance);
+        audit.set_principal(&subject, &instance);
     } else {
         audit.identify_service(actor.value());
     }

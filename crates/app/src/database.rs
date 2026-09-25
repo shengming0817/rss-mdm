@@ -29,11 +29,8 @@ impl Database {
         &self,
         config: &crate::config::AuditConfig,
     ) -> Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>, Error> {
-        let timer = crate::lifecycle::RuntimeTimer;
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let cutoff = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
-            .map_err(|_| Error::Configuration(crate::ConfigIssue::Budget))?;
-        let control = rss_audit_postgres::Control::new(&timer, cutoff, &cancel);
+        let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+        let control = budget.control();
         rss_mdm_audit_integration::AuditStore::new(self.pool.clone(), config.integrity()?, &control)
             .await
             .map(std::sync::Arc::new)

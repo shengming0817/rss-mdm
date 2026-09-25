@@ -481,11 +481,8 @@ pub(crate) async fn envelope(
     {
         let status = response.status().as_u16();
         let result = audit_result(&response, &snapshot);
-        let timer = crate::lifecycle::RuntimeTimer;
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
-            .expect("bounded audit settlement budget");
-        let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+        let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+        let control = budget.control();
         if let Err(error) = envelope
             .audit_store
             .settle_request(&audit, status, result, &control)

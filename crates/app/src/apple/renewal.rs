@@ -47,12 +47,8 @@ async fn prepare(
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(tenant.into(), "apple_renewal");
     audit.identify_service("service:certificate-renewal");
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = store
         .execute(
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
@@ -85,7 +81,7 @@ async fn prepare(
                             serde_json::to_value(&prepared).expect("closed renewal coordinates"),
                         )
                     })
-                    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    .map_err(Error::from)?;
                     store
                         .append(tx, &fact, replayed)
                         .await
@@ -223,12 +219,8 @@ pub(super) async fn challenge(
     transaction: &str,
     audit: &RequestAudit,
 ) -> Result<bool, Error> {
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = app.audit_store.execute(app.identity.tenant, &control, (app, csr, secret, transaction, audit),
         |(app, csr, secret, transaction, audit), tx| Box::pin(async move {
             let replayed = tx.with_connection_context(&mut (*app, *csr, *secret, *transaction, *audit), |(app, csr, secret, transaction, audit), c| Box::pin(async move {
@@ -261,7 +253,7 @@ pub(super) async fn challenge(
             let Some(replayed) = replayed else { return Ok(false); };
             let fingerprint = crate::enrollment::digest(&(csr.attempt, csr.digest, csr.spki, transaction));
             let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:challenge", csr.attempt),
-                fingerprint.as_bytes(), 200, "success", Some(csr.enrollment)).map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                fingerprint.as_bytes(), 200, "success", Some(csr.enrollment)).map_err(Error::from)?;
             app.audit_store.append(tx, &fact, replayed).await.map_err(Error::from)?;
             if replayed { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();
@@ -278,12 +270,8 @@ pub(super) async fn notify(
     transaction: &str,
     audit: &RequestAudit,
 ) -> Result<bool, Error> {
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = app
         .audit_store
         .execute(
@@ -347,7 +335,7 @@ pub(super) async fn notify(
                         "success",
                         Some(leaf.attempt),
                     )
-                    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    .map_err(Error::from)?;
                     app.audit_store
                         .append(tx, &fact, replayed)
                         .await
@@ -386,12 +374,8 @@ pub(super) async fn activate(
     udid: &str,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(app.identity.tenant.to_string(), "apple_renewal");
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = app.audit_store.execute(app.identity.tenant, &control, (app, leaf, udid, &audit),
         |(app, leaf, udid, audit), tx| Box::pin(async move {
             let changed = tx.with_connection_context(&mut (*app, *leaf, *udid, *audit),
@@ -432,7 +416,7 @@ pub(super) async fn activate(
             if changed {
                 let fingerprint = crate::enrollment::digest(&(leaf.attempt, leaf.fingerprint, udid));
                 let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:activate", leaf.attempt),
-                    fingerprint.as_bytes(), 200, "success", Some(leaf.enrollment)).map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+                    fingerprint.as_bytes(), 200, "success", Some(leaf.enrollment)).map_err(Error::from)?;
                 app.audit_store.append(tx, &fact, false).await.map_err(Error::from)?;
                 audit.mark_commit_started();
             }
@@ -456,12 +440,8 @@ pub(super) async fn management(
     bytes: &[u8],
     audit: &RequestAudit,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let timer = crate::lifecycle::RuntimeTimer;
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline =
-        rss_request_context::Deadline::from_timeout(&timer, std::time::Duration::from_secs(2))
-            .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let control = budget.control();
     let outcome = app.audit_store.execute(app.identity.tenant, &control, (app, p, d, bytes, audit),
         |(app, p, d, bytes, audit), tx| Box::pin(async move {
             let result = tx.with_connection_context(&mut (*p, *d, *bytes), |(p, d, bytes), c| Box::pin(async move {

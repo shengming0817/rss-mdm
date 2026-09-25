@@ -338,7 +338,7 @@ async fn enrollment(
             return Err(Error::Unauthorized);
         }
         let _permission = proof.enrollment(&auth.device)?;
-        audit.identify(proof.principal_id(), proof.instance_id());
+        proof.bind_audit(&audit)?;
         audit.target(&auth.device);
         let now = app.clock.unix_seconds()?;
         if let Some(t) = &security.timestamp {

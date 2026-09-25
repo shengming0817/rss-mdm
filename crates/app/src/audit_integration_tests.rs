@@ -55,7 +55,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
     let store = AuditStore::new(pool.clone(), mode, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
-    request.identify_operator("fixture-principal", "fixture-instance");
+    request.set_principal("fixture-principal", "fixture-instance");
     let fact = Fact::business(
         &request,
         "stable-operation",
