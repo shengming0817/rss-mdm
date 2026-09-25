@@ -1,69 +1,67 @@
-"""Production action inventory: source ownership and request/business event boundaries."""
+"""Exact production action declarations and their source ownership."""
 from pathlib import Path
 import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1] / "crates/app/src"
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
-# "both" means the owner produces business facts and the envelope independently settles
-# rejection, reads, replay or unknown requests. Internal scheduling cursors are not facts.
 OWNERS = {
-    "agent_registration": ("agent.rs", "both"),
-    "agent_report": ("agent.rs", "both"),
-    "agent_report_read": ("api.rs", "request"),
-    "apple_checkin": ("api.rs", "both"),
-    "apple_management": ("api.rs", "request"),
-    "apple_profile": ("api.rs", "both"),
-    "apple_push": ("commands/apple_push.rs", "business"),
-    "apple_renewal": ("apple/renewal.rs", "business"),
-    "apple_scep": ("api.rs", "both"),
-    "authentication": ("api.rs", "identity"),
-    "authorization_departments_read": ("api.rs", "request"),
-    "authorization_effective_read": ("api.rs", "request"),
-    "authorization_groups_read": ("api.rs", "request"),
-    "authorization_initialize": ("authorization/store.rs", "business"),
-    "authorization_members_read": ("api.rs", "request"),
-    "authorization_rules_read": ("api.rs", "request"),
-    "authorization_write": ("authorization/store.rs", "both"),
-    "automation_failed": ("management/automation/completion.rs", "business"),
-    "automation_completed": ("management/automation/jobs.rs", "business"),
-    "collection_finish": ("collection/store.rs", "business"),
-    "collection_read": ("api.rs", "request"),
-    "collection_start": ("collection/apple.rs", "both"),
-    "command_accept": ("commands/actions/http.rs", "both"),
-    "command_approve": ("commands/actions/http.rs", "both"),
-    "command_cancel": ("commands/actions/http.rs", "both"),
-    "command_dispatch": ("commands/recovery.rs", "business"),
-    "command_read": ("commands/actions/http.rs", "both"),
-    "command_reconcile": ("commands/actions/recovery.rs", "business"),
-    "credential_revoke": ("device.rs", "both"),
-    "device_action": ("api.rs", "request"),
-    "enrollment_cancel": ("api.rs", "both"),
-    "enrollment_create": ("api.rs", "both"),
-    "enrollment_issue": ("api.rs", "both"),
-    "enrollment_read": ("api.rs", "request"),
-    "enrollment_resume": ("api.rs", "both"),
-    "inventory_read": ("api.rs", "request"),
-    "management_read": ("commands/recovery.rs", "request"),
-    "management_write": ("commands/actions/http.rs", "both"),
-    "plan_execute": ("commands/http.rs", "both"),
-    "plan_preview": ("management/http.rs", "both"),
-    "plan_save": ("management/http.rs", "both"),
-    "protected_request": ("api.rs", "request"),
-    "registration_bind": ("device.rs", "business"),
-    "registration_read": ("api.rs", "request"),
-    "software_binding": ("software_publication/storage.rs", "business"),
-    "software_candidate": ("software_publication/service.rs", "business"),
-    "software_validate": ("software_publication/service.rs", "business"),
-    "software_approve": ("software_publication/service.rs", "business"),
-    "software_authorize": ("software_publication/service.rs", "business"),
-    "software_call": ("software_publication/driver.rs", "business"),
-    "software_preflight": ("software_publication/driver.rs", "both"),
-    "software_result": ("software_publication/driver.rs", "business"),
-    "software_withdraw": ("software_publication/driver.rs", "business"),
-    "windows_discovery": ("api.rs", "request"),
-    "windows_management": ("api.rs", "request"),
-    "windows_policy": ("api.rs", "request"),
+    "agent_registration": "agent.rs",
+    "agent_report": "agent.rs",
+    "agent_report_read": "api.rs",
+    "apple_checkin": "api.rs",
+    "apple_management": "api.rs",
+    "apple_profile": "api.rs",
+    "apple_push": "commands/apple_push.rs",
+    "apple_renewal": "apple/renewal.rs",
+    "apple_scep": "api.rs",
+    "authentication": "api.rs",
+    "authorization_departments_read": "api.rs",
+    "authorization_effective_read": "api.rs",
+    "authorization_groups_read": "api.rs",
+    "authorization_initialize": "authorization/store.rs",
+    "authorization_members_read": "api.rs",
+    "authorization_rules_read": "api.rs",
+    "authorization_write": "authorization/store.rs",
+    "automation_failed": "management/automation/completion.rs",
+    "automation_completed": "management/automation/jobs.rs",
+    "collection_finish": "collection/store.rs",
+    "collection_read": "api.rs",
+    "collection_start": "collection/apple.rs",
+    "command_accept": "commands/actions/http.rs",
+    "command_approve": "commands/actions/http.rs",
+    "command_cancel": "commands/actions/http.rs",
+    "command_dispatch": "commands/recovery.rs",
+    "command_read": "commands/actions/http.rs",
+    "command_reconcile": "commands/actions/recovery.rs",
+    "credential_revoke": "device.rs",
+    "device_action": "api.rs",
+    "enrollment_cancel": "api.rs",
+    "enrollment_create": "api.rs",
+    "enrollment_issue": "api.rs",
+    "enrollment_read": "api.rs",
+    "enrollment_resume": "api.rs",
+    "inventory_read": "api.rs",
+    "management_read": "commands/recovery.rs",
+    "management_write": "commands/actions/http.rs",
+    "plan_execute": "commands/http.rs",
+    "plan_preview": "management/http.rs",
+    "plan_save": "management/http.rs",
+    "protected_request": "api.rs",
+    "registration_bind": "device.rs",
+    "registration_read": "api.rs",
+    "software_binding": "software_publication/storage.rs",
+    "software_candidate": "software_publication/service.rs",
+    "software_validate": "software_publication/service.rs",
+    "software_approve": "software_publication/service.rs",
+    "software_authorize": "software_publication/service.rs",
+    "software_call": "software_publication/driver.rs",
+    "software_preflight": "software_publication/driver.rs",
+    "software_result": "software_publication/driver.rs",
+    "software_withdraw": "software_publication/driver.rs",
+    "windows_discovery": "api.rs",
+    "windows_management": "api.rs",
+    "windows_policy": "api.rs",
 }
 
 
@@ -216,14 +214,14 @@ class AuditSurface(unittest.TestCase):
     def test_every_declared_action_has_an_explicit_production_owner(self):
         self.assertEqual(declared_actions(), DECLARATIONS)
         self.assertEqual({action for action, _ in DECLARATIONS}, OWNERS.keys())
-        for action, (owner, kind) in OWNERS.items():
+        for action, owner in OWNERS.items():
             with self.subTest(action=action):
                 self.assertIn((action, owner), DECLARATIONS)
-                self.assertIn(kind, {"request", "business", "both", "identity"})
 
     def test_retired_audit_writes_and_transaction_forwarders_do_not_exist(self):
         self.assertFalse((ROOT / "audit.rs").exists())
-        for path in ROOT.rglob("*.rs"):
+        self.assertNotIn("'audit'", (ROOT / "commands/dependencies.sql").read_text())
+        for path in [*ROOT.rglob("*.rs"), *ROOT.rglob("*.sql")]:
             source = path.read_text()
             self.assertNotIn("mdm_access.audit", source, str(path))
             self.assertNotIn("append_on_connection", source, str(path))

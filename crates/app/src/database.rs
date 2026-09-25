@@ -37,7 +37,7 @@ impl Database {
         rss_mdm_audit_integration::AuditStore::new(self.pool.clone(), config.integrity()?, &control)
             .await
             .map(std::sync::Arc::new)
-            .map_err(|_| Error::Unavailable(Failure::Audit))
+            .map_err(Error::from)
     }
     pub async fn close(&self) {
         self.pool.close().await;
@@ -130,4 +130,47 @@ SELECT current_user='mdm_access' AND session_user=current_user
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)
+}
+
+/// Probe each borrowed transaction owner at startup without changing its isolation or pool.
+pub(crate) async fn admit_audit_runtime(
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    store: &rss_mdm_audit_integration::AuditStore,
+    tenant: rss_request_context::TenantId,
+) -> Result<(), Error> {
+    let failure = std::sync::Mutex::new(None);
+    runtime
+        .local_tx_with_context(
+            tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(5),
+            ),
+            (store, &failure),
+            |(store, failure), tx| {
+                Box::pin(async move {
+                    match store.lock_in(tx).await {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            *failure.lock().expect("startup audit failure") =
+                                Some(Error::from(error));
+                            Err(rss_audit_postgres::Error::StorageContract.into())
+                        }
+                    }
+                })
+            },
+        )
+        .await
+        .fold(
+            Ok,
+            |_| Err(Error::Unavailable(Failure::Audit)),
+            |_| {
+                Err(failure
+                    .into_inner()
+                    .expect("startup audit failure")
+                    .unwrap_or(Error::Unavailable(Failure::Audit)))
+            },
+            |_| Err(Error::RollbackFailed),
+            |_| Err(Error::CommitUnknown),
+            |_| Err(Error::Unavailable(Failure::Audit)),
+        )
 }

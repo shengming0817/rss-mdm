@@ -157,27 +157,32 @@ fn sql(statement: &str) -> String {
     String::from_utf8(result.stdout).unwrap().trim().into()
 }
 async fn runtime(t: TenantId) -> Arc<PgRuntime> {
+    runtime_role(t, "mdm_management_runtime").await
+}
+async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
     let c = fixture();
-    Arc::new(
-        PgRuntime::connect_producer(
-            PgConfig::new(
-                "localhost",
-                c["port"].as_u64().unwrap() as u16,
-                "backend",
-                "mdm_management_runtime",
-                PgPassword::new("backend-fixture"),
-                PgPrivateCa::from_pem(std::fs::read(c["ca"].as_str().unwrap()).unwrap()).unwrap(),
-            ),
-            crate::lifecycle::RuntimeTimer,
-            ExecutionBinding::new(
-                StorageIdentity::new([1; 16], [2; 16]).unwrap(),
-                vec![(t, Epoch::new(1).unwrap())],
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap(),
+    let config = PgConfig::new(
+        "localhost",
+        c["port"].as_u64().unwrap() as u16,
+        "backend",
+        role,
+        PgPassword::new("backend-fixture"),
+        PgPrivateCa::from_pem(std::fs::read(c["ca"].as_str().unwrap()).unwrap()).unwrap(),
+    );
+    let binding = ExecutionBinding::new(
+        StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+        vec![(t, Epoch::new(1).unwrap())],
     )
+    .unwrap();
+    Arc::new(if role == "mdm_command_runtime" {
+        PgRuntime::connect(config, crate::lifecycle::RuntimeTimer, binding)
+            .await
+            .unwrap()
+    } else {
+        PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
+            .await
+            .unwrap()
+    })
 }
 async fn management(t: TenantId) -> Management {
     Management::new(
@@ -1861,4 +1866,34 @@ async fn audit_store_with_integrity(
             .await
             .unwrap(),
     )
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
+    let store = audit_store().await;
+    for role in [
+        "mdm_management_runtime",
+        "mdm_command_runtime",
+        "mdm_software_driver",
+    ] {
+        sql(&format!(
+            "ALTER ROLE {role} SET default_transaction_isolation='repeatable read'"
+        ));
+        let runtime = runtime_role(tenant(), role).await;
+        let result = crate::database::admit_audit_runtime(&runtime, &store, tenant()).await;
+        runtime.close().await;
+        sql(&format!(
+            "ALTER ROLE {role} RESET default_transaction_isolation"
+        ));
+        assert!(
+            matches!(result, Err(Error::Unavailable(Failure::AuditIsolation))),
+            "{role}: {result:?}"
+        );
+        let runtime = runtime_role(tenant(), role).await;
+        crate::database::admit_audit_runtime(&runtime, &store, tenant())
+            .await
+            .unwrap();
+        runtime.close().await;
+    }
 }

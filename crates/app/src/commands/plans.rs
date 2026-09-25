@@ -9,6 +9,7 @@ use crate::{
         model::{FrozenIntent, PlanExecutionAdmission},
     },
 };
+use rss_mdm_audit_integration::Fact;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -102,7 +103,7 @@ impl Commands {
         let value = response.clone();
         let rev = input.expected_revision;
         let request = input.operation_id;
-        let fact = rss_mdm_audit_integration::Fact::business(
+        let fact = Fact::business(
             audit,
             &format!("plan:{plan}:execute:{request}"),
             &fingerprint,
@@ -488,7 +489,7 @@ async fn replay_execution(
     }
     authorize_replay(tx, proof, &response).await?;
     audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-    let fact = rss_mdm_audit_integration::Fact::business(
+    let fact = Fact::business(
         audit,
         &format!("plan:{plan}:execute:{request}"),
         fingerprint,

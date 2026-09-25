@@ -95,6 +95,10 @@ pub enum Failure {
     Database,
     AccessAdmission,
     Audit,
+    AuditIntegrity,
+    AuditIsolation,
+    AuditContract,
+    AuditAdmission,
     InventoryQuery,
     AssetCandidates,
     AssetSources,
@@ -159,6 +163,7 @@ impl ProcessError {
                 stage,
                 kind: match error {
                     Error::CommitUnknown => "commit_unknown; retry_same_operation",
+                    Error::RollbackFailed => "rollback_unconfirmed; retry_same_operation",
                     Error::Conflict => "conflict",
                     Error::Malformed => "malformed_input",
                     Error::Unauthorized => "unauthorized",
@@ -175,6 +180,11 @@ mod tests {
     use super::*;
     #[test]
     fn operator_unknown_commit_preserves_safe_recovery_class() {
+        assert!(
+            ProcessError::at("authorization.initialize", Error::RollbackFailed)
+                .to_string()
+                .contains("rollback_unconfirmed; retry_same_operation")
+        );
         assert!(
             ProcessError::at("authorization.initialize", Error::CommitUnknown)
                 .to_string()

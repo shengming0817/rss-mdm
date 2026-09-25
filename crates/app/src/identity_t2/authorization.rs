@@ -653,6 +653,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         .merge(identity.routes())
         .layer(middleware::from_fn_with_state(
             crate::api::Envelope {
+                admission: Arc::new(tokio::sync::Semaphore::new(32)),
                 host: "mdm.example.test".into(),
                 clock: monotonic,
                 audit_store: access.audit_store(&config.audit).await?,

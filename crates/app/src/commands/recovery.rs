@@ -1,4 +1,5 @@
 use super::*;
+use rss_mdm_audit_integration::Fact;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
@@ -224,7 +225,7 @@ impl Commands {
         audit.identify_service("command-dispatch");
         let result=self.transact((self,id,fingerprint,&audit),&audit,|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
-            let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("command:{id}:dispatch"),fingerprint,200,"success",None)?;
+            let fact=Fact::business(audit,&format!("command:{id}:dispatch"),fingerprint,200,"success",None)?;
             let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
@@ -337,7 +338,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
                         let fact_audit=audit.transaction_copy();fact_audit.identify_service("command-recovery");fact_audit.operation(operation.id,"command_reconcile");fact_audit.target(&operation.device);fact_audit.registration(operation.registration);
                         let details=serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
                         let fingerprint=invalid(serde_json::to_vec(&details))?;
-                        let fact=rss_mdm_audit_integration::Fact::business(&fact_audit,&format!("command:{id}:recover:{}",command.version()),&fingerprint,200,"success",None)?.with_details(details)?;
+                        let fact=Fact::business(&fact_audit,&format!("command:{id}:recover:{}",command.version()),&fingerprint,200,"success",None)?.with_details(details)?;
                         fact_audit.finalize(None);
                         service.audit_store.append_in(tx,&fact,false).await?;
                     }

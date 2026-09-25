@@ -161,6 +161,24 @@ def verify_backend_support(data):
         require(key == ident or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), "support depends on product/core/identity")
         pending.extend(d['pkg'] for d in nodes[key]['deps'])
 
+def verify_audit_integration(data):
+    name = 'rss-mdm-audit-integration'
+    packages = {p['id']: p['name'] for p in data['packages']}
+    nodes = {n['id']: n for n in data['resolve']['nodes']}
+    ids = [key for key, package in packages.items() if package == name]
+    require(len(ids) == 1, 'exactly one product audit integration package is required')
+    identity = ids[0]
+    parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
+    require(parents == {'rss-mdm-app'}, 'only App business producers may consume audit integration')
+    require(set(nodes[identity]['features']) <= {'default', 'integration'}, 'audit integration exposes an unsupported feature')
+    pending, visited = [identity], set()
+    while pending:
+        key = pending.pop()
+        if key in visited: continue
+        visited.add(key)
+        require(key == identity or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), 'audit integration depends on a product, domain or Identity package')
+        pending.extend(d['pkg'] for d in nodes[key]['deps'])
+
 def verify_metadata(data, root, mode, pin):
     url, rev = pin
     expected = f"git+{url}?rev={rev}#{rev}"
@@ -186,6 +204,7 @@ def verify_metadata(data, root, mode, pin):
     require(("test-support" in features["rss-identity-oidc"]) == (mode == "integration"), "OIDC fixture transport feature drift")
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     verify_backend_support(data)
+    verify_audit_integration(data)
     app_id = next(p['id'] for p in data['packages'] if p['name'] == 'rss-mdm-app')
     visited, todo = set(), [app_id]
     while todo:

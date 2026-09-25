@@ -164,7 +164,12 @@ impl Management {
                 .append_in(tx, &fact, false)
                 .await
                 .map_err(Error::from);
-            audit.finalize(None);
+            audit.finalize(
+                result
+                    .as_ref()
+                    .err()
+                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+            );
             result?;
         }
         Ok(())

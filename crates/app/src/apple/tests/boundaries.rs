@@ -182,6 +182,13 @@ impl Fixture {
             .await?;
         ensure!(reply.0 == StatusCode::ACCEPTED);
         let run = reply.1["runId"].as_str().unwrap();
+        let mut pending_reader =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let pending: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_access.collection_runs WHERE sealed_at IS NULL AND registration IN (SELECT registration FROM mdm_apple.devices WHERE state='active')").fetch_all(&mut pending_reader).await?;
+        ensure!(
+            pending.len() >= 65,
+            "retirement must exercise the real accumulated collection backlog"
+        );
         let checkout = peer
             .send(
                 "/checkin",
@@ -192,6 +199,20 @@ impl Fixture {
             )
             .await?;
         ensure!(checkout.0 == StatusCode::OK);
+        let facts = crate::audit_test_support::read(&mut pending_reader).await?;
+        for id in pending {
+            ensure!(
+                facts
+                    .iter()
+                    .filter(|record| record.source() == "mdm.business"
+                        && record.action() == "collection_finish"
+                        && record.operation() == Some(id.as_str()))
+                    .count()
+                    == 1,
+                "each retired collection requires exactly one terminal fact"
+            );
+        }
+        pending_reader.close().await?;
         let stale = peer
             .send(
                 "/mdm",

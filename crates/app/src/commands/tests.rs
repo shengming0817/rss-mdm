@@ -885,7 +885,13 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND session_id='900'").bind(TENANT).execute(&mut pg).await?;
         ensure!(
-            crate::windows::retention::prune_management(&self.app.audit_store, TENANT).await? >= 1
+            crate::windows::retention::prune_management(
+                &self.app.access,
+                &self.app.audit_store,
+                TENANT
+            )
+            .await?
+                >= 1
         );
         let read = self
             .call(Method::GET, &format!("/{}", self.operation), None)

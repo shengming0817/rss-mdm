@@ -123,6 +123,7 @@ pub(crate) fn router(
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn_with_state(
             Envelope {
+                admission: Arc::new(tokio::sync::Semaphore::new(32)),
                 host: apple
                     .config
                     .management

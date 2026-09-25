@@ -47,6 +47,8 @@ impl AuditStore {
     pub fn inject_next_fault(&self, fault: rss_audit_postgres::PgFault) {
         self.adapter.inject_next_fault(fault);
     }
+    /// Admit the host-owned pool and explicit integrity mode. Does not close the pool.
+    /// Rejects unsafe receipt privileges/schema and non-READ-COMMITTED isolation.
     pub async fn new<T: ExecutionTimer>(
         pool: PgPool,
         integrity: Integrity,
@@ -80,12 +82,19 @@ impl AuditStore {
     }
     /// Admit the configured tenant before serving requests. Verify a bounded authenticated
     /// record when present so a wrong secret fails startup, even with the same key ID.
+    /// Validate this tenant's stored integrity mode and, for Ledger, authenticate an existing window.
+    /// This uses the same bounded owner transaction and never repairs or downgrades stored data.
     pub async fn validate_tenant<T: ExecutionTimer>(
         &self,
         tenant: rss_request_context::TenantId,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
         let ledger = self.ledger;
+        let failure = |error| match error {
+            rss_audit_postgres::TransactionError::Operation(error) => error,
+            rss_audit_postgres::TransactionError::Audit(error) => error.into(),
+            rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        };
         self.execute(tenant, control, (), move |_, tx| {
             Box::pin(async move {
                 let page = tx
@@ -110,16 +119,11 @@ impl AuditStore {
         .await
         .fold(
             |_| Ok(()),
-            |_| Err(Error::Receipt),
-            |e| {
-                Err(match e {
-                    rss_audit_postgres::TransactionError::Operation(e) => e,
-                    _ => Error::Receipt,
-                })
-            },
+            |error| Err(failure(error)),
+            |error| Err(failure(error)),
             |_| Err(Error::RollbackFailed),
             |_| Err(Error::CommitUnknown),
-            |_| Err(Error::Receipt),
+            |error| Err(failure(error)),
         )?;
         if ledger {
             self.adapter
@@ -180,6 +184,9 @@ impl AuditStore {
             )
             .await
     }
+    /// First operation in an RSS transaction: validate isolation/receipts, then lock Audit and Ledger.
+    /// Must precede business and outbox locks. Reuses the owner's connection and remaining budget;
+    /// errors must propagate to that owner. This method neither commits nor proves prior rollback.
     pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
         tx.with_connection(|c| Box::pin(async move { Ok(admit_receipts(c).await) }))
             .await
@@ -208,7 +215,7 @@ impl AuditStore {
             )
     }
     /// Settle a standalone request fact before returning its protected response.
-    pub async fn record<T: ExecutionTimer>(
+    async fn record<T: ExecutionTimer>(
         &self,
         fact: Fact,
         control: &Control<'_, T>,
@@ -225,6 +232,9 @@ impl AuditStore {
         .await
     }
 
+    /// Stage a request fact under an Audit-owned transaction for a final known response.
+    /// Request tenant must match the transaction. The owner must propagate errors and settle;
+    /// use `settle_request` instead after a separate business transaction has ended.
     pub async fn append_request<T: ExecutionTimer>(
         &self,
         tx: &mut AuditTransaction<'_, '_, '_, T>,
@@ -235,7 +245,10 @@ impl AuditStore {
         let fact = Fact::request(request, status, result)?;
         self.append_checked(tx, &fact, None).await
     }
-    /// Caller must acquire head locks before business locks and propagate this error.
+    /// Stage a business fact inside `execute`; head locks must already precede business locks.
+    /// `replayed` must reflect the producer's actual locked business receipt. A mismatched pair
+    /// is an integrity failure, never permission to reconstruct or overwrite an event.
+    /// Return errors to the original owner; this result is not a commit receipt.
     pub async fn append<T: ExecutionTimer>(
         &self,
         tx: &mut AuditTransaction<'_, '_, '_, T>,
@@ -244,6 +257,9 @@ impl AuditStore {
     ) -> Result<(), Error> {
         self.append_checked(tx, fact, Some(replayed)).await
     }
+    // These two carrier adapters share restore/read_receipt/save_receipt and the component's
+    // append implementation. Keep transaction ownership explicit rather than introducing an
+    // erased writer/transaction trait that could expose a second settlement path.
     async fn append_checked<T: ExecutionTimer>(
         &self,
         tx: &mut AuditTransaction<'_, '_, '_, T>,
@@ -273,6 +289,9 @@ impl AuditStore {
         tx.append(&prepared).await?;
         Ok(())
     }
+    /// Stage a business fact in the existing RSS owner after `lock_in`.
+    /// `replayed` is the producer's locked business-receipt result, not a guessed HTTP property.
+    /// Pairing, fingerprint and canonical bytes must agree; success remains staged until owner commit.
     pub async fn append_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -281,6 +300,8 @@ impl AuditStore {
     ) -> Result<(), Error> {
         self.append_checked_in(tx, fact, Some(replayed)).await
     }
+    /// Stage an independent request identity in the RSS owner's transaction after `lock_in`.
+    /// Only use after the final response facts are known; this does not settle or release a response.
     pub async fn append_request_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -354,7 +375,7 @@ async fn now(c: &mut PgConnection) -> Result<Timepoint, Error> {
     let at: i64 = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
         .fetch_one(c)
         .await?;
-    Timepoint::try_from(at).map_err(|_| Error::Receipt)
+    Timepoint::try_from(at).map_err(|_| rss_audit_postgres::Error::StorageContract.into())
 }
 async fn read_receipt(
     c: &mut PgConnection,

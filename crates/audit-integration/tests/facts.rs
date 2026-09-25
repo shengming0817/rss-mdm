@@ -79,5 +79,19 @@ fn detail_replacement_depends_only_on_final_facts() {
         .with_details(serde_json::json!({"value": 2}))
         .unwrap();
     assert_eq!(direct.fingerprint(), replaced.fingerprint());
+    assert_ne!(fact().fingerprint(), direct.fingerprint());
+    assert_ne!(
+        fact()
+            .with_details(serde_json::json!({"value": 1}))
+            .unwrap()
+            .fingerprint(),
+        direct.fingerprint()
+    );
+    let event = direct
+        .event(rss_contract::Timepoint::try_from(1_i64).unwrap())
+        .unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_slice(event.context().payload().as_bytes()).unwrap();
+    assert_eq!(payload["details"], serde_json::json!({"value": 2}));
     audit.finalize(None);
 }

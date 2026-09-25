@@ -6,15 +6,28 @@ use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 
 pub(crate) async fn prune_management(
+    database: &crate::Database,
     store: &rss_mdm_audit_integration::AuditStore,
     tenant: &str,
 ) -> Result<u64, Error> {
+    // This is only a non-locking hint. Any candidate is re-read under Audit then
+    // business locks below; a concurrent new expiry is picked up on the next tick.
+    let mut hint = database.begin(tenant).await?;
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at<clock_timestamp())")
+        .bind(tenant).fetch_one(&mut *hint).await.map_err(db)?;
+    hint.rollback().await.map_err(db)?;
+    if !pending {
+        return Ok(0);
+    }
     let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
     audit.identify_service("service:management-retention");
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
-        .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
+    let deadline = rss_request_context::Deadline::from_timeout(
+        &timer,
+        crate::registration_lifecycle::TRANSACTION_BUDGET,
+    )
+    .map_err(|_| Error::Unavailable(crate::Failure::Audit))?;
     let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
     let attempt = store
         .execute(
@@ -53,7 +66,7 @@ async fn prune_on(
     tenant: &str,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<u64, Error> {
-    let expired=sqlx::query("SELECT registration::text,session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at<clock_timestamp() ORDER BY expires_at,registration,session_id LIMIT 128 FOR UPDATE SKIP LOCKED")
+    let expired=sqlx::query("SELECT registration::text,session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at<clock_timestamp() ORDER BY expires_at,registration,session_id LIMIT 32 FOR UPDATE SKIP LOCKED")
             .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
     let mut registrations = Vec::<String>::new();
     let mut sessions = Vec::<String>::new();
@@ -83,6 +96,7 @@ async fn prune_on(
 }
 
 pub(crate) fn registration(
+    database: Arc<crate::Database>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
 ) -> ManagedTaskRegistration {
@@ -93,7 +107,7 @@ pub(crate) fn registration(
         let mut failures=0u64;
         loop {
             tokio::select! { biased; ()=token.cancelled()=>return Ok(()), _=tick.tick()=>{} }
-            let result=tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=tokio::time::timeout(Duration::from_secs(2),prune_management(&audit_store, &tenant))=>result };
+            let result=tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=tokio::time::timeout(Duration::from_secs(7),prune_management(&database, &audit_store, &tenant))=>result };
             match result {
                 Ok(Ok(count)) => { failures=0; if count>0 { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention","sessions":count})); } }
                 failed => {

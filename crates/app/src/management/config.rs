@@ -78,6 +78,12 @@ impl Config {
             runtime: runtime.clone(),
             role: Role::Management,
         });
+        if let Err(error) =
+            crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await
+        {
+            runtime.close().await;
+            return Err(error);
+        }
         match Management::new(audit_store, runtime.clone(), tenant, clock).await {
             Ok(mut service) => {
                 if !self.sources.is_empty() {
@@ -133,6 +139,7 @@ impl Config {
             role: Role::Publication,
         });
         management.publication_runtime = Some(runtime.clone());
+        crate::database::admit_audit_runtime(&runtime, &management.audit_store, tenant).await?;
         for source in &self.sources {
             let artifacts = p::ArtifactReader::new(
                 source.artifacts.clone(),

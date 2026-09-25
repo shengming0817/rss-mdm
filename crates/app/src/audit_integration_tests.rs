@@ -562,11 +562,15 @@ async fn audit_process_exit_fixture() -> Result<()> {
 // Exercise the real retirement backlog size under the product's owner budget in
 // both modes; each event retains a separate identity and exact recovery receipt.
 async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
+    assert_eq!(
+        crate::registration_lifecycle::TRANSACTION_BUDGET,
+        Duration::from_secs(6)
+    );
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = Control::new(
         &timer,
-        Deadline::from_timeout(&timer, crate::registration_lifecycle::TRANSACTION_BUDGET)?,
+        Deadline::from_timeout(&timer, Duration::from_secs(6))?,
         &cancel,
     );
     let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
@@ -589,7 +593,7 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
     for replayed in [false, true] {
         let control = Control::new(
             &timer,
-            Deadline::from_timeout(&timer, crate::registration_lifecycle::TRANSACTION_BUDGET)?,
+            Deadline::from_timeout(&timer, Duration::from_secs(6))?,
             &cancel,
         );
         let attempt = store

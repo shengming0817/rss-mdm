@@ -7,6 +7,7 @@ use super::{
 use crate::commands::{Commands, Result, corrupt, invalid, storage};
 use crate::{Error, device::DevicePrincipal};
 use rss_mdm_agent_wire as wire;
+use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -69,7 +70,7 @@ impl Commands {
                     if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || signed.payload.expires_at<=now || run.state.attempt()!=Some(signed.payload.attempt_id) || !db::valid(tx,&plan,p.device(),now).await?{return Err(Error::Conflict.into());}
                 }
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:offer:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+                let fact=Fact::business(audit,&format!("agent:{}:offer:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
                 service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);
             }
             let tenant=tx.tenant_id().to_string();let device=p.device().to_owned();
@@ -105,7 +106,7 @@ impl Commands {
             let has_offer=offer.is_some();
             let response=invalid(serde_json::to_value(invalid(wire::TaskClaimResponse::new(offer,cancellations))?))?;
             if has_offer{
-                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:offer:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+                let fact=Fact::business(audit,&format!("agent:{}:offer:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
                 db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;
                 service.audit_store.append_in(tx,&fact,false).await?;
             }else{service.audit_store.append_request_in(tx,audit,200,"success").await?;}
@@ -129,7 +130,7 @@ impl Commands {
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
                 if response.get("permit").filter(|p|!p.is_null()).and_then(|p|p["payload"]["expiresAt"].as_i64()).is_some_and(|expiry|expiry<=now){return Err(Error::Conflict.into());}
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+                let fact=Fact::business(audit,&format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
                 service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);}
             let mut permit=None;
             match input.event() {
@@ -155,7 +156,7 @@ impl Commands {
                 },
             }
             db::save_run(tx,&run).await?;let response=invalid(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None)))?;
-            let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
+            let fact=Fact::business(audit,&format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id()),&hash,200,"success",None)?;
             db::receipt(tx,&actor,input.operation_id(),hash,&response).await?;
             service.audit_store.append_in(tx,&fact,false).await?;Ok(response)
         })).await

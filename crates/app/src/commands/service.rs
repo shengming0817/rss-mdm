@@ -4,6 +4,7 @@ use crate::{
     authorization::{Approval, Permission},
 };
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
+use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging::{message::*, outbox::PendingMessage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -85,7 +86,7 @@ impl Commands {
         let fingerprint = create_fingerprint(proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            let fact = rss_mdm_audit_integration::Fact::business(
+            let fact = Fact::business(
                 audit,
                 &format!("command:{0}:accept", input.operation_id),
                 &fingerprint,
@@ -171,7 +172,7 @@ impl Commands {
             let auth=storage::authorized(tx,proof,device,permission).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
             let fingerprint=Sha256::digest(invalid(serde_json::to_vec(&("mdm.command-change/v2",proof.user(),device,id,change,approve)))?).to_vec();
-            if let Some(value)=replay(tx,change.request_id,&fingerprint).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("command-change:{}", change.request_id), &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
+            if let Some(value)=replay(tx,change.request_id,&fingerprint).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &format!("command-change:{}", change.request_id), &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
             let op=storage::load(tx,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
@@ -189,7 +190,7 @@ impl Commands {
             let approval=invalid(serde_json::to_string(&approval))?;let tenant=service.tenant.to_string();let operation_key=id.to_string();
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET approval=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(approval).execute(c).await?;Ok(())})).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("command-change:{}", change.request_id), &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result).await?;proof.check_live()?;Ok(result)
+            let fact = Fact::business(audit, &format!("command-change:{}", change.request_id), &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result).await?;proof.check_live()?;Ok(result)
         })).await
     }
 }
@@ -314,7 +315,7 @@ async fn created(
     fingerprint: Vec<u8>,
 ) -> Result<Value> {
     let response = json!({"operationId":id,"commandId":id,"revision":1,"accepted":true});
-    let fact = rss_mdm_audit_integration::Fact::business(
+    let fact = Fact::business(
         audit,
         &format!("command:{id}:accept"),
         &fingerprint,

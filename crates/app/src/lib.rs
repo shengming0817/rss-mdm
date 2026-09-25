@@ -101,6 +101,12 @@ impl IntoResponse for Error {
             Self::ManagementNotFound(object) => (StatusCode::NOT_FOUND, object.code()),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
+            Self::Unavailable(Failure::AuditIntegrity) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "audit_integrity_error")
+            }
+            Self::Unavailable(
+                Failure::AuditIsolation | Failure::AuditContract | Failure::AuditAdmission,
+            ) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_contract_error"),
             Self::Configuration(_) | Self::Unavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }

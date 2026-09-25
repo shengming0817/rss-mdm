@@ -161,12 +161,7 @@ pub async fn serve(
                                 &audit_control,
                             )
                             .await
-                            .map_err(|_| {
-                                ProcessError::at(
-                                    "startup.audit",
-                                    crate::Error::Unavailable(crate::Failure::Audit),
-                                )
-                            })?;
+                            .map_err(|error| ProcessError::at("startup.audit", error.into()))?;
                         let runtime = Arc::new(InventoryRuntime::new(
                             observation_store,
                             projection_store,
@@ -297,6 +292,7 @@ pub async fn serve(
                     {
                         launch.stage_task_with_token(
                             crate::windows::retention::registration(
+                                access.clone(),
                                 audit_store.clone(),
                                 tenant.clone(),
                             )

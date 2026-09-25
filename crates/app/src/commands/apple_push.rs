@@ -1,5 +1,6 @@
 //! Durable APNs wake lease, separate from native command evidence.
 use super::*;
+use rss_mdm_audit_integration::Fact;
 use sqlx::Row;
 pub(crate) struct Wake {
     pub id: Uuid,
@@ -42,7 +43,7 @@ impl Commands {
                 audit.target(&registration.to_string());
                 let revision: i64=row.try_get("token_revision")?;
                 let fingerprint=invalid(serde_json::to_vec(&(registration,revision,configuration)))?;
-                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("apple-push:{id}:lease"),&fingerprint,200,"success",None)?;
+                let fact=Fact::business(audit,&format!("apple-push:{id}:lease"),&fingerprint,200,"success",None)?;
                 service.audit_store.append_in(tx,&fact,false).await?;
                 return Ok(Some(Wake{id,registration,revision,token:row.try_get("token")?,magic:row.try_get("magic")?}))
             }
@@ -72,7 +73,7 @@ impl Commands {
             let unregistered=outcome==crate::apple::push::Outcome::Unregistered;
             let outcome=match outcome {crate::apple::push::Outcome::Accepted=>"accepted",crate::apple::push::Outcome::Retryable=>"retryable",crate::apple::push::Outcome::Unregistered=>"unregistered",crate::apple::push::Outcome::Rejected=>"rejected"};
             let fingerprint=invalid(serde_json::to_vec(&(registration,id,revision,status,outcome)))?;
-            let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("apple-push:{id}:settle"),&fingerprint,200,"success",None)?
+            let fact=Fact::business(audit,&format!("apple-push:{id}:settle"),&fingerprint,200,"success",None)?
                 .with_details(serde_json::json!({"outcome":outcome,"status":status,"tokenRevision":revision}))?;
             let changed=tx.with_connection(move|c|Box::pin(async move {
                 let old=sqlx::query("SELECT push_lease_until IS NULL AS settled,push_status,push_outcome FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND push_id=$3::uuid AND token_revision=$4 FOR UPDATE")

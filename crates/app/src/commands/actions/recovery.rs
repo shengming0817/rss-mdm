@@ -5,6 +5,7 @@ use super::{
     storage as db,
 };
 use crate::commands::{Commands, Result, corrupt, storage};
+use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
@@ -76,7 +77,7 @@ pub(super) async fn audit_recovery(
         audit.registration(run.target.registration);
         let bytes = crate::commands::invalid(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
-        let fact = rss_mdm_audit_integration::Fact::business(
+        let fact = Fact::business(
             &audit,
             &format!(
                 "action:{}:recover:{:x}",
@@ -108,7 +109,7 @@ impl Commands {
         audit.identify_service("command-dispatch");
         let result=self.transact((self,id,fingerprint,&audit),&audit,|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
-            let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("action:{id}:dispatch"),fingerprint,200,"success",None)?;
+            let fact=Fact::business(audit,&format!("action:{id}:dispatch"),fingerprint,200,"success",None)?;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;

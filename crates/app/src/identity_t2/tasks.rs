@@ -719,7 +719,13 @@ async fn range_matrix(router: &Router, task: &Value, expected: &[u8]) -> Result<
         ensure!(
             audit_count(|record| record.request() == Some(request_id)
                 && record.source() == "mdm.request"
-                && record.status() == status.as_u16())?
+                && record.status() == status.as_u16()
+                && record.result()
+                    == if status.is_success() {
+                        "success"
+                    } else {
+                        "failed"
+                    })?
                 == 1
         );
         ensure!(audit_count(|record| record.request() == Some(request_id))? == 1);

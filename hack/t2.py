@@ -22,18 +22,23 @@ def require(condition,message):
 def run(args, **kw):
     return subprocess.run(args, check=True, text=True, **kw)
 
+def verify_exact_result(output, selected):
+    passed = re.findall(r'^test (\S+) \.\.\. ok$', output, re.MULTILINE)
+    require(passed == [selected] and re.search(r'^test result: ok\. 1 passed; 0 failed; 0 ignored;', output, re.MULTILINE),
+            'T2 did not execute exactly the selected test: ' + selected)
+
+def run_exact_test(env, selected, integration=False):
+    args = ["cargo", "test", "--locked", "-p", "rss-mdm-app"]
+    if integration: args += ["--features", "integration"]
+    args += ["--lib", selected, "--", "--ignored", "--exact", "--test-threads=1"]
+    result = subprocess.run(args, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(result.stdout, flush=True)
+    require(result.returncode == 0, 'T2 failed: ' + selected)
+    verify_exact_result(result.stdout, selected)
+
 def run_foundation_tests(env):
     for selected in ["identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity", "device::tests::postgres_boundary", "inventory_runtime::tests::durable_report_recovery_and_projection"]:
-        try:
-            result = run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib",selected,"--","--ignored","--exact","--test-threads=1"],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-        except subprocess.CalledProcessError as error:
-            print(error.stdout or "", flush=True)
-            raise
-        print(result.stdout, flush=True)
-        passed = re.findall(r'^test (\S+) \.\.\. ok$', result.stdout, re.MULTILINE)
-        require(result.returncode == 0 and passed == [selected]
-                and re.search(r'^test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout, re.MULTILINE),
-                'foundation T2 did not execute exactly the selected test: ' + selected)
+        run_exact_test(env, selected, integration=True)
 
 def verify_windows_result(output):
     expected={
@@ -230,9 +235,9 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             print(upgrade.stdout, end='', flush=True)
             require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
-            run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "audit_integration_tests::installed_audit_receipts_replay_and_atomicity", "--", "--ignored", "--exact"], cwd=ROOT, env=env)
+            run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
             for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
-                run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", audit_test, "--", "--ignored", "--exact"], cwd=ROOT, env=env)
+                run_exact_test(env, audit_test)
             if installation_only:
                 return
             if catalog_mode:

@@ -38,6 +38,7 @@ impl Commands {
                 .map_err(|_| Error::Unavailable(Failure::CommandStorage))?,
         );
         let result = async {
+            crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
             let outbox = Arc::new(
                 PgOutboxStore::new(
                     runtime.clone(),

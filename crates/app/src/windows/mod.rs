@@ -120,6 +120,7 @@ pub(crate) fn routers(
             .layer(DefaultBodyLimit::max(512 * 1024))
             .layer(middleware::from_fn_with_state(
                 Envelope {
+                    admission: Arc::new(tokio::sync::Semaphore::new(32)),
                     host: origin.trim_start_matches("https://").into(),
                     clock: clock.clone(),
                     audit_store: app.audit_store.clone(),

@@ -60,7 +60,35 @@ impl From<rss_mdm_audit_integration::Error> for Error {
             rss_mdm_audit_integration::Error::Audit(error) if error.is_interrupted() => {
                 Self::Unavailable(crate::Failure::RequestDeadline)
             }
-            _ => Self::Unavailable(crate::Failure::Audit),
+            rss_mdm_audit_integration::Error::Receipt => {
+                Self::Unavailable(crate::Failure::AuditIntegrity)
+            }
+            rss_mdm_audit_integration::Error::Isolation => {
+                Self::Unavailable(crate::Failure::AuditIsolation)
+            }
+            rss_mdm_audit_integration::Error::Fact(_) => {
+                Self::Unavailable(crate::Failure::AuditContract)
+            }
+            rss_mdm_audit_integration::Error::Audit(error) => {
+                use rss_audit_postgres::Error as Audit;
+                Self::Unavailable(match error {
+                    Audit::Admission(_) => crate::Failure::AuditAdmission,
+                    Audit::Conflict | Audit::StorageContract | Audit::IntegrityRequired => {
+                        crate::Failure::AuditIntegrity
+                    }
+                    Audit::Ledger(error) => match error {
+                        rss_ledger_postgres::Error::Storage(_)
+                        | rss_ledger_postgres::Error::Messaging(_) => crate::Failure::Audit,
+                        rss_ledger_postgres::Error::Admission(_) => crate::Failure::AuditAdmission,
+                        _ => crate::Failure::AuditIntegrity,
+                    },
+                    Audit::InvalidBound
+                    | Audit::ScopeMismatch
+                    | Audit::Protocol(_)
+                    | Audit::ReadBudgetExceeded => crate::Failure::AuditContract,
+                    _ => crate::Failure::Audit,
+                })
+            }
         }
     }
 }
@@ -69,6 +97,7 @@ impl From<rss_mdm_audit_integration::Error> for Error {
 pub(crate) fn audit_settlement(
     original: Option<&Error>,
     outcome: rss_mdm_audit_integration::WriteOutcome,
+    failure: Error,
 ) -> Error {
     match original {
         Some(Error::CommitUnknown) => Error::CommitUnknown,
@@ -77,8 +106,23 @@ pub(crate) fn audit_settlement(
             rss_mdm_audit_integration::WriteOutcome::Unknown
             | rss_mdm_audit_integration::WriteOutcome::Committed => Error::CommitUnknown,
             rss_mdm_audit_integration::WriteOutcome::RollbackFailed => Error::RollbackFailed,
-            _ => Error::Unavailable(crate::Failure::Audit),
+            _ => failure,
         },
+    }
+}
+
+/// Diagnostic cause is independent of the protected operation's settlement state.
+pub(crate) fn audit_failure_reason(error: &Error) -> rss_mdm_audit_integration::FailureReason {
+    use rss_mdm_audit_integration::FailureReason as Reason;
+    match error {
+        Error::Unavailable(crate::Failure::AuditIntegrity) => Reason::Integrity,
+        Error::Unavailable(
+            crate::Failure::AuditIsolation
+            | crate::Failure::AuditContract
+            | crate::Failure::AuditAdmission,
+        ) => Reason::Contract,
+        Error::Unavailable(crate::Failure::RequestDeadline) => Reason::Interrupted,
+        _ => Reason::Persistent,
     }
 }
 
@@ -108,8 +152,52 @@ mod tests {
             Error::from(rss_mdm_audit_integration::Error::Audit(
                 rss_audit_postgres::Error::Ledger(rss_ledger_postgres::Error::StorageContract)
             )),
-            Error::Unavailable(crate::Failure::Audit)
+            Error::Unavailable(crate::Failure::AuditIntegrity)
         ));
+    }
+    #[tokio::test]
+    async fn durable_corruption_is_distinct_from_interruption_and_preserves_settlement() {
+        use axum::response::IntoResponse;
+        for (cause, reason) in [
+            (
+                rss_mdm_audit_integration::Error::Receipt,
+                "audit_integrity_error",
+            ),
+            (
+                rss_mdm_audit_integration::Error::Isolation,
+                "audit_contract_error",
+            ),
+        ] {
+            let projected = Error::from(cause);
+            assert_eq!(
+                serde_json::to_value(audit_failure_reason(&projected)).unwrap(),
+                reason
+            );
+            let settled = audit_settlement(None, RolledBack, projected);
+            let diagnostic =
+                crate::diagnostic::ProcessError::at("startup.audit", settled.clone()).to_string();
+            assert!(diagnostic.contains("Audit"));
+            let response = settled.into_response();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            );
+            assert!(matches!(
+                response.extensions().get::<Error>(),
+                Some(Error::Unavailable(_))
+            ));
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["code"], reason);
+        }
+        let unknown = audit_settlement(
+            Some(&Error::CommitUnknown),
+            RolledBack,
+            Error::Unavailable(crate::Failure::AuditIntegrity),
+        );
+        assert!(matches!(unknown, Error::CommitUnknown));
     }
     #[test]
     fn request_settlement_preserves_business_certainty() {
@@ -121,27 +209,43 @@ mod tests {
             RollbackFailed,
         ] {
             assert!(matches!(
-                audit_settlement(Some(&Error::CommitUnknown), state),
+                audit_settlement(
+                    Some(&Error::CommitUnknown),
+                    state,
+                    Error::Unavailable(crate::Failure::Audit)
+                ),
                 Error::CommitUnknown
             ));
             assert!(matches!(
-                audit_settlement(Some(&Error::RollbackFailed), state),
+                audit_settlement(
+                    Some(&Error::RollbackFailed),
+                    state,
+                    Error::Unavailable(crate::Failure::Audit)
+                ),
                 Error::RollbackFailed
             ));
         }
         for state in [Unknown, Committed] {
             assert!(matches!(
-                audit_settlement(None, state),
+                audit_settlement(None, state, Error::Unavailable(crate::Failure::Audit)),
                 Error::CommitUnknown
             ));
         }
         assert!(matches!(
-            audit_settlement(None, RollbackFailed),
+            audit_settlement(
+                None,
+                RollbackFailed,
+                Error::Unavailable(crate::Failure::Audit)
+            ),
             Error::RollbackFailed
         ));
         for state in [CommitNotStarted, RolledBack] {
             assert!(matches!(
-                audit_settlement(Some(&Error::Forbidden), state),
+                audit_settlement(
+                    Some(&Error::Forbidden),
+                    state,
+                    Error::Unavailable(crate::Failure::Audit)
+                ),
                 Error::Unavailable(crate::Failure::Audit)
             ));
         }

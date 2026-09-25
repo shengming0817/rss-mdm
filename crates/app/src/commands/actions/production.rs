@@ -2,6 +2,7 @@ use super::{schedule::Trigger, state::RunState, storage as db};
 use crate::Error;
 use crate::commands::{Commands, Result, invalid, messaging_domain};
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
+use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging::{
     message::*,
     outbox::{AppendOutcome, OutboxWriter, PendingMessage},
@@ -161,7 +162,7 @@ pub(super) async fn produce(
         audit.plan(plan.id);
         audit.registration(registration);
         let result: Result<()> = async {
-            let fact = rss_mdm_audit_integration::Fact::business(
+            let fact = Fact::business(
                 &audit,
                 &format!("action:{id}:accept"),
                 &fingerprint,

@@ -10,7 +10,7 @@ use crate::{authorization::context::AuthorizedPrincipal, clock::Clock};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -341,6 +341,7 @@ pub(crate) fn from_state(
         .layer(DefaultBodyLimit::max(16384))
         .layer(middleware::from_fn_with_state(
             Envelope {
+                admission: Arc::new(tokio::sync::Semaphore::new(32)),
                 host,
                 clock: monotonic,
                 audit_store,
@@ -358,6 +359,7 @@ pub(crate) fn from_state(
 
 #[derive(Clone)]
 pub(crate) struct Envelope {
+    pub(crate) admission: Arc<tokio::sync::Semaphore>,
     pub(crate) host: String,
     pub(crate) clock: Arc<dyn rss_observation::Clock>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -421,6 +423,22 @@ pub(crate) async fn envelope(
     // Native authentication commits its own atomic security event. A second product
     // audit must not replace that settled response (including rotated credentials).
     let audited = !matches!(request.uri().path(), "/livez" | "/readyz") && !native_identity;
+    // Transport capacity is admitted before handlers and durable denial auditing.
+    // Keep this separate from the existing cryptographic/Agent permit to avoid nested acquisition.
+    let _audit_permit = if audited {
+        match envelope.admission.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                audit.finalize(None);
+                return capacity_response(
+                    request.uri().path().starts_with("/api/agent/v2/"),
+                    request_id,
+                );
+            }
+        }
+    } else {
+        None
+    };
     request.extensions_mut().insert(audit.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -441,11 +459,18 @@ pub(crate) async fn envelope(
     ) {
         response = crate::error_projection::audit_deadline(snapshot.write_outcome).into_response();
     }
-    let mut audit_failure = matches!(
-        response.extensions().get::<Error>(),
-        Some(Error::Unavailable(Failure::Audit))
-    )
-    .then_some(FailureReason::Transaction);
+    let mut audit_failure = match response.extensions().get::<Error>() {
+        Some(
+            error @ Error::Unavailable(
+                Failure::AuditIntegrity
+                | Failure::AuditIsolation
+                | Failure::AuditContract
+                | Failure::AuditAdmission,
+            ),
+        ) => Some(crate::error_projection::audit_failure_reason(error)),
+        Some(Error::Unavailable(Failure::Audit)) => Some(FailureReason::Transaction),
+        _ => None,
+    };
     if audited
         && (snapshot.settle_request
             || snapshot.write_outcome != WriteOutcome::Committed
@@ -461,15 +486,17 @@ pub(crate) async fn envelope(
         let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))
             .expect("bounded audit settlement budget");
         let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
-        if let Err(_error) = envelope
+        if let Err(error) = envelope
             .audit_store
             .settle_request(&audit, status, result, &control)
             .await
         {
-            audit_failure = Some(FailureReason::Persistent);
+            let error = Error::from(error);
+            audit_failure = Some(crate::error_projection::audit_failure_reason(&error));
             response = crate::error_projection::audit_settlement(
                 response.extensions().get::<Error>(),
                 snapshot.write_outcome,
+                error,
             )
             .into_response();
         }
@@ -497,6 +524,22 @@ pub(crate) async fn envelope(
     );
     secure_response(response, request_id)
 }
+fn capacity_response(agent: bool, request_id: uuid::Uuid) -> Response {
+    let mut response = if agent {
+        crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable)
+    } else {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"code":"request_limited"})),
+        )
+            .into_response()
+    };
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    secure_response(response, request_id)
+}
+
 pub(crate) fn secure_response(mut response: Response, request_id: uuid::Uuid) -> Response {
     response.headers_mut().insert(
         "x-request-id",
@@ -585,8 +628,6 @@ fn audit_result(
         "failed"
     } else if let Some(result) = snapshot.management_result {
         result.audit_tag()
-    } else if snapshot.operation_id.is_some() {
-        "replay"
     } else {
         "success"
     }
@@ -775,6 +816,7 @@ mod tests {
                 )
                 .layer(middleware::from_fn_with_state(
                     Envelope {
+                        admission: Arc::new(tokio::sync::Semaphore::new(32)),
                         host: "mdm.example.test".into(),
                         clock: monotonic(),
                         audit_store,
@@ -862,6 +904,7 @@ mod tests {
                 )
                 .layer(middleware::from_fn_with_state(
                     Envelope {
+                        admission: Arc::new(tokio::sync::Semaphore::new(32)),
                         host: "mdm.example.test".to_owned(),
                         clock: monotonic(),
                         audit_store: audit_store.clone(),
@@ -900,5 +943,55 @@ mod tests {
             );
         }
         pool.close().await;
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handler = entered.clone();
+        let router = Router::new()
+            .route(
+                "/api/protected",
+                get(move || {
+                    let handler = handler.clone();
+                    async move {
+                        handler.store(true, std::sync::atomic::Ordering::SeqCst);
+                        StatusCode::OK
+                    }
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                Envelope {
+                    admission: Arc::new(tokio::sync::Semaphore::new(0)),
+                    host: "mdm.example.test".into(),
+                    clock: monotonic(),
+                    audit_store,
+                    requests: Arc::new(tokio::sync::Semaphore::new(4)),
+                    tenant: "11111111-1111-4111-8111-111111111111".into(),
+                },
+                envelope,
+            ));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header("host", "mdm.example.test")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        assert!(!entered.load(std::sync::atomic::Ordering::SeqCst));
+    }
+    #[test]
+    fn operation_coordinate_does_not_claim_request_replay() {
+        let audit = RequestAudit::new(
+            "11111111-1111-4111-8111-111111111111".into(),
+            "command_read",
+        );
+        audit.operation(uuid::Uuid::new_v4(), "command_read");
+        let response = StatusCode::OK.into_response();
+        assert_eq!(audit_result(&response, &audit.snapshot()), "success");
+        audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+        assert_eq!(audit_result(&response, &audit.snapshot()), "replay");
+        audit.finalize(None);
     }
 }

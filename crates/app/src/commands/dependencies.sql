@@ -2,8 +2,8 @@
 -- numbers are rendered as names; values/data are never included in this snapshot.
 WITH relations AS (
  SELECT c.*,n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE c.relkind='r' AND (n.nspname IN('rss_device_command','rss_reconcile','mdm_apple') OR (n.nspname='mdm_resource' AND c.relname IN ('aggregates','immutable')) OR (n.nspname='mdm_access' AND c.relname IN
- ('requests','agent_bindings','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','authorization_rules','user_groups','management_sessions','management_messages','collection_runs','audit')))
+ WHERE c.relkind='r' AND (n.nspname IN('rss_device_command','rss_reconcile','mdm_apple','rss_audit','rss_ledger','mdm_audit') OR (n.nspname='mdm_resource' AND c.relname IN ('aggregates','immutable')) OR (n.nspname='mdm_access' AND c.relname IN
+ ('requests','agent_bindings','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','authorization_rules','user_groups','management_sessions','management_messages','collection_runs')))
 ), contracts AS (
  SELECT t.nspname||'.'||t.relname AS name, encode(sha256(convert_to(jsonb_build_object(
  'shape',jsonb_build_array(t.relkind,t.relpersistence,t.relrowsecurity,t.relforcerowsecurity,pg_get_userbyid(t.relowner)),
@@ -19,6 +19,6 @@ WITH relations AS (
  encode(sha256(convert_to(jsonb_build_object('definition',pg_get_functiondef(p.oid),'owner',pg_get_userbyid(p.proowner),
  'acl',(SELECT jsonb_agg(jsonb_build_array(CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END,a.privilege_type,a.is_grantable) ORDER BY CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END COLLATE "C",a.privilege_type,a.is_grantable) FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a))::text,'UTF8')),'hex')
  FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname IN('rss_device_command','rss_reconcile') OR (n.nspname,p.proname) IN (('mdm_management','plan_execution_admission'),('mdm_policy_projection','execution_admission'))
+ WHERE n.nspname IN('rss_device_command','rss_reconcile','rss_audit','rss_ledger') OR (n.nspname,p.proname) IN (('mdm_management','plan_execution_admission'),('mdm_policy_projection','execution_admission'))
 )
 SELECT jsonb_object_agg(name,digest)::text FROM contracts

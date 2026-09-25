@@ -32,7 +32,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
     assert_eq!(server.state.lock().unwrap().posts, 1);
-    assert_publication_audit(&p, "applied");
+    assert_publication_audit(&p, &input.candidate, "applied");
     assert!(!server.state.lock().unwrap().artifact_auth_leaked);
     assert_eq!(
         server
@@ -178,7 +178,7 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
             .outcome,
         Withdrawal::WaitingPublication
     );
-    assert_publication_audit(&p, "unknown");
+    assert_publication_audit(&p, &input.candidate, "unknown");
     assert_eq!(
         service
             .withdrawal_status(p.id(), 1, cutoff())
@@ -705,7 +705,7 @@ async fn publication_result_commit_unknown_recovers_one_external_call_and_audit(
     runtime.close().await;
 }
 
-fn assert_publication_audit(p: &rel::Publication, outcome: &str) {
+fn assert_publication_audit(p: &rel::Publication, candidate: &rel::CandidateId, outcome: &str) {
     let digest: String = p
         .id()
         .digest()
@@ -724,7 +724,13 @@ fn assert_publication_audit(p: &rel::Publication, outcome: &str) {
         .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
     let fact = &rows[0]["software"];
-    assert_eq!(fact["operation"].as_str().unwrap().len(), 64);
+    let request_hash = sql(&format!(
+        "SELECT encode(sha256(convert_to(id,'UTF8')),'hex') FROM mdm_software_release.requests WHERE tenant_id='{}' AND owner='{}' AND id LIKE 'record/%'",
+        candidate.tenant(),
+        candidate.value()
+    ));
+    assert_eq!(request_hash.lines().count(), 1);
+    assert_eq!(fact["operation"], request_hash);
     assert_eq!(fact["publication"], digest);
     assert_eq!(fact["attempt"], p.attempt);
     assert_eq!(fact["ring"], 0);

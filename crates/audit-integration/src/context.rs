@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+/// Shared request facts and diagnostic projection. It never proves transaction settlement.
 #[derive(Clone)]
 pub struct RequestAudit(Arc<Context>);
 struct Context {
@@ -14,6 +15,7 @@ struct State {
     snapshot: Snapshot,
     finalized: bool,
 }
+/// Frozen, credential-free product facts used to create one immutable event.
 #[derive(Clone)]
 pub struct Snapshot {
     pub actor: Option<String>,
@@ -66,6 +68,12 @@ pub enum WriteOutcome {
 }
 #[derive(Clone, Copy, serde::Serialize)]
 pub enum FailureReason {
+    #[serde(rename = "audit_integrity_error")]
+    Integrity,
+    #[serde(rename = "audit_contract_error")]
+    Contract,
+    #[serde(rename = "audit_interrupted")]
+    Interrupted,
     #[serde(rename = "persistent_audit_unavailable")]
     Persistent,
     #[serde(rename = "transaction_audit_failed")]
@@ -74,6 +82,7 @@ pub enum FailureReason {
     Cancelled,
 }
 impl RequestAudit {
+    /// Create a request identity for one tenant; persisted facts validate its canonical tenant ID.
     pub fn new(tenant: String, action: &'static str) -> Self {
         Self(Arc::new(Context {
             request_id: Uuid::new_v4(),
@@ -97,6 +106,7 @@ impl RequestAudit {
             }),
         }))
     }
+    /// Copy coordinates/facts for an independently owned transaction without sharing its diagnostic finalization.
     pub fn transaction_copy(&self) -> Self {
         Self(Arc::new(Context {
             request_id: self.0.request_id,
@@ -107,12 +117,15 @@ impl RequestAudit {
             }),
         }))
     }
+    /// Return the unique request event coordinate, distinct from a business operation identity.
     pub fn request_id(&self) -> Uuid {
         self.0.request_id
     }
+    /// Return the source-owned tenant text; a transaction still validates its typed tenant binding.
     pub fn tenant(&self) -> &str {
         &self.0.tenant
     }
+    /// Freeze the current safe facts; subsequent context changes do not alter an existing Fact.
     pub fn snapshot(&self) -> Snapshot {
         self.0.state.lock().expect("audit lock").snapshot.clone()
     }
@@ -129,34 +142,41 @@ impl RequestAudit {
         state.snapshot.actor_kind = "principal";
         state.snapshot.instance = Some(instance.into());
     }
+    /// Bind the service actor supplied by the owning background producer; never an authenticated user proof.
     pub fn identify_service(&self, actor: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(actor.into());
         state.snapshot.actor_kind = "service";
         state.snapshot.instance = None;
     }
+    /// Attach controlled software coordinates, excluding source contents and provider diagnostics.
     pub fn software(&self, fact: SoftwareFact) {
         self.0.state.lock().expect("audit lock").snapshot.software = Some(fact);
     }
+    /// Select the business producer-owned action label.
     pub fn set_action(&self, action: &'static str) {
         self.0.state.lock().expect("audit lock").snapshot.action = action;
     }
+    /// Set a bounded, non-control-character target; invalid optional targets are omitted.
     pub fn target(&self, target: &str) {
         self.0.state.lock().expect("audit lock").snapshot.target =
             (target.len() <= 256 && !target.is_empty() && !target.chars().any(char::is_control))
                 .then(|| target.to_owned());
     }
+    /// Attach an operation coordinate; its presence does not imply successful execution or replay.
     pub fn operation(&self, id: Uuid, action: &'static str) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.operation_id = Some(id);
         state.snapshot.action = action;
     }
+    /// Bind a device actor only after the producer validates the active registration credential.
     pub fn identify_device(&self, registration: Uuid) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(format!("device:{registration}"));
         state.snapshot.actor_kind = "device";
         state.snapshot.instance = None;
     }
+    /// Attach the registration coordinate for correlation, independently of the acting principal.
     pub fn registration(&self, id: Uuid) {
         self.0
             .state
@@ -165,9 +185,11 @@ impl RequestAudit {
             .snapshot
             .registration_id = Some(id);
     }
+    /// Attach the product plan coordinate for execution and recovery correlation.
     pub fn plan(&self, plan: Uuid) {
         self.0.state.lock().expect("audit lock").snapshot.plan = Some(plan);
     }
+    /// Record the producer-confirmed operation disposition; replay requires an existing receipt.
     pub fn management_result(&self, result: ManagementResult) {
         self.0
             .state
@@ -186,6 +208,7 @@ impl RequestAudit {
             .snapshot
             .settle_request = true;
     }
+    /// Project entry into owner settlement as unknown; never erase an already confirmed commit.
     pub fn mark_commit_started(&self) {
         let mut state = self.0.state.lock().expect("audit lock");
         if matches!(
@@ -195,11 +218,15 @@ impl RequestAudit {
             state.snapshot.write_outcome = WriteOutcome::Unknown;
         }
     }
+    /// Project an acknowledged owner commit.
+    /// # Panics
+    /// Panics unless `mark_commit_started` established the unknown settlement phase first.
     pub fn mark_committed(&self) {
         let mut state = self.0.state.lock().expect("audit lock");
         assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
         state.snapshot.write_outcome = WriteOutcome::Committed;
     }
+    /// Project an acknowledged owner rollback; callers must not use this for cancellation or failed cleanup.
     pub fn mark_rolled_back(&self) {
         self.0
             .state
@@ -208,6 +235,7 @@ impl RequestAudit {
             .snapshot
             .write_outcome = WriteOutcome::RolledBack;
     }
+    /// Project an unacknowledged rollback, preserving the need to resolve the original attempt.
     pub fn mark_rollback_failed(&self) {
         self.0
             .state
@@ -216,6 +244,7 @@ impl RequestAudit {
             .snapshot
             .write_outcome = WriteOutcome::RollbackFailed;
     }
+    /// Finish diagnostic reporting exactly once. This does not append audit or establish a commit/rollback fact.
     pub fn finalize(&self, failure: Option<FailureReason>) {
         let event = {
             let mut state = self.0.state.lock().expect("audit lock");
