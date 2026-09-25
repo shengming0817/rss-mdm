@@ -2,6 +2,7 @@
 """Run the fixed MDM OCI with only its own PostgreSQL and HTTPS ingress."""
 import argparse
 from enum import StrEnum
+import hashlib
 import http.client
 import json
 import os
@@ -36,6 +37,8 @@ class Browser:
             connection.request(method, path, body=json.dumps(data) if data is not None else None, headers=headers)
             response = connection.getresponse()
             body = response.read()
+            request_id = response.getheader("x-request-id")
+            self.request_id = str(uuid.UUID(request_id)) if request_id is not None else None
             for key, value in response.getheaders():
                 if key.lower() == "set-cookie":
                     require("Secure" in value and "HttpOnly" in value and "Path=/" in value and "Domain=" not in value,
@@ -71,7 +74,9 @@ def run_smoke(directory):
         denied=str(uuid.uuid4())
         require(browser.call("POST","/api/v3/enrollments",dict(deviceId="outside",password="A"*43,source="mdm.windows"),denied)[0]==403,"device scope bypass")
         require(sql("SELECT count(*) FROM mdm_access.grants WHERE device='outside'")=="0","denied enrollment wrote business state")
-        require(sql("SELECT count(*) FROM mdm_access.audit WHERE operation_id='"+denied+"' AND result='denied'")=="1","candidate denial audit missing")
+        require(browser.request_id is not None,"candidate protected response has no request identity")
+        event_id = "e-" + hashlib.sha256(browser.request_id.encode()).hexdigest()
+        require(sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1","candidate denial audit missing")
         require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
         require(browser.call("GET","/api/v2/devices/outside/inventory")[0]==403,"inventory scope bypass")
         old_cookie=browser.cookie

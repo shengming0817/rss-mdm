@@ -82,7 +82,7 @@ impl Commands {
         apple: &crate::apple::Apple,
         p: &DevicePrincipal,
         bytes: &[u8],
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Vec<u8>, Error> {
         let dictionary = wire::decode(bytes)?;
         let message = wire::management(&dictionary)?;
@@ -106,7 +106,10 @@ impl Commands {
                         receive(service, tx, p, id, message.status, dictionary, bytes).await?;
                     }
                     let response = send(service, tx, apple, p).await?;
-                    storage::audit(tx, audit, 200).await?;
+                    service
+                        .audit_store
+                        .append_request_in(tx, audit, 200, "success")
+                        .await?;
                     Ok(response)
                 })
             },
@@ -172,21 +175,34 @@ async fn receive(
     let principal = p.clone();
     let dictionary = d.clone();
     let response = bytes.to_vec();
-    let collected = tx
+    let (collected, facts) = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                Ok(crate::collection::apple::receive(
-                    c,
-                    &principal,
-                    id,
-                    status,
-                    &dictionary,
-                    &response,
-                )
+                Ok(async move {
+                    let mut facts = Vec::new();
+                    let collected = crate::collection::apple::receive(
+                        c,
+                        &mut facts,
+                        &principal,
+                        id,
+                        status,
+                        &dictionary,
+                        &response,
+                    )
+                    .await?;
+                    Ok::<_, Error>((collected, facts))
+                }
                 .await)
             })
         })
         .await??;
+    for fact in &facts {
+        service
+            .audit_store
+            .append_in(tx, fact, false)
+            .await
+            .map_err(Error::from)?;
+    }
     if collected {
         return Ok(());
     }

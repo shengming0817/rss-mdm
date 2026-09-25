@@ -32,3 +32,31 @@ class BackendSupportBoundary(unittest.TestCase):
         data = graph()
         next(n for n in data['resolve']['nodes'] if n['id'] == 'sqlx')['deps'].append({'pkg': 'rss-mdm-policy', 'dep_kinds': [{'kind': None, 'target': None}]})
         with self.assertRaises(RuntimeError): ci.verify_backend_support(data)
+
+class AuditIntegrationBoundary(unittest.TestCase):
+    def graph(self):
+        names = {'rss-mdm-audit-integration', 'rss-mdm-app', 'rss-mdm-policy', 'rss-identity-core', 'rss-audit-postgres'}
+        nodes = [{'id': name, 'features': [], 'deps': []} for name in names]
+        for owner, target in [('rss-mdm-app','rss-mdm-audit-integration'), ('rss-mdm-audit-integration','rss-audit-postgres')]:
+            next(n for n in nodes if n['id'] == owner)['deps'].append({'pkg':target})
+        return {'packages':[{'id':name,'name':name} for name in names], 'resolve':{'nodes':nodes}}
+
+    def test_consumers_and_reverse_dependencies_are_enforced(self):
+        ci.verify_audit_integration(self.graph())
+        for owner, target in [('rss-mdm-policy','rss-mdm-audit-integration'),
+                              ('rss-mdm-audit-integration','rss-mdm-policy'),
+                              ('rss-mdm-audit-integration','rss-mdm-app'),
+                              ('rss-audit-postgres','rss-identity-core')]:
+            data = self.graph()
+            next(n for n in data['resolve']['nodes'] if n['id'] == owner)['deps'].append({'pkg':target})
+            with self.subTest(owner=owner,target=target), self.assertRaises(RuntimeError):
+                ci.verify_audit_integration(data)
+
+    def test_only_explicit_integration_feature_is_accepted(self):
+        data = self.graph()
+        node = next(n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-audit-integration')
+        node['features'] = ['default', 'integration']
+        ci.verify_audit_integration(data)
+        node['features'].append('legacy-audit')
+        with self.assertRaises(RuntimeError):
+            ci.verify_audit_integration(data)

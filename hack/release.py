@@ -75,7 +75,7 @@ def build(out, header, web_image):
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
-ROLE_NAMES = ("software-publication", "management", "identity", "commands")
+ROLE_NAMES = ("software-publication", "management", "identity", "commands", "audit")
 DEPLOYMENT_FILES = ("mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
@@ -108,7 +108,10 @@ def source_inputs(root, header=None):
         before = source.stat()
         digest = sha(source)
         after = source.stat()
-        if before != after:
+        # Reading can update atime; only identity, content and mutation metadata
+        # participate in the immutable snapshot check.
+        fields = ("st_dev", "st_ino", "st_size", "st_mode", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in fields):
             raise ValueError("source changed during snapshot")
         inputs[name] = (digest, after.st_mode, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)
     return inputs

@@ -38,8 +38,5 @@ GRANT SELECT ON mdm_access.requests TO mdm_access;
 GRANT SELECT,INSERT ON mdm_access.devices,mdm_access.registrations,mdm_access.credentials,mdm_access.report_sources TO mdm_access;
 GRANT UPDATE(state) ON mdm_access.registrations,mdm_access.credentials TO mdm_access;
 GRANT UPDATE(enabled) ON mdm_access.report_sources TO mdm_access;
-ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
-ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication','protected_request','registration_bind','credential_revoke','device_report'));
-ALTER TABLE mdm_access.audit ADD COLUMN registration_id uuid;
 -- Attempted/unknown registrations may not commit; denial audit must still be writable.
 COMMIT;

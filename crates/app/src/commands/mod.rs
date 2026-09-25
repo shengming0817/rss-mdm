@@ -1,4 +1,8 @@
 //! Product operation composition; RSS remains the command, messaging and recovery owner.
+//! Producers keep phase-specific event identities beside the actual mutation/replay decision.
+//! `transact` owns settlement; shared `Fact`/`AuditStore` own encoding and persistence.
+//! Management's optional-operation adapter additionally chooses request versus business events;
+//! command producers already have explicit phase identities and retain that choice here.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 pub(crate) mod actions;
 mod apple;
@@ -12,7 +16,7 @@ mod protocol;
 mod recovery;
 mod service;
 mod storage;
-use crate::{Error, Failure, audit::Audit};
+use crate::{Error, Failure};
 pub(crate) use config::Resource;
 pub(crate) use http::routes;
 use model::*;
@@ -35,6 +39,7 @@ fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub(crate) struct Commands {
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<PgRuntime>,
     outbox: Arc<PgOutboxStore<()>>,
     store: rss_device_command_postgres::PgStore<()>,
@@ -83,7 +88,7 @@ fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
 }
 fn settle<T>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<T, PgError>,
-    audit: &Audit,
+    audit: &RequestAudit,
     failure: Mutex<Option<Error>>,
 ) -> std::result::Result<T, Error> {
     attempt.fold(
@@ -93,12 +98,16 @@ fn settle<T>(
         },
         |_| Err(Error::Unavailable(Failure::CommandStorage)),
         |_| {
+            audit.mark_rolled_back();
             Err(failure
                 .into_inner()
                 .expect("request result")
                 .unwrap_or(Error::Unavailable(Failure::CommandStorage)))
         },
-        |_| Err(Error::CommitUnknown),
+        |_| {
+            audit.mark_rollback_failed();
+            Err(Error::RollbackFailed)
+        },
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::Unavailable(Failure::CommandStorage)),
     )
@@ -118,7 +127,7 @@ impl Commands {
     pub(crate) async fn transact<C: Send, R: Send, F>(
         &self,
         context: C,
-        audit: &Audit,
+        audit: &RequestAudit,
         operation: F,
     ) -> std::result::Result<R, Error>
     where
@@ -135,10 +144,13 @@ impl Commands {
             .local_tx_with_context(
                 self.tenant,
                 deadline(),
-                (context, Some(operation), audit, &failure),
+                (&self.audit_store, context, Some(operation), audit, &failure),
                 |state, tx| {
                     Box::pin(async move {
-                        let (context, operation, audit, failure) = state;
+                        let (audit_store, context, operation, audit, failure) = state;
+                        if let Err(error) = audit_store.lock_in(tx).await {
+                            return Err(rejection(Error::from(error).into(), failure));
+                        }
                         if let Err(e) = storage::admit(tx).await {
                             return Err(rejection(e, failure));
                         }
@@ -174,5 +186,18 @@ pub(crate) mod tests;
 impl From<crate::authorization::error::AuthorizationError> for Fault {
     fn from(error: crate::authorization::error::AuthorizationError) -> Self {
         Error::from(error).into()
+    }
+}
+
+use rss_mdm_audit_integration::RequestAudit;
+
+impl From<rss_mdm_audit_integration::Error> for Fault {
+    fn from(error: rss_mdm_audit_integration::Error) -> Self {
+        Self::Request(error.into())
+    }
+}
+impl From<rss_mdm_audit_integration::InvalidFact> for Fault {
+    fn from(error: rss_mdm_audit_integration::InvalidFact) -> Self {
+        Self::Request(rss_mdm_audit_integration::Error::Fact(error).into())
     }
 }

@@ -34,9 +34,8 @@ fn invalid() -> Error {
 pub(crate) fn failure(error: AuthorityError) -> Error {
     match error {
         AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
-        AuthorityError::CommitUnknown(_) | AuthorityError::RollbackFailed(_) => {
-            Error::CommitUnknown
-        }
+        AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
+        AuthorityError::RollbackFailed(_) => Error::RollbackFailed,
         _ => Error::Unavailable(Failure::IdentityStorage),
     }
 }

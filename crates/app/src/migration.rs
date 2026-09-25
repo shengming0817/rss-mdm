@@ -93,8 +93,18 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 46] {
+fn units() -> [(&'static str, &'static str); 49] {
     [
+        ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
+        ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
+        (
+            "audit-receipts-v1",
+            rss_mdm_audit_integration::MIGRATION_SQL,
+        ),
+        (
+            "audit-runtime-v1",
+            include_str!("../schema/audit-runtime.sql"),
+        ),
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
         ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
@@ -102,10 +112,6 @@ fn units() -> [(&'static str, &'static str); 46] {
         (
             "inventory-api-reader-v1",
             rss_mdm_inventory_postgres::READER_MIGRATION_SQL,
-        ),
-        (
-            "access-audit-request-index-v1",
-            include_str!("../migrations/0002_audit_request_index.sql"),
         ),
         ("device-identity-v1", crate::device::IDENTITY_MIGRATION_SQL),
         (
@@ -298,7 +304,6 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             "existing ledger differs or is incomplete",
         ));
     }
-    preflight_upgrade(conn, installation, instance, &installed, current).await?;
     for &(name, sql) in current {
         apply_unit(conn, installation, instance, name, sql).await?;
     }
@@ -323,7 +328,9 @@ async fn apply_unit(
         .execute(&mut *conn)
         .await
         .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
-    if name == "identity-authority-v11" {
+    if matches!(name, "audit-v1" | "audit-ledger-v1") {
+        install_audit_component(conn, name, sql).await?;
+    } else if name == "identity-authority-v11" {
         install_identity(conn, installation, instance).await?;
     } else {
         sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
@@ -341,6 +348,37 @@ async fn apply_unit(
     Ok(())
 }
 
+async fn install_audit_component(
+    conn: &mut PgConnection,
+    name: &'static str,
+    sql: &'static str,
+) -> Result<()> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|_| MigrationError::at(name, "begin"))?;
+    let role = if name == "audit-v1" {
+        "mdm_audit_owner"
+    } else {
+        "mdm_ledger_owner"
+    };
+    sqlx::query("SELECT set_config('role',$1,true)")
+        .bind(role)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| MigrationError::at(name, "owner role"))?;
+    sqlx::raw_sql(sql)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| MigrationError::at(name, "component schema"))?;
+    sqlx::query("SET LOCAL ROLE mdm_owner")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| MigrationError::at(name, "restore installer role"))?;
+    tx.commit()
+        .await
+        .map_err(|_| MigrationError::at(name, "commit acknowledgement unknown"))
+}
 async fn unit_installed(conn: &mut PgConnection, name: &'static str, digest: &str) -> Result<bool> {
     let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
         .bind(name)
@@ -387,83 +425,10 @@ fn accepted_ledger(
         .iter()
         .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
         .collect::<BTreeMap<_, _>>();
-    if actual.len() == candidate.len()
+    actual.len() == candidate.len()
         && actual
             .iter()
             .all(|(name, digest)| candidate.get(name).is_some_and(|value| value == digest))
-    {
-        return true;
-    }
-    // The merged target's exact Apple ledger is also an accepted deployed baseline.
-    let apple_baseline = &units()[..40];
-    if actual.len() == apple_baseline.len()
-        && apple_baseline.iter().all(|(name, sql)| {
-            actual
-                .get(name)
-                .is_some_and(|digest| **digest == format!("{:x}", Sha256::digest(sql)))
-        })
-    {
-        return true;
-    }
-    #[derive(serde::Deserialize)]
-    struct Unit {
-        name: String,
-        sha256: String,
-    }
-    #[derive(serde::Deserialize)]
-    struct Baseline {
-        units: Vec<Unit>,
-    }
-    let baseline: Baseline = serde_json::from_str(include_str!("migration/baseline-a83f7876.json"))
-        .expect("fixed reviewed migration manifest");
-    baseline.units.len() == actual.len()
-        && baseline
-            .units
-            .iter()
-            .all(|unit| actual.get(unit.name.as_str()) == Some(&unit.sha256.as_str()))
-}
-
-async fn preflight_upgrade(
-    conn: &mut PgConnection,
-    installation: &Installation,
-    instance: rss_identity_core::InstanceId,
-    installed: &[(String, String, bool)],
-    current: &[(&'static str, &'static str)],
-) -> Result<()> {
-    if !installed.is_empty()
-        && !installed.iter().any(|unit| unit.0 == "apple-management-v1")
-        && installed
-            .iter()
-            .any(|unit| unit.0 == "windows-configuration-v1")
-        && current.iter().any(|unit| unit.0 == "apple-management-v1")
-    {
-        verify_installation(conn, installation, instance).await?;
-        let mut tx = conn
-            .begin()
-            .await
-            .map_err(|_| MigrationError::at("apple-management-v1", "preflight transaction"))?;
-        sqlx::raw_sql(include_str!("migration/apple-preflight.sql")).execute(&mut *tx).await.map_err(|_|MigrationError::at("apple-management-v1","quiesce commands, dispatch, sessions, collections and reconciliation before upgrade"))?;
-        tx.commit()
-            .await
-            .map_err(|_| MigrationError::at("apple-management-v1", "preflight acknowledgement"))?;
-    }
-    if !installed.is_empty()
-        && !installed.iter().any(|unit| unit.0 == "agent-access-v2")
-        && current.iter().any(|unit| unit.0 == "agent-access-v2")
-    {
-        verify_installation(conn, installation, instance).await?;
-        let mut preflight = conn
-            .begin()
-            .await
-            .map_err(|_| MigrationError::at("agent-access-v2", "preflight transaction"))?;
-        sqlx::raw_sql(include_str!("migration/tasks-preflight.sql"))
-            .execute(&mut *preflight).await.map_err(|_| MigrationError::at("agent-access-v2", "drain Agent reports, revoke V1 registrations and replace incomplete Script versions before upgrade"))?;
-        preflight
-            .commit()
-            .await
-            .map_err(|_| MigrationError::at("agent-access-v2", "preflight acknowledgement"))?;
-    }
-    Ok(())
 }
 
 async fn install_identity(

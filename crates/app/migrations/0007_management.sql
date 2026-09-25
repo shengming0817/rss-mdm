@@ -40,16 +40,9 @@ GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_management TO mdm_management_run
 GRANT UPDATE(revision,deleted) ON mdm_management.scopes TO mdm_management_runtime;
 GRANT USAGE ON SCHEMA mdm_software_composition TO mdm_management_runtime;
 GRANT SELECT ON mdm_software_composition.subjects TO mdm_management_runtime;
-GRANT INSERT ON mdm_access.audit TO mdm_management_runtime;
 GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.report_sources,mdm_access.collection_runs,mdm.inventory TO mdm_management_runtime;
 ALTER TABLE mdm_access.grants DROP CONSTRAINT grants_device_check;
 ALTER TABLE mdm_access.grants ADD CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]');
-ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_target_check;
-ALTER TABLE mdm_access.audit ADD CHECK(target IS NULL OR octet_length(target) BETWEEN 1 AND 256);
 ALTER TABLE mdm_access.devices DROP CONSTRAINT devices_id_check;
 ALTER TABLE mdm_access.devices ADD CHECK(octet_length(id) BETWEEN 1 AND 256 AND id !~ '[[:cntrl:]]');
-ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
-ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
-('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
-'protected_request','registration_bind','credential_revoke','device_report','enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management','collection_read','collection_finish','software_binding','software_candidate','software_validate','software_approve','software_authorize','software_call','software_preflight','software_result','software_withdraw','software_archive','management_read','management_write','plan_preview','plan_save'));
 COMMIT;

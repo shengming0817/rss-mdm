@@ -15,7 +15,7 @@ mod scopes;
 mod storage;
 mod transaction;
 mod wire;
-use crate::{Error, Failure, audit::Audit};
+use crate::{Error, Failure};
 pub(crate) use config::Config;
 pub(crate) use http::{resource_routes, routes, routes_v2};
 use model::*;
@@ -29,6 +29,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 pub(crate) struct Management {
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     runtime: Arc<PgRuntime>,
     asset_cursor_key: ring::hmac::Key,
@@ -73,6 +74,7 @@ fn deadline() -> OperationDeadline {
 }
 impl Management {
     async fn new(
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
@@ -91,9 +93,11 @@ impl Management {
                 .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
         let key = storage::cursor_key(&runtime, tenant).await?;
         Ok(Self {
+            audit_store: audit_store.clone(),
             automation_task: std::sync::OnceLock::new(),
             asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
             assets: Arc::new(assets::AssetService::new(
+                audit_store,
                 runtime.clone(),
                 tenant,
                 clock.clone(),
@@ -114,11 +118,12 @@ impl Management {
     async fn execute(
         &self,
         command: &Command,
-        audit: &Audit,
+        audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
         transaction::run(
+            &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
@@ -145,7 +150,7 @@ impl Management {
         &self,
         tx: &mut PgTransaction<'_>,
         command: &Command,
-        audit: &Audit,
+        audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
         storage::lock(tx).await?;
@@ -157,8 +162,15 @@ impl Management {
             if !matches!(command, Command::PublicationIntent { .. }) {
                 wire::Response::decode(old.clone())?;
             }
-            audit.management_result(crate::audit::ManagementResult::Replayed);
-            storage::audit(tx, audit).await?;
+            audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+            storage::audit(
+                tx,
+                &self.audit_store,
+                audit,
+                operation.zip(Some(fingerprint.as_slice())),
+                true,
+            )
+            .await?;
             authorize()?;
             return Ok(old);
         }
@@ -176,7 +188,14 @@ impl Management {
         if let Some(id) = operation {
             storage::receipt(tx, id, &fingerprint, &value).await?;
         }
-        storage::audit(tx, audit).await?;
+        storage::audit(
+            tx,
+            &self.audit_store,
+            audit,
+            operation.zip(Some(fingerprint.as_slice())),
+            false,
+        )
+        .await?;
         authorize()?;
         Ok(value)
     }
@@ -358,3 +377,5 @@ impl From<crate::device::DeviceError> for Fault {
         Error::from(error).into()
     }
 }
+
+use rss_mdm_audit_integration::RequestAudit;

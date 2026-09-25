@@ -1,6 +1,5 @@
 use super::*;
 use crate::{
-    audit::Audit,
     collection,
     device::{
         DeviceService, VerifiedChannelCredential,
@@ -62,8 +61,76 @@ pub(crate) async fn report_statuses(
     statuses: [u16; 2],
 ) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
-    let mut tx = access.begin(&principal.tenant().to_string()).await?;
-    let scope = crate::device::store::revalidate(&mut tx, &principal).await?;
+    let store = access
+        .audit_store(&crate::config::AuditConfig::Plain)
+        .await?;
+    let audit = RequestAudit::new(principal.tenant().to_string(), "windows_management");
+    audit.registration(principal.registration());
+    audit.identify_device(principal.registration());
+    audit.target(principal.device());
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = CancellationToken::new();
+    let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))?;
+    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let attempt = store
+        .execute(
+            principal.tenant(),
+            &control,
+            (&store, &principal, values, statuses, &audit),
+            |(store, principal, values, statuses, audit), tx| {
+                Box::pin(async move {
+                    let mut facts = Vec::new();
+                    let (scope, id) = tx
+                        .with_connection_context(
+                            &mut (*principal, *values, *statuses, &mut facts),
+                            |(principal, values, statuses, facts), c| {
+                                Box::pin(report_on(c, principal, *values, *statuses, facts))
+                            },
+                        )
+                        .await?;
+                    for fact in &facts {
+                        store.append(tx, fact, false).await?;
+                    }
+                    audit.operation(id, "windows_management");
+                    store.append_request(tx, audit, 200, "success").await?;
+                    audit.mark_commit_started();
+                    Ok::<_, anyhow::Error>((scope, id))
+                })
+            },
+        )
+        .await;
+    let result = attempt.fold(
+        |value| Ok(value.into_value()),
+        |error| Err(anyhow::anyhow!("{error}")),
+        |error| Err(anyhow::anyhow!("{error}")),
+        |error| Err(anyhow::anyhow!("rollback unconfirmed: {error}")),
+        |error| Err(anyhow::anyhow!("commit unconfirmed: {error}")),
+        |error| Err(anyhow::anyhow!("{error}")),
+    );
+    if result.is_ok() {
+        audit.mark_committed();
+    }
+    audit.finalize(
+        result
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    let (scope, id) = result?;
+    Ok(
+        crate::collection::store::collection(access, &scope, Some(id))
+            .await?
+            .unwrap(),
+    )
+}
+async fn report_on(
+    tx: &mut sqlx::PgConnection,
+    principal: &crate::device::DevicePrincipal,
+    values: [Option<&str>; 2],
+    statuses: [u16; 2],
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+) -> Result<(Scope, Uuid)> {
+    let scope = crate::device::store::revalidate(tx, principal).await?;
     let mut request = Message {
         header: Header {
             session_id: 1,
@@ -76,7 +143,7 @@ pub(crate) async fn report_statuses(
         commands: vec![status(1, 0, CommandName::SyncHdr, 212)],
         final_message: true,
     };
-    let id = collection::create(&mut tx, &scope, &mut request).await?;
+    let id = collection::create(tx, &scope, &mut request).await?;
     let previous = String::from_utf8(syncml::encode(&request, &CodecLimits::default())?)?;
     let mut response = Message {
         header: Header {
@@ -116,7 +183,8 @@ pub(crate) async fn report_statuses(
     }
     ensure!(
         collection::accept(
-            &mut tx,
+            tx,
+            facts,
             &principal.tenant().to_string(),
             id,
             &response,
@@ -124,19 +192,9 @@ pub(crate) async fn report_statuses(
         )
         .await?
     );
-    let audit = Audit::new(principal.tenant().to_string(), "windows_management");
-    audit.operation(id, "windows_management");
-    audit.registration(principal.registration());
-    audit.identify_device(principal.registration());
-    audit.target(principal.device());
-    crate::operations::commit_audited(access, tx, &audit, None).await?;
-    audit.finalize(None);
-    Ok(
-        crate::collection::store::collection(access, &scope, Some(id))
-            .await?
-            .unwrap(),
-    )
+    Ok((scope, id))
 }
+
 pub(crate) async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownStack> {
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
@@ -225,7 +283,13 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .is_err()
     );
     let access = Arc::new(Database::connect(options("mdm_access")?).await?);
-    let service = Arc::new(DeviceService::new(access.clone(), A.into()));
+    let service = Arc::new(DeviceService::new(
+        access.clone(),
+        A.into(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    ));
     let admin = admin(A, "admin-a").await?;
     let credential = proof(A, Channel::Mdm, 121);
     let (_, registration) = bind(&service, &admin, &credential, "collection-recovery", 0).await?;
@@ -249,9 +313,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         corrupt_epoch,
     )?;
     let read = crate::collection::store::collection(&access, &corrupt_scope, Some(first.id)).await;
-    let pending = crate::collection::store::Delivery::new(access.clone())
-        .pending_reports(A)
-        .await;
+    let pending = crate::collection::store::Delivery::new(
+        access.clone(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    )
+    .pending_reports(A)
+    .await;
     sqlx::query("UPDATE mdm_access.collection_runs SET epoch=$1::uuid WHERE tenant_id=$2::uuid AND id=$3::uuid")
         .bind(first.scope.epoch().as_str()).bind(A).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
     corrupt_root
@@ -265,9 +334,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let canonical = first.batch().unwrap().encode().to_vec();
     let runtime = open(access.clone()).await?;
     ensure!(runtime.inspect(&first).await?.receipt.is_none());
-    let reports = crate::collection::store::Delivery::new(access.clone())
-        .pending_reports(A)
-        .await?;
+    let reports = crate::collection::store::Delivery::new(
+        access.clone(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    )
+    .pending_reports(A)
+    .await?;
     let durable = reports
         .iter()
         .find(|r| r.batch().id().as_str() == first.id.to_string())
@@ -318,11 +392,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             );
             ensure!(runtime.inspect(&first).await?.receipt.is_none());
             ensure!(
-                crate::collection::store::Delivery::new(access.clone())
-                    .pending_reports(A)
-                    .await?
-                    .iter()
-                    .any(|r| r.batch().id() == durable.batch().id())
+                crate::collection::store::Delivery::new(
+                    access.clone(),
+                    access
+                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .await?
+                )
+                .pending_reports(A)
+                .await?
+                .iter()
+                .any(|r| r.batch().id() == durable.batch().id())
             );
         }
         runtime
@@ -538,3 +617,5 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     access.close().await;
     Ok(())
 }
+
+use rss_mdm_audit_integration::RequestAudit;

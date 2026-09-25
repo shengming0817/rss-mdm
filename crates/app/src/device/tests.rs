@@ -72,13 +72,16 @@ async fn request(
     device: &str,
     channel: Channel,
 ) -> anyhow::Result<Uuid> {
-    let audit = Audit::new(admin.tenant_id().into(), "enrollment_create");
-    audit.identify(admin);
+    let audit = RequestAudit::new(admin.tenant_id().into(), "enrollment_create");
+    admin.bind_audit(&audit).unwrap();
     audit.target(device);
     let key = Uuid::new_v4();
     audit.operation(key, "enrollment_create");
     let receipt = crate::enrollment::store::create_enrollment(
-        store,
+        store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?
+            .as_ref(),
         admin.enrollment(device)?,
         &Password::new(crate::enrollment::random())?,
         match channel {
@@ -131,8 +134,20 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let service = DeviceService::new(access.clone(), A.into());
-    let service_b = DeviceService::new(access.clone(), B.into());
+    let service = DeviceService::new(
+        access.clone(),
+        A.into(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
+    let service_b = DeviceService::new(
+        access.clone(),
+        B.into(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(A)
@@ -240,7 +255,9 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .is_err()
     );
     // Real commit succeeds but its ACK is lost; recreate the owner and recover by original key.
-    access.fail_next(2);
+    service
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     assert!(matches!(
         service
             .revoke(&admin_a, "same-serial", second.registration, revoke_key)
@@ -252,7 +269,13 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .context("access store admission")?,
     );
-    let restart = DeviceService::new(restart_access.clone(), A.into());
+    let restart = DeviceService::new(
+        restart_access.clone(),
+        A.into(),
+        restart_access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
     let receipt = restart
         .revoke(&admin_a, "same-serial", second.registration, revoke_key)
         .await?;
@@ -302,7 +325,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         expected_generation: 2,
         source: ReportSource::MdmWindows,
     };
-    root.execute("REVOKE INSERT ON mdm_access.audit FROM mdm_access")
+    root.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
         .await?;
     assert!(
         service
@@ -321,7 +344,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_err()
     );
-    root.execute("GRANT INSERT ON mdm_access.audit TO mdm_access")
+    root.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
         .await?;
     assert!(
         service
@@ -331,14 +354,18 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     );
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid").bind(A).bind(pending.request_id.to_string()).fetch_one(&mut root).await?;
     assert_eq!(count, 0);
-    access.fail_next(1);
+    service
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     assert!(
         service
             .bind(&admin_a, &third_proof, pending.clone())
             .await
             .is_err()
     );
-    access.fail_next(2);
+    service
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     assert!(matches!(
         service.bind(&admin_a, &third_proof, pending.clone()).await,
         Err(Error::CommitUnknown)
@@ -353,7 +380,15 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .bind(&admin_a, &third_proof, pending.clone())
             .await?
     );
-    let audits:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND operation_id=$2::uuid AND result='success'").bind(A).bind(pending.operation_id.to_string()).fetch_one(&mut root).await?;
+    let audits = crate::audit_test_support::read(&mut root)
+        .await?
+        .iter()
+        .filter(|r| {
+            r.source() == "mdm.business"
+                && r.operation() == Some(pending.operation_id.to_string().as_str())
+                && r.result() == "success"
+        })
+        .count();
     assert_eq!(audits, 1);
     assert!(service.bind(&other, &third_proof, pending).await.is_err());
     // Failed replacement must leave the existing generation/credential/source fully active.
@@ -363,7 +398,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
         expected_generation: 3,
         source: ReportSource::MdmWindows,
     };
-    root.execute("REVOKE INSERT ON mdm_access.audit FROM mdm_access")
+    root.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
         .await?;
     assert!(
         service
@@ -371,7 +406,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
             .await
             .is_err()
     );
-    root.execute("GRANT INSERT ON mdm_access.audit TO mdm_access")
+    root.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
         .await?;
     assert!(
         service
@@ -381,7 +416,9 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     );
     // Replacement commits with its old generation still active, then loses its ACK.
     let fourth_proof = proof(A, Channel::Mdm, 4);
-    access.fail_next(2);
+    service
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     assert!(matches!(
         service.bind(&admin_a, &fourth_proof, replace.clone()).await,
         Err(Error::CommitUnknown)
@@ -491,7 +528,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     for statement in [
         "DELETE FROM mdm_access.registrations",
         "UPDATE mdm_access.credentials SET locator=repeat('0',64)",
-        "UPDATE mdm_access.audit SET result='success'",
+        "UPDATE mdm_audit.receipts SET canonical=canonical",
     ] {
         assert!(runtime.execute(statement).await.is_err());
     }
@@ -502,8 +539,8 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Force both contenders past the locator precheck. Different device locks cannot
-// arbitrate this race: the database unique constraint must roll back the loser's retire.
+// Hold both business rows. The first contender must wait there while the second
+// waits on the earlier Audit head; after release exactly one credential bind wins.
 async fn credential_race(
     service: &DeviceService,
     admin: &AuthorizedPrincipal,
@@ -529,14 +566,14 @@ async fn credential_race(
     let release = async {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let blocked:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE 'SELECT id::text AS id FROM mdm_access.registrations%'")
+                let (business,audit):(i64,i64)=sqlx::query_as("SELECT count(*) FILTER(WHERE query LIKE 'SELECT id::text AS id FROM mdm_access.registrations%'),count(*) FILTER(WHERE query LIKE '%rss_audit.reserve%') FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock'")
                     .fetch_one(&mut *hold).await?;
-                if blocked == 2 { return Ok::<_, sqlx::Error>(()); }
+                if business == 1 && audit == 1 { return Ok::<_, sqlx::Error>(()); }
                 // Clear the transaction-local statistics snapshot before the next poll.
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await.context("both credential contenders must pass precheck")??;
+        }).await.context("Audit head must serialize contenders before their business locks")??;
         hold.commit().await?;
         Ok::<_, anyhow::Error>(())
     };
@@ -602,16 +639,19 @@ async fn commit_deadlines(
     root: &mut PgConnection,
 ) -> anyhow::Result<()> {
     let mut outcomes = Vec::new();
-    for fault in [3, 4] {
-        let device = format!("commit-deadline-{fault}");
-        let credential = proof(A, Channel::Mdm, 100 + fault);
+    for (number, fault, committed) in [
+        (3, rss_audit_postgres::PgFault::BeforeCommitPending, false),
+        (4, rss_audit_postgres::PgFault::CommitUnknownAfterAck, true),
+    ] {
+        let device = format!("commit-deadline-{number}");
+        let credential = proof(A, Channel::Mdm, 100 + number);
         let command = BindRegistration {
             operation_id: Uuid::new_v4(),
             request_id: request(&service.access, admin, &device, Channel::Mdm).await?,
             expected_generation: 0,
             source: ReportSource::MdmWindows,
         };
-        service.access.fail_next(fault);
+        service.audit_store.inject_next_fault(fault);
         let result = service.bind(admin, &credential, command.clone()).await;
         outcomes.push(matches!(result, Err(Error::CommitUnknown)));
         let stored: i64 = sqlx::query_scalar(
@@ -620,12 +660,12 @@ async fn commit_deadlines(
         .bind(command.operation_id.to_string())
         .fetch_one(&mut *root)
         .await?;
-        assert_eq!(stored, i64::from(fault == 4));
+        assert_eq!(stored, i64::from(committed));
         let receipt = service.bind(admin, &credential, command.clone()).await?;
         assert_eq!(service.bind(admin, &credential, command).await?, receipt);
 
         let key = Uuid::new_v4();
-        service.access.fail_next(fault);
+        service.audit_store.inject_next_fault(fault);
         let result = service
             .revoke(admin, &device, receipt.registration, key)
             .await;
@@ -636,7 +676,7 @@ async fn commit_deadlines(
         .bind(key.to_string())
         .fetch_one(&mut *root)
         .await?;
-        assert_eq!(stored, i64::from(fault == 4));
+        assert_eq!(stored, i64::from(committed));
         let revoked = service
             .revoke(admin, &device, receipt.registration, key)
             .await?;

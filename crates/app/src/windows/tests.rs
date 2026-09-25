@@ -37,9 +37,14 @@ fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
     Ok(Windows::load(config, now())?)
 }
-fn audit(proof: &AuthorizedPrincipal, key: Uuid, device: &str, action: &'static str) -> Audit {
-    let a = Audit::new(proof.tenant_id().into(), action);
-    a.identify(proof);
+fn audit(
+    proof: &AuthorizedPrincipal,
+    key: Uuid,
+    device: &str,
+    action: &'static str,
+) -> RequestAudit {
+    let a = RequestAudit::new(proof.tenant_id().into(), action);
+    proof.bind_audit(&a).unwrap();
     a.target(device);
     a.operation(key, action);
     a
@@ -54,7 +59,10 @@ async fn create(
 ) -> anyhow::Result<crate::enrollment::Receipt> {
     let a = audit(proof, key, device, "enrollment_create");
     let receipt = crate::enrollment::store::create_enrollment(
-        store,
+        store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?
+            .as_ref(),
         proof.enrollment(device)?,
         password,
         rss_mdm_inventory::ReportSource::MdmWindows,
@@ -67,7 +75,7 @@ async fn create(
     Ok(receipt?)
 }
 async fn complete(
-    store: &Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     w: &Windows,
     auth: &Authorization,
     proof: &AuthorizedPrincipal,
@@ -292,7 +300,16 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         &checked,
     );
     let access = Arc::new(store);
-    let service = crate::device::DeviceService::new(access.clone(), TENANT.into());
+    let audit_store = access
+        .audit_store(&crate::config::AuditConfig::Plain)
+        .await?;
+    let service = crate::device::DeviceService::new(
+        access.clone(),
+        TENANT.into(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
     ensure!(
         service.management_principal(&credential).await.is_err(),
         "unbound signed certificate admitted"
@@ -302,14 +319,14 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let unrelated = w.ca.sign(&unrelated.to_der()?)?;
     w.ca.verify(&[CertificateDer::from(unrelated.as_slice())], now())?;
     ensure!(matches!(
-        complete(&access, &w, &auth, &proof, &intent, &unrelated).await,
+        complete(&audit_store, &w, &auth, &proof, &intent, &unrelated).await,
         Err(Error::Conflict)
     ));
     ensure!(service.management_principal(&credential).await.is_err());
     // Failed final write leaves only the exact immutable intent.
-    access.fail_next(1);
+    audit_store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     ensure!(
-        complete(&access, &w, &auth, &proof, &intent, &cert)
+        complete(&audit_store, &w, &auth, &proof, &intent, &cert)
             .await
             .is_err()
     );
@@ -333,12 +350,23 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             && saved.registration == intent.registration
             && restarted_ca.ca.sign(&saved.tbs)? == cert
     );
-    access.fail_next(2);
+    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     ensure!(matches!(
-        complete(&access, &w, &auth, &proof, &intent, &cert).await,
+        complete(&audit_store, &w, &auth, &proof, &intent, &cert).await,
         Err(Error::CommitUnknown)
     ));
-    complete(&restarted, &restarted_ca, &auth, &proof, &saved, &cert).await?;
+    complete(
+        restarted
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?
+            .as_ref(),
+        &restarted_ca,
+        &auth,
+        &proof,
+        &saved,
+        &cert,
+    )
+    .await?;
     ensure!(
         service
             .management_principal(&credential)
@@ -346,7 +374,16 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .registration()
             == intent.registration
     );
-    let successes:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='enrollment_issue' AND operation_id=$2::uuid AND result='success'").bind(TENANT).bind(auth.operation.to_string()).fetch_one(&mut pg).await?;
+    let successes = crate::audit_test_support::read(&mut pg)
+        .await?
+        .iter()
+        .filter(|r| {
+            r.source() == "mdm.business"
+                && r.action() == "enrollment_issue"
+                && r.operation() == Some(auth.operation.to_string().as_str())
+                && r.result() == "success"
+        })
+        .count();
     ensure!(successes == 1);
     for fault in [3, 4] {
         let device = format!("windows-commit-deadline-{fault}");
@@ -379,16 +416,22 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .await?;
         let c = w.ca.sign(&i.tbs)?;
-        access.fail_next(fault);
-        ensure!(
-            tokio::time::timeout(
-                Duration::from_millis(200),
-                complete(&access, &w, &a, &proof, &i, &c)
-            )
-            .await
-            .is_err()
-        );
-        complete(&access, &w, &a, &proof, &i, &c).await?;
+        audit_store.inject_next_fault(if fault == 3 {
+            rss_audit_postgres::PgFault::BeforeCommitPending
+        } else {
+            rss_audit_postgres::PgFault::CommitUnknownAfterAck
+        });
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            complete(&audit_store, &w, &a, &proof, &i, &c),
+        )
+        .await;
+        ensure!(if fault == 3 {
+            result.is_err()
+        } else {
+            matches!(result, Ok(Err(Error::CommitUnknown)))
+        });
+        complete(&audit_store, &w, &a, &proof, &i, &c).await?;
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2",
         )
@@ -403,7 +446,10 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let resume_key = Uuid::new_v4();
     let a = audit(&proof, resume_key, "windows-device", "enrollment_resume");
     crate::enrollment::store::change_enrollment(
-        &access,
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?
+            .as_ref(),
         proof.enrollment("windows-device")?,
         auth.id,
         Some((&next, Uuid::new_v4())),
@@ -418,7 +464,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .is_err()
     );
     ensure!(
-        complete(&access, &w, &auth, &proof, &intent, &cert)
+        complete(&audit_store, &w, &auth, &proof, &intent, &cert)
             .await
             .is_err()
     );
@@ -428,7 +474,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         resumed.operation == auth.operation
             && resumed.expected_generation == auth.expected_generation
     );
-    complete(&access, &w, &resumed, &proof, &intent, &cert).await?;
+    complete(&audit_store, &w, &resumed, &proof, &intent, &cert).await?;
     // Cancelled/expired authorizations cannot publish an already computed signature.
     for (device, cause) in [
         ("cancel-race", "cancel"),
@@ -467,7 +513,10 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             let key = Uuid::new_v4();
             let a = audit(&proof, key, device, "enrollment_cancel");
             crate::enrollment::store::change_enrollment(
-                &access,
+                access
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?
+                    .as_ref(),
                 proof.enrollment(device)?,
                 auth.id,
                 None,
@@ -487,7 +536,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             None
         };
         let result = complete(
-            &access,
+            &audit_store,
             &w,
             &auth,
             current.as_ref().unwrap_or(&proof),
@@ -511,7 +560,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .bind(TENANT).bind(auth.id.to_string()).fetch_one(&mut pg).await?;
         ensure!(bound == 0);
     }
-    // Audit failure rolls back the entire final binding, then the same intent can finish.
+    // RequestAudit failure rolls back the entire final binding, then the same intent can finish.
     let r = create(
         &access,
         &proof,
@@ -541,14 +590,23 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let c = w.ca.sign(&i.tbs)?;
-    pg.execute("REVOKE INSERT ON mdm_access.audit FROM mdm_access")
+    pg.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
         .await?;
-    let failed = complete(&access, &w, &a, &proof, &i, &c).await;
-    ensure!(Database::connect(options("mdm_access")?).await.is_err());
-    pg.execute("GRANT INSERT ON mdm_access.audit TO mdm_access")
+    let failed = complete(&audit_store, &w, &a, &proof, &i, &c).await;
+    let reopened = Database::connect(options("mdm_access")?).await?;
+    let rejected = reopened
+        .audit_store(&crate::config::AuditConfig::Plain)
+        .await
+        .is_err();
+    reopened.close().await;
+    pg.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
         .await?;
-    ensure!(matches!(failed, Err(Error::Unavailable(Failure::Audit))));
-    complete(&access, &w, &a, &proof, &i, &c).await?;
+    ensure!(rejected);
+    ensure!(matches!(
+        failed,
+        Err(Error::Unavailable(Failure::AuditAdmission))
+    ));
+    complete(&audit_store, &w, &a, &proof, &i, &c).await?;
     // Two accepted enrollments freeze the same base; only one final generation can win.
     let first = create(
         &access,
@@ -608,8 +666,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     .await?;
     let (c1, c2) = (w.ca.sign(&i1.tbs)?, w.ca.sign(&i2.tbs)?);
     let (r1, r2) = tokio::join!(
-        complete(&access, &w, &a1, &proof, &i1, &c1),
-        complete(&access, &w, &a2, &proof, &i2, &c2)
+        complete(&audit_store, &w, &a1, &proof, &i1, &c1),
+        complete(&audit_store, &w, &a2, &proof, &i2, &c2)
     );
     ensure!(r1.is_ok() != r2.is_ok());
     // Revocation cannot be undone by enrollment resume or by replay of issuance.
@@ -623,7 +681,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .await?;
     ensure!(service.management_principal(&credential).await.is_err());
     ensure!(
-        complete(&access, &w, &resumed, &proof, &intent, &cert)
+        complete(&audit_store, &w, &resumed, &proof, &intent, &cert)
             .await
             .is_err()
     );
@@ -631,7 +689,10 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let a = audit(&proof, key, "windows-device", "enrollment_resume");
     ensure!(
         crate::enrollment::store::change_enrollment(
-            &access,
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?
+                .as_ref(),
             proof.enrollment("windows-device")?,
             auth.id,
             Some((&password, Uuid::new_v4())),
@@ -652,12 +713,22 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             "REVOKE UPDATE(state) ON mdm_access.grants FROM mdm_access",
         ),
         (
-            "GRANT SELECT ON mdm_access.audit TO mdm_access",
-            "REVOKE SELECT ON mdm_access.audit FROM mdm_access",
+            "GRANT UPDATE(canonical) ON mdm_audit.receipts TO mdm_access",
+            "REVOKE UPDATE(canonical) ON mdm_audit.receipts FROM mdm_access",
         ),
     ] {
         pg.execute(grant).await?;
-        let rejected = Database::connect(options("mdm_access")?).await.is_err();
+        let rejected = match Database::connect(options("mdm_access")?).await {
+            Err(_) => true,
+            Ok(store) => {
+                let rejected = store
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await
+                    .is_err();
+                store.close().await;
+                rejected
+            }
+        };
         pg.execute(revoke).await?;
         ensure!(rejected);
     }
@@ -714,7 +785,11 @@ async fn ingress_burst(
     request.header.to = Some(url.clone());
     let bytes = soap::encode(&request, &CodecLimits::default())?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
-    let before:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='windows_discovery'").bind(TENANT).fetch_one(&mut pg).await?;
+    let before = crate::audit_test_support::read(&mut pg)
+        .await?
+        .iter()
+        .filter(|r| r.action() == "windows_discovery")
+        .count();
     // Freeze refill time only for the deterministic burst assertions.
     clock.advance();
     let mut accepted = 0i64;
@@ -744,9 +819,13 @@ async fn ingress_burst(
         refused >= 64 && accepted <= 64,
         "forwarded headers bypassed peer admission"
     );
-    let after:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND action='windows_discovery'").bind(TENANT).fetch_one(&mut pg).await?;
+    let after = crate::audit_test_support::read(&mut pg)
+        .await?
+        .iter()
+        .filter(|r| r.action() == "windows_discovery")
+        .count();
     ensure!(
-        after - before == accepted,
+        after - before == usize::try_from(accepted)?,
         "capacity denials amplified persistent audit"
     );
     clock.advance();
@@ -893,7 +972,15 @@ async fn discover_and_policy(
         (discovery_audit, "windows_discovery"),
         (policy_audit, "windows_policy"),
     ] {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE tenant_id=$1::uuid AND request_id=$2::uuid AND action=$3 AND result='success'").bind(TENANT).bind(request).bind(action).fetch_one(&mut pg).await?;
+        let count = crate::audit_test_support::read(&mut pg)
+            .await?
+            .iter()
+            .filter(|r| {
+                r.request() == Some(request.as_str())
+                    && r.action() == action
+                    && r.result() == "success"
+            })
+            .count();
         ensure!(count == 1);
     }
     pg.close().await?;
@@ -1000,6 +1087,9 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     let devices = Arc::new(crate::device::DeviceService::new(
         store.clone(),
         TENANT.into(),
+        store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
     ));
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
@@ -1013,16 +1103,27 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     let management = config
         .management
         .open(
+            store
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
             rss_request_context::TenantId::parse(TENANT)?,
             Arc::new(crate::clock::SystemClock),
             |_| {},
         )
         .await
         .map_err(|e| anyhow::anyhow!("management startup: {e:?}"))?;
-    let commands = crate::commands::Commands::open(&config)
-        .await
-        .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
+    let commands = crate::commands::Commands::open(
+        &config,
+        store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
     let app = Arc::new(Assembly {
+        audit_store: store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
         apple: None,
         commands,
         management,
@@ -1083,7 +1184,9 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
             tls::registration(
                 enroll,
                 enrollment,
-                store.clone(),
+                store
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?,
                 TENANT.into(),
                 crate::native::NativeListenerKind::WindowsEnrollment,
             )
@@ -1093,7 +1196,9 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
             tls::registration(
                 manage,
                 management,
-                store.clone(),
+                store
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?,
                 TENANT.into(),
                 crate::native::NativeListenerKind::WindowsManagement,
             )

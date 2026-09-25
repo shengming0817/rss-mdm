@@ -170,6 +170,7 @@ pub(crate) async fn create(
 }
 pub(crate) async fn accept(
     tx: &mut sqlx::PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
     id: Uuid,
     message: &syncml::Message,
@@ -222,7 +223,7 @@ pub(crate) async fn accept(
         } else {
             "message_budget"
         };
-        seal(tx, &mut run, reason).await?;
+        facts.extend(seal(tx, &mut run, reason).await?);
     } else {
         sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL")
             .bind(tenant).bind(id.to_string()).bind(serde_json::to_string(&run.attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
@@ -233,7 +234,7 @@ pub(super) async fn seal(
     tx: &mut sqlx::PgConnection,
     run: &mut Run,
     reason: &str,
-) -> Result<(), Error> {
+) -> Result<Option<rss_mdm_audit_integration::Fact>, Error> {
     run.attempts.finish();
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -270,34 +271,53 @@ pub(super) async fn seal(
         .as_ref()
         .map(|b| fingerprint(b, &run.scope))
         .transpose()?;
-    sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result=$4,reason=$5,batch=$6,digest=$7,sealed_at=$8,delivery_pending=$9 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL")
+    let changed = sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result=$4,reason=$5,batch=$6,digest=$7,sealed_at=$8,delivery_pending=$9 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL")
         .bind(run.scope.tenant().to_string()).bind(run.id.to_string()).bind(serde_json::to_string(&run.attempts).expect("closed attempts")).bind(result).bind(reason)
-        .bind(batch.as_ref().map(|b| b.encode())).bind(digest).bind(now).bind(batch.is_some()).execute(&mut *tx).await.map_err(db)?;
+        .bind(batch.as_ref().map(|b| b.encode())).bind(&digest).bind(now).bind(batch.is_some()).execute(&mut *tx).await.map_err(db)?.rows_affected();
+    if changed == 0 {
+        return Ok(None);
+    }
     // The terminal fact is audited in the caller's transaction. Its owner records commit
     // uncertainty (HTTP envelope or retention task); this helper never commits independently.
-    let audit = crate::audit::Audit::new(run.scope.tenant().to_string(), "collection_finish");
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        run.scope.tenant().to_string(),
+        "collection_finish",
+    );
     audit.operation(run.id, "collection_finish");
     audit.registration(Uuid::parse_str(run.scope.registration().as_str()).map_err(|_| corrupt())?);
-    let result = crate::audit::append_on_connection(tx, &audit, 200, "success", None).await;
-    audit.finalize(
-        result
-            .as_ref()
-            .err()
-            .map(|_| crate::audit::FailureReason::Transaction),
-    );
-    result
+    audit.identify_service("service:collection-finalizer");
+    let details = serde_json::json!({"collectionResult":result,"reason":reason,"batchDigest":digest,"sealedAt":now});
+    let fingerprint = serde_json::to_vec(&details).expect("closed collection outcome");
+    let fact = rss_mdm_audit_integration::Fact::business(
+        &audit,
+        &format!("collection:{}:finish", run.id),
+        &fingerprint,
+        200,
+        if result == "failed" {
+            "failed"
+        } else {
+            "success"
+        },
+        None,
+    )
+    .and_then(|fact| fact.with_details(details))
+    .map_err(Error::from);
+    audit.finalize(None);
+    fact.map(Some)
 }
 /// Terminalize accepted facts before disposing protocol state. Never accepts new device input.
 pub(crate) async fn terminate(
     tx: &mut sqlx::PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
     registration: &str,
     reason: &str,
 ) -> Result<(), Error> {
-    terminate_session(tx, tenant, registration, None, reason).await
+    terminate_session(tx, facts, tenant, registration, None, reason).await
 }
 pub(crate) async fn terminate_session(
     tx: &mut sqlx::PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
     registration: &str,
     session: Option<&str>,
@@ -306,7 +326,7 @@ pub(crate) async fn terminate_session(
     let rows = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL AND ($3::text IS NULL OR session_id=$3) ORDER BY sequence FOR UPDATE"))
         .bind(tenant).bind(registration).bind(session).fetch_all(&mut *tx).await.map_err(db)?;
     for row in rows {
-        seal(tx, &mut Run::from_row(row)?, reason).await?;
+        facts.extend(seal(tx, &mut Run::from_row(row)?, reason).await?);
     }
     Ok(())
 }
@@ -385,23 +405,48 @@ pub(super) async fn load_on(
 
 /// The durable delivery queue consumed by the Inventory worker.
 pub(crate) struct Delivery {
+    audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     database: std::sync::Arc<crate::database::Database>,
 }
 impl Delivery {
-    pub(crate) fn new(database: std::sync::Arc<crate::database::Database>) -> Self {
-        Self { database }
+    pub(crate) fn new(
+        database: std::sync::Arc<crate::database::Database>,
+        audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+    ) -> Self {
+        Self {
+            database,
+            audit_store,
+        }
     }
     pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
-        let mut tx = self.database.begin(tenant).await?;
-        crate::collection::apple::expire(&mut tx, tenant).await?;
-        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
-            .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
-        let reports: Vec<DurableReport> = rows
-            .into_iter()
-            .map(durable_report)
-            .collect::<Result<_, Error>>()?;
-        tx.commit().await.map_err(db)?;
-        Ok(reports)
+        let audit =
+            rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
+        audit.identify_service("service:inventory-delivery");
+        let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+        let control = budget.control();
+        let attempt = self.audit_store.execute(
+            rss_request_context::TenantId::parse(tenant).map_err(|_| corrupt())?, &control,
+            (&self.audit_store, tenant, &audit), |(store, tenant, audit), tx| Box::pin(async move {
+                let mut facts = Vec::new();
+                let reports = tx.with_connection_context(&mut (*tenant, &mut facts), |(tenant, facts), c| Box::pin(async move {
+                    crate::collection::apple::expire(c, facts, tenant).await?;
+                    let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
+                        .bind(*tenant).fetch_all(c).await.map_err(db)?;
+                    rows.into_iter().map(durable_report).collect::<Result<Vec<_>, Error>>()
+                })).await?;
+                for fact in &facts { store.append(tx, fact, false).await.map_err(Error::from)?; }
+                audit.mark_commit_started();
+                Ok(reports)
+            }),
+        ).await;
+        let result = crate::operations::settle(attempt, &audit);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result
     }
     pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
         let mut tx = self

@@ -118,6 +118,7 @@ impl Management {
         if !self.scope_dependency_succeeded_in(tx, *resolution).await? {
             return crate::management::automation::jobs::finish_job_in(
                 tx,
+                &self.audit_store,
                 task,
                 Some("source_unavailable"),
             )
@@ -182,11 +183,22 @@ impl Management {
                     sqlx::query("UPDATE mdm_management.candidate_heads SET candidate=$3::uuid WHERE tenant_id=$1::uuid AND policy=$2 AND desired=$3::uuid")
                         .bind(tenant).bind(policy).bind(task.to_string()).execute(c).await?;Ok(())
                 })).await?;
-                crate::management::automation::jobs::finish_job_in(tx, task, None).await
+                crate::management::automation::jobs::finish_job_in(
+                    tx,
+                    &self.audit_store,
+                    task,
+                    None,
+                )
+                .await
             }
             pg::CandidatePhase::Superseded => {
-                crate::management::automation::jobs::finish_job_in(tx, task, Some("superseded"))
-                    .await
+                crate::management::automation::jobs::finish_job_in(
+                    tx,
+                    &self.audit_store,
+                    task,
+                    Some("superseded"),
+                )
+                .await
             }
         }
     }

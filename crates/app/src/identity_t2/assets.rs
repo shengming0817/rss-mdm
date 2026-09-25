@@ -193,7 +193,13 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         "UPDATE mdm_access.credentials SET locator=repeat('79',32) WHERE registration='{registration}'"
     ))?;
     let access = database(base).await?;
-    let service = crate::device::DeviceService::new(access.clone(), TENANT.into());
+    let service = crate::device::DeviceService::new(
+        access.clone(),
+        TENANT.into(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
     let proof = crate::device::tests::proof(TENANT, rss_mdm_inventory::Channel::Mdm, 121);
     let config: Config = serde_json::from_value(base.clone())?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
@@ -731,9 +737,9 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
             ["kind"]
             == "integer"
     );
-    // Audit failure rolls back an otherwise valid assignment and receipt.
+    // A deferred business write failure rolls back the assignment, receipt and staged audit.
     pg(
-        "CREATE FUNCTION public.reject_asset_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='management_write' THEN RAISE EXCEPTION 'fixture'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_asset_audit BEFORE INSERT ON mdm_access.audit FOR EACH ROW EXECUTE FUNCTION public.reject_asset_audit();",
+        "CREATE FUNCTION public.reject_asset_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_asset_write AFTER UPDATE ON mdm.manual_assignments DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.reject_asset_write();",
     )?;
     let rejected = browser
         .call(
@@ -747,7 +753,7 @@ async fn asset_write_query_group_and_isolation() -> Result<()> {
         )
         .await?;
     pg(
-        "DROP TRIGGER reject_asset_audit ON mdm_access.audit; DROP FUNCTION public.reject_asset_audit();",
+        "DROP TRIGGER reject_asset_write ON mdm.manual_assignments; DROP FUNCTION public.reject_asset_write();",
     )?;
     ensure!(rejected.0 == StatusCode::SERVICE_UNAVAILABLE);
     ensure!(pg(&format!("SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{TENANT}' AND device='asset-a' AND field='custom.office_floor'"))?.trim()=="4");

@@ -66,20 +66,6 @@ pub(super) async fn load(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Operati
         registration_generation: row.try_get("registration_generation")?,
     })
 }
-pub(super) async fn audit(tx: &mut PgTransaction<'_>, audit: &Audit, status: u16) -> Result<()> {
-    let audit = audit.clone();
-    let outcome = audit
-        .snapshot()
-        .management_result
-        .map_or("success", |r| r.audit_tag());
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            Ok(crate::audit::append_on_connection(c, &audit, status, outcome, None).await)
-        })
-    })
-    .await??;
-    Ok(())
-}
 pub(super) async fn authorized(
     tx: &mut PgTransaction<'_>,
     proof: &crate::authorization::context::AuthorizedPrincipal,

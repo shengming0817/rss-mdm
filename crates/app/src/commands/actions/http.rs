@@ -1,6 +1,6 @@
 use super::model::{Change, Create};
 use crate::commands::http::HttpState;
-use crate::{Error, audit::Audit, authorization::context::RequestAuth};
+use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     body::Bytes,
@@ -44,7 +44,7 @@ pub(crate) fn agent_routes() -> Router<Arc<HttpState>> {
 async fn create(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     input: Body<Create>,
 ) -> Result<(StatusCode, Json<Value>), Error> {
     let input = body(input)?;
@@ -58,7 +58,7 @@ async fn create(
 async fn read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, Error> {
     audit.operation(id, "command_read");
@@ -71,7 +71,7 @@ async fn read(
 async fn runs(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     Query(page): Query<super::history::Page>,
 ) -> Result<Json<Value>, Error> {
@@ -85,7 +85,7 @@ async fn runs(
 async fn run(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((id, task)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, Error> {
     audit.operation(task, "command_read");
@@ -99,7 +99,7 @@ async fn run(
 async fn approve(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     input: Body<Change>,
 ) -> Result<Json<Value>, Error> {
@@ -114,7 +114,7 @@ async fn approve(
 async fn cancel(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     input: Body<Change>,
 ) -> Result<Json<Value>, Error> {
@@ -129,7 +129,7 @@ async fn cancel(
 async fn authenticate(
     app: &HttpState,
     headers: &HeaderMap,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<crate::device::DevicePrincipal, crate::agent::AgentError> {
     let credential = crate::agent::agent_credential(app.commands.tenant, headers)?;
     let principal = app
@@ -153,7 +153,7 @@ fn task_error(error: Error) -> crate::agent::AgentError {
 }
 async fn claim(
     State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     input: Body<wire::TaskClaimRequest>,
 ) -> Result<Json<Value>, crate::agent::AgentError> {
@@ -172,7 +172,7 @@ async fn claim(
 }
 async fn event(
     State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     input: Body<wire::TaskEventRequest>,
@@ -197,7 +197,7 @@ struct Download {
 }
 async fn download(
     State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(query): Query<Download>,
@@ -290,7 +290,7 @@ struct Upload {
 async fn upload(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Upload>,
     bytes: Bytes,
@@ -379,7 +379,10 @@ async fn upload(
                         .map_err(|_| Error::Unavailable(crate::Failure::CommandStorage))??;
                     proof.require(crate::authorization::Permission::ResourceWrite, None)?;
                     proof.check_live()?;
-                    crate::commands::storage::audit(tx, audit, 201).await?;
+                    service
+                        .audit_store
+                        .append_request_in(tx, audit, 201, "success")
+                        .await?;
                     Ok(())
                 })
             },
@@ -387,3 +390,5 @@ async fn upload(
         .await?;
     Ok(StatusCode::CREATED)
 }
+
+use rss_mdm_audit_integration::RequestAudit;

@@ -1,7 +1,6 @@
 use super::{certificate::Csr, *};
 use crate::authorization::context::AuthorizedPrincipal;
 use crate::{
-    audit::Audit,
     database::db,
     device::{BindRegistration, VerifiedChannelCredential, store::bind_in},
     enrollment::{
@@ -135,13 +134,13 @@ pub(super) async fn issued_certificate(
     reason = "explicit authorization, immutable intent and commit audit inputs"
 )]
 pub(super) async fn complete_issuance(
-    database: &crate::database::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
     windows: &Windows,
     auth: &Authorization,
     proof: &AuthorizedPrincipal,
     intent: &Intent,
     certificate: &[u8],
-    audit: &Audit,
+    audit: &RequestAudit,
     now: i64,
 ) -> Result<(), Error> {
     // The persisted intention is the only authority for the bytes being bound.
@@ -172,15 +171,108 @@ pub(super) async fn complete_issuance(
         key: auth.operation,
         digest: &digest,
     };
-    let mut tx = database.begin(proof.tenant_id()).await?;
-    let old = crate::operations::replay(&mut tx, &operation).await?;
-    let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
+    let budget =
+        crate::audit_budget::AuditBudget::new(crate::registration_lifecycle::TRANSACTION_BUDGET);
+    let control = budget.control();
+    let attempt = store
+        .execute(
+            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+            &control,
+            (
+                store,
+                CompletionInputs {
+                    windows,
+                    auth,
+                    proof,
+                    intent,
+                    certificate,
+                    credential: &credential,
+                    operation: &operation,
+                    audit,
+                    facts: Vec::new(),
+                },
+            ),
+            |(store, inputs), tx| {
+                Box::pin(async move {
+                    let replayed = tx
+                        .with_connection_context(inputs, |inputs, c| {
+                            Box::pin(complete_on(c, inputs))
+                        })
+                        .await?;
+                    for fact in &inputs.facts {
+                        store.append(tx, fact, false).await.map_err(Error::from)?;
+                    }
+                    let fact = rss_mdm_audit_integration::Fact::business(
+                        inputs.audit,
+                        &format!(
+                            "enrollment_issue:{}:{}",
+                            inputs.proof.principal_id(),
+                            inputs.auth.operation
+                        ),
+                        inputs.operation.digest.as_bytes(),
+                        200,
+                        "success",
+                        Some(inputs.auth.id),
+                    )
+                    .map_err(Error::from)?;
+                    store
+                        .append(tx, &fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        inputs.audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    inputs.audit.mark_commit_started();
+                    Ok(())
+                })
+            },
+        )
+        .await;
+    crate::operations::settle(attempt, audit)
+}
+struct CompletionInputs<'a> {
+    windows: &'a Windows,
+    auth: &'a Authorization,
+    proof: &'a AuthorizedPrincipal,
+    intent: &'a Intent,
+    certificate: &'a [u8],
+    credential: &'a VerifiedChannelCredential,
+    operation: &'a Operation<'a>,
+    audit: &'a RequestAudit,
+    facts: Vec<rss_mdm_audit_integration::Fact>,
+}
+async fn complete_on(
+    tx: &mut sqlx::PgConnection,
+    inputs: &mut CompletionInputs<'_>,
+) -> Result<bool, Error> {
+    let CompletionInputs {
+        windows,
+        auth,
+        proof,
+        intent,
+        certificate,
+        credential,
+        operation,
+        audit,
+        facts,
+    } = inputs;
+    let windows = *windows;
+    let auth = *auth;
+    let proof = *proof;
+    let intent = *intent;
+    let certificate = *certificate;
+    let credential = *credential;
+    let operation = *operation;
+    let audit = *audit;
+    let old = crate::operations::replay(tx, operation).await?;
+    let row = request(tx, proof.tenant_id(), auth.id).await?;
     current(&row, auth, proof)?;
     if old.is_some() {
-        crate::enrollment::store::active_windows_enrollment(&mut tx, proof.tenant_id(), auth.id)
-            .await?;
+        crate::enrollment::store::active_windows_enrollment(tx, proof.tenant_id(), auth.id).await?;
         let old: Vec<u8> = crate::enrollment::protocol::required_certificate(
-            &mut tx,
+            tx,
             proof.tenant_id(),
             auth.id.to_string(),
         )
@@ -189,15 +281,16 @@ pub(super) async fn complete_issuance(
         if old != certificate {
             return Err(Error::Conflict);
         }
-        return Ok(());
+        audit.registration(intent.registration);
+        return Ok(true);
     }
     if row.try_get::<String, _>("state").map_err(db)? != "pending" {
         return Err(Error::Conflict);
     }
     let receipt = bind_in(
-        &mut tx,
+        tx,
         proof,
-        &credential,
+        credential,
         &BindRegistration {
             operation_id: auth.operation,
             request_id: auth.id,
@@ -206,13 +299,14 @@ pub(super) async fn complete_issuance(
         },
         auth.device.clone(),
         [intent.registration, intent.credential, intent.epoch],
+        facts,
     )
     .await?;
     let secrets = windows
         .protection
         .open(proof.tenant_id(), auth.id, &intent.sealed)?;
     crate::enrollment::protocol::insert_certificate(
-        &mut tx,
+        tx,
         proof.tenant_id(),
         auth.id.to_string(),
         certificate,
@@ -221,18 +315,17 @@ pub(super) async fn complete_issuance(
     .await
     .map_err(db)?;
     // Evaluate again after channel/registration lock waits, immediately before committing.
-    crate::enrollment::store::mark_bound_in(&mut tx, proof.tenant_id(), auth, false).await?;
+    crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth, false).await?;
     audit.registration(receipt.registration);
     proof.enrollment(&auth.device)?;
-    crate::operations::finish(
-        database,
+    crate::operations::save(
         tx,
-        &operation,
+        operation,
         &serde_json::to_string(&receipt).expect("closed receipt"),
         audit,
-        Some(auth.id),
     )
-    .await
+    .await?;
+    Ok(false)
 }
 
 fn current(
@@ -293,3 +386,5 @@ pub(super) fn provision(
     )
     .map_err(|_| Error::Unavailable(Failure::Protocol))
 }
+
+use rss_mdm_audit_integration::RequestAudit;

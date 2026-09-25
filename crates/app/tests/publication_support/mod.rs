@@ -127,7 +127,7 @@ impl Server {
         config: RingSources,
     ) -> PublicationService {
         PublicationService::connect(
-            runtime,
+            (runtime, audit_store().await),
             tenant(),
             self.logical.clone(),
             config,

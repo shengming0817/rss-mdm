@@ -1,9 +1,7 @@
 //! Bounded run summaries and separately authorized full execution evidence.
 use super::storage as db;
 use crate::commands::{Commands, storage};
-use crate::{
-    Error, audit::Audit, authorization::Permission, authorization::context::AuthorizedPrincipal,
-};
+use crate::{Error, authorization::Permission, authorization::context::AuthorizedPrincipal};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -20,7 +18,7 @@ impl Commands {
         proof: &AuthorizedPrincipal,
         id: Uuid,
         page: &Page,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> Result<Value, Error> {
         if page.after_at.is_some() != page.after_id.is_some()
             || page.after_at.is_some_and(|at| at < 0)
@@ -28,8 +26,8 @@ impl Commands {
         {
             return Err(Error::Malformed);
         }
-        self.transact((proof,id,page,audit),audit,|ctx,tx|Box::pin(async move {
-            let (proof,id,page,audit)=*ctx;
+        self.transact((&self.audit_store,proof,id,page,audit),audit,|ctx,tx|Box::pin(async move {
+            let (store,proof,id,page,audit)=*ctx;
             storage::lock(tx,"action-owner").await?;
             let plan=db::load_plan(tx,id).await?;
             for device in &plan.frozen.input.devices {storage::authorized(tx,proof,device,Permission::OperationRead).await?;}
@@ -40,7 +38,7 @@ impl Commands {
             })).await?;
             let more=rows.len()>20;rows.truncate(20);
             let next=if more {rows.last().map(|row|json!({"availableAt":row["availableAt"],"taskId":row["taskId"]}))}else{None};
-            storage::audit(tx,audit,200).await?;
+            store.append_request_in(tx,audit,200,"success").await?;
             Ok(json!({"items":rows,"nextCursor":next}))
         })).await
     }
@@ -49,16 +47,18 @@ impl Commands {
         proof: &AuthorizedPrincipal,
         plan: Uuid,
         id: Uuid,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> Result<Value, Error> {
-        self.transact((proof,plan,id,audit),audit,|ctx,tx|Box::pin(async move {
-            let (proof,plan,id,audit)=*ctx;
+        self.transact((&self.audit_store,proof,plan,id,audit),audit,|ctx,tx|Box::pin(async move {
+            let (store,proof,plan,id,audit)=*ctx;
             storage::lock(tx,"action-owner").await?;
             let run=db::load_run(tx,id).await?;
             if run.plan!=plan{return Err(Error::NotFound.into());}
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
-            storage::audit(tx,audit,200).await?;
+            store.append_request_in(tx,audit,200,"success").await?;
             Ok(json!({"planId":plan,"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":"unverified","result":run.result}))
         })).await
     }
 }
+
+use rss_mdm_audit_integration::RequestAudit;

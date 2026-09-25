@@ -22,18 +22,23 @@ def require(condition,message):
 def run(args, **kw):
     return subprocess.run(args, check=True, text=True, **kw)
 
+def verify_exact_result(output, selected):
+    passed = re.findall(r'^test (\S+) \.\.\. ok$', output, re.MULTILINE)
+    require(passed == [selected] and re.search(r'^test result: ok\. 1 passed; 0 failed; 0 ignored;', output, re.MULTILINE),
+            'T2 did not execute exactly the selected test: ' + selected)
+
+def run_exact_test(env, selected, integration=False):
+    args = ["cargo", "test", "--locked", "-p", "rss-mdm-app"]
+    if integration: args += ["--features", "integration"]
+    args += ["--lib", selected, "--", "--ignored", "--exact", "--test-threads=1"]
+    result = subprocess.run(args, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(result.stdout, flush=True)
+    require(result.returncode == 0, 'T2 failed: ' + selected)
+    verify_exact_result(result.stdout, selected)
+
 def run_foundation_tests(env):
     for selected in ["identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity", "device::tests::postgres_boundary", "inventory_runtime::tests::durable_report_recovery_and_projection"]:
-        try:
-            result = run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib",selected,"--","--ignored","--exact","--test-threads=1"],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-        except subprocess.CalledProcessError as error:
-            print(error.stdout or "", flush=True)
-            raise
-        print(result.stdout, flush=True)
-        passed = re.findall(r'^test (\S+) \.\.\. ok$', result.stdout, re.MULTILINE)
-        require(result.returncode == 0 and passed == [selected]
-                and re.search(r'^test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout, re.MULTILINE),
-                'foundation T2 did not execute exactly the selected test: ' + selected)
+        run_exact_test(env, selected, integration=True)
 
 def verify_windows_result(output):
     expected={
@@ -58,9 +63,7 @@ def verify_migrations(container, binary, config, root, env):
     migrate(admin_config,accepted=False)
     require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
     migrate(); migrate()
-    # Force index eligibility on the tiny fixture; this is not a throughput claim.
-    plan = json.loads(sql("SET enable_seqscan=off; EXPLAIN (FORMAT JSON) SELECT id FROM mdm_access.audit WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND request_id='22222222-2222-4222-8222-222222222222'").removeprefix("SET\n"))
-    require('request_id' in json.dumps(plan[0]['Plan'].get('Index Cond', '')), 'request-id lookup lacks an index condition')
+    require(sql("SELECT to_regclass('mdm_access.audit') IS NULL") == "t", "retired product audit table was installed")
     original = sql("SELECT digest FROM public.mdm_migrations WHERE name='inventory-v1'")
     import hashlib
     require(original == hashlib.sha256((ROOT/'crates/inventory-postgres/migrations/0001_inventory.sql').read_bytes()).hexdigest(), "migration invariant rejected")
@@ -174,6 +177,7 @@ def configure_identity(root, port, binary, env):
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
 def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
+    installation_only = sys.argv[1:] == ["--installation"]
     foundation_only = sys.argv[1:] == ["--foundation"]
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
@@ -205,10 +209,13 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text())
+            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text()+(ROOT/'crates/app/schema/audit-roles.sql').read_text())
             sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
+            # Composed debug async tests include Audit ownership around existing business
+            # frames. This is the Rust test thread stack, not a production runtime setting.
+            env.setdefault('RUST_MIN_STACK', str(8 * 1024 * 1024))
             env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")
             (root / "owner-password").write_text("owner-fixture")
             os.chmod(root / "owner-password", 0o600)
@@ -223,11 +230,16 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             env['MDM_APPLE_FIXTURES']=str(root)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
-            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_apple"], stdout=subprocess.DEVNULL, timeout=10)
+            run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="GRANT CREATE ON DATABASE mdm_installation,mdm_installation_tasks TO mdm_audit_owner,mdm_ledger_owner;", stdout=subprocess.DEVNULL, timeout=10)
             upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection_apple ... ok' in upgrade.stdout and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
+            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
+            run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
+            for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
+                run_exact_test(env, audit_test)
+            if installation_only:
+                return
             if catalog_mode:
                 from command_catalog import capture
                 capture(name, catalog_mode)
@@ -258,9 +270,6 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 require(result.returncode==0 and 'test identity_t2::assets::asset_write_query_group_and_isolation ... ok' in result.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'asset Router/PG T2 failed')
                 return
             if command_only:
-                # The composed authoring/native/recovery fixture nests large debug async frames.
-                # This is the Rust test thread's stack, not the production runtime configuration.
-                env.setdefault('RUST_MIN_STACK', str(8 * 1024 * 1024))
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')

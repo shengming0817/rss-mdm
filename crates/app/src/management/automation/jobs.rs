@@ -135,13 +135,21 @@ impl Management {
             let id =
                 Uuid::parse_str(id).map_err(|_| Error::Unavailable(Failure::ManagementStorage))?;
             let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-            rss_reconcile_postgres::messaging::wake_with(&self.runtime,&job_target(self.tenant,id),&control,(),|_,tx|Box::pin(async move {
+            self.runtime.local_tx_with_context(
+    self.tenant,
+    rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
+    (self, job_target(self.tenant,id).clone(), ()),
+    |(service, target, context), tx| Box::pin(async move {
+        service.audit_store.lock_in(tx).await.map_err(PgError::from)?;
+        rss_reconcile_postgres::messaging::wake_in(tx, target, context, |_,tx|Box::pin(async move {
                 let tenant=tx.tenant_id().to_string();
                 tx.with_connection(move |c|Box::pin(async move {
                     sqlx::query("UPDATE mdm_management.automation_jobs SET forwarded=true WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT forwarded")
                         .bind(tenant).bind(id.to_string()).execute(c).await?;Ok(())
                 })).await
-            })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::ManagementStorage)))?;
+            })).await
+    }),
+).await.fold(Ok,|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::ManagementStorage)))?;
         }
         Ok(ids.len())
     }
@@ -199,6 +207,7 @@ pub(in crate::management) async fn enqueue_job_in(
 }
 pub(in crate::management) async fn finish_job_in(
     tx: &mut PgTransaction<'_>,
+    store: &rss_mdm_audit_integration::AuditStore,
     id: Uuid,
     failure: Option<&str>,
 ) -> Result<()> {
@@ -213,10 +222,10 @@ pub(in crate::management) async fn finish_job_in(
     } else {
         "success"
     };
-    let failure = failure.map(str::to_owned);
+    let failure_owned = failure.map(str::to_owned);
     let target:Option<String>=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_scalar("UPDATE mdm_management.automation_jobs SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT completed RETURNING target")
-                .bind(tenant).bind(id.to_string()).bind(failure).fetch_optional(c).await
+                .bind(tenant).bind(id.to_string()).bind(failure_owned).fetch_optional(c).await
         })).await?;
     if target.is_none() {
         let tenant = tx.tenant_id().to_string();
@@ -229,19 +238,29 @@ pub(in crate::management) async fn finish_job_in(
         }
     }
     if let Some(target) = target {
-        let audit = Audit::new(tx.tenant_id().to_string(), action);
+        let audit = RequestAudit::new(tx.tenant_id().to_string(), action);
         audit.identify_service("service:asset-automation");
         audit.target(&target);
         audit.operation(id, action);
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                let result =
-                    crate::audit::append_on_connection(c, &audit, 200, outcome, None).await;
-                audit.finalize(None);
-                result.map_err(|_| sqlx::Error::Protocol("automation audit unavailable".into()))
-            })
-        })
-        .await?;
+        let fingerprint =
+            serde_json::to_vec(&(id, &target, failure)).expect("closed automation result");
+        let fact = rss_mdm_audit_integration::Fact::business(
+            &audit,
+            &format!("automation:{id}:terminal"),
+            &fingerprint,
+            200,
+            outcome,
+            None,
+        )
+        .map_err(Error::from)?;
+        let result = store.append_in(tx, &fact, false).await.map_err(Error::from);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result?;
     }
     Ok(())
 }

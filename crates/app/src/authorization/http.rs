@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Error, audit::Audit, authorization::context::RequestAuth};
+use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -75,26 +75,26 @@ async fn groups(
 async fn rule_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     Json(change): Json<Change<Rule>>,
 ) -> Result<Json<Receipt>, Error> {
     audit.operation(change.operation_id, "authorization_write");
     audit.target(&id.to_string());
-    crate::authorization::store::change_rule(&app.access, &auth.proof, id, change, &audit)
+    crate::authorization::store::change_rule(&app.audit_store, &auth.proof, id, change, &audit)
         .await
         .map(Json)
 }
 async fn group_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     Json(change): Json<Change<UserGroup>>,
 ) -> Result<Json<Receipt>, Error> {
     audit.operation(change.operation_id, "authorization_write");
     audit.target(&id.to_string());
-    crate::authorization::store::change_group(&app.access, &auth.proof, id, change, &audit)
+    crate::authorization::store::change_group(&app.audit_store, &auth.proof, id, change, &audit)
         .await
         .map(Json)
 }
@@ -106,7 +106,7 @@ struct MemberPage {
 }
 async fn members(
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     Query(page): Query<MemberPage>,
 ) -> Result<Json<Value>, Error> {
@@ -164,7 +164,7 @@ async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Val
 }
 
 pub(crate) struct HttpState {
-    pub(crate) access: std::sync::Arc<crate::database::Database>,
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 
 use crate::{Failure, authorization::context::AuthorizedPrincipal};
@@ -212,8 +212,10 @@ async fn authenticate_and_run(
     {
         Ok((proof, credential)) => {
             let proof = AuthorizedPrincipal::from_identity(proof);
-            if let Some(audit) = parts.extensions.get::<Audit>() {
-                audit.identify(&proof);
+            if let Some(audit) = parts.extensions.get::<RequestAudit>()
+                && let Err(error) = proof.bind_audit(audit)
+            {
+                return error.into_response();
             }
             // Authentication has settled. Authorization I/O and the handler share the host budget.
             tokio::time::timeout(Duration::from_secs(8), async {
@@ -246,3 +248,5 @@ pub(crate) struct AuthenticationState {
     pub(crate) access: Arc<crate::database::Database>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
+
+use rss_mdm_audit_integration::RequestAudit;

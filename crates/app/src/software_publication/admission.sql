@@ -29,22 +29,22 @@ SELECT
  WHERE n.nspname='mdm_software_composition' AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
-  (t.relname='authorities' AND a.attname='candidate' OR t.relname='slots' AND a.attname IN('operation','cursor') OR t.relname='targets' AND a.attname IN('attempted','acknowledged') OR t.relname='withdrawals' AND a.attname='complete' OR t.relname='projections' AND a.attname='publication')
+  (t.relname='authorities' AND a.attname='candidate' OR t.relname='slots' AND a.attname IN('operation','cursor') OR t.relname='targets' AND a.attname IN('attempted','acknowledged','call_generation') OR t.relname='withdrawals' AND a.attname='complete' OR t.relname='projections' AND a.attname='publication')
  OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0
  OR (acl.grantee IN(SELECT oid FROM reachable) AND acl.is_grantable))
 
- AND has_schema_privilege(current_user,'mdm_access','USAGE')
- AND has_table_privilege(current_user,'mdm_access.audit','INSERT')
- AND NOT has_table_privilege(current_user,'mdm_access.audit','SELECT,UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES')
- AND (SELECT relrowsecurity AND relforcerowsecurity AND relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) FROM pg_class WHERE oid='mdm_access.audit'::regclass)
+ AND has_schema_privilege(current_user,'mdm_audit','USAGE')
+ AND has_table_privilege(current_user,'mdm_audit.receipts','SELECT,INSERT')
+ AND NOT has_table_privilege(current_user,'mdm_audit.receipts','UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ AND (SELECT relrowsecurity AND relforcerowsecurity AND relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) FROM pg_class WHERE oid='mdm_audit.receipts'::regclass)
  -- Final composition admission closes permissions outside the three owned surfaces.
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
  AND c.relkind IN ('r','v','m','f')
  AND n.nspname NOT IN ('mdm_resource','mdm_software_release','mdm_software_composition')
- AND (n.nspname,c.relname) NOT IN (('mdm_management','resource_references'),('mdm_access','audit'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
+ AND (n.nspname,c.relname) NOT IN (('mdm_management','resource_references'),('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
@@ -52,14 +52,14 @@ SELECT
  AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
- AND p.oid NOT IN ('rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
+ AND p.oid NOT IN ('rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
  AND has_function_privilege(current_user,p.oid,'EXECUTE'))
- AND (SELECT count(*)=1 FROM pg_policy WHERE polrelid='mdm_access.audit'::regclass)
- AND EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='mdm_access.audit'::regclass AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
+ AND (SELECT count(*)=1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass)
+ AND EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid')
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND has_schema_privilege(current_user,n.oid,'CREATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c,LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
- WHERE c.oid='mdm_access.audit'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
+ WHERE c.oid='mdm_audit.receipts'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a
- WHERE c.attrelid='mdm_access.audit'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
+ WHERE c.attrelid='mdm_audit.receipts'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))

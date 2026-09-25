@@ -9,6 +9,7 @@ use crate::{
         model::{FrozenIntent, PlanExecutionAdmission},
     },
 };
+use rss_mdm_audit_integration::Fact;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -35,7 +36,7 @@ impl Commands {
         policy: &str,
         plan: Uuid,
         input: &Execute,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.require(Permission::PlanExecute, None)?;
         self.transact(
@@ -59,7 +60,7 @@ impl Commands {
         policy: &str,
         plan: Uuid,
         input: &Execute,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> Result<Value> {
         let s = self;
         self.lock_plan_request(tx, proof, input).await?;
@@ -72,8 +73,16 @@ impl Commands {
         )))?)
         .to_vec();
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
-        if let Some(response) =
-            replay_execution(tx, proof, input.operation_id, &fingerprint, audit).await?
+        if let Some(response) = replay_execution(
+            &self.audit_store,
+            tx,
+            proof,
+            plan,
+            input.operation_id,
+            &fingerprint,
+            audit,
+        )
+        .await?
         {
             return Ok(response);
         }
@@ -94,12 +103,20 @@ impl Commands {
         let value = response.clone();
         let rev = input.expected_revision;
         let request = input.operation_id;
+        let fact = Fact::business(
+            audit,
+            &format!("plan:{plan}:execute:{request}"),
+            &fingerprint,
+            202,
+            "success",
+            None,
+        )?;
         tx.with_connection(move|c|Box::pin(async move{
             sqlx::query("INSERT INTO mdm_commands.requests(tenant_id,id,plan,fingerprint,response) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5)").bind(&tenant).bind(request.to_string()).bind(plan.to_string()).bind(fingerprint).bind(value).execute(&mut *c).await?;
             sqlx::query("INSERT INTO mdm_commands.plan_executions VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid)").bind(tenant).bind(plan.to_string()).bind(key).bind(rev).bind(request.to_string()).execute(c).await?;Ok(())
         })).await?;
-        audit.management_result(crate::audit::ManagementResult::Performed);
-        storage::audit(tx, audit, 202).await?;
+        audit.management_result(rss_mdm_audit_integration::ManagementResult::Performed);
+        self.audit_store.append_in(tx, &fact, false).await?;
         proof.check_live()?;
         Ok(response)
     }
@@ -187,7 +204,7 @@ impl Commands {
         preview: &PlanExecutionAdmission,
         device: &str,
         input: &Execute,
-        audit: &Audit,
+        audit: &RequestAudit,
     ) -> Result<Value> {
         let s = self;
         let frozen = preview.configuration.as_ref().ok_or(Error::Malformed)?;
@@ -246,7 +263,14 @@ impl Commands {
         command_audit.target(device);
         let result = s
             .create_in(tx, proof, device, &create, &command_audit)
-            .await?;
+            .await;
+        command_audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        let result = result?;
         let tenant = s.tenant.to_string();
         let name = device.to_owned();
         let policy = policy.to_owned();
@@ -443,11 +467,13 @@ async fn load_saved_plan(
 }
 
 async fn replay_execution(
+    store: &rss_mdm_audit_integration::AuditStore,
     tx: &mut PgTransaction<'_>,
     proof: &AuthorizedPrincipal,
+    plan: Uuid,
     request: Uuid,
     fingerprint: &[u8],
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<Option<Value>> {
     let tenant = tx.tenant_id().to_string();
     let replay = tx
@@ -462,8 +488,16 @@ async fn replay_execution(
         return Err(Reason::StalePlan.at(None, PlanStage::Execute).into());
     }
     authorize_replay(tx, proof, &response).await?;
-    audit.management_result(crate::audit::ManagementResult::Replayed);
-    storage::audit(tx, audit, 200).await?;
+    audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+    let fact = Fact::business(
+        audit,
+        &format!("plan:{plan}:execute:{request}"),
+        fingerprint,
+        202,
+        "success",
+        None,
+    )?;
+    store.append_in(tx, &fact, true).await?;
     Ok(Some(response))
 }
 

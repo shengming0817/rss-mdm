@@ -100,7 +100,17 @@ impl Client {
         ensure!(denied.0 == StatusCode::BAD_REQUEST && denied.1["code"] == "malformed_request");
         let mut check =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
-        let effects:(i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2),(SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND result='success')").bind(old_id.to_string()).bind(format!("dispatch.{old_id}")).fetch_one(&mut check).await?;
+        let effects:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2)").bind(old_id.to_string()).bind(format!("dispatch.{old_id}")).fetch_one(&mut check).await?;
+        let audits = crate::audit_test_support::read(&mut check)
+            .await?
+            .iter()
+            .filter(|r| {
+                r.source() == "mdm.business"
+                    && r.operation() == Some(old_id.to_string().as_str())
+                    && r.result() == "success"
+            })
+            .count() as i64;
+        let effects = (effects.0, effects.1, effects.2, audits);
         ensure!(effects == (0, 0, 0, 0));
         check.close().await?;
         let request = json!({"operationId":self.operation,"task":{"kind":"state_verify","field":"model","expectedValue":"Final-Model"},"deadline":self.app.clock.unix_seconds()?+300});
@@ -163,7 +173,7 @@ impl Client {
             .await?
                 == approved
         );
-        let audit = Audit::new(TENANT.into(), "management_read");
+        let audit = RequestAudit::new(TENANT.into(), "management_read");
         #[cfg(feature = "integration")]
         self.retry_gateway().await?;
         #[cfg(feature = "integration")]
@@ -246,7 +256,18 @@ impl Client {
             } else {
                 ensure!(a == b && a.0 == StatusCode::ACCEPTED);
             }
-            let facts:(i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2),(SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND action='command_accept' AND result='success')").bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
+            let facts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2)").bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
+            let audits = crate::audit_test_support::read(&mut pg)
+                .await?
+                .iter()
+                .filter(|r| {
+                    r.source() == "mdm.business"
+                        && r.operation() == Some(id.to_string().as_str())
+                        && r.result() == "success"
+                        && r.action() == "command_accept"
+                })
+                .count() as i64;
+            let facts = (facts.0, facts.1, facts.2, audits);
             ensure!(
                 facts == (1, 1, 1, 1),
                 "concurrent request duplicated facts {facts:?}"
@@ -262,7 +283,24 @@ impl Client {
             );
         }
 
-        let successes:Vec<(String,i64)>=sqlx::query_as("SELECT action,count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND result='success' AND action IN('command_accept','command_dispatch') GROUP BY action ORDER BY action").bind(self.operation.to_string()).fetch_all(&mut pg).await?;
+        let records = crate::audit_test_support::read(&mut pg).await?;
+        let successes: Vec<(String, i64)> = ["command_accept", "command_dispatch"]
+            .into_iter()
+            .map(|action| {
+                (
+                    action.to_owned(),
+                    records
+                        .iter()
+                        .filter(|r| {
+                            r.source() == "mdm.business"
+                                && r.operation() == Some(self.operation.to_string().as_str())
+                                && r.result() == "success"
+                                && r.action() == action
+                        })
+                        .count() as i64,
+                )
+            })
+            .collect();
         ensure!(
             successes == vec![("command_accept".into(), 1), ("command_dispatch".into(), 1)],
             "replay duplicated success audits {:?}",
@@ -318,7 +356,16 @@ impl Client {
                 .bind(self.operation.to_string())
                 .fetch_one(&mut pg)
                 .await?;
-                let successes:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND action='command_dispatch' AND result='success'").bind(self.operation.to_string()).fetch_one(&mut pg).await?;
+                let successes = crate::audit_test_support::read(&mut pg)
+                    .await?
+                    .iter()
+                    .filter(|r| {
+                        r.source() == "mdm.business"
+                            && r.operation() == Some(self.operation.to_string().as_str())
+                            && r.action() == "command_dispatch"
+                            && r.result() == "success"
+                    })
+                    .count() as i64;
                 ensure!(accepted == (index == 1) && successes == index as i64);
             }
             // Respect the provider's durable Retry schedule, without rewriting its clock/state.
@@ -528,7 +575,17 @@ impl Client {
         next["operationId"] = id.to_string().into();
         let result = self.call(Method::POST, "", Some(next)).await?;
         ensure!(result.0 == StatusCode::SERVICE_UNAVAILABLE);
-        let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid)+(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$2)+(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$3)+(SELECT count(*) FROM mdm_access.audit WHERE operation_id=$1::uuid AND action='command_accept' AND result='success')").bind(id.to_string()).bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
+        let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid)+(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$2)+(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$3)").bind(id.to_string()).bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
+        let count = count
+            + crate::audit_test_support::read(&mut pg)
+                .await?
+                .iter()
+                .filter(|r| {
+                    r.source() == "mdm.business"
+                        && r.operation() == Some(id.to_string().as_str())
+                        && r.action() == "command_accept"
+                })
+                .count() as i64;
         ensure!(
             count == 0,
             "abandoned commit partially persisted command/outbox"
@@ -827,7 +884,15 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND session_id='900'").bind(TENANT).execute(&mut pg).await?;
-        ensure!(crate::windows::retention::prune_management(&self.app.access, TENANT).await? >= 1);
+        ensure!(
+            crate::windows::retention::prune_management(
+                &self.app.access,
+                &self.app.audit_store,
+                TENANT
+            )
+            .await?
+                >= 1
+        );
         let read = self
             .call(Method::GET, &format!("/{}", self.operation), None)
             .await?;
@@ -836,7 +901,11 @@ impl Client {
             "session GC removed operation evidence"
         );
         let config = crate::identity_fixture::config(TENANT)?;
-        let restarted = Box::pin(Commands::open(&config)).await?;
+        let restarted = Box::pin(Commands::open(
+            &config,
+            crate::identity_fixture::audit_store(&config).await?,
+        ))
+        .await?;
         eprintln!("command T2: restarted runtime admitted");
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let timer = recovery::Timer::new();
@@ -924,7 +993,11 @@ impl Client {
 async fn relay_crash_child() -> anyhow::Result<()> {
     use rss_transactional_messaging::{outbox::OutboxRelayStore, policy::DeliveryBudget};
     let config = crate::identity_fixture::config(TENANT)?;
-    let service = Box::pin(Commands::open(&config)).await?;
+    let service = Box::pin(Commands::open(
+        &config,
+        crate::identity_fixture::audit_store(&config).await?,
+    ))
+    .await?;
     let relay = PgOutboxStore::<()>::new(
         service.runtime.clone(),
         messaging_domain(),

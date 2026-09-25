@@ -1,4 +1,5 @@
 use super::*;
+use rss_mdm_audit_integration::Fact;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
@@ -219,20 +220,27 @@ impl Commands {
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
-        let audit = Audit::new(self.tenant.to_string(), "command_dispatch");
+        let audit = RequestAudit::new(self.tenant.to_string(), "command_dispatch");
         audit.operation(id, "command_dispatch");
+        audit.identify_service("command-dispatch");
         let result=self.transact((self,id,fingerprint,&audit),&audit,|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
+            let fact=Fact::business(audit,&format!("command:{id}:dispatch"),fingerprint,200,"success",None)?;
             let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
                 if old==Some(false) {sqlx::query("UPDATE mdm_commands.operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).execute(c).await?;}
                 Ok(old)
             })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-            if old {audit.management_result(crate::audit::ManagementResult::Replayed);}
-            storage::audit(tx,audit,200).await?;Ok(())
+            if old {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
+            service.audit_store.append_in(tx,&fact,old).await?;Ok(())
         })).await;
-        audit.finalize(None);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
         result
     }
 }
@@ -252,7 +260,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
     > + Send {
         Box::pin(async move {
             control.check()?;
-            let audit = Audit::new(self.tenant.to_string(), "management_read");
+            let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
             let active=self.transact((self,claim.target().entity()),&audit,|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
             if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::active(tx,id).await;}
@@ -270,7 +278,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
                 }
             }
         })).await;
-            audit.finalize(None);
+            audit.finalize(
+                active
+                    .as_ref()
+                    .err()
+                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+            );
             Ok(ReconcileDiff::between(
                 DesiredState::present(false),
                 ActualState::present(active.map_err(failure)?),
@@ -285,9 +298,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
         Box::pin(async move {
-            let audit = Audit::new(self.tenant.to_string(), "management_write");
+            let audit = RequestAudit::new(self.tenant.to_string(), "management_write");
             let error = Mutex::new(None);
-            let attempt=rss_reconcile_postgres::messaging::protect(&self.runtime,claim,control,(self,claim.target().entity(),&audit,&error),|ctx,tx|Box::pin(async move {
+            control.check()?;
+            let attempt=self.runtime.local_tx_with_context(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(self,claim,(self,claim.target().entity(),&audit,&error)),|(service,claim,context),tx|Box::pin(async move {
+                if let Err(e)=service.audit_store.lock_in(tx).await {return Err(rejection(Fault::Request(e.into()),context.3));}
+                rss_reconcile_postgres::messaging::protect_in(tx,claim,context,|ctx,tx|Box::pin(async move {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
                 storage::admit(tx).await?;
@@ -300,6 +316,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
                 let after=row.try_get::<Option<String>,_>("recovery_after")?.map(|s|corrupt(dc::CommandId::parse(&s))).transpose()?;
                 let registration=storage::current_registration(tx,&name).await;
                 if let Ok((id,generation))=registration {storage::authority(service,tx,&name,id,generation).await?;}
+                let tenant=service.tenant.to_string();let command_device=scope.device().as_uuid().to_string();let cursor=after.as_ref().map(|v|v.as_str().to_owned());
+                let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
                 let page=service.store.recover(tx,scope,invalid(dc::BatchLimit::new(64))?,after.as_ref()).await?;
                 if matches!(registration,Err(Fault::Request(Error::Conflict))) {
                     for command in &page.commands {if !command.status().is_terminal(){let transition=service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?;if transition.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into());}}}
@@ -313,14 +331,32 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Commands {
                         }
                     }
                 }
+                for (id,version,status) in previous {
+                    let operation=storage::load(tx,corrupt(Uuid::parse_str(&id))?).await?;
+                    let command=service.required_command(tx,&operation).await?;
+                    if command.version()!=version {
+                        let fact_audit=audit.transaction_copy();fact_audit.identify_service("command-recovery");fact_audit.operation(operation.id,"command_reconcile");fact_audit.target(&operation.device);fact_audit.registration(operation.registration);
+                        let details=serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
+                        let fingerprint=invalid(serde_json::to_vec(&details))?;
+                        let fact=Fact::business(&fact_audit,&format!("command:{id}:recover:{}",command.version()),&fingerprint,200,"success",None)?.with_details(details)?;
+                        fact_audit.finalize(None);
+                        service.audit_store.append_in(tx,&fact,false).await?;
+                    }
+                }
                 let cursor=page.after.map(|s|s.as_str().to_owned());let tenant=service.tenant.to_string();
                 tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
                 Ok(())
             }.await;
             match result {Ok(())=>{audit.mark_commit_started();Ok(())},Err(e)=>Err(rejection(e,failure))}
-        })).await;
+        })).await
+            })).await;
             let result = settle(attempt, &audit, error);
-            audit.finalize(None);
+            audit.finalize(
+                result
+                    .as_ref()
+                    .err()
+                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+            );
             result.map_err(failure)
         })
     }

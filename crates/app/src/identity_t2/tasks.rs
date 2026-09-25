@@ -97,6 +97,28 @@ async fn claim(router: &Router) -> Result<Value> {
     })
     .await?
 }
+fn business_event(operation: Uuid) -> Result<String> {
+    let operation = operation.to_string();
+    let records = audit_records()?;
+    let matching: Vec<_> = records
+        .iter()
+        .filter(|record| {
+            record.source() == "mdm.business" && record.operation() == Some(operation.as_str())
+        })
+        .collect();
+    ensure!(
+        matching.len() == 1,
+        "operation must retain one business event"
+    );
+    Ok(matching[0]
+        .decoded
+        .event()
+        .identity()
+        .event_id()
+        .as_str()
+        .to_owned())
+}
+
 async fn plan(
     author: &mut Browser,
     reviewer: &mut Browser,
@@ -127,10 +149,12 @@ async fn plan(
             && receipt["nextStage"] == "review",
         "plan receipt lacks stable progress feedback: {receipt}"
     );
+    let created_event = business_event(id)?;
     ensure!(
         receipt == post(author, router, "/api/v3/script-plans", body).await?,
         "plan replay changed"
     );
+    ensure!(business_event(id)? == created_event);
     let path = format!("/api/v3/script-plans/{id}/approve");
     ensure!(
         author
@@ -155,8 +179,11 @@ async fn plan(
             .0
             == StatusCode::SERVICE_UNAVAILABLE
     );
+    let approval_id = Uuid::parse_str(approval["operationId"].as_str().unwrap())?;
+    let approved_event = business_event(approval_id)?;
     let receipt = post(reviewer, router, &path, approval.clone()).await?;
     ensure!(receipt == post(reviewer, router, &path, approval).await?);
+    ensure!(business_event(approval_id)? == approved_event);
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{id}'"
@@ -186,6 +213,10 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         monotonic(),
         database(&base).await?,
         None,
+        database(&base)
+            .await?
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
     )
     .await?;
     let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
@@ -336,7 +367,11 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
             == StatusCode::CONFLICT
     );
     let config: Config = serde_json::from_value(base.clone())?;
-    let worker = crate::commands::Commands::open(&config).await?;
+    let worker = crate::commands::Commands::open(
+        &config,
+        crate::identity_fixture::audit_store(&config).await?,
+    )
+    .await?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -529,13 +564,13 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     ensure!(stack.shutdown().join().await?.is_clean());
     capacity::verify(&mut author, &mut reviewer, &router, id, &commands).await?;
     scheduled_matrix(&mut author, &mut reviewer, &router, id, &commands, &config).await?;
-    post(
-        &mut author,
-        &router,
-        &format!("/api/v3/script-plans/{cancel_plan}/cancel"),
-        json!({"operationId":Uuid::new_v4()}),
-    )
-    .await?;
+    let cancel_operation = Uuid::new_v4();
+    let cancel_path = format!("/api/v3/script-plans/{cancel_plan}/cancel");
+    let cancel_request = json!({"operationId":cancel_operation});
+    let cancelled = post(&mut author, &router, &cancel_path, cancel_request.clone()).await?;
+    let cancelled_event = business_event(cancel_operation)?;
+    ensure!(post(&mut author, &router, &cancel_path, cancel_request).await? == cancelled);
+    ensure!(business_event(cancel_operation)? == cancelled_event);
     let timeout_id = timeout_task["payload"]["taskId"].as_str().unwrap();
     pg(&format!(
         "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{timeout_id}'"
@@ -546,7 +581,11 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     let before_runs = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
     let before_attempts = pg("SELECT count(*) FROM mdm_commands.action_attempts")?;
     let before_outbox = pg("SELECT count(*) FROM rss_transactional_messaging.outbox")?;
-    let restarted = crate::commands::Commands::open(&config).await?;
+    let restarted = crate::commands::Commands::open(
+        &config,
+        crate::identity_fixture::audit_store(&config).await?,
+    )
+    .await?;
     for plan in [timeout_plan, cancel_plan, queued_plan] {
         restarted.recover_action_fixture(plan).await?;
     }
@@ -703,11 +742,45 @@ async fn range_matrix(router: &Router, task: &Value, expected: &[u8]) -> Result<
             "range {range}: {}",
             response.status()
         );
+        let request_id = response.headers()["x-request-id"].to_str()?;
+        ensure!(
+            audit_count(|record| record.request() == Some(request_id)
+                && record.source() == "mdm.request"
+                && record.status() == status.as_u16()
+                && record.result()
+                    == if status.is_success() {
+                        "success"
+                    } else {
+                        "failed"
+                    })?
+                == 1
+        );
+        ensure!(audit_count(|record| record.request() == Some(request_id))? == 1);
         if status.is_success() {
             ensure!(response.headers().contains_key("etag"));
             ensure!(response.into_body().collect().await?.to_bytes().as_ref() == bytes);
         }
     }
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header("host", "mdm.example.test")
+                .header("authorization", format!("Bearer {CREDENTIAL}"))
+                .header("range", "bytes=0-3")
+                .header("range", "bytes=4-7")
+                .body(Body::empty())?,
+        )
+        .await?;
+    ensure!(response.status() == StatusCode::BAD_REQUEST);
+    let request_id = response.headers()["x-request-id"].to_str()?;
+    ensure!(
+        audit_count(|record| record.request() == Some(request_id)
+            && record.status() == 400
+            && record.result() == "failed")?
+            == 1
+    );
     let wrong = path.replace(
         task["payload"]["attemptId"].as_str().unwrap(),
         &Uuid::new_v4().to_string(),
@@ -793,7 +866,11 @@ async fn scheduled_matrix(
         )
         .await?;
         // Reopening the actual PG runtime restores the cursor; no in-memory deduplication.
-        let restarted = crate::commands::Commands::open(config).await?;
+        let restarted = crate::commands::Commands::open(
+            config,
+            crate::identity_fixture::audit_store(config).await?,
+        )
+        .await?;
         tokio::try_join!(
             commands.scan_action_fixture(id, at),
             restarted.scan_action_fixture(id, at)

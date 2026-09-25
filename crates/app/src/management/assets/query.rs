@@ -198,7 +198,8 @@ impl AssetService {
             return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
         }
         if done {
-            crate::management::automation::jobs::finish_job_in(tx, task, None).await?;
+            crate::management::automation::jobs::finish_job_in(tx, &self.audit_store, task, None)
+                .await?;
         }
         Ok(())
     }

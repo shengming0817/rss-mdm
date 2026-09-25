@@ -115,5 +115,8 @@
       "protocol_key_file": "/run/mdm/protocol.key",
       "provider_id": "RSS-MDM"
     }
+  },
+  "audit": {
+    "mode": "plain"
   }
 }

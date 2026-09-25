@@ -2,7 +2,8 @@
 //! Embedded authentication assembly and product-owned device/resource authorization.
 #[cfg(test)]
 extern crate self as rss_mdm_app;
-mod audit;
+#[cfg(test)]
+mod audit_integration_tests;
 pub mod authorization;
 mod collection;
 mod commands;
@@ -22,6 +23,7 @@ mod publication_support;
 mod registration_lifecycle;
 use database::Database;
 pub use management::Missing as ManagementObject;
+mod audit_budget;
 mod diagnostic;
 mod error_projection;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
@@ -65,6 +67,8 @@ pub enum Error {
     Conflict,
     #[error("commit outcome unknown; retry the same operation")]
     CommitUnknown,
+    #[error("rollback not acknowledged; original attempt remains unresolved")]
+    RollbackFailed,
     #[error("identity rejected")]
     Unauthorized,
     #[error("permission denied")]
@@ -84,6 +88,10 @@ impl IntoResponse for Error {
             Self::Plan(failure) => (StatusCode::CONFLICT, failure.reason.code()),
             Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
+            Self::RollbackFailed => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "operation_rollback_unconfirmed",
+            ),
             Self::ConfigurationTargetLimit => {
                 (StatusCode::BAD_REQUEST, "configuration_target_limit")
             }
@@ -94,6 +102,12 @@ impl IntoResponse for Error {
             Self::ManagementNotFound(object) => (StatusCode::NOT_FOUND, object.code()),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
+            Self::Unavailable(Failure::AuditIntegrity) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "audit_integrity_error")
+            }
+            Self::Unavailable(
+                Failure::AuditIsolation | Failure::AuditContract | Failure::AuditAdmission,
+            ) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_contract_error"),
             Self::Configuration(_) | Self::Unavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
@@ -148,3 +162,6 @@ pub enum PlanStage {
     Save,
     Execute,
 }
+
+#[cfg(test)]
+mod audit_test_support;

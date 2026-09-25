@@ -76,7 +76,9 @@ pub(super) async fn verify(
     let before = pg(&format!(
         "SELECT scan_at FROM mdm_commands.action_plans WHERE id='{timer}'"
     ))?;
-    commands.scan_action_fixture(timer, now).await?;
+    // The authoring requests advance database time; scan the next interval boundary,
+    // not a timestamp captured before the plan existed.
+    commands.scan_action_fixture(timer, now + 60).await?;
     ensure!(
         pg(&format!(
             "SELECT scan_at FROM mdm_commands.action_plans WHERE id='{timer}'"

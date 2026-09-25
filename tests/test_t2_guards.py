@@ -7,6 +7,16 @@ import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
 class T2Guards(unittest.TestCase):
+    def test_exact_audit_gate_cannot_pass_when_removed_or_renamed(self):
+        sys.path.insert(0, str(ROOT/'hack'))
+        import t2
+        name = 'audit_integration_tests::installed_audit_receipts_replay_and_atomicity'
+        for output in ['running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;',
+                       'test renamed::test ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;',
+                       f'test {name} ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored;']:
+            with self.assertRaises(RuntimeError): t2.verify_exact_result(output, name)
+        t2.verify_exact_result(f'test {name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;', name)
+
     def test_windows_runner_rejects_empty_or_partial_success(self):
         sys.path.insert(0,str(ROOT/'hack'))
         import t2

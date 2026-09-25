@@ -77,6 +77,8 @@ def verify(image):
             while request('/api/probe')[0]!=200:
                 if time.monotonic()>deadline:raise RuntimeError('connection slots did not recover')
                 time.sleep(.05)
+            statuses = [request('/api/protected', '203.0.113.'+str(n))[0] for n in range(40)]
+            if 200 not in statuses or 429 not in statuses: raise RuntimeError('general API admission is not bounded')
             log=subprocess.run(['docker','logs',name],check=True,capture_output=True,text=True,timeout=10)
             if 'synthetic-sensitive-value' in log.stdout+log.stderr or 'mdm_gateway' not in log.stdout:raise RuntimeError('gateway logging contract failed')
             print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery passed')

@@ -64,7 +64,7 @@ fn authorize(auth: &RequestAuth, command: &Command) -> std::result::Result<(), E
 async fn run(
     app: &HttpState,
     auth: &RequestAuth,
-    audit: &Audit,
+    audit: &RequestAudit,
     command: Command,
 ) -> std::result::Result<HttpResponse, Error> {
     audit.set_action(if command.operation().is_some() {
@@ -102,7 +102,7 @@ async fn run(
 async fn fields(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
 ) -> std::result::Result<HttpResponse, Error> {
     run(&app, &auth, &audit, Command::Fields).await
 }
@@ -115,7 +115,7 @@ struct Page {
 async fn search(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     payload: BodyInput<Operation<Query>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let request = body(payload)?;
@@ -128,7 +128,7 @@ struct Empty {}
 async fn detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     parameters: ParamInput<Empty>,
 ) -> std::result::Result<HttpResponse, Error> {
@@ -139,7 +139,7 @@ async fn detail(
 async fn manual(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((device, key)): Path<(String, String)>,
     payload: BodyInput<Operation<ManualChange>>,
 ) -> std::result::Result<HttpResponse, Error> {
@@ -166,7 +166,7 @@ struct After {
 async fn saved_list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     parameters: ParamInput<After>,
 ) -> std::result::Result<HttpResponse, Error> {
     let after = params(parameters)?;
@@ -184,7 +184,7 @@ async fn saved_list(
 async fn saved_read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> std::result::Result<HttpResponse, Error> {
     run(
@@ -201,7 +201,7 @@ async fn saved_read(
 async fn saved_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<SavedChange>>,
 ) -> std::result::Result<HttpResponse, Error> {
@@ -221,7 +221,7 @@ async fn saved_write(
 async fn saved_execute(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<Empty>>,
 ) -> std::result::Result<HttpResponse, Error> {
@@ -244,7 +244,7 @@ async fn saved_execute(
 async fn query_status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(task): Path<Uuid>,
 ) -> std::result::Result<HttpResponse, Error> {
     run(
@@ -261,7 +261,7 @@ async fn query_status(
 async fn query_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(task): Path<Uuid>,
     parameters: ParamInput<Page>,
 ) -> std::result::Result<HttpResponse, Error> {
@@ -282,7 +282,7 @@ async fn query_items(
 async fn query_facets(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((task, facet)): Path<(Uuid, Facet)>,
     parameters: ParamInput<Page>,
 ) -> std::result::Result<HttpResponse, Error> {

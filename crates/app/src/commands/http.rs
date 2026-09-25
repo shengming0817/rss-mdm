@@ -21,7 +21,7 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
 async fn create(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     input: std::result::Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
@@ -48,7 +48,7 @@ async fn create(
 async fn read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
 ) -> std::result::Result<Json<Value>, Error> {
     audit.operation(id, "command_read");
@@ -61,7 +61,7 @@ async fn read(
 async fn cancel(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
@@ -76,7 +76,7 @@ async fn cancel(
 async fn approve(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
@@ -92,7 +92,7 @@ async fn approve(
 async fn execute_plan(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((policy, plan)): Path<(String, Uuid)>,
     body: std::result::Result<Json<super::plans::Execute>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {

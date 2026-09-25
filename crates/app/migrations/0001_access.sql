@@ -20,23 +20,14 @@ CREATE TABLE mdm_access.operations (
  digest text NOT NULL CHECK(length(digest)=64), result text NOT NULL CHECK(length(result)<=2048),
  PRIMARY KEY(tenant_id,actor,operation_id)
 );
-CREATE TABLE mdm_access.audit (
- tenant_id uuid NOT NULL, id uuid NOT NULL, request_id uuid NOT NULL,
- actor text, client text, target text, operation_id uuid, registration_request uuid,
- action text NOT NULL CHECK(action IN ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication','protected_request')),
- result text NOT NULL CHECK(result IN ('success','denied','failed','unknown','replay')),
- status integer NOT NULL CHECK(status BETWEEN 100 AND 599), recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
- PRIMARY KEY(tenant_id,id),
- CHECK(actor IS NULL OR length(actor) BETWEEN 1 AND 255), CHECK(client IS NULL OR length(client) BETWEEN 1 AND 255), CHECK(target IS NULL OR length(target) BETWEEN 1 AND 255)
-);
 DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['grants','requests','operations','audit'] LOOP
+ FOREACH t IN ARRAY ARRAY['grants','requests','operations'] LOOP
   EXECUTE format('ALTER TABLE mdm_access.%I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE mdm_access.%I FORCE ROW LEVEL SECURITY',t);
   EXECUTE format('CREATE POLICY tenant ON mdm_access.%I USING (tenant_id = nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK (tenant_id = nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
  END LOOP;
 END $$;
 GRANT SELECT,INSERT ON mdm_access.grants,mdm_access.operations TO mdm_access;
-GRANT INSERT ON mdm_access.requests,mdm_access.audit TO mdm_access;
+GRANT INSERT ON mdm_access.requests TO mdm_access;
 GRANT UPDATE(state) ON mdm_access.grants TO mdm_access;
 COMMIT;

@@ -8,19 +8,21 @@ use uuid::Uuid;
 async fn history(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<Vec<String>> {
     let mut hashes = Vec::new();
     for table in [
-        "grants",
-        "requests",
-        "operations",
-        "audit",
-        "devices",
-        "registrations",
-        "credentials",
-        "report_sources",
-        "enrollment_intents",
-        "enrollment_certificates",
+        "mdm_access.grants",
+        "mdm_access.requests",
+        "mdm_access.operations",
+        "mdm_access.devices",
+        "mdm_access.registrations",
+        "mdm_access.credentials",
+        "mdm_access.report_sources",
+        "mdm_access.enrollment_intents",
+        "mdm_access.enrollment_certificates",
+        "rss_audit.records",
+        "mdm_audit.receipts",
+        "rss_ledger.entries",
     ] {
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM mdm_access.",
+            "SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM ",
         );
         query
             .push(table)
@@ -85,10 +87,33 @@ pub(super) async fn verify(
             == 0
     );
     tx.rollback().await?;
+    let audit_store = store
+        .audit_store(&crate::config::AuditConfig::Plain)
+        .await?;
+    let mut held_head = pg.begin().await?;
+    let _: i32 =
+        sqlx::query_scalar("SELECT 1 FROM rss_audit.heads WHERE tenant_id=$1::uuid FOR UPDATE")
+            .bind(tenant)
+            .fetch_one(&mut *held_head)
+            .await?;
+    ensure!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            crate::windows::retention::prune_management(store, &audit_store, tenant)
+        )
+        .await??
+            == 0,
+        "idle retention must not wait on the audit head"
+    );
+    held_head.rollback().await?;
     seed(&mut pg, tenant, registration, 1256).await?;
     ensure!(
-        crate::windows::retention::prune_management(store, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-            .await?
+        crate::windows::retention::prune_management(
+            store,
+            &audit_store,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        )
+        .await?
             == 0
     );
     ensure!(messages(&mut pg, tenant).await? == 257);
@@ -96,7 +121,7 @@ pub(super) async fn verify(
     // A failure after deleting child rows rolls back both tables.
     pg.execute("CREATE FUNCTION mdm_access.reject_session_gc() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_session_gc BEFORE DELETE ON mdm_access.management_sessions FOR EACH ROW EXECUTE FUNCTION mdm_access.reject_session_gc()").await?;
     ensure!(
-        crate::windows::retention::prune_management(store, tenant)
+        crate::windows::retention::prune_management(store, &audit_store, tenant)
             .await
             .is_err()
     );
@@ -104,14 +129,24 @@ pub(super) async fn verify(
     ensure!(queries(&mut pg, tenant).await? == 257);
     pg.execute("DROP TRIGGER reject_session_gc ON mdm_access.management_sessions; DROP FUNCTION mdm_access.reject_session_gc()").await?;
     let (a, b) = tokio::join!(
-        crate::windows::retention::prune_management(store, tenant),
-        crate::windows::retention::prune_management(store, tenant)
+        crate::windows::retention::prune_management(store, &audit_store, tenant),
+        crate::windows::retention::prune_management(store, &audit_store, tenant)
     );
     let (a, b) = (a?, b?);
-    ensure!(a <= 128 && b <= 128 && a + b == 256);
-    ensure!(crate::windows::retention::prune_management(store, tenant).await? == 1);
+    ensure!(a <= 32 && b <= 32 && a + b == 64);
+    let mut pruned = a + b;
+    loop {
+        let count =
+            crate::windows::retention::prune_management(store, &audit_store, tenant).await?;
+        ensure!(count <= 32);
+        pruned += count;
+        if count == 0 {
+            break;
+        }
+    }
+    ensure!(pruned == 257);
     ensure!(
-        crate::windows::retention::prune_management(store, tenant).await? == 0
+        crate::windows::retention::prune_management(store, &audit_store, tenant).await? == 0
             && messages(&mut pg, tenant).await? == 0
     );
     ensure!(
@@ -143,7 +178,15 @@ pub(super) async fn verify(
                 Box::pin(async move {
                     let mut launch = startup.commit();
                     launch.stage_task_with_token(
-                        super::retention::registration(owner, scope_tenant).critical(),
+                        super::retention::registration(
+                            owner.clone(),
+                            owner
+                                .audit_store(&crate::config::AuditConfig::Plain)
+                                .await
+                                .unwrap(),
+                            scope_tenant,
+                        )
+                        .critical(),
                     );
                     launch.finish();
                     std::future::pending().await

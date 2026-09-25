@@ -14,7 +14,7 @@ spec.loader.exec_module(t2)
 class FoundationSelection(unittest.TestCase):
     def test_zero_tests_is_not_a_success(self):
         result = subprocess.CompletedProcess([], 0, stdout="test result: ok. 0 passed; 0 failed; 0 ignored; 100 filtered out;\n")
-        with patch.object(t2, "run", return_value=result):
+        with patch.object(t2.subprocess, "run", return_value=result):
             with self.assertRaises(RuntimeError):
                 t2.run_foundation_tests({})
 
@@ -31,7 +31,7 @@ class FoundationSelection(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 1 if kind == "failed" else 0, stdout=output)
             return run
         for kind in ["wrong", "extra", "ignored", "failed"]:
-            with self.subTest(kind=kind), patch.object(t2, "run", side_effect=fake(kind)), patch("builtins.print"):
+            with self.subTest(kind=kind), patch.object(t2.subprocess, "run", side_effect=fake(kind)), patch("builtins.print"):
                 with self.assertRaises(RuntimeError):
                     t2.run_foundation_tests({})
 
@@ -41,7 +41,7 @@ class FoundationSelection(unittest.TestCase):
             self.assertNotIn("--nocapture", args)
             selected = args[args.index("--lib") + 1]
             return subprocess.CompletedProcess(args, 0, stdout=f"test {selected} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n")
-        with patch.object(t2, "run", side_effect=run) as runner, patch("builtins.print"):
+        with patch.object(t2.subprocess, "run", side_effect=run) as runner, patch("builtins.print"):
             t2.run_foundation_tests({})
         self.assertEqual(runner.call_count, 3)
 

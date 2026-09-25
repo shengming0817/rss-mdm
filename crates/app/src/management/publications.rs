@@ -1,6 +1,5 @@
 //! The browser actor authorizes work; the controlled driver owns external effects.
 use super::*;
-use crate::audit::ManagementResult as Effect;
 use crate::authorization::context::RequestAuth;
 use crate::management::http::HttpState;
 use crate::software_publication as service;
@@ -9,6 +8,7 @@ use axum::{
     extract::{Path, State},
     routing::get,
 };
+use rss_mdm_audit_integration::ManagementResult as Effect;
 use rss_mdm_software_release as rel;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -96,9 +96,8 @@ fn failure(e: service::Error) -> Error {
         service::Error::CandidateNotFound => Error::ManagementNotFound(Missing::Candidate),
         service::Error::Identity => Error::Forbidden,
         service::Error::Conflict | service::Error::Blocked => Error::Conflict,
-        service::Error::CommitUnknown(_) | service::Error::RollbackFailed(_) => {
-            Error::CommitUnknown
-        }
+        service::Error::CommitUnknown(_) => Error::CommitUnknown,
+        service::Error::RollbackFailed(_) => Error::RollbackFailed,
         _ => Error::Unavailable(Failure::Runtime),
     }
 }
@@ -111,7 +110,7 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
 async fn read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((source, id)): Path<(String, String)>,
 ) -> std::result::Result<Json<wire::Candidate>, Error> {
     audit.set_action("management_read");
@@ -141,7 +140,7 @@ async fn read(
 async fn write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     Path((source, id)): Path<(String, String)>,
     Json(request): Json<Operation<Change>>,
 ) -> std::result::Result<Json<wire::Candidate>, Error> {
@@ -182,7 +181,7 @@ async fn write(
     audit.operation(request.operation_id, "management_write");
     let intent_audit = audit.transaction_copy();
     intent_audit.set_action("software_preflight");
-    intent_audit.software(crate::audit::SoftwareFact {
+    intent_audit.software(rss_mdm_audit_integration::SoftwareFact {
         operation: request.operation_id.to_string(),
         publication: None,
         attempt: None,
@@ -205,7 +204,7 @@ async fn write(
         .await;
     intent_audit.finalize(intent.as_ref().err().and_then(|e| {
         matches!(e, Error::Unavailable(Failure::Audit))
-            .then_some(crate::audit::FailureReason::Transaction)
+            .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
     }));
     let intent = intent?;
     let at = Timepoint::try_from(intent["as_of"].as_i64().ok_or(Error::Conflict)?)
@@ -231,6 +230,7 @@ async fn write(
             principal_id: publisher_subject.clone(),
         })?;
     }
+    audit.require_request_settlement();
     audit.mark_commit_started();
     let outcome = perform(
         service,
@@ -248,6 +248,7 @@ async fn write(
             if matches!(effect, Effect::Unknown) {
                 return Err(Error::CommitUnknown);
             }
+            audit.mark_committed();
             let candidate = service
                 .candidate(&candidate_id, cutoff())
                 .await
@@ -255,7 +256,12 @@ async fn write(
                 .ok_or(Error::ManagementNotFound(Missing::Candidate))?;
             Ok(Json(summary(&candidate)))
         }
-        Err(e) => Err(e),
+        Err(e) => {
+            if matches!(e, Error::RollbackFailed) {
+                audit.mark_rollback_failed();
+            }
+            Err(e)
+        }
     }
 }
 async fn perform(

@@ -271,7 +271,13 @@ impl Management {
                 .await;
         }
         if !publish {
-            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(
+                tx,
+                &self.audit_store,
+                task,
+                None,
+            )
+            .await;
         }
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former watermark.
@@ -363,7 +369,13 @@ impl Management {
             .await?;
         }
         if rows.len() <= 64 {
-            return crate::management::automation::jobs::finish_job_in(tx, task, None).await;
+            return crate::management::automation::jobs::finish_job_in(
+                tx,
+                &self.audit_store,
+                task,
+                None,
+            )
+            .await;
         }
         let tenant = self.tenant.to_string();
         let cursor = rows[63].clone();

@@ -27,6 +27,9 @@ impl Peer {
         Ok((status, bytes))
     }
     pub async fn token(&self) -> Result<()> {
+        self.token_value(42).await
+    }
+    pub async fn token_value(&self, value: u8) -> Result<()> {
         let reply = self
             .send(
                 "/checkin",
@@ -34,7 +37,7 @@ impl Peer {
                     ("MessageType", "TokenUpdate".into()),
                     ("UDID", "rss-apple-t2".into()),
                     ("Topic", self.topic.clone().into()),
-                    ("Token", plist::Value::Data(vec![42; 32])),
+                    ("Token", plist::Value::Data(vec![value; 32])),
                     ("PushMagic", "fixture-magic".into()),
                 ]),
             )

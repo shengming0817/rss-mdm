@@ -1,8 +1,8 @@
 //! One product asset composition; Inventory resolves facts, Group evaluates conditions.
 pub(crate) mod collection;
 use super::{
-    Audit, Error, Failure, Operation, PgTransaction, Result, TenantId, Timepoint, Uuid, Value,
-    input, json, stored,
+    Error, Failure, Operation, PgTransaction, RequestAudit, Result, TenantId, Timepoint, Uuid,
+    Value, input, json, stored,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -131,11 +131,11 @@ mod tests {
     use super::*;
     #[test]
     fn persisted_asset_fingerprint_keeps_its_original_encoding() {
-        let audit = Audit::new(
+        let audit = RequestAudit::new(
             "11111111-1111-4111-8111-111111111111".into(),
             "management_write",
         );
-        audit.identify_fixture("operator", "mdm");
+        audit.set_principal("operator", "mdm");
         let id = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
         let command = Command::Search {
             request: Operation {
@@ -197,6 +197,7 @@ mod tests {
 
 /// Asset algorithms and resources, independently constructible from management workflows.
 pub(crate) struct AssetService {
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     tenant: TenantId,
     clock: Arc<dyn crate::clock::Clock>,
@@ -204,12 +205,14 @@ pub(crate) struct AssetService {
 }
 impl AssetService {
     pub(crate) fn new(
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
         cursor_key: &[u8],
     ) -> Self {
         Self {
+            audit_store,
             runtime,
             tenant,
             clock,
@@ -219,11 +222,12 @@ impl AssetService {
     pub(crate) async fn execute(
         &self,
         command: &Command,
-        audit: &Audit,
+        audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
         super::transaction::run(
+            &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
@@ -241,7 +245,7 @@ impl AssetService {
         &self,
         tx: &mut PgTransaction<'_>,
         command: &Command,
-        audit: &Audit,
+        audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
         super::storage::lock(tx).await?;
@@ -251,8 +255,15 @@ impl AssetService {
             && let Some(old) = super::storage::replay(tx, id, &fingerprint).await?
         {
             stored(serde_json::from_value::<AssetEnvelope>(old.clone()))?;
-            audit.management_result(crate::audit::ManagementResult::Replayed);
-            super::storage::audit(tx, audit).await?;
+            audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+            super::storage::audit(
+                tx,
+                &self.audit_store,
+                audit,
+                operation.zip(Some(fingerprint.as_slice())),
+                true,
+            )
+            .await?;
             authorize()?;
             return Ok(old);
         }
@@ -267,13 +278,20 @@ impl AssetService {
         if let Some(id) = operation {
             super::storage::receipt(tx, id, &fingerprint, &value).await?;
         }
-        super::storage::audit(tx, audit).await?;
+        super::storage::audit(
+            tx,
+            &self.audit_store,
+            audit,
+            operation.zip(Some(fingerprint.as_slice())),
+            false,
+        )
+        .await?;
         authorize()?;
         Ok(value)
     }
 }
 // The persisted operation fingerprint is independent of the internal dispatcher type.
-fn operation_identity(command: &Command, audit: &Audit) -> Result<(Option<Uuid>, Vec<u8>)> {
+fn operation_identity(command: &Command, audit: &RequestAudit) -> Result<(Option<Uuid>, Vec<u8>)> {
     #[derive(serde::Serialize)]
     struct Fingerprint<'a> {
         kind: &'static str,

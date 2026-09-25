@@ -404,10 +404,12 @@ pub(super) async fn matrix(
         );
     }
     set_management_grants(&member, json!(["group_write"])).await?;
-    pg("REVOKE INSERT ON mdm_access.audit FROM mdm_management_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_management_runtime")?;
     let failed=browser.call(&router,Method::POST,&format!("/api/v2/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
-    pg("GRANT INSERT ON mdm_access.audit TO mdm_management_runtime")?;
-    ensure!(failed.0 == StatusCode::SERVICE_UNAVAILABLE);
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_management_runtime")?;
+    ensure!(
+        failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error"
+    );
     ensure!(pg("SELECT count(*) FROM mdm_group.groups WHERE name='must-rollback'")?.trim() == "0");
     ensure!(automation.shutdown().join().await?.is_clean());
     println!("MDM_MANAGEMENT_HTTP_MATRIX_PASSED");
@@ -518,8 +520,24 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     let bad_operation = uuid::Uuid::new_v4();
     let (bad_status,_)=publisher.call(&router,Method::POST,&path,Some(json!({"operationId":bad_operation,"expectedRevision":0,"input":{"action":"candidate","resource":"missing","version":"v1","expectedResourceRevision":1,"submission":server.winget_submission()}}))).await?;
     ensure!(bad_status.is_client_error());
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{bad_operation}' AND result='success'"))?.trim()=="0","failed publication intent claimed success");
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{bad_operation}' AND result='unknown' AND status=202 AND software->>'stage'='management_admission'"))?.trim()=="1");
+    ensure!(
+        audit_count(|r| r.source() == "mdm.business"
+            && r.operation() == Some(bad_operation.to_string().as_str())
+            && r.result() == "success")?
+        .to_string()
+            == "0",
+        "failed publication intent claimed success"
+    );
+    ensure!(
+        audit_count(
+            |r| r.operation() == Some(bad_operation.to_string().as_str())
+                && r.result() == "unknown"
+                && r.status() == 202
+                && r.payload["software"]["stage"] == "management_admission"
+        )?
+        .to_string()
+            == "1"
+    );
     let candidate=call(&mut publisher,&router,&path,0,json!({"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"submission":server.winget_submission()})).await?;
     let validated = call(
         &mut publisher,
@@ -551,41 +569,63 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     .await?;
     let publication = &authorized["rings"][0]["publication"];
     let request = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":authorized["revision"],"input":{"action":"publish","ring":"test","publication":publication["id"],"attempt":publication["attempt"]}});
-    // Hold the actual management lock after HTTP admission, revoke, then let the intent finish.
+    // Let revocation own Audit before publication starts. Hold its authorization
+    // lock until publication is visibly waiting on Audit, then release in lock order.
     use sqlx::Connection;
     let mut holder =
         sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
-    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2390))")
-        .bind(TENANT)
+    let authorization_key = format!("{TENANT}:{INSTANCE}");
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2363))")
+        .bind(&authorization_key)
         .execute(&mut holder)
         .await?;
     let posts_before = server.state.lock().unwrap().posts;
     let mut delayed = publisher.clone();
-    let revoke = async {
-        let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-            + Duration::from_millis(750);
-        loop {
-            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_management_runtime' AND wait_event='advisory')").fetch_one(&mut holder).await?;
-            if waiting {
-                break;
-            }
-            ensure!(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < deadline,
-                "publication did not wait at management lock"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
+    let begin_publication = tokio::sync::Notify::new();
+    let release = async {
+        for (phase, query) in [
+            (
+                "revocation authorization lock",
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE '%2363%')",
+            ),
+            (
+                "publication Audit lock",
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_management_runtime' AND wait_event_type='Lock' AND query LIKE '%rss_audit.reserve%')",
+            ),
+        ] {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if sqlx::query_scalar::<_, bool>(query)
+                        .fetch_one(&mut holder)
+                        .await?
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Ok::<_, sqlx::Error>(())
+            })
+            .await
+            .with_context(|| format!("missing barrier: {phase}"))??;
+            begin_publication.notify_one();
         }
-        set_management_grants(&member, json!([])).await?;
-        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2390))")
-            .bind(TENANT)
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2363))")
+            .bind(&authorization_key)
             .execute(&mut holder)
             .await?;
         anyhow::Ok(())
     };
-    let (delayed, revoked) = tokio::join!(
-        delayed.call(&router, Method::POST, &path, Some(request.clone())),
-        revoke
+    let (delayed, revoked, released) = tokio::join!(
+        async {
+            begin_publication.notified().await;
+            delayed
+                .call(&router, Method::POST, &path, Some(request.clone()))
+                .await
+        },
+        set_management_grants(&member, json!([])),
+        release,
     );
+    released?;
     holder.close().await?;
     revoked?;
     set_management_grants(&member, publisher_grants).await?;
@@ -610,7 +650,13 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         "uncertain source result claimed HTTP success"
     );
     let operation = request["operationId"].as_str().unwrap();
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{operation}' AND action='management_write' AND result='unknown'"))?.trim()=="1");
+    ensure!(
+        audit_count(|r| r.operation() == Some(operation.to_string().as_str())
+            && r.action() == "management_write"
+            && r.result() == "unknown")?
+        .to_string()
+            == "1"
+    );
     let (status, published) = publisher
         .call(&router, Method::POST, &path, Some(request.clone()))
         .await?;
@@ -619,7 +665,16 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         "publish: {status} {published}"
     );
     let publication_operation = request["operationId"].as_str().unwrap().to_owned();
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{publication_operation}' AND action='management_write' AND result='success'"))?.trim()=="1", "first publication mislabeled as replay");
+    ensure!(
+        audit_count(
+            |r| r.operation() == Some(publication_operation.to_string().as_str())
+                && r.action() == "management_write"
+                && r.result() == "success"
+        )?
+        .to_string()
+            == "1",
+        "first publication mislabeled as replay"
+    );
     ensure!(
         publisher
             .call(&router, Method::POST, &path, Some(request))
@@ -627,12 +682,27 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
             .0
             == StatusCode::OK
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{publication_operation}' AND action='management_write' AND result='replay'"))?.trim()=="1", "terminal retry was not audited as replay");
+    ensure!(
+        audit_count(|r| r.source() == "mdm.request"
+            && r.operation() == Some(publication_operation.to_string().as_str())
+            && r.action() == "management_write"
+            && r.result() == "replay")?
+        .to_string()
+            == "1",
+        "terminal retry was not audited as replay"
+    );
     ensure!(
         server.state.lock().unwrap().posts == 1,
         "HTTP replay republished content"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE action='software_approve' AND actor='{}' AND instance='{INSTANCE}'",subject.as_str().unwrap()))?.trim()=="1","approval lost real actor");
+    ensure!(
+        audit_count(|r| r.action() == "software_approve"
+            && r.actor() == subject.as_str()
+            && r.payload["instance"] == INSTANCE)?
+        .to_string()
+            == "1",
+        "approval lost real actor"
+    );
     let withdraw = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":published["revision"],"input":{"action":"withdraw","ring":"pilot"}});
     let (status, withdrawn) = publisher
         .call(&router, Method::POST, &path, Some(withdraw.clone()))
@@ -646,8 +716,22 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         .await?;
     ensure!(status == StatusCode::OK);
     let operation = withdraw["operationId"].as_str().unwrap();
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{operation}' AND action='management_write' AND result='success'"))?.trim()=="1","unpublished withdrawal replay was marked as performed");
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{operation}' AND action='management_write' AND result='replay'"))?.trim()=="1");
+    ensure!(
+        audit_count(|r| r.operation() == Some(operation.to_string().as_str())
+            && r.action() == "management_write"
+            && r.result() == "success")?
+        .to_string()
+            == "1",
+        "unpublished withdrawal replay was marked as performed"
+    );
+    ensure!(
+        audit_count(|r| r.source() == "mdm.request"
+            && r.operation() == Some(operation.to_string().as_str())
+            && r.action() == "management_write"
+            && r.result() == "replay")?
+        .to_string()
+            == "1"
+    );
     let fresh = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":withdrawn["revision"],"input":{"action":"withdraw","ring":"pilot"}});
     ensure!(
         publisher
@@ -657,7 +741,13 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
             == StatusCode::OK
     );
     let operation = fresh["operationId"].as_str().unwrap();
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE operation_id='{operation}' AND action='management_write' AND result='success'"))?.trim()=="1");
+    ensure!(
+        audit_count(|r| r.operation() == Some(operation.to_string().as_str())
+            && r.action() == "management_write"
+            && r.result() == "success")?
+        .to_string()
+            == "1"
+    );
     println!("MDM_SOFTWARE_MANAGEMENT_HTTP_MATRIX_PASSED");
     Ok(())
 }
@@ -1019,7 +1109,19 @@ async fn permission_matrix(
             }
         }
     }
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.audit WHERE target='{id}' AND result='denied' AND action IN ('management_read','management_write','plan_preview','plan_save') AND actor IS NOT NULL AND instance='{INSTANCE}'"))?.trim()==expected_denied.to_string(),"denied action/target/actor audit incomplete");
+    ensure!(
+        audit_count(|r| r.target() == id.to_string()
+            && r.result() == "denied"
+            && matches!(
+                r.action(),
+                "management_read" | "management_write" | "plan_preview" | "plan_save"
+            )
+            && r.actor().is_some()
+            && r.payload["instance"] == INSTANCE)?
+        .to_string()
+            == expected_denied.to_string(),
+        "denied action/target/actor audit incomplete"
+    );
     Ok(())
 }
 

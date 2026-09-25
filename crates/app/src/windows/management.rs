@@ -16,7 +16,7 @@ use zeroize::Zeroizing;
 pub(super) async fn manage(
     State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<tls::Peer>,
-    Extension(audit): Extension<Audit>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Result<Response, Error> {
@@ -87,10 +87,11 @@ pub(super) async fn manage(
 /// Response provenance belongs to the native adapter, independently of audit formatting.
 pub(crate) struct ManagementReply {
     bytes: Vec<u8>,
+    facts: Vec<rss_mdm_audit_integration::Fact>,
 }
 impl ManagementReply {
-    pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.bytes
+    pub(crate) fn into_parts(self) -> (Vec<u8>, Vec<rss_mdm_audit_integration::Fact>) {
+        (self.bytes, self.facts)
     }
 }
 
@@ -100,8 +101,9 @@ pub(crate) async fn management_on(
     principal: &DevicePrincipal,
     message: &syncml::Message,
     bytes: &[u8],
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<ManagementReply, Error> {
+    let mut facts = Vec::new();
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
     let session = message.header.session_id.to_string();
@@ -120,7 +122,7 @@ pub(crate) async fn management_on(
             .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
     let stored = match session_decision(tx, principal, message, &digest, audit).await? {
         SessionDecision::Replay(bytes) => {
-            return Ok(ManagementReply { bytes });
+            return Ok(ManagementReply { bytes, facts });
         }
         SessionDecision::Continue(stored) => stored,
     };
@@ -168,12 +170,12 @@ pub(crate) async fn management_on(
         crate::commands::native::receive_on(tx, principal, message, authenticated_session).await?;
     let (run_id, complete) = collect(
         tx,
+        (&mut facts, audit),
         &scope,
         &filtered,
         stored.as_ref(),
         &mut response,
         authenticated_session,
-        audit,
     )
     .await?;
     let pending =
@@ -196,7 +198,10 @@ pub(crate) async fn management_on(
     server.persist_nonce(tx, &tenant, request, message).await?;
     sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&response).execute(&mut *tx).await.map_err(db)?;
-    Ok(ManagementReply { bytes: response })
+    Ok(ManagementReply {
+        bytes: response,
+        facts,
+    })
 }
 
 fn session_state(complete: bool, run_id: Option<Uuid>) -> &'static str {
@@ -209,13 +214,14 @@ fn session_state(complete: bool, run_id: Option<Uuid>) -> &'static str {
 
 async fn collect(
     tx: &mut sqlx::PgConnection,
+    effects: (&mut Vec<rss_mdm_audit_integration::Fact>, &RequestAudit),
     scope: &rss_observation::Scope,
     message: &syncml::Message,
     stored: Option<&sqlx::postgres::PgRow>,
     response: &mut syncml::Message,
     authenticated_session: bool,
-    audit: &Audit,
 ) -> Result<(Option<Uuid>, bool), Error> {
+    let (facts, audit) = effects;
     let tenant = scope.tenant().to_string();
     let registration = scope.registration().as_str().to_owned();
     let run_id = stored
@@ -233,7 +239,7 @@ async fn collect(
         return Err(Error::Unauthorized);
     }
     if stored.is_none() {
-        crate::collection::terminate(tx, &tenant, &registration, "superseded").await?;
+        crate::collection::terminate(tx, facts, &tenant, &registration, "superseded").await?;
         sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
                 .bind(&tenant).bind(&registration).execute(&mut *tx).await.map_err(db)?;
     }
@@ -247,7 +253,7 @@ async fn collect(
             .ok_or(Error::Conflict)?
             .try_get("correlation")
             .map_err(db)?;
-        complete = crate::collection::accept(tx, &tenant, id, message, &previous).await?;
+        complete = crate::collection::accept(tx, facts, &tenant, id, message, &previous).await?;
         audit.operation(id, "windows_management");
     } else if message
         .commands
@@ -260,7 +266,8 @@ async fn collect(
         let id = crate::collection::create(tx, scope, response).await?;
         audit.operation(id, "windows_management");
         if message.header.message_id == 8 {
-            crate::collection::terminate(tx, &tenant, &registration, "message_budget").await?;
+            crate::collection::terminate(tx, facts, &tenant, &registration, "message_budget")
+                .await?;
             complete = true;
         }
         Some(id)
@@ -524,7 +531,7 @@ async fn session_decision(
     principal: &DevicePrincipal,
     message: &syncml::Message,
     digest: &str,
-    audit: &Audit,
+    audit: &RequestAudit,
 ) -> Result<SessionDecision, Error> {
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
@@ -539,7 +546,7 @@ async fn session_decision(
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
             crate::commands::native::replay_on(tx,principal,message).await?;
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
-            audit.management_result(crate::audit::ManagementResult::Replayed);
+            audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             return old.try_get("response").map(SessionDecision::Replay).map_err(db);
         }
         if !matches!(

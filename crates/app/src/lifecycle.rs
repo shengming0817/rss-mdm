@@ -84,6 +84,7 @@ pub async fn serve(
                         listener,
                         app,
                         native_listeners,
+                        audit_store,
                         access,
                         tenant,
                         runtime,
@@ -127,10 +128,35 @@ pub async fn serve(
                         .map_err(|e| ProcessError::at("startup.projection", e))?;
                         let projection_store = projection.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(projection));
+                        let audit_store = access
+                            .audit_store(&compiled.config.audit)
+                            .await
+                            .map_err(|e| ProcessError::at("startup.audit", e))?;
+                        let audit_budget = crate::audit_budget::AuditBudget::with_cancellation(
+                            Duration::from_secs(5),
+                            startup_cancel.clone(),
+                        );
+                        let audit_control = audit_budget.control();
+                        audit_store
+                            .validate_tenant(
+                                rss_request_context::TenantId::parse(
+                                    &compiled.config.identity.tenant_id,
+                                )
+                                .map_err(|_| {
+                                    ProcessError::at(
+                                        "startup.audit",
+                                        crate::Error::Unavailable(crate::Failure::Audit),
+                                    )
+                                })?,
+                                &audit_control,
+                            )
+                            .await
+                            .map_err(|error| ProcessError::at("startup.audit", error.into()))?;
                         let runtime = Arc::new(InventoryRuntime::new(
                             observation_store,
                             projection_store,
                             access.clone(),
+                            audit_store.clone(),
                             rss_request_context::TenantId::parse(
                                 &compiled.config.identity.tenant_id,
                             )
@@ -144,6 +170,7 @@ pub async fn serve(
                             .config
                             .management
                             .open(
+                                audit_store.clone(),
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,
                                 )
@@ -155,9 +182,10 @@ pub async fn serve(
                             )
                             .await
                             .map_err(|e| ProcessError::at("startup.management", e))?;
-                        let commands = crate::commands::Commands::open(&compiled.config)
-                            .await
-                            .map_err(|e| ProcessError::at("startup.commands", e))?;
+                        let commands =
+                            crate::commands::Commands::open(&compiled.config, audit_store.clone())
+                                .await
+                                .map_err(|e| ProcessError::at("startup.commands", e))?;
                         let automation = crate::management::automation::Automation::open(
                             management.clone(),
                             &compiled.config.management.database,
@@ -183,6 +211,7 @@ pub async fn serve(
                         let mut app = crate::api::from_compiled(
                             compiled,
                             crate::api::AssemblyDependencies {
+                                audit_store: audit_store.clone(),
                                 clock: Arc::new(crate::clock::SystemClock),
                                 monotonic,
                                 access: access.clone(),
@@ -218,6 +247,7 @@ pub async fn serve(
                             listener,
                             app,
                             native_listeners,
+                            audit_store,
                             access,
                             tenant,
                             runtime,
@@ -237,6 +267,7 @@ pub async fn serve(
                                 apple,
                                 commands.clone(),
                                 access.clone(),
+                                audit_store.clone(),
                                 tenant.clone(),
                             )
                             .critical(),
@@ -250,8 +281,12 @@ pub async fn serve(
                         .any(|(kind, _, _)| kind.windows_retention())
                     {
                         launch.stage_task_with_token(
-                            crate::windows::retention::registration(access.clone(), tenant.clone())
-                                .critical(),
+                            crate::windows::retention::registration(
+                                access.clone(),
+                                audit_store.clone(),
+                                tenant.clone(),
+                            )
+                            .critical(),
                         );
                     }
                     launch.stage_task_with_token(
@@ -269,7 +304,7 @@ pub async fn serve(
                             crate::native::tls::registration(
                                 listener,
                                 router,
-                                access.clone(),
+                                audit_store.clone(),
                                 tenant.clone(),
                                 kind,
                             )

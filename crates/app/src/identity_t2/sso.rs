@@ -191,14 +191,17 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         )
         .await?,
     );
-    let router = crate::api::application(
+    let audit_store = database(&base).await?.audit_store(&config.audit).await?;
+    let router = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
         database(&base).await?,
         Some(identity),
+        audit_store,
     )
     .await?
+    .0
     .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
         "127.0.0.1".parse()?,
     )));

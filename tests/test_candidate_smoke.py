@@ -16,11 +16,11 @@ class SmokeCompletion(unittest.TestCase):
         browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""
         unavailable = mock.Mock(status=502)
         unavailable.getheaders.return_value = []
-        unavailable.getheader.return_value = "text/html"
+        unavailable.getheader.side_effect = lambda name, default=None: {"Content-Type":"text/html"}.get(name, default)
         unavailable.read.return_value = b"<html>Bad Gateway</html>"
         ready = mock.Mock(status=200)
         ready.getheaders.return_value = []
-        ready.getheader.return_value = "application/json"
+        ready.getheader.side_effect = lambda name, default=None: {"Content-Type":"application/json"}.get(name, default)
         ready.read.return_value = b'{"ready":true}'
         with mock.patch.object(candidate.http.client, "HTTPSConnection") as connect:
             connect.return_value.getresponse.side_effect = [unavailable, ready]

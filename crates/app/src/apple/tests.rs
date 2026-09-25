@@ -20,6 +20,7 @@ use crate::{
     identity_t2::Browser,
     native::{self, tls},
 };
+use anyhow::Context;
 use anyhow::{Result, ensure};
 use axum::{
     Router,
@@ -65,6 +66,9 @@ impl Fixture {
         let devices = Arc::new(crate::device::DeviceService::new(
             access.clone(),
             TENANT.into(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
         ));
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
             config.runtime_database.options()?,
@@ -76,12 +80,21 @@ impl Fixture {
         let management = config
             .management
             .open(
+                access
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?,
                 rss_request_context::TenantId::parse(TENANT)?,
                 clock.clone(),
                 |_| {},
             )
             .await?;
-        let commands = crate::commands::Commands::open(config).await?;
+        let commands = crate::commands::Commands::open(
+            config,
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
+        )
+        .await?;
         let identity = crate::identity::Identity::connect(
             config,
             compiled.identity_management.clone(),
@@ -90,6 +103,9 @@ impl Fixture {
         .await?;
         let config = compiled.config;
         let app = Arc::new(Assembly {
+            audit_store: access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
             commands: commands.clone(),
             management,
             identity: Arc::new(identity),
@@ -172,7 +188,9 @@ impl Fixture {
                 tls::registration(
                     manage,
                     native,
-                    access.clone(),
+                    access
+                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .await?,
                     TENANT.into(),
                     crate::native::NativeListenerKind::AppleManagement,
                 )
@@ -182,7 +200,9 @@ impl Fixture {
                 tls::registration(
                     webhook,
                     hooks,
-                    access,
+                    access
+                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .await?,
                     TENANT.into(),
                     crate::native::NativeListenerKind::AppleWebhookFixture,
                 )
@@ -351,10 +371,18 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
     f.push_cycle(&peer).await?;
     f.collection_cycle(&peer).await?;
     f.profile_cycle(&peer).await?;
-    let (renewed, renewed_device) = f.renewal_cycle(&peer, &device).await?;
-    let replacement = f.replace(&renewed, &renewed_device).await?;
-    f.native_boundaries(&replacement).await?;
-    f.production().await
+    let (renewed, renewed_device) = f
+        .renewal_cycle(&peer, &device)
+        .await
+        .context("Apple renewal cycle")?;
+    let replacement = f
+        .replace(&renewed, &renewed_device)
+        .await
+        .context("Apple replacement cycle")?;
+    f.native_boundaries(&replacement)
+        .await
+        .context("Apple boundaries")?;
+    f.production().await.context("Apple production startup")
 }
 
 #[allow(clippy::disallowed_methods, reason = "test composition root")]

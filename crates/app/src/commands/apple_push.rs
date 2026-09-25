@@ -1,5 +1,6 @@
 //! Durable APNs wake lease, separate from native command evidence.
 use super::*;
+use rss_mdm_audit_integration::Fact;
 use sqlx::Row;
 pub(crate) struct Wake {
     pub id: Uuid,
@@ -14,8 +15,10 @@ impl Commands {
         configuration: &[u8; 32],
     ) -> std::result::Result<Option<Wake>, Error> {
         let configuration = *configuration;
-        let audit = Audit::new(self.tenant.to_string(), "apple_push");
-        let result=self.transact(self,&audit,|service,tx|Box::pin(async move {
+        let audit = RequestAudit::new(self.tenant.to_string(), "apple_push");
+        audit.identify_service("apple-push");
+        let result=self.transact((self,&audit),&audit,|ctx,tx|Box::pin(async move {
+            let (service,audit)=*ctx;
             let tenant=service.tenant.to_string();let instance=service.instance.clone();
             tx.with_connection(move|c|Box::pin(async move {Ok(crate::authorization::lock_on(c,&tenant,&instance).await)})).await??;
             let tenant=service.tenant.to_string();
@@ -35,11 +38,23 @@ impl Commands {
                     sqlx::query("UPDATE mdm_apple.devices SET push_failures=CASE WHEN push_configuration IS DISTINCT FROM $4 THEN 0 ELSE push_failures END,push_configuration=$4,push_id=$3::uuid,push_lease_until=clock_timestamp()+interval '15 seconds',next_push=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND registration=$2::uuid")
                         .bind(tenant).bind(registration.to_string()).bind(id.to_string()).bind(configuration.as_slice()).execute(c).await?;Ok(())
                 })).await?;
-                return Ok(Some(Wake{id,registration,revision:row.try_get("token_revision")?,token:row.try_get("token")?,magic:row.try_get("magic")?}))
+                audit.registration(registration);
+                audit.operation(id,"apple_push");
+                audit.target(&registration.to_string());
+                let revision: i64=row.try_get("token_revision")?;
+                let fingerprint=invalid(serde_json::to_vec(&(registration,revision,configuration)))?;
+                let fact=Fact::business(audit,&format!("apple-push:{id}:lease"),&fingerprint,200,"success",None)?;
+                service.audit_store.append_in(tx,&fact,false).await?;
+                return Ok(Some(Wake{id,registration,revision,token:row.try_get("token")?,magic:row.try_get("magic")?}))
             }
             Ok(None)
         })).await;
-        audit.finalize(None);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
         result
     }
     pub(crate) async fn apple_pushed(
@@ -48,19 +63,41 @@ impl Commands {
         status: Option<u16>,
         outcome: crate::apple::push::Outcome,
     ) -> std::result::Result<(), Error> {
-        let audit = Audit::new(self.tenant.to_string(), "apple_push");
+        let audit = RequestAudit::new(self.tenant.to_string(), "apple_push");
         audit.registration(wake.registration);
+        audit.operation(wake.id, "apple_push");
+        audit.target(&wake.registration.to_string());
+        audit.identify_service("apple-push");
         let result=self.transact((self,wake,status,outcome,&audit),&audit,|ctx,tx|Box::pin(async move {
             let (service,wake,status,outcome,audit)=*ctx;let tenant=service.tenant.to_string();let registration=wake.registration;let id=wake.id;let revision=wake.revision;
             let unregistered=outcome==crate::apple::push::Outcome::Unregistered;
             let outcome=match outcome {crate::apple::push::Outcome::Accepted=>"accepted",crate::apple::push::Outcome::Retryable=>"retryable",crate::apple::push::Outcome::Unregistered=>"unregistered",crate::apple::push::Outcome::Rejected=>"rejected"};
-            tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query("UPDATE mdm_apple.devices SET push_lease_until=NULL,push_status=$5,push_outcome=$6,next_push=clock_timestamp()+make_interval(secs => CASE WHEN $6='retryable' THEN greatest(CASE WHEN $5>=500 THEN 900 ELSE 30 END,30*(1<<least(push_failures,5))) ELSE 30 END),push_failures=CASE WHEN $6='retryable' THEN least(push_failures+1,6) ELSE 0 END,token=CASE WHEN $7 THEN NULL ELSE token END,magic=CASE WHEN $7 THEN NULL ELSE magic END,state=CASE WHEN $7 THEN 'pending_token' ELSE state END WHERE tenant_id=$1::uuid AND registration=$2::uuid AND push_id=$3::uuid AND token_revision=$4 AND state='active'")
-                    .bind(tenant).bind(registration.to_string()).bind(id.to_string()).bind(revision).bind(status.map(i32::from)).bind(outcome).bind(unregistered).execute(c).await?;Ok(())
+            let fingerprint=invalid(serde_json::to_vec(&(registration,id,revision,status,outcome)))?;
+            let fact=Fact::business(audit,&format!("apple-push:{id}:settle"),&fingerprint,200,"success",None)?
+                .with_details(serde_json::json!({"outcome":outcome,"status":status,"tokenRevision":revision}))?;
+            let changed=tx.with_connection(move|c|Box::pin(async move {
+                let old=sqlx::query("SELECT push_lease_until IS NULL AS settled,push_status,push_outcome FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND push_id=$3::uuid AND token_revision=$4 FOR UPDATE")
+                    .bind(&tenant).bind(registration.to_string()).bind(id.to_string()).bind(revision).fetch_optional(&mut *c).await?;
+                let Some(old)=old else{return Ok(None)};
+                if old.try_get::<bool,_>("settled")?{
+                    return Ok(Some(if old.try_get::<Option<i32>,_>("push_status")?==status.map(i32::from) && old.try_get::<Option<String>,_>("push_outcome")?.as_deref()==Some(outcome){0}else{2}));
+                }
+                Ok(Some(sqlx::query("UPDATE mdm_apple.devices SET push_lease_until=NULL,push_status=$5,push_outcome=$6,next_push=clock_timestamp()+make_interval(secs => CASE WHEN $6='retryable' THEN greatest(CASE WHEN $5>=500 THEN 900 ELSE 30 END,30*(1<<least(push_failures,5))) ELSE 30 END),push_failures=CASE WHEN $6='retryable' THEN least(push_failures+1,6) ELSE 0 END,token=CASE WHEN $7 THEN NULL ELSE token END,magic=CASE WHEN $7 THEN NULL ELSE magic END,state=CASE WHEN $7 THEN 'pending_token' ELSE state END WHERE tenant_id=$1::uuid AND registration=$2::uuid AND push_id=$3::uuid AND token_revision=$4 AND state='active' AND push_lease_until IS NOT NULL")
+                    .bind(tenant).bind(registration.to_string()).bind(id.to_string()).bind(revision).bind(status.map(i32::from)).bind(outcome).bind(unregistered).execute(c).await?.rows_affected()))
             })).await?;
-            storage::audit(tx,audit,200).await?;Ok(())
+            match changed {
+                Some(0|1)=>{service.audit_store.append_in(tx,&fact,changed==Some(0)).await?;},
+                Some(_)=>return Err(Error::Conflict.into()),
+                None=>{service.audit_store.append_request_in(tx,audit,200,"success").await?;},
+            }
+            Ok(())
         })).await;
-        audit.finalize(None);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
         result
     }
 }

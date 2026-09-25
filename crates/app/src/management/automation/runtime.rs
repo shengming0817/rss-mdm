@@ -180,57 +180,92 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
     {
         Box::pin(async move {
             let failure = Mutex::new(None);
-            let attempt = rss_reconcile_postgres::messaging::protect(
-                &self.service.runtime,
-                claim,
-                control,
-                (&self.service, claim.target().entity(), &failure),
-                |ctx, tx| {
-                    Box::pin(async move {
-                        let result: Result<()> = async {
-                            if ctx.1 == "changes" {
-                                ctx.0.dispatch_assets_in(tx).await?;
-                                return ctx.0.clear_ingress_failure_in(tx).await;
-                            }
-                            let id = input(
-                                ctx.1
-                                    .strip_prefix("job:")
-                                    .ok_or(Error::Malformed)
-                                    .and_then(|s| Uuid::parse_str(s).map_err(|_| Error::Malformed)),
-                            )?;
-                            let (job, done, _, cursor, _) = ctx.0.job_in(tx, id).await?;
-                            if done {
-                                return Ok(());
-                            }
-                            match job {
-                                JobInput::AssetQuery { .. } => {
-                                    ctx.0
-                                        .assets
-                                        .advance_asset_query_in(tx, id, &job, cursor)
-                                        .await
-                                }
-                                JobInput::Group { group, .. } => {
-                                    tx.prepare_outbox_partitions(&[ctx
-                                        .0
-                                        .groups
-                                        .partition(&group.to_string())?])
-                                        .await?;
-                                    ctx.0.advance_group_job_in(tx, id, &job, cursor).await
-                                }
-                                JobInput::Scope { scope } => {
-                                    ctx.0.advance_scope_job_in(tx, id, scope, cursor).await
-                                }
-                                JobInput::Policy { .. } => {
-                                    ctx.0.advance_policy_job_in(tx, id, &job).await
-                                }
-                            }
-                        }
-                        .await;
-                        result.map_err(|e| fault(e, ctx.2))
-                    })
-                },
-            )
-            .await;
+            let attempt = self
+                .service
+                .runtime
+                .local_tx_with_context(
+                    self.service.tenant,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        control.remaining(),
+                    ),
+                    (
+                        &self.service,
+                        claim,
+                        (&self.service, claim.target().entity(), &failure),
+                    ),
+                    |(service, claim, context), tx| {
+                        Box::pin(async move {
+                            service
+                                .audit_store
+                                .lock_in(tx)
+                                .await
+                                .map_err(PgError::from)?;
+                            rss_reconcile_postgres::messaging::protect_in(
+                                tx,
+                                claim,
+                                context,
+                                |ctx, tx| {
+                                    Box::pin(async move {
+                                        let result: Result<()> = async {
+                                            if ctx.1 == "changes" {
+                                                ctx.0.dispatch_assets_in(tx).await?;
+                                                return ctx.0.clear_ingress_failure_in(tx).await;
+                                            }
+                                            let id = input(
+                                                ctx.1
+                                                    .strip_prefix("job:")
+                                                    .ok_or(Error::Malformed)
+                                                    .and_then(|s| {
+                                                        Uuid::parse_str(s)
+                                                            .map_err(|_| Error::Malformed)
+                                                    }),
+                                            )?;
+                                            let (job, done, _, cursor, _) =
+                                                ctx.0.job_in(tx, id).await?;
+                                            if done {
+                                                return Ok(());
+                                            }
+                                            match job {
+                                                JobInput::AssetQuery { .. } => {
+                                                    ctx.0
+                                                        .assets
+                                                        .advance_asset_query_in(
+                                                            tx, id, &job, cursor,
+                                                        )
+                                                        .await
+                                                }
+                                                JobInput::Group { group, .. } => {
+                                                    tx.prepare_outbox_partitions(&[ctx
+                                                        .0
+                                                        .groups
+                                                        .partition(
+                                                        &group.to_string(),
+                                                    )?])
+                                                    .await?;
+                                                    ctx.0
+                                                        .advance_group_job_in(tx, id, &job, cursor)
+                                                        .await
+                                                }
+                                                JobInput::Scope { scope } => {
+                                                    ctx.0
+                                                        .advance_scope_job_in(tx, id, scope, cursor)
+                                                        .await
+                                                }
+                                                JobInput::Policy { .. } => {
+                                                    ctx.0.advance_policy_job_in(tx, id, &job).await
+                                                }
+                                            }
+                                        }
+                                        .await;
+                                        result.map_err(|e| fault(e, ctx.2))
+                                    })
+                                },
+                            )
+                            .await
+                        })
+                    },
+                )
+                .await;
             // Only a confirmed rollback may be followed by a durable terminal
             // rejection. Unknown settlement is retried under the original identity.
             let rejection = attempt
@@ -281,12 +316,13 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     rss_reconcile::ErrorKind::Transient,
                 ));
             };
-            rss_reconcile_postgres::messaging::protect(
-                &self.service.runtime,
-                claim,
-                control,
-                &self.service,
-                |service, tx| {
+            self.service.runtime.local_tx_with_context(
+    self.service.tenant,
+    rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
+    (&self.service, claim, &self.service),
+    |(service, claim, context), tx| Box::pin(async move {
+        service.audit_store.lock_in(tx).await.map_err(PgError::from)?;
+        rss_reconcile_postgres::messaging::protect_in(tx, claim, context, |service,tx| {
                     Box::pin(async move {
                         if let Some(detail) = detail {
                             let tenant = tx.tenant_id().to_string();
@@ -302,12 +338,13 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                 .await
                                 .map_err(|e| fault(e, &Mutex::new(None)))?;
                         }
-                        crate::management::automation::jobs::finish_job_in(tx, id, terminal)
+                        crate::management::automation::jobs::finish_job_in(tx, &service.audit_store, id, terminal)
                             .await
                             .map_err(|e| fault(e, &Mutex::new(None)))
                     })
-                },
-            )
+                }).await
+    }),
+)
             .await
             .fold(
                 Ok,

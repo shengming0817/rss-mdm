@@ -76,10 +76,5 @@ REVOKE UPDATE(state) ON mdm_access.grants FROM mdm_access;
 GRANT UPDATE(state,password_digest,password_version,session_ref,expires_at) ON mdm_access.requests TO mdm_access;
 GRANT UPDATE(server_nonce) ON mdm_access.enrollment_certificates TO mdm_access;
 GRANT UPDATE(state,last_message,correlation,nonce,client_authenticated) ON mdm_access.management_sessions TO mdm_access;
-ALTER TABLE mdm_access.audit DROP CONSTRAINT audit_action_check;
 -- Retain historical action vocabulary for immutable audit facts only.
-ALTER TABLE mdm_access.audit ADD CONSTRAINT audit_action_check CHECK(action IN
- ('grant_issue','grant_revoke','registration_accept','inventory_read','device_action','authentication',
-  'protected_request','registration_bind','credential_revoke','device_report',
-  'enrollment_create','enrollment_resume','enrollment_cancel','enrollment_issue','enrollment_read','registration_read','windows_discovery','windows_policy','windows_management'));
 COMMIT;

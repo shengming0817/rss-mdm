@@ -67,6 +67,37 @@ pub async fn runtime_at(port: Option<u16>) -> Arc<PgRuntime> {
         .unwrap(),
     )
 }
+pub async fn audit_store() -> Arc<rss_mdm_audit_integration::AuditStore> {
+    let c = config();
+    let options = sqlx::postgres::PgConnectOptions::new()
+        .host("localhost")
+        .port(c["port"].as_u64().unwrap() as u16)
+        .database("backend")
+        .username("mdm_software_driver")
+        .password("backend-fixture")
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(c["ca"].as_str().unwrap());
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_audit_postgres::Control::new(
+        &Timer,
+        Deadline::from_timeout(&Timer, Duration::from_secs(20)).unwrap(),
+        &cancel,
+    );
+    Arc::new(
+        rss_mdm_audit_integration::AuditStore::new(
+            pool,
+            rss_audit_postgres::Integrity::Plain,
+            &control,
+        )
+        .await
+        .unwrap(),
+    )
+}
 pub fn sql(statement: &str) -> String {
     use std::io::Write;
     let c = config();
@@ -109,4 +140,21 @@ pub fn unique() -> String {
 
 pub fn cutoff() -> Deadline {
     Deadline::from_timeout(&Timer, Duration::from_secs(60)).unwrap()
+}
+
+pub fn audit_records() -> Vec<rss_audit_core::DecodedAuditV1> {
+    sql("SELECT encode(canonical,'hex') FROM rss_audit.records ORDER BY tenant_id,position")
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let bytes = (0..line.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&line[i..i + 2], 16).unwrap())
+                .collect::<Vec<_>>();
+            rss_audit_core::decode_untrusted(&bytes).unwrap()
+        })
+        .collect()
+}
+pub fn audit_payload(record: &rss_audit_core::DecodedAuditV1) -> serde_json::Value {
+    serde_json::from_slice(record.event().context().payload().as_bytes()).unwrap()
 }

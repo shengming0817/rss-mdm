@@ -124,14 +124,44 @@ impl Fixture {
         let queued = self
             .create_operation(json!({"kind":"profile_install","enabled":true}))
             .await?;
-        peer.token().await?;
+        peer.token_value(43).await?;
+        let mut token_observer =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let revision: i64 =
+            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.devices WHERE state='active'")
+                .fetch_one(&mut token_observer)
+                .await?;
+        let facts_before = crate::audit_test_support::read(&mut token_observer)
+            .await?
+            .into_iter()
+            .filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin")
+            .count();
+        peer.token_value(43).await?;
+        ensure!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT token_revision FROM mdm_apple.devices WHERE state='active'"
+            )
+            .fetch_one(&mut token_observer)
+            .await?
+                == revision
+        );
+        ensure!(
+            crate::audit_test_support::read(&mut token_observer)
+                .await?
+                .into_iter()
+                .filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin")
+                .count()
+                == facts_before,
+            "unchanged TokenUpdate duplicated business facts"
+        );
+        token_observer.close().await?;
         let old = self
             .app
             .commands
             .apple_wake(&self.app.apple()?.push.configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing wake"))?;
-        peer.token().await?;
+        peer.token_value(44).await?;
         self.app
             .commands
             .apple_pushed(&old, Some(410), push::Outcome::Unregistered)
@@ -152,6 +182,13 @@ impl Fixture {
             .await?;
         ensure!(reply.0 == StatusCode::ACCEPTED);
         let run = reply.1["runId"].as_str().unwrap();
+        let mut pending_reader =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let pending: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_access.collection_runs WHERE sealed_at IS NULL AND registration IN (SELECT registration FROM mdm_apple.devices WHERE state='active')").fetch_all(&mut pending_reader).await?;
+        ensure!(
+            pending.len() >= 65,
+            "retirement must exercise the real accumulated collection backlog"
+        );
         let checkout = peer
             .send(
                 "/checkin",
@@ -162,6 +199,20 @@ impl Fixture {
             )
             .await?;
         ensure!(checkout.0 == StatusCode::OK);
+        let facts = crate::audit_test_support::read(&mut pending_reader).await?;
+        for id in pending {
+            ensure!(
+                facts
+                    .iter()
+                    .filter(|record| record.source() == "mdm.business"
+                        && record.action() == "collection_finish"
+                        && record.operation() == Some(id.as_str()))
+                    .count()
+                    == 1,
+                "each retired collection requires exactly one terminal fact"
+            );
+        }
+        pending_reader.close().await?;
         let stale = peer
             .send(
                 "/mdm",
@@ -176,6 +227,10 @@ impl Fixture {
             result == ("failed".into(), "revoked".into(), true),
             "retirement left collection pending"
         );
+        let terminal = crate::audit_test_support::read(&mut pg).await?;
+        ensure!(terminal.iter().any(|r| r.action() == "collection_finish"
+            && r.operation() == Some(run.to_string().as_str())
+            && r.actor() == Some("service:collection-finalizer")));
         let active: i64 =
             sqlx::query_scalar("SELECT count(*) FROM mdm_apple.devices WHERE state='active'")
                 .fetch_one(&mut pg)
@@ -389,7 +444,12 @@ impl Fixture {
             .execute(&mut pg)
             .await?;
         // Provider time injection, not a fabricated device response or result.
-        let audited: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.audit WHERE action='collection_start' AND result='denied' AND actor IS NOT NULL)").fetch_one(&mut pg).await?;
+        let audited = crate::audit_test_support::read(&mut pg)
+            .await?
+            .iter()
+            .any(|r| {
+                r.action() == "collection_start" && r.result() == "denied" && r.actor().is_some()
+            });
         ensure!(audited, "collection denial lost business action audit");
         sqlx::query("UPDATE mdm_access.collection_runs SET apple_deadline=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(run).execute(&mut pg).await?;
         let mut terminal = false;
@@ -405,6 +465,10 @@ impl Fixture {
             terminal,
             "unreported collection did not expire without an Observation report"
         );
+        let terminal = crate::audit_test_support::read(&mut pg).await?;
+        ensure!(terminal.iter().any(|r| r.action() == "collection_finish"
+            && r.operation() == Some(run.to_string().as_str())
+            && r.actor() == Some("service:collection-finalizer")));
         pg.close().await?;
         crate::identity_fixture::set_grants(
             TENANT,

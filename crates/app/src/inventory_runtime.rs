@@ -286,6 +286,7 @@ impl InventoryRuntime {
         observation: Arc<Observation<Clock>>,
         projection: Arc<Projection>,
         access: Arc<Database>,
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Clock,
         readiness: Arc<Readiness>,
@@ -293,7 +294,7 @@ impl InventoryRuntime {
         Self {
             observation,
             projection,
-            delivery: crate::collection::store::Delivery::new(access),
+            delivery: crate::collection::store::Delivery::new(access, audit_store),
             tenant,
             clock,
             readiness,
@@ -406,9 +407,19 @@ impl InventoryRuntime {
                 deadline.instant().into(),
                 self.delivery.pending_reports(&self.tenant.to_string()),
             )
-            .await
-            .map_err(|_| WorkerFailure::PendingReports)?
-            .map_err(|_| WorkerFailure::PendingReports)?;
+            .await;
+            let reports = match reports {
+                Ok(Ok(reports)) => reports,
+                // A contended Audit head or uncertain settlement leaves durable work
+                // pending. The next pass acquires the same locks and reads fresh state.
+                Err(_)
+                | Ok(Err(
+                    Error::CommitUnknown
+                    | Error::RollbackFailed
+                    | Error::Unavailable(crate::Failure::RequestDeadline),
+                )) => continue,
+                Ok(Err(_)) => return Err(WorkerFailure::PendingReports),
+            };
             let pending_count = reports.len();
             for report in reports {
                 if deadline.remaining(self.clock.now.now()).is_none() {
@@ -554,7 +565,10 @@ impl InventoryRuntime {
         Ok(Arc::new(Self::new(
             observation.store,
             projection.store,
-            access,
+            access.clone(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
             tenant,
             clock,
             Arc::new(Readiness::default()),

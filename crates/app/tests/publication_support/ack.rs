@@ -61,7 +61,7 @@ pub struct CommitGate {
 impl CommitGate {
     pub async fn start(id: &str) -> Self {
         sql(&format!(
-            "CREATE FUNCTION public.hold_backend_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(238899); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER t2_hold_commit AFTER INSERT ON mdm_access.audit DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.action='software_result' AND NEW.target='{id}') EXECUTE FUNCTION public.hold_backend_commit();"
+            "CREATE FUNCTION public.hold_backend_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(238899); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER t2_hold_commit AFTER UPDATE ON mdm_software_release.aggregates DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.id='{id}') EXECUTE FUNCTION public.hold_backend_commit();"
         ));
         let c = config();
         let holder=std::process::Command::new("docker").args(["exec",c["container"].as_str().unwrap(),"psql","-At","-U","postgres","-d","backend","-c","SET application_name='backend_ack_holder'; SELECT pg_advisory_lock(238899); SELECT pg_sleep(30)"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
@@ -85,7 +85,7 @@ impl Drop for CommitGate {
         let _ = self.holder.kill();
         let _ = self.holder.wait();
         sql(
-            "DROP TRIGGER t2_hold_commit ON mdm_access.audit; DROP FUNCTION public.hold_backend_commit()",
+            "DROP TRIGGER t2_hold_commit ON mdm_software_release.aggregates; DROP FUNCTION public.hold_backend_commit()",
         );
     }
 }
