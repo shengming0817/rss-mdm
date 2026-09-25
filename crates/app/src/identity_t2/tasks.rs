@@ -97,6 +97,28 @@ async fn claim(router: &Router) -> Result<Value> {
     })
     .await?
 }
+fn business_event(operation: Uuid) -> Result<String> {
+    let operation = operation.to_string();
+    let records = audit_records()?;
+    let matching: Vec<_> = records
+        .iter()
+        .filter(|record| {
+            record.source() == "mdm.business" && record.operation() == Some(operation.as_str())
+        })
+        .collect();
+    ensure!(
+        matching.len() == 1,
+        "operation must retain one business event"
+    );
+    Ok(matching[0]
+        .decoded
+        .event()
+        .identity()
+        .event_id()
+        .as_str()
+        .to_owned())
+}
+
 async fn plan(
     author: &mut Browser,
     reviewer: &mut Browser,
@@ -127,10 +149,12 @@ async fn plan(
             && receipt["nextStage"] == "review",
         "plan receipt lacks stable progress feedback: {receipt}"
     );
+    let created_event = business_event(id)?;
     ensure!(
         receipt == post(author, router, "/api/v3/script-plans", body).await?,
         "plan replay changed"
     );
+    ensure!(business_event(id)? == created_event);
     let path = format!("/api/v3/script-plans/{id}/approve");
     ensure!(
         author
@@ -155,8 +179,11 @@ async fn plan(
             .0
             == StatusCode::SERVICE_UNAVAILABLE
     );
+    let approval_id = Uuid::parse_str(approval["operationId"].as_str().unwrap())?;
+    let approved_event = business_event(approval_id)?;
     let receipt = post(reviewer, router, &path, approval.clone()).await?;
     ensure!(receipt == post(reviewer, router, &path, approval).await?);
+    ensure!(business_event(approval_id)? == approved_event);
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{id}'"
@@ -537,13 +564,13 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     ensure!(stack.shutdown().join().await?.is_clean());
     capacity::verify(&mut author, &mut reviewer, &router, id, &commands).await?;
     scheduled_matrix(&mut author, &mut reviewer, &router, id, &commands, &config).await?;
-    post(
-        &mut author,
-        &router,
-        &format!("/api/v3/script-plans/{cancel_plan}/cancel"),
-        json!({"operationId":Uuid::new_v4()}),
-    )
-    .await?;
+    let cancel_operation = Uuid::new_v4();
+    let cancel_path = format!("/api/v3/script-plans/{cancel_plan}/cancel");
+    let cancel_request = json!({"operationId":cancel_operation});
+    let cancelled = post(&mut author, &router, &cancel_path, cancel_request.clone()).await?;
+    let cancelled_event = business_event(cancel_operation)?;
+    ensure!(post(&mut author, &router, &cancel_path, cancel_request).await? == cancelled);
+    ensure!(business_event(cancel_operation)? == cancelled_event);
     let timeout_id = timeout_task["payload"]["taskId"].as_str().unwrap();
     pg(&format!(
         "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{timeout_id}'"
