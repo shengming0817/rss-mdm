@@ -407,7 +407,9 @@ pub(super) async fn matrix(
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_management_runtime")?;
     let failed=browser.call(&router,Method::POST,&format!("/api/v2/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_management_runtime")?;
-    ensure!(failed.0 == StatusCode::SERVICE_UNAVAILABLE);
+    ensure!(
+        failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error"
+    );
     ensure!(pg("SELECT count(*) FROM mdm_group.groups WHERE name='must-rollback'")?.trim() == "0");
     ensure!(automation.shutdown().join().await?.is_clean());
     println!("MDM_MANAGEMENT_HTTP_MATRIX_PASSED");

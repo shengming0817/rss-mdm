@@ -513,8 +513,14 @@ async fn enrollment_matrix(
     let mut anonymous = Browser::default();
     let denied = anonymous.call(router, Method::GET, query, None).await?;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_management_runtime")?;
-    ensure!(read.0 == StatusCode::SERVICE_UNAVAILABLE && read.1.get("asset").is_none());
-    ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE);
+    ensure!(
+        read.0 == StatusCode::INTERNAL_SERVER_ERROR
+            && read.1["code"] == "audit_contract_error"
+            && read.1.get("asset").is_none()
+    );
+    ensure!(
+        denied.0 == StatusCode::INTERNAL_SERVER_ERROR && denied.1["code"] == "audit_contract_error"
+    );
     browser.operation = None;
     ensure!(browser.call(router, Method::GET, query, None).await?.0 == StatusCode::OK);
     let mut anonymous = Browser::default();

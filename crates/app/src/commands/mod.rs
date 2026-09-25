@@ -1,4 +1,8 @@
 //! Product operation composition; RSS remains the command, messaging and recovery owner.
+//! Producers keep phase-specific event identities beside the actual mutation/replay decision.
+//! `transact` owns settlement; shared `Fact`/`AuditStore` own encoding and persistence.
+//! Management's optional-operation adapter additionally chooses request versus business events;
+//! command producers already have explicit phase identities and retain that choice here.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 pub(crate) mod actions;
 mod apple;
