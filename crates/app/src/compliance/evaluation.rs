@@ -423,7 +423,15 @@ impl Compliance {
                         .bind(tenant).bind(task.to_string()).execute(c).await?;
                     Ok(())
                 })).await?;
-                return Ok(());
+                // This frozen input can never become publishable. Group mutation/publication
+                // invalidates the rule and wakes the shared dispatcher to create a new run.
+                return crate::automation::jobs::finish_job_in(
+                    tx,
+                    &self.planning.audit_store,
+                    task,
+                    Some("superseded"),
+                )
+                .await;
             }
             self.enqueue(tx, r).await?;
         }

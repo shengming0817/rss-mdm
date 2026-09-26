@@ -22,9 +22,10 @@ CREATE TABLE mdm_compliance.groups (
 );
 CREATE INDEX rules_by_group ON mdm_compliance.groups(tenant_id,group_id,rule_id);
 CREATE TABLE mdm_compliance.results (
- tenant_id uuid NOT NULL, task uuid NOT NULL, rule_id uuid NOT NULL, device text NOT NULL,
+ tenant_id uuid NOT NULL, task uuid NOT NULL, rule_id uuid NOT NULL, rule_revision bigint NOT NULL CHECK(rule_revision>0), device text NOT NULL,
  evaluated_at bigint NOT NULL, document jsonb NOT NULL CHECK(octet_length(document::text)<=262144),
- PRIMARY KEY(tenant_id,task,device), FOREIGN KEY(tenant_id,rule_id) REFERENCES mdm_compliance.rules(tenant_id,id)
+ CONSTRAINT result_document_identity CHECK(coalesce(document->>'ruleId'=rule_id::text AND document->>'ruleVersion'=rule_revision::text,false)),
+ PRIMARY KEY(tenant_id,task,device), FOREIGN KEY(tenant_id,rule_id,rule_revision) REFERENCES mdm_compliance.versions(tenant_id,rule_id,revision)
 );
 CREATE INDEX device_history ON mdm_compliance.results(tenant_id,device,evaluated_at,task);
 CREATE TABLE mdm_compliance.operations (

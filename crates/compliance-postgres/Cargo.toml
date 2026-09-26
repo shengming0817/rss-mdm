@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 rss-mdm-compliance.workspace = true
 rss-request-context.workspace = true
-rss-transactional-messaging-postgres.workspace = true
 sqlx.workspace = true
 serde.workspace = true
 serde_json.workspace = true

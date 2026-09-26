@@ -162,11 +162,12 @@ pub async fn result(
     tenant(c, t).await?;
     document.validate().map_err(|_| corrupt())?;
     sqlx::query(
-        "INSERT INTO mdm_compliance.results VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::jsonb)",
+        "INSERT INTO mdm_compliance.results(tenant_id,task,rule_id,rule_revision,device,evaluated_at,document) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7::jsonb)",
     )
     .bind(t.to_string())
     .bind(task.to_string())
     .bind(document.rule_id.to_string())
+    .bind(document.rule_version)
     .bind(device)
     .bind(document.evaluated_at)
     .bind(serde_json::to_string(document).map_err(|_| corrupt())?)

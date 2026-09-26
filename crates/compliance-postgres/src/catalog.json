@@ -119,6 +119,15 @@
     ],
     [
       "results",
+      "rule_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "results",
       "device",
       "text",
       true,
@@ -287,6 +296,13 @@
     ],
     [
       "results",
+      "result_document_identity",
+      "c",
+      "CHECK (COALESCE((((document ->> 'ruleId'::text) = (rule_id)::text) AND ((document ->> 'ruleVersion'::text) = (rule_revision)::text)), false))",
+      true
+    ],
+    [
+      "results",
       "results_document_check",
       "c",
       "CHECK ((octet_length((document)::text) <= 262144))",
@@ -301,9 +317,16 @@
     ],
     [
       "results",
-      "results_tenant_id_rule_id_fkey",
+      "results_rule_revision_check",
+      "c",
+      "CHECK ((rule_revision > 0))",
+      true
+    ],
+    [
+      "results",
+      "results_tenant_id_rule_id_rule_revision_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, rule_id) REFERENCES mdm_compliance.rules(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, rule_id, rule_revision) REFERENCES mdm_compliance.versions(tenant_id, rule_id, revision)",
       true
     ],
     [

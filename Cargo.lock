@@ -2667,6 +2667,7 @@ name = "rss-mdm-compliance"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "thiserror 2.0.20",
  "uuid",
 ]
 
@@ -2676,7 +2677,6 @@ version = "0.1.0"
 dependencies = [
  "rss-mdm-compliance",
  "rss-request-context",
- "rss-transactional-messaging-postgres",
  "serde",
  "serde_json",
  "sqlx",

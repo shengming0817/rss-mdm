@@ -39,12 +39,6 @@ impl Compliance {
             Some("superseded") => "superseded",
             Some(_) => "failed",
             None if done => "published",
-            None if detail
-                .as_ref()
-                .is_some_and(|d| d["reason"] == "group_input_pending") =>
-            {
-                "waiting_for_groups"
-            }
             None if cursor.is_some() || forwarded => "evaluating",
             None => "queued",
         };

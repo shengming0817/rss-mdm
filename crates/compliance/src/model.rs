@@ -3,8 +3,18 @@ use crate::{Decision, Status, assess};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Invalid;
+/// Closed validation categories. Messages never contain policy or device values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Invalid {
+    #[error("invalid compliance definition")]
+    Definition,
+    #[error("invalid frozen compliance input")]
+    Input,
+    #[error("invalid compliance assessment")]
+    Assessment,
+    #[error("invalid compliance evidence")]
+    Evidence,
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
@@ -46,7 +56,7 @@ impl<C> Definition<C> {
     }
     pub fn validate(&self) -> Result<(), Invalid> {
         if !text(&self.name, 128) {
-            return Err(Invalid);
+            return Err(Invalid::Definition);
         }
         if let Target::Groups { ids } = &self.target
             && (ids.is_empty()
@@ -54,7 +64,7 @@ impl<C> Definition<C> {
                 || ids.iter().any(Uuid::is_nil)
                 || ids.iter().collect::<BTreeSet<_>>().len() != ids.len())
         {
-            return Err(Invalid);
+            return Err(Invalid::Definition);
         }
         Ok(())
     }
@@ -86,13 +96,13 @@ impl<C> Input<C> {
     pub fn validate(&self) -> Result<(), Invalid> {
         self.definition.validate()?;
         if self.rule.is_nil() || self.revision < 1 || self.watermark < 0 || self.evaluated_at < 0 {
-            return Err(Invalid);
+            return Err(Invalid::Input);
         }
         let expected: BTreeSet<_> = self.definition.groups().into_iter().collect();
         if self.groups.len() != expected.len()
             || self.groups.iter().map(|g| g.id).collect::<BTreeSet<_>>() != expected
         {
-            return Err(Invalid);
+            return Err(Invalid::Input);
         }
         if self.groups.iter().any(|g| {
             g.revision < 1
@@ -100,7 +110,7 @@ impl<C> Input<C> {
                 || g.asset_watermark
                     .is_some_and(|v| v < 0 || v > self.watermark)
         }) {
-            return Err(Invalid);
+            return Err(Invalid::Input);
         }
         Ok(())
     }
@@ -281,29 +291,29 @@ impl Assessment {
             || self.evaluated_at < 0
             || !text(&self.dictionary_version, 128)
         {
-            return Err(Invalid);
+            return Err(Invalid::Assessment);
         }
         if self.groups.len() > 16
             || self.groups.iter().any(|g| !g.ready)
             || self.groups.len() != self.applicability.groups.len()
         {
-            return Err(Invalid);
+            return Err(Invalid::Assessment);
         }
         for (g, p) in self.groups.iter().zip(&self.applicability.groups) {
             if g.id != p.id || g.member_set != p.member_set {
-                return Err(Invalid);
+                return Err(Invalid::Assessment);
             }
         }
         // Platform provenance includes every active registration/source, unlike a
         // resolved field's two-source value limit. The host bounds its source page.
         if self.explanations.len() > 1024 || self.evidence.len() > 256 {
-            return Err(Invalid);
+            return Err(Invalid::Assessment);
         }
         if self.applicability.platform_decision
             != platform_decision(self.applicability.platform, &self.applicability.sources)
             || conclusion(&self.applicability, self.condition) != (self.status, self.reason)
         {
-            return Err(Invalid);
+            return Err(Invalid::Assessment);
         }
         if self.evidence.iter().any(|e| {
             !text(&e.field, 256)
@@ -312,7 +322,7 @@ impl Assessment {
                     .iter()
                     .any(|s| !text(&s.source, 128) || !text(&s.snapshot_id, 1024))
         }) {
-            return Err(Invalid);
+            return Err(Invalid::Evidence);
         }
         Ok(())
     }

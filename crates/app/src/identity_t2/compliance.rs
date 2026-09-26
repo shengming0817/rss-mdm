@@ -142,10 +142,283 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         let current = &response["rules"][0]["current"];
         ensure!(current["applicability"]["platformDecision"] == "match");
         ensure!(current["evidence"][0]["sources"][0]["source"] == "mdm.windows");
+        if model == "Collected" {
+            for values in [[Some("Unconfirmed"), None], [None, None]] {
+                let incomplete = report(&service, &access, &proof, values).await?;
+                tokio::time::timeout(Duration::from_secs(8), async {
+                    loop {
+                        let delivery = runtime.inspect(&incomplete).await?;
+                        if delivery.receipt.is_some()
+                            && delivery.projection
+                                == crate::inventory_runtime::ProjectionStatus::NotApplicable
+                        {
+                            return Ok::<_, crate::Error>(());
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await??;
+                let retained = status(b, router, device, "compliant").await?;
+                ensure!(
+                    retained["rules"][0]["current"]["evidence"] == current["evidence"],
+                    "failed collection replaced verified facts"
+                );
+                // Explicit reevaluation also uses the same complete fact, even at a newer watermark.
+                let run = ok(
+                    b,
+                    router,
+                    Method::POST,
+                    &format!("{path}/recompute"),
+                    Some(request(1, json!({}))),
+                )
+                .await?;
+                task_phase(
+                    b,
+                    router,
+                    &format!("{path}/tasks/{}", run["task"].as_str().unwrap()),
+                    "published",
+                )
+                .await?;
+                ensure!(
+                    status(b, router, device, "compliant").await?["rules"][0]["current"]["status"]
+                        == "compliant"
+                );
+            }
+        }
     }
     def["enabled"] = json!(false);
     ok(b, router, Method::PUT, &path, Some(request(1, def))).await?;
     ensure!(owner.shutdown().join().await?.is_clean());
+    Ok(())
+}
+async fn history_boundaries(
+    b: &mut Browser,
+    router: &Router,
+    base: &Value,
+    token: &str,
+    rule_path: &str,
+    task: &str,
+    subject: &str,
+) -> Result<()> {
+    let history = "/api/v2/devices/compliance-a/compliance/history";
+    for filter in ["from=0", "until=9999999999"] {
+        ensure!(
+            b.call(
+                router,
+                Method::GET,
+                &format!("{history}?cursor={token}&{filter}"),
+                None
+            )
+            .await?
+            .0 == StatusCode::BAD_REQUEST
+        );
+    }
+    let mut other = Browser::default();
+    ensure!(other.login(router, "other").await? == StatusCode::OK);
+    let other_subject = browser_subject(&other, router).await?;
+    crate::identity_fixture::set_grants(
+        TENANT,
+        &other_subject,
+        crate::identity_fixture::device_grants(None, &["compliance_read"])?,
+    )
+    .await?;
+    ensure!(other.call(router, Method::GET, history, None).await?.0 == StatusCode::OK);
+    ensure!(
+        other
+            .call(
+                router,
+                Method::GET,
+                &format!("{history}?cursor={token}"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
+    );
+    for device in [None, Some("compliance-a")] {
+        let mut limited = vec![crate::authorization::Grant {
+            operation: crate::authorization::Permission::ComplianceRuleRead,
+            scope: crate::authorization::Scope::Tenant,
+        }];
+        if let Some(device) = device {
+            limited.extend(crate::identity_fixture::device_grants(
+                Some(device),
+                &["compliance_read"],
+            )?);
+        }
+        crate::identity_fixture::set_grants(TENANT, subject, limited).await?;
+        ensure!(b.call(router, Method::GET, rule_path, None).await?.0 == StatusCode::OK);
+        ensure!(
+            b.call(
+                router,
+                Method::GET,
+                &format!("{rule_path}/tasks/{task}"),
+                None
+            )
+            .await?
+            .0 == StatusCode::FORBIDDEN
+        );
+    }
+    grants(subject, None).await?;
+    let tenant = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let config = crate::identity_fixture::config(tenant)?;
+    let access = database(base).await?;
+    let audit = access.audit_store(&config.audit).await?;
+    let (other_router, _, _) = crate::api::application_fixture(
+        config,
+        Arc::new(crate::clock::SystemClock),
+        monotonic(),
+        access,
+        None,
+        audit,
+    )
+    .await?;
+    let other_router = other_router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+        "127.0.0.1".parse()?,
+    )));
+    pg_tenant(
+        tenant,
+        &format!("INSERT INTO mdm_access.devices VALUES('{tenant}','compliance-a')"),
+    )?;
+    crate::identity_fixture::set_grants(
+        tenant,
+        crate::identity_fixture::ADMIN,
+        crate::identity_fixture::device_grants(None, &["compliance_read"])?,
+    )
+    .await?;
+    let mut cross = Browser::default();
+    ensure!(
+        cross
+            .call(
+                &other_router,
+                Method::POST,
+                &format!("/api/v2/tenants/{tenant}/login"),
+                Some(json!({"login":"admin","password":PASSWORD}))
+            )
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        cross
+            .call(&other_router, Method::GET, history, None)
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        cross
+            .call(
+                &other_router,
+                Method::GET,
+                &format!("{history}?cursor={token}"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+async fn task_phase(b: &mut Browser, router: &Router, path: &str, phase: &str) -> Result<Value> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let value = ok(b, router, Method::GET, path, None).await?;
+            if value["phase"] == phase {
+                return Ok::<_, anyhow::Error>(value);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?
+}
+async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Value) -> Result<()> {
+    let group = Uuid::new_v4();
+    let gp = format!("/api/v2/groups/{group}");
+    let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","name":"held group","description":"","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}})))).await?;
+    let group_task = created["task"].as_str().unwrap();
+    // Hold only the external group input. No claim was created while the worker was stopped.
+    pg(&format!(
+        "UPDATE mdm_automation.automation_jobs SET forwarded=true WHERE id='{group_task}'"
+    ))?;
+    let rule = Uuid::new_v4();
+    let path = format!("/api/v2/compliance-rules/{rule}");
+    let waiting = ok(
+        b,
+        router,
+        Method::PUT,
+        &path,
+        Some(request(
+            0,
+            definition(json!({"kind":"groups","ids":[group]})),
+        )),
+    )
+    .await?;
+    let task = waiting["task"].as_str().unwrap();
+    let worker = start_automation(base).await?;
+    let finished = task_phase(b, router, &format!("{path}/tasks/{task}"), "superseded").await?;
+    ensure!(
+        finished["diagnostic"]["reason"] == "group_input_pending" && finished["processed"] == 0
+    );
+    let independent = Uuid::new_v4();
+    let independent_path = format!("/api/v2/compliance-rules/{independent}");
+    let run = ok(
+        b,
+        router,
+        Method::PUT,
+        &independent_path,
+        Some(request(0, definition(json!({"kind":"all"})))),
+    )
+    .await?;
+    task_phase(
+        b,
+        router,
+        &format!("{independent_path}/tasks/{}", run["task"].as_str().unwrap()),
+        "published",
+    )
+    .await?;
+    ensure!(
+        audit_count(|r| r.operation() == Some(task) && r.action() == "automation_superseded")? == 1
+    );
+    pg(&format!(
+        "UPDATE mdm_automation.automation_jobs SET forwarded=false WHERE id='{group_task}'"
+    ))?;
+    status(b, router, "compliance-a", "compliant").await?;
+    let next = pg(&format!(
+        "SELECT desired::text FROM mdm_compliance.rules WHERE id='{rule}'"
+    ))?;
+    ensure!(next.trim() != task);
+    ensure!(worker.shutdown().join().await?.is_clean());
+    Ok(())
+}
+async fn result_version_fk(base: &Value, value: &Value) -> Result<()> {
+    use sqlx::{Connection, Executor};
+    let config: Config = serde_json::from_value(base.clone())?;
+    let mut connection =
+        sqlx::PgConnection::connect_with(&config.flow.storage.database.options()?).await?;
+    connection.execute("BEGIN").await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(TENANT)
+        .execute(&mut connection)
+        .await?;
+    let mut assessment: rss_mdm_compliance::Assessment = serde_json::from_value(value.clone())?;
+    assessment.rule_version += 999;
+    let outcome = rss_mdm_compliance_postgres::result(
+        &mut connection,
+        rss_request_context::TenantId::parse(TENANT)?,
+        Uuid::new_v4(),
+        "compliance-a",
+        &assessment,
+    )
+    .await;
+    connection.execute("ROLLBACK").await?;
+    ensure!(
+        outcome.is_err(),
+        "result adapter accepted a nonexistent rule version"
+    );
+    let task = Uuid::new_v4();
+    ensure!(pg(&format!("INSERT INTO mdm_compliance.results SELECT tenant_id,'{task}',rule_id,rule_revision,device,evaluated_at,jsonb_set(document,'{{ruleVersion}}',to_jsonb(rule_revision+1)) FROM mdm_compliance.results LIMIT 1")).is_err(),"document and version column may not disagree");
+    connection.close().await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -270,6 +543,7 @@ async fn rules_facts_groups_history_and_authorization() -> Result<()> {
     let automation = start_automation(&base).await?;
     let unknown = status(&mut browser, &router, "compliance-a", "unknown").await?;
     ensure!(unknown["rules"][0]["current"]["reason"] == "facts_unknown");
+    result_version_fk(&base, &unknown["rules"][0]["current"]).await?;
     assign(&mut browser, &router, "compliance-a", 0, false).await?;
     let passed = status(&mut browser, &router, "compliance-a", "compliant").await?;
     let old = passed["rules"][0]["current"].clone();
@@ -334,6 +608,16 @@ async fn rules_facts_groups_history_and_authorization() -> Result<()> {
         s == StatusCode::BAD_REQUEST,
         "history cursor was reused for a different device"
     );
+    history_boundaries(
+        &mut browser,
+        &router,
+        &base,
+        next,
+        &path,
+        written["task"].as_str().unwrap(),
+        &subject,
+    )
+    .await?;
     // Publication and its terminal audit must roll back together, including the final page.
     pg(
         "CREATE SEQUENCE public.compliance_publish_attempts; GRANT USAGE ON SEQUENCE public.compliance_publish_attempts TO mdm_flow_runtime; CREATE FUNCTION public.reject_compliance_publish() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('public.compliance_publish_attempts'); RAISE EXCEPTION 'publication fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_compliance_publish AFTER UPDATE ON mdm_compliance.rules DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.current_run IS DISTINCT FROM OLD.current_run) EXECUTE FUNCTION public.reject_compliance_publish()",
@@ -656,7 +940,14 @@ async fn rules_facts_groups_history_and_authorization() -> Result<()> {
     )
     .await?;
     ensure!(old["phase"] == "superseded");
+    tokio::time::timeout(Duration::from_secs(10),async {
+        loop {
+            if pg(&format!("SELECT d.consumed=c.revision FROM mdm_planning.asset_dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{TENANT}'"))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await??;
     ensure!(restarted.shutdown().join().await?.is_clean());
+    waiting_group_does_not_spin(&mut browser, &router, &base).await?;
     ensure!(audit_count(|r| r.action() == "compliance_read")? > 0);
     reader.close().await;
     Ok(())

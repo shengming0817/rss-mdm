@@ -451,7 +451,7 @@ CSP 返回成功只能证明相应命令的结果，不能替代所有受控设�
 
 AC-H01-01　配置应用后再次读取对应状态；人为改变受控项可识别漂移并按策略修复，保留完整时间线。
 
-AC-H01-02　缺失/冲突资产事实、宽限期未结束、证据验证失败都不显示为已通过；历史结果能定位对应规则版本。
+AC-H01-02　缺失/冲突资产事实、用于判断的证据验证失败都不显示为已通过；历史结果能定位对应规则版本。无宽限期或合规时限。采集尝试 Partial/Failed 保留最近一次完整且仍有效的事实，尝试失败不使旧证据失效；只有新事实、显式删除或来源/注册失效改变事实结论。
 
 > 依据：[D04](../reference/historical-sources.md#d04) 019–022；[D05](../reference/historical-sources.md#d05)；[D06](../reference/historical-sources.md#d06) §8；[D07](../reference/historical-sources.md#d07) P8；[C01](../reference/historical-sources.md#c01)/C13/C14。
 

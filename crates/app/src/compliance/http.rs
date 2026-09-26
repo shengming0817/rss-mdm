@@ -16,7 +16,11 @@ fn authorize(auth: &RequestAuth, c: &Command) -> std::result::Result<(), Error> 
         }
         _ => (Permission::ComplianceRuleRead, None),
     };
-    auth.proof.require(permission, device)
+    auth.proof.require(permission, device)?;
+    if matches!(c, Command::Task { .. }) {
+        auth.proof.require_all_devices(Permission::ComplianceRead)?;
+    }
+    Ok(())
 }
 async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) -> Response {
     audit.set_action(if c.operation().is_some() {
