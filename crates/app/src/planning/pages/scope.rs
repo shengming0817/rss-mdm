@@ -60,7 +60,7 @@ impl Planning {
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT r.phase,r.object_count,r.member_count,r.input::text,(NOT s.deleted AND s.resolution=r.id) AS current FROM mdm_planning.scope_runs r JOIN mdm_planning.scopes s ON (s.tenant_id,s.id)=(r.tenant_id,r.scope) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.scope=$3::uuid")
                 .bind(tenant).bind(result.to_string()).bind(scope.to_string()).fetch_optional(c).await
-        })).await?.ok_or(Error::NotFound)?;
+        })).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Scope)))?;
         if row.try_get::<&str, _>("phase")? != "published" {
             return Err(Error::Conflict.into());
         }

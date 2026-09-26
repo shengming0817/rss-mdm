@@ -46,6 +46,14 @@ class FlowOwnership(unittest.TestCase):
                 continue
             self.assertNotIn("crate::flow::", path.read_text(), str(path))
 
+    def test_each_receipt_owner_has_a_distinct_audit_identity(self):
+        for owner in ("planning", "assets", "resource_catalog", "software_publication"):
+            self.assertIn('format!("' + owner + ':{id}")', (APP / owner / "receipts.rs").read_text())
+
+    def test_task_and_planning_pages_cannot_project_inventory_errors(self):
+        for name in ("execution/actions/storage.rs", "execution/actions/history.rs", "planning/pages.rs", "planning/pages/scope.rs", "planning/pages/policy.rs"):
+            self.assertNotIn("Error::NotFound", (APP / name).read_text(), name)
+
     def test_plan_and_execution_progress_have_distinct_storage(self):
         sql = "\n".join(p.read_text() for p in (ROOT / "crates/app/migrations").glob("*.sql"))
         self.assertIn("CREATE TABLE mdm_planning.action_plans", sql)

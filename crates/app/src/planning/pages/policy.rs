@@ -108,7 +108,12 @@ impl Planning {
             Err(_) => return Err(Error::Conflict.into()),
         };
         if candidate.request.policy.value() != policy {
-            return Err(Error::NotFound.into());
+            return Err(
+                Error::Planning(crate::planning::error::PlanningError::Missing(
+                    crate::planning::error::Missing::Preview,
+                ))
+                .into(),
+            );
         }
         let plan = candidate.plan.ok_or(Error::Conflict)?;
         let (page, next) = if kind == PolicyPageKind::Targets {

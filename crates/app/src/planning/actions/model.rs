@@ -94,11 +94,8 @@ pub(crate) struct ScopeSnapshot {
     pub fingerprint: String,
 }
 impl Create {
-    pub fn validate(&self, now: i64) -> Result<(), Error> {
-        if self.operation_id.is_nil()
-            || self.schedule.until <= now
-            || !(60..=604800).contains(&self.run_lifetime_seconds)
-        {
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.operation_id.is_nil() || !(60..=604800).contains(&self.run_lifetime_seconds) {
             return Err(Error::Malformed);
         }
         for id in [&self.resource, &self.version, &self.variant] {

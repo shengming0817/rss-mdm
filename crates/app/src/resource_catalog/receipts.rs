@@ -25,7 +25,7 @@ pub(crate) async fn audit(
     let result = if let Some((id, fingerprint)) = operation {
         let fact = rss_mdm_audit_integration::Fact::business(
             audit,
-            &format!("planning:{id}"),
+            &format!("resource_catalog:{id}"),
             fingerprint,
             status,
             result,

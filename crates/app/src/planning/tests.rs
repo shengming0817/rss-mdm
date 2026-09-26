@@ -1083,6 +1083,26 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
     let service = planning(tenant()).await;
     for (change, restore) in [
         (
+            "GRANT DELETE ON mdm_commands.action_runs TO mdm_flow_runtime",
+            "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",
+        ),
+        (
+            "REVOKE INSERT ON mdm_commands.action_progress FROM mdm_flow_runtime",
+            "GRANT INSERT ON mdm_commands.action_progress TO mdm_flow_runtime",
+        ),
+        (
+            "GRANT UPDATE(scan_at) ON mdm_commands.action_progress TO mdm_flow_runtime",
+            "REVOKE UPDATE(scan_at) ON mdm_commands.action_progress FROM mdm_flow_runtime",
+        ),
+        (
+            "REVOKE SELECT ON mdm_access.agent_bindings FROM mdm_flow_runtime",
+            "GRANT SELECT ON mdm_access.agent_bindings TO mdm_flow_runtime",
+        ),
+        (
+            "CREATE ROLE flow_drift NOLOGIN; GRANT UPDATE(scan_at) ON mdm_commands.action_progress TO flow_drift; GRANT flow_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE flow_drift FROM mdm_flow_runtime; DROP OWNED BY flow_drift; DROP ROLE flow_drift",
+        ),
+        (
             "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact DROP NOT NULL",
             "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact SET NOT NULL",
         ),

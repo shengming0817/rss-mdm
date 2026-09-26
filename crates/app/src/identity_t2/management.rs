@@ -424,6 +424,8 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     let initial = app(&cfg, reader.clone()).await?;
     let member = browser_subject(session, &initial).await?;
     let publisher_grants = json!([
+        "group_read",
+        "group_write",
         "resource_read",
         "resource_write",
         "release_read",
@@ -476,14 +478,37 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     publisher.csrf = session.csrf.clone();
     let resource = uuid::Uuid::new_v4();
     let resource_path = format!("/api/v3/resources/{resource}");
-    call(
+    let shared_operation = uuid::Uuid::new_v4();
+    let resource_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"create","kind":"software"}});
+    let (status, resource_receipt) = settled_write(
         &mut publisher,
         &router,
         &resource_path,
-        0,
-        json!({"action":"create","kind":"software"}),
+        resource_request.clone(),
     )
     .await?;
+    ensure!(status.is_success(), "resource identity: {resource_receipt}");
+    let shared_group = format!("/api/v2/groups/{}", uuid::Uuid::new_v4());
+    let group_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"create","name":"owner-scoped-operation","description":"","criteria":null}});
+    let (status, group_receipt) = settled_write(
+        &mut publisher,
+        &router,
+        &shared_group,
+        group_request.clone(),
+    )
+    .await?;
+    ensure!(status.is_success(), "planning identity: {group_receipt}");
+    let shared_saved = format!("/api/v2/saved-queries/{}", uuid::Uuid::new_v4());
+    let saved_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"put","definition":{"name":"owner-scoped-operation","query":{}}}});
+    let (status, saved_receipt) = publisher
+        .call(
+            &router,
+            Method::PUT,
+            &shared_saved,
+            Some(saved_request.clone()),
+        )
+        .await?;
+    ensure!(status.is_success(), "assets identity: {saved_receipt}");
     let digest = rss_mdm_resource::Digest::of(b"abc").bytes();
     let variants=[("x86_64","x64"),("aarch64","arm64")].iter().map(|(arch,key)|json!({"platform":"windows","architecture":arch,"key":"msi.machine.no-id","declaration":{"kind":"software","source":server.logical,"package":"Acme.App","version":"1","artifact":{"reference":key,"length":3,"sha256":digest},"install":"install","detect":"detect","uninstall":null}})).collect::<Vec<_>>();
     call(
@@ -510,7 +535,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         );
         ensure!(
             pg(&format!(
-                "SELECT count(*) FROM mdm_planning.operations WHERE id='{blocked}'"
+                "SELECT count(*) FROM mdm_publication.operations WHERE id='{blocked}'"
             ))?
             .trim()
                 == "0"
@@ -538,7 +563,59 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         .to_string()
             == "1"
     );
-    let candidate=call(&mut publisher,&router,&path,0,json!({"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"submission":server.winget_submission()})).await?;
+    let candidate_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"submission":server.winget_submission()}});
+    let (status, candidate) =
+        settled_write(&mut publisher, &router, &path, candidate_request.clone()).await?;
+    ensure!(status.is_success(), "publication identity: {candidate}");
+    ensure!(pg(&format!("SELECT (SELECT count(*) FROM mdm_resource_catalog.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_planning.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_assets.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_publication.operations WHERE id='{shared_operation}')"))?.trim()=="4");
+    let event_count = audit_count(|r| {
+        r.source() == "mdm.business"
+            && matches!(r.action(), "management_write" | "software_preflight")
+            && r.operation() == Some(shared_operation.to_string().as_str())
+    })?;
+    ensure!(
+        event_count >= 4,
+        "each owner must retain an independent business event; found {event_count}"
+    );
+    for (method, route, request, expected) in [
+        (
+            Method::POST,
+            &resource_path,
+            resource_request,
+            &resource_receipt,
+        ),
+        (
+            Method::POST,
+            &shared_group,
+            group_request.clone(),
+            &group_receipt,
+        ),
+        (Method::PUT, &shared_saved, saved_request, &saved_receipt),
+        (Method::POST, &path, candidate_request, &candidate),
+    ] {
+        let replay = publisher
+            .call(&router, method, route, Some(request))
+            .await?;
+        ensure!(
+            replay.0.is_success() && &replay.1 == expected,
+            "owner replay {route}: {replay:?}"
+        );
+    }
+    ensure!(
+        audit_count(|r| r.source() == "mdm.business"
+            && matches!(r.action(), "management_write" | "software_preflight")
+            && r.operation() == Some(shared_operation.to_string().as_str()))?
+            == event_count
+    );
+    let mut conflict = group_request;
+    conflict["input"]["name"] = json!("different-request");
+    let rejected = publisher
+        .call(&router, Method::POST, &shared_group, Some(conflict))
+        .await?;
+    ensure!(
+        rejected.0 == StatusCode::CONFLICT,
+        "same-owner identity conflict: {rejected:?}"
+    );
     let validated = call(
         &mut publisher,
         &router,
@@ -1037,7 +1114,7 @@ async fn permission_matrix(
     let expected_denied = cases.len() * (grants.len() - 1);
     let counts = || {
         pg(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_planning.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_planning.policy_assignments),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_planning.operations)+(SELECT count(*) FROM mdm_assets.operations)+(SELECT count(*) FROM mdm_resource_catalog.operations)+(SELECT count(*) FROM mdm_publication.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_planning.policy_assignments),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
         )
     };
     // Exercise every permission change against the same running service. Rebuilding
@@ -1152,6 +1229,39 @@ async fn derived_result_authorization(
         "resource_read",
         "resource_write"
     ]);
+    let absent = uuid::Uuid::new_v4();
+    for (route, code) in [
+        (
+            format!("/api/v2/groups/{absent}/results/{group_result}/members"),
+            "group_not_found",
+        ),
+        (
+            format!("{group}/results/{absent}/members"),
+            "group_not_found",
+        ),
+        (
+            format!("/api/v2/scopes/{absent}/results/{scope_result}/members"),
+            "scope_not_found",
+        ),
+        (
+            format!("/api/v2/scopes/{scope}/results/{absent}/members"),
+            "scope_not_found",
+        ),
+        (
+            format!("/api/v2/policies/{absent}/results/{policy_result}/targets"),
+            "plan_preview_not_found",
+        ),
+        (
+            format!("{policy}/results/{absent}/targets"),
+            "plan_preview_not_found",
+        ),
+    ] {
+        let response = browser.call(router, Method::GET, &route, None).await?;
+        ensure!(
+            response.0 == StatusCode::NOT_FOUND && response.1["code"] == code,
+            "planning missing result {route}: {response:?}"
+        );
+    }
     let mut paths = vec![
         format!("{group}/tasks/{group_result}"),
         format!("/api/v2/scopes/{scope}/tasks/{scope_result}"),

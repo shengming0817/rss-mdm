@@ -106,7 +106,12 @@ impl Planning {
         let id = checked_input(pg::OperationId::parse(&result.to_string()))?;
         let build = group_checked(self.groups.build_in(tx, id).await?)?;
         if build.request.group != owner {
-            return Err(Error::NotFound.into());
+            return Err(
+                Error::Planning(crate::planning::error::PlanningError::Missing(
+                    crate::planning::error::Missing::Group,
+                ))
+                .into(),
+            );
         }
         if !build.ready {
             return Err(Error::Conflict.into());

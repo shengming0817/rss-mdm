@@ -51,6 +51,9 @@ impl ActionPlans {
             });
         }
 
+        if input.schedule.until <= now {
+            return Err(Error::Malformed.into());
+        }
         let targets = super::targets::freeze_in(tx, &input.targets).await?;
         let approvals = Approval::for_devices(
             &snapshot,
@@ -91,10 +94,6 @@ impl ActionPlans {
         if plan.author == proof.user() {
             return Err(Error::Forbidden.into());
         }
-        let now = storage::now(tx).await?;
-        if !plan.active || now >= plan.frozen.input.schedule.until {
-            return Err(Error::Conflict.into());
-        }
         let snapshot = storage::current(tx, proof).await?;
         let approvals = Approval::for_devices(
             &snapshot,
@@ -109,10 +108,15 @@ impl ActionPlans {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             let fact = Fact::business(audit, &event_key, &hash, 200, "success", None)?;
             service.audit_store.append_in(tx, &fact, true).await?;
+            proof.check_live()?;
             return Ok(Approved {
                 response: value,
                 changed: false,
             });
+        }
+        let now = storage::now(tx).await?;
+        if !plan.active || now >= plan.frozen.input.schedule.until {
+            return Err(Error::Conflict.into());
         }
         if plan.reviewer.is_some() {
             return Err(Error::Conflict.into());
@@ -285,7 +289,7 @@ async fn admit_creation_in(
         .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
     storage::lock(tx, "action-owner").await?;
     let now = storage::now(tx).await?;
-    input.validate(now)?;
+    input.validate()?;
     let snapshot = storage::current(tx, proof).await?;
     if matches!(input.targets, Targets::Scope { .. }) {
         snapshot.require(proof, Permission::ScopeRead, None)?;

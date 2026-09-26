@@ -48,7 +48,7 @@ pub(super) async fn registration(tx: &mut PgTransaction<'_>, device: &str) -> Re
 }
 pub(super) async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT plan::text,device,registration::text,generation,available_at,deadline,state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT plan::text,device,registration::text,generation,available_at,deadline,state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::execution::error::ExecutionError::MissingTask))?;
     Ok(Run {
         id,
         plan: stored(Uuid::parse_str(&row.try_get::<String, _>("plan")?))?,

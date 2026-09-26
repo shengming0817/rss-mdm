@@ -355,6 +355,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     )
     .await?;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    recovery_contracts::verify(&mut author, &mut reviewer, &router, id, &execution).await?;
     frozen_scope_matrix(
         &mut author,
         &mut reviewer,
@@ -971,6 +972,7 @@ mod archive_race;
 mod capacity;
 mod history;
 mod poll;
+mod recovery_contracts;
 mod scope_bounds;
 
 async fn frozen_scope_matrix(

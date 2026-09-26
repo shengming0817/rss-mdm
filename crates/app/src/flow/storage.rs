@@ -37,6 +37,18 @@ pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     }
     let contracts = [
         (
+            "execution handoff",
+            include_str!("../execution/catalog.sql"),
+            include_str!("../execution/catalog.json"),
+            include_str!("storage/handoff-admission.sql"),
+        ),
+        (
+            "authorization and execution dependencies",
+            include_str!("../execution/dependencies.sql"),
+            include_str!("../execution/dependencies.json"),
+            include_str!("storage/handoff-admission.sql"),
+        ),
+        (
             "planning",
             include_str!("../planning/catalog.sql"),
             include_str!("../planning/catalog.json"),

@@ -53,7 +53,7 @@ impl ExecutionService {
             let (store,proof,plan,id,audit)=*ctx;
             storage::lock(tx,"action-owner").await?;
             let run=db::load_run(tx,id).await?;
-            if run.plan!=plan{return Err(Error::NotFound.into());}
+            if run.plan!=plan{return Err(Error::Execution(crate::execution::error::ExecutionError::MissingTask).into());}
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
             store.append_request_in(tx,audit,200,"success").await?;
             Ok(json!({"planId":plan,"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":"unverified","result":run.result}))

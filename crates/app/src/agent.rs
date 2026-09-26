@@ -63,9 +63,12 @@ impl IntoResponse for AgentError {
                         wire::ErrorCode::OperationUnknown
                     }
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
+                    Error::Execution(crate::execution::error::ExecutionError::MissingTask) => {
+                        wire::ErrorCode::TaskNotFound
+                    }
                     Error::NotFound
                     | Error::Resource(_)
-                    | Error::Execution(_)
+                    | Error::Execution(crate::execution::error::ExecutionError::MissingOperation)
                     | Error::Publication(_)
                     | Error::Planning(crate::planning::error::PlanningError::Missing(_)) => {
                         wire::ErrorCode::ReportNotFound
