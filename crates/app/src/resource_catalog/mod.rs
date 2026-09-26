@@ -335,18 +335,14 @@ pub(crate) trait References: Send + Sync {
         version: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>;
 }
+type CatalogFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>;
 pub(crate) trait ConfigurationAuthor: Send + Sync {
     fn read_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         resource: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<std::collections::BTreeMap<String, bool>>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> CatalogFuture<'a, std::collections::BTreeMap<String, bool>>;
 
     fn version_in<'a>(
         &'a self,

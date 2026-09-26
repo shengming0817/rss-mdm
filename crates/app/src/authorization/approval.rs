@@ -18,6 +18,18 @@ struct Basis {
     expires_at: Option<i64>,
 }
 impl Approval {
+    pub(crate) fn for_devices(
+        snapshot: &Snapshot,
+        proof: &AuthorizedPrincipal,
+        devices: &[String],
+        permission: Permission,
+    ) -> Result<Vec<Self>, Error> {
+        devices
+            .iter()
+            .map(|device| Self::from_proof(snapshot, proof, device, permission))
+            .collect()
+    }
+
     pub(crate) fn from_proof(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,

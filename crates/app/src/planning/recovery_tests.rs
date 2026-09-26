@@ -336,9 +336,9 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
                 )
                 .await;
                 if let Ok(state) = state
-                    && state["status"] == "failed"
+                    && state["asset"]["status"] == "failed"
                 {
-                    return state;
+                    return state["asset"].clone();
                 }
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }

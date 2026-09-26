@@ -1,6 +1,6 @@
 use super::model::*;
 use crate::action_admission as storage;
-use crate::transaction::{Result, stored};
+use crate::transaction::{Result, checked_input, stored};
 use crate::{
     Error,
     authorization::{Approval, Permission, User},
@@ -107,5 +107,24 @@ pub(crate) async fn receipt(
     let actor = actor.to_owned();
     let response = response.clone();
     tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.action_receipts(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3::uuid,$4,$5)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).execute(c).await?;Ok(())})).await?;
+    Ok(())
+}
+
+pub(super) async fn insert_plan_in(
+    tx: &mut PgTransaction<'_>,
+    frozen: &Frozen,
+    author: &User,
+    approvals: &[Approval],
+    hash: &[u8],
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let document = checked_input(serde_json::to_value(frozen))?;
+    let author = checked_input(serde_json::to_value(author))?;
+    let approvals = checked_input(serde_json::to_value(approvals))?;
+    let digest = hash.to_vec();
+    let id = frozen.input.operation_id.to_string();
+    let resource = frozen.input.resource.clone();
+    let version = frozen.input.version.clone();
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.action_plans(tenant_id,id,resource,version,document,fingerprint,author,author_approvals) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8)").bind(tenant).bind(id).bind(resource).bind(version).bind(document).bind(digest).bind(author).bind(approvals).execute(c).await?;Ok(())})).await?;
     Ok(())
 }

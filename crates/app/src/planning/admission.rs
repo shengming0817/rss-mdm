@@ -316,22 +316,6 @@ impl FrozenIntent {
         }
     }
 }
-#[cfg(test)]
-mod frozen_tests {
-    use super::*;
-    #[test]
-    fn unknown_intents_fields_and_reasons_are_rejected() {
-        for intent in [
-            serde_json::json!({"kind":"unknown","device":"d","version":1}),
-            serde_json::json!({"kind":"add","device":"d","version":1,"extra":true}),
-            serde_json::json!({"kind":"cancel","device":"d","version":1,"reason":"unknown"}),
-            serde_json::json!({"kind":"supersede","device":"d"}),
-        ] {
-            assert!(serde_json::from_value::<FrozenIntent>(intent).is_err());
-        }
-    }
-}
-
 /// Recheck the frozen product prerequisites without granting execution ownership.
 pub(crate) fn validate_configuration(
     frozen: &FrozenConfiguration,
@@ -349,4 +333,20 @@ pub(crate) fn validate_configuration(
         return Err(Reason::StalePlan.at(Some(device), stage));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod frozen_tests {
+    use super::*;
+    #[test]
+    fn unknown_intents_fields_and_reasons_are_rejected() {
+        for intent in [
+            serde_json::json!({"kind":"unknown","device":"d","version":1}),
+            serde_json::json!({"kind":"add","device":"d","version":1,"extra":true}),
+            serde_json::json!({"kind":"cancel","device":"d","version":1,"reason":"unknown"}),
+            serde_json::json!({"kind":"supersede","device":"d"}),
+        ] {
+            assert!(serde_json::from_value::<FrozenIntent>(intent).is_err());
+        }
+    }
 }

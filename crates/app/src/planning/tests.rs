@@ -206,9 +206,17 @@ async fn execute(m: &Planning, c: &Command) -> std::result::Result<Value, Error>
     result
 }
 async fn execute_asset(m: &Planning, c: &assets::Command) -> std::result::Result<Value, Error> {
+    let service = assets(m).await;
+    execute_asset_service(m, &service, c).await
+}
+async fn execute_asset_service(
+    m: &Planning,
+    service: &assets::AssetService,
+    c: &assets::Command,
+) -> std::result::Result<Value, Error> {
     let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
     audit.set_principal("operator", "mdm");
-    let result = assets(m).await.execute(c, &audit, &|| Ok(())).await;
+    let result = service.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result
 }
@@ -1095,8 +1103,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE DELETE ON mdm_automation.automation_jobs FROM mdm_flow_runtime",
         ),
         (
-            "GRANT SELECT ON mdm_access.authorization_rules TO mdm_flow_runtime",
-            "REVOKE SELECT ON mdm_access.authorization_rules FROM mdm_flow_runtime",
+            "GRANT UPDATE ON mdm_access.authorization_rules TO mdm_flow_runtime",
+            "REVOKE UPDATE ON mdm_access.authorization_rules FROM mdm_flow_runtime",
         ),
     ] {
         sql(change);
@@ -1104,7 +1112,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             .await
             .is_err();
         sql(restore);
-        assert!(rejected);
+        assert!(rejected, "accepted privilege drift: {change}");
     }
     for (table, column) in [
         ("mdm_access.devices", "id"),
@@ -1522,16 +1530,20 @@ async fn asset_commit_unknown_recovers_original_receipts() {
             ),
         },
     ];
+    let service = assets(&m).await;
     for command in execution {
         m.runtime.inject_next_transaction_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
         );
         assert!(matches!(
-            execute_asset(&m, &command).await,
+            execute_asset_service(&m, &service, &command).await,
             Err(Error::CommitUnknown)
         ));
-        let recovered = execute_asset(&m, &command).await.unwrap();
-        assert_eq!(execute_asset(&m, &command).await.unwrap(), recovered);
+        let recovered = execute_asset_service(&m, &service, &command).await.unwrap();
+        assert_eq!(
+            execute_asset_service(&m, &service, &command).await.unwrap(),
+            recovered
+        );
     }
     assert_eq!(
         sql(&format!(
