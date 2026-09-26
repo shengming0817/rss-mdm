@@ -12,6 +12,8 @@ import time
 import uuid
 from t2 import IMAGE, run, require
 
+from build_run import lease_fds, require_lease
+
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED = {
     "standalone_delete_requires_companion_transaction",
@@ -69,12 +71,13 @@ def fixture(migrations=None):
             subprocess.run(['docker','rm','-f',name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20)
 
 def main():
+    require_lease(ROOT)
     with fixture() as (env,sql):
-        result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--features','integration','--test','t2','--','--ignored','--test-threads=1','--nocapture'],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+        result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--features','integration','--test','t2','--','--ignored','--test-threads=1','--nocapture'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
         print(result.stdout,flush=True)
         require(result.returncode==0,'Group PG behavioral suite failed')
         verify_tests(result.stdout)
-        generations = subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--test','generations','--','--ignored','--test-threads=1'], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        generations = subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--test','generations','--','--ignored','--test-threads=1'], pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(generations.stdout, flush=True)
         require(generations.returncode == 0, 'Group immutable generations failed')
         verify_tests(generations.stdout, {'staged_pages_publish_atomically_and_replay_without_duplicate_members','static_patches_use_the_same_sealed_publication_and_preserve_old_sets', 'static_commands_replay_and_borrowed_rollback', 'durable_recalculation_no_change_fences_stale_run'})

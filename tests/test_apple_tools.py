@@ -9,6 +9,9 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hack"))
+
 spec = importlib.util.spec_from_file_location('apple_tools', ROOT / 'hack/apple_tools.py')
 tools = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tools)
@@ -39,7 +42,10 @@ class OracleSource(unittest.TestCase):
                 seen.append(cwd)
                 Path(args[args.index('-o') + 1]).write_bytes(b'binary')
 
-            with patch.dict(os.environ, {'CARGO_TARGET_DIR': temporary}), patch.object(tools, 'LOCK', {'nanomdm': {'revision': 'fixed', 'sourceArchiveSha256': digest}}), patch('subprocess.run', side_effect=build):
+            # This isolated, mocked build owns a temporary target, not the enclosing CI lease.
+            env = {key: value for key, value in os.environ.items() if not key.startswith('_MDM_')}
+            env['CARGO_TARGET_DIR'] = temporary
+            with patch.dict(os.environ, env, clear=True), patch.object(tools, 'LOCK', {'nanomdm': {'revision': 'fixed', 'sourceArchiveSha256': digest}}), patch('subprocess.run', side_effect=build):
                 tools.nano_binary()
                 tools.nano_binary()
             self.assertEqual(len(seen), 2)

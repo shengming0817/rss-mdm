@@ -9,6 +9,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hack"))
+
 spec = importlib.util.spec_from_file_location('selection_ci', Path(__file__).resolve().parents[1] / 'hack/ci.py')
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
@@ -64,7 +67,7 @@ class Selection(unittest.TestCase):
                 if '-m' in args: return result('failure', 1)
                 return result()
             selection = {'full': False, 'packages': [], 'reasons': ['docs-only']}
-            with patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'dependency_graphs') as graphs, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
+            with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'dependency_graphs') as graphs, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((out / 'result.json').read_text())
             self.assertEqual(evidence['gates']['script-tests'], 'failed')
@@ -101,7 +104,7 @@ class Selection(unittest.TestCase):
             out = Path(directory)
             (out / 'result.json').write_text('previous execution')
             (out / 'selection.json').write_text('previous selection')
-            with patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value={'full': True, 'packages': [], 'reasons': ['explicit-full']}), patch.object(ci, 'command', return_value=result('head')) as command, patch.dict(ci.os.environ, {'CI_PLAN': '1'}), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value={'full': True, 'packages': [], 'reasons': ['explicit-full']}), patch.object(ci, 'command', return_value=result('head')) as command, patch.dict(ci.os.environ, {'CI_PLAN': '1'}), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ci.main(), 0)
             self.assertEqual(command.call_count, 1)
             self.assertEqual((out / 'result.json').read_text(), 'previous execution')
