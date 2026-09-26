@@ -114,6 +114,19 @@ class BuildRunTests(unittest.TestCase):
         self.assertNotEqual(same.returncode, 0)
         self.assertIn('worktree busy', same.stderr)
 
+    def test_case_aliases_cannot_acquire_two_target_locks(self):
+        target = self.root / 'CaseTarget'; target.mkdir()
+        alias = target.with_name('casetarget')
+        if not alias.exists():
+            # A case-sensitive volume has distinct resources, not an alias to test.
+            self.skipTest('filesystem is case-sensitive')
+        self.assertTrue(os.path.samefile(target, alias))
+        self.hold(env={'MDM_TARGET_POOL_N': 'off', 'CARGO_TARGET_DIR': str(target)})
+        result = self.run_code(work=self.other, env={'MDM_TARGET_POOL_N': 'off',
+                                                   'CARGO_TARGET_DIR': str(alias)})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('target busy', result.stderr)
+
     def test_configuration_and_exit_status(self):
         for config in ({'MDM_TARGET_POOL_N': '-1'}, {'MDM_TARGET_POOL_N': '2', 'CARGO_TARGET_DIR': '/tmp/unused'},
                        {'MDM_COMPILER_CACHE': 'typo'}, {'MDM_TARGET_POOL_N': 'off', 'CARGO_TARGET_DIR': ''}):
@@ -189,11 +202,11 @@ class BuildRunTests(unittest.TestCase):
     def test_formal_scripts_reject_missing_lease_before_starting_dependencies(self):
         scripts = ['ci.py', 't2.py', 'group-t2.py', 'backend-t2.py', 'management-t2.py',
                    'publication-t2.py', 'source-t2.py', 'apple-t2.py', 'asset-t2.py',
-                   'command-t2.py', 'task-t2.py', 'identity_t2.py']
+                   'command-t2.py', 'task-t2.py', 'identity_t2.py', 'login_gateway_t2.py']
         for script in scripts:
             with self.subTest(script=script):
                 result = subprocess.run([sys.executable, str(ROOT / 'hack' / script)],
-                                        cwd=ROOT, env=clean_env() | {'CI_PLAN': '0'},
+                                        cwd=ROOT, env=clean_env() | {'CI_PLAN': '0', 'PATH': str(self.root / 'no-tools')},
                                         capture_output=True, text=True, timeout=10)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('build lease required', result.stderr)

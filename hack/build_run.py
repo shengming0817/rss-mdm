@@ -35,7 +35,18 @@ def directory(path):
     if path.is_symlink():
         raise ValueError(f'refusing symlink directory: {path}')
     path.mkdir(parents=True, exist_ok=True)
-    return path.resolve()
+    return canonical_directory(path)
+
+
+def canonical_directory(path):
+    """Ask the filesystem for its spelling, including case/Unicode aliases on macOS."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if sys.platform == 'darwin':
+            return Path(os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b'\0', 1)[0]))
+        return Path(os.readlink(f'/proc/self/fd/{fd}'))
+    finally:
+        os.close(fd)
 
 
 def lock_file(path, blocking=False):
@@ -74,7 +85,8 @@ def owned_directory(path, marker):
 
 
 def lock_path(kind, path):
-    digest = hashlib.sha256(os.fsencode(path.resolve())).hexdigest()
+    # Resources are canonicalized before allocation. Keep the key stable across cargo clean.
+    digest = hashlib.sha256(os.fsencode(path)).hexdigest()
     return LOCK_ROOT / f'{kind}-{digest}.lock'
 
 
@@ -113,7 +125,7 @@ def lease_fds():
 def require_lease(worktree):
     if not lease_fds():
         raise ValueError('build lease required; use make or python3 hack/build_run.py -- COMMAND')
-    if Path(json.loads(os.environ[LEASE_ENV])['worktree']) != Path(worktree).resolve():
+    if Path(json.loads(os.environ[LEASE_ENV])['worktree']) != canonical_directory(worktree):
         raise ValueError('build lease belongs to a different worktree')
 
 
@@ -175,6 +187,8 @@ def acquire_slot(root, slots, worktree):
             target = root / f'slot-{index}'
             if target.is_symlink():
                 raise ValueError(f'refusing symlink slot: {target}')
+            # Establish the actual filesystem spelling before choosing its one lock identity.
+            target = directory(target)
             value = metadata(root, index)
             fd = lock_file(lock_path('target', target))
             if fd is None:
@@ -191,7 +205,7 @@ def acquire_slot(root, slots, worktree):
         if not candidates:
             raise ValueError(f'pool full ({slots} slots): {root}')
         rank, _, index = min(candidates)
-        target = root / f'slot-{index}'
+        target = canonical_directory(root / f'slot-{index}')
         if rank != 0 and target.exists():
             shutil.rmtree(target)
         directory(target)
@@ -313,7 +327,7 @@ def main(argv):
     if LEASE_ENV in os.environ:
         raise ValueError('nested build runner is not allowed; inherit the existing lease')
     env = os.environ.copy()
-    worktree = Path.cwd().resolve()
+    worktree = canonical_directory(Path.cwd())
     pool, target = target_config(env, worktree)
     # A persistent cache daemon must never inherit a build lease.
     compiler_cache(env, worktree)
@@ -324,9 +338,8 @@ def main(argv):
         if pool:
             target, target_fd = acquire_slot(*pool, worktree)
         else:
-            target = target.resolve()
+            target = directory(target.resolve())
             target_fd = take_lock('target', target)
-            target.mkdir(parents=True, exist_ok=True)
         env['CARGO_TARGET_DIR'] = str(target)
         fds = (work_fd, target_fd)
         env[LEASE_ENV] = json.dumps({'worktree': str(worktree), 'target': str(target), 'fds': fds})
