@@ -78,7 +78,7 @@ impl Fixture {
         )
         .await?;
         let management = config
-            .management
+            .flow
             .open(
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
@@ -88,7 +88,7 @@ impl Fixture {
                 |_| {},
             )
             .await?;
-        let commands = crate::commands::Commands::open(
+        let execution = crate::flow::execution::open(
             config,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
@@ -106,8 +106,8 @@ impl Fixture {
             audit_store: access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            commands: commands.clone(),
-            management,
+            execution: execution.clone(),
+            flow: management,
             identity: Arc::new(identity),
             credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
                 monotonic.clone(),
@@ -115,13 +115,11 @@ impl Fixture {
             )),
             clock,
             identity_management: compiled.identity_management,
-            collection: Arc::new(
-                crate::management::assets::collection::CollectionService::new(
-                    devices.clone(),
-                    access.clone(),
-                    runtime.clone(),
-                ),
-            ),
+            collection: Arc::new(crate::assets::collection::CollectionService::new(
+                devices.clone(),
+                access.clone(),
+                runtime.clone(),
+            )),
             readiness: runtime.readiness.clone(),
             devices,
             windows: None,
@@ -208,7 +206,7 @@ impl Fixture {
                 )
                 .critical(),
             );
-            launch.stage_deferred_task_with_token(commands.registration().critical());
+            launch.stage_deferred_task_with_token(execution.registration().critical());
             launch.stage_deferred_task_with_token(runtime.registration().critical());
             launch.finish();
         }

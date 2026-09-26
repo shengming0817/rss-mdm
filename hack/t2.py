@@ -118,7 +118,7 @@ def verify_startup_deadlines(binary, root, env):
         for key in ['access_database','runtime_database','command_database']:
             config[key]['port']=stalled_port
         for key in ['database','publication_database']:
-            config['management'][key]['port']=stalled_port
+            config['flow']['storage' if key=='database' else 'publication']['database']['port']=stalled_port
         config['identity']['database']['port']=stalled_port
         path=root/'stalled.json';path.write_text(json.dumps(config));path.chmod(0o600)
         start=time.monotonic()
@@ -162,9 +162,9 @@ def configure_identity(root, port, binary, env):
         return dict(host='localhost',port=int(port),name='mdm_test',user=role,password_file=write(role+'-password',password),ca_file=str(root/'ca.crt'))
     for key,role,password in [('access_database','mdm_access','access-fixture'),('runtime_database','mdm_runtime','runtime-fixture')]:config[key]=database(role,password)
     config['identity']['database']=database('mdm_identity_runtime','identity-runtime-fixture')
-    config['management']['database']=database('mdm_management_runtime','runtime-fixture')
+    config['flow']['storage']['database']=database('mdm_planning_runtime','runtime-fixture')
     config['command_database']=database('mdm_command_runtime','runtime-fixture')
-    config['management']['publication_database']=database('mdm_software_driver','runtime-fixture')
+    config['flow']['publication']['database']=database('mdm_software_driver','runtime-fixture')
     config['native_protocols']={'windows':json.loads((root/'windows.json').read_text())}
     config['identity_management']=[dict(tenant_id=TENANTS[0],instance_id=INSTANCE,principal_id=ADMIN,permissions=['accounts','providers'])]
     env['MDM_TEST_CONFIG']=write('runtime.json',config)
@@ -209,8 +209,8 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 if time.monotonic() > end: raise RuntimeError("PostgreSQL startup deadline")
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
-            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/management-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text()+(ROOT/'crates/app/schema/audit-roles.sql').read_text())
-            sql += "ALTER ROLE mdm_management_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
+            sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/planning-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text()+(ROOT/'crates/app/schema/audit-roles.sql').read_text())
+            sql += "ALTER ROLE mdm_planning_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             # Composed debug async tests include Audit ownership around existing business

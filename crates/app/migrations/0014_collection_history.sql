@@ -16,7 +16,7 @@ CREATE POLICY tenant ON mdm_access.collection_history
  USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_access.collection_history FROM PUBLIC;
-GRANT SELECT ON mdm_access.collection_history TO mdm_management_runtime;
+GRANT SELECT ON mdm_access.collection_history TO mdm_planning_runtime;
 CREATE FUNCTION mdm_access.capture_collection_history() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm_access AS $$
 DECLARE r jsonb; d jsonb; v bigint; t uuid;

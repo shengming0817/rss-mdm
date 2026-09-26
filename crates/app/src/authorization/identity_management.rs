@@ -67,7 +67,7 @@ pub(crate) struct IdentityNavigation {
     pub(crate) manage_accounts: bool,
     pub(crate) manage_providers: bool,
 }
-/// Product-owned grants for the embedded account and provider management interfaces.
+/// Product-owned grants for the embedded account and provider planning interfaces.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityPermission {

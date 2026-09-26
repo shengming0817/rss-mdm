@@ -2,9 +2,9 @@
 use crate::authorization::context::RequestAuth;
 use crate::{ConfigIssue, Database, Failure};
 use crate::{
-    Error, authorization::identity_management::IdentityManagementPolicy,
-    device::coordinates::Coordinates, enrollment::credentials::Credentials, identity::Identity,
-    management::assets::collection::CollectionService,
+    Error, assets::collection::CollectionService,
+    authorization::identity_management::IdentityManagementPolicy, device::coordinates::Coordinates,
+    enrollment::credentials::Credentials, identity::Identity,
 };
 use crate::{authorization::context::AuthorizedPrincipal, clock::Clock};
 use axum::{
@@ -24,8 +24,8 @@ use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub(crate) struct Assembly {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) commands: Arc<crate::commands::Commands>,
-    pub(crate) management: Arc<crate::management::Management>,
+    pub(crate) execution: Arc<crate::execution::ExecutionService>,
+    pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Arc<Identity>,
     pub(crate) credentials: Arc<Credentials>,
     pub(crate) clock: Arc<dyn Clock>,
@@ -57,7 +57,7 @@ pub(crate) async fn application_fixture(
     access: Arc<Database>,
     identity: Option<Identity>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-) -> Result<(Router, Arc<crate::commands::Commands>), Error> {
+) -> Result<(Router, Arc<crate::execution::ExecutionService>), Error> {
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access.clone(),
@@ -66,8 +66,8 @@ pub(crate) async fn application_fixture(
         monotonic.clone(),
     )
     .await?;
-    let management = config
-        .management
+    let planning = config
+        .flow
         .open(
             audit_store.clone(),
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
@@ -76,7 +76,7 @@ pub(crate) async fn application_fixture(
             |_| {},
         )
         .await?;
-    let commands = crate::commands::Commands::open(&config, audit_store.clone()).await?;
+    let execution = crate::flow::execution::open(&config, audit_store.clone()).await?;
     let compiled = config.compile()?;
     let identity = match identity {
         Some(identity) => identity,
@@ -94,27 +94,27 @@ pub(crate) async fn application_fixture(
             compiled,
             AssemblyDependencies {
                 audit_store,
-                commands: commands.clone(),
+                execution: execution.clone(),
                 clock,
                 monotonic,
                 access,
                 runtime,
-                management,
+                flow: planning,
                 identity,
             },
         )?
         .browser,
-        commands,
+        execution,
     ))
 }
 pub(crate) struct AssemblyDependencies {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) commands: Arc<crate::commands::Commands>,
+    pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<Database>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
-    pub(crate) management: Arc<crate::management::Management>,
+    pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Identity,
 }
 pub(crate) fn from_compiled(
@@ -127,12 +127,12 @@ pub(crate) fn from_compiled(
     } = compiled;
     let AssemblyDependencies {
         audit_store,
-        commands,
+        execution,
         clock,
         monotonic,
         access,
         runtime,
-        management,
+        flow: planning,
         identity,
     } = dependencies;
     let devices = Arc::new(crate::device::DeviceService::new(
@@ -158,8 +158,8 @@ pub(crate) fn from_compiled(
     let state = Arc::new(Assembly {
         audit_store,
         apple,
-        commands,
-        management,
+        execution,
+        flow: planning,
         windows,
         access: access.clone(),
         identity: Arc::new(identity),
@@ -191,18 +191,25 @@ pub(crate) fn from_state(
         devices: state.devices.clone(),
         collection: state.collection.clone(),
     });
-    let commands = Arc::new(crate::commands::http::HttpState {
-        commands: state.commands.clone(),
+    let plans = Arc::new(crate::planning::actions::ActionPlans {
+        audit_store: state.audit_store.clone(),
+        runtime: state.execution.runtime.clone(),
+        tenant: state.execution.tenant,
+        content: state.execution.content.clone(),
+        dispatch: state.execution.clone(),
+    });
+
+    let execution = Arc::new(crate::execution::http::HttpState {
+        execution: state.execution.clone(),
         devices: state.devices.clone(),
         apple: state.apple.is_some(),
         windows: state.windows.is_some(),
     });
-    let management = Arc::new(crate::management::http::HttpState {
-        management: state.management.clone(),
-        access: state.access.clone(),
+    let planning = Arc::new(crate::planning::http::HttpState {
+        planning: state.flow.planning.clone(),
     });
-    let assets = Arc::new(crate::management::assets::http::HttpState {
-        assets: state.management.assets.clone(),
+    let assets = Arc::new(crate::assets::http::HttpState {
+        assets: state.flow.assets.clone(),
     });
     let authorization = Arc::new(crate::authorization::http::HttpState {
         audit_store: state.audit_store.clone(),
@@ -212,7 +219,7 @@ pub(crate) fn from_state(
         access: state.access.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),
-        commands: state.commands.clone(),
+        execution: state.execution.clone(),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
         identity: state.identity.clone(),
@@ -222,7 +229,7 @@ pub(crate) fn from_state(
         audit_store: state.audit_store.clone(),
         access: state.access.clone(),
         clock: state.clock.clone(),
-        commands: state.commands.clone(),
+        execution: state.execution.clone(),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
         identity: state.identity.clone(),
@@ -259,14 +266,21 @@ pub(crate) fn from_state(
         readiness: state.readiness.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),
-        management: state.management.clone(),
+        flow: state.flow.clone(),
     });
     let authentication = state.identity.routes();
     let audit_tenant = state.identity.tenant.to_string();
     let audit_store = state.audit_store.clone();
     let requests = state.requests.clone();
     let protected_v1 = Router::new()
-        .merge(crate::management::routes().with_state(management.clone()))
+        .merge(
+            crate::software_publication::http::routes().with_state(Arc::new(
+                crate::software_publication::http::HttpState {
+                    publications: state.flow.publications.clone(),
+                    access: state.access.clone(),
+                },
+            )),
+        )
         .merge(crate::authorization::routes().with_state(authorization))
         .route(
             "/devices/{id}/collection-runs",
@@ -282,24 +296,38 @@ pub(crate) fn from_state(
             crate::authorization::http::protect,
         ));
     let protected_v2 = Router::new()
-        .merge(crate::commands::routes().with_state(commands.clone()))
-        .merge(crate::management::routes_v2().with_state(management.clone()))
-        .merge(crate::management::assets::routes().with_state(assets))
+        .merge(crate::execution::routes().with_state(execution.clone()))
+        .merge(crate::planning::routes_v2().with_state(planning.clone()))
+        .merge(crate::assets::routes().with_state(assets))
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::protect,
         ));
-    let protected_v3 = crate::management::resource_routes()
-        .with_state(management)
-        .merge(crate::commands::actions::http::routes().with_state(commands.clone()))
+    let protected_v3 = crate::resource_catalog::http::routes()
+        .with_state(Arc::new(crate::resource_catalog::http::HttpState {
+            catalog: state.flow.catalog.clone(),
+        }))
+        .merge(crate::execution::actions::http::routes().with_state(execution.clone()))
+        .merge(
+            crate::planning::actions::http::routes().with_state(Arc::new(
+                crate::planning::actions::http::HttpState { plans },
+            )),
+        )
+        .merge(crate::task_content::http::routes().with_state(Arc::new(
+            crate::task_content::http::HttpState {
+                runtime: state.execution.runtime.clone(),
+                audit_store: state.audit_store.clone(),
+                tenant: state.execution.tenant,
+                content: state.execution.content.clone(),
+            },
+        )))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::protect,
         ));
     let mut listeners = Vec::new();
-    if let Some((enrollment, management)) =
-        crate::windows::routers(windows_state, monotonic.clone())
+    if let Some((enrollment, planning)) = crate::windows::routers(windows_state, monotonic.clone())
     {
         listeners.push((
             crate::native::NativeListenerKind::WindowsEnrollment,
@@ -307,7 +335,7 @@ pub(crate) fn from_state(
         ));
         listeners.push((
             crate::native::NativeListenerKind::WindowsManagement,
-            management,
+            planning,
         ));
     }
     if let Some(apple) = crate::apple::router(apple_state.clone(), monotonic.clone()) {
@@ -330,7 +358,7 @@ pub(crate) fn from_state(
             "/api/agent/v2",
             crate::agent::routes()
                 .with_state(agent)
-                .merge(crate::commands::actions::http::agent_routes().with_state(commands)),
+                .merge(crate::execution::actions::http::agent_routes().with_state(execution)),
         )
         .nest("/api/v1", protected_v1)
         .nest("/api/v2", protected_v2)
@@ -717,11 +745,12 @@ async fn ready(State(app): State<Arc<ReadinessState>>) -> Response {
             .as_ref()
             .is_none_or(|apple| app.clock.unix_seconds().is_ok_and(|now| apple.ready(now)))
         && app
-            .management
+            .flow
+            .planning
             .automation_task
             .get()
             .is_some_and(rss_runtime::TaskStatus::is_running)
-        && app.management.ingress_ready().await
+        && app.flow.planning.ingress_ready().await
     {
         Json(json!({"ready":true})).into_response()
     } else {
@@ -738,7 +767,7 @@ async fn collection_run(
     Extension(audit): Extension<RequestAudit>,
     path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     query: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<crate::management::assets::collection::CollectionResponse>, Error> {
+) -> Result<Json<crate::assets::collection::CollectionResponse>, Error> {
     let Path((device, run)) = path.map_err(|_| Error::Malformed)?;
     let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
     audit.target(&device);
@@ -752,14 +781,14 @@ struct IdentityContextState {
 }
 
 struct CollectionState {
-    collection: Arc<crate::management::assets::collection::CollectionService>,
+    collection: Arc<crate::assets::collection::CollectionService>,
 }
 
 struct ReadinessState {
     readiness: Arc<crate::inventory_runtime::Readiness>,
     apple: Option<Arc<crate::apple::Apple>>,
     clock: Arc<dyn crate::clock::Clock>,
-    management: Arc<crate::management::Management>,
+    flow: Arc<crate::flow::Flow>,
 }
 
 #[cfg(test)]

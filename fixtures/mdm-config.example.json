@@ -30,62 +30,6 @@
     "password_file": "/run/mdm/mdm-runtime-password",
     "ca_file": "/run/mdm/database-ca.pem"
   },
-  "management": {
-    "database": {
-      "host": "postgres.example.test",
-      "port": 5432,
-      "name": "mdm",
-      "user": "mdm_management_runtime",
-      "password_file": "/run/mdm/mdm-management-password",
-      "ca_file": "/run/mdm/database-ca.pem"
-    },
-    "target": [
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1,
-      1
-    ],
-    "lineage": [
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2
-    ],
-    "epoch": 1,
-    "sources": [],
-    "publication_database": {
-      "host": "postgres.example.test",
-      "port": 5432,
-      "name": "mdm",
-      "user": "mdm_software_driver",
-      "password_file": "/run/mdm/mdm-software-driver-password",
-      "ca_file": "/run/mdm/database-ca.pem"
-    }
-  },
   "trusted_gateway": "127.0.0.1",
   "identity_management": [],
   "command_database": {
@@ -104,19 +48,79 @@
         "certificate_file": "/run/mdm/enrollment-tls.pem",
         "private_key_file": "/run/mdm/enrollment-tls.pk8"
       },
-      "management": {
-        "listen": "0.0.0.0:8444",
-        "origin": "https://manage.example.test:8444",
-        "certificate_file": "/run/mdm/management-tls.pem",
-        "private_key_file": "/run/mdm/management-tls.pk8"
-      },
       "ca_certificate_file": "/run/mdm/enrollment-ca.pem",
       "ca_private_key_file": "/run/mdm/enrollment-ca.pk8",
       "protocol_key_file": "/run/mdm/protocol.key",
-      "provider_id": "RSS-MDM"
+      "provider_id": "RSS-MDM",
+      "management": {
+        "listen": "0.0.0.0:8444",
+        "origin": "https://manage.example.test:8444",
+        "certificate_file": "/run/mdm/planning-tls.pem",
+        "private_key_file": "/run/mdm/planning-tls.pk8"
+      }
     }
   },
   "audit": {
     "mode": "plain"
+  },
+  "flow": {
+    "storage": {
+      "database": {
+        "host": "postgres.example.test",
+        "port": 5432,
+        "name": "mdm",
+        "user": "mdm_planning_runtime",
+        "password_file": "/run/mdm/mdm-planning-password",
+        "ca_file": "/run/mdm/database-ca.pem"
+      },
+      "target": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "lineage": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "epoch": 1
+    },
+    "publication": {
+      "database": {
+        "host": "postgres.example.test",
+        "port": 5432,
+        "name": "mdm",
+        "user": "mdm_software_driver",
+        "password_file": "/run/mdm/mdm-software-driver-password",
+        "ca_file": "/run/mdm/database-ca.pem"
+      },
+      "sources": []
+    }
   }
 }

@@ -1,6 +1,6 @@
 # Apple 原生管理设计
 
-产品拥有身份、注册、采集和结果；step-ca 仅负责外部 SCEP 签发，NanoMDM 仅作协议对照。复用 Commands/CollectionRun/Observation/Inventory，避免第二套队列与设备状态权威。
+产品拥有身份、注册、采集和结果；step-ca 仅负责外部 SCEP 签发，NanoMDM 仅作协议对照。复用 Execution/CollectionRun/Observation/Inventory，避免第二套队列与设备状态权威。
 
 一次性 challenge 先事务提交消费再返回 allow，重复回调不能再次授权。签名模板使用产品授权主题并绑定公钥与 attempt，不信任任意 CSR 主题。通知丢失可由首次匹配的 mTLS 叶证书恢复；签发响应丢失则新授权、新 attempt、新密钥，不能透明重签。
 

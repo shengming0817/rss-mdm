@@ -2,17 +2,23 @@
 //! Embedded authentication assembly and product-owned device/resource authorization.
 #[cfg(test)]
 extern crate self as rss_mdm_app;
+mod action_admission;
+mod assets;
 #[cfg(test)]
 mod audit_integration_tests;
 pub mod authorization;
+mod automation;
 mod collection;
-mod commands;
 mod database;
 pub mod device;
 mod enrollment;
+mod execution;
+mod execution_transaction;
+mod flow;
 mod inventory_runtime;
-mod management;
+mod mutation;
 mod operations;
+mod planning;
 #[cfg(test)]
 #[allow(
     dead_code,
@@ -21,8 +27,10 @@ mod operations;
 #[path = "../tests/publication_support/mod.rs"]
 mod publication_support;
 mod registration_lifecycle;
+mod resource_catalog;
+mod task_content;
 use database::Database;
-pub use management::Missing as ManagementObject;
+pub use error_projection::ObjectKind;
 mod audit_budget;
 mod diagnostic;
 mod error_projection;
@@ -75,8 +83,8 @@ pub enum Error {
     Forbidden,
     #[error("dependency unavailable")]
     Unavailable(Failure),
-    #[error("management object not found")]
-    ManagementNotFound(ManagementObject),
+    #[error("planning object not found")]
+    ObjectNotFound(ObjectKind),
     #[error("inventory not found")]
     NotFound,
     #[error("action not supported")]
@@ -99,7 +107,7 @@ impl IntoResponse for Error {
             Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
-            Self::ManagementNotFound(object) => (StatusCode::NOT_FOUND, object.code()),
+            Self::ObjectNotFound(object) => (StatusCode::NOT_FOUND, object.code()),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
             Self::Unavailable(Failure::AuditIntegrity) => {

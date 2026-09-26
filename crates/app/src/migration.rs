@@ -138,7 +138,7 @@ fn units() -> [(&'static str, &'static str); 49] {
             crate::software_publication::MIGRATION_SQL,
         ),
         (
-            "management-v1",
+            "planning-v1",
             include_str!("../migrations/0007_management.sql"),
         ),
         (
@@ -179,17 +179,14 @@ fn units() -> [(&'static str, &'static str); 49] {
         ),
         ("reconcile-v1", rss_reconcile_postgres::MIGRATION_SQL),
         (
-            "commands-v1",
+            "execution-v1",
             include_str!("../migrations/0011_commands.sql"),
         ),
         (
             "inventory-v2",
             rss_mdm_inventory_postgres::ASSETS_MIGRATION_SQL,
         ),
-        (
-            "assets-management-v1",
-            crate::management::assets::ASSETS_MIGRATION_SQL,
-        ),
+        ("assets-planning-v1", crate::assets::ASSETS_MIGRATION_SQL),
         ("agent-access-v1", crate::device::AGENT_ACCESS_MIGRATION_SQL),
         (
             "policy-candidates-v2",
@@ -228,7 +225,7 @@ fn units() -> [(&'static str, &'static str); 49] {
             include_str!("../migrations/0012_windows_configuration.sql"),
         ),
         (
-            "apple-management-v1",
+            "apple-planning-v1",
             include_str!("../migrations/0015_apple_management.sql"),
         ),
         (

@@ -106,9 +106,9 @@ impl Identity {
         let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| invalid())?;
         let runtime = open_runtime(
             &config.identity.database,
-            &config.management.target,
-            &config.management.lineage,
-            config.management.epoch,
+            &config.flow.storage.target,
+            &config.flow.storage.lineage,
+            config.flow.storage.epoch,
             tenant,
         )
         .await?;

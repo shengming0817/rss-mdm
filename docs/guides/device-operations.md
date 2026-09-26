@@ -52,7 +52,7 @@
 
 执行要求租户级 `plan_execute` 和全部目标（含退出/归档目标）的设备级 `firewall_write`；取消意图还要求同一设备的 `operation_cancel`，首次执行与重放均重新检查这两项权限。state_verify、policy_write、plan_save 均不能替代写权限。批准记住具体权限及依据，派发重新核验；撤权、期限或旧世代不能由缓存重放绕过。
 
-Management 持有类型化 `PlanExecutionAdmission`，从 Policy 公共分页接口冻结执行输入；同一个 owner 准入投影服务保存、执行、投递、缓存重放、回执及恢复。Policy 持有候选/版本/来源 token 的有效性，Management 组合 Scope 和尚未转发的设备身份历史。Commands 仅调用窄投影，运行角色没有 Management、Policy、Group 私表 SELECT 权限。
+Planning 持有类型化 `PlanExecutionAdmission`，从 Policy 公共分页接口冻结执行输入；同一个 owner 准入投影服务保存、执行、投递、缓存重放、回执及恢复。Policy 持有候选/版本/来源 token 的有效性，Planning 组合 Scope 和尚未转发的设备身份历史。Execution 仅调用窄投影，运行角色没有 Planning、Policy、Group 私表 SELECT 权限。
 
 冻结计划使用闭合动作与原因类型，未知动作、未知原因和多余字段拒绝解析。所有首次执行（包括仅取消和空动作）在任何写入前检查 deadline 未过期且微秒换算不溢出；已提交请求重放保留原结果并重新校验权限。
 

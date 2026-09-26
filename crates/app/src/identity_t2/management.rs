@@ -28,7 +28,7 @@ async fn call(
     }
     ensure!(
         status == StatusCode::OK || status == StatusCode::ACCEPTED,
-        "management request {path}: {status} {result}"
+        "planning request {path}: {status} {result}"
     );
     if let Some(task) = result["task"].as_str() {
         let status_url = result["statusUrl"]
@@ -59,7 +59,7 @@ async fn settled_write(
         }
     })
     .await
-    .context("management write did not settle")?
+    .context("planning write did not settle")?
 }
 pub(super) async fn matrix(
     base: &Value,
@@ -111,7 +111,7 @@ pub(super) async fn matrix(
         let response=browser.call(&router,Method::POST,&format!("/api/v2/groups/{blocked}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"csrf-must-not-write","description":"","criteria":null}}))).await?;
         ensure!(
             response.0 == StatusCode::FORBIDDEN,
-            "management write accepted absent/incorrect csrf token: {}",
+            "planning write accepted absent/incorrect csrf token: {}",
             response.0
         );
         ensure!(
@@ -404,9 +404,9 @@ pub(super) async fn matrix(
         );
     }
     set_management_grants(&member, json!(["group_write"])).await?;
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_management_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_planning_runtime")?;
     let failed=browser.call(&router,Method::POST,&format!("/api/v2/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_management_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_planning_runtime")?;
     ensure!(
         failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error"
     );
@@ -420,7 +420,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
     let server = publication_support::Server::new().await;
     let mut cfg = base.clone();
     let source_config = |ring: &str| json!({"Winget":{"base":format!("{}{ring}/",server.base),"addresses":[server.address],"private_ca":server.ca,"credential_reference":"source-key","credential_file":server.secret}});
-    cfg["management"]["sources"] = json!([{"name":server.logical,"rings":{"test":source_config("test"),"pilot":source_config("pilot"),"production":source_config("production")},"artifacts":[{"base":format!("{}artifacts/",server.base),"addresses":[server.address],"private_ca":server.ca}],"max_artifact_bytes":1048576}]);
+    cfg["flow"]["publication"]["sources"] = json!([{"name":server.logical,"rings":{"test":source_config("test"),"pilot":source_config("pilot"),"production":source_config("production")},"artifacts":[{"base":format!("{}artifacts/",server.base),"addresses":[server.address],"private_ca":server.ca}],"max_artifact_bytes":1048576}]);
     let initial = app(&cfg, reader.clone()).await?;
     let member = browser_subject(session, &initial).await?;
     let publisher_grants = json!([
@@ -510,7 +510,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         );
         ensure!(
             pg(&format!(
-                "SELECT count(*) FROM mdm_management.operations WHERE id='{blocked}'"
+                "SELECT count(*) FROM mdm_flow.operations WHERE id='{blocked}'"
             ))?
             .trim()
                 == "0"
@@ -590,7 +590,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
             ),
             (
                 "publication Audit lock",
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_management_runtime' AND wait_event_type='Lock' AND query LIKE '%rss_audit.reserve%')",
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_planning_runtime' AND wait_event_type='Lock' AND query LIKE '%rss_audit.reserve%')",
             ),
         ] {
             tokio::time::timeout(Duration::from_secs(1), async {
@@ -766,7 +766,7 @@ fn seed_management_device(device: &str) -> Result<()> {
 async fn await_ingress() -> Result<()> {
     let settled=tokio::time::timeout(Duration::from_secs(90),async {
         loop {
-            let ready=pg(&format!("SELECT coalesce((SELECT consumed FROM mdm_management.asset_dispatch WHERE tenant_id='{TENANT}'),0)=coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),0) AND NOT EXISTS(SELECT 1 FROM mdm_management.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed)"))?;
+            let ready=pg(&format!("SELECT coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id='{TENANT}'),0)=coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),0) AND NOT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed)"))?;
             if ready.trim()=="t" { return Ok::<_,anyhow::Error>(()); }
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
@@ -775,7 +775,7 @@ async fn await_ingress() -> Result<()> {
         return outcome;
     }
     let progress = pg(&format!(
-        "SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),'checkpoint',(SELECT to_jsonb(d)-'group_cursor' FROM mdm_management.asset_dispatch d WHERE tenant_id='{TENANT}'),'jobs',(SELECT jsonb_agg(p) FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase,r.object_count FROM mdm_management.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p))"
+        "SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),'checkpoint',(SELECT to_jsonb(d)-'group_cursor' FROM mdm_planning.asset_dispatch d WHERE tenant_id='{TENANT}'),'jobs',(SELECT jsonb_agg(p) FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase,r.object_count FROM mdm_automation.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p))"
     ))?;
     anyhow::bail!("fixture ingress did not settle: {progress}")
 }
@@ -883,14 +883,16 @@ async fn policy_item_count(
 
 // Exercise the route-to-capability map independently of the full business flow.
 // Authorized missing/stale targets must reach domain validation; denied calls
-// must stop before any management, policy, resource or release mutation.
+// must stop before any planning, policy, resource or release mutation.
 async fn permission_matrix(
     base: &Value,
     reader: Arc<InventoryReader>,
     session: &Browser,
 ) -> Result<()> {
     let id = uuid::Uuid::new_v4();
-    let source = base["management"]["sources"][0]["name"].as_str().unwrap();
+    let source = base["flow"]["publication"]["sources"][0]["name"]
+        .as_str()
+        .unwrap();
     let release = format!("/api/v1/software-sources/{source}/candidates/{id}");
     let op = |input: Value| {
         Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":999,"input":input}))
@@ -1035,7 +1037,7 @@ async fn permission_matrix(
     let expected_denied = cases.len() * (grants.len() - 1);
     let counts = || {
         pg(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.operations),(SELECT count(*) FROM mdm_management.scope_versions),(SELECT count(*) FROM mdm_management.automation_jobs),(SELECT count(*) FROM mdm_management.policy_assignments),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_flow.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_planning.policy_assignments),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
         )
     };
     // Exercise every permission change against the same running service. Rebuilding
@@ -1199,7 +1201,7 @@ async fn derived_result_authorization(
         }
         Box::pin(crate::identity_fixture::set_grants(TENANT, member, grants)).await?;
         let before = pg(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.automation_jobs))",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_automation.automation_jobs))",
         )?;
         for (path, revision, input) in [
             (
@@ -1228,7 +1230,7 @@ async fn derived_result_authorization(
         }
         ensure!(
             pg(
-                "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_management.automation_jobs))"
+                "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_automation.automation_jobs))"
             )? == before,
             "denied dynamic write enqueued work"
         );

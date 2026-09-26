@@ -185,7 +185,7 @@ class CandidateInputs(unittest.TestCase):
                 candidate.verify_candidate(root)
                 docker.assert_called_once()
                 docker.reset_mock()
-                path = root / 'deployment/management-roles.sql'; path.write_text('changed')
+                path = root / 'deployment/planning-roles.sql'; path.write_text('changed')
                 with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
                 docker.assert_not_called()
                 path.unlink()

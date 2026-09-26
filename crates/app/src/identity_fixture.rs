@@ -64,7 +64,7 @@ fn save(identity: &Identity, login: &str, secret: &SessionSecret) -> Result<()> 
     Ok(())
 }
 #[tokio::test]
-#[ignore = "make t2: seed through public account management after operator initialization"]
+#[ignore = "make t2: seed through public account planning after operator initialization"]
 async fn seed_accounts() -> Result<()> {
     for tenant in [
         "11111111-1111-4111-8111-111111111111",

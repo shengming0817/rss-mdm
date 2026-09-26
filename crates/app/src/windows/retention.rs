@@ -104,10 +104,10 @@ pub(crate) fn registration(
             tokio::select! { biased; ()=token.cancelled()=>return Ok(()), _=tick.tick()=>{} }
             let result=tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=tokio::time::timeout(Duration::from_secs(7),prune_management(&database, &audit_store, &tenant))=>result };
             match result {
-                Ok(Ok(count)) => { failures=0; if count>0 { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention","sessions":count})); } }
+                Ok(Ok(count)) => { failures=0; if count>0 { eprintln!("{}",serde_json::json!({"event":"mdm_planning_retention","sessions":count})); } }
                 failed => {
                     failures=failures.saturating_add(1);
-                    if failures.is_power_of_two() { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention_failure","kind":if failed.is_err() { "deadline" } else { "access_store" },"count":failures})); }
+                    if failures.is_power_of_two() { eprintln!("{}",serde_json::json!({"event":"mdm_planning_retention_failure","kind":if failed.is_err() { "deadline" } else { "access_store" },"count":failures})); }
                 }
             }
         }

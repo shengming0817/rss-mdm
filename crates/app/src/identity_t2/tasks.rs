@@ -125,11 +125,11 @@ async fn plan(
     router: &Router,
     resource: Uuid,
     now: i64,
-    commands: &crate::commands::Commands,
+    execution: &crate::execution::ExecutionService,
 ) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let body = json!({"operationId":id,"resource":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default","parameters":{},"devices":[DEVICE_ID],"schedule":{"trigger":{"kind":"manual"},"notBefore":now-1,"until":now+600,"jitterSeconds":0,"window":null},"runLifetimeSeconds":300});
-    commands.inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+    execution.inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(
         author
             .call(
@@ -169,7 +169,7 @@ async fn plan(
             == StatusCode::FORBIDDEN
     );
     let approval = json!({"operationId":Uuid::new_v4()});
-    commands.inject_fault(
+    execution.inject_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     ensure!(
@@ -207,7 +207,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["tasks"] = json!({"directory":temp.path(),"private_key_file":keyfile,"key_id":"fixture","trusted_keys":{"fixture":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())}});
-    let (router, commands) = crate::api::application_fixture(
+    let (router, execution) = crate::api::application_fixture(
         serde_json::from_value(base.clone())?,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
@@ -255,7 +255,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         operation: crate::authorization::Permission::InventoryRead,
         scope: crate::authorization::Scope::AllDevices,
     });
-    crate::identity_fixture::set_grants(TENANT, &author_id, grants).await?;
+    crate::identity_fixture::set_grants(TENANT, &author_id, grants.clone()).await?;
     crate::identity_fixture::set_grants(
         TENANT,
         &reviewer_id,
@@ -353,7 +353,17 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     )
     .await?;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let plan_id = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    frozen_scope_matrix(
+        &mut author,
+        &mut reviewer,
+        &router,
+        id,
+        &execution,
+        &base,
+        &grants,
+    )
+    .await?;
+    let plan_id = plan(&mut author, &mut reviewer, &router, id, now, &execution).await?;
     ensure!(
         author
             .call(
@@ -367,7 +377,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
             == StatusCode::CONFLICT
     );
     let config: Config = serde_json::from_value(base.clone())?;
-    let worker = crate::commands::Commands::open(
+    let worker = crate::flow::execution::open(
         &config,
         crate::identity_fixture::audit_store(&config).await?,
     )
@@ -378,7 +388,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     )?;
     let mut startup = stack.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::commands::Resource(worker.clone()),
+        crate::execution::Resource(worker.clone()),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(worker.registration().critical());
@@ -398,7 +408,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     })
     .await??;
     let claim_operation = Uuid::new_v4();
-    commands.inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+    execution.inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(
         claim_request(&router, claim_operation).await?.0 == StatusCode::SERVICE_UNAVAILABLE,
         "claim commit-pending fault was not surfaced"
@@ -438,7 +448,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         })?;
     let result_operation = Uuid::new_v4();
     let mut result = json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
-    commands.inject_fault(
+    execution.inject_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     ensure!(
@@ -473,7 +483,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     ensure!(pg("SELECT count(*) FROM mdm_access.collection_runs WHERE source='agent.script' AND delivery_pending")?.trim()=="2");
     ensure!(
         pg(&format!(
-            "SELECT count(*) FROM rss_device_command.commands WHERE command_id='{}'",
+            "SELECT count(*) FROM rss_device_command.execution WHERE command_id='{}'",
             signed.payload.task_id
         ))?
         .trim()
@@ -519,7 +529,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         )
         .await?;
     ensure!(read.0 == StatusCode::OK);
-    plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    plan(&mut author, &mut reviewer, &router, id, now, &execution).await?;
     let task = claim(&router).await?;
     task_event(&router, &task, json!({"kind":"received"})).await?;
     task_event(&router, &task, json!({"kind":"start"})).await?;
@@ -538,15 +548,15 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
             == "1.2",
         "bad output replaced trusted value: {detail}"
     );
-    let timeout_plan = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    let timeout_plan = plan(&mut author, &mut reviewer, &router, id, now, &execution).await?;
     let timeout_task = claim(&router).await?;
     task_event(&router, &timeout_task, json!({"kind":"received"})).await?;
     task_event(&router, &timeout_task, json!({"kind":"start"})).await?;
-    let cancel_plan = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    let cancel_plan = plan(&mut author, &mut reviewer, &router, id, now, &execution).await?;
     let cancel_task = claim(&router).await?;
     task_event(&router, &cancel_task, json!({"kind":"received"})).await?;
     task_event(&router, &cancel_task, json!({"kind":"start"})).await?;
-    let queued_plan = plan(&mut author, &mut reviewer, &router, id, now, &commands).await?;
+    let queued_plan = plan(&mut author, &mut reviewer, &router, id, now, &execution).await?;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if pg(&format!(
@@ -562,8 +572,8 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     })
     .await??;
     ensure!(stack.shutdown().join().await?.is_clean());
-    capacity::verify(&mut author, &mut reviewer, &router, id, &commands).await?;
-    scheduled_matrix(&mut author, &mut reviewer, &router, id, &commands, &config).await?;
+    capacity::verify(&mut author, &mut reviewer, &router, id, &execution).await?;
+    scheduled_matrix(&mut author, &mut reviewer, &router, id, &execution, &config).await?;
     let cancel_operation = Uuid::new_v4();
     let cancel_path = format!("/api/v3/script-plans/{cancel_plan}/cancel");
     let cancel_request = json!({"operationId":cancel_operation});
@@ -576,12 +586,12 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{timeout_id}'"
     ))?;
     pg(&format!(
-        "UPDATE mdm_commands.action_plans SET recovery_after=NULL WHERE id IN ('{timeout_plan}','{cancel_plan}','{queued_plan}')"
+        "UPDATE mdm_commands.action_progress SET recovery_after=NULL WHERE id IN ('{timeout_plan}','{cancel_plan}','{queued_plan}')"
     ))?;
     let before_runs = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
     let before_attempts = pg("SELECT count(*) FROM mdm_commands.action_attempts")?;
     let before_outbox = pg("SELECT count(*) FROM rss_transactional_messaging.outbox")?;
-    let restarted = crate::commands::Commands::open(
+    let restarted = crate::flow::execution::open(
         &config,
         crate::identity_fixture::audit_store(&config).await?,
     )
@@ -641,7 +651,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         .trim()
             == "confirmed"
     );
-    rss_runtime::ManagedResource::shutdown(&crate::commands::Resource(restarted)).await?;
+    rss_runtime::ManagedResource::shutdown(&crate::execution::Resource(restarted)).await?;
     let pending = claim(&router).await?;
     let pending = poll::verify(&router, pending).await?;
     ensure!(
@@ -804,7 +814,7 @@ async fn scheduled_matrix(
     reviewer: &mut Browser,
     router: &Router,
     resource: Uuid,
-    commands: &crate::commands::Commands,
+    execution: &crate::execution::ExecutionService,
     config: &Config,
 ) -> Result<()> {
     // Seed the capacity boundary, then exercise admission through the authenticated API.
@@ -815,7 +825,7 @@ async fn scheduled_matrix(
     let request = json!({"operationId":seed,"resource":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default","parameters":{},"devices":[DEVICE_ID],"schedule":{"trigger":{"kind":"check_in","minimumSeconds":60},"notBefore":now,"until":now+86400,"jitterSeconds":0,"window":null,"misfire":"skip"},"runLifetimeSeconds":300});
     post(author, router, "/api/v3/script-plans", request.clone()).await?;
     pg(&format!(
-        "INSERT INTO mdm_commands.action_plans(tenant_id,id,resource,version,document,fingerprint,author,author_approvals,scan_at) SELECT tenant_id,gen_random_uuid(),resource,version,document,fingerprint,author,author_approvals,scan_at FROM mdm_commands.action_plans CROSS JOIN generate_series(1,127) WHERE id='{seed}'"
+        "INSERT INTO mdm_planning.action_plans(tenant_id,id,resource,version,document,fingerprint,author,author_approvals) SELECT tenant_id,gen_random_uuid(),resource,version,document,fingerprint,author,author_approvals FROM mdm_planning.action_plans CROSS JOIN generate_series(1,127) WHERE id='{seed}'"
     ))?;
     // Exact retries remain replayable even at capacity.
     post(author, router, "/api/v3/script-plans", request.clone()).await?;
@@ -842,7 +852,7 @@ async fn scheduled_matrix(
     .await?;
     post(author, router, "/api/v3/script-plans", over).await?;
     pg(
-        "UPDATE mdm_commands.action_plans SET active=false WHERE document->'input'->'schedule'->'trigger'->>'kind'='check_in'",
+        "UPDATE mdm_planning.action_plans SET active=false WHERE document->'input'->'schedule'->'trigger'->>'kind'='check_in'",
     )?;
     let fold = next_new_york_fold(now)?;
     let mut cases = Vec::new();
@@ -866,16 +876,16 @@ async fn scheduled_matrix(
         )
         .await?;
         // Reopening the actual PG runtime restores the cursor; no in-memory deduplication.
-        let restarted = crate::commands::Commands::open(
+        let restarted = crate::flow::execution::open(
             config,
             crate::identity_fixture::audit_store(config).await?,
         )
         .await?;
         tokio::try_join!(
-            commands.scan_action_fixture(id, at),
+            execution.scan_action_fixture(id, at),
             restarted.scan_action_fixture(id, at)
         )?;
-        rss_runtime::ManagedResource::shutdown(&crate::commands::Resource(restarted)).await?;
+        rss_runtime::ManagedResource::shutdown(&crate::execution::Resource(restarted)).await?;
         ensure!(
             pg(&format!(
                 "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{id}'"
@@ -951,3 +961,189 @@ async fn group_matrix(author: &mut Browser, router: &Router, config: &Value) -> 
 mod capacity;
 mod history;
 mod poll;
+
+async fn frozen_scope_matrix(
+    author: &mut Browser,
+    reviewer: &mut Browser,
+    router: &Router,
+    resource: Uuid,
+    execution: &crate::execution::ExecutionService,
+    base: &Value,
+    author_grants: &[crate::authorization::Grant],
+) -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    const EXTRA: &str = "scope-extra-device";
+    let author_id = browser_subject(author, router).await?;
+    let reviewer_id = browser_subject(reviewer, router).await?;
+    let mut grants = author_grants.to_vec();
+    grants.extend([
+        Grant {
+            operation: Permission::ScopeRead,
+            scope: Scope::Tenant,
+        },
+        Grant {
+            operation: Permission::ScopeWrite,
+            scope: Scope::Tenant,
+        },
+    ]);
+    grants.extend(crate::identity_fixture::device_grants(
+        Some(EXTRA),
+        &[
+            "enrollment",
+            "script_execute",
+            "operation_read",
+            "operation_cancel",
+        ],
+    )?);
+    crate::identity_fixture::set_grants(TENANT, &author_id, grants).await?;
+    let mut reviewer_grants =
+        crate::identity_fixture::device_grants(Some(DEVICE_ID), &["script_approve"])?;
+    reviewer_grants.extend(crate::identity_fixture::device_grants(
+        Some(EXTRA),
+        &["script_approve"],
+    )?);
+    crate::identity_fixture::set_grants(TENANT, &reviewer_id, reviewer_grants).await?;
+    author.operation = Some(Uuid::new_v4());
+    let password = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    let enrolled = post(
+        author,
+        router,
+        "/api/v3/enrollments",
+        json!({"deviceId":EXTRA,"password":password,"source":"agent.builtin"}),
+    )
+    .await?;
+    author.operation = None;
+    let registered=agent_call(router,Method::POST,"/api/agent/v2/registrations",None,Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"enrollmentId":enrolled["enrollmentId"],"password":password,"credential":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ","capabilities":["inventory.basic.v2","task.execute.v2"]}))).await?;
+    ensure!(
+        registered.0 == StatusCode::CREATED,
+        "scope device registration: {registered:?}"
+    );
+    let automation = start_automation(base).await?;
+    let group = Uuid::new_v4();
+    let scope = Uuid::new_v4();
+    let group_path = format!("/api/v2/groups/{group}");
+    let scope_path = format!("/api/v2/scopes/{scope}");
+    post(author,router,&group_path,json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"frozen-script-targets","description":"","criteria":null}})).await?;
+    post(author,router,&group_path,json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[DEVICE_ID],"remove":[]}})).await?;
+    let created=post(author,router,&scope_path,json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}}})).await?;
+    await_task(
+        author,
+        router,
+        &format!("{scope_path}/tasks/{}", created["task"].as_str().unwrap()),
+    )
+    .await?;
+    let (_, snapshot) = author.call(router, Method::GET, &scope_path, None).await?;
+    let revision = snapshot["resolutionRevision"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("missing resolution revision: {snapshot}"))?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let old = Uuid::new_v4();
+    let request = json!({"operationId":old,"resource":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default","parameters":{},"scopeRef":{"id":scope,"resolutionRevision":revision},"schedule":{"trigger":{"kind":"once","at":now+3600},"notBefore":now,"until":now+7200,"jitterSeconds":0,"window":null,"misfire":"coalesce_one"},"runLifetimeSeconds":300});
+    let receipt = post(author, router, "/api/v3/script-plans", request.clone()).await?;
+    ensure!(receipt["targetCount"] == 1);
+    post(
+        reviewer,
+        router,
+        &format!("/api/v3/script-plans/{old}/approve"),
+        json!({"operationId":Uuid::new_v4()}),
+    )
+    .await?;
+    let (_, current) = author.call(router, Method::GET, &group_path, None).await?;
+    let changed=post(author,router,&group_path,json!({"operationId":Uuid::new_v4(),"expectedRevision":current["group"]["revision"],"input":{"action":"members","add":[EXTRA],"remove":[]}})).await?;
+    if let Some(task) = changed["task"].as_str() {
+        await_task(author, router, &format!("{group_path}/tasks/{task}")).await?;
+    }
+    let next = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (_, current) = author.call(router, Method::GET, &scope_path, None).await?;
+            if current["resolutionRevision"]
+                .as_u64()
+                .is_some_and(|v| v > revision)
+            {
+                return Ok::<_, anyhow::Error>(current["resolutionRevision"].clone());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    ensure!(
+        post(author, router, "/api/v3/script-plans", request.clone()).await? == receipt,
+        "scope change must not re-resolve a retry"
+    );
+    let (_, frozen) = author
+        .call(
+            router,
+            Method::GET,
+            &format!("/api/v3/script-plans/{old}"),
+            None,
+        )
+        .await?;
+    ensure!(frozen["definition"]["targets"]["devices"] == json!([DEVICE_ID]));
+    let mut stale = request.clone();
+    stale["operationId"] = json!(Uuid::new_v4());
+    ensure!(
+        author
+            .call(router, Method::POST, "/api/v3/script-plans", Some(stale))
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    let new = Uuid::new_v4();
+    let mut fresh = request;
+    fresh["operationId"] = json!(new);
+    fresh["scopeRef"]["resolutionRevision"] = next;
+    ensure!(post(author, router, "/api/v3/script-plans", fresh).await?["targetCount"] == 2);
+    // New target set cannot execute before its own independent approval.
+    execution.scan_action_fixture(new, now + 3601).await?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{new}'"
+        ))?
+        .trim()
+            == "0"
+    );
+    post(
+        reviewer,
+        router,
+        &format!("/api/v3/script-plans/{new}/approve"),
+        json!({"operationId":Uuid::new_v4()}),
+    )
+    .await?;
+    let config: Config = serde_json::from_value(base.clone())?;
+    let restarted = crate::flow::execution::open(
+        &config,
+        crate::identity_fixture::audit_store(&config).await?,
+    )
+    .await?;
+    for (plan, count) in [(old, 1), (new, 2)] {
+        tokio::try_join!(
+            execution.scan_action_fixture(plan, now + 3601),
+            restarted.scan_action_fixture(plan, now + 3601)
+        )?;
+        ensure!(
+            pg(&format!(
+                "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{plan}'"
+            ))?
+            .trim()
+                == count.to_string()
+        );
+        post(
+            author,
+            router,
+            &format!("/api/v3/script-plans/{plan}/cancel"),
+            json!({"operationId":Uuid::new_v4()}),
+        )
+        .await?;
+        execution.recover_action_fixture(plan).await?;
+    }
+    rss_runtime::ManagedResource::shutdown(&crate::execution::Resource(restarted)).await?;
+    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::identity_fixture::set_grants(TENANT, &author_id, author_grants.to_vec()).await?;
+    crate::identity_fixture::set_grants(
+        TENANT,
+        &reviewer_id,
+        crate::identity_fixture::device_grants(Some(DEVICE_ID), &["script_approve"])?,
+    )
+    .await?;
+    Ok(())
+}

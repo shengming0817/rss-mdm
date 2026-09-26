@@ -97,7 +97,7 @@ pub(super) fn enrollment(
         mdm.insert(key.into(), value);
     }
     let mut profile = payload("Configuration", &identifier, enrollment);
-    profile.insert("PayloadDisplayName".into(), "RSS Device Management".into());
+    profile.insert("PayloadDisplayName".into(), "RSS Device Planning".into());
     profile.insert(
         "PayloadContent".into(),
         Value::Array(vec![scep.into(), mdm.into()]),

@@ -18,7 +18,7 @@ class FoundationBoundaries(unittest.TestCase):
 
     def test_assets_execute_through_their_own_capability(self):
         violations = []
-        for path in (SOURCE / 'management').rglob('*.rs'):
+        for path in (SOURCE / 'planning').rglob('*.rs'):
             if re.search(r'Command::Asset\b', path.read_text()):
                 violations.append(str(path.relative_to(ROOT)))
         self.assertEqual(violations, [])
@@ -47,7 +47,7 @@ class FoundationBoundaries(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_asset_queries_use_owner_read_interfaces(self):
-        for path in (SOURCE / 'management/assets').glob('*.rs'):
+        for path in (SOURCE / 'assets').glob('*.rs'):
             self.assertNotIn('mdm_access.', path.read_text(), str(path))
 
     def test_only_composition_and_fixtures_can_use_assembly(self):

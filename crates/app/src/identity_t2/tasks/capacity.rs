@@ -5,7 +5,7 @@ pub(super) async fn verify(
     reviewer: &mut Browser,
     router: &Router,
     resource: Uuid,
-    commands: &crate::commands::Commands,
+    execution: &crate::execution::ExecutionService,
 ) -> Result<()> {
     let now = pg("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")?
         .trim()
@@ -51,7 +51,7 @@ pub(super) async fn verify(
     );
     ensure!(
         pg(&format!(
-            "SELECT reviewer IS NULL AND NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE plan='{manual}') FROM mdm_commands.action_plans WHERE id='{manual}'"
+            "SELECT reviewer IS NULL AND NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE plan='{manual}') FROM mdm_planning.action_plans WHERE id='{manual}'"
         ))?
         .trim()
             == "t",
@@ -74,19 +74,19 @@ pub(super) async fn verify(
     )
     .await?;
     let before = pg(&format!(
-        "SELECT scan_at FROM mdm_commands.action_plans WHERE id='{timer}'"
+        "SELECT scan_at FROM mdm_planning.action_plans WHERE id='{timer}'"
     ))?;
     // The authoring requests advance database time; scan the next interval boundary,
     // not a timestamp captured before the plan existed.
-    commands.scan_action_fixture(timer, now + 60).await?;
+    execution.scan_action_fixture(timer, now + 60).await?;
     ensure!(
         pg(&format!(
-            "SELECT scan_at FROM mdm_commands.action_plans WHERE id='{timer}'"
+            "SELECT scan_at FROM mdm_planning.action_plans WHERE id='{timer}'"
         ))? == before,
         "capacity-blocked timer advanced its cursor"
     );
     let blocked = pg(&format!(
-        "SELECT blocked_at FROM mdm_commands.action_plans WHERE id='{timer}'"
+        "SELECT blocked_at FROM mdm_planning.action_plans WHERE id='{timer}'"
     ))?
     .trim()
     .parse::<i64>()?;
@@ -99,7 +99,7 @@ pub(super) async fn verify(
     );
 
     pg("DELETE FROM mdm_commands.action_runs WHERE occurrence LIKE 'capacity-fixture:%'")?;
-    commands.scan_action_fixture(timer, blocked + 60).await?;
+    execution.scan_action_fixture(timer, blocked + 60).await?;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.action_runs WHERE plan='{timer}'"
@@ -110,7 +110,7 @@ pub(super) async fn verify(
     );
     ensure!(
         pg(&format!(
-            "SELECT scan_at={blocked} AND blocked_at IS NULL FROM mdm_commands.action_plans WHERE id='{timer}'"
+            "SELECT scan_at={blocked} AND blocked_at IS NULL FROM mdm_planning.action_plans WHERE id='{timer}'"
         ))?
         .trim()
             == "t"

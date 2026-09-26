@@ -196,7 +196,7 @@ impl Fixture {
                 sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?)
                     .await?;
             let count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1",
+                "SELECT count(*) FROM rss_device_command.execution WHERE command_id=$1",
             )
             .bind(run.to_string())
             .fetch_one(&mut pg)

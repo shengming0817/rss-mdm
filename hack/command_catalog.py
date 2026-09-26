@@ -8,12 +8,12 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-NAMES = ("catalog", "dependencies", "management")
+NAMES = ("catalog", "dependencies", "planning")
 
 def capture(container, mode):
-    directory = ROOT / "crates/app/src/commands"
+    directory = ROOT / "crates/app/src/execution"
     query = "BEGIN; SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog;\n"
-    paths = {name: (directory / f"{name}.sql") if name != "management" else ROOT / "crates/app/src/management/catalog.sql" for name in NAMES}
+    paths = {name: (directory / f"{name}.sql") if name != "planning" else ROOT / "crates/app/src/planning/catalog.sql" for name in NAMES}
     query += "\n".join(paths[name].read_text() + ";" for name in NAMES)
     query += "\nROLLBACK;"
     result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=query, text=True, capture_output=True)

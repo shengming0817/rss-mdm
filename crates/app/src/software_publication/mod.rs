@@ -1,4 +1,4 @@
-//! Controlled backend use cases. Management HTTP identity/authorization belongs to N12.
+//! Controlled backend use cases. Planning HTTP identity/authorization belongs to N12.
 mod artifact;
 mod config;
 mod driver;
@@ -175,3 +175,8 @@ mod diagnostics_tests {
         assert!(std::error::Error::source(&error).is_some());
     }
 }
+
+pub(crate) mod http;
+mod wire;
+
+pub(crate) mod references;

@@ -104,8 +104,8 @@ pub struct Config {
     pub access_database: Database,
     pub runtime_database: Database,
     pub command_database: Database,
-    pub(crate) tasks: Option<crate::commands::actions::content::Config>,
-    pub(crate) management: crate::management::Config,
+    pub(crate) tasks: Option<crate::task_content::Config>,
+    pub(crate) flow: crate::flow::Config,
     pub identity_management: Vec<IdentityManagementGrant>,
     pub native_protocols: NativeProtocols,
 }
@@ -156,9 +156,9 @@ impl Config {
             || self.command_database.port != self.access_database.port
             || self.command_database.name != self.access_database.name
         {
-            return Err(Error::Configuration(ConfigIssue::Commands));
+            return Err(Error::Configuration(ConfigIssue::Execution));
         }
-        self.management.validate(&self.access_database)?;
+        self.flow.validate(&self.access_database)?;
         if let Some(windows) = &self.native_protocols.windows {
             windows.validate(self.listen)?;
         }
@@ -269,22 +269,22 @@ mod tests {
             (
                 "/command_database/user",
                 serde_json::json!("mdm_access"),
-                "Commands",
+                "Execution",
             ),
             (
                 "/command_database/host",
                 serde_json::json!("other-host"),
-                "Commands",
+                "Execution",
             ),
             (
                 "/command_database/port",
                 serde_json::json!(5433),
-                "Commands",
+                "Execution",
             ),
             (
                 "/command_database/name",
                 serde_json::json!("other-db"),
-                "Commands",
+                "Execution",
             ),
             (
                 "/access_database/user",

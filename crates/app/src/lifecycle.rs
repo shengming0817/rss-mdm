@@ -88,9 +88,9 @@ pub async fn serve(
                         access,
                         tenant,
                         runtime,
-                        commands,
+                        execution,
                         automation,
-                    ) = tokio::time::timeout(compiled.config.management.startup_budget(), async {
+                    ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
                             crate::Database::connect(
                                 compiled.config.access_database.options().map_err(|e| {
@@ -166,9 +166,9 @@ pub async fn serve(
                             clock,
                             readiness,
                         ));
-                        let management = compiled
+                        let planning = compiled
                             .config
-                            .management
+                            .flow
                             .open(
                                 audit_store.clone(),
                                 rss_request_context::TenantId::parse(
@@ -181,22 +181,22 @@ pub async fn serve(
                                 },
                             )
                             .await
-                            .map_err(|e| ProcessError::at("startup.management", e))?;
-                        let commands =
-                            crate::commands::Commands::open(&compiled.config, audit_store.clone())
+                            .map_err(|e| ProcessError::at("startup.planning", e))?;
+                        let execution =
+                            crate::flow::execution::open(&compiled.config, audit_store.clone())
                                 .await
-                                .map_err(|e| ProcessError::at("startup.commands", e))?;
-                        let automation = crate::management::automation::Automation::open(
-                            management.clone(),
-                            &compiled.config.management.database,
+                                .map_err(|e| ProcessError::at("startup.execution", e))?;
+                        let automation = crate::automation::Automation::open(
+                            planning.clone(),
+                            &compiled.config.flow.storage.database,
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.asset_automation", e))?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            crate::management::automation::Resource(automation.clone()),
+                            crate::automation::Resource(automation.clone()),
                         ));
                         startup.stage_resource(DynManagedResource::new_box(
-                            crate::commands::Resource(commands.clone()),
+                            crate::execution::Resource(execution.clone()),
                         ));
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
@@ -216,8 +216,8 @@ pub async fn serve(
                                 monotonic,
                                 access: access.clone(),
                                 runtime: runtime.clone(),
-                                management,
-                                commands: commands.clone(),
+                                flow: planning,
+                                execution: execution.clone(),
                                 identity,
                             },
                         )
@@ -251,7 +251,7 @@ pub async fn serve(
                             access,
                             tenant,
                             runtime,
-                            commands,
+                            execution,
                             automation,
                         ))
                     })
@@ -265,7 +265,7 @@ pub async fn serve(
                         launch.stage_task_with_token(
                             crate::apple::push::registration(
                                 apple,
-                                commands.clone(),
+                                execution.clone(),
                                 access.clone(),
                                 audit_store.clone(),
                                 tenant.clone(),
@@ -273,7 +273,7 @@ pub async fn serve(
                             .critical(),
                         );
                     }
-                    launch.stage_deferred_task_with_token(commands.registration().critical());
+                    launch.stage_deferred_task_with_token(execution.registration().critical());
                     launch.stage_deferred_task_with_token(automation.registration().critical());
                     launch.stage_deferred_task_with_token(runtime.registration().critical());
                     if native_listeners

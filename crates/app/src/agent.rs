@@ -58,9 +58,7 @@ impl IntoResponse for AgentError {
                         wire::ErrorCode::OperationUnknown
                     }
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
-                    Error::NotFound | Error::ManagementNotFound(_) => {
-                        wire::ErrorCode::ReportNotFound
-                    }
+                    Error::NotFound | Error::ObjectNotFound(_) => wire::ErrorCode::ReportNotFound,
                     Error::Configuration(_) | Error::Unavailable(_) | Error::Unsupported => {
                         wire::ErrorCode::ServiceUnavailable
                     }
@@ -574,7 +572,7 @@ pub(crate) struct HttpState {
     pub(crate) identity: std::sync::Arc<crate::identity::Identity>,
     pub(crate) credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
     pub(crate) devices: std::sync::Arc<crate::device::DeviceService>,
-    pub(crate) collection: std::sync::Arc<crate::management::assets::collection::CollectionService>,
+    pub(crate) collection: std::sync::Arc<crate::assets::collection::CollectionService>,
 }
 
 impl From<crate::enrollment::EnrollmentError> for AgentError {
