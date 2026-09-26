@@ -45,6 +45,10 @@ impl DurableStore for Automation {
         control: &Control<'_, T>,
     ) -> impl std::future::Future<Output = std::result::Result<(), ReconcileError>> + Send {
         Box::pin(async move {
+            // RSS settles with the runner's lifetime control, not the attempt control.
+            // Never turn an unbounded process lifetime into PostgreSQL statement_timeout.
+            let settlement = control.child(Duration::from_secs(6));
+            let control = &settlement;
             if matches!(completion, Completion::Suspended { .. })
                 || (completion == Completion::Converged && claim.target().entity() == "changes")
             {

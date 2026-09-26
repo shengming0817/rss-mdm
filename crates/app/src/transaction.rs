@@ -172,6 +172,7 @@ use serde_json::Value;
 pub(crate) enum TransactionOwner {
     Planning,
     Assets,
+    Compliance,
     ResourceCatalog,
     Publication,
     SoftwareCatalog,
@@ -182,6 +183,7 @@ impl TransactionOwner {
         match self {
             Self::Planning => Failure::PlanningStorage,
             Self::Assets => Failure::AssetsStorage,
+            Self::Compliance => Failure::ComplianceStorage,
             Self::ResourceCatalog => Failure::ResourceStorage,
             Self::Publication => Failure::PublicationStorage,
             Self::SoftwareCatalog => Failure::SoftwareCatalogStorage,

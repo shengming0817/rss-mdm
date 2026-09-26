@@ -164,7 +164,16 @@ impl Planning {
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.scope_sources WHERE tenant_id=$1::uuid AND kind='group' AND target=$2)")
                 .bind(tenant).bind(id.to_string()).fetch_one(c).await
         })).await?;
+        let compliance_tenant = self.tenant;
+        let compliance_used = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    rss_mdm_compliance_postgres::group_used(c, compliance_tenant, id).await
+                })
+            })
+            .await?;
         if used
+            || compliance_used
             || checked(
                 self.policies
                     .has_saved_reference_in(tx, &format!("group-members.{id}"))

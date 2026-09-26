@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 52] {
+fn units() -> [(&'static str, &'static str); 55] {
     [
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
@@ -269,6 +269,15 @@ fn units() -> [(&'static str, &'static str); 52] {
             rss_mdm_software_service::catalog::INSTALL_SQL,
         ),
         ("content-v1", include_str!("content/install.sql")),
+        (
+            "asset-watermark-fence-v1",
+            rss_mdm_inventory_postgres::WATERMARK_FENCE_MIGRATION_SQL,
+        ),
+        ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
+        (
+            "compliance-jobs-v1",
+            include_str!("../migrations/0020_compliance.sql"),
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.

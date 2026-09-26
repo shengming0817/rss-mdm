@@ -12,6 +12,9 @@ pub(crate) enum TaskKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum JobInput {
+    Compliance {
+        input: Box<crate::compliance::Input>,
+    },
     AssetQuery {
         query: assets::Query,
         scope: assets::ReadScope,
@@ -40,6 +43,7 @@ pub(crate) enum JobInput {
 impl JobInput {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
+            Self::Compliance { .. } => "compliance",
             Self::AssetQuery { .. } => "asset_query",
             Self::Group { publish: true, .. } => "group",
             Self::Group { publish: false, .. } => "group_preview",
@@ -49,6 +53,7 @@ impl JobInput {
     }
     pub(crate) fn target(&self) -> String {
         match self {
+            Self::Compliance { input } => input.rule.to_string(),
             Self::AssetQuery { scope, .. } => scope.subject.clone(),
             Self::Group { group, .. } => group.to_string(),
             Self::Scope { scope } => scope.to_string(),

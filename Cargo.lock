@@ -2590,6 +2590,8 @@ dependencies = [
  "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
  "rss-mdm-brew-source",
+ "rss-mdm-compliance",
+ "rss-mdm-compliance-postgres",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
@@ -2681,6 +2683,27 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "rss-mdm-compliance"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-compliance-postgres"
+version = "0.1.0"
+dependencies = [
+ "rss-mdm-compliance",
+ "rss-request-context",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
 ]
 
 [[package]]

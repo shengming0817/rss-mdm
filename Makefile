@@ -31,6 +31,7 @@ _t2:
 	python3 hack/publication-t2.py
 	python3 hack/management-t2.py
 	python3 hack/asset-t2.py
+	python3 hack/compliance-t2.py
 	python3 hack/command-t2.py
 	python3 hack/task-t2.py
 	python3 hack/software-t2.py
@@ -76,3 +77,7 @@ t2-apple:
 .PHONY: t2-software
 t2-software:
 	python3 hack/build_run.py -- python3 hack/software-t2.py
+
+.PHONY: t2-compliance
+t2-compliance:
+	python3 hack/build_run.py -- python3 hack/compliance-t2.py

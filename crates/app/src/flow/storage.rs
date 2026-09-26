@@ -23,6 +23,14 @@ pub(crate) async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result:
         )
 }
 pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::verify_watermark_fence(c).await?;
+            rss_mdm_compliance_postgres::admit(c, tenant).await
+        })
+    })
+    .await?;
     let valid = tx
         .with_connection(|c| {
             Box::pin(async move {

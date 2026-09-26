@@ -11,6 +11,8 @@ def production_paths():
 
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
 OWNERS = {
+    "compliance_write": "compliance/http.rs",
+    "compliance_read": "compliance/http.rs",
     "agent_registration": "agent.rs",
     "agent_report": "agent.rs",
     "agent_report_read": "api.rs",
@@ -71,6 +73,8 @@ OWNERS = {
 
 
 DECLARATIONS = {
+    ('compliance_write', 'compliance/http.rs'),
+    ('compliance_read', 'compliance/http.rs'),
     ('agent_registration', 'agent.rs'),
     ('agent_registration', 'api.rs'),
     ('agent_report', 'agent.rs'),

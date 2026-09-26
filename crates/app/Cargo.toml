@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 rss-mdm-software-service.workspace = true
+rss-mdm-compliance.workspace = true
+rss-mdm-compliance-postgres.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-audit-core.workspace = true
 rss-audit-postgres.workspace = true

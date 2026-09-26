@@ -128,6 +128,7 @@ impl Planning {
             }
         };
         let receipt = checked(self.groups.execute_in(tx, operation, at, &command).await?)?;
+        crate::compliance::group_changed(tx, id).await?;
         let criteria = match &op.input {
             GroupChange::Create { criteria, .. } => Some(criteria.as_ref()),
             GroupChange::Rule { criteria } => Some(Some(criteria)),

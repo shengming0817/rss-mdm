@@ -9,7 +9,7 @@ import tempfile
 from build_run import lease_fds
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOGS = {"catalog": "execution/catalog", "dependencies": "execution/dependencies", "planning": "planning/catalog", "assets": "assets/catalog", "automation": "automation/catalog", "resources": "resource_catalog/catalog", "publication": "../../software-service/src/publication/http_catalog", "software": "../../software-service/src/catalog/catalog", "content": "content/catalog", "flow": "flow/storage/catalog"}
+CATALOGS = {"compliance": "../../compliance-postgres/src/catalog", "catalog": "execution/catalog", "dependencies": "execution/dependencies", "planning": "planning/catalog", "assets": "assets/catalog", "automation": "automation/catalog", "resources": "resource_catalog/catalog", "publication": "../../software-service/src/publication/http_catalog", "software": "../../software-service/src/catalog/catalog", "content": "content/catalog", "flow": "flow/storage/catalog"}
 NAMES = tuple(CATALOGS)
 
 def capture(container, mode):

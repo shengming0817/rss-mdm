@@ -22,6 +22,8 @@ OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
     "rss-mdm-software-service": "crates/software-service",
+    "rss-mdm-compliance": "crates/compliance",
+    "rss-mdm-compliance-postgres": "crates/compliance-postgres",
     "rss-mdm-audit-integration": "crates/audit-integration",
     "rss-mdm-agent-wire": "crates/agent-wire",
     "rss-mdm-backend-postgres-support": "crates/backend-postgres-support",
@@ -241,6 +243,7 @@ GATE_PACKAGES = {
     "agent-wire-compat": {"rss-mdm-agent-wire"},
     "source-t2": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
     "source-t2-oracle": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
+    "compliance-t2": APP_INPUTS | {"rss-mdm-compliance", "rss-mdm-compliance-postgres", "rss-mdm-group-postgres"},
     "group-t2": APP_INPUTS | {"rss-mdm-group-postgres"},
     "backend-t2": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
     "t2": APP_INPUTS | {"inventory-postgres-integration"},
@@ -350,6 +353,7 @@ def main():
         ("management-t2",[sys.executable,"hack/management-t2.py"]),
         ("task-t2",[sys.executable,"hack/task-t2.py"]),
         ("asset-t2",[sys.executable,"hack/asset-t2.py"]),
+        ("compliance-t2",[sys.executable,"hack/compliance-t2.py"]),
         ("command-catalog",[sys.executable,"hack/command_catalog.py","--check"]),
         ("command-t2",[sys.executable,"hack/command-t2.py"]),
         ("apple-t2",[sys.executable,"hack/apple-t2.py"]),
