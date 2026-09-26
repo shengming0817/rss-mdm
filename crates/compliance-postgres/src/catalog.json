@@ -1,42 +1,6 @@
 {
   "columns": [
     [
-      "dispatch",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "dispatch",
-      "consumed",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "dispatch",
-      "watermark",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "dispatch",
-      "cursor",
-      "uuid",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
       "fields",
       "tenant_id",
       "uuid",
@@ -273,27 +237,6 @@
   ],
   "constraints": [
     [
-      "dispatch",
-      "dispatch_check",
-      "c",
-      "CHECK ((watermark >= consumed))",
-      true
-    ],
-    [
-      "dispatch",
-      "dispatch_consumed_check",
-      "c",
-      "CHECK ((consumed >= 0))",
-      true
-    ],
-    [
-      "dispatch",
-      "dispatch_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id)",
-      true
-    ],
-    [
       "fields",
       "fields_pkey",
       "p",
@@ -407,14 +350,6 @@
     ]
   ],
   "indexes": [
-    [
-      "dispatch",
-      "dispatch_pkey",
-      "CREATE UNIQUE INDEX dispatch_pkey ON mdm_compliance.dispatch USING btree (tenant_id)",
-      true,
-      true,
-      true
-    ],
     [
       "fields",
       "fields_by_key",

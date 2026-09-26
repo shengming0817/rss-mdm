@@ -48,8 +48,13 @@ class Selection(unittest.TestCase):
         for name in ['group-t2', 'advisories']:
             self.assertFalse(ci.selected_gate(name, selection), name)
         for package in ci.APP_INPUTS:
-            for name in ['backend-t2', 'asset-t2', 'command-t2']:
+            for name in ['backend-t2', 'asset-t2', 'command-t2', 'compliance-t2']:
                 self.assertTrue(ci.selected_gate(name, {'full': False, 'packages': [package]}), (package, name))
+
+    def test_compliance_owners_select_real_router_gate(self):
+        for package in ['rss-mdm-compliance', 'rss-mdm-compliance-postgres', 'rss-mdm-group-postgres']:
+            self.assertTrue(ci.selected_gate('compliance-t2', {'full': False, 'packages': [package]}))
+        self.assertFalse(ci.selected_gate('compliance-t2', {'full': False, 'packages': ['rss-mdm-winget-source']}))
 
     def test_docs_skip_rust_and_failure_collection_keeps_running(self):
         with tempfile.TemporaryDirectory() as directory:

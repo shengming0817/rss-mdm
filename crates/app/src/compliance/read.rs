@@ -1,6 +1,7 @@
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rss_mdm_compliance::{Current, Status};
+use rss_mdm_compliance::{Assessment, Current};
+use std::collections::BTreeMap;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryCursor {
@@ -13,6 +14,45 @@ struct HistoryCursor {
 }
 
 impl Compliance {
+    pub(super) async fn task(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        rule: Uuid,
+        task: Uuid,
+    ) -> Result<Value> {
+        let (job, done, failure, cursor, forwarded) =
+            crate::automation::jobs::read_in(tx, task).await?;
+        let crate::automation::JobInput::Compliance { input } = job else {
+            return Err(Error::NotFound.into());
+        };
+        if input.rule != rule {
+            return Err(Error::NotFound.into());
+        }
+        let tenant = self.tenant();
+        let (processed, detail) = tx.with_connection(move |c| Box::pin(async move {
+            let processed = pg::result_count(c, tenant, task).await?;
+            let detail: Option<Value> = sqlx::query_scalar("SELECT failure_detail FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant.to_string()).bind(task.to_string()).fetch_one(c).await?;
+            Ok((processed, detail))
+        })).await?;
+        let phase = match failure.as_deref() {
+            Some("superseded") => "superseded",
+            Some(_) => "failed",
+            None if done => "published",
+            None if detail
+                .as_ref()
+                .is_some_and(|d| d["reason"] == "group_input_pending") =>
+            {
+                "waiting_for_groups"
+            }
+            None if cursor.is_some() || forwarded => "evaluating",
+            None => "queued",
+        };
+        Ok(
+            json!({"task":task,"ruleId":rule,"ruleVersion":input.revision,"factWatermark":input.watermark,
+            "phase":phase,"processed":processed,"completed":done,"failure":failure,"diagnostic":detail}),
+        )
+    }
     async fn device(&self, tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
         let t = self.tenant().to_string();
         let d = device.to_owned();
@@ -35,43 +75,63 @@ impl Compliance {
         })
         .await?;
         let rules = tx
-            .with_connection(move |c| Box::pin(async move { pg::rules(c, t, None, 101).await }))
+            .with_connection(move |c| {
+                Box::pin(async move { pg::rules::<crate::assets::Criteria>(c, t, None, 101).await })
+            })
             .await?;
         if rules.len() > 100 {
             return Err(Error::Unavailable(Failure::ComplianceStorage).into());
         }
-        let mut items = Vec::new();
-        let mut statuses = Vec::new();
-        for rule in rules.iter().filter(|r| r.enabled) {
-            let mut previous = None;
-            let mut current = None;
-            if let Some(task) = rule.current_run {
-                let d = device.to_owned();
-                let value = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move { pg::result_at(c, t, task, &d).await })
-                    })
-                    .await?;
-                let (job, done, failure, _, _) = crate::automation::jobs::read_in(tx, task).await?;
-                if let crate::automation::JobInput::Compliance { input } = job {
-                    if done
-                        && failure.is_none()
-                        && rule.desired == Some(task)
-                        && self.fresh(tx, rule, &input).await?
-                    {
-                        current = value.clone();
-                    }
-                } else {
+        let tasks: Vec<_> = rules
+            .iter()
+            .filter_map(|r| r.current_run.map(|id| id.to_string()))
+            .collect();
+        let name = device.to_owned();
+        let rows=tx.with_connection(move|c|Box::pin(async move{
+          sqlx::query("SELECT j.id::text,j.input::text,j.completed,j.failure,e.document::text FROM mdm_automation.automation_jobs j LEFT JOIN mdm_compliance.results e ON (e.tenant_id,e.task)=(j.tenant_id,j.id) AND e.device=$3 WHERE j.tenant_id=$1::uuid AND j.id=ANY($2::uuid[])")
+          .bind(t.to_string()).bind(tasks).bind(name).fetch_all(c).await
+        })).await?;
+        let mut runs = BTreeMap::new();
+        let mut inputs = Vec::new();
+        for row in rows {
+            let id: Uuid = stored(Uuid::parse_str(row.try_get("id")?))?;
+            let job: crate::automation::JobInput =
+                stored(serde_json::from_str(row.try_get("input")?))?;
+            let crate::automation::JobInput::Compliance { input } = job else {
+                return Err(Error::Unavailable(Failure::ComplianceStorage).into());
+            };
+            let value = row
+                .try_get::<Option<&str>, _>("document")?
+                .map(|s| stored(serde_json::from_str::<Assessment>(s)))
+                .transpose()?;
+            if let Some(v) = &value {
+                stored(v.validate())?;
+                if (v.rule_id, v.rule_version, v.fact_watermark)
+                    != (input.rule, input.revision, input.watermark)
+                {
                     return Err(Error::Unavailable(Failure::ComplianceStorage).into());
                 }
-                previous = value;
             }
-            let status = match &current {
-                Some(v) => Current::from(stored(serde_json::from_value::<Status>(
-                    v["status"].clone(),
-                ))?),
-                None => Current::Pending,
+            if row.try_get::<bool, _>("completed")?
+                && row.try_get::<Option<String>, _>("failure")?.is_none()
+            {
+                inputs.push(*input);
+            }
+            runs.insert(id, value);
+        }
+        let fresh = self.inputs_current(tx, &inputs).await?;
+        let mut items = Vec::new();
+        let mut statuses = Vec::new();
+        for rule in rules.into_iter().filter(|r| r.enabled) {
+            let previous = rule.current_run.and_then(|id| runs.remove(&id).flatten());
+            let current = if rule.current_run == rule.desired && fresh.contains(&rule.id) {
+                previous.clone()
+            } else {
+                None
             };
+            let status = current
+                .as_ref()
+                .map_or(Current::Pending, |v| Current::from(v.status));
             statuses.push(status);
             items.push(json!({"ruleId":rule.id,"ruleVersion":rule.revision,"status":status,"current":current,"previous":if status==Current::Pending{previous}else{None}}));
         }
@@ -143,7 +203,9 @@ impl Compliance {
         for r in rows.into_iter().take(limit) {
             let task: String = r.try_get("task")?;
             let failure: Option<String> = r.try_get("failure")?;
-            let mut value: Value = stored(serde_json::from_str(r.try_get("document")?))?;
+            let assessment: Assessment = stored(serde_json::from_str(r.try_get("document")?))?;
+            stored(assessment.validate())?;
+            let mut value = json(&assessment)?;
             value["task"] = json!(task);
             value["disposition"] = json!(match failure.as_deref() {
                 None => "published",

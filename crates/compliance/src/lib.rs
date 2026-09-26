@@ -1,5 +1,7 @@
 //! Deterministic product compliance decisions; time and device execution are not inputs.
 use serde::{Deserialize, Serialize};
+mod model;
+pub use model::*;
 /// Completed assessment, never a worker state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -10,7 +12,8 @@ pub enum Status {
     NotApplicable,
 }
 /// Host-mapped three-valued predicate or target decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Decision {
     Match,
     NoMatch,

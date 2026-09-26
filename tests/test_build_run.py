@@ -273,7 +273,7 @@ class BuildRunTests(unittest.TestCase):
 
     def test_formal_scripts_reject_missing_lease_before_starting_dependencies(self):
         scripts = ['ci.py', 't2.py', 'group-t2.py', 'backend-t2.py', 'management-t2.py',
-                   'publication-t2.py', 'source-t2.py', 'apple-t2.py', 'asset-t2.py',
+                   'publication-t2.py', 'source-t2.py', 'apple-t2.py', 'asset-t2.py', 'compliance-t2.py',
                    'command-t2.py', 'task-t2.py', 'identity_t2.py', 'login_gateway_t2.py']
         for script in scripts:
             with self.subTest(script=script):
@@ -296,7 +296,7 @@ print(json.dumps({'name':Path(sys.argv[0]).name,'target':os.environ.get('CARGO_T
                   'full':os.environ.get('CI_FULL')}))
 '''
         for script in ['ci.py', 't2.py', 'group-t2.py', 'backend-t2.py', 'management-t2.py',
-                       'publication-t2.py', 'source-t2.py', 'apple-t2.py', 'asset-t2.py',
+                       'publication-t2.py', 'source-t2.py', 'apple-t2.py', 'asset-t2.py', 'compliance-t2.py',
                        'command-t2.py', 'task-t2.py', 'identity_t2.py']:
             (hack / script).write_text(fake)
         cargo = self.work / 'cargo'
@@ -305,13 +305,13 @@ print(json.dumps({'name':Path(sys.argv[0]).name,'target':os.environ.get('CARGO_T
         env = self.env | {'PATH': str(self.work) + os.pathsep + os.environ['PATH']}
         for target in ['build', 'check', 'test', 'ci', 'ci-full', 't2', 'source-t2',
                        't2-identity', 't2-group', 't2-backend', 't2-publication',
-                       't2-assets', 't2-tasks', 't2-apple']:
+                       't2-assets', 't2-tasks', 't2-apple', 't2-compliance']:
             with self.subTest(target=target):
                 result = subprocess.run(['make', '-s', target], cwd=self.work, env=env,
                                         capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 records = [json.loads(line) for line in result.stdout.splitlines()]
-                self.assertEqual(len(records), 9 if target == 't2' else 1)
+                self.assertEqual(len(records), 10 if target == 't2' else 1)
                 self.assertEqual(len({record['lease'] for record in records}), 1)
                 self.assertTrue(records[0]['lease'])
                 self.assertIn(str(self.pool), records[0]['target'])

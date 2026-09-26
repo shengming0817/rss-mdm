@@ -21,3 +21,49 @@ fn complete_current_summary_distinguishes_missing_rules_and_unfinished_work() {
         C::NonCompliant
     );
 }
+
+#[test]
+fn platform_evidence_preserves_all_valid_agent_sources() {
+    use rss_mdm_compliance::{
+        Applicability, Assessment, Definition, Input, Platform, Severity, SourceReference, Target,
+    };
+    let input = Input {
+        rule: uuid::Uuid::new_v4(),
+        revision: 1,
+        watermark: 1,
+        evaluated_at: 1,
+        definition: Definition {
+            name: "Agent policy".into(),
+            severity: Severity::High,
+            enabled: true,
+            platform: Platform::All,
+            target: Target::All,
+            criteria: (),
+        },
+        groups: vec![],
+    };
+    let sources = ["agent.builtin", "agent.script", "agent.osquery"]
+        .map(|source| SourceReference {
+            source: source.into(),
+            registration: "registration".into(),
+            generation: "1".into(),
+            epoch: "epoch".into(),
+        })
+        .to_vec();
+    let result = Assessment::evaluate(
+        &input,
+        "dictionary",
+        D::Match,
+        Applicability {
+            platform: Platform::All,
+            platform_decision: D::Match,
+            sources,
+            groups: vec![],
+        },
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(result.status, S::Compliant);
+    assert_eq!(result.applicability.sources.len(), 3);
+}

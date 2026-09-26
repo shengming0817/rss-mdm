@@ -59,7 +59,7 @@ pub async fn verify_watermark_fence(
         .0
         .to_owned()
         + "END ";
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_proc p WHERE p.oid='mdm.lock_asset_watermark(uuid)'::regprocedure AND p.prosecdef AND p.provolatile='v' AND NOT p.proleakproof AND p.prorettype='bigint'::regtype AND p.proconfig=ARRAY['search_path=pg_catalog, mdm'] AND p.prosrc=$1 AND p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql') AND p.proowner=(SELECT relowner FROM pg_class WHERE oid='mdm.asset_clock'::regclass) AND NOT pg_has_role(current_user,p.proowner,'MEMBER') AND has_function_privilege(current_user,p.oid,'EXECUTE') AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR (a.is_grantable AND a.grantee<>p.proowner)))")
+    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_proc p WHERE p.oid='mdm.lock_asset_watermark(uuid)'::regprocedure AND p.prosecdef AND p.provolatile='v' AND NOT p.proleakproof AND p.prorettype='bigint'::regtype AND p.proconfig=ARRAY['search_path=pg_catalog, mdm'] AND p.prosrc=$1 AND p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql') AND p.proowner=(SELECT relowner FROM pg_class WHERE oid='mdm.asset_clock'::regclass) AND NOT pg_has_role(current_user,p.proowner,'MEMBER') AND has_function_privilege(current_user,p.oid,'EXECUTE') AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee NOT IN(p.proowner,(SELECT oid FROM pg_roles WHERE rolname='mdm_flow_runtime')) OR (a.grantee<>p.proowner AND (a.is_grantable OR a.privilege_type<>'EXECUTE'))))")
  .bind(source).fetch_one(c).await?;
     if !valid {
         return Err(sqlx::Error::Protocol(

@@ -229,12 +229,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                     Box::pin(async move {
                                         let result: Result<()> = async {
                                             if ctx.1 == "changes" {
-                                                ctx.0.dispatch_assets_in(tx).await?;
-                                                crate::compliance::Compliance::new(
+                                                let compliance = crate::compliance::Compliance::new(
                                                     (*ctx.0).clone(),
-                                                )
-                                                .dispatch(tx)
-                                                .await?;
+                                                );
+                                                ctx.0.dispatch_assets_in(tx, &compliance).await?;
                                                 return ctx.0.clear_ingress_failure_in(tx).await;
                                             }
                                             let id = checked_input(

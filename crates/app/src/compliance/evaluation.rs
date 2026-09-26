@@ -1,11 +1,14 @@
 use super::*;
-use rss_mdm_compliance::{Decision, Status};
+use rss_mdm_compliance::{
+    Applicability, Assessment, Decision, Explanation, FactReference, FieldEvidence, GroupEvidence,
+    Outcome, SourceReference,
+};
 use rss_mdm_group_postgres as group;
 use std::collections::BTreeMap;
 impl Compliance {
-    pub(super) async fn capture(&self, tx: &mut PgTransaction<'_>, r: &pg::Rule) -> Result<Input> {
+    pub(super) async fn capture(&self, tx: &mut PgTransaction<'_>, r: &Rule) -> Result<Input> {
         let t = self.tenant();
-        let definition: Definition = stored(serde_json::from_value(r.definition.clone()))?;
+        let definition: Definition = r.definition.clone();
         let mut groups = Vec::new();
         let mut ids = definition.groups();
         ids.sort();
@@ -19,6 +22,7 @@ impl Compliance {
             )?;
             let set = checked(self.planning.groups.current_member_set_in(tx, gid).await?)?;
             let mut ready = g.kind == group::GroupKind::Static;
+            let mut asset_watermark = None;
             if let Some(set) = set {
                 let build = checked(self.planning.groups.build_in(tx, set).await?)?;
                 let receipt = build
@@ -35,6 +39,7 @@ impl Compliance {
                         .strip_prefix("assets:")
                         .and_then(|s| s.parse::<i64>().ok())
                         .ok_or(Error::Unavailable(Failure::ComplianceStorage))?;
+                    asset_watermark = Some(at);
                     let tenant = t.to_string();
                     let dirty:bool=tx.with_connection(move|c|Box::pin(async move{
       sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_planning.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
@@ -50,6 +55,7 @@ impl Compliance {
                 member_set: set
                     .map(|v| stored(Uuid::parse_str(&v.to_string())))
                     .transpose()?,
+                asset_watermark,
                 ready,
             });
         }
@@ -75,7 +81,7 @@ impl Compliance {
             groups,
         })
     }
-    pub(super) async fn enqueue(&self, tx: &mut PgTransaction<'_>, r: &pg::Rule) -> Result<Uuid> {
+    pub(super) async fn enqueue(&self, tx: &mut PgTransaction<'_>, r: &Rule) -> Result<Uuid> {
         let input = self.capture(tx, r).await?;
         let task = Uuid::new_v4();
         let t = self.tenant();
@@ -102,36 +108,16 @@ impl Compliance {
     pub(super) async fn fresh(
         &self,
         tx: &mut PgTransaction<'_>,
-        r: &pg::Rule,
+        r: &Rule,
         input: &Input,
     ) -> Result<bool> {
         if !r.enabled || r.id != input.rule || r.revision != input.revision {
             return Ok(false);
         }
-        let now = self.capture(tx, r).await?;
-        if json(&now.definition)? != json(&input.definition)? {
-            return Err(Error::Unavailable(Failure::ComplianceStorage).into());
-        }
-        if now.groups.len() != input.groups.len()
-            || now.groups.iter().zip(&input.groups).any(|(a, b)| {
-                !a.ready
-                    || !b.ready
-                    || a.id != b.id
-                    || a.revision != b.revision
-                    || a.member_set != b.member_set
-                    || a.member_version != b.member_version
-            })
-        {
-            return Ok(false);
-        }
-        let t = self.tenant().to_string();
-        let at = input.watermark;
-        let id = r.id;
-        let dirty:bool=tx.with_connection(move|c|Box::pin(async move{
-   sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_compliance.fields f WHERE f.tenant_id=c.tenant_id AND f.rule_id=$3::uuid AND f.field=ANY(c.fields))))")
-    .bind(t).bind(at).bind(id.to_string()).fetch_one(c).await
-  })).await?;
-        Ok(!dirty)
+        Ok(self
+            .inputs_current(tx, std::slice::from_ref(input))
+            .await?
+            .contains(&r.id))
     }
     pub(crate) async fn advance(
         &self,
@@ -183,15 +169,13 @@ impl Compliance {
                 input,
                 device,
                 e,
-                targets[&device.device],
-                platforms.get(&device.device).copied().unwrap_or_default(),
-            );
+                targets.get(&device.device).cloned().unwrap_or_default(),
+                platforms.get(&device.device).cloned().unwrap_or_default(),
+            )?;
             let t = self.tenant();
-            let rule = input.rule;
             let name = device.device.clone();
-            let at = input.evaluated_at;
             tx.with_connection(move |c| {
-                Box::pin(async move { pg::result(c, t, task, rule, &name, at, &document).await })
+                Box::pin(async move { pg::result(c, t, task, &name, &document).await })
             })
             .await?;
         }
@@ -230,7 +214,7 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         input: &Input,
         devices: &[crate::assets::DeviceView],
-    ) -> Result<BTreeMap<String, (bool, bool)>> {
+    ) -> Result<BTreeMap<String, Vec<SourceReference>>> {
         let t = self.tenant();
         let ids: Vec<_> = devices.iter().map(|d| d.device.clone()).collect();
         let at = input.watermark;
@@ -241,16 +225,18 @@ impl Compliance {
                 )
             })
             .await?;
-        let mut platforms: BTreeMap<String, (bool, bool)> = BTreeMap::new();
-        for s in sources {
-            let flags = platforms.entry(s.try_get("device")?).or_default();
-            match s.try_get::<&str, _>("source")? {
-                "mdm.windows" => flags.0 = true,
-                "mdm.apple" => flags.1 = true,
-                _ => {}
-            }
+        let mut platforms: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
+        for row in sources {
+            platforms
+                .entry(row.try_get("device")?)
+                .or_default()
+                .push(SourceReference {
+                    source: row.try_get("source")?,
+                    registration: row.try_get("registration")?,
+                    generation: row.try_get("generation")?,
+                    epoch: row.try_get("epoch")?,
+                });
         }
-
         Ok(platforms)
     }
 }
@@ -259,53 +245,79 @@ fn assessment(
     input: &Input,
     device: &crate::assets::DeviceView,
     e: group::core::ObjectEvaluation,
-    target: Decision,
-    platforms: (bool, bool),
-) -> Value {
-    let mut applicable = target;
-    let platform = match input.definition.platform {
-        Platform::All => Decision::Match,
-        other => match platforms {
-            (true, false) => {
-                if matches!(other, Platform::Windows) {
-                    Decision::Match
-                } else {
-                    Decision::NoMatch
-                }
-            }
-            (false, true) => {
-                if matches!(other, Platform::Macos) {
-                    Decision::Match
-                } else {
-                    Decision::NoMatch
-                }
-            }
-            _ => Decision::Unknown,
-        },
-    };
-    applicable = match (applicable, platform) {
-        (Decision::NoMatch, _) | (_, Decision::NoMatch) => Decision::NoMatch,
-        (Decision::Unknown, _) | (_, Decision::Unknown) => Decision::Unknown,
-        _ => Decision::Match,
-    };
-    let decision = match e.decision {
+    groups: Vec<GroupEvidence>,
+    sources: Vec<SourceReference>,
+) -> Result<Assessment> {
+    let condition = match e.decision {
         group::core::Decision::Match => Decision::Match,
         group::core::Decision::NoMatch => Decision::NoMatch,
         group::core::Decision::Unknown => Decision::Unknown,
     };
-    let status = rss_mdm_compliance::assess(applicable, decision);
-    let reasons:Vec<_>=e.explanations.iter().map(|x|json!({"path":x.path,"outcome":match x.outcome{group::core::Outcome::Match=>"match",group::core::Outcome::NoMatch=>"no_match",group::core::Outcome::Unknown(r)=>match r{group::core::UnknownReason::Null=>"null",group::core::UnknownReason::Missing=>"missing",group::core::UnknownReason::Deleted=>"deleted",group::core::UnknownReason::Unsupported=>"unsupported",group::core::UnknownReason::Conflict=>"conflict"}}})).collect();
-    let evidence:Vec<_>=e.provenance.keys().filter_map(|field|device.fields.iter().find(|(k,_)|k.as_str()==field).map(|(k,v)|json!({"field":k,"sources":v.sources.iter().map(|s|&s.evidence).collect::<Vec<_>>()}))).collect();
-    let reason = match status {
-        Status::NotApplicable => "not_applicable",
-        Status::Unknown if applicable == Decision::Unknown => "applicability_unknown",
-        Status::Unknown => "facts_unknown",
-        Status::Compliant => "rule_satisfied",
-        Status::NonCompliant => "rule_failed",
+    let explanations = e
+        .explanations
+        .into_iter()
+        .map(|e| Explanation {
+            path: e.path,
+            outcome: match e.outcome {
+                group::core::Outcome::Match => Outcome::Match,
+                group::core::Outcome::NoMatch => Outcome::NoMatch,
+                group::core::Outcome::Unknown(r) => match r {
+                    group::core::UnknownReason::Null => Outcome::Null,
+                    group::core::UnknownReason::Missing => Outcome::Missing,
+                    group::core::UnknownReason::Deleted => Outcome::Deleted,
+                    group::core::UnknownReason::Unsupported => Outcome::Unsupported,
+                    group::core::UnknownReason::Conflict => Outcome::Conflict,
+                },
+            },
+        })
+        .collect();
+    let evidence = e
+        .provenance
+        .keys()
+        .filter_map(|field| {
+            device
+                .fields
+                .iter()
+                .find(|(k, _)| k.as_str() == field)
+                .map(|(k, v)| FieldEvidence {
+                    field: k.as_str().into(),
+                    sources: v
+                        .sources
+                        .iter()
+                        .map(|s| {
+                            let e = &s.evidence;
+                            FactReference {
+                                source: e.source.as_str().into(),
+                                registration: e.registration.clone(),
+                                registration_generation: e.registration_generation,
+                                epoch: e.epoch.clone(),
+                                snapshot_id: e.snapshot_id.clone(),
+                                observed_at: e.observed_at,
+                                received_at: e.received_at,
+                                actor: e.actor.clone(),
+                            }
+                        })
+                        .collect(),
+                })
+        })
+        .collect();
+    let applicability = Applicability {
+        platform: input.definition.platform,
+        platform_decision: rss_mdm_compliance::platform_decision(
+            input.definition.platform,
+            &sources,
+        ),
+        sources,
+        groups,
     };
-    let document = json!({"ruleId":input.rule,"ruleVersion":input.revision,"dictionaryVersion":rss_mdm_inventory::DICTIONARY,"factWatermark":input.watermark,"groups":input.groups,"evaluatedAt":input.evaluated_at,"status":status,"reason":reason,"explanations":reasons,"evidence":evidence});
-
-    document
+    stored(Assessment::evaluate(
+        input,
+        rss_mdm_inventory::DICTIONARY,
+        condition,
+        applicability,
+        explanations,
+        evidence,
+    ))
 }
 
 impl Compliance {
@@ -315,30 +327,36 @@ impl Compliance {
         input: &Input,
         devices: &[crate::assets::DeviceView],
         cursor: Option<String>,
-    ) -> Result<BTreeMap<String, Decision>> {
-        let mut targets: BTreeMap<String, Decision> = devices
+    ) -> Result<BTreeMap<String, Vec<GroupEvidence>>> {
+        let mut targets: BTreeMap<String, Vec<GroupEvidence>> = devices
             .iter()
             .map(|d| {
                 (
                     d.device.clone(),
-                    if matches!(input.definition.target, Target::All) {
-                        Decision::Match
-                    } else {
-                        Decision::NoMatch
-                    },
+                    input
+                        .groups
+                        .iter()
+                        .map(|g| GroupEvidence {
+                            id: g.id,
+                            member_set: g.member_set,
+                            decision: Decision::NoMatch,
+                        })
+                        .collect(),
                 )
             })
             .collect();
-
-        for set in input.groups.iter().filter_map(|g| g.member_set) {
-            self.group_target_page(
-                tx,
-                set,
-                cursor.clone(),
-                devices.last().map(|d| d.device.as_str()),
-                &mut targets,
-            )
-            .await?;
+        for (index, g) in input.groups.iter().enumerate() {
+            if let Some(set) = g.member_set {
+                self.group_target_page(
+                    tx,
+                    set,
+                    cursor.clone(),
+                    devices.last().map(|d| d.device.as_str()),
+                    index,
+                    &mut targets,
+                )
+                .await?;
+            }
         }
         Ok(targets)
     }
@@ -348,7 +366,8 @@ impl Compliance {
         set: Uuid,
         mut after: Option<String>,
         last_device: Option<&str>,
-        targets: &mut BTreeMap<String, Decision>,
+        index: usize,
+        targets: &mut BTreeMap<String, Vec<GroupEvidence>>,
     ) -> Result<()> {
         loop {
             let records = checked(
@@ -368,7 +387,7 @@ impl Compliance {
             if after.as_ref().is_some_and(|a| a >= &last) {
                 return Err(Error::Unavailable(Failure::ComplianceStorage).into());
             }
-            merge_targets(targets, records);
+            merge_targets(targets, index, records);
             if last_device.is_none_or(|d| last.as_str() >= d) {
                 return Ok(());
             }
@@ -376,26 +395,35 @@ impl Compliance {
         }
     }
 }
-fn merge_targets(targets: &mut BTreeMap<String, Decision>, records: Vec<group::DecisionRecord>) {
+fn merge_targets(
+    targets: &mut BTreeMap<String, Vec<GroupEvidence>>,
+    index: usize,
+    records: Vec<group::DecisionRecord>,
+) {
     for record in records {
         if let Some(target) = targets.get_mut(&record.device) {
-            match record.decision {
-                group::DecisionValue::Match => *target = Decision::Match,
-                group::DecisionValue::NoMatch => {}
-                _ if *target != Decision::Match => *target = Decision::Unknown,
-                _ => {}
-            }
+            target[index].decision = match record.decision {
+                group::DecisionValue::Match => Decision::Match,
+                group::DecisionValue::NoMatch => Decision::NoMatch,
+                _ => Decision::Unknown,
+            };
         }
     }
 }
 
 impl Compliance {
-    async fn supersede(&self, tx: &mut PgTransaction<'_>, task: Uuid, r: &pg::Rule) -> Result<()> {
+    async fn supersede(&self, tx: &mut PgTransaction<'_>, task: Uuid, r: &Rule) -> Result<()> {
         // Do not create an unbounded succession of jobs while Group is still converging.
         if r.desired == Some(task) && r.enabled {
             let next = self.capture(tx, r).await?;
             if next.groups.iter().any(|g| !g.ready) {
-                return Err(Error::Unavailable(Failure::ComplianceInputPending).into());
+                let tenant = self.tenant().to_string();
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query(r#"UPDATE mdm_automation.automation_jobs SET failure_detail='{"reason":"group_input_pending"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2::uuid"#)
+                        .bind(tenant).bind(task.to_string()).execute(c).await?;
+                    Ok(())
+                })).await?;
+                return Ok(());
             }
             self.enqueue(tx, r).await?;
         }
@@ -412,8 +440,9 @@ impl Compliance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rss_mdm_compliance::Platform;
     fn input() -> Input {
-        Input{rule:Uuid::nil(),revision:1,definition:serde_json::from_value(json!({"name":"rule","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}})).unwrap(),watermark:1,evaluated_at:1,groups:vec![]}
+        Input{rule:Uuid::new_v4(),revision:1,definition:serde_json::from_value(json!({"name":"rule","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}})).unwrap(),watermark:1,evaluated_at:1,groups:vec![]}
     }
     #[test]
     fn unknown_causes_and_absent_platform_are_not_compliance() {
@@ -443,51 +472,41 @@ mod tests {
                 path: vec![],
                 outcome: group::core::Outcome::Unknown(cause),
             }];
-            let value = assessment(
-                &input,
-                &device,
-                result.clone(),
-                Decision::Match,
-                (false, false),
+            assert_eq!(
+                assessment(&input, &device, result.clone(), vec![], vec![])
+                    .unwrap()
+                    .status,
+                rss_mdm_compliance::Status::Unknown
             );
-            assert_eq!(value["status"], "unknown");
-            assert_ne!(value["explanations"][0]["outcome"], "match");
         }
         result.decision = group::core::Decision::Match;
         input.definition.platform = Platform::Windows;
+        let source = |s: &str| SourceReference {
+            source: s.into(),
+            registration: "registration".into(),
+            generation: "1".into(),
+            epoch: "epoch".into(),
+        };
+        let value = assessment(&input, &device, result.clone(), vec![], vec![]).unwrap();
+        assert_eq!(value.reason, rss_mdm_compliance::Reason::PlatformUnknown);
+        let value = assessment(
+            &input,
+            &device,
+            result.clone(),
+            vec![],
+            vec![source("mdm.apple")],
+        )
+        .unwrap();
         assert_eq!(
-            assessment(
-                &input,
-                &device,
-                result.clone(),
-                Decision::Match,
-                (false, false)
-            )["status"],
-            "unknown"
+            value.reason,
+            rss_mdm_compliance::Reason::PlatformNotApplicable
         );
+        assert_eq!(value.applicability.sources[0].source, "mdm.apple");
         assert_eq!(
-            assessment(
-                &input,
-                &device,
-                result.clone(),
-                Decision::Match,
-                (true, true)
-            )["status"],
-            "unknown"
-        );
-        assert_eq!(
-            assessment(
-                &input,
-                &device,
-                result.clone(),
-                Decision::Match,
-                (false, true)
-            )["status"],
-            "not_applicable"
-        );
-        assert_eq!(
-            assessment(&input, &device, result, Decision::Match, (true, false))["status"],
-            "compliant"
+            assessment(&input, &device, result, vec![], vec![source("mdm.windows")])
+                .unwrap()
+                .status,
+            rss_mdm_compliance::Status::Compliant
         );
     }
     #[test]
@@ -502,7 +521,8 @@ mod tests {
         value["criteria"]["value"] = json!({"kind":"string","value":"false"});
         let rule: Definition = serde_json::from_value(value).unwrap();
         assert!(
-            rule.validate(
+            validate_definition(
+                &rule,
                 TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap(),
                 Uuid::new_v4()
             )

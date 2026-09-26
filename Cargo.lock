@@ -2667,6 +2667,7 @@ name = "rss-mdm-compliance"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "uuid",
 ]
 
 [[package]]

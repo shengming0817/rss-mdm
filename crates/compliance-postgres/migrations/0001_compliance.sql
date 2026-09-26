@@ -31,12 +31,8 @@ CREATE TABLE mdm_compliance.operations (
  tenant_id uuid NOT NULL, id uuid NOT NULL, fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  response jsonb NOT NULL CHECK(octet_length(response::text)<=65536), PRIMARY KEY(tenant_id,id)
 );
-CREATE TABLE mdm_compliance.dispatch (
- tenant_id uuid PRIMARY KEY, consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),
- watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed), cursor uuid
-);
 DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['rules','versions','fields','groups','results','operations','dispatch'] LOOP
+ FOREACH t IN ARRAY ARRAY['rules','versions','fields','groups','results','operations'] LOOP
   EXECUTE format('ALTER TABLE mdm_compliance.%I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE mdm_compliance.%I FORCE ROW LEVEL SECURITY',t);
   EXECUTE format($policy$CREATE POLICY tenant ON mdm_compliance.%I USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)$policy$,t);
@@ -45,5 +41,4 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 GRANT UPDATE(revision,enabled,desired,current_run) ON mdm_compliance.rules TO mdm_flow_runtime;
-GRANT UPDATE(consumed,watermark,cursor) ON mdm_compliance.dispatch TO mdm_flow_runtime;
 GRANT DELETE ON mdm_compliance.fields,mdm_compliance.groups TO mdm_flow_runtime;

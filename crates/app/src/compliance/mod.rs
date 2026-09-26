@@ -12,6 +12,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 mod dispatch;
 mod evaluation;
+mod freshness;
 mod model;
 mod read;
 pub(crate) use dispatch::group_changed;
@@ -27,11 +28,13 @@ impl Compliance {
     fn tenant(&self) -> TenantId {
         self.planning.tenant
     }
-    async fn rule(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<pg::Rule> {
+    async fn rule(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Rule> {
         let t = self.tenant();
-        tx.with_connection(move |c| Box::pin(async move { pg::rule(c, t, id).await }))
-            .await?
-            .ok_or_else(|| Error::NotFound.into())
+        tx.with_connection(move |c| {
+            Box::pin(async move { pg::rule::<crate::assets::Criteria>(c, t, id).await })
+        })
+        .await?
+        .ok_or_else(|| Error::NotFound.into())
     }
     pub(crate) async fn execute(
         &self,
@@ -131,16 +134,24 @@ impl Compliance {
         match command {
             Command::List { after } => {
                 let after = *after;
-                let mut rows = tx
+                let mut rows: Vec<Rule> = tx
                     .with_connection(move |c| {
-                        Box::pin(async move { pg::rules(c, t, after, 51).await })
+                        Box::pin(async move {
+                            pg::rules::<crate::assets::Criteria>(c, t, after, 51).await
+                        })
                     })
                     .await?;
                 let more = rows.len() > 50;
                 rows.truncate(50);
-                Ok(json!({"items":rows,"next":if more{rows.last().map(|r|r.id)}else{None}}))
+                let next = if more {
+                    rows.last().map(|r| r.id)
+                } else {
+                    None
+                };
+                let items: Vec<RuleView> = rows.into_iter().map(Into::into).collect();
+                Ok(json!({"items":items,"nextCursor":next}))
             }
-            Command::Read { id } => json(&self.rule(tx, *id).await?),
+            Command::Read { id } => json(&RuleView::from(self.rule(tx, *id).await?)),
             Command::Version { id, revision } => {
                 let id = *id;
                 let revision = *revision;
@@ -149,7 +160,9 @@ impl Compliance {
                 }
                 let row = tx
                     .with_connection(move |c| {
-                        Box::pin(async move { pg::version(c, t, id, revision).await })
+                        Box::pin(async move {
+                            pg::version::<crate::assets::Criteria>(c, t, id, revision).await
+                        })
                     })
                     .await?
                     .ok_or(Error::NotFound)?;
@@ -164,16 +177,7 @@ impl Compliance {
                 let task = self.enqueue(tx, &r).await?;
                 Ok(json!({"task":task}))
             }
-            Command::Task { id, task } => {
-                let (job, done, failure, _, _) =
-                    crate::automation::jobs::read_in(tx, *task).await?;
-                match job {
-                    crate::automation::JobInput::Compliance { input } if input.rule == *id => {
-                        Ok(json!({"task":task,"completed":done,"failure":failure}))
-                    }
-                    _ => Err(Error::NotFound.into()),
-                }
-            }
+            Command::Task { id, task } => self.task(tx, *id, *task).await,
             Command::Current { device } => self.current(tx, device).await,
             Command::History {
                 device,
@@ -195,17 +199,23 @@ impl Compliance {
         if id.is_nil() {
             return Err(Error::Malformed.into());
         }
-        let fields = request.input.validate(t, id)?;
+        let fields = validate_definition(&request.input, t, id)?;
         let target = id;
         let old = tx
-            .with_connection(move |c| Box::pin(async move { pg::rule(c, t, target).await }))
+            .with_connection(move |c| {
+                Box::pin(async move { pg::rule::<crate::assets::Criteria>(c, t, target).await })
+            })
             .await?;
         if old.as_ref().map_or(0, |r| r.revision as u64) != request.expected_revision {
             return Err(Error::Conflict.into());
         }
         if old.is_none() {
             let rules = tx
-                .with_connection(move |c| Box::pin(async move { pg::rules(c, t, None, 101).await }))
+                .with_connection(move |c| {
+                    Box::pin(
+                        async move { pg::rules::<crate::assets::Criteria>(c, t, None, 101).await },
+                    )
+                })
                 .await?;
             if rules.len() >= 100 {
                 return Err(Error::Malformed.into());
@@ -220,13 +230,13 @@ impl Compliance {
             .ok()
             .and_then(|v| v.checked_add(1))
             .ok_or(Error::Malformed)?;
-        let rule = pg::Rule {
+        let rule = Rule {
             id,
             revision,
             enabled: request.input.enabled,
             desired: None,
             current_run: old.and_then(|r| r.current_run),
-            definition: json(&request.input)?,
+            definition: request.input.clone(),
         };
         let row = rule.clone();
         tx.with_connection(move |c| {

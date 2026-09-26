@@ -1,14 +1,13 @@
 use super::*;
-/// Invalidate dependent rules in the group mutation/publication transaction.
+/// Invalidate and wake atomically with the group mutation, without a second checkpoint.
 pub(crate) async fn group_changed(tx: &mut PgTransaction<'_>, group: Uuid) -> Result<()> {
     let tenant = tx.tenant_id();
-    let t = tenant.to_string();
-    let affected=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("UPDATE mdm_compliance.rules r SET desired=NULL WHERE r.tenant_id=$1::uuid AND r.enabled AND EXISTS(SELECT 1 FROM mdm_compliance.groups g WHERE (g.tenant_id,g.rule_id)=(r.tenant_id,r.id) AND g.group_id=$2::uuid)")
-            .bind(t).bind(group.to_string()).execute(c).await.map(|r|r.rows_affected())
-    })).await?;
+    let affected = tx
+        .with_connection(move |c| {
+            Box::pin(async move { pg::invalidate_group(c, tenant, group).await })
+        })
+        .await?;
     if affected > 0 {
-        // One durable wake in the changing transaction, not a polling wake on each bridge tick.
         rss_reconcile_postgres::messaging::wake_in(
             tx,
             &crate::planning::automation::asset_target(tenant),
@@ -19,51 +18,42 @@ pub(crate) async fn group_changed(tx: &mut PgTransaction<'_>, group: Uuid) -> Re
     }
     Ok(())
 }
-
 impl Compliance {
-    pub(crate) async fn dispatch(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+    pub(crate) async fn dispatch_invalidated(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
         crate::transaction::lock(tx).await?;
         let t = self.tenant();
-        // Rule/group writes are durable invalidations even when the asset watermark is unchanged.
-        let missing:Option<String>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id::text FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL ORDER BY id LIMIT 1").bind(t.to_string()).fetch_optional(c).await})).await?;
-        if let Some(id) = missing {
-            let rule = self.rule(tx, stored(Uuid::parse_str(&id))?).await?;
+        let id = tx
+            .with_connection(move |c| Box::pin(async move { pg::next_invalidated(c, t).await }))
+            .await?;
+        if let Some(id) = id {
+            let rule = self.rule(tx, id).await?;
             self.enqueue(tx, &rule).await?;
-            return Ok(());
+            return Ok(true);
         }
-        let state=tx.with_connection(move|c|Box::pin(async move{
-   sqlx::query("INSERT INTO mdm_compliance.dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(t.to_string()).execute(&mut *c).await?;
-   sqlx::query("SELECT consumed,watermark,cursor::text FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(t.to_string()).fetch_one(c).await
-  })).await?;
-        let consumed: i64 = state.try_get("consumed")?;
-        let mut watermark: i64 = state.try_get("watermark")?;
-        let cursor: Option<String> = state.try_get("cursor")?;
-        if consumed == watermark {
-            watermark=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT coalesce(max(revision),$2) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 ORDER BY revision LIMIT 1000) p").bind(t.to_string()).bind(consumed).fetch_one(c).await})).await?;
-        }
-        if consumed == watermark {
-            return Ok(());
-        }
+        Ok(false)
+    }
+    /// Exactly one rule per transaction; the shared dispatcher owns its durable cursor.
+    pub(crate) async fn dispatch_rules(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        cursor: Option<String>,
+    ) -> Result<Option<String>> {
+        crate::transaction::lock(tx).await?;
+        let t = self.tenant();
         let after = cursor.map(|s| stored(Uuid::parse_str(&s))).transpose()?;
         let rows = tx
-            .with_connection(move |c| Box::pin(async move { pg::rules(c, t, after, 33).await }))
+            .with_connection(move |c| {
+                Box::pin(async move { pg::rules::<crate::assets::Criteria>(c, t, after, 2).await })
+            })
             .await?;
-        for r in rows.iter().take(32).filter(|r| r.enabled) {
-            self.refresh_rule(tx, r).await?;
+        if let Some(rule) = rows.first()
+            && rule.enabled
+        {
+            self.refresh_rule(tx, rule).await?;
         }
-        let next = if rows.len() > 32 {
-            Some(rows[31].id.to_string())
-        } else {
-            None
-        };
-        let consumed = if next.is_some() { consumed } else { watermark };
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_compliance.dispatch SET consumed=$2,watermark=$3,cursor=$4::uuid WHERE tenant_id=$1::uuid").bind(t.to_string()).bind(consumed).bind(watermark).bind(next).execute(c).await?;Ok(())})).await?;
-        Ok(())
+        Ok((rows.len() > 1).then(|| rows[0].id.to_string()))
     }
-}
-
-impl Compliance {
-    async fn refresh_rule(&self, tx: &mut PgTransaction<'_>, r: &pg::Rule) -> Result<()> {
+    async fn refresh_rule(&self, tx: &mut PgTransaction<'_>, r: &Rule) -> Result<()> {
         let needs = if let Some(task) = r.desired {
             let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, task).await?;
             match job {
@@ -78,7 +68,6 @@ impl Compliance {
         if needs {
             self.enqueue(tx, r).await?;
         }
-
         Ok(())
     }
 }

@@ -5,20 +5,27 @@ impl Planning {
     pub(crate) async fn asset_work_pending(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
         let tenant = self.tenant.to_string();
         Ok(tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid),0) OR coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
+            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
                 .bind(tenant).fetch_one(c).await
         })).await?)
     }
-    pub(crate) async fn dispatch_assets_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+    pub(crate) async fn dispatch_assets_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        compliance: &crate::compliance::Compliance,
+    ) -> Result<()> {
+        if compliance.dispatch_invalidated(tx).await? {
+            return Ok(());
+        }
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("INSERT INTO mdm_planning.asset_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
-            sqlx::query("SELECT consumed,watermark,group_cursor::text,phase FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid FOR UPDATE")
+            sqlx::query("SELECT consumed,watermark,cursor::text,phase FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid FOR UPDATE")
                 .bind(tenant).fetch_one(c).await
         })).await?;
         let consumed: i64 = row.try_get("consumed")?;
         let mut watermark: i64 = row.try_get("watermark")?;
-        let mut cursor: Option<String> = row.try_get("group_cursor")?;
+        let mut cursor: Option<String> = row.try_get("cursor")?;
         let mut phase: String = row.try_get("phase")?;
         if watermark == consumed {
             let tenant = self.tenant.to_string();
@@ -37,35 +44,53 @@ impl Planning {
         if phase == "groups" {
             self.dispatch_groups_in(tx, consumed, watermark, cursor)
                 .await
+        } else if phase == "compliance" {
+            let next = compliance.dispatch_rules(tx, cursor).await?;
+            self.dispatch_cursor_in(
+                tx,
+                if next.is_some() { consumed } else { watermark },
+                watermark,
+                next.clone(),
+                if next.is_some() {
+                    "compliance"
+                } else {
+                    "groups"
+                },
+            )
+            .await
         } else {
-            let tenant = self.tenant.to_string();
-            let scopes:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
+            self.dispatch_devices_in(tx, consumed, watermark, cursor)
+                .await
+        }
+    }
+    async fn dispatch_devices_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        consumed: i64,
+        watermark: i64,
+        cursor: Option<String>,
+    ) -> Result<()> {
+        let tenant = self.tenant.to_string();
+        let scopes:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query_scalar("WITH changed AS (SELECT DISTINCT identity->>'device' AS device FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND kind IN('device','registration','source','credential')) SELECT DISTINCT hit.scope::text FROM changed CROSS JOIN LATERAL (SELECT s.scope FROM mdm_planning.scope_sources s WHERE s.tenant_id=$1::uuid AND s.kind='device' AND s.target=changed.device AND ($4::uuid IS NULL OR s.scope>$4::uuid) ORDER BY s.scope LIMIT 33) hit ORDER BY hit.scope::text LIMIT 33")
                     .bind(tenant).bind(consumed).bind(watermark).bind(cursor).fetch_all(c).await
             })).await?;
-            for scope in scopes.iter().take(32) {
-                crate::automation::jobs::enqueue_job_in(
-                    tx,
-                    Uuid::new_v4(),
-                    &JobInput::Scope {
-                        scope: stored(Uuid::parse_str(scope))?,
-                    },
-                )
-                .await?;
-            }
-            if scopes.len() > 32 {
-                self.dispatch_cursor_in(
-                    tx,
-                    consumed,
-                    watermark,
-                    Some(scopes[31].clone()),
-                    "devices",
-                )
+        for scope in scopes.iter().take(32) {
+            crate::automation::jobs::enqueue_job_in(
+                tx,
+                Uuid::new_v4(),
+                &JobInput::Scope {
+                    scope: stored(Uuid::parse_str(scope))?,
+                },
+            )
+            .await?;
+        }
+        if scopes.len() > 32 {
+            self.dispatch_cursor_in(tx, consumed, watermark, Some(scopes[31].clone()), "devices")
                 .await
-            } else {
-                self.dispatch_cursor_in(tx, watermark, watermark, None, "groups")
-                    .await
-            }
+        } else {
+            self.dispatch_cursor_in(tx, consumed, watermark, None, "compliance")
+                .await
         }
     }
     async fn dispatch_groups_in(
@@ -198,7 +223,7 @@ impl Planning {
         let tenant = self.tenant.to_string();
         let phase = phase.to_owned();
         tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("UPDATE mdm_planning.asset_dispatch SET consumed=$2,watermark=$3,group_cursor=$4::uuid,phase=$5 WHERE tenant_id=$1::uuid")
+            sqlx::query("UPDATE mdm_planning.asset_dispatch SET consumed=$2,watermark=$3,cursor=$4::uuid,phase=$5 WHERE tenant_id=$1::uuid")
                 .bind(tenant).bind(consumed).bind(watermark).bind(cursor).bind(phase).execute(c).await?;Ok(())
         })).await?;
         Ok(())

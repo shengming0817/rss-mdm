@@ -72,7 +72,7 @@ inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配�
 | GET /compliance-rules/{id}/versions/{revision} | 历史规则定义，用于解释旧评估 |
 | PUT /compliance-rules/{id} | Operation 包装的完整定义；首次 expectedRevision=0 |
 | POST /compliance-rules/{id}/recompute | Operation 包装，input 为 `{}`，expectedRevision 为当前版本 |
-| GET /compliance-rules/{id}/tasks/{task} | completed 与闭合失败原因 |
+| GET /compliance-rules/{id}/tasks/{task} | phase、processed、completed、failure 与 diagnostic |
 | GET /devices/{id}/compliance | 设备汇总、各规则 current；待评估时 previous 单独标识 |
 | GET /devices/{id}/compliance/history?from=…&until=…&limit=50&cursor=… | UTC 秒范围、最多 100 条，返回 nextCursor |
 
@@ -88,4 +88,4 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 
 完成结论为 compliant/non_compliant/unknown/not_applicable；组资格不确定仍是 unknown。pending 只表示最新输入尚未完成，不能把 previous 当作当前合规。设备汇总优先明确失败、未知、待评估；至少一条适用规则且全部通过才是 compliant。无启用规则为 unknown/no_rules，全不适用为 not_applicable。
 
-历史保留规则版本、字典版本、资产水位、组成员集、评估时间、原因和无原始字段值的证据引用，以及 published/superseded/failed 标识。任务按固定输入分页，只有完整运行且输入仍有效才切换当前指针；旧运行不能覆盖新事实。失败诊断和恢复复用现有 automation，重启继续持久任务；本接口不提供自动修复或标准合规认证声明。
+历史保留规则版本、字典版本、资产水位、组成员集、评估时间、原因和无原始字段值的证据引用，以及 published/superseded/failed 标识。任务按固定输入分页，只有完整运行且输入仍有效才切换当前指针；旧运行不能覆盖新事实。任务阶段为 queued、waiting_for_groups、evaluating、published、superseded 或 failed；processed 只统计已提交的设备评估。组输入未就绪时保留 group_input_pending 诊断。适用性证据分别保留平台判定、来源和各组资格，原因区分 platform_not_applicable、group_not_applicable、platform_unknown、group_unknown 与事实结论。规则列表使用 nextCursor，规则读取只返回 id/revision/definition。失败诊断和恢复复用现有 automation；资产调度依次推进 Group、Scope、Compliance 后提交同一 checkpoint，重启继续持久任务；本接口不提供自动修复或标准合规认证声明。
