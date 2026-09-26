@@ -3,7 +3,6 @@
 
 Adapted from RSS hack/ci-run.py at e901f5a1cd023e28d3a190e36ed8508f2afc467e.
 ref: CPython v3.11.13 Lib/subprocess.py (explicit pass_fds across Python children).
-ref: mozilla/sccache v0.15.0 src/commands.rs (start server before taking leases).
 """
 from __future__ import annotations
 
@@ -15,13 +14,12 @@ from pathlib import Path
 import re
 import shutil
 import signal
-import socket
 import stat
 import subprocess
 import sys
 import time
+import unicodedata
 
-SCCACHE_VERSION = '0.15.0'
 LEASE_ENV = '_MDM_BUILD_LEASE'
 LOCK_ROOT = Path.home() / '.cache/rss-mdm-build-locks'
 POOL_MARKER = '.mdm-target-pool-v1'
@@ -35,18 +33,7 @@ def directory(path):
     if path.is_symlink():
         raise ValueError(f'refusing symlink directory: {path}')
     path.mkdir(parents=True, exist_ok=True)
-    return canonical_directory(path)
-
-
-def canonical_directory(path):
-    """Ask the filesystem for its spelling, including case/Unicode aliases on macOS."""
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        if sys.platform == 'darwin':
-            return Path(os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b'\0', 1)[0]))
-        return Path(os.readlink(f'/proc/self/fd/{fd}'))
-    finally:
-        os.close(fd)
+    return path.resolve()
 
 
 def lock_file(path, blocking=False):
@@ -85,8 +72,10 @@ def owned_directory(path, marker):
 
 
 def lock_path(kind, path):
-    # Resources are canonicalized before allocation. Keep the key stable across cargo clean.
-    digest = hashlib.sha256(os.fsencode(path)).hexdigest()
+    # Conservatively coalesce case/Unicode aliases even when cargo clean removes the directory.
+    # Case-sensitive filesystems may serialize distinct spellings; never permit an alias race.
+    key = unicodedata.normalize('NFD', str(path.resolve())).casefold()
+    digest = hashlib.sha256(os.fsencode(key)).hexdigest()
     return LOCK_ROOT / f'{kind}-{digest}.lock'
 
 
@@ -125,7 +114,7 @@ def lease_fds():
 def require_lease(worktree):
     if not lease_fds():
         raise ValueError('build lease required; use make or python3 hack/build_run.py -- COMMAND')
-    if Path(json.loads(os.environ[LEASE_ENV])['worktree']) != canonical_directory(worktree):
+    if not os.path.samefile(json.loads(os.environ[LEASE_ENV])['worktree'], worktree):
         raise ValueError('build lease belongs to a different worktree')
 
 
@@ -187,8 +176,6 @@ def acquire_slot(root, slots, worktree):
             target = root / f'slot-{index}'
             if target.is_symlink():
                 raise ValueError(f'refusing symlink slot: {target}')
-            # Establish the actual filesystem spelling before choosing its one lock identity.
-            target = directory(target)
             value = metadata(root, index)
             fd = lock_file(lock_path('target', target))
             if fd is None:
@@ -205,7 +192,7 @@ def acquire_slot(root, slots, worktree):
         if not candidates:
             raise ValueError(f'pool full ({slots} slots): {root}')
         rank, _, index = min(candidates)
-        target = canonical_directory(root / f'slot-{index}')
+        target = root / f'slot-{index}'
         if rank != 0 and target.exists():
             shutil.rmtree(target)
         directory(target)
@@ -217,61 +204,14 @@ def acquire_slot(root, slots, worktree):
         os.close(global_fd)
 
 
-def compiler_cache(env, worktree):
-    mode = env.get('MDM_COMPILER_CACHE', 'auto')
-    if mode not in ('auto', 'on', 'off'):
-        raise ValueError('MDM_COMPILER_CACHE must be auto, on or off')
+def compiler_environment(env):
+    # A detached cache server can keep writing target after its client and lease disappear.
+    # Managed runs use direct rustc; no compatibility fallback to the old sccache wrapper.
     wrappers = ('RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_RUSTC_WRAPPER',
                 'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER')
     if any(env.get(key) for key in wrappers):
-        raise ValueError('custom rustc wrapper conflicts with managed compiler cache')
-    # Override ancestor Cargo configuration too: this runner owns compiler caching.
+        raise ValueError('custom rustc wrapper is incompatible with the build lease')
     env.update(RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='')
-    if mode == 'off':
-        return
-    binary = shutil.which('sccache', path=env.get('PATH'))
-    try:
-        version = subprocess.run([binary, '--version'], env=env, capture_output=True, text=True, timeout=10) if binary else None
-        if version is None or version.returncode or version.stdout.strip() != f'sccache {SCCACHE_VERSION}':
-            raise ValueError(f'sccache {SCCACHE_VERSION} unavailable')
-        git = subprocess.run(['/usr/bin/git', '-C', str(worktree), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-                             capture_output=True, text=True, timeout=10)
-        root = (Path(git.stdout.strip()).parent / '.cache/sccache/objects' if git.returncode == 0
-                else Path.home() / '.cache/rss-mdm-sccache/objects')
-        env.setdefault('SCCACHE_DIR', str(root))
-        env.setdefault('SCCACHE_SERVER_UDS', str(Path(env['SCCACHE_DIR']) / 'server.sock'))
-        env.setdefault('SCCACHE_CACHE_SIZE', '10G')
-        env['SCCACHE_DIR'] = str(directory(Path(env['SCCACHE_DIR'])))
-        uds = Path(env['SCCACHE_SERVER_UDS'])
-        env['SCCACHE_SERVER_UDS'] = str(directory(uds.parent) / uds.name)
-        if len(os.fsencode(env['SCCACHE_SERVER_UDS'])) >= 100:
-            raise ValueError('sccache socket path is too long')
-        startup_fd = lock_file(Path(env['SCCACHE_SERVER_UDS'] + '.lock'), blocking=True)
-        try:
-            def connect():
-                with socket.socket(socket.AF_UNIX) as connection:
-                    connection.settimeout(5)
-                    connection.connect(env['SCCACHE_SERVER_UDS'])
-            try:
-                connect()
-            except (FileNotFoundError, ConnectionRefusedError):
-                subprocess.run([binary, '--start-server'], env=env, capture_output=True, timeout=15)
-                connect()
-        finally:
-            os.close(startup_fd)
-        probe = subprocess.run([binary, '--show-stats', '--stats-format', 'json'], env=env,
-                               capture_output=True, text=True, timeout=15)
-        stats = json.loads(probe.stdout)
-        if (probe.returncode or stats.get('version') != SCCACHE_VERSION
-                or stats.get('cache_location') != f'Local disk: "{Path(env["SCCACHE_DIR"]).resolve()}"'):
-            raise ValueError('sccache server version/cache directory differs; restart it after active builds exit')
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        if mode == 'on':
-            raise ValueError(f'compiler cache unavailable: {error}') from error
-        log(f'compiler cache disabled: {error}')
-        return
-    env.update(RUSTC_WRAPPER=binary, CARGO_INCREMENTAL='0', SCCACHE_IGNORE_SERVER_IO_ERROR='1')
-    log(f'compiler cache enabled: sccache {SCCACHE_VERSION}')
 
 
 def run_child(argv, env, fds):
@@ -327,10 +267,9 @@ def main(argv):
     if LEASE_ENV in os.environ:
         raise ValueError('nested build runner is not allowed; inherit the existing lease')
     env = os.environ.copy()
-    worktree = canonical_directory(Path.cwd())
+    worktree = Path.cwd().resolve()
     pool, target = target_config(env, worktree)
-    # A persistent cache daemon must never inherit a build lease.
-    compiler_cache(env, worktree)
+    compiler_environment(env)
     owned_directory(LOCK_ROOT, '.mdm-build-locks-v1')
     work_fd = take_lock('worktree', worktree)
     target_fd = None
@@ -338,8 +277,9 @@ def main(argv):
         if pool:
             target, target_fd = acquire_slot(*pool, worktree)
         else:
-            target = directory(target.resolve())
+            target = target.resolve()
             target_fd = take_lock('target', target)
+            target.mkdir(parents=True, exist_ok=True)
         env['CARGO_TARGET_DIR'] = str(target)
         fds = (work_fd, target_fd)
         env[LEASE_ENV] = json.dumps({'worktree': str(worktree), 'target': str(target), 'fds': fds})

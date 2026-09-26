@@ -33,7 +33,7 @@ class BuildRunTests(unittest.TestCase):
         self.other.mkdir()
         self.pool = self.root / 'pool'
         self.env = clean_env() | {'MDM_TARGET_POOL_ROOT': str(self.pool),
-                                 'MDM_TARGET_POOL_N': '2', 'MDM_COMPILER_CACHE': 'off',
+                                 'MDM_TARGET_POOL_N': '2',
                                  'PYTHONPATH': str(ROOT / 'hack')}
 
     def run_code(self, code='pass', *, work=None, env=None):
@@ -127,9 +127,30 @@ class BuildRunTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('target busy', result.stderr)
 
+    def test_case_alias_remains_busy_after_cargo_clean_removes_target(self):
+        target = self.root / 'CaseTarget'; target.mkdir()
+        alias = target.with_name('casetarget')
+        if not alias.exists():
+            self.skipTest('filesystem is case-sensitive')
+        (self.work / 'src').mkdir()
+        (self.work / 'src/lib.rs').write_text('pub fn value() {}')
+        (self.work / 'Cargo.toml').write_text('[package]\nname="clean-proof"\nversion="0.0.0"\nedition="2021"\n')
+        ready = self.root / 'cleaned'
+        code = ('import subprocess,os,time; from pathlib import Path; from build_run import lease_fds; '
+                'subprocess.run(["cargo","clean","--offline"],check=True,pass_fds=lease_fds()); '
+                f'Path({str(ready)!r}).write_text(str(os.getpid())); '
+                'time.sleep(30)')
+        process = self.hold(code=code, env={'MDM_TARGET_POOL_N': 'off', 'CARGO_TARGET_DIR': str(target)})
+        self.wait_ready(ready, process)
+        self.addCleanup(self.kill_group, int(ready.read_text()))
+        self.assertFalse(target.exists())
+        result = self.run_code(work=self.other, env={'MDM_TARGET_POOL_N': 'off', 'CARGO_TARGET_DIR': str(alias)})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('target busy', result.stderr)
+
     def test_configuration_and_exit_status(self):
         for config in ({'MDM_TARGET_POOL_N': '-1'}, {'MDM_TARGET_POOL_N': '2', 'CARGO_TARGET_DIR': '/tmp/unused'},
-                       {'MDM_COMPILER_CACHE': 'typo'}, {'MDM_TARGET_POOL_N': 'off', 'CARGO_TARGET_DIR': ''}):
+                       {'MDM_TARGET_POOL_N': 'off', 'CARGO_TARGET_DIR': ''}):
             with self.subTest(config=config):
                 self.assertEqual(self.run_code(env=config).returncode, 2)
         result = self.run_code('import os; print(os.environ["CARGO_TARGET_DIR"]); raise SystemExit(7)',
