@@ -438,7 +438,7 @@ async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     // A valid-looking but absent target never acquires the irreversible bootstrap marker.
     let wrong_key = Uuid::new_v4();
     let mut init = json!({"database":base["access_database"],"identityDatabase":base["identity"]["database"],
-        "installation":{"instance_id":INSTANCE,"target":base["management"]["target"],"lineage":base["management"]["lineage"],"epoch":base["management"]["epoch"],"tenants":[TENANT]},
+        "installation":{"instance_id":INSTANCE,"target":base["flow"]["storage"]["target"],"lineage":base["flow"]["storage"]["lineage"],"epoch":base["flow"]["storage"]["epoch"],"tenants":[TENANT]},
         "audit":{"mode":"plain"},"login":"authorization-member","passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
         "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":TENANT,"principalId":Uuid::new_v4()}});
     ensure!(matches!(

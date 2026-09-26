@@ -1,0 +1,10 @@
+CREATE SCHEMA mdm_flow;
+REVOKE ALL ON SCHEMA mdm_flow FROM PUBLIC;
+GRANT USAGE ON SCHEMA mdm_flow TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_software_composition TO mdm_flow_runtime;
+GRANT SELECT ON mdm_software_composition.subjects TO mdm_flow_runtime;
+GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.report_sources,mdm_access.collection_runs,mdm.inventory TO mdm_flow_runtime;
+ALTER TABLE mdm_access.grants DROP CONSTRAINT grants_device_check;
+ALTER TABLE mdm_access.grants ADD CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]');
+ALTER TABLE mdm_access.devices DROP CONSTRAINT devices_id_check;
+ALTER TABLE mdm_access.devices ADD CHECK(octet_length(id) BETWEEN 1 AND 256 AND id !~ '[[:cntrl:]]');

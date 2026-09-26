@@ -5,7 +5,8 @@
 //! Real MDM Router with its own PG authority and native component HTTP routes.
 mod assets;
 mod authorization;
-mod management;
+#[path = "identity_t2/management.rs"]
+mod planning;
 use crate::publication_support;
 #[cfg(feature = "integration")]
 mod sso;
@@ -260,7 +261,7 @@ async fn app_with_access(
 ) -> Result<(Router, Arc<rss_mdm_audit_integration::AuditStore>)> {
     let c: Config = serde_json::from_value(value.clone())?;
     let audit_store = access.audit_store(&c.audit).await?;
-    let (router, _) = crate::api::application_fixture(
+    let (router, _, _) = crate::api::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
@@ -294,7 +295,7 @@ async fn start_automation(value: &Value) -> Result<rss_runtime::ShutdownStack> {
     let access = crate::Database::connect(config.access_database.options()?).await?;
     let audit_store = access.audit_store(&config.audit).await?;
     let service = config
-        .management
+        .flow
         .open(
             audit_store,
             rss_request_context::TenantId::parse(TENANT)?,
@@ -303,10 +304,9 @@ async fn start_automation(value: &Value) -> Result<rss_runtime::ShutdownStack> {
         )
         .await?;
     let automation =
-        crate::management::automation::Automation::open(service, &config.management.database)
-            .await?;
+        crate::automation::Automation::open(service, &config.flow.storage.database).await?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::management::automation::Resource(automation.clone()),
+        crate::automation::Resource(automation.clone()),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(automation.registration().critical());
@@ -342,7 +342,7 @@ async fn await_task(browser: &mut Browser, router: &Router, path: &str) -> Resul
         Ok(result) => result,
         Err(_) => {
             let progress = pg(&format!(
-                "SELECT coalesce(jsonb_agg(p),'[]') FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase AS group_phase,r.object_count,s.phase AS scope_phase FROM mdm_management.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) LEFT JOIN mdm_management.scope_runs s ON (s.tenant_id,s.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p"
+                "SELECT coalesce(jsonb_agg(p),'[]') FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase AS group_phase,r.object_count,s.phase AS scope_phase FROM mdm_automation.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) LEFT JOIN mdm_planning.scope_runs s ON (s.tenant_id,s.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p"
             ))?;
             anyhow::bail!("task {path} exceeded fixture deadline; last {last}; pending {progress}")
         }
@@ -508,11 +508,11 @@ async fn enrollment_matrix(
             == StatusCode::CONFLICT
     );
     // RequestAudit is mandatory for both reads and denied requests; never disclose assets on failure.
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_management_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_flow_runtime")?;
     let read = browser.call(router, Method::GET, query, None).await?;
     let mut anonymous = Browser::default();
     let denied = anonymous.call(router, Method::GET, query, None).await?;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_management_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
     ensure!(
         read.0 == StatusCode::INTERNAL_SERVER_ERROR
             && read.1["code"] == "audit_contract_error"
@@ -1384,13 +1384,13 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    // Keep the independently served management matrix out of the parent test's
+    // Keep the independently served planning matrix out of the parent test's
     // debug poll stack; do not increase global/test runtime stack budgets.
     let management_base = allowed.clone();
     let management_reader = reader.clone();
     let management_browser = browser.clone();
     tokio::spawn(async move {
-        management::matrix(&management_base, management_reader, &management_browser).await
+        planning::matrix(&management_base, management_reader, &management_browser).await
     })
     .await??;
     Box::pin(enrollment_matrix(
@@ -1613,7 +1613,7 @@ async fn native_accounts(
     );
     // The component owns its atomic security event; a second product audit cannot
     // overwrite a committed account mutation or discard the native response.
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_management_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_flow_runtime")?;
     let created = admin
         .call(
             admin_router,
@@ -1622,7 +1622,7 @@ async fn native_accounts(
             Some(json!({"login":"managed-user","password":PASSWORD})),
         )
         .await;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_management_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
     let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();
@@ -1636,7 +1636,7 @@ async fn native_accounts(
             .0
             == StatusCode::UNAUTHORIZED
     );
-    // Product management policy asks the component for Recent(300s), including native accounts.
+    // Product planning policy asks the component for Recent(300s), including native accounts.
     pg(&format!(
         "UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'"
     ))?;

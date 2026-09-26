@@ -103,9 +103,9 @@ pub struct Config {
     pub identity: Identity,
     pub access_database: Database,
     pub runtime_database: Database,
-    pub command_database: Database,
-    pub(crate) tasks: Option<crate::commands::actions::content::Config>,
-    pub(crate) management: crate::management::Config,
+    pub execution: ExecutionStorage,
+    pub(crate) tasks: Option<crate::task_content::Config>,
+    pub(crate) flow: crate::flow::Config,
     pub identity_management: Vec<IdentityManagementGrant>,
     pub native_protocols: NativeProtocols,
 }
@@ -151,14 +151,14 @@ impl Config {
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
             return Err(Error::Configuration(ConfigIssue::Tenant));
         }
-        if self.command_database.user != "mdm_command_runtime"
-            || self.command_database.host != self.access_database.host
-            || self.command_database.port != self.access_database.port
-            || self.command_database.name != self.access_database.name
+        if self.execution.database.user != "mdm_command_runtime"
+            || self.execution.database.host != self.access_database.host
+            || self.execution.database.port != self.access_database.port
+            || self.execution.database.name != self.access_database.name
         {
-            return Err(Error::Configuration(ConfigIssue::Commands));
+            return Err(Error::Configuration(ConfigIssue::Execution));
         }
-        self.management.validate(&self.access_database)?;
+        self.flow.validate(&self.access_database)?;
         if let Some(windows) = &self.native_protocols.windows {
             windows.validate(self.listen)?;
         }
@@ -267,24 +267,24 @@ mod tests {
         for (pointer, value, field) in [
             ("/listen", serde_json::json!("0.0.0.0:8080"), "Listen"),
             (
-                "/command_database/user",
+                "/execution/database/user",
                 serde_json::json!("mdm_access"),
-                "Commands",
+                "Execution",
             ),
             (
-                "/command_database/host",
+                "/execution/database/host",
                 serde_json::json!("other-host"),
-                "Commands",
+                "Execution",
             ),
             (
-                "/command_database/port",
+                "/execution/database/port",
                 serde_json::json!(5433),
-                "Commands",
+                "Execution",
             ),
             (
-                "/command_database/name",
+                "/execution/database/name",
                 serde_json::json!("other-db"),
-                "Commands",
+                "Execution",
             ),
             (
                 "/access_database/user",
@@ -390,4 +390,10 @@ mod tests {
         assert!(database.options().is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionStorage {
+    pub database: Database,
 }

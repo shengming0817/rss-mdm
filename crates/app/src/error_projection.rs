@@ -32,13 +32,6 @@ impl From<crate::collection::CollectionError> for Error {
         }
     }
 }
-impl From<crate::management::assets::AssetError> for Error {
-    fn from(error: crate::management::assets::AssetError) -> Self {
-        match error {
-            crate::management::assets::AssetError::RestrictedScope => Self::Forbidden,
-        }
-    }
-}
 
 pub(crate) fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -> crate::Error {
     match outcome {

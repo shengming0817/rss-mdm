@@ -1,0 +1,73 @@
+{
+  "columns": [
+    [
+      "operations",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "fingerprint",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "response",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ]
+  ],
+  "indexes": [
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_resource_catalog.operations USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ]
+  ],
+  "constraints": [
+    [
+      "operations",
+      "operations_fingerprint_check",
+      "c",
+      "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "operations",
+      "operations_response_check",
+      "c",
+      "CHECK ((octet_length((response)::text) <= 8388608))",
+      true
+    ]
+  ]
+}

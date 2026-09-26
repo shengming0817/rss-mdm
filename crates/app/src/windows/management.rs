@@ -72,7 +72,7 @@ pub(super) async fn manage(
         }
     }
     let response = app
-        .commands
+        .execution
         .management(app.windows()?, &principal, &message, &bytes, &audit)
         .await?;
     Ok((
@@ -167,7 +167,7 @@ pub(crate) async fn management_on(
         initial,
     )?;
     let filtered =
-        crate::commands::native::receive_on(tx, principal, message, authenticated_session).await?;
+        crate::execution::native::receive_on(tx, principal, message, authenticated_session).await?;
     let (run_id, complete) = collect(
         tx,
         (&mut facts, audit),
@@ -179,7 +179,7 @@ pub(crate) async fn management_on(
     )
     .await?;
     let pending =
-        crate::commands::native::send_on(tx, principal, &mut response, authenticated_session)
+        crate::execution::native::send_on(tx, principal, &mut response, authenticated_session)
             .await?;
     let response = syncml::encode(&response, &CodecLimits::default())
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
@@ -429,7 +429,7 @@ fn management_response(
     nonce: &[u8],
     initial: Vec<&Command>,
 ) -> Result<syncml::Message, Error> {
-    let mut commands = vec![Command::Status(Status {
+    let mut execution = vec![Command::Status(Status {
         credential: None,
         id: 1,
         message_ref: message.header.message_id,
@@ -451,9 +451,9 @@ fn management_response(
                 Command::DevInfo { .. } => CommandName::Replace,
                 _ => return Err(Error::Malformed),
             };
-            commands.push(Command::Status(Status {
+            execution.push(Command::Status(Status {
                 credential: None,
-                id: commands.len() as u32 + 1,
+                id: execution.len() as u32 + 1,
                 message_ref: message.header.message_id,
                 command_ref: command.id(),
                 command: kind,
@@ -470,8 +470,8 @@ fn management_response(
         .iter()
         .filter(|c| matches!(c, Command::Results(_)))
     {
-        commands.push(Command::Status(Status {
-            id: commands.len() as u32 + 1,
+        execution.push(Command::Status(Status {
+            id: execution.len() as u32 + 1,
             message_ref: message.header.message_id,
             command_ref: result.id(),
             command: CommandName::Results,
@@ -503,7 +503,7 @@ fn management_response(
             }),
             meta: None,
         },
-        commands,
+        commands: execution,
         final_message: true,
     };
     Ok(response)
@@ -544,7 +544,7 @@ async fn session_decision(
         if let Some(old)=sqlx::query("SELECT digest,response FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
-            crate::commands::native::replay_on(tx,principal,message).await?;
+            crate::execution::native::replay_on(tx,principal,message).await?;
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             return old.try_get("response").map(SessionDecision::Replay).map_err(db);

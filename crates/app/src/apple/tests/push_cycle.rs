@@ -25,7 +25,7 @@ impl Fixture {
             push::tests::Participant::start(vec![429, 503, 400, 200, 410], vec![42; 32]).await?;
         for (status, failures, minimum) in [(429, 1, 25.0), (503, 2, 55.0), (400, 0, 25.0)] {
             due(&mut pg).await?;
-            push::wake(&participant.push, &self.app.commands).await?;
+            push::wake(&participant.push, &self.app.execution).await?;
             let receipt = state(&mut pg).await?;
             ensure!(
                 receipt["status"] == status
@@ -42,14 +42,14 @@ impl Fixture {
             ensure!(self.operation(operation).await?["commandStatus"] == "published");
         }
         due(&mut pg).await?;
-        push::wake(&participant.push, &self.app.commands).await?;
+        push::wake(&participant.push, &self.app.execution).await?;
         ensure!(
             state(&mut pg).await?["status"] == 400,
             "permanent rejection was retried without recovery"
         );
         ensure!(
             self.app
-                .commands
+                .execution
                 .apple_wake(&participant.push.configuration)
                 .await?
                 .is_none()
@@ -59,26 +59,26 @@ impl Fixture {
             push::tests::Participant::start_with_rotation(vec![400, 200], vec![42; 32], true)
                 .await?;
         ensure!(rotated.push.configuration != participant.push.configuration);
-        push::wake(&rotated.push, &self.app.commands).await?;
+        push::wake(&rotated.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["outcome"] == "rejected");
         ensure!(
             self.app
-                .commands
+                .execution
                 .apple_wake(&rotated.push.configuration)
                 .await?
                 .is_none()
         );
         // TokenUpdate is the explicit recovery transition for a paused token.
         peer.token().await?;
-        push::wake(&rotated.push, &self.app.commands).await?;
+        push::wake(&rotated.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["outcome"] == "accepted");
         rotated.close().await?;
         due(&mut pg).await?;
-        push::wake(&participant.push, &self.app.commands).await?;
+        push::wake(&participant.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["outcome"] == "accepted");
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         due(&mut pg).await?;
-        push::wake(&participant.push, &self.app.commands).await?;
+        push::wake(&participant.push, &self.app.execution).await?;
         let unregistered = state(&mut pg).await?;
         ensure!(
             unregistered["state"] == "pending_token"
@@ -96,7 +96,7 @@ impl Fixture {
         participant.close().await?;
         peer.token().await?;
         let unavailable = push::tests::Participant::unavailable_push().await?;
-        push::wake(&unavailable, &self.app.commands).await?;
+        push::wake(&unavailable, &self.app.execution).await?;
         let failed = state(&mut pg).await?;
         ensure!(
             failed["status"].is_null()
@@ -107,7 +107,7 @@ impl Fixture {
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         due(&mut pg).await?;
         let recovered = push::tests::Participant::start(vec![200], vec![42; 32]).await?;
-        push::wake(&recovered.push, &self.app.commands).await?;
+        push::wake(&recovered.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["failures"] == 0);
         recovered.close().await?;
         pg.close().await?;

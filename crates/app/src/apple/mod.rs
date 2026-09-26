@@ -220,7 +220,7 @@ pub(crate) struct HttpState {
     pub(crate) access: std::sync::Arc<crate::database::Database>,
     pub(crate) apple: Option<std::sync::Arc<crate::apple::Apple>>,
     pub(crate) clock: std::sync::Arc<dyn crate::clock::Clock>,
-    pub(crate) commands: std::sync::Arc<crate::commands::Commands>,
+    pub(crate) execution: std::sync::Arc<crate::execution::ExecutionService>,
     pub(crate) credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
     pub(crate) devices: std::sync::Arc<crate::device::DeviceService>,
     pub(crate) identity: std::sync::Arc<crate::identity::Identity>,

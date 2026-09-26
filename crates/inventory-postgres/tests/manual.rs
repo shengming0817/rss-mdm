@@ -15,7 +15,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
         .database("backend")
-        .username("mdm_management_runtime")
+        .username("mdm_flow_runtime")
         .password("backend-fixture")
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());

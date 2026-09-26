@@ -186,7 +186,7 @@ impl Fixture {
         let audit = rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "apple_management");
         let stale = self
             .app
-            .commands
+            .execution
             .apple_management(
                 self.app.apple()?,
                 &old_principal,

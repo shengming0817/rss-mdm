@@ -2,9 +2,9 @@ use super::*;
 use crate::api::Assembly;
 use crate::{
     Database,
+    assets::collection::CollectionService,
     device::tests::{admin, options},
     enrollment::{Authorization, Password},
-    management::assets::collection::CollectionService,
 };
 use crate::{authorization::context::AuthorizedPrincipal, clock::Clock};
 use anyhow::ensure;
@@ -1064,9 +1064,9 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     std::fs::write(&management_password, "runtime-fixture")?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&management_password, std::fs::Permissions::from_mode(0o600))?;
-    value["management"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_management_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
-    value["command_database"] = value["management"]["database"].clone();
-    value["command_database"]["user"] = "mdm_command_runtime".into();
+    value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_flow_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
+    value["execution"]["database"] = value["flow"]["storage"]["database"].clone();
+    value["execution"]["database"]["user"] = "mdm_command_runtime".into();
     let config: crate::config::Config = serde_json::from_value(value)?;
     let clock = Arc::new(crate::clock::SystemClock);
     let identity_management = Arc::new(
@@ -1101,7 +1101,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     )
     .await?;
     let management = config
-        .management
+        .flow
         .open(
             store
                 .audit_store(&crate::config::AuditConfig::Plain)
@@ -1112,7 +1112,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
         )
         .await
         .map_err(|e| anyhow::anyhow!("management startup: {e:?}"))?;
-    let commands = crate::commands::Commands::open(
+    let execution = crate::flow::execution::open(
         &config,
         store
             .audit_store(&crate::config::AuditConfig::Plain)
@@ -1121,12 +1121,13 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
     let app = Arc::new(Assembly {
+        content_writer: None,
         audit_store: store
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
         apple: None,
-        commands,
-        management,
+        execution,
+        flow: management,
         identity: Arc::new(identity),
         credentials: Arc::new(credentials),
         clock,
@@ -1162,7 +1163,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     let (_, management) = listeners.pop().expect("management listener");
     let (_, mut enrollment) = listeners.pop().expect("enrollment listener");
     let mut task_client = if with_commands {
-        Some(crate::commands::tests::Client::start(browser, app.clone()).await?)
+        Some(crate::execution::tests::Client::start(browser, app.clone()).await?)
     } else {
         None
     };
@@ -1412,10 +1413,10 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     };
     #[cfg(feature = "integration")]
     {
-        app.commands
+        app.execution
             .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
         ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
-        app.commands.inject_fault(
+        app.execution.inject_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
         );
         ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
@@ -1642,7 +1643,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     let final_fragment = syncml::encode(&conflicting, &CodecLimits::default())?;
     #[cfg(feature = "integration")]
     {
-        app.commands.inject_fault(
+        app.execution.inject_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
         );
         ensure!(

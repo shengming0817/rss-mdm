@@ -75,7 +75,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     .await;
     settle(runtime, kdf, result).await
 }
-/// Operator commands own the same bounded KDF/runtime cleanup, including failed authentication.
+/// Operator execution own the same bounded KDF/runtime cleanup, including failed authentication.
 pub(crate) async fn settle<T>(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     kdf: Arc<PasswordKdf>,

@@ -135,7 +135,7 @@ async fn report_on(
         header: Header {
             session_id: 1,
             message_id: 1,
-            source: "https://mdm.example/management".into(),
+            source: "https://mdm.example/planning".into(),
             target: principal.device().into(),
             credential: None,
             meta: None,

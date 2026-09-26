@@ -52,14 +52,29 @@ impl IntoResponse for AgentError {
                 let code = match error {
                     Error::Malformed
                     | Error::CertificateRequest
-                    | Error::ConfigurationTargetLimit => wire::ErrorCode::MalformedRequest,
-                    Error::Conflict | Error::Plan(_) => wire::ErrorCode::OperationConflict,
+                    | Error::Planning(crate::planning::error::PlanningError::TargetLimit) => {
+                        wire::ErrorCode::MalformedRequest
+                    }
+                    Error::Conflict
+                    | Error::Planning(crate::planning::error::PlanningError::Plan(_)) => {
+                        wire::ErrorCode::OperationConflict
+                    }
                     Error::CommitUnknown | Error::RollbackFailed => {
                         wire::ErrorCode::OperationUnknown
                     }
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
-                    Error::NotFound | Error::ManagementNotFound(_) => {
+                    Error::Execution(crate::execution::error::ExecutionError::MissingTask) => {
+                        wire::ErrorCode::TaskNotFound
+                    }
+                    Error::NotFound
+                    | Error::Resource(_)
+                    | Error::Execution(crate::execution::error::ExecutionError::MissingOperation)
+                    | Error::Publication(_)
+                    | Error::Planning(crate::planning::error::PlanningError::Missing(_)) => {
                         wire::ErrorCode::ReportNotFound
+                    }
+                    Error::Planning(crate::planning::error::PlanningError::Action(_)) => {
+                        wire::ErrorCode::OperationConflict
                     }
                     Error::Configuration(_) | Error::Unavailable(_) | Error::Unsupported => {
                         wire::ErrorCode::ServiceUnavailable
@@ -574,7 +589,7 @@ pub(crate) struct HttpState {
     pub(crate) identity: std::sync::Arc<crate::identity::Identity>,
     pub(crate) credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
     pub(crate) devices: std::sync::Arc<crate::device::DeviceService>,
-    pub(crate) collection: std::sync::Arc<crate::management::assets::collection::CollectionService>,
+    pub(crate) collection: std::sync::Arc<crate::assets::collection::CollectionService>,
 }
 
 impl From<crate::enrollment::EnrollmentError> for AgentError {

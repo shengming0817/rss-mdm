@@ -193,7 +193,7 @@ pub(super) async fn manage(
             .into_response());
     }
     let bytes = app
-        .commands
+        .execution
         .apple_management(apple, &principal, &bytes, &audit)
         .await?;
     Ok((

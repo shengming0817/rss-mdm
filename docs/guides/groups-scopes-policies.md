@@ -9,7 +9,7 @@ Group 解释资产条件并持有成员，Scope 组合组与设备来源，Polic
 3. Scope 计算目标并集 ∩ 限制并集 − 排除并集。limitations=null 表示不限制，[] 表示空限制；设备和组来源都绑定明确版本。
 4. Policy activate 绑定不可变资源版本。preview 冻结已发布 Scope、策略版本与引用令牌；任务完成后 save 重新核对当前权限、CAS 和来源版本，过期候选返回冲突，不偷偷重算。
 
-管理入口使用 `/api/v2`，资源使用 `/api/v3`。写入携带 operationId、expectedRevision、input；提交未知重放原请求。异步操作返回 task/statusUrl，完成后按结果入口分页；nextCursor 原样续读，尾页可为空。完整请求形态见 [管理源码](../../crates/app/src/management)。
+管理入口使用 `/api/v2`，资源使用 `/api/v3`。写入携带 operationId、expectedRevision、input；提交未知重放原请求。异步操作返回 task/statusUrl，完成后按结果入口分页；nextCursor 原样续读，尾页可为空。Scope 读取同时返回当前 `resolution` 与 `resolutionRevision`，可用于创建冻结脚本计划；未产生完整结果时 resolution 为空。完整请求形态见 [计划源码](../../crates/app/src/planning)。
 
 管理动作权限之外，Group 回执、Group/Scope 任务、三类结果页与计划摘要还要求全设备 inventory_read。每页重验权限，已有游标不能绕过撤权；部分设备范围不能替代租户级组计算。定义获授权提交后，后台作为服务推进，不保存发起人的过期授权快照。
 

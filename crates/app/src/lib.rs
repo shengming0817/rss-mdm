@@ -2,17 +2,23 @@
 //! Embedded authentication assembly and product-owned device/resource authorization.
 #[cfg(test)]
 extern crate self as rss_mdm_app;
+mod action_admission;
+mod assets;
 #[cfg(test)]
 mod audit_integration_tests;
 pub mod authorization;
+mod automation;
 mod collection;
-mod commands;
 mod database;
 pub mod device;
 mod enrollment;
+pub mod execution;
+
+mod flow;
+mod http_operation;
 mod inventory_runtime;
-mod management;
 mod operations;
+pub mod planning;
 #[cfg(test)]
 #[allow(
     dead_code,
@@ -21,8 +27,11 @@ mod operations;
 #[path = "../tests/publication_support/mod.rs"]
 mod publication_support;
 mod registration_lifecycle;
+pub mod resource_catalog;
+mod task_content;
+mod transaction;
 use database::Database;
-pub use management::Missing as ManagementObject;
+
 mod audit_budget;
 mod diagnostic;
 mod error_projection;
@@ -57,10 +66,14 @@ pub enum Error {
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
-    #[error("firewall plans support at most 32 devices")]
-    ConfigurationTargetLimit,
-    #[error("configuration plan rejected")]
-    Plan(PlanFailure),
+    #[error(transparent)]
+    Planning(#[from] planning::error::PlanningError),
+    #[error(transparent)]
+    Resource(#[from] resource_catalog::error::ResourceError),
+    #[error(transparent)]
+    Execution(#[from] execution::error::ExecutionError),
+    #[error(transparent)]
+    Publication(#[from] software_publication::error::PublicationHttpError),
     #[error("certificate request rejected")]
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
@@ -75,8 +88,6 @@ pub enum Error {
     Forbidden,
     #[error("dependency unavailable")]
     Unavailable(Failure),
-    #[error("management object not found")]
-    ManagementNotFound(ManagementObject),
     #[error("inventory not found")]
     NotFound,
     #[error("action not supported")]
@@ -84,22 +95,28 @@ pub enum Error {
 }
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
+        let projected = match &self {
+            Self::Planning(e) => Some(e.clone().into_response()),
+            Self::Resource(e) => Some(e.clone().into_response()),
+            Self::Execution(e) => Some(e.clone().into_response()),
+            Self::Publication(e) => Some(e.clone().into_response()),
+            _ => None,
+        };
+        if let Some(mut response) = projected {
+            response.extensions_mut().insert(self);
+            return response;
+        }
         let (status, code) = match &self {
-            Self::Plan(failure) => (StatusCode::CONFLICT, failure.reason.code()),
             Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
             Self::RollbackFailed => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "operation_rollback_unconfirmed",
             ),
-            Self::ConfigurationTargetLimit => {
-                (StatusCode::BAD_REQUEST, "configuration_target_limit")
-            }
             Self::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
             Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
-            Self::ManagementNotFound(object) => (StatusCode::NOT_FOUND, object.code()),
             Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
             Self::Unavailable(Failure::AuditIntegrity) => {
@@ -108,60 +125,32 @@ impl IntoResponse for Error {
             Self::Unavailable(
                 Failure::AuditIsolation | Failure::AuditContract | Failure::AuditAdmission,
             ) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_contract_error"),
+            Self::Planning(_) | Self::Resource(_) | Self::Execution(_) | Self::Publication(_) => {
+                unreachable!("domain errors projected above")
+            }
             Self::Configuration(_) | Self::Unavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
         };
-        let mut body = serde_json::json!({"code":code});
-        if let Self::Plan(failure) = &self {
-            body["device"] = serde_json::json!(failure.device);
-            body["stage"] = serde_json::json!(failure.stage);
-        }
+        let body = serde_json::json!({"code":code});
         let mut response = (status, Json(body)).into_response();
         response.extensions_mut().insert(self);
         response
     }
 }
 
-/// Safe product failure context; no source documents or database errors escape.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct PlanFailure {
-    pub reason: PlanFailureReason,
-    pub device: Option<String>,
-    pub stage: PlanStage,
-}
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanFailureReason {
-    CapabilityUnknown,
-    PlatformUnsupported,
-    StalePlan,
-    OwnerConflict,
-}
-impl PlanFailureReason {
-    fn code(self) -> &'static str {
-        match self {
-            Self::CapabilityUnknown => "capability_unknown",
-            Self::PlatformUnsupported => "platform_unsupported",
-            Self::StalePlan => "stale_plan",
-            Self::OwnerConflict => "owner_conflict",
-        }
-    }
-    pub(crate) fn at(self, device: Option<&str>, stage: PlanStage) -> Error {
-        Error::Plan(PlanFailure {
-            reason: self,
-            device: device.map(str::to_owned),
-            stage,
-        })
-    }
-}
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanStage {
-    Preview,
-    Save,
-    Execute,
-}
-
 #[cfg(test)]
 mod audit_test_support;
+
+impl Error {
+    pub(crate) fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::NotFound
+                | Self::Planning(planning::error::PlanningError::Missing(_))
+                | Self::Resource(resource_catalog::error::ResourceError::Missing)
+                | Self::Execution(_)
+                | Self::Publication(_)
+        )
+    }
+}

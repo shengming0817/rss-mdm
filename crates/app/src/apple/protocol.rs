@@ -1,5 +1,5 @@
 //! Bounded native plist decoding; no SyncML status or identity translation.
-//! ref: apple/device-management mdm/checkin and mdm/commands@09f249a06e7e3289930bf6d05f38fb562f748ebf
+//! ref: apple/device-management mdm/checkin and mdm/execution@09f249a06e7e3289930bf6d05f38fb562f748ebf
 use crate::Error;
 use plist::{Dictionary, Value};
 use serde::{
@@ -181,12 +181,12 @@ pub(crate) enum Status {
     Error,
     NotNow,
 }
-pub(crate) struct Management<'a> {
+pub(crate) struct Planning<'a> {
     pub udid: &'a str,
     pub status: Status,
     pub command: Option<Uuid>,
 }
-pub(crate) fn management(d: &Dictionary) -> Result<Management<'_>, Error> {
+pub(crate) fn management(d: &Dictionary) -> Result<Planning<'_>, Error> {
     let udid = device(d)?;
     let status = match text(d, "Status")? {
         "Idle" => Status::Idle,
@@ -203,7 +203,7 @@ pub(crate) fn management(d: &Dictionary) -> Result<Management<'_>, Error> {
     } else {
         Some(Uuid::parse_str(text(d, "CommandUUID")?).map_err(|_| Error::Malformed)?)
     };
-    Ok(Management {
+    Ok(Planning {
         udid,
         status,
         command,

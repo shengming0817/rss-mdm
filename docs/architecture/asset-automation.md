@@ -60,3 +60,5 @@ RSS 目标；提交未知沿原 claim/任务身份恢复，不把未知结果当
 借用事务参考：[SQLx v0.8.6 transaction.rs](https://github.com/launchbadge/sqlx/blob/v0.8.6/sqlx-core/src/transaction.rs)。
 
 操作与分页见 [组、范围与计划](../guides/groups-scopes-policies.md)。容量目标须由独立性能验证给出证据，功能边界测试不作规模证明。
+
+业务回执的 operationId 以能力 owner 为作用域；规划、资产、资源目录与软件发布的审计事件键使用同一 owner namespace。同 owner 的重复请求恢复原回执，复用标识但改变请求返回冲突；跨 owner 的独立操作不会误报审计完整性故障。

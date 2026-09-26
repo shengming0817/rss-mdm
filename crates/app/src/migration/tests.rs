@@ -76,7 +76,9 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
                 .await?;
         }
         // An otherwise complete pre-assets ledger must not regain prefix-upgrade support.
-        owner.execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v2','assets-management-v1')").await?;
+        owner
+            .execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v2','assets-v1')")
+            .await?;
         ensure!(migrate_on(&mut owner, &installation).await.is_err());
         ensure!(
             sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_migrations")
@@ -91,7 +93,7 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
                 == "preserve"
         );
         for (name, digest, complete) in &before {
-            if name == "inventory-v2" || name == "assets-management-v1" {
+            if name == "inventory-v2" || name == "assets-v1" {
                 sqlx::query("INSERT INTO public.mdm_migrations VALUES($1,$2,$3)")
                     .bind(name)
                     .bind(digest)

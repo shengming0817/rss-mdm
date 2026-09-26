@@ -75,7 +75,7 @@ def build(out, header, web_image):
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
-ROLE_NAMES = ("software-publication", "management", "identity", "commands", "audit")
+ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit")
 DEPLOYMENT_FILES = ("mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 

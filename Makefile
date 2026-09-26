@@ -62,7 +62,7 @@ t2-assets:
 	python3 hack/build_run.py -- python3 hack/asset-t2.py
 .PHONY: command-catalog
 command-catalog:
-	python3 hack/command_catalog.py --check
+	python3 hack/build_run.py -- python3 hack/command_catalog.py --check
 
 .PHONY: t2-tasks
 t2-tasks:

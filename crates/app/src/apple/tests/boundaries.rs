@@ -157,13 +157,13 @@ impl Fixture {
         token_observer.close().await?;
         let old = self
             .app
-            .commands
+            .execution
             .apple_wake(&self.app.apple()?.push.configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing wake"))?;
         peer.token_value(44).await?;
         self.app
-            .commands
+            .execution
             .apple_pushed(&old, Some(410), push::Outcome::Unregistered)
             .await?;
         ensure!(
@@ -421,7 +421,7 @@ impl Fixture {
         ensure!(self.operation(op).await?["authorization"] == "blocked");
         ensure!(
             self.app
-                .commands
+                .execution
                 .apple_wake(&self.app.apple()?.push.configuration)
                 .await?
                 .is_none(),
@@ -546,7 +546,7 @@ impl Fixture {
             .await?;
         ensure!(
             self.app
-                .commands
+                .execution
                 .apple_wake(&self.app.apple()?.push.configuration)
                 .await?
                 .is_none()
@@ -556,12 +556,12 @@ impl Fixture {
             .await?;
         let wake = self
             .app
-            .commands
+            .execution
             .apple_wake(&self.app.apple()?.push.configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("blocked queue page starved approved wake"))?;
         self.app
-            .commands
+            .execution
             .apple_pushed(&wake, Some(200), push::Outcome::Accepted)
             .await?;
         // Make old entries due again to independently exercise the native 32-item scan.

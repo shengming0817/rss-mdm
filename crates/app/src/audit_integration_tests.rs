@@ -16,7 +16,7 @@ use uuid::Uuid;
 async fn installed_audit_receipts_replay_and_atomicity() -> Result<()> {
     for role in [
         "mdm_access",
-        "mdm_management_runtime",
+        "mdm_flow_runtime",
         "mdm_command_runtime",
         "mdm_software_driver",
     ] {
@@ -596,19 +596,30 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
             Deadline::from_timeout(&timer, Duration::from_secs(6))?,
             &cancel,
         );
+        let started = rss_request_context::Clock::now(&timer);
+        let processed = std::sync::atomic::AtomicUsize::new(0);
         let attempt = store
-            .execute(tenant, &control, (&store, &facts), |(store, facts), tx| {
-                Box::pin(async move {
-                    for fact in facts.iter() {
-                        store.append(tx, fact, replayed).await?;
-                    }
-                    Ok::<_, Error>(())
-                })
-            })
+            .execute(
+                tenant,
+                &control,
+                (&store, &facts, &processed),
+                |(store, facts, processed), tx| {
+                    Box::pin(async move {
+                        for fact in facts.iter() {
+                            store.append(tx, fact, replayed).await?;
+                            processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Ok::<_, Error>(())
+                    })
+                },
+            )
             .await;
+        let outcome = state(attempt);
         ensure!(
-            state(attempt) == "committed",
-            "retirement batch mode ledger={ledger} replay={replayed}"
+            outcome == "committed",
+            "retirement batch mode ledger={ledger} replay={replayed} outcome={outcome} processed={} elapsed={:?}",
+            processed.load(std::sync::atomic::Ordering::Relaxed),
+            rss_request_context::Clock::now(&timer).saturating_duration_since(started)
         );
         let canonical = bytes(pool, tenant).await?;
         ensure!(canonical.len() == 65);

@@ -138,8 +138,17 @@ fn units() -> [(&'static str, &'static str); 49] {
             crate::software_publication::MIGRATION_SQL,
         ),
         (
-            "management-v1",
-            include_str!("../migrations/0007_management.sql"),
+            "flow-v1",
+            concat!(
+                "BEGIN;\n",
+                include_str!("../migrations/0007_flow.sql"),
+                include_str!("planning/install.sql"),
+                include_str!("assets/install.sql"),
+                include_str!("resource_catalog/install.sql"),
+                include_str!("software_publication/install.sql"),
+                include_str!("automation/install.sql"),
+                "COMMIT;\n",
+            ),
         ),
         (
             "group-outbox-writer-v1",
@@ -179,17 +188,14 @@ fn units() -> [(&'static str, &'static str); 49] {
         ),
         ("reconcile-v1", rss_reconcile_postgres::MIGRATION_SQL),
         (
-            "commands-v1",
+            "execution-v1",
             include_str!("../migrations/0011_commands.sql"),
         ),
         (
             "inventory-v2",
             rss_mdm_inventory_postgres::ASSETS_MIGRATION_SQL,
         ),
-        (
-            "assets-management-v1",
-            crate::management::assets::ASSETS_MIGRATION_SQL,
-        ),
+        ("assets-v1", crate::assets::ASSETS_MIGRATION_SQL),
         ("agent-access-v1", crate::device::AGENT_ACCESS_MIGRATION_SQL),
         (
             "policy-candidates-v2",

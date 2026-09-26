@@ -272,7 +272,7 @@ impl Health {
 }
 pub(crate) fn registration(
     apple: std::sync::Arc<super::Apple>,
-    commands: std::sync::Arc<crate::commands::Commands>,
+    execution: std::sync::Arc<crate::execution::ExecutionService>,
     access: std::sync::Arc<crate::Database>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
@@ -286,7 +286,7 @@ pub(crate) fn registration(
             let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=async {
                 let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
                 super::renewal::maintain(&apple, &access, &audit_store, &tenant, now).await?;
-                wake(&apple.push,&commands).await
+                wake(&apple.push,&execution).await
             }=>result };
             let (ready, delay) = health.observe(&result);
             let changed = apple.push_ready.swap(ready, std::sync::atomic::Ordering::Relaxed) != ready;
@@ -297,10 +297,10 @@ pub(crate) fn registration(
 }
 pub(super) async fn wake(
     push: &Push,
-    commands: &crate::commands::Commands,
+    execution: &crate::execution::ExecutionService,
 ) -> Result<WakeHealth, Error> {
     use crate::clock::Clock;
-    let Some(wake) = commands.apple_wake(&push.configuration).await? else {
+    let Some(wake) = execution.apple_wake(&push.configuration).await? else {
         return Ok(WakeHealth::Idle);
     };
     let now = crate::clock::SystemClock.unix_seconds()?;
@@ -322,7 +322,7 @@ pub(super) async fn wake(
             ),
             _ => (None, Outcome::Retryable, None, None, Some("transport")),
         };
-    commands.apple_pushed(&wake, status, outcome).await?;
+    execution.apple_pushed(&wake, status, outcome).await?;
     if outcome != Outcome::Accepted {
         eprintln!(
             "{}",

@@ -15,10 +15,10 @@ def run(env):
         print(result.stdout,flush=True)
         if result.returncode:raise RuntimeError('publication T2 failed')
         pg.verify_tests(result.stdout, {'publication_result_commit_unknown_recovers_one_external_call_and_audit','public_artifact_digest_length_tls_redirect_and_timeout_fail_closed','preflight_failure_allows_explicit_retry_without_resubmitting_unknown','full_version_publication_recovery_and_public_artifact_boundary','unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back','brew_full_version_recovery_shared_tap_and_old_version_withdrawal','ring_isolation_unstarted_withdrawal_and_lost_delete_ack','complete_variant_mapping_and_resource_reference_protection'})
-        result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--lib','management::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic','--','--ignored','--exact'],pass_fds=lease_fds(), cwd=ROOT,env=tls,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+        result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--lib','planning::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic','--','--ignored','--exact'],pass_fds=lease_fds(), cwd=ROOT,env=tls,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
         print(result.stdout,flush=True)
-        if result.returncode:raise RuntimeError('management resource archive T2 failed')
-        pg.verify_tests(result.stdout, {'management::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic'})
+        if result.returncode:raise RuntimeError('planning resource archive T2 failed')
+        pg.verify_tests(result.stdout, {'planning::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic'})
 def main():
     require_lease(ROOT)
     if '--existing' in sys.argv:

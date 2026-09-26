@@ -22,13 +22,13 @@ CN 为 enrollment UUID 的 32 位小写 hex 与 attempt UUID 的 32 位小写 he
 
 ## Profile 操作
 
-整组 Commands 使用 `/api/v2`，包括计划执行。`POST /api/v2/devices/{id}/operations` 的请求为：
+整组 Execution 使用 `/api/v2`，包括计划执行。`POST /api/v2/devices/{id}/operations` 的请求为：
 
 ```json
 {"operationId":"97c3820e-4698-47dc-bb09-b33bd53da2f0","task":{"kind":"profile_install","enabled":true},"deadline":1800000000}
 ```
 
-示例 deadline 必须替换为未来 Unix 秒。要求设备级 `firewall_write`；同一 Identifier 的操作串行。Identifier 稳定绑定 tenant/device，安装 operationId 是 PayloadUUID。移除 task 为 `{"kind":"profile_remove","profile":"当前拥有的安装 UUID"}`，不能移除其他 UUID。任务类型自身决定协议，不接受 executor 字段。查询、取消和重新批准沿用 [Commands](device-operations.md) 的 operation_read/operation_cancel、requestId 和 expectedRevision 契约。
+示例 deadline 必须替换为未来 Unix 秒。要求设备级 `firewall_write`；同一 Identifier 的操作串行。Identifier 稳定绑定 tenant/device，安装 operationId 是 PayloadUUID。移除 task 为 `{"kind":"profile_remove","profile":"当前拥有的安装 UUID"}`，不能移除其他 UUID。任务类型自身决定协议，不接受 executor 字段。查询、取消和重新批准沿用 [Execution](device-operations.md) 的 operation_read/operation_cancel、requestId 和 expectedRevision 契约。
 
 | 证据 | commandStatus 含义 |
 | --- | --- |

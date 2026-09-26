@@ -265,3 +265,16 @@ pub(crate) fn department_matches(
         false
     })
 }
+
+impl Snapshot {
+    pub(crate) fn require_devices(
+        &self,
+        proof: &AuthorizedPrincipal,
+        permission: Permission,
+        devices: &[String],
+    ) -> Result<(), AuthorizationError> {
+        devices
+            .iter()
+            .try_for_each(|device| self.require(proof, permission, Some(device)))
+    }
+}
