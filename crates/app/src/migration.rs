@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 49] {
+fn units() -> [(&'static str, &'static str); 52] {
     [
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
@@ -135,7 +135,7 @@ fn units() -> [(&'static str, &'static str); 49] {
         ),
         (
             "software-publication-v1",
-            crate::software_publication::MIGRATION_SQL,
+            rss_mdm_software_service::publication::MIGRATION_SQL,
         ),
         (
             "flow-v1",
@@ -145,7 +145,6 @@ fn units() -> [(&'static str, &'static str); 49] {
                 include_str!("planning/install.sql"),
                 include_str!("assets/install.sql"),
                 include_str!("resource_catalog/install.sql"),
-                include_str!("software_publication/install.sql"),
                 include_str!("automation/install.sql"),
                 "COMMIT;\n",
             ),
@@ -261,6 +260,15 @@ fn units() -> [(&'static str, &'static str); 49] {
             "enterprise-task-admission-v2",
             include_str!("../migrations/0019_action_blocked_occurrence.sql"),
         ),
+        (
+            "publication-operations-v1",
+            rss_mdm_software_service::publication::OPERATIONS_SQL,
+        ),
+        (
+            "software-catalog-v1",
+            rss_mdm_software_service::catalog::INSTALL_SQL,
+        ),
+        ("content-v1", include_str!("content/install.sql")),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.

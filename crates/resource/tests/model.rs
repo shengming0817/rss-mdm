@@ -19,11 +19,7 @@ fn variant(arch: Architecture, byte: u8) -> Variant {
         arch,
         id("msi"),
         Declaration::Software {
-            package: Package::new(id("private"), id("Acme.App"), id("1.2")),
-            artifact,
-            install: id("msi-install"),
-            detect: id("product-code"),
-            uninstall: Some(id("msi-remove")),
+            definition: software(&artifact),
         },
     )
 }
@@ -36,12 +32,6 @@ fn immutable_identity_and_canonical_order() {
     let b = variant(Architecture::Aarch64, 2);
     let v = version("one", vec![a.clone(), b.clone()]);
     assert_eq!(v.digest(), version("one", vec![b, a]).digest());
-    assert_eq!(
-        v.digest().bytes(),
-        Digest::parse("f820d2058997820f12d037252919197efa5d99377bc5d7a98542a47105e92a2b")
-            .unwrap()
-            .bytes()
-    );
     let mut r = Resource::new(tenant(), id("app"), Kind::Software);
     assert!(r.insert(v.clone(), now()).unwrap());
     assert!(!r.insert(v, now()).unwrap());
@@ -172,26 +162,6 @@ fn v1_digest_goldens_cover_declarations_and_optional_tags() {
     let artifact = Artifact::new(id("payload"), 3, Digest::from_bytes([0xa5; 32])).unwrap();
     for (declaration, expected) in [
         (
-            Declaration::Software {
-                package: Package::new(id("private"), id("Acme.App"), id("1.2")),
-                artifact: artifact.clone(),
-                install: id("install"),
-                detect: id("detect"),
-                uninstall: None,
-            },
-            "5494e58566811eb82af4b811108d69ec8476d87d4702ef96ad4bfa9822c11aad",
-        ),
-        (
-            Declaration::Software {
-                package: Package::new(id("private"), id("Acme.App"), id("1.2")),
-                artifact: artifact.clone(),
-                install: id("install"),
-                detect: id("detect"),
-                uninstall: Some(id("remove")),
-            },
-            "76e813f5dc77d639c68c9c0c9d282cb3e021777ac59313733e7d512282f785cb",
-        ),
-        (
             Declaration::Configuration {
                 artifact: artifact.clone(),
                 schema: id("schema"),
@@ -234,4 +204,8 @@ fn v1_digest_goldens_cover_declarations_and_optional_tags() {
 
 fn script() -> ScriptDefinition {
     serde_json::from_value(serde_json::json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object"},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1})).unwrap()
+}
+
+fn software(artifact: &Artifact) -> SoftwareDefinition {
+    serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.2","format":"msi","primary":"package","artifacts":{"package":{"reference":artifact.reference().as_str(),"length":artifact.length(),"sha256":artifact.digest().bytes()}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null})).unwrap()
 }

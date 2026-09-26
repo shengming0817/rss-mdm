@@ -35,9 +35,9 @@ class BackendSupportBoundary(unittest.TestCase):
 
 class AuditIntegrationBoundary(unittest.TestCase):
     def graph(self):
-        names = {'rss-mdm-audit-integration', 'rss-mdm-app', 'rss-mdm-policy', 'rss-identity-core', 'rss-audit-postgres'}
+        names = {'rss-mdm-software-service', 'rss-mdm-audit-integration', 'rss-mdm-app', 'rss-mdm-policy', 'rss-identity-core', 'rss-audit-postgres'}
         nodes = [{'id': name, 'features': [], 'deps': []} for name in names]
-        for owner, target in [('rss-mdm-app','rss-mdm-audit-integration'), ('rss-mdm-audit-integration','rss-audit-postgres')]:
+        for owner, target in [('rss-mdm-software-service','rss-mdm-audit-integration'), ('rss-mdm-app','rss-mdm-audit-integration'), ('rss-mdm-audit-integration','rss-audit-postgres')]:
             next(n for n in nodes if n['id'] == owner)['deps'].append({'pkg':target})
         return {'packages':[{'id':name,'name':name} for name in names], 'resolve':{'nodes':nodes}}
 

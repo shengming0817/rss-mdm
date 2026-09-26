@@ -169,17 +169,35 @@ impl ExecutionService {
         id: Uuid,
         attempt: Uuid,
         audit: &RequestAudit,
-    ) -> std::result::Result<(Vec<u8>, String), Error> {
+    ) -> std::result::Result<crate::content::Verified, Error> {
+        let artifact = self.authorize_content(p, id, attempt, audit).await?;
+        let verified = self
+            .content
+            .as_ref()
+            .ok_or(Error::Unsupported)?
+            .verify(&artifact)
+            .await?;
+        let current = self.authorize_content(p, id, attempt, audit).await?;
+        if !verified.matches(&current) {
+            return Err(Error::Conflict);
+        }
+        Ok(verified)
+    }
+    async fn authorize_content(
+        &self,
+        p: &DevicePrincipal,
+        id: Uuid,
+        attempt: Uuid,
+        audit: &RequestAudit,
+    ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
         audit.require_request_settlement();
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,attempt,audit),|ctx,tx|Box::pin(async move{
-            let (service,p,id,attempt,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,p,id,attempt,audit),|ctx,tx|Box::pin(async move{
+            let (_service,p,id,attempt,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
             let run=db::load_run(tx,id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&id.to_string());let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
             if run.state.attempt()!=Some(attempt) || run.deadline<=now || run.state.cancellation!=Cancellation::None || !plan.definition.authorized_in(tx,p.device(),now).await?{return Err(Error::Forbidden.into());}
             let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
             if now>=expiry{return Err(Error::Forbidden.into());}
-            let artifact=plan.definition.frozen.artifact()?;let etag=format!("\"{}\"",artifact.digest().bytes().iter().map(|v|format!("{v:02x}")).collect::<String>());let content=service.content.clone().ok_or(Error::Unsupported)?;
-            let bytes=tokio::task::spawn_blocking(move||content.read(&artifact)).await.map_err(|_|Error::Unavailable(crate::Failure::CommandStorage))??;
-            Ok((bytes,etag))
+            plan.definition.frozen.artifact().map_err(Into::into)
         }),crate::transaction::TransactionOwner::Execution).await
     }
 }

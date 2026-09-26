@@ -1,10 +1,10 @@
 pub mod ack;
 pub mod pg;
 use pg::*;
-use rss_mdm_app::software_publication::*;
 use rss_mdm_resource as resource;
 use rss_mdm_resource_postgres as resource_pg;
 use rss_mdm_software_release as rel;
+use rss_mdm_software_service::publication::*;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -112,7 +112,6 @@ impl Server {
                 addresses: vec![self.address],
                 private_ca: Some(self.ca.clone()),
                 credential_reference: "source-key".into(),
-                credential_file: self.secret.clone(),
             })
         });
         RingSources {
@@ -127,7 +126,7 @@ impl Server {
         config: RingSources,
     ) -> PublicationService {
         PublicationService::connect(
-            (runtime, audit_store().await),
+            host(runtime, audit_store().await),
             tenant(),
             self.logical.clone(),
             config,
@@ -317,16 +316,39 @@ pub async fn seed(
             arch,
             id(variant),
             resource::Declaration::Software {
-                package: resource::Package::new(
-                    id(&server.logical),
-                    id(package),
-                    id(package_version),
-                ),
-                artifact: resource::Artifact::new(id(keyname), 3, resource::Digest::of(b"abc"))
-                    .unwrap(),
-                install: id("install"),
-                detect: id("detect"),
-                uninstall: None,
+                definition: {
+                    let mut spec = software_definition(
+                        &server.logical,
+                        package,
+                        package_version,
+                        platform,
+                        keyname,
+                    )
+                    .spec()
+                    .clone();
+                    if let Submission::Brew { recipe } = &submission
+                        && let BrewPayload::Formula {
+                            source,
+                            dependencies,
+                            ..
+                        } = &recipe.payload
+                    {
+                        for a in std::iter::once(source)
+                            .chain(dependencies.iter().flat_map(|d| d.artifacts.iter()))
+                        {
+                            spec.artifacts.insert(
+                                a.key.clone(),
+                                resource::SoftwareArtifact {
+                                    reference: a.key.clone(),
+                                    origin: Some(a.url.clone()),
+                                    length: a.length,
+                                    sha256: a.sha256,
+                                },
+                            );
+                        }
+                    }
+                    resource::SoftwareDefinition::new(spec).unwrap()
+                },
             },
         ));
     }
@@ -516,4 +538,65 @@ pub fn git(config: &RingSources, args: &[&str]) -> String {
 
 pub async fn request_for(service: &PublicationService, id: &rel::CandidateId) -> ServiceRequest {
     request(&service.candidate(id, cutoff()).await.unwrap().unwrap())
+}
+
+/// Complete immutable fixture shared with product HTTP tests.
+pub fn software_definition(
+    source: &str,
+    package: &str,
+    version: &str,
+    platform: resource::Platform,
+    key: &str,
+) -> resource::SoftwareDefinition {
+    let windows = platform == resource::Platform::Windows;
+    serde_json::from_value(serde_json::json!({"source":{"id":source,"revision":"1","sha256":vec![1;32]},"package":package,"version":version,"format":if windows {"winget"} else {"brew"},"primary":"package","artifacts":{"package":{"reference":key,"length":3,"sha256":resource::Digest::of(b"abc").bytes()}},"install":{"executor":if windows {"winget"} else {"brew"},"entry":null,"runAs":if windows {"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":600,"outputBytes":4096},"uninstall":null,"detect":if windows {serde_json::json!({"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":version})}else{serde_json::json!({"kind":"pkg_receipt","receipt":"com.acme.app","version":version})},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null})).unwrap()
+}
+
+pub fn host(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
+) -> rss_mdm_software_service::Host {
+    rss_mdm_software_service::Host {
+        runtime,
+        audit: Arc::new(TestAudit(audit)),
+        credentials: Arc::new(TestCredentials),
+    }
+}
+struct TestAudit(Arc<rss_mdm_audit_integration::AuditStore>);
+impl rss_mdm_software_service::AuditPort for TestAudit {
+    fn lock_in<'a>(
+        &'a self,
+        tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    ) -> rss_mdm_software_service::AuditFuture<'a> {
+        Box::pin(async move { self.0.lock_in(tx).await })
+    }
+    fn append_in<'a>(
+        &'a self,
+        tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        fact: &'a rss_mdm_audit_integration::Fact,
+        replayed: bool,
+    ) -> rss_mdm_software_service::AuditFuture<'a> {
+        Box::pin(async move { self.0.append_in(tx, fact, replayed).await })
+    }
+    fn append_request_in<'a>(
+        &'a self,
+        tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        request: &'a rss_mdm_audit_integration::RequestAudit,
+        status: u16,
+        result: &'a str,
+    ) -> rss_mdm_software_service::AuditFuture<'a> {
+        Box::pin(async move { self.0.append_request_in(tx, request, status, result).await })
+    }
+}
+struct TestCredentials;
+impl rss_mdm_software_service::Credentials for TestCredentials {
+    fn winget(
+        &self,
+        tenant: rss_request_context::TenantId,
+        source: &str,
+        reference: &str,
+    ) -> rss_mdm_software_service::publication::Result<rss_mdm_winget_source::WriteAccess> {
+        rss_mdm_winget_source::WriteAccess::new(tenant, source, reference, "fixture-source-token")
+            .map_err(|_| rss_mdm_software_service::publication::Error::Identity)
+    }
 }

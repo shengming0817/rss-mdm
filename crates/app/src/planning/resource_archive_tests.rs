@@ -1,8 +1,8 @@
 use crate::publication_support::{Server, pg, seed};
 use crate::resource_catalog::{self as resources, Command};
-use crate::software_publication::Error as PublicationError;
+use rss_mdm_software_service::publication::Error as PublicationError;
 
-fn archive(input: &crate::software_publication::CandidateInput) -> Command {
+fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Command {
     Command::Resource {
         id: input.resource.as_str().to_owned(),
         change: super::operation(

@@ -7,7 +7,9 @@
 //! Persist snapshots and reference checks atomically in the consuming adapter; a
 //! returned decision does not prove a database commit or execution on a device.
 mod script;
+mod software;
 pub use script::*;
+pub use software::*;
 
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
@@ -122,15 +124,22 @@ pub enum Kind {
     /// A configuration artifact with schema, application and detection identities.
     Configuration,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 /// Operating system selected by an exact variant lookup.
 pub enum Platform {
     /// Windows target.
     Windows,
     /// macOS target.
+    #[serde(rename = "macos")]
     MacOS,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 /// CPU architecture selected by an exact variant lookup.
 pub enum Architecture {
     /// 64-bit x86 target.
@@ -147,9 +156,9 @@ pub struct Artifact {
 }
 impl Artifact {
     /// Bind an opaque reference, positive byte length and expected digest.
-    /// Zero length returns [`Error::InvalidInput`]; no content is fetched or checked.
+    /// Zero length or a value above the signed 64-bit storage/file range returns [`Error::InvalidInput`]; no content is fetched or checked.
     pub fn new(reference: Id, length: u64, digest: Digest) -> Result<Self, Error> {
-        if length == 0 {
+        if length == 0 || length > i64::MAX as u64 {
             return Err(Error::InvalidInput);
         }
         Ok(Self {
@@ -179,50 +188,13 @@ impl Artifact {
         self.digest.verify(bytes)
     }
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Exact source/package/version coordinates; no package resolution or existence check.
-pub struct Package {
-    source: Id,
-    package: Id,
-    version: Id,
-}
-impl Package {
-    /// Bind exact coordinates without contacting or authorizing the source.
-    pub fn new(source: Id, package: Id, version: Id) -> Self {
-        Self {
-            source,
-            package,
-            version,
-        }
-    }
-    /// Borrow the source identity interpreted by the consumer.
-    pub fn source(&self) -> &Id {
-        &self.source
-    }
-    /// Borrow the package identity within the source.
-    pub fn package(&self) -> &Id {
-        &self.package
-    }
-    /// Borrow the exact package version identity; no version ordering is implied.
-    pub fn version(&self) -> &Id {
-        &self.version
-    }
-}
 /// Data only. Executor/schema identities are interpreted by a future consumer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Declaration {
-    /// Software metadata; executor identities are references, not commands.
+    /// Complete frozen software behavior and content closure.
     Software {
-        /// Exact package coordinates in the selected source.
-        package: Package,
-        /// Expected immutable artifact; construction does not load its bytes.
-        artifact: Artifact,
-        /// Consumer-owned installation operation identity.
-        install: Id,
-        /// Consumer-owned detection operation identity.
-        detect: Id,
-        /// Optional uninstallation operation identity; `None` declares none.
-        uninstall: Option<Id>,
+        /// Validated immutable definition; no mutable executor identifiers.
+        definition: SoftwareDefinition,
     },
     /// Script metadata; construction does not interpret or execute the artifact.
     Script {
@@ -257,9 +229,8 @@ impl Declaration {
     /// Borrow the expected artifact shared by every declaration family.
     pub fn artifact(&self) -> &Artifact {
         match self {
-            Self::Software { artifact, .. }
-            | Self::Script { artifact, .. }
-            | Self::Configuration { artifact, .. } => artifact,
+            Self::Software { definition } => definition.primary(),
+            Self::Script { artifact, .. } | Self::Configuration { artifact, .. } => artifact,
         }
     }
 }
@@ -336,7 +307,44 @@ impl Version {
         if variants.iter().any(|v| v.declaration.kind() != kind) {
             return Err(Error::KindMismatch);
         }
+        let mut artifacts = std::collections::BTreeSet::new();
+        let mut definition_bytes = 0usize;
+        let mut dependencies = std::collections::BTreeMap::new();
         for variant in &variants {
+            if let Declaration::Software { definition } = &variant.declaration {
+                definition.validate_target(variant.platform, variant.architecture)?;
+                definition_bytes = definition_bytes
+                    .checked_add(definition.canonical().len())
+                    .ok_or(Error::InvalidInput)?;
+                for artifact in definition.spec().artifacts.values() {
+                    artifacts.insert((artifact.length, artifact.sha256));
+                }
+                for dependency in &definition.spec().dependencies {
+                    if dependencies
+                        .insert(
+                            (&dependency.resource, &dependency.version),
+                            dependency.sha256,
+                        )
+                        .is_some_and(|old| old != dependency.sha256)
+                    {
+                        return Err(Error::InvalidInput);
+                    }
+                }
+                if definition_bytes > 8 * 1024 * 1024
+                    || artifacts.len() > 128
+                    || dependencies.len() > 32
+                {
+                    return Err(Error::InvalidInput);
+                }
+                if definition
+                    .spec()
+                    .dependencies
+                    .iter()
+                    .any(|d| d.resource == resource.as_str())
+                {
+                    return Err(Error::InvalidInput);
+                }
+            }
             if let Declaration::Script { definition, .. } = &variant.declaration {
                 definition.validate_platform(variant.platform)?;
             }
@@ -358,7 +366,11 @@ impl Version {
             variants,
             digest: Digest::from_bytes([0; 32]),
         };
-        value.digest = Digest::of(&value.canonical());
+        let bytes = value.canonical();
+        if bytes.len() > 8 * 1024 * 1024 {
+            return Err(Error::InvalidInput);
+        }
+        value.digest = Digest::of(&bytes);
         Ok(value)
     }
     /// Return the owning tenant; this is not an authorization check.
@@ -400,7 +412,9 @@ impl Version {
     }
     // V1: domain separator, tenant, length-prefixed identities, explicit tags/counts.
     fn canonical(&self) -> Vec<u8> {
-        let mut e = Encoding(if self.kind == Kind::Script {
+        let mut e = Encoding(if self.kind == Kind::Software {
+            b"rss-mdm-resource-software-v2\0".to_vec()
+        } else if self.kind == Kind::Script {
             b"rss-mdm-resource-script-v2\0".to_vec()
         } else {
             b"rss-mdm-resource-v1\0".to_vec()
@@ -429,19 +443,10 @@ impl Version {
             e.0.extend(a.length.to_be_bytes());
             e.0.extend(a.digest.0);
             match &v.declaration {
-                Declaration::Software {
-                    package,
-                    install,
-                    detect,
-                    uninstall,
-                    ..
-                } => {
-                    e.id(&package.source);
-                    e.id(&package.package);
-                    e.id(&package.version);
-                    e.id(install);
-                    e.id(detect);
-                    e.optional(uninstall);
+                Declaration::Software { definition } => {
+                    let bytes = definition.canonical();
+                    e.0.extend((bytes.len() as u32).to_be_bytes());
+                    e.0.extend(bytes);
                 }
                 Declaration::Script { definition, .. } => {
                     let bytes = definition.canonical();

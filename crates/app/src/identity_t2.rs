@@ -9,6 +9,8 @@ mod authorization;
 mod planning;
 use crate::publication_support;
 #[cfg(feature = "integration")]
+mod software;
+#[cfg(feature = "integration")]
 mod sso;
 #[cfg(feature = "integration")]
 mod tasks;

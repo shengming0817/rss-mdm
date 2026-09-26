@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-software-service": "crates/software-service",
     "rss-mdm-audit-integration": "crates/audit-integration",
     "rss-mdm-agent-wire": "crates/agent-wire",
     "rss-mdm-backend-postgres-support": "crates/backend-postgres-support",
@@ -171,7 +172,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-mdm-app'}, 'only App business producers may consume audit integration')
+    require(parents == {'rss-mdm-app', 'rss-mdm-software-service'}, 'only host and software business producers may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default', 'integration'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
@@ -243,7 +244,7 @@ GATE_PACKAGES = {
     "group-t2": APP_INPUTS | {"rss-mdm-group-postgres"},
     "backend-t2": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
     "t2": APP_INPUTS | {"inventory-postgres-integration"},
-    **{name: APP_INPUTS for name in ("task-t2", "apple-t2", "asset-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
+    **{name: APP_INPUTS for name in ("task-t2", "software-t2", "apple-t2", "asset-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
 }
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
@@ -354,6 +355,7 @@ def main():
         ("apple-t2",[sys.executable,"hack/apple-t2.py"]),
         ("backend-t2",[sys.executable,"hack/backend-t2.py"]),
         ("publication-t2",[sys.executable,"hack/publication-t2.py"]),
+        ("software-t2",[sys.executable,"hack/software-t2.py"]),
         ("source-t2-oracle",[sys.executable,"hack/test_source_t2.py"]),
         ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("agent-wire-compat",[sys.executable,"hack/agent_wire_compat.py"]),

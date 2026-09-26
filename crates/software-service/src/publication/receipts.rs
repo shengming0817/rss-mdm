@@ -1,13 +1,15 @@
-use crate::Error;
-use crate::transaction::*;
+use crate::catalog::{Error, Result};
+fn stored<T>(v: std::result::Result<T, serde_json::Error>) -> Result<T> {
+    v.map_err(|_| Error::Integrity)
+}
 use rss_mdm_audit_integration::RequestAudit;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use sqlx::Row;
 use uuid::Uuid;
-pub(crate) async fn audit(
+pub async fn audit(
     tx: &mut PgTransaction<'_>,
-    store: &rss_mdm_audit_integration::AuditStore,
+    store: &dyn crate::AuditPort,
     audit: &RequestAudit,
     operation: Option<(Uuid, &[u8])>,
     replayed: bool,
@@ -39,7 +41,7 @@ pub(crate) async fn audit(
     result.map_err(Error::from)?;
     Ok(())
 }
-pub(crate) async fn replay(
+pub async fn replay(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     fingerprint: &[u8],
@@ -51,7 +53,7 @@ pub(crate) async fn replay(
     })).await?;
     if let Some(row) = row {
         if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint {
-            return Err(Error::Conflict.into());
+            return Err(Error::Conflict);
         }
         return Ok(Some(stored(serde_json::from_str(
             &row.try_get::<String, _>("response")?,
@@ -59,7 +61,7 @@ pub(crate) async fn replay(
     }
     Ok(None)
 }
-pub(crate) async fn receipt(
+pub async fn receipt(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     fingerprint: &[u8],

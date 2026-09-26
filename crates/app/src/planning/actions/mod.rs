@@ -7,7 +7,7 @@ mod targets;
 use std::sync::Arc;
 pub(crate) struct ActionPlans {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) content: Option<Arc<dyn crate::task_content::ArtifactReader>>,
+    pub(crate) content: Option<Arc<crate::content::Store>>,
 }
 
 pub(crate) mod admission;

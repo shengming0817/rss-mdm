@@ -46,6 +46,60 @@
       ""
     ],
     [
+      "artifact_refs",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "artifact_refs",
+      "owner",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "artifact_refs",
+      "version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "artifact_refs",
+      "sha256",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "artifact_refs",
+      "length",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "artifact_refs",
+      "archived",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "immutable",
       "tenant_id",
       "uuid",
@@ -173,6 +227,22 @@
       true
     ],
     [
+      "artifact_refs",
+      "artifact_refs_live",
+      "CREATE INDEX artifact_refs_live ON mdm_resource.artifact_refs USING btree (tenant_id, sha256) WHERE (NOT archived)",
+      true,
+      true,
+      true
+    ],
+    [
+      "artifact_refs",
+      "artifact_refs_pkey",
+      "CREATE UNIQUE INDEX artifact_refs_pkey ON mdm_resource.artifact_refs USING btree (tenant_id, owner, version, sha256, length)",
+      true,
+      true,
+      true
+    ],
+    [
       "immutable",
       "immutable_pkey",
       "CREATE UNIQUE INDEX immutable_pkey ON mdm_resource.immutable USING btree (tenant_id, owner, kind, key)",
@@ -223,6 +293,41 @@
       "aggregates_revision_check",
       "c",
       "CHECK ((revision >= 0))",
+      true
+    ],
+    [
+      "artifact_refs",
+      "artifact_refs_length_check",
+      "c",
+      "CHECK ((length > 0))",
+      true
+    ],
+    [
+      "artifact_refs",
+      "artifact_refs_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, owner, version, sha256, length)",
+      true
+    ],
+    [
+      "artifact_refs",
+      "artifact_refs_sha256_check",
+      "c",
+      "CHECK ((octet_length(sha256) = 32))",
+      true
+    ],
+    [
+      "artifact_refs",
+      "artifact_refs_tenant_id_owner_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, owner) REFERENCES mdm_resource.aggregates(tenant_id, id)",
+      true
+    ],
+    [
+      "artifact_refs",
+      "artifact_refs_version_check",
+      "c",
+      "CHECK (((octet_length(version) >= 1) AND (octet_length(version) <= 128)))",
       true
     ],
     [

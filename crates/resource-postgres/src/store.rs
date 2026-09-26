@@ -304,6 +304,13 @@ impl ResourceStore {
                     )
                     .await?;
             }
+            match &r.command {
+                Command::Insert(version) => crate::artifacts::insert(tx, version).await?,
+                Command::Archive { version, .. } => {
+                    crate::artifacts::archive(tx, &r.resource, version).await?
+                }
+                _ => (),
+            }
             event::append(
                 &self.writer,
                 tx,

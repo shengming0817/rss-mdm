@@ -73,7 +73,8 @@ impl ArtifactReader {
             deadline,
         })
     }
-    pub async fn verify(&self, url: &str, length: u64, digest: [u8; 32]) -> Result<()> {
+    /// Open only an explicitly allowlisted immutable object; caller must verify the complete stream.
+    pub async fn open(&self, url: &str, length: u64) -> Result<reqwest::Response> {
         if length == 0 || length > self.max_bytes {
             return Err(Error::ArtifactBudget);
         }
@@ -85,7 +86,7 @@ impl ArtifactReader {
             .ok_or(Error::ArtifactAddress)?
             .1;
         tokio::time::timeout(self.deadline, async {
-            let mut response = client
+            let response = client
                 .get(url)
                 .header("Accept-Encoding", "identity")
                 .send()
@@ -102,6 +103,23 @@ impl ArtifactReader {
             {
                 return Err(Error::ArtifactDigest);
             }
+            Ok(response)
+        })
+        .await
+        .map_err(|cause| Error::ArtifactTimeout.context("artifact::open", cause))?
+    }
+    pub async fn verify(&self, url: &str, length: u64, digest: [u8; 32]) -> Result<()> {
+        tokio::time::timeout(self.deadline, async {
+            let mut response = self.open(url, length).await.map_err(|error| match error {
+                Error::Diagnostic {
+                    category, source, ..
+                } => Error::Diagnostic {
+                    stage: "artifact::verify",
+                    category,
+                    source,
+                },
+                other => other,
+            })?;
             let mut hash = Sha256::new();
             let mut seen = 0u64;
             while let Some(chunk) = response

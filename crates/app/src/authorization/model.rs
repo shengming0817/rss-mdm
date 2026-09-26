@@ -35,6 +35,10 @@ pub enum Permission {
     PlanExecute,
     ResourceRead,
     ResourceWrite,
+    SoftwareRead,
+    SoftwareWrite,
+    SoftwareApprove,
+    SoftwareWithdraw,
     ReleaseRead,
     ReleaseWrite,
     ReleaseValidate,
@@ -75,6 +79,10 @@ impl Permission {
             | Self::PlanExecute
             | Self::ResourceRead
             | Self::ResourceWrite
+            | Self::SoftwareRead
+            | Self::SoftwareWrite
+            | Self::SoftwareApprove
+            | Self::SoftwareWithdraw
             | Self::ReleaseRead
             | Self::ReleaseWrite
             | Self::ReleaseValidate

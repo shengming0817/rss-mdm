@@ -14,11 +14,11 @@ Resource.Script 同时持有脚本和采集模板不可变版本，避免重复 
 
 ## 持有与事务
 
-`resource_catalog` 持有三类资源目录和引用核查，`planning` 持有 Group/Scope/Policy、配置业务校验与冻结的 ActionPlan，`execution` 持有命令、run、attempt、occurrence 和恢复进度。资产查询与采集接缝归 `assets`，发布目录和源装配归 `software_publication`。宿主 `flow` 持有连接、跨能力事务与路由装配；后台 queue/claim 仍只有一套宿主设施。
+`resource_catalog` 持有三类资源目录和引用核查，`planning` 持有 Group/Scope/Policy、配置业务校验与冻结的 ActionPlan，`execution` 持有命令、run、attempt、occurrence 和恢复进度。资产查询与采集接缝归 `assets`，企业目录、准入及外部发布协调归 `software-service`，App 仅持有 HTTP 和源凭据装配。宿主 `flow` 持有连接、跨能力事务与路由装配；后台 queue/claim 仍只有一套宿主设施。
 
 ActionPlan 与批准回执在 `mdm_planning`，可变调度进度在 `mdm_commands.action_progress`。宿主角色在同一借用事务中完成批准和首次派发、取消和恢复唤醒；执行角色只有计划读取权限。计划与执行共享计划锁，随后获取设备 action 锁；资源归档和新引用串行于资源版本锁。取消不会删除历史引用。
 
-内容读取、上传和任务签名分别通过 `ArtifactReader`、`ArtifactWriter`、`TaskSigner` 注入；计划只消费读取能力。各 owner 保留自身 catalog、准入与回执，宿主统一处理 CommitUnknown 和回滚失败。
+内容读取、上传和任务签名分别通过 `content::Store` 与独立 `task_signing::Signer` 注入；计划只消费读取能力。各 owner 保留自身 catalog、准入与回执，宿主统一处理 CommitUnknown 和回滚失败。
 
 ## 来源
 

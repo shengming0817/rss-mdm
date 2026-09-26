@@ -160,7 +160,7 @@ impl Config {
         planning: &mut Flow,
         acquire: &mut impl FnMut(Resource),
     ) -> std::result::Result<(), Error> {
-        use crate::software_publication as p;
+        use rss_mdm_software_service::publication as p;
         let invalid = || Error::Configuration(crate::ConfigIssue::Publication);
         let db = &self.publication.database;
         let binding = ExecutionBinding::new(
@@ -201,7 +201,19 @@ impl Config {
             )
             .map_err(|_| invalid())?;
             let service = p::PublicationService::connect(
-                (runtime.clone(), planning.publications.audit_store.clone()),
+                rss_mdm_software_service::Host {
+                    runtime: runtime.clone(),
+                    audit: Arc::new(crate::software_publication::host::Audit(
+                        planning.publications.audit_store.clone(),
+                    )),
+                    credentials: Arc::new(
+                        crate::software_publication::host::SourceCredentials::load(
+                            tenant,
+                            &source.name,
+                            &source.credentials,
+                        )?,
+                    ),
+                },
                 tenant,
                 source.name.clone(),
                 source.rings.clone(),
@@ -263,7 +275,7 @@ mod tests {
         let mut config: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
                 .unwrap();
-        let source = serde_json::json!({"name":"fixture","rings":{"test":{"Brew":{"tap":"a/test","repository":"/tmp/test"}},"pilot":{"Brew":{"tap":"a/pilot","repository":"/tmp/pilot"}},"production":{"Brew":{"tap":"a/production","repository":"/tmp/production"}}},"artifacts":[],"max_artifact_bytes":1});
+        let source = serde_json::json!({"name":"fixture","credentials":{},"rings":{"test":{"Brew":{"tap":"a/test","repository":"/tmp/test"}},"pilot":{"Brew":{"tap":"a/pilot","repository":"/tmp/pilot"}},"production":{"Brew":{"tap":"a/production","repository":"/tmp/production"}}},"artifacts":[],"max_artifact_bytes":1});
         config["flow"]["publication"]["sources"] =
             serde_json::json!([source.clone(), source.clone(), source]);
         let c: crate::config::Config = serde_json::from_value(config).unwrap();
@@ -326,9 +338,15 @@ impl crate::resource_catalog::References for ResourceReferences {
         Box::pin(async move {
             let plans = crate::planning::references::count_in(tx, resource, version).await?;
             let publications =
-                crate::software_publication::references::count_in(tx, resource, version).await?;
+                rss_mdm_software_service::publication::references::count_in(tx, resource, version)
+                    .await?;
+            let tenant = tx.tenant_id().to_string();
+            let resource = resource.to_owned();
+            let version = version.to_owned();
+            let approvals:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
             plans
-                .checked_add(publications)
+                .checked_add(approvals as u64)
+                .and_then(|n| n.checked_add(publications))
                 .ok_or_else(|| Error::Unavailable(Failure::FlowStorage).into())
         })
     }

@@ -1,4 +1,4 @@
-use rss_mdm_app::software_publication::{ArtifactOrigin, ArtifactReader};
+use rss_mdm_software_service::publication::{ArtifactOrigin, ArtifactReader};
 #[test]
 fn artifact_reader_rejects_credentials_redirectable_urls_and_unbounded_budgets() {
     let origin = |base: &str| ArtifactOrigin {

@@ -14,6 +14,7 @@ pub mod device;
 mod enrollment;
 pub mod execution;
 
+mod content;
 mod flow;
 mod http_operation;
 mod inventory_runtime;
@@ -28,7 +29,8 @@ pub mod planning;
 mod publication_support;
 mod registration_lifecycle;
 pub mod resource_catalog;
-mod task_content;
+mod software_catalog;
+mod task_signing;
 mod transaction;
 use database::Database;
 

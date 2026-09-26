@@ -4,12 +4,23 @@ Resource.Script 持有唯一的不可变执行定义。管理入口为 `/api/v3/
 
 ## 配置与内容
 
-配置可选 `tasks` 对象；未配置时任务创建拒绝，不影响基础报告：
+内容与任务签名分别配置；软件目录只需要 `content`，脚本任务需要同时配置 `content` 和 `task_signing`。旧 `tasks` 配置已删除：
 
 ```json
 {
-  "tasks": {
-    "directory": "/var/lib/rss-mdm/tasks",
+  "content": {
+    "directory": "/var/lib/rss-mdm/content",
+    "imports": {},
+    "max_artifact_bytes": 8589934592,
+    "max_temporary_bytes": 34359738368,
+    "max_uploads": 4,
+    "transfer_seconds": 1800,
+    "retention_seconds": 86400,
+    "max_bundle_bytes": 17179869184,
+    "max_bundle_entries": 4096,
+    "max_expansion_ratio": 100
+  },
+  "task_signing": {
     "private_key_file": "/run/secrets/task-signing.pk8",
     "key_id": "enterprise-2026-09",
     "trusted_keys": {"enterprise-2026-09": "<32-byte Ed25519 public key, unpadded base64url>"}
@@ -17,12 +28,16 @@ Resource.Script 持有唯一的不可变执行定义。管理入口为 `/api/v3/
 }
 ```
 
-directory 必须预先存在，服务按 tenant 创建内容目录。每个 tenant 目录的 `.upload.lock` 用独占文件锁串行化所有实例的启动清扫和上传；启动及每次上传前只删除名称精确为 `.upload-<canonical hyphenated UUID>` 的普通文件，不删除锁文件、非普通文件或近似名称。锁、扫描、删除、写入和目录同步失败均报 CommandStorage 并阻止启动或本次上传；已存在内容的长度或摘要不符报 CommandInvariant。密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 的公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限、资源摘要、内容长度/hash、解释器、身份、参数和预算。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
+`directory` 必须预先存在，服务按 tenant 隔离内容和上传会话。数据以 SHA-256 寻址；临时文件长度/hash 全部核对后才原子发布。正文按固定缓冲流式读写，脚本自身仍限制为 16MiB。`max_uploads` 同时限定保留中的上传会话数量和每进程内容校验/传输并发；配额不足拒绝，不建立无界等待队列。`transfer_seconds` 限制传输预算，`retention_seconds` 限制上传恢复窗口。单个软件产物硬上限为 1TiB，实际部署必须显式选择更小或相等的预算；网关正文上限与之配套。
+
+同一上传 ID 的元数据持久化已确认 offset；未确认文件尾部在续传时截断。过期会话在新上传或显式清理时回收。原子落盘后数据库事务失败可能留下未引用文件；`POST /api/v3/software/content/cleanup` 需要 ResourceWrite，每轮至多清理 128 个超过保留窗口且无有效引用、无活跃读写的对象。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。不得手工删除 `.upload-*`、`.blob-*.lock` 或正在使用的内容文件。
+
+密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限、资源摘要、内容长度/hash、解释器、身份、参数和预算。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
 Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_info_v1）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须全部显式绑定；不拼接 shell 命令。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 
-先创建 Resource、加入完整 version，再通过
-`POST /api/v3/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64`
+先创建 Resource、加入完整 version，再使用固定 operation UUID 通过
+`POST /api/v3/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation=<UUID>`
 上传原始字节，最后 activate。上传需 ResourceWrite，精确长度与 SHA-256 必须匹配声明，同一摘要不可覆盖。osquery_info_v1 的唯一内容为 `SELECT version FROM osquery_info;` 加一个 LF，且 system、无参数、单行输出。
 
 ## 计划和授权
