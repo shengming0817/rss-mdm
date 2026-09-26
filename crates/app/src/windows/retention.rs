@@ -21,13 +21,14 @@ pub(crate) async fn prune_management(
     }
     let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
     audit.identify_service("service:management-retention");
-    let budget =
-        crate::audit_budget::AuditBudget::new(crate::registration_lifecycle::TRANSACTION_BUDGET);
+    let budget = crate::audit_budget::AuditBudget::retirement(None);
     let control = budget.control();
+    let operation_control = budget.operation_control();
     let attempt = store
-        .execute(
+        .execute_with_operation(
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
             &control,
+            &operation_control,
             (store, tenant, &audit),
             |(store, tenant, audit), tx| {
                 Box::pin(async move {

@@ -239,7 +239,11 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             print(upgrade.stdout, end='', flush=True)
             require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
-            run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
+            # Every specialized run still proves installation and actual runtime admission.
+            # Batch/recovery correctness belongs to the installation gate, once per CI.
+            if installation_only or not (task_only or identity_only or asset_only or command_only or catalog_mode or apple_only or foundation_only or device_only or windows_only):
+                run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
+                run_exact_test(env, "audit_integration_tests::operation_cutoff_leaves_owner_time_to_rollback")
             for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
                 run_exact_test(env, audit_test)
             if installation_only:

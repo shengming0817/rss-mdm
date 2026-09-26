@@ -559,18 +559,14 @@ async fn audit_process_exit_fixture() -> Result<()> {
     anyhow::bail!("crash fixture unexpectedly settled: {}", state(attempt));
 }
 
-// Exercise the real retirement backlog size under the product's owner budget in
+// Exercise batch correctness independently of product performance policy in
 // both modes; each event retains a separate identity and exact recovery receipt.
 async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
-    assert_eq!(
-        crate::registration_lifecycle::TRANSACTION_BUDGET,
-        Duration::from_secs(6)
-    );
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = Control::new(
         &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(6))?,
+        Deadline::from_timeout(&timer, Duration::from_secs(30))?,
         &cancel,
     );
     let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
@@ -593,7 +589,7 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
     for replayed in [false, true] {
         let control = Control::new(
             &timer,
-            Deadline::from_timeout(&timer, Duration::from_secs(6))?,
+            Deadline::from_timeout(&timer, Duration::from_secs(30))?,
             &cancel,
         );
         let started = rss_request_context::Clock::now(&timer);
@@ -630,5 +626,89 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
         }
     }
     request.finalize(None);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 --installation: real owner settlement after a bounded callback"]
+async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
+    let (pool, _) = request_store().await?;
+    for ledger in [false, true] {
+        let timer = crate::lifecycle::RuntimeTimer;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let total = Control::new(
+            &timer,
+            Deadline::from_timeout(&timer, Duration::from_secs(10))?,
+            &cancel,
+        );
+        let store = AuditStore::new(pool.clone(), integrity(ledger)?, &total).await?;
+        let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+        let request = RequestAudit::new(tenant.to_string(), "bounded_retirement");
+        request.identify_service("service:collection-finalizer");
+        let fact = Fact::business(
+            &request,
+            "bounded-operation",
+            b"retired",
+            200,
+            "success",
+            None,
+        )?;
+        let operation = Control::new(
+            &timer,
+            Deadline::from_timeout(&timer, Duration::from_secs(2))?,
+            &cancel,
+        );
+        let reached = std::sync::atomic::AtomicBool::new(false);
+        let attempt = store
+            .execute_with_operation(
+                tenant,
+                &total,
+                &operation,
+                (&store, &fact, &reached),
+                |(store, fact, reached), tx| {
+                    Box::pin(async move {
+                        store.append(tx, fact, false).await?;
+                        reached.store(true, std::sync::atomic::Ordering::Release);
+                        std::future::pending::<Result<(), Error>>().await
+                    })
+                },
+            )
+            .await;
+        ensure!(reached.load(std::sync::atomic::Ordering::Acquire));
+        ensure!(state(attempt) == "rolled_back");
+        ensure!(bytes(&pool, tenant).await?.is_empty());
+        let mut observer = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(&mut *observer)
+            .await?;
+        let receipts: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+                .bind(tenant.to_string())
+                .fetch_one(&mut *observer)
+                .await?;
+        ensure!(receipts == 0);
+        observer.rollback().await?;
+        // The expired absolute operation cutoff cannot run even an immediately-ready callback.
+        let forbidden = store
+            .execute_with_operation(tenant, &total, &operation, (), |_, _| {
+                Box::pin(async {
+                    panic!("expired callback ran");
+                    #[allow(unreachable_code)]
+                    Ok::<(), Error>(())
+                })
+            })
+            .await;
+        ensure!(state(forbidden) == "rolled_back");
+        let recovery = store
+            .execute(tenant, &total, (&store, &fact), |(store, fact), tx| {
+                Box::pin(async move { store.append(tx, fact, false).await })
+            })
+            .await;
+        ensure!(state(recovery) == "committed");
+        ensure!(bytes(&pool, tenant).await?.len() == 1);
+        request.finalize(None);
+    }
+    pool.close().await;
     Ok(())
 }

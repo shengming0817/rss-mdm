@@ -183,6 +183,63 @@ impl AuditStore {
             )
             .await
     }
+    /// End product work before the owner's total cutoff, then await the owner's settlement.
+    /// Only cancels the borrowed callback, never the enclosing transaction future. Provider
+    /// acquisition/setup remain subject to its total cutoff and may have an unconfirmed rollback.
+    pub async fn execute_with_operation<
+        T: ExecutionTimer,
+        C: Send,
+        R: Send,
+        E: Send + From<Error>,
+        F,
+    >(
+        &self,
+        tenant: rss_request_context::TenantId,
+        total: &Control<'_, T>,
+        operation_control: &Control<'_, T>,
+        context: C,
+        operation: F,
+    ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
+        rss_audit_postgres::Committed<R>,
+        rss_audit_postgres::TransactionError<E>,
+    >
+    where
+        F: for<'a> FnOnce(
+                &'a mut C,
+                &'a mut AuditTransaction<'_, '_, '_, T>,
+            ) -> futures::future::BoxFuture<'a, Result<R, E>>
+            + Send,
+    {
+        self.adapter
+            .local_tx_with_context(
+                tenant,
+                total,
+                (context, Some(operation), operation_control, total),
+                |(context, operation, operation_control, total), tx| {
+                    Box::pin(async move {
+                        let expired = || {
+                            E::from(Error::Audit(rss_audit_postgres::Error::Deadline(
+                        rss_transactional_messaging::transaction::LocalTxDeadlineStage::Operation)))
+                        };
+                        let remaining = operation_control.remaining().min(total.remaining());
+                        if remaining.is_zero() {
+                            return Err(expired());
+                        }
+                        let work = async {
+                            tx.with_connection(|c| Box::pin(admit_receipts(c)))
+                                .await
+                                .map_err(E::from)?;
+                            tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
+                            operation.take().expect("one owner callback")(context, tx).await
+                        };
+                        tokio::time::timeout(remaining, work)
+                            .await
+                            .map_err(|_| expired())?
+                    })
+                },
+            )
+            .await
+    }
     /// First operation in an RSS transaction: validate isolation/receipts, then lock Audit and Ledger.
     /// Must precede business and outbox locks. Reuses the owner's connection and remaining budget;
     /// errors must propagate to that owner. This method neither commits nor proves prior rollback.
