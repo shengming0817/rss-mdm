@@ -958,12 +958,19 @@ async fn ingress_batches_reuse_published_group_coverage() {
         .into_iter()
         .find(|c| c.target().entity() == "changes")
         .unwrap();
-    for (consumed, watermark) in [(0, 1000), (1000, 1000), (1000, 1001), (1001, 1001)] {
+    for (consumed, watermark, phase) in [
+        (0, 1000, "devices"),
+        (0, 1000, "compliance"),
+        (1000, 1000, "groups"),
+        (1000, 1001, "devices"),
+        (1000, 1001, "compliance"),
+        (1001, 1001, "groups"),
+    ] {
         let diff = worker.observe(&claim, &control).await.unwrap();
         worker.apply(&claim, diff, &control).await.unwrap();
         assert_eq!(
-            sql("SELECT consumed||','||watermark FROM mdm_planning.asset_dispatch"),
-            format!("{consumed},{watermark}")
+            sql("SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch"),
+            format!("{consumed},{watermark},{phase}")
         );
         assert_eq!(
             sql("SELECT count(*) FROM mdm_automation.automation_jobs"),

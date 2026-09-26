@@ -111,7 +111,12 @@ async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result
     }
     crate::identity_fixture::set_grants(TENANT, subject, grants).await
 }
-fn seed_source(device: &str, channel: &str, source: &str, value: &str) -> Result<(Uuid, Uuid)> {
+pub(super) fn seed_source(
+    device: &str,
+    channel: &str,
+    source: &str,
+    value: &str,
+) -> Result<(Uuid, Uuid)> {
     let registration = Uuid::new_v4();
     let epoch = Uuid::new_v4();
     let grant = Uuid::new_v4();

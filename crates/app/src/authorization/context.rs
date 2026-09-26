@@ -68,6 +68,20 @@ impl AuthorizedPrincipal {
         self.check_live()?;
         self.authorization.as_ref().ok_or(Error::Unauthorized)
     }
+    pub(crate) fn require_all_devices(
+        &self,
+        permission: crate::authorization::Permission,
+    ) -> Result<(), Error> {
+        let grants = self.authorization()?.effective(self)?;
+        if grants.iter().any(|g| {
+            g.grant.operation == permission
+                && matches!(g.grant.scope, crate::authorization::Scope::AllDevices)
+        }) {
+            self.check_live()
+        } else {
+            Err(Error::Forbidden)
+        }
+    }
     pub(crate) fn require(
         &self,
         operation: crate::authorization::Permission,

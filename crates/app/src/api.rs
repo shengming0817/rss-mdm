@@ -321,6 +321,9 @@ pub(crate) fn from_state(
         .merge(crate::execution::routes().with_state(execution.clone()))
         .merge(crate::planning::routes_v2().with_state(planning.clone()))
         .merge(crate::assets::routes().with_state(assets))
+        .merge(crate::compliance::http::routes().with_state(Arc::new(
+            crate::compliance::Compliance::new(state.flow.planning.clone()),
+        )))
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::protect,

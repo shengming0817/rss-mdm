@@ -41,7 +41,9 @@ impl Planning {
         let mut policy_revision = None;
         if failure.is_none() {
             match &job {
-                JobInput::AssetQuery { .. } => return Err(Error::NotFound.into()),
+                JobInput::AssetQuery { .. } | JobInput::Compliance { .. } => {
+                    return Err(Error::NotFound.into());
+                }
                 JobInput::Group { .. } => {
                     let build = checked(
                         self.groups

@@ -1,0 +1,107 @@
+use super::*;
+pub(crate) use rss_mdm_compliance::GroupInput;
+use serde::{Deserialize, Serialize};
+pub(crate) type Definition = rss_mdm_compliance::Definition<crate::assets::Criteria>;
+pub(crate) type Input = rss_mdm_compliance::Input<crate::assets::Criteria>;
+pub(super) type Rule = pg::Rule<crate::assets::Criteria>;
+pub(super) fn validate_definition(
+    definition: &Definition,
+    t: TenantId,
+    id: Uuid,
+) -> Result<Vec<String>> {
+    checked_input(definition.validate())?;
+    if checked_input(serde_json::to_vec(definition))?.len() > 65536 {
+        return Err(Error::Malformed.into());
+    }
+    let rule = crate::assets::rule(t, id, &definition.criteria)?;
+    fn fields(
+        c: &rss_mdm_group_postgres::core::Criteria,
+        out: &mut std::collections::BTreeSet<String>,
+    ) {
+        use rss_mdm_group_postgres::core::CriteriaView;
+        match c.view() {
+            CriteriaView::Predicate(p) => {
+                out.insert(p.field.clone());
+            }
+            CriteriaView::And(cs) | CriteriaView::Or(cs) => {
+                for c in cs {
+                    fields(c, out)
+                }
+            }
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    fields(rule.view().criteria, &mut out);
+    Ok(out.into_iter().collect())
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Command {
+    List {
+        after: Option<Uuid>,
+    },
+    Read {
+        id: Uuid,
+    },
+    Version {
+        id: Uuid,
+        revision: i64,
+    },
+    Put {
+        id: Uuid,
+        request: crate::http_operation::Operation<Definition>,
+    },
+    Recompute {
+        id: Uuid,
+        request: crate::http_operation::Operation<Empty>,
+    },
+    Task {
+        id: Uuid,
+        task: Uuid,
+    },
+    Current {
+        device: String,
+    },
+    History {
+        device: String,
+        subject: String,
+        page: HistoryPage,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Empty {}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct HistoryPage {
+    pub cursor: Option<String>,
+    pub from: Option<i64>,
+    pub until: Option<i64>,
+    pub limit: Option<usize>,
+}
+impl Command {
+    pub(super) fn operation(&self) -> Option<Uuid> {
+        match self {
+            Self::Put { request, .. } => Some(request.operation_id),
+            Self::Recompute { request, .. } => Some(request.operation_id),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RuleView {
+    pub id: Uuid,
+    pub revision: i64,
+    pub definition: Definition,
+}
+impl From<Rule> for RuleView {
+    fn from(row: Rule) -> Self {
+        Self {
+            id: row.id,
+            revision: row.revision,
+            definition: row.definition,
+        }
+    }
+}

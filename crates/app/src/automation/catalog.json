@@ -144,7 +144,7 @@
       "automation_jobs",
       "automation_jobs_kind_check",
       "c",
-      "CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'scope'::text, 'policy'::text, 'asset_query'::text])))",
+      "CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'scope'::text, 'policy'::text, 'asset_query'::text, 'compliance'::text])))",
       true
     ],
     [

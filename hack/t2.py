@@ -179,7 +179,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
+def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False, compliance_only=False):
     require_lease(ROOT)
     installation_only = sys.argv[1:] == ["--installation"]
     foundation_only = sys.argv[1:] == ["--foundation"]
@@ -232,16 +232,20 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             from apple_fixtures import generate as generate_apple
             generate_apple(root, root/'server.crt', root/'server.key')
             env['MDM_APPLE_FIXTURES']=str(root)
-            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
-            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
-            run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="GRANT CREATE ON DATABASE mdm_installation,mdm_installation_tasks TO mdm_audit_owner,mdm_ledger_owner;", stdout=subprocess.DEVNULL, timeout=10)
-            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], pass_fds=lease_fds(), cwd=ROOT, env=env, capture_output=True, text=True)
-            print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
-            verify_migrations(name, migrators[0], migration_config, root, env)
-            run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
-            for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
-                run_exact_test(env, audit_test)
+            if compliance_only:
+                run([migrators[0],"migrate","--config",str(migration_config)],env=env,cwd=ROOT,timeout=70)
+            else:
+                run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
+                run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
+                run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="GRANT CREATE ON DATABASE mdm_installation,mdm_installation_tasks TO mdm_audit_owner,mdm_ledger_owner;", stdout=subprocess.DEVNULL, timeout=10)
+                upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], pass_fds=lease_fds(), cwd=ROOT, env=env, capture_output=True, text=True)
+                print(upgrade.stdout, end='', flush=True)
+                require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
+                verify_migrations(name, migrators[0], migration_config, root, env)
+            if not compliance_only:
+                run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
+                for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
+                    run_exact_test(env, audit_test)
             if installation_only:
                 return
             if catalog_mode:
@@ -267,6 +271,16 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
+                return
+            if compliance_only:
+                command=["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::compliance::","--","--ignored","--test-threads=1","--nocapture"]
+                with subprocess.Popen(command,pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT) as process:
+                    lines=[]
+                    for line in process.stdout:
+                        print(line,end='',flush=True)
+                        lines.append(line)
+                    code=process.wait()
+                require(code==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in ''.join(lines),'compliance Router/PG T2 failed or omitted')
                 return
             if asset_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)

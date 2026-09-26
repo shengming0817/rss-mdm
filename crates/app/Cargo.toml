@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-compliance.workspace = true
+rss-mdm-compliance-postgres.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-audit-core.workspace = true
 rss-audit-postgres.workspace = true

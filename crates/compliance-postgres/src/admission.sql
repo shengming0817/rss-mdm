@@ -1,0 +1,20 @@
+WITH tables AS (SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_compliance' AND c.relkind='r')
+SELECT (SELECT count(*)=6 FROM tables)
+AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT t.relrowsecurity OR NOT t.relforcerowsecurity OR pg_has_role(current_user,t.relowner,'MEMBER'))
+AND NOT EXISTS(SELECT 1 FROM tables t WHERE (NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT')) OR has_table_privilege(current_user,t.oid,'TRUNCATE,REFERENCES,TRIGGER'))
+AND NOT EXISTS(SELECT 1 FROM tables t WHERE has_table_privilege(current_user,t.oid,'UPDATE') OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname IN('fields','groups')))
+AND NOT EXISTS(SELECT 1 FROM tables t CROSS JOIN LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0)
+AND NOT EXISTS(SELECT 1 FROM tables t WHERE (SELECT count(*) FROM pg_policy p WHERE p.polrelid=t.oid)<>1 OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND pg_get_expr(p.polqual,p.polrelid) = '(tenant_id = (NULLIF(current_setting(''rss.tenant_id''::text, true), ''''::text))::uuid)' AND pg_get_expr(p.polwithcheck,p.polrelid)=pg_get_expr(p.polqual,p.polrelid)))
+AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE')<>((t.relname='rules' AND a.attname IN('revision','enabled','desired','current_run'))) OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
+AND NOT EXISTS(SELECT 1 FROM tables t CROSS JOIN LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.is_grantable AND a.grantee<>t.relowner AND pg_has_role(current_user,a.grantee,'MEMBER'))
+AND NOT EXISTS(
+ SELECT 1 FROM tables t CROSS JOIN LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a
+ WHERE a.grantee NOT IN(t.relowner,(SELECT oid FROM pg_roles WHERE rolname='mdm_flow_runtime'))
+ OR (a.grantee<>t.relowner AND (a.is_grantable OR NOT (a.privilege_type IN('SELECT','INSERT') OR (a.privilege_type='DELETE' AND t.relname IN('fields','groups')))))
+)
+AND NOT EXISTS(
+ SELECT 1 FROM tables t JOIN pg_attribute c ON c.attrelid=t.oid CROSS JOIN LATERAL aclexplode(c.attacl) a
+ WHERE a.grantee NOT IN(t.relowner,(SELECT oid FROM pg_roles WHERE rolname='mdm_flow_runtime'))
+ OR (a.grantee<>t.relowner AND (a.is_grantable OR a.privilege_type<>'UPDATE' OR NOT ((t.relname='rules' AND c.attname IN('revision','enabled','desired','current_run')))))
+)
+AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_trigger g ON g.tgrelid=t.oid WHERE NOT g.tgisinternal)

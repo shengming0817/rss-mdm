@@ -1,0 +1,17 @@
+[package]
+name = "rss-mdm-compliance-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-mdm-compliance.workspace = true
+rss-request-context.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
