@@ -34,7 +34,7 @@ Resource 持有不可变 software/script/configuration 版本，Policy 引用意
 
 文件存在不表示数据库已提交，更不表示软件已批准。CommitUnknown 后保留 operationId 并查询/重放；不得换键掩盖未知结果。下载支持单段 Range、ETag、If-Range 和 416；每个新请求重新授权。审计记录授权读取，不证明客户端完整接收；客户端仍需校验最终长度/hash。
 
-外部导入也使用 Resource.Software，产物可声明不可变 `origin`。`content.imports` 按来源 ID 配置允许的 origin 列表，每项为 `{base, addresses, private_ca}`，沿用受控 HTTPS、固定解析地址、CA 验证、无代理/重定向/凭据转发规则。来源批准后，通过 `POST /content/mirror` 携带与上传相同的选择参数及 operation，只镜像选定产物；同一次流读取完成校验和落盘，不扫描或全量镜像生态。此配置不依赖外部 publication 的三环装配。
+外部导入也使用 Resource.Software，产物可声明不可变 `origin`。`content.imports` 按来源 ID 配置允许的 origin 列表，每项为 `{base, addresses, private_ca}`，沿用受控 HTTPS、固定解析地址、CA 验证、无代理/重定向/凭据转发规则。来源批准后，通过 `POST /content/mirror` 携带与上传相同的选择参数及 operation，只镜像选定产物；同一次流读取完成校验和落盘，不扫描或全量镜像生态。绑定提交前再次核对当前来源批准及精确快照；下载期间撤回来源会拒绝绑定，恢复后使用原 operation 重试。此配置不依赖外部 publication 的三环装配。
 
 ## RSS Bundle
 

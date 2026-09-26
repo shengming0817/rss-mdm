@@ -7,20 +7,23 @@ pub(crate) struct Garbage {
     pub digest: [u8; 32],
 }
 impl Garbage {
-    pub(crate) async fn remove(self) -> Result<(), Error> {
-        tokio::task::spawn_blocking(move || {
-            let _guard = self._guard;
-            let parent = self.path.parent().ok_or_else(storage)?;
-            fs::remove_file(&self.path).map_err(|_| Error::Unavailable(Failure::ContentCleanup))?;
-            sync_dir(parent).map_err(|_| Error::Unavailable(Failure::ContentCleanup))
-        })
-        .await
-        .map_err(|_| Error::Unavailable(Failure::ContentCleanup))?
+    // No detached unlink may outlive the transaction protecting the reference check.
+    // Only unlink/fsync metadata is done here; body I/O and hashing remain outside PG.
+    pub(crate) fn remove(self) -> Result<(), Error> {
+        let _guard = self._guard;
+        let parent = self.path.parent().ok_or_else(storage)?;
+        fs::remove_file(&self.path).map_err(|_| Error::Unavailable(Failure::ContentCleanup))?;
+        sync_dir(parent).map_err(|_| Error::Unavailable(Failure::ContentCleanup))
     }
 }
 impl Store {
     fn clean_orphan(&self, id: Uuid, path: &Path, now: i64) -> Result<(), Error> {
-        let metadata = fs::symlink_metadata(path).map_err(|_| storage())?;
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            // An earlier metadata/companion entry in this same scan may already remove it.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(storage()),
+        };
         let age = metadata
             .modified()
             .map_err(|_| storage())?

@@ -186,7 +186,7 @@ async fn garbage_never_removes_a_pinned_stream_or_live_upload() {
         store.verify(&artifact).await,
         Err(Error::Conflict)
     ));
-    garbage.into_iter().next().unwrap().remove().await.unwrap();
+    garbage.into_iter().next().unwrap().remove().unwrap();
     assert!(!store.path(&artifact).exists());
 }
 
@@ -307,4 +307,159 @@ fn content_lock_files_remain_bounded_across_unique_artifacts() {
         files <= 257,
         "persistent lock files grew with artifact history: {files}"
     );
+}
+
+#[test]
+fn bundle_rejects_unsafe_zip_structure_and_small_budget_overruns() {
+    use rss_mdm_resource::{BundleEntry, BundleManifest, SoftwareDefinition};
+    use std::io::Write;
+    let manifest = BundleManifest {
+        schema: 1,
+        platform: rss_mdm_resource::Platform::Windows,
+        architecture: rss_mdm_resource::Architecture::X86_64,
+        entries: std::collections::BTreeMap::from([
+            (
+                "install.ps1".into(),
+                BundleEntry {
+                    length: 4,
+                    sha256: rss_mdm_resource::Digest::of(b"exit").bytes(),
+                },
+            ),
+            (
+                "payload.bin".into(),
+                BundleEntry {
+                    length: 3,
+                    sha256: rss_mdm_resource::Digest::of(b"abc").bytes(),
+                },
+            ),
+        ]),
+    };
+    let make = |compression| {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(compression);
+        for (name, data) in [
+            ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+            ("install.ps1", b"exit".to_vec()),
+            ("payload.bin", b"abc".to_vec()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    };
+    let stored = make(zip::CompressionMethod::Stored);
+    let deflated = make(zip::CompressionMethod::Deflated);
+    let directory = tempfile::tempdir().unwrap();
+    let cfg = config(directory.path().to_owned());
+    let valid = |bytes: &[u8], cfg: &Config| {
+        let path = directory.path().join("boundary.zip");
+        fs::write(&path, bytes).unwrap();
+        let definition: SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","format":"bundle","primary":"zip","artifacts":{"zip":{"reference":"zip","length":bytes.len(),"sha256":vec![2;32]}},"install":{"executor":"power_shell7","entry":"install.ps1","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":manifest})).unwrap();
+        super::bundle::validate(
+            &mut File::open(path).unwrap(),
+            &definition,
+            cfg,
+            &crate::lifecycle::RuntimeTimer,
+            rss_request_context::Deadline::from_timeout(
+                &crate::lifecycle::RuntimeTimer,
+                std::time::Duration::from_secs(60),
+            )
+            .unwrap(),
+        )
+        .is_ok()
+    };
+    assert!(valid(&stored, &cfg));
+    assert!(valid(&deflated, &cfg));
+    let central: Vec<_> = stored
+        .windows(4)
+        .enumerate()
+        .filter_map(|(i, b)| (b == b"PK\x01\x02").then_some(i))
+        .collect();
+    let local: Vec<_> = stored
+        .windows(4)
+        .enumerate()
+        .filter_map(|(i, b)| (b == b"PK\x03\x04").then_some(i))
+        .collect();
+    let end = stored.len() - 22;
+    let mut record = vec![0u8; 56];
+    record[..4].copy_from_slice(b"PK\x06\x06");
+    record[4..12].copy_from_slice(&44u64.to_le_bytes());
+    record[12..14].copy_from_slice(&45u16.to_le_bytes());
+    record[14..16].copy_from_slice(&45u16.to_le_bytes());
+    record[24..32].copy_from_slice(&3u64.to_le_bytes());
+    record[32..40].copy_from_slice(&3u64.to_le_bytes());
+    let size = u32::from_le_bytes(stored[end + 12..end + 16].try_into().unwrap()) as u64;
+    let offset = u32::from_le_bytes(stored[end + 16..end + 20].try_into().unwrap()) as u64;
+    record[40..48].copy_from_slice(&size.to_le_bytes());
+    record[48..56].copy_from_slice(&offset.to_le_bytes());
+    let mut locator = vec![0u8; 20];
+    locator[..4].copy_from_slice(b"PK\x06\x07");
+    locator[8..16].copy_from_slice(&(end as u64).to_le_bytes());
+    locator[16..20].copy_from_slice(&1u32.to_le_bytes());
+    let mut footer = stored[end..].to_vec();
+    footer[8..20].fill(255);
+    let mut zip64 = stored[..end].to_vec();
+    zip64.extend(record);
+    zip64.extend(locator);
+    zip64.extend(footer);
+    assert!(valid(&zip64, &cfg), "valid small ZIP64 footer");
+    let mut cases = Vec::new();
+    let mut encrypted = stored.clone();
+    encrypted[local[0] + 6] |= 1;
+    encrypted[central[0] + 8] |= 1;
+    cases.push(("encrypted", encrypted, cfg.clone()));
+    let mut method = stored.clone();
+    method[local[0] + 8..local[0] + 10].copy_from_slice(&12u16.to_le_bytes());
+    method[central[0] + 10..central[0] + 12].copy_from_slice(&12u16.to_le_bytes());
+    cases.push(("compression", method, cfg.clone()));
+    let mut overlap = stored.clone();
+    let first = overlap[central[0] + 42..central[0] + 46].to_vec();
+    overlap[central[1] + 42..central[1] + 46].copy_from_slice(&first);
+    cases.push(("overlap", overlap, cfg.clone()));
+    let mut multi = stored.clone();
+    multi[end + 4] = 1;
+    cases.push(("multi-disk", multi, cfg.clone()));
+    let mut directory_budget = stored.clone();
+    directory_budget[end + 12..end + 16].copy_from_slice(&(33 * 1024 * 1024u32).to_le_bytes());
+    cases.push(("directory-budget", directory_budget, cfg.clone()));
+    let mut invalid64 = zip64;
+    invalid64[end + 4..end + 12].copy_from_slice(&43u64.to_le_bytes());
+    cases.push(("zip64-record", invalid64, cfg.clone()));
+    let mut entries = cfg.clone();
+    entries.max_bundle_entries = 1;
+    cases.push(("entry-budget", stored.clone(), entries));
+    let mut expanded = cfg.clone();
+    expanded.max_bundle_bytes = 1;
+    cases.push(("expanded-budget", stored, expanded));
+    let mut ratio = cfg;
+    ratio.max_expansion_ratio = 1;
+    cases.push(("ratio", deflated, ratio));
+    for (name, bytes, cfg) in cases {
+        assert!(!valid(&bytes, &cfg), "accepted {name}");
+    }
+}
+
+#[tokio::test]
+async fn expired_partial_cleanup_tolerates_entries_removed_earlier_in_the_scan() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        &config(directory.path().to_owned()),
+        "10000000-0000-0000-0000-000000000001",
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )
+    .unwrap();
+    for _ in 0..4 {
+        let id = Uuid::new_v4();
+        store.begin(id, binding(b"abc"), 100).await.unwrap();
+        store.append(id, 0, 100, &b"a"[..]).await.unwrap();
+    }
+    assert!(store.garbage(i64::MAX / 2).await.unwrap().is_empty());
+    assert!(store.garbage(i64::MAX / 2).await.unwrap().is_empty());
+    assert!(!fs::read_dir(&store.directory).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".upload-")
+    }));
 }

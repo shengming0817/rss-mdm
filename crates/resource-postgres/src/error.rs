@@ -73,6 +73,7 @@ pub(crate) fn decode_domain<T>(
     result.map_err(|error| {
         let category = match error {
             crate::core::Error::InvalidInput => "InvalidInput",
+            crate::core::Error::SoftwareValidation(kind) => kind.as_str(),
             crate::core::Error::InvalidDigest => "InvalidDigest",
             crate::core::Error::IdentityConflict => "IdentityConflict",
             crate::core::Error::TenantMismatch => "TenantMismatch",

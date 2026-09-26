@@ -25,6 +25,7 @@ pub struct State {
     pub hidden_reads: usize,
     pub reject_information_once: bool,
     pub artifact_auth_leaked: bool,
+    pub artifact_pause: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
 }
 pub struct Server {
     pub state: Arc<Mutex<State>>,
@@ -80,7 +81,8 @@ impl Server {
             loop {
                 tokio::select! {accepted=listener.accept()=>{let(socket,_)=accepted.unwrap();let tls=tls.clone();let state=st.clone();let source=source.clone();tasks.spawn(async move{let Ok(mut socket)=tls.accept(socket).await else{return};let _=tokio::time::timeout(Duration::from_secs(30),async{let mut head=Vec::new();while !head.ends_with(b"\r\n\r\n"){head.push(socket.read_u8().await?);assert!(head.len()<16384);}let header=String::from_utf8(head).unwrap();let line=header.lines().next().unwrap();let mut parts=line.split_whitespace();let method=parts.next().unwrap();let path=parts.next().unwrap();let length=header.lines().find_map(|s|s.to_ascii_lowercase().strip_prefix("content-length: ").map(|v|v.parse::<usize>().unwrap())).unwrap_or(0);assert!(length<=4*1024*1024);let mut bytes=vec![0;length];socket.read_exact(&mut bytes).await?;
                 if path.ends_with("/timeout") {tokio::time::sleep(Duration::from_secs(1)).await;}
-                let response=respond(&state,&source,method,path,&header,&bytes);if let Some((status,body))=response{let location=if status==302 {"Location: /test/information\r\n"} else {""};socket.write_all(format!("HTTP/1.1 {status} Fixture\r\n{location}Connection: close\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",body.len()).as_bytes()).await?;socket.write_all(&body).await?;}Ok::<(),std::io::Error>(())}).await;});},_=tasks.join_next(),if !tasks.is_empty()=>{}}
+                let pause = if path.starts_with("/artifacts/") { state.lock().unwrap().artifact_pause.take() } else { None };
+                let response=respond(&state,&source,method,path,&header,&bytes);if let Some((status,body))=response{let location=if status==302 {"Location: /test/information\r\n"} else {""};socket.write_all(format!("HTTP/1.1 {status} Fixture\r\n{location}Connection: close\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",body.len()).as_bytes()).await?;if let Some((started,resume))=pause { let split=usize::from(!body.is_empty());socket.write_all(&body[..split]).await?;socket.flush().await?;started.notify_one();resume.notified().await;socket.write_all(&body[split..]).await?; } else { socket.write_all(&body).await?; }}Ok::<(),std::io::Error>(())}).await;});},_=tasks.join_next(),if !tasks.is_empty()=>{}}
             }
         });
         Self {

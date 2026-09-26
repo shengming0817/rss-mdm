@@ -3,6 +3,49 @@ use crate::{Architecture, Artifact, Digest, Error, Id, Platform, RunAs};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Closed software validation context; never contains submitted values or paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SoftwareValidationKind {
+    /// Source identity or revision is invalid.
+    Source,
+    /// Package identity or version text is invalid.
+    Identity,
+    /// Artifact coordinates, origin or primary selection are invalid.
+    Artifact,
+    /// Exact dependency identity or uniqueness is invalid.
+    Dependency,
+    /// Bundle manifest, membership or portable path is invalid.
+    Bundle,
+    /// Invocation, execution identity, arguments or command budget is invalid.
+    Command,
+    /// Detection definition is invalid.
+    Detection,
+    /// Platform or architecture is inconsistent with the definition.
+    Target,
+    /// The complete definition exceeds a structural or encoding budget.
+    Budget,
+}
+impl SoftwareValidationKind {
+    /// Stable input-free diagnostic category for storage and host adapters.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "software_source",
+            Self::Identity => "software_identity",
+            Self::Artifact => "software_artifact",
+            Self::Dependency => "software_dependency",
+            Self::Bundle => "software_bundle",
+            Self::Command => "software_command",
+            Self::Detection => "software_detection",
+            Self::Target => "software_target",
+            Self::Budget => "software_budget",
+        }
+    }
+}
+use SoftwareValidationKind as Validation;
+fn invalid(kind: Validation) -> Error {
+    Error::SoftwareValidation(kind)
+}
+
 /// Exact admitted source revision; neither a URL nor a credential.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,10 +74,11 @@ impl SoftwareArtifact {
     /// Validate and return the shared artifact value.
     pub fn artifact(&self) -> Result<Artifact, Error> {
         Artifact::new(
-            Id::new(&self.reference)?,
+            Id::new(&self.reference).map_err(|_| invalid(Validation::Artifact))?,
             self.length,
             Digest::from_bytes(self.sha256),
         )
+        .map_err(|_| invalid(Validation::Artifact))
     }
 }
 /// Finite delivery formats; no ambient package-manager fallback.
@@ -238,7 +282,7 @@ fn text(s: &str, limit: usize) -> Result<(), Error> {
 }
 /// Validate a portable ZIP member name; no absolute, traversal, device or ambiguous names.
 pub fn bundle_path(path: &str) -> Result<(), Error> {
-    text(path, 1024)?;
+    text(path, 1024).map_err(|_| invalid(Validation::Bundle))?;
     if !path.is_ascii()
         || path.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
         || path.split('/').any(|p| {
@@ -251,51 +295,54 @@ pub fn bundle_path(path: &str) -> Result<(), Error> {
             }
         })
     {
-        return Err(Error::InvalidInput);
+        return Err(invalid(Validation::Bundle));
     }
     Ok(())
 }
 impl SoftwareDefinition {
     /// Validate a complete definition without fetching bytes or granting authority.
     pub fn new(mut spec: SoftwareSpec) -> Result<Self, Error> {
-        Id::new(&spec.source.id)?;
-        Id::new(&spec.source.revision)?;
-        text(&spec.package, 1024)?;
-        text(&spec.version, 1024)?;
-        if spec.artifacts.is_empty() || spec.artifacts.len() > 64 || spec.dependencies.len() > 32 {
-            return Err(Error::InvalidInput);
+        Id::new(&spec.source.id).map_err(|_| invalid(Validation::Source))?;
+        Id::new(&spec.source.revision).map_err(|_| invalid(Validation::Source))?;
+        text(&spec.package, 1024).map_err(|_| invalid(Validation::Identity))?;
+        text(&spec.version, 1024).map_err(|_| invalid(Validation::Identity))?;
+        if spec.artifacts.is_empty() {
+            return Err(invalid(Validation::Artifact));
+        }
+        if spec.artifacts.len() > 64 || spec.dependencies.len() > 32 {
+            return Err(invalid(Validation::Budget));
         }
         let mut references = BTreeSet::new();
         for (key, a) in &spec.artifacts {
-            Id::new(key)?;
+            Id::new(key).map_err(|_| invalid(Validation::Artifact))?;
             a.artifact()?;
             if let Some(origin) = &a.origin {
-                text(origin, 2048)?;
+                text(origin, 2048).map_err(|_| invalid(Validation::Artifact))?;
                 if !origin.starts_with("https://") || origin.contains(['?', '#', '@']) {
-                    return Err(Error::InvalidInput);
+                    return Err(invalid(Validation::Artifact));
                 }
             }
             if !references.insert(&a.reference) {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Artifact));
             }
         }
         let primary = spec
             .artifacts
             .get(&spec.primary)
-            .ok_or(Error::InvalidInput)?
+            .ok_or(invalid(Validation::Artifact))?
             .artifact()?;
         spec.dependencies
             .sort_by(|a, b| (&a.resource, &a.version).cmp(&(&b.resource, &b.version)));
         let mut deps = BTreeSet::new();
         for dep in &spec.dependencies {
-            Id::new(&dep.resource)?;
-            Id::new(&dep.version)?;
+            Id::new(&dep.resource).map_err(|_| invalid(Validation::Dependency))?;
+            Id::new(&dep.version).map_err(|_| invalid(Validation::Dependency))?;
             if !deps.insert(&dep.resource) {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Dependency));
             }
         }
         if (spec.format == SoftwareFormat::Bundle) != spec.bundle.is_some() {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Bundle));
         }
         if let Some(bundle) = &spec.bundle {
             if bundle.schema != 1
@@ -303,7 +350,7 @@ impl SoftwareDefinition {
                 || bundle.entries.len() > 4096
                 || spec.artifacts.len() != 1
             {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Bundle));
             }
             let mut names = BTreeSet::new();
             for name in bundle.entries.keys() {
@@ -311,7 +358,7 @@ impl SoftwareDefinition {
                 if name.eq_ignore_ascii_case("manifest.json")
                     || !names.insert(name.to_ascii_lowercase())
                 {
-                    return Err(Error::InvalidInput);
+                    return Err(invalid(Validation::Bundle));
                 }
             }
             let ext = if bundle.platform == Platform::Windows {
@@ -320,14 +367,14 @@ impl SoftwareDefinition {
                 "sh"
             };
             if spec.install.entry.as_deref() != Some(format!("install.{ext}").as_str()) {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Bundle));
             }
             if spec
                 .uninstall
                 .as_ref()
                 .is_some_and(|c| c.entry.as_deref() != Some(format!("uninstall.{ext}").as_str()))
             {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Bundle));
             }
         }
         Self::command(&spec, &spec.install)?;
@@ -351,24 +398,24 @@ impl SoftwareDefinition {
                         }
                     })
                 {
-                    return Err(Error::InvalidInput);
+                    return Err(invalid(Validation::Detection));
                 }
-                text(version, 1024)?;
+                text(version, 1024).map_err(|_| invalid(Validation::Detection))?;
             }
             SoftwareDetection::PkgReceipt { receipt, version } => {
-                text(receipt, 255)?;
-                text(version, 1024)?;
+                text(receipt, 255).map_err(|_| invalid(Validation::Detection))?;
+                text(version, 1024).map_err(|_| invalid(Validation::Detection))?;
                 if !receipt
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
                 {
-                    return Err(Error::InvalidInput);
+                    return Err(invalid(Validation::Detection));
                 }
             }
             SoftwareDetection::Script { command } => {
-                Self::command(&spec, command)?;
+                Self::command(&spec, command).map_err(|_| invalid(Validation::Detection))?;
                 if !is_script(command.executor) {
-                    return Err(Error::InvalidInput);
+                    return Err(invalid(Validation::Detection));
                 }
             }
         }
@@ -382,14 +429,14 @@ impl SoftwareDefinition {
         if expected.is_some_and(|e| spec.install.executor != e)
             || (expected.is_none() && !is_script(spec.install.executor))
         {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Command));
         }
         if serde_json::to_vec(&spec)
-            .map_err(|_| Error::InvalidInput)?
+            .map_err(|_| invalid(Validation::Budget))?
             .len()
             > 1_048_576
         {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Budget));
         }
         Ok(Self {
             spec: Box::new(spec),
@@ -402,11 +449,11 @@ impl SoftwareDefinition {
             || c.arguments.len() > 128
             || c.environment.len() > 32
         {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Command));
         }
         for arg in &c.arguments {
             if arg.len() > 4096 || arg.contains('\0') {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Command));
             }
         }
         for (key, value) in &c.environment {
@@ -416,24 +463,24 @@ impl SoftwareDefinition {
                 || value.len() > 4096
                 || value.contains('\0')
             {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Command));
             }
         }
         if is_script(c.executor) {
-            let entry = c.entry.as_ref().ok_or(Error::InvalidInput)?;
+            let entry = c.entry.as_ref().ok_or(invalid(Validation::Command))?;
             if let Some(bundle) = &spec.bundle {
-                bundle_path(entry)?;
+                bundle_path(entry).map_err(|_| invalid(Validation::Command))?;
                 if !bundle.entries.contains_key(entry) {
-                    return Err(Error::InvalidInput);
+                    return Err(invalid(Validation::Command));
                 }
             } else if !spec.artifacts.contains_key(entry) {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Command));
             }
         } else if c.entry.is_some() {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Command));
         }
         if c.executor == SoftwareExecutor::Brew && c.run_as != RunAs::LoggedInUser {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Command));
         }
         Ok(())
     }
@@ -479,17 +526,17 @@ impl SoftwareDefinition {
                 .as_ref()
                 .is_some_and(|c| !valid(c.executor))
         {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Target));
         }
         match &self.spec.detect {
             SoftwareDetection::MsiProduct { .. } if platform != Platform::Windows => {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Target));
             }
             SoftwareDetection::PkgReceipt { .. } if platform != Platform::MacOS => {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Target));
             }
             SoftwareDetection::Script { command } if !valid(command.executor) => {
-                return Err(Error::InvalidInput);
+                return Err(invalid(Validation::Target));
             }
             _ => (),
         }
@@ -499,7 +546,7 @@ impl SoftwareDefinition {
             .as_ref()
             .is_some_and(|b| b.platform != platform || b.architecture != architecture)
         {
-            return Err(Error::InvalidInput);
+            return Err(invalid(Validation::Target));
         }
         Ok(())
     }

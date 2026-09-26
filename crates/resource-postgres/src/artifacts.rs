@@ -18,6 +18,7 @@ pub(crate) async fn insert(tx: &mut PgTransaction<'_>, version: &Version) -> Res
         }
     }
     for (sha256, length) in artifacts {
+        lock(tx, Digest::from_bytes(sha256)).await?;
         let tenant = tx.tenant_id().to_string();
         let owner = version.resource().as_str().to_owned();
         let label = version.label().as_str().to_owned();
@@ -52,13 +53,23 @@ pub(crate) async fn archive(
     tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_resource.artifact_refs SET archived=true WHERE tenant_id=$1::uuid AND owner=$2 AND version=$3").bind(tenant).bind(owner).bind(version).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
+async fn lock(tx: &mut PgTransaction<'_>, digest: Digest) -> Result<(), PgError> {
+    let key: String = digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    STORAGE.lock(tx, "artifact", &key).await
+}
 /// True while any non-archived resource version in the borrowed tenant references these bytes.
-/// The host must also exclude live file readers/writers while reclaiming storage. Resource archival
+/// Acquires the same tenant/digest transaction lock as reference insertion. The host must
+/// retain this transaction through final file removal and exclude live file readers/writers. Resource archival
 /// continues to require the complete external approval/publication/execution reference check.
 pub async fn artifact_referenced_in(
     tx: &mut PgTransaction<'_>,
     digest: Digest,
 ) -> Result<bool, PgError> {
+    lock(tx, digest).await?;
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_resource.artifact_refs WHERE tenant_id=$1::uuid AND sha256=$2 AND NOT archived)").bind(tenant).bind(digest.bytes().to_vec()).fetch_one(c).await})).await
 }

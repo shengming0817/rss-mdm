@@ -22,10 +22,12 @@ async fn write(
 #[tokio::test]
 #[ignore = "make t2-software: real product TCP, TLS PostgreSQL and files"]
 async fn enterprise_catalog_content_and_atomic_admission() -> Result<()> {
+    let origin_server = publication_support::Server::new().await;
     let directory = tempfile::tempdir()?;
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["content"] = json!({"directory":directory.path(),"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100});
+    base["content"]["imports"][&origin_server.logical] = json!([{"base":format!("{}artifacts/",origin_server.base),"addresses":[origin_server.address],"private_ca":origin_server.ca}]);
     let (router, execution, runtime) = crate::api::application_fixture(
         serde_json::from_value(base.clone())?,
         Arc::new(crate::clock::SystemClock),
@@ -76,7 +78,7 @@ async fn enterprise_catalog_content_and_atomic_admission() -> Result<()> {
     })
     .collect::<Result<Vec<_>>>()?;
     crate::identity_fixture::set_grants(TENANT, &subject, grants).await?;
-    let source = Uuid::new_v4().to_string();
+    let source = origin_server.logical.clone();
     let source_path = format!("/api/v3/software/sources/{source}/revisions/1");
     let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","kind":"private","location":null,"publishers":[]}})).await?;
     write(
@@ -240,6 +242,8 @@ async fn enterprise_catalog_content_and_atomic_admission() -> Result<()> {
     let download = format!(
         "{origin}{admission_path}/content?platform=windows&architecture=x86_64&variant=default"
     );
+    gc_reference_race(&runtime, execution.content.as_ref().unwrap()).await?;
+    mirror_matrix(&mut user, &router, &definition, &origin_server, &runtime).await?;
     dependency_admission_matrix(&mut user, &router, &definition).await?;
     let store = execution.content.as_ref().expect("configured content");
     let artifact = rss_mdm_resource::Artifact::new(
@@ -725,5 +729,271 @@ async fn cleanup_preserves_resource_references(
         store.verify(&artifact).await.is_err(),
         "unreferenced object survived cleanup"
     );
+    Ok(())
+}
+
+async fn mirror_resource(
+    user: &mut Browser,
+    router: &Router,
+    definition: &Value,
+    server: &publication_support::Server,
+    path: &str,
+    digest: &[u8],
+) -> Result<(String, Uuid)> {
+    let mut definition = definition.clone();
+    definition["artifacts"]["package"]["length"] = json!(3);
+    definition["artifacts"]["package"]["sha256"] =
+        json!(rss_mdm_resource::Digest::of(digest).bytes());
+    definition["artifacts"]["package"]["origin"] =
+        json!(format!("{}artifacts/{path}", server.base));
+    let (resource, _) = create_software_version(user, router, definition).await?;
+    let operation = Uuid::new_v4();
+    Ok((
+        format!(
+            "/api/v3/resources/{resource}/content/mirror?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}"
+        ),
+        operation,
+    ))
+}
+
+async fn mirror_matrix(
+    user: &mut Browser,
+    router: &Router,
+    definition: &Value,
+    server: &publication_support::Server,
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+) -> Result<()> {
+    for (path, bytes) in [("redirect", &b"abc"[..]), ("wrong.msi", &b"abd"[..])] {
+        let (url, operation) =
+            mirror_resource(user, router, definition, server, path, bytes).await?;
+        let response = user.call(router, Method::POST, &url, None).await?;
+        ensure!(
+            !response.0.is_success(),
+            "unsafe mirror succeeded: {response:?}"
+        );
+        ensure!(
+            pg(&format!(
+                "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
+            ))?
+            .trim()
+                == "0"
+        );
+    }
+    let (url, operation) =
+        mirror_resource(user, router, definition, server, "audit.msi", b"abc").await?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
+    let failed = user.call(router, Method::POST, &url, None).await;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
+    ensure!(failed?.0.is_server_error());
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
+        ))?
+        .trim()
+            == "0"
+    );
+    ensure!(user.call(router, Method::POST, &url, None).await?.0 == StatusCode::CREATED);
+    ensure!(user.call(router, Method::POST, &url, None).await?.0 == StatusCode::CREATED);
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
+        ))?
+        .trim()
+            == "1"
+    );
+    for revoke in [false, true] {
+        let (url, operation) =
+            mirror_resource(user, router, definition, server, "paused.msi", b"abc").await?;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        server.state.lock().unwrap().artifact_pause = Some((started.clone(), resume.clone()));
+        let mut client = user.clone();
+        let app = router.clone();
+        let request = url.clone();
+        let mirror =
+            tokio::spawn(async move { client.call(&app, Method::POST, &request, None).await });
+        tokio::time::timeout(Duration::from_secs(10), started.notified()).await?;
+        let source_path = format!("/api/v3/software/sources/{}/revisions/1", server.logical);
+        if revoke {
+            write(
+                user,
+                router,
+                &source_path,
+                2,
+                json!({"action":"withdraw","evidence":["revoked-during-download"]}),
+            )
+            .await?;
+        } else {
+            runtime.inject_next_transaction_fault(
+                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+            );
+        }
+        resume.notify_one();
+        let response = mirror.await??;
+        if revoke {
+            let persisted = pg(&format!(
+                "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
+            ))?;
+            write(
+                user,
+                router,
+                &source_path,
+                3,
+                json!({"action":"approve","evidence":["source-restored"]}),
+            )
+            .await?;
+            ensure!(
+                response.0 == StatusCode::FORBIDDEN && persisted.trim() == "0",
+                "withdrawn origin committed mirror: {response:?}, bindings={persisted}"
+            );
+        } else {
+            ensure!(
+                response.0 == StatusCode::SERVICE_UNAVAILABLE,
+                "mirror lost commit: {response:?}"
+            );
+        }
+        ensure!(user.call(router, Method::POST, &url, None).await?.0 == StatusCode::CREATED);
+        ensure!(
+            pg(&format!(
+                "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
+            ))?
+            .trim()
+                == "1"
+        );
+    }
+    ensure!(!server.state.lock().unwrap().artifact_auth_leaked);
+    Ok(())
+}
+
+async fn gc_reference_race(
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Arc<crate::content::Store>,
+) -> Result<()> {
+    use rss_mdm_resource as r;
+    use rss_mdm_resource_postgres as rp;
+    let tenant = rss_request_context::TenantId::parse(TENANT)?;
+    let resources = Arc::new(
+        rp::ResourceStore::new(runtime.clone(), tenant, crate::transaction::deadline()).await?,
+    );
+    let resource = r::Id::new(Uuid::new_v4().to_string())?;
+    let data = b"gc-concurrent-reference";
+    let artifact = r::Artifact::new(
+        r::Id::new("gc-bytes")?,
+        data.len() as u64,
+        r::Digest::of(data),
+    )?;
+    let request = |revision, command| rp::Request {
+        id: r::Id::new(Uuid::new_v4().to_string()).unwrap(),
+        resource: resource.clone(),
+        expected_storage_revision: revision,
+        as_of: rss_contract::Timepoint::try_from(1i64).unwrap(),
+        command,
+    };
+    resources
+        .execute(
+            &request(0, rp::Command::Create(r::Kind::Configuration)),
+            crate::transaction::deadline(),
+        )
+        .await?;
+    let version = r::Version::new(
+        tenant,
+        resource.clone(),
+        r::Id::new("v1")?,
+        r::Kind::Configuration,
+        vec![r::Variant::new(
+            r::Platform::Windows,
+            r::Architecture::X86_64,
+            r::Id::new("default")?,
+            r::Declaration::Configuration {
+                artifact: artifact.clone(),
+                schema: r::Id::new("schema")?,
+                apply: r::Id::new("apply")?,
+                detect: r::Id::new("detect")?,
+                remove: None,
+            },
+        )],
+    )?;
+    let insert = request(1, rp::Command::Insert(version));
+    let id = Uuid::new_v4();
+    content
+        .begin(
+            id,
+            crate::content::Binding {
+                resource: resource.as_str().into(),
+                version: "v1".into(),
+                variant: "default".into(),
+                platform: r::Platform::Windows,
+                architecture: r::Architecture::X86_64,
+                resource_digest: [1; 32],
+                source: None,
+                origin: None,
+                reference: artifact.reference().as_str().into(),
+                length: artifact.length(),
+                sha256: artifact.digest().bytes(),
+                actor: "fixture".into(),
+            },
+            1,
+        )
+        .await?;
+    content.append(id, 0, 1, &data[..]).await?;
+    content.finish(id, 1).await?;
+    let candidate = content
+        .garbage(i64::MAX / 2)
+        .await?
+        .into_iter()
+        .find(|c| c.digest == artifact.digest().bytes())
+        .expect("aged candidate");
+    let checked = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let gc_runtime = runtime.clone();
+    let ready = checked.clone();
+    let release = resume.clone();
+    let gc = tokio::spawn(async move {
+        crate::transaction::inspect(
+            &gc_runtime,
+            tenant,
+            (Some(candidate), ready, release),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (candidate, ready, release) = ctx;
+                    let digest = r::Digest::from_bytes(candidate.as_ref().unwrap().digest);
+                    let referenced = rp::artifact_referenced_in(tx, digest).await?;
+                    assert!(!referenced);
+                    ready.notify_one();
+                    release.notified().await;
+                    assert!(
+                        crate::content::http::reclaim_in(tx, candidate.take().unwrap(), || Ok(()))
+                            .await?
+                    );
+                    Ok(())
+                })
+            },
+            crate::transaction::TransactionOwner::ResourceCatalog,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), checked.notified()).await?;
+    let mut writer = tokio::spawn(async move {
+        resources
+            .execute(&insert, crate::transaction::deadline())
+            .await
+    });
+    let early = tokio::time::timeout(Duration::from_millis(750), &mut writer).await;
+    let raced = early.is_ok();
+    resume.notify_one();
+    gc.await??;
+    match early {
+        Ok(result) => {
+            result??;
+        }
+        Err(_) => {
+            writer.await??;
+        }
+    }
+    ensure!(
+        !raced,
+        "Resource reference committed between GC inspection and file deletion"
+    );
+    ensure!(content.verify(&artifact).await.is_err());
     Ok(())
 }

@@ -90,3 +90,41 @@ fn incomplete_or_unbounded_software_is_rejected() {
     v["installId"] = json!("mutable");
     assert!(version(v).is_err());
 }
+
+#[test]
+fn software_validation_reports_closed_context_without_input_values() {
+    for (pointer, value, category) in [
+        ("/source/id", json!("secret-source-value!"), "Source"),
+        ("/package", json!(""), "Identity"),
+        ("/primary", json!("missing"), "Artifact"),
+        (
+            "/dependencies",
+            json!([{"resource":"..","version":"v1","sha256":vec![3;32]}]),
+            "Dependency",
+        ),
+        ("/format", json!("bundle"), "Bundle"),
+        ("/install/timeoutSeconds", json!(0), "Command"),
+        (
+            "/detect/productCode",
+            json!("bad-product-code"),
+            "Detection",
+        ),
+    ] {
+        let mut value_spec = spec();
+        *value_spec.pointer_mut(pointer).unwrap() = value;
+        let parsed: SoftwareSpec = serde_json::from_value(value_spec).unwrap();
+        let error = SoftwareDefinition::new(parsed).unwrap_err();
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains(category), "{pointer}: {diagnostic}");
+        assert!(!diagnostic.contains("secret-source-value"));
+        assert!(!diagnostic.contains("bad-product-code"));
+    }
+    let definition = SoftwareDefinition::new(serde_json::from_value(spec()).unwrap()).unwrap();
+    assert!(
+        definition
+            .validate_target(Platform::MacOS, Architecture::X86_64)
+            .unwrap_err()
+            .to_string()
+            .contains("Target")
+    );
+}

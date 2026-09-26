@@ -263,19 +263,29 @@ impl Catalog {
             .await?;
         Ok(value)
     }
+    /// Hold current source admission stable through the caller's final transaction.
+    pub async fn source_admitted_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        source: &r::SoftwareSource,
+    ) -> Result<()> {
+        self.tenant(tx)?;
+        storage::lock(tx).await?;
+        let (stored, admission) = storage::source(tx, &source.id, &source.revision)
+            .await?
+            .ok_or(Error::NotAdmitted)?;
+        if !matches!(admission.state, AdmissionState::Approved) || stored.snapshot()? != *source {
+            return Err(Error::NotAdmitted);
+        }
+        Ok(())
+    }
     async fn check_sources(&self, tx: &mut PgTransaction<'_>, version: &r::Version) -> Result<()> {
         for variant in version.variants() {
             let r::Declaration::Software { definition } = variant.declaration() else {
                 return Err(Error::Input);
             };
-            let source = &definition.spec().source;
-            let (stored, admission) = storage::source(tx, &source.id, &source.revision)
-                .await?
-                .ok_or(Error::NotAdmitted)?;
-            if !matches!(admission.state, AdmissionState::Approved) || stored.snapshot()? != *source
-            {
-                return Err(Error::NotAdmitted);
-            }
+            self.source_admitted_in(tx, &definition.spec().source)
+                .await?;
         }
         Ok(())
     }

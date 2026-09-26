@@ -21,6 +21,8 @@ use std::{collections::BTreeMap, fmt};
 pub enum Error {
     /// An identity, length, variant count or restored aggregate shape is invalid.
     InvalidInput,
+    /// A software definition violates the named closed validation boundary.
+    SoftwareValidation(SoftwareValidationKind),
     /// A SHA-256 string is malformed, or supplied bytes differ in length or digest.
     InvalidDigest,
     /// Resource/version coordinates differ, a label is duplicated, or its content changed.

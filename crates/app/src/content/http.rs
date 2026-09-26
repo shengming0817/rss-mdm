@@ -221,12 +221,14 @@ async fn record(
     proof: &AuthorizedPrincipal,
     audit: &RequestAudit,
     upload: &Upload,
+    source_catalog: Option<&rss_mdm_software_service::catalog::Catalog>,
 ) -> Result<(), Error> {
     audit.operation(upload.id, "management_write");
     let verified = store(app)?.verify(&upload.binding.artifact()?).await?;
-    transaction::run(&app.audit_store,&app.runtime,app.tenant,audit,(app,proof,audit,upload,&verified),|ctx,tx|Box::pin(async move{
-        let (app,proof,audit,upload,verified)=*ctx;
+    transaction::run(&app.audit_store,&app.runtime,app.tenant,audit,(app,proof,audit,upload,&verified,source_catalog),|ctx,tx|Box::pin(async move{
+        let (app,proof,audit,upload,verified,source_catalog)=*ctx;
         tx.prepare_outbox_partitions(&[super::event::partition(app.tenant,&upload.binding.resource)?]).await?;
+        if let Some(catalog)=source_catalog { catalog.source_admitted_in(tx,upload.binding.source.as_ref().ok_or(Error::Malformed)?).await?; }
         let current=resolve_in(tx,proof,&upload.binding.resource,&Selection::from_binding(&upload.binding)).await?;
         if current!=upload.binding || !verified.matches(&current.artifact()?){return Err(Error::Conflict.into());}
         let tenant=tx.tenant_id().to_string();let u=upload.clone();
@@ -302,7 +304,7 @@ async fn complete(
     let result = store(&app)?
         .finish(upload, app.clock.unix_seconds()?)
         .await?;
-    record(&app, &auth.proof, &audit, &result).await?;
+    record(&app, &auth.proof, &audit, &result, None).await?;
     Ok(StatusCode::CREATED)
 }
 async fn upload(
@@ -330,7 +332,7 @@ async fn upload(
     let complete = store(&app)?
         .finish(operation, app.clock.unix_seconds()?)
         .await?;
-    record(&app, &auth.proof, &audit, &complete).await?;
+    record(&app, &auth.proof, &audit, &complete, None).await?;
     Ok(StatusCode::CREATED)
 }
 /// Explicit bounded maintenance; every candidate is pinned against new upload/download readers.
@@ -345,38 +347,52 @@ async fn cleanup(
     let candidates = store(&app)?.garbage(app.clock.unix_seconds()?).await?;
     let mut removed = 0usize;
     for candidate in candidates {
-        let unreferenced = transaction::inspect(
+        let deleted = transaction::inspect(
             &app.runtime,
             app.tenant,
-            (&auth.proof, candidate.digest),
+            (&auth.proof, Some(candidate)),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (proof, digest) = *ctx;
+                    let (proof, candidate) = ctx;
+                    let proof = *proof;
                     crate::action_admission::lock(tx, "action-owner").await?;
                     crate::action_admission::current(tx, proof).await?.require(
                         proof,
                         Permission::ResourceWrite,
                         None,
                     )?;
-                    let referenced = rss_mdm_resource_postgres::artifact_referenced_in(
-                        tx,
-                        r::Digest::from_bytes(digest),
-                    )
-                    .await?;
-                    proof.check_live()?;
-                    Ok(!referenced)
+                    reclaim_in(tx, candidate.take().expect("one reclaim"), || {
+                        proof.check_live()
+                    })
+                    .await
                 })
             },
             TransactionOwner::ResourceCatalog,
         )
         .await?;
-        if unreferenced {
-            candidate.remove().await?;
+        if deleted {
             removed += 1;
         }
     }
     Ok(Json(serde_json::json!({"removed":removed})))
 }
+pub(crate) async fn reclaim_in(
+    tx: &mut PgTransaction<'_>,
+    candidate: super::cleanup::Garbage,
+    authorize: impl FnOnce() -> Result<(), Error> + Send,
+) -> transaction::Result<bool> {
+    let referenced = rss_mdm_resource_postgres::artifact_referenced_in(
+        tx,
+        r::Digest::from_bytes(candidate.digest),
+    )
+    .await?;
+    authorize()?;
+    if !referenced {
+        candidate.remove()?;
+    }
+    Ok(!referenced)
+}
+
 /// Mirror only the selected frozen artifact; source credentials never reach the artifact origin.
 async fn mirror(
     State(app): State<Arc<HttpState>>,
@@ -403,15 +419,7 @@ async fn mirror(
         |ctx, tx| {
             Box::pin(async move {
                 let (catalog, source) = *ctx;
-                let value = catalog
-                    .source_read_in(tx, &source.id, &source.revision)
-                    .await?;
-                if value["admission"]["state"] != "approved"
-                    || value["snapshot"]
-                        != serde_json::to_value(source).map_err(|_| Error::Malformed)?
-                {
-                    return Err(Error::Forbidden.into());
-                }
+                catalog.source_admitted_in(tx, source).await?;
                 Ok(())
             })
         },
@@ -450,7 +458,7 @@ async fn mirror(
         content.append(operation, 0, now, stream).await?;
     }
     let result = content.finish(operation, app.clock.unix_seconds()?).await?;
-    record(&app, &auth.proof, &audit, &result).await?;
+    record(&app, &auth.proof, &audit, &result, Some(&catalog)).await?;
     Ok(StatusCode::CREATED)
 }
 
