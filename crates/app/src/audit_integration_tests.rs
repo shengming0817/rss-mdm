@@ -285,7 +285,7 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let fact = Fact::business(&request, "commit-ack-loss", b"A", 200, "success", None)?;
     store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let attempt = store
-        .execute(tenant, &control, (&store, &fact), |(s, f), tx| {
+        .execute_with_operation(tenant, &control, &control, (&store, &fact), |(s, f), tx| {
             Box::pin(async move { s.append(tx, f, false).await })
         })
         .await;
@@ -293,7 +293,7 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let original = bytes(pool, tenant).await?;
     ensure!(original.len() == 1);
     let attempt = store
-        .execute(tenant, &control, (&store, &fact), |(s, f), tx| {
+        .execute_with_operation(tenant, &control, &control, (&store, &fact), |(s, f), tx| {
             Box::pin(async move { s.append(tx, f, true).await })
         })
         .await;
@@ -302,12 +302,18 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let failed = Fact::business(&request, "rollback-ack-loss", b"B", 200, "success", None)?;
     store.inject_next_fault(rss_audit_postgres::PgFault::RollbackFailedAfterAck);
     let attempt = store
-        .execute(tenant, &control, (&store, &failed), |(s, f), tx| {
-            Box::pin(async move {
-                s.append(tx, f, false).await?;
-                Err::<(), _>(Error::Receipt)
-            })
-        })
+        .execute_with_operation(
+            tenant,
+            &control,
+            &control,
+            (&store, &failed),
+            |(s, f), tx| {
+                Box::pin(async move {
+                    s.append(tx, f, false).await?;
+                    Err::<(), _>(Error::Receipt)
+                })
+            },
+        )
         .await;
     ensure!(state(attempt) == "rollback_failed");
     ensure!(bytes(pool, tenant).await? == original);
@@ -562,13 +568,17 @@ async fn audit_process_exit_fixture() -> Result<()> {
 // Exercise batch correctness independently of product performance policy in
 // both modes; each event retains a separate identity and exact recovery receipt.
 async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
+    retirement_batch_using(pool, ledger, Duration::from_secs(30), true).await
+}
+async fn retirement_batch_using(
+    pool: &PgPool,
+    ledger: bool,
+    timeout: Duration,
+    strict: bool,
+) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(30))?,
-        &cancel,
-    );
+    let control = Control::new(&timer, Deadline::from_timeout(&timer, timeout)?, &cancel);
     let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let request = RequestAudit::new(tenant.to_string(), "collection_finish");
@@ -587,11 +597,7 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut original = None;
     for replayed in [false, true] {
-        let control = Control::new(
-            &timer,
-            Deadline::from_timeout(&timer, Duration::from_secs(30))?,
-            &cancel,
-        );
+        let control = Control::new(&timer, Deadline::from_timeout(&timer, timeout)?, &cancel);
         let started = rss_request_context::Clock::now(&timer);
         let processed = std::sync::atomic::AtomicUsize::new(0);
         let attempt = store
@@ -611,6 +617,45 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
             )
             .await;
         let outcome = state(attempt);
+        eprintln!(
+            "{}",
+            serde_json::json!({"audit_batch":true,"ledger":ledger,"replay":replayed,"outcome":outcome,"processed":processed.load(std::sync::atomic::Ordering::Relaxed),"elapsed_micros":rss_request_context::Clock::now(&timer).saturating_duration_since(started).as_micros()})
+        );
+        if !strict && outcome != "committed" {
+            // Serialize with the original owner before claiming any final database state.
+            let fresh = Control::new(
+                &timer,
+                Deadline::from_timeout(&timer, Duration::from_secs(30))?,
+                &cancel,
+            );
+            let settled = store
+                .execute(tenant, &fresh, (), |_, _| {
+                    Box::pin(async { Ok::<(), Error>(()) })
+                })
+                .await;
+            ensure!(state(settled) == "committed");
+            let records = bytes(pool, tenant).await?;
+            let mut check = pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(tenant.to_string())
+                .execute(&mut *check)
+                .await?;
+            let receipts: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid",
+            )
+            .bind(tenant.to_string())
+            .fetch_one(&mut *check)
+            .await?;
+            check.rollback().await?;
+            ensure!(receipts as usize == records.len());
+            ensure!(records.is_empty() || records.len() == 65);
+            eprintln!(
+                "{}",
+                serde_json::json!({"audit_final_state":true,"ledger":ledger,"records":records.len(),"receipts":receipts})
+            );
+            request.finalize(None);
+            return Ok(());
+        }
         ensure!(
             outcome == "committed",
             "retirement batch mode ledger={ledger} replay={replayed} outcome={outcome} processed={} elapsed={:?}",
@@ -708,6 +753,17 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
         ensure!(state(recovery) == "committed");
         ensure!(bytes(&pool, tenant).await?.len() == 1);
         request.finalize(None);
+    }
+    pool.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "diagnostic only: six seconds is not a correctness or performance gate"]
+async fn original_six_second_batch_diagnostic() -> Result<()> {
+    let (pool, _) = request_store().await?;
+    for ledger in [false, true] {
+        retirement_batch_using(&pool, ledger, Duration::from_secs(6), false).await?;
     }
     pool.close().await;
     Ok(())

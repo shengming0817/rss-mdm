@@ -90,6 +90,7 @@ pub async fn serve(
                         runtime,
                         execution,
                         automation,
+                        identity_audit,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
                             crate::Database::connect(
@@ -208,6 +209,13 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
+                        let identity_audit = crate::identity_audit::Worker::open(
+                            &compiled.config,
+                            identity.audit_readiness.clone(),
+                            |resource| startup.stage_resource(resource),
+                        )
+                        .await
+                        .map_err(|error| ProcessError::at("startup.identity_audit", error))?;
                         let mut app = crate::api::from_compiled(
                             compiled,
                             crate::api::AssemblyDependencies {
@@ -253,6 +261,7 @@ pub async fn serve(
                             runtime,
                             execution,
                             automation,
+                            identity_audit,
                         ))
                     })
                     .await
@@ -273,6 +282,7 @@ pub async fn serve(
                             .critical(),
                         );
                     }
+                    launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(execution.registration().critical());
                     launch.stage_deferred_task_with_token(automation.registration().critical());
                     launch.stage_deferred_task_with_token(runtime.registration().critical());

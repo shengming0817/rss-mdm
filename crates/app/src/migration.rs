@@ -93,7 +93,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 49] {
+fn units() -> [(&'static str, &'static str); 50] {
     [
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
@@ -104,6 +104,10 @@ fn units() -> [(&'static str, &'static str); 49] {
         (
             "audit-runtime-v1",
             include_str!("../schema/audit-runtime.sql"),
+        ),
+        (
+            "identity-audit-runtime-v1",
+            include_str!("../schema/identity-audit-runtime.sql"),
         ),
         ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
@@ -461,6 +465,9 @@ async fn install_identity(
             rss_identity_postgres::AuthorityProfile::Maintenance,
         )
         .await?;
+        rss_identity_postgres::audit::grant_worker(&mut tx, crate::identity_audit::ROLE)
+            .await
+            .map_err(|_| sqlx::Error::Protocol("identity audit grant rejected".into()))?;
         sqlx::query(
             "INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)",
         )
@@ -512,6 +519,9 @@ async fn verify_profiles(
             .execute(&mut *conn)
             .await?;
     }
+    rss_identity_postgres::audit::verify_worker(conn, crate::identity_audit::ROLE)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("identity audit profile rejected".into()))?;
     Ok(())
 }
 async fn verify_installation(

@@ -82,6 +82,7 @@ rss-contract = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev =
 rss-mdm-group-postgres = { path = "crates/group-postgres" }
 rss-transactional-messaging = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e901f5a1cd023e28d3a190e36ed8508f2afc467e", default-features = false, features = ["producer"] }
 rss-transactional-messaging-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e901f5a1cd023e28d3a190e36ed8508f2afc467e", default-features = false }
+rss-transactional-messaging-runtime = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e901f5a1cd023e28d3a190e36ed8508f2afc467e", default-features = false }
 
 rss-mdm-policy-postgres = { path = "crates/policy-postgres" }
 rss-mdm-resource-postgres = { path = "crates/resource-postgres" }

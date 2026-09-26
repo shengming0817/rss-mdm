@@ -163,8 +163,9 @@ impl AuditStore {
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        self.adapter
-            .local_tx_with_context(
+        measure(
+            "owner_total",
+            self.adapter.local_tx_with_context(
                 tenant,
                 control,
                 (context, Some(operation)),
@@ -173,15 +174,19 @@ impl AuditStore {
                         tx.with_connection(|c| Box::pin(admit_receipts(c)))
                             .await
                             .map_err(E::from)?;
-                        tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
+                        measure("lock_head", tx.lock_head())
+                            .await
+                            .map_err(Error::from)
+                            .map_err(E::from)?;
                         let operation = operation
                             .take()
                             .expect("component invokes its transaction callback once");
-                        operation(context, tx).await
+                        measure("product_callback", operation(context, tx)).await
                     })
                 },
-            )
-            .await
+            ),
+        )
+        .await
     }
     /// End product work before the owner's total cutoff, then await the owner's settlement.
     /// Only cancels the borrowed callback, never the enclosing transaction future. Provider
@@ -210,8 +215,9 @@ impl AuditStore {
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        self.adapter
-            .local_tx_with_context(
+        measure(
+            "owner_total",
+            self.adapter.local_tx_with_context(
                 tenant,
                 total,
                 (context, Some(operation), operation_control, total),
@@ -229,16 +235,28 @@ impl AuditStore {
                             tx.with_connection(|c| Box::pin(admit_receipts(c)))
                                 .await
                                 .map_err(E::from)?;
-                            tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
-                            operation.take().expect("one owner callback")(context, tx).await
+                            measure("lock_head", tx.lock_head())
+                                .await
+                                .map_err(Error::from)
+                                .map_err(E::from)?;
+                            let value = measure(
+                                "product_callback",
+                                operation.take().expect("one owner callback")(context, tx),
+                            )
+                            .await?;
+                            if operation_control.remaining().is_zero() {
+                                return Err(expired());
+                            }
+                            Ok(value)
                         };
                         tokio::time::timeout(remaining, work)
                             .await
                             .map_err(|_| expired())?
                     })
                 },
-            )
-            .await
+            ),
+        )
+        .await
     }
     /// First operation in an RSS transaction: validate isolation/receipts, then lock Audit and Ledger.
     /// Must precede business and outbox locks. Reuses the owner's connection and remaining budget;
@@ -326,23 +344,28 @@ impl AuditStore {
             return Err(rss_audit_postgres::Error::ScopeMismatch.into());
         }
         let identity = fact.identity().clone();
-        let receipt = tx
-            .with_connection(move |c| Box::pin(async move { read_receipt(c, &identity).await }))
-            .await?;
-        let record = tx.find(fact.identity()).await?;
+        let receipt = measure(
+            "receipt_read",
+            tx.with_connection(move |c| Box::pin(async move { read_receipt(c, &identity).await })),
+        )
+        .await?;
+        let record = measure("record_find", tx.find(fact.identity())).await?;
         if let Some(prepared) = restore(fact, receipt, record, self.ledger, existing)? {
-            tx.append(&prepared).await?;
+            measure("append_replay", tx.append(&prepared)).await?;
             return Ok(());
         }
-        let at = tx.with_connection(|c| Box::pin(now(c))).await?;
-        let prepared = tx.prepare(fact.event(at)?).await?;
+        let at = measure("timestamp", tx.with_connection(|c| Box::pin(now(c)))).await?;
+        let prepared = measure("prepare", tx.prepare(fact.event(at)?)).await?;
         let save = prepared.clone();
         let fingerprint = *fact.fingerprint();
-        tx.with_connection(move |c| {
-            Box::pin(async move { save_receipt(c, &save, fingerprint).await })
-        })
+        measure(
+            "receipt_write",
+            tx.with_connection(move |c| {
+                Box::pin(async move { save_receipt(c, &save, fingerprint).await })
+            }),
+        )
         .await?;
-        tx.append(&prepared).await?;
+        measure("append", tx.append(&prepared)).await?;
         Ok(())
     }
     /// Stage a business fact in the existing RSS owner after `lock_in`.
@@ -483,4 +506,22 @@ fn transaction_error(error: rss_audit_postgres::TransactionError<Error>) -> Erro
         rss_audit_postgres::TransactionError::Audit(error) => Error::Audit(error),
         rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
+}
+
+// Fixture-only phase timing; production has no environment switch or diagnostic payload.
+async fn measure<F: std::future::Future>(phase: &'static str, future: F) -> F::Output {
+    #[cfg(feature = "integration")]
+    let started =
+        (std::env::var_os("MDM_AUDIT_DIAGNOSTIC").is_some()).then(tokio::time::Instant::now);
+    #[cfg(not(feature = "integration"))]
+    let _ = phase;
+    let value = future.await;
+    #[cfg(feature = "integration")]
+    if let Some(started) = started {
+        eprintln!(
+            "{}",
+            serde_json::json!({"audit_phase":phase,"elapsed_micros":started.elapsed().as_micros()})
+        );
+    }
+    value
 }

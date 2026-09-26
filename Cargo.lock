@@ -2591,6 +2591,7 @@ dependencies = [
  "rss-runtime",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
+ "rss-transactional-messaging-runtime",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -60,6 +60,7 @@ pub enum ConfigIssue {
     ProductOrigin,
     Instance,
     IdentityDatabase,
+    IdentityAuditDatabase,
     IdentityConfiguration,
     Issuer,
     Tenant,

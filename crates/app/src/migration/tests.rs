@@ -38,6 +38,14 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         }
         for (grant, revoke) in [
             (
+                "GRANT SELECT ON identity_authority.accounts TO mdm_identity_audit",
+                "REVOKE SELECT ON identity_authority.accounts FROM mdm_identity_audit",
+            ),
+            (
+                "GRANT INSERT ON rss_audit.records TO mdm_identity_audit",
+                "REVOKE INSERT ON rss_audit.records FROM mdm_identity_audit",
+            ),
+            (
                 "GRANT DELETE ON identity_authority.accounts TO mdm_identity_runtime",
                 "REVOKE DELETE ON identity_authority.accounts FROM mdm_identity_runtime",
             ),

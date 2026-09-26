@@ -78,6 +78,7 @@ pub struct Identity {
     pub instance_id: String,
     pub tenant_id: String,
     pub database: Database,
+    pub audit_worker: Database,
     pub oidc: Option<crate::identity::OidcConfig>,
 }
 #[derive(Deserialize)]
@@ -145,6 +146,14 @@ impl Config {
             || self.identity.database.name != self.access_database.name
         {
             return Err(Error::Configuration(ConfigIssue::IdentityDatabase));
+        }
+        let worker = &self.identity.audit_worker;
+        if worker.user != crate::identity_audit::ROLE
+            || worker.host != self.identity.database.host
+            || worker.port != self.identity.database.port
+            || worker.name != self.identity.database.name
+        {
+            return Err(Error::Configuration(ConfigIssue::IdentityAuditDatabase));
         }
         let tenant = uuid::Uuid::parse_str(&self.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
@@ -244,6 +253,37 @@ pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identity_worker_requires_its_own_same_database_credentials() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        value["identity"]["audit_worker"] = value["identity"]["database"].clone();
+        assert!(
+            serde_json::from_value::<Config>(value.clone())
+                .and_then(|c| c.compile().map_err(serde::de::Error::custom))
+                .is_err()
+        );
+        value["identity"]["audit_worker"]["user"] = "mdm_identity_audit".into();
+        assert!(
+            serde_json::from_value::<Config>(value.clone())
+                .unwrap()
+                .compile()
+                .is_ok()
+        );
+        value["identity"]["audit_worker"]["name"] = "other".into();
+        assert!(
+            serde_json::from_value::<Config>(value.clone())
+                .unwrap()
+                .compile()
+                .is_err()
+        );
+        value["identity"]
+            .as_object_mut()
+            .unwrap()
+            .remove("audit_worker");
+        assert!(serde_json::from_value::<Config>(value).is_err());
+    }
     #[test]
     fn static_business_permissions_are_rejected() {
         let mut value: serde_json::Value =

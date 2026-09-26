@@ -42,6 +42,7 @@ mod apple;
 mod clock;
 pub mod config;
 mod identity;
+mod identity_audit;
 #[cfg(test)]
 mod identity_fixture;
 #[cfg(test)]

@@ -79,6 +79,7 @@ impl Principal {
 pub(crate) struct Identity {
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
+    pub(crate) audit_readiness: Arc<crate::identity_audit::Readiness>,
     routes: Router,
     http: rss_identity_http_axum::HttpConfig,
 }
@@ -151,6 +152,7 @@ impl Identity {
         Ok(Self {
             authority,
             tenant,
+            audit_readiness: Arc::default(),
             routes,
             http,
         })
@@ -238,6 +240,32 @@ pub(crate) async fn open_runtime(
     epoch: i64,
     tenant: TenantId,
 ) -> Result<Arc<PgRuntime>, Error> {
+    let (pg, binding) = runtime_inputs(database, target, lineage, epoch, tenant)?;
+    PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding)
+        .await
+        .map(Arc::new)
+        .map_err(|_| Error::Unavailable(Failure::IdentityStorage))
+}
+pub(crate) async fn open_consumer_runtime(
+    database: &config::Database,
+    target: &[u8; 16],
+    lineage: &[u8; 16],
+    epoch: i64,
+    tenant: TenantId,
+) -> Result<Arc<PgRuntime>, Error> {
+    let (pg, binding) = runtime_inputs(database, target, lineage, epoch, tenant)?;
+    PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding)
+        .await
+        .map(Arc::new)
+        .map_err(|_| Error::Unavailable(Failure::IdentityStorage))
+}
+fn runtime_inputs(
+    database: &config::Database,
+    target: &[u8; 16],
+    lineage: &[u8; 16],
+    epoch: i64,
+    tenant: TenantId,
+) -> Result<(PgConfig, ExecutionBinding), Error> {
     let binding = ExecutionBinding::new(
         StorageIdentity::new(*target, *lineage).map_err(|_| invalid())?,
         vec![(tenant, Epoch::new(epoch).map_err(|_| invalid())?)],
@@ -252,11 +280,9 @@ pub(crate) async fn open_runtime(
         PgPrivateCa::from_pem(config::read(&database.ca_file, 1024 * 1024, false)?.to_vec())
             .map_err(|_| invalid())?,
     );
-    PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding)
-        .await
-        .map(Arc::new)
-        .map_err(|_| Error::Unavailable(Failure::IdentityStorage))
+    Ok((pg, binding))
 }
+
 struct RuntimeResource(Arc<PgRuntime>);
 impl rss_runtime::ManagedResource for RuntimeResource {
     fn name(&self) -> &str {

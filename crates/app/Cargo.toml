@@ -69,6 +69,7 @@ rss-mdm-winget-source.workspace = true
 rss-mdm-brew-source.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
+rss-transactional-messaging-runtime.workspace = true
 
 rss-device-command.workspace = true
 rss-device-command-postgres.workspace = true
