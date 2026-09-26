@@ -31,6 +31,8 @@ class BuildRunTests(unittest.TestCase):
         self.other = self.root / 'other'
         self.work.mkdir()
         self.other.mkdir()
+        for work in (self.work, self.other):
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(work)], check=True, env=clean_env())
         self.pool = self.root / 'pool'
         self.env = clean_env() | {'MDM_TARGET_POOL_ROOT': str(self.pool),
                                  'MDM_TARGET_POOL_N': '2',
@@ -77,6 +79,54 @@ class BuildRunTests(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
 
+    def test_root_and_subdirectory_share_git_worktree_identity(self):
+        subprocess.run(['/usr/bin/git', 'init', '-q', str(self.work)], check=True)
+        child = self.work / 'nested'; child.mkdir()
+        self.hold()
+        result = self.run_code(work=child)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('worktree busy', result.stderr)
+
+    def test_pool_allocator_contention_fails_without_waiting(self):
+        import fcntl
+        self.assertEqual(self.run_code().returncode, 0)
+        with (self.pool / '.pool.lock').open('r+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = subprocess.run([sys.executable, str(SCRIPT), '--', 'true'], cwd=self.other,
+                                    env=self.env, capture_output=True, text=True, timeout=2)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('allocator busy', result.stderr)
+
+    def test_slow_cleanup_releases_allocator_and_interruption_invalidates_owner(self):
+        self.assertEqual(self.run_code(env={'MDM_TARGET_POOL_N': '1'}).returncode, 0)
+        target = self.pool / 'slot-0'
+        (target / 'old-artifact').touch()
+        ready = self.root / 'cleaning'
+        code = ("import build_run,time; from pathlib import Path; "
+                "original=build_run.shutil.rmtree; "
+                f"build_run.shutil.rmtree=lambda path: (Path({str(ready)!r}).touch(), time.sleep(30), original(path)); "
+                "build_run.main(['--','true'])")
+        process = subprocess.Popen([sys.executable, '-c', code], cwd=self.other,
+                                   env=self.env | {'MDM_TARGET_POOL_N': '1'},
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.stop, process)
+        self.wait_ready(ready, process)
+        # The first slot remains reserved, but allocating a different slot must not wait.
+        result = self.run_code()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.pool / 'slot-0.json').exists())
+        process.terminate(); process.wait(timeout=5)
+        result = self.run_code(work=self.other, env={'MDM_TARGET_POOL_N': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((target / 'old-artifact').exists())
+
+    def test_sigquit_cancels_child_and_releases_slot(self):
+        process = self.hold(env={'MDM_TARGET_POOL_N': '1'})
+        process.send_signal(signal.SIGQUIT)
+        self.assertEqual(process.wait(timeout=8), 128 + signal.SIGQUIT)
+        result = self.run_code(work=self.other, env={'MDM_TARGET_POOL_N': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_sticky_slot_then_safe_reassignment(self):
         first = self.run_code('import os; print(os.environ["CARGO_TARGET_DIR"])',
                               env={'MDM_TARGET_POOL_N': '1'})
@@ -97,6 +147,7 @@ class BuildRunTests(unittest.TestCase):
         self.assertIn('worktree busy', repeat.stderr)
         self.hold(work=self.other)
         third = self.root / 'third'; third.mkdir()
+        subprocess.run(['/usr/bin/git', 'init', '-q', str(third)], check=True, env=clean_env())
         result = self.run_code(work=third)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('pool full', result.stderr)
@@ -339,6 +390,7 @@ print(json.dumps({'name':Path(sys.argv[0]).name,'target':os.environ.get('CARGO_T
         code = '''import os,subprocess,time
 from pathlib import Path
 from build_run import lease_fds
+Path('acquired').touch()
 subprocess.run(['cargo','build','--offline'],check=True,pass_fds=lease_fds())
 Path('built').touch()
 end=time.monotonic()+60
@@ -349,9 +401,13 @@ subprocess.run([str(Path(os.environ['CARGO_TARGET_DIR'])/'debug/lease-proof')],c
 subprocess.run(['cargo','test','--offline'],check=True,pass_fds=lease_fds())
 '''
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            jobs = [pool.submit(self.run_code, code, work=work, env={'PEER_READY': str(peer / 'built')})
-                    for work, peer in ((repo, second), (second, repo))]
-            results = [job.result(timeout=70) for job in jobs]
+            first = pool.submit(self.run_code, code, work=repo, env={'PEER_READY': str(second / 'built')})
+            end = time.monotonic() + 10
+            while not (repo / 'acquired').exists() and not first.done() and time.monotonic() < end:
+                time.sleep(.01)
+            self.assertTrue((repo / 'acquired').exists())
+            other = pool.submit(self.run_code, code, work=second, env={'PEER_READY': str(repo / 'built')})
+            results = [job.result(timeout=70) for job in (first, other)]
         for label, result in zip(('first', 'second'), results):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(label + '\n', result.stdout)

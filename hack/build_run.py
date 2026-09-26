@@ -166,8 +166,11 @@ def write_metadata(root, index, worktree):
 
 def acquire_slot(root, slots, worktree):
     root = owned_directory(root, POOL_MARKER)
-    global_fd = lock_file(root / '.pool.lock', blocking=True)
+    global_fd = lock_file(root / '.pool.lock')
+    if global_fd is None:
+        raise ValueError(f'allocator busy: {root}')
     held = {}
+    retired = []
     try:
         indices = set(range(slots))
         indices.update(int(p.name[5:]) for p in root.glob('slot-*') if re.fullmatch(r'slot-[0-9]+', p.name))
@@ -182,8 +185,7 @@ def acquire_slot(root, slots, worktree):
                 continue
             held[index] = fd
             if index >= slots:
-                if target.exists():
-                    shutil.rmtree(target)
+                retired.append(index)
                 (root / f'slot-{index}.json').unlink(missing_ok=True)
                 continue
             rank = (0 if value and value['worktree'] == str(worktree) else
@@ -193,6 +195,18 @@ def acquire_slot(root, slots, worktree):
             raise ValueError(f'pool full ({slots} slots): {root}')
         rank, _, index = min(candidates)
         target = root / f'slot-{index}'
+        # Invalidate ownership before cleanup: interruption must force a fresh wipe next time.
+        if rank != 0:
+            (root / f'slot-{index}.json').unlink(missing_ok=True)
+        for unused in set(held) - {index} - set(retired):
+            os.close(held.pop(unused))
+        os.close(global_fd)
+        global_fd = None
+        # Only target locks remain held during expensive filesystem work.
+        for old in retired:
+            obsolete = root / f'slot-{old}'
+            if obsolete.exists():
+                shutil.rmtree(obsolete)
         if rank != 0 and target.exists():
             shutil.rmtree(target)
         directory(target)
@@ -201,7 +215,8 @@ def acquire_slot(root, slots, worktree):
     finally:
         for fd in held.values():
             os.close(fd)
-        os.close(global_fd)
+        if global_fd is not None:
+            os.close(global_fd)
 
 
 def compiler_environment(env):
@@ -227,7 +242,7 @@ def run_child(argv, env, fds):
             except ProcessLookupError:
                 pass
     try:
-        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
             previous[sig] = signal.signal(sig, forward)
         process = subprocess.Popen(argv, env=env, start_new_session=True, pass_fds=fds)
         if cancelled:
@@ -267,7 +282,11 @@ def main(argv):
     if LEASE_ENV in os.environ:
         raise ValueError('nested build runner is not allowed; inherit the existing lease')
     env = os.environ.copy()
-    worktree = Path.cwd().resolve()
+    identity = subprocess.run(['/usr/bin/git', 'rev-parse', '--show-toplevel'],
+                              capture_output=True, text=True)
+    if identity.returncode:
+        raise ValueError('build runner requires a Git worktree')
+    worktree = Path(identity.stdout.strip()).resolve()
     pool, target = target_config(env, worktree)
     compiler_environment(env)
     owned_directory(LOCK_ROOT, '.mdm-build-locks-v1')

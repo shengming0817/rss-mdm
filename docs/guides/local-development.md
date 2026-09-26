@@ -15,8 +15,9 @@ make ci-plan CI_BASE=origin/develop
 ## 构建槽位与缓存
 
 Make 的 build/check/test、CI 和定向 T2 入口由 [启动器](../../hack/build_run.py) 管理：默认四个槽，
-每次完整命令独占 worktree 和 target，子进程继承租约。同 worktree 优先复用空闲槽；槽换属时清理旧产物。
-槽满、worktree 或目标目录已占用时立即失败，待原运行退出后重试。槽数不限制每个 Cargo 的编译线程数。
+每次完整命令独占 worktree 和 target，子进程继承租约。worktree 身份由系统 Git 解析，
+从子目录启动仍锁定同一 checkout；子命令保留原启动目录。同 worktree 优先复用空闲槽；槽换属时清理旧产物。
+槽满、分配器忙、worktree 或目标目录已占用时立即失败，待原运行退出后重试。槽数不限制每个 Cargo 的编译线程数。
 
 | 配置 | 行为 |
 | --- | --- |
@@ -42,7 +43,7 @@ MDM_TARGET_POOL_N=off CARGO_TARGET_DIR="$PWD/target" make test
 锁键统一折叠路径大小写和 Unicode 规范形式，保证目录被 `cargo clean` 删除、以不同拼写重建后仍互斥。
 因此在大小写敏感文件系统上，仅拼写大小写或 Unicode 形式不同的目录也可能被保守地判为占用。
 
-取消会转发到运行进程组，五秒后仍存活的进程会被终止。若入口被强制杀死，后代进程可能仍持有租约；
+INT/TERM/HUP/QUIT 取消信号会转发到运行进程组，五秒后仍存活的进程会被终止。若入口被强制杀死，后代进程可能仍持有租约；
 不能只凭入口 PID 消失就删除产物或锁文件。锁独立存放在 `~/.cache/rss-mdm-build-locks`，不随 target 清理。
 池损坏或遗留进程无法确认时改用新的专用池，并先排查原进程；不删除活跃锁、不自动接管未标记非空目录。
 旧公共 target 不自动迁移或清理，确认所有旧构建退出后再自行处理。

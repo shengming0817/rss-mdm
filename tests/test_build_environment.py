@@ -13,6 +13,7 @@ class BuildEnvironmentTests(unittest.TestCase):
     def test_managed_run_never_starts_sccache_and_clears_ancestor_wrappers(self):
         with tempfile.TemporaryDirectory(prefix='mdm-direct-') as temporary:
             root = Path(temporary).resolve()
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True, env=clean_env())
             binary = root / 'bin'; binary.mkdir()
             probe = root / 'cache-started'
             cache = binary / 'sccache'
