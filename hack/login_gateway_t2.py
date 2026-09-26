@@ -8,6 +8,7 @@ import time
 import uuid
 import json
 import sys
+from build_run import require_lease
 ROOT=Path(__file__).resolve().parents[1]
 
 def verify(image):
@@ -91,4 +92,5 @@ def verify(image):
                 primary.add_note('login gateway cleanup also failed')
 
 if __name__ == "__main__":
+    require_lease(ROOT)
     verify(json.loads((ROOT/"deployment/providers.lock.json").read_text())["nginx"])

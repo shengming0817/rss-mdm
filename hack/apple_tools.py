@@ -9,6 +9,8 @@ import tarfile
 import tempfile
 import urllib.request
 
+from build_run import lease_fds, require_lease
+
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT/'fixtures/apple-tools.lock.json').read_text())
 
@@ -43,6 +45,7 @@ def binary(name):
 
 
 if __name__ == '__main__':
+    require_lease(ROOT)
     for name in ['step', 'step-ca']:
         print(name, binary(name), flush=True)
 
@@ -66,6 +69,6 @@ def nano_binary():
         source = Path(temporary)/('nanomdm-'+item['revision'])
         built = Path(temporary)/'nanomdm'
         subprocess.run(['go','build','-mod=readonly','-trimpath','-o',str(built),'./cmd/nanomdm'],
-                       cwd=source,env={**os.environ,'GOWORK':'off'},check=True,timeout=180)
+                       pass_fds=lease_fds(), cwd=source,env={**os.environ,'GOWORK':'off'},check=True,timeout=180)
         built.replace(destination)
     return destination

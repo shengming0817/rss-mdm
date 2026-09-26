@@ -15,6 +15,8 @@ import time
 import tomllib
 from urllib.parse import urlsplit
 
+from build_run import lease_fds, require_lease
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
@@ -140,7 +142,7 @@ def noninteractive(env=None):
     return value
 
 def command(args, cwd=ROOT, env=None, *, separate_stderr=False):
-    return subprocess.run(args, cwd=cwd, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE if separate_stderr else subprocess.STDOUT)
+    return subprocess.run(args, pass_fds=lease_fds(), cwd=cwd, env=noninteractive(env), stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE if separate_stderr else subprocess.STDOUT)
 
 def verify_backend_support(data):
     support = "rss-mdm-backend-postgres-support"
@@ -320,12 +322,17 @@ def working_source_state():
         except FileNotFoundError:
             state[name] = None
             continue
-        require(before == after, "source changed while reading CI inputs")
+        # Reading can update atime; compare only file identity and modification metadata.
+        fields = ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        require(all(getattr(before, field) == getattr(after, field) for field in fields),
+                "source changed while reading CI inputs")
         state[name] = (hashlib.sha256(data).hexdigest(), after.st_mode, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)
     return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
 
 
 def main():
+    if os.environ.get("CI_PLAN", "0") != "1":
+        require_lease(ROOT)
     OUT.mkdir(parents=True, exist_ok=True)
     head = command(["/usr/bin/git", "rev-parse", "HEAD"])
     require(head.returncode == 0, "cannot resolve base revision")

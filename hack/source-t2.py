@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from build_run import lease_fds, require_lease
+
 ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED = {
@@ -41,7 +43,7 @@ def verify_tests(output, expected):
 def run_tests(package, target, expected, env=None):
     result = subprocess.run(
         ["cargo", "test", "--locked", "-p", package, *target, "--", "--ignored", "--color=never"],
-        cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     print(result.stdout, flush=True)
     if result.returncode:
@@ -87,6 +89,7 @@ def tls_environment(root):
     return dict(os.environ, SOURCE_T2_TLS=str(root), SOURCE_T2_ADDRESS=address)
 
 def main():
+    require_lease(ROOT)
     failed = []
     with tempfile.TemporaryDirectory(prefix="mdm-source-tls-") as directory:
         try:
