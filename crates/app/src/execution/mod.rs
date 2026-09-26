@@ -39,7 +39,7 @@ fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub(crate) struct ExecutionService {
-    pub(crate) signer: Option<Arc<dyn crate::task_content::TaskSigner>>,
+    pub(crate) signer: Option<Arc<crate::task_signing::Signer>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
@@ -47,7 +47,7 @@ pub(crate) struct ExecutionService {
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) tenant: TenantId,
     pub(crate) instance: String,
-    pub(crate) content: Option<Arc<dyn crate::task_content::ArtifactReader>>,
+    pub(crate) content: Option<Arc<crate::content::Store>>,
 }
 pub(crate) use crate::transaction::*;
 impl ExecutionService {

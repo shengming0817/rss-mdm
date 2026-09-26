@@ -34,6 +34,7 @@ _t2:
 	python3 hack/compliance-t2.py
 	python3 hack/command-t2.py
 	python3 hack/task-t2.py
+	python3 hack/software-t2.py
 	python3 hack/apple-t2.py
 
 .PHONY: source-t2
@@ -72,6 +73,10 @@ t2-tasks:
 .PHONY: t2-apple
 t2-apple:
 	python3 hack/build_run.py -- python3 hack/apple-t2.py
+
+.PHONY: t2-software
+t2-software:
+	python3 hack/build_run.py -- python3 hack/software-t2.py
 
 .PHONY: t2-compliance
 t2-compliance:

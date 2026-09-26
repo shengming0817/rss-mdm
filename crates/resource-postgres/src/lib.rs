@@ -1,7 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![deny(missing_docs)]
 //! Immutable Resource versions and lifecycle over the host-owned RSS transaction.
+mod artifacts;
 mod codec;
+pub use artifacts::artifact_referenced_in;
 
 mod error;
 mod event;
@@ -16,8 +18,9 @@ pub const MIGRATION_SQL: &str = include_str!("../migrations/0001.sql");
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 pub(crate) const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Resource);
 pub(crate) const ADMISSION: Admission = Admission {
-    tables: &["aggregates", "immutable", "requests"],
+    tables: &["aggregates", "artifact_refs", "immutable", "requests"],
     update_columns: &[
+        "artifact_refs.archived",
         "aggregates.revision",
         "aggregates.document",
         "aggregates.digest",

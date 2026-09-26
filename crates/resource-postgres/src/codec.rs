@@ -58,22 +58,7 @@ fn read_artifact(v: &Value) -> Result<Artifact, PgError> {
 }
 fn declaration(d: &Declaration) -> Value {
     match d {
-        Declaration::Software {
-            package,
-            artifact: a,
-            install,
-            detect,
-            uninstall,
-        } => json!([
-            0,
-            artifact(a),
-            package.source().as_str(),
-            package.package().as_str(),
-            package.version().as_str(),
-            install.as_str(),
-            detect.as_str(),
-            uninstall.as_ref().map(Id::as_str)
-        ]),
+        Declaration::Software { definition } => json!([4, definition]),
         Declaration::Script {
             artifact: a,
             definition,
@@ -102,14 +87,11 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
         .first()
         .ok_or_else(|| STORAGE.fault("codec::read_declaration"))?)?
     {
-        0 => {
-            let a = array(v, 8)?;
+        4 => {
+            let a = array(v, 2)?;
             Ok(Declaration::Software {
-                artifact: read_artifact(&a[1])?,
-                package: Package::new(id(&a[2])?, id(&a[3])?, id(&a[4])?),
-                install: id(&a[5])?,
-                detect: id(&a[6])?,
-                uninstall: optional(&a[7])?,
+                definition: STORAGE
+                    .json("codec::software", serde_json::from_value(a[1].clone()))?,
             })
         }
         3 => {
@@ -134,7 +116,11 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
 }
 pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
     STORAGE.encode(&json!([
-        if v.kind() == Kind::Script { 2 } else { 1 },
+        match v.kind() {
+            Kind::Software => 3,
+            Kind::Script => 2,
+            Kind::Configuration => 1,
+        },
         v.tenant().to_string(),
         v.resource().as_str(),
         v.label().as_str(),
@@ -161,10 +147,10 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
     let a = array(&v, 7)?;
     if n(&a[0])?
-        != if read_kind(&a[4])? == Kind::Script {
-            2
-        } else {
-            1
+        != match read_kind(&a[4])? {
+            Kind::Software => 3,
+            Kind::Script => 2,
+            Kind::Configuration => 1,
         }
     {
         return Err(STORAGE.fault("codec::read_version"));

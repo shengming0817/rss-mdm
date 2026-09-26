@@ -35,10 +35,10 @@ class FlowOwnership(unittest.TestCase):
                 self.assertNotIn("UPDATE", statement)
 
     def test_content_capabilities_and_settlement_have_one_owner(self):
-        content = (APP / "task_content.rs").read_text()
-        for capability in ("ArtifactReader", "ArtifactWriter", "TaskSigner"):
-            self.assertIn("trait " + capability, content)
-        self.assertNotIn("ContentPort", content)
+        content = (APP / "content/mod.rs").read_text()
+        self.assertNotIn("Ed25519KeyPair", content)
+        self.assertFalse((APP / "task_content.rs").exists())
+        self.assertTrue((APP / "task_signing.rs").is_file())
         self.assertFalse((APP / "mutation.rs").exists())
         self.assertFalse((APP / "execution_transaction.rs").exists())
         for path in (APP / "planning").rglob("*.rs"):
@@ -47,8 +47,10 @@ class FlowOwnership(unittest.TestCase):
             self.assertNotIn("crate::flow::", path.read_text(), str(path))
 
     def test_each_receipt_owner_has_a_distinct_audit_identity(self):
-        for owner in ("planning", "assets", "resource_catalog", "software_publication"):
+        for owner in ("planning", "assets", "resource_catalog"):
             self.assertIn('format!("' + owner + ':{id}")', (APP / owner / "receipts.rs").read_text())
+
+        self.assertIn('format!("software_publication:{id}")', (ROOT / "crates/software-service/src/publication/receipts.rs").read_text())
 
     def test_task_and_planning_pages_cannot_project_inventory_errors(self):
         for name in ("execution/actions/storage.rs", "execution/actions/history.rs", "planning/pages.rs", "planning/pages/scope.rs", "planning/pages/policy.rs"):

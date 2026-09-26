@@ -1,5 +1,5 @@
-use rss_mdm_app::software_publication::*;
 use rss_mdm_software_release as rel;
+use rss_mdm_software_service::publication::*;
 use tracing::instrument::WithSubscriber;
 mod publication_support;
 use publication_support::pg::*;
@@ -462,7 +462,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     same.pilot = same.test.clone();
     assert!(
         PublicationService::connect(
-            (runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()),
             tenant(),
             server.logical.clone(),
             same,
@@ -475,7 +475,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     );
     let connect = || {
         PublicationService::connect(
-            (runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()),
             tenant(),
             server.logical.clone(),
             server.winget(),
@@ -501,7 +501,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     assert!(connect().await.is_ok());
     assert!(
         PublicationService::connect(
-            (runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()),
             tenant(),
             format!("{}-alias", server.logical),
             server.winget(),
@@ -516,7 +516,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     std::mem::swap(&mut swapped.test, &mut swapped.pilot);
     assert!(
         PublicationService::connect(
-            (runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()),
             tenant(),
             server.logical.clone(),
             swapped,

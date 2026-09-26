@@ -23,7 +23,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub(crate) struct Assembly {
-    pub(crate) content_writer: Option<Arc<dyn crate::task_content::ArtifactWriter>>,
+    pub(crate) content_writer: Option<Arc<crate::content::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) flow: Arc<crate::flow::Flow>,
@@ -165,11 +165,7 @@ pub(crate) fn from_compiled(
         .apple
         .map(|config| crate::apple::Apple::load(config, clock.unix_seconds()?).map(Arc::new))
         .transpose()?;
-    let content_writer = config
-        .tasks
-        .as_ref()
-        .map(|c| crate::task_content::open(c, &config.identity.tenant_id).map(|c| c.writer))
-        .transpose()?;
+    let content_writer = execution.content.clone();
     let state = Arc::new(Assembly {
         content_writer,
         audit_store,
@@ -337,12 +333,28 @@ pub(crate) fn from_state(
             crate::flow::actions_http::routes()
                 .with_state(Arc::new(crate::flow::actions_http::HttpState { plans })),
         )
-        .merge(crate::task_content::http::routes().with_state(Arc::new(
-            crate::task_content::http::HttpState {
-                runtime: state.execution.runtime.clone(),
+        .merge(crate::software_catalog::routes().with_state(Arc::new(
+            crate::software_catalog::HttpState {
+                runtime: state.flow.runtime.clone(),
+                audit: state.audit_store.clone(),
+                tenant: state.execution.tenant,
+                catalog: rss_mdm_software_service::catalog::Catalog::new(
+                    state.flow.runtime.clone(),
+                    state.execution.tenant,
+                    Arc::new(crate::software_publication::host::Audit(
+                        state.audit_store.clone(),
+                    )),
+                ),
+                content: state.content_writer.clone(),
+            },
+        )))
+        .merge(crate::content::http::routes().with_state(Arc::new(
+            crate::content::http::HttpState {
+                runtime: state.flow.runtime.clone(),
                 audit_store: state.audit_store.clone(),
                 tenant: state.execution.tenant,
                 content: state.content_writer.clone(),
+                clock: state.clock.clone(),
             },
         )))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
@@ -569,7 +581,7 @@ pub(crate) async fn envelope(
     audit.finalize(audit_failure);
     eprintln!(
         "{}",
-        json!({"event":"mdm_request","request_id":request_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
+        json!({"event":"mdm_request","request_id":request_id,"operation_id":snapshot.operation_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
     );
     secure_response(response, request_id)
 }
@@ -627,13 +639,27 @@ async fn bounded_body(
     } else {
         None
     };
+    let streaming = match request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str())
+    {
+        Some("/api/v3/resources/{id}/content") => request.method() == axum::http::Method::POST,
+        Some("/api/v3/resources/{id}/uploads/{upload}") => {
+            request.method() == axum::http::Method::PATCH
+        }
+        _ => false,
+    };
+    if streaming {
+        return next.run(request).await;
+    }
     let limit = match request
         .extensions()
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
     {
+        Some("/api/v3/resources/{id}") => 8 * 1024 * 1024,
         Some("/api/agent/v2/tasks/{id}/events") => rss_mdm_agent_wire::MAX_TASK_REQUEST_BYTES,
-        Some("/api/v3/resources/{id}/content") => 16_777_216,
         _ if agent => rss_mdm_agent_wire::MAX_REQUEST_BYTES,
         _ => 2 * 1024 * 1024,
     };

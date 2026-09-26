@@ -179,7 +179,7 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False, compliance_only=False):
+def main(software_only=False, task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False, compliance_only=False):
     require_lease(ROOT)
     installation_only = sys.argv[1:] == ["--installation"]
     foundation_only = sys.argv[1:] == ["--foundation"]
@@ -242,7 +242,8 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 print(upgrade.stdout, end='', flush=True)
                 require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
                 verify_migrations(name, migrators[0], migration_config, root, env)
-            if not compliance_only:
+            # Focused software/compliance gates cover their own transactions.
+            if not software_only and not compliance_only:
                 run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
                 for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
                     run_exact_test(env, audit_test)
@@ -266,6 +267,11 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             env['MDM_TEST_PG_CONTAINER'] = name
             if foundation_only:
                 run_foundation_tests(env)
+                return
+            if software_only:
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::software::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(result.stdout,flush=True)
+                require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise software T2 failed or did not execute')
                 return
             if task_only:
                 result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)

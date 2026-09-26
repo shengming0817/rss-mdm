@@ -114,22 +114,16 @@ fn primary<'a>(
                 && v.key().as_str() == variant
         })
         .ok_or(Error::Content)?;
-    let resource::Declaration::Software {
-        package: p,
-        artifact,
-        ..
-    } = v.declaration()
-    else {
+    let resource::Declaration::Software { definition } = v.declaration() else {
         return Err(Error::Content);
     };
-    if p.source().as_str() != source
-        || p.package().as_str() != package
-        || p.version().as_str() != package_version
-    {
+    let spec = definition.spec();
+    if spec.source.id != source || spec.package != package || spec.version != package_version {
         return Err(Error::Content);
     }
-    Ok(artifact)
+    Ok(definition.primary())
 }
+
 fn matches_primary(primary: &resource::Artifact, artifact: &PublicArtifact) -> Result<()> {
     if primary.reference().as_str() != artifact.key
         || primary.length() != artifact.length
@@ -281,6 +275,35 @@ pub(super) fn prepare(
         {
             return Err(Error::Content);
         }
+    }
+    let mut declared = BTreeMap::new();
+    for variant in version
+        .variants()
+        .iter()
+        .filter(|v| v.platform() == platform)
+    {
+        let resource::Declaration::Software { definition } = variant.declaration() else {
+            return Err(Error::Content);
+        };
+        for artifact in definition.spec().artifacts.values() {
+            if declared
+                .insert(artifact.reference.clone(), artifact.clone())
+                .is_some_and(|old| old != *artifact)
+            {
+                return Err(Error::Content);
+            }
+        }
+    }
+    if declared.len() != unique.len()
+        || unique.values().any(|a| {
+            declared.get(&a.key).is_none_or(|expected| {
+                expected.length != a.length
+                    || expected.sha256 != a.sha256
+                    || expected.origin.as_ref().is_some_and(|url| url != &a.url)
+            })
+        })
+    {
+        return Err(Error::Content);
     }
     let input = serde_json::to_vec(&submission)
         .map_err(|cause| Error::Content.context("spec::prepare", cause))?;

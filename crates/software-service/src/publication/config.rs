@@ -12,7 +12,6 @@ pub struct WingetConfig {
     pub addresses: Vec<IpAddr>,
     pub private_ca: Option<Vec<u8>>,
     pub credential_reference: String,
-    pub credential_file: PathBuf,
 }
 #[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,7 +73,12 @@ pub(super) struct Sources {
     pub digest: [u8; 32],
 }
 impl Sources {
-    pub async fn new(tenant: TenantId, logical: String, config: RingSources) -> Result<Self> {
+    pub async fn new(
+        tenant: TenantId,
+        logical: String,
+        config: RingSources,
+        credentials: &dyn crate::Credentials,
+    ) -> Result<Self> {
         rel::SoftwareIdentity::new(rel::SoftwareIdentityFields {
             source: logical.clone(),
             package: "validation".into(),
@@ -84,7 +88,7 @@ impl Sources {
         .map_err(|cause| Error::Input.context("config::new", cause))?;
         let mut values = Vec::new();
         for (ring, config) in config.ordered().into_iter().enumerate() {
-            let mut binding = compile(tenant, &logical, config).await?;
+            let mut binding = compile(tenant, &logical, config, credentials).await?;
             binding.configuration = serde_json::to_vec(&serde_json::json!([
                 1,
                 logical,
@@ -136,7 +140,12 @@ pub(super) fn index(r: rel::Ring) -> usize {
         rel::Ring::Production => 2,
     }
 }
-async fn compile(tenant: TenantId, logical: &str, config: SourceConfig) -> Result<Binding> {
+async fn compile(
+    tenant: TenantId,
+    logical: &str,
+    config: SourceConfig,
+    credentials: &dyn crate::Credentials,
+) -> Result<Binding> {
     let (driver, physical, configuration) = match config {
         SourceConfig::Winget(c) => {
             let physical = super::artifact::checked_url(&c.base)?.to_string();
@@ -153,10 +162,7 @@ async fn compile(tenant: TenantId, logical: &str, config: SourceConfig) -> Resul
                     .with_root_certificate(ca)
                     .map_err(|cause| Error::Input.context("config::compile", cause))?;
             }
-            let token = crate::config::secret(&c.credential_file)
-                .map_err(|cause| Error::Identity.context("config::compile", cause))?;
-            let access = winget::WriteAccess::new(tenant, logical, &c.credential_reference, &token)
-                .map_err(|cause| Error::Identity.context("config::compile", cause))?;
+            let access = credentials.winget(tenant, logical, &c.credential_reference)?;
             let configuration = serde_json::to_vec(&serde_json::json!([
                 1,
                 "winget",

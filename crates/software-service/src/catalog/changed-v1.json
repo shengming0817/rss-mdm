@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["v","key","operation","state"],"properties":{"v":{"const":1},"key":{"type":"string","maxLength":1024},"operation":{"type":"string","format":"uuid"},"state":{"type":"object"}}}

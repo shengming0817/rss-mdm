@@ -1,10 +1,50 @@
 # 资源与软件发布
 
-Resource 持有不可变 software/script/configuration 版本，Policy 引用意图，软件发布持有审批、外部提交与对账事实。Script 执行见 [企业任务](enterprise-tasks.md)。公共类型、编码与预算以 crate rustdoc 为准。
+Resource 持有不可变 software/script/configuration 版本，Policy 引用意图，企业目录持有来源/版本准入，外部软件发布分别持有发布审批、提交与对账事实。Script 执行见 [企业任务](enterprise-tasks.md)。公共类型、编码与预算以 crate rustdoc 为准。
 
 版本标签是精确身份，不按 SemVer 推断顺序；同版本不能更换字节。激活与弃用改变生命周期而不改内容，归档要求真实引用检查并保留历史。声明产物摘要不证明实际对象存在，提交前必须核对实际长度与摘要。
 
-## 审批、发布与恢复
+## 企业目录与批准
+
+私有 MSI、PKG 和 RSS Bundle 直接创建 Resource.Software；无需伪造 WinGet/Brew 清单。软件声明只有 `definition`，完整数据类型见 `rss-mdm-resource::SoftwareSpec`。旧 install/detect/uninstall 标识字段与旧软件持久编码已删除，无历史导入或双格式读取。
+
+定义冻结精确来源快照、包与版本、平台/架构变体、安装/卸载/检测、解释器、执行身份、字面参数/环境、预算、重启/降级/所有权策略、精确依赖及所有产物长度/SHA-256。软件版本是生态原文，不解析 latest 或隐式 SemVer 范围。辅助脚本及 Brew source/bottle/dependency 产物也必须进入 Resource 定义；发布请求不能额外注入未冻结内容。
+
+管理写操作使用 `operationId`、`expectedRevision` 和 `input`；同 operation 重放同一请求，改内容冲突。以下路径均位于 `/api/v3`：
+
+| 路径 | 行为与权限 |
+|---|---|
+| `/software/sources/{id}/revisions/{revision}` | GET 读取；POST `register`（SoftwareWrite）、`approve`（SoftwareApprove）、`withdraw`（SoftwareWithdraw） |
+| `/software/resources/{id}/versions/{version}` | GET 读取准入；POST `approve` / `withdraw`，分别需要 SoftwareApprove / SoftwareWithdraw |
+| `/software/resources/{id}/versions/{version}/content` | SoftwareRead 读取当前已准入的精确变体内容；查询参数为 platform、architecture、variant，可指定 artifact 引用 |
+
+读取源与版本准入需要 SoftwareRead。源注册体为 `definition: {id, revision, kind, location, publishers}`；kind 为 private/winget/brew，private 的 location 为 null，WinGet 为固定 HTTPS 源地址，Brew 为完整 owner/tap。注册返回 `snapshot`，原样进入 SoftwareSpec.source。源定义不可换写，批准或撤回只更新准入状态；变更来源内容须新 revision。批准/撤回必须提供非空 `evidence` 数组。
+
+先批准来源，创建完整 Resource 版本并上传全部产物，再批准该版本。版本批准核对所有变体、来源、产物、检测及有限依赖；Resource.Active 和外部 Published 均不能代替批准。内部批准不强制外部三环；分配和灰度归 #2470。撤回阻断新的安装准入，不隐式卸载；历史操作回执、旧 attempt 及未知事实继续保留。查询或重放旧批准回执不重新产生当前准入。
+
+## 内容上传、续传与镜像
+
+内容配置与签名分离，配置示例和清理规则见[企业任务](enterprise-tasks.md)。以下资源路径均位于 `/api/v3/resources/{id}`，需要 ResourceWrite，并逐次重新核对当前授权和不可变资源版本：
+
+- `POST /content?version=...&variant=...&platform=...&architecture=...&operation=<UUID>` 流式上传完整产物；多产物软件用 `artifact=<reference>` 指定成员。
+- `POST /uploads/{uploadId}` 携带相同选择参数，建立绑定当前主体、版本摘要及产物的恢复会话。
+- `GET /uploads/{uploadId}` 查询已确认 offset；`PATCH /uploads/{uploadId}?offset=N` 顺序追加字节，错 offset 返回 409 和当前 offset。
+- `POST /uploads/{uploadId}/complete` 验证完整长度/hash、原子发布并提交引用、审计及 Outbox；重复完成保持原身份。
+- `GET /content/operations/{operationId}` 使用 ResourceRead 查询持久绑定回执，上传临时会话过期后仍可核实原操作。暂时查不到不构成提交失败证明。
+
+文件存在不表示数据库已提交，更不表示软件已批准。CommitUnknown 后保留 operationId 并查询/重放；不得换键掩盖未知结果。下载支持单段 Range、ETag、If-Range 和 416；每个新请求重新授权。审计记录授权读取，不证明客户端完整接收；客户端仍需校验最终长度/hash。
+
+外部导入也使用 Resource.Software，产物可声明不可变 `origin`。`content.imports` 按来源 ID 配置允许的 origin 列表，每项为 `{base, addresses, private_ca}`，沿用受控 HTTPS、固定解析地址、CA 验证、无代理/重定向/凭据转发规则。来源批准后，通过 `POST /content/mirror` 携带与上传相同的选择参数及 operation，只镜像选定产物；同一次流读取完成校验和落盘，不扫描或全量镜像生态。绑定提交前再次核对当前来源批准及精确快照；下载期间撤回来源会拒绝绑定，恢复后使用原 operation 重试。此配置不依赖外部 publication 的三环装配。
+
+## RSS Bundle
+
+一个平台、一个架构对应一个 ZIP。`SoftwareSpec.bundle` 是完整 manifest，ZIP 内 `manifest.json` 使用该结构的规范紧凑 JSON 字节；字段格式以 Resource serde 类型为准。`entries` 明确每个非 manifest 成员的路径、未压缩长度和 SHA-256。
+
+Windows 固定 `install.ps1`，macOS 固定 `install.sh`；仅声明卸载时要求 `uninstall.ps1` / `uninstall.sh`。必须有 MSI product、PKG receipt 或受控脚本检测，不能用安装 exit 0 代替检测。包内脚本和 payload 一同批准，不拆成 Script 资源。
+
+只接收普通文件、便携 ASCII 相对路径，以及 Stored/Deflate 压缩；拒绝路径穿越、设备名、大小写冲突、重复成员、符号链接、加密、未声明成员、重叠布局、尾随数据和预算超限。ZIP64 仍受相同数量与展开限制。服务端不执行包内脚本；平台解压、签名和执行检查仍由 Agent adapter 持有。
+
+## 外部发布审批与恢复
 
 按 Test → Pilot → Production 顺序，每环重新验证和审批。审批绑定完整平台包、所有变体、源配置、证据及发布者；实际主体来自当前会话，默认禁止同一主体审批并发布。后台源驱动身份不能充当管理员批准。
 
@@ -12,7 +52,7 @@ Resource 持有不可变 software/script/configuration 版本，Policy 引用意
 
 撤回先明确发布结果，再对账删除。查询不到暂时结果不等于未发布，WinGet 删除结果未知不能盲目重发。完成撤回不代表客户端卸载或缓存失效；重新发布须新候选、重新审批，并核对同版本字节与旧尝试竞争。
 
-PG 组合借用同一 runtime/tenant 事务，业务拒绝必须处理，存储错误传播以回滚；状态、回执与 Outbox 原子提交。最外层事务先声明完整 Outbox 分区再取得业务锁。CommitUnknown/RollbackFailed 保留原操作身份，不能借重连换键。
+外部 publication 的业务/SQL/恢复位于 software-service，宿主注入凭据和事务内审计；发布配置按来源提供 `credentials: {credentialReference: secretFile}`，源自身只保存 credential_reference。PG 组合借用同一 runtime/tenant 事务，业务拒绝必须处理，存储错误传播以回滚；状态、回执与 Outbox 原子提交。最外层事务先声明完整 Outbox 分区再取得业务锁。CommitUnknown/RollbackFailed 保留原操作身份，不能借重连换键。
 
 ## 产物与网络
 

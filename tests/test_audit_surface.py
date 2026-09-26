@@ -1,9 +1,14 @@
 """Exact production action declarations and their source ownership."""
 from pathlib import Path
 import re
+import os
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1] / "crates/app/src"
+SERVICE = ROOT.parents[1] / "software-service/src"
+def production_paths():
+    return [*ROOT.rglob("*.rs"), *SERVICE.rglob("*.rs")]
+
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
 OWNERS = {
     "compliance_write": "compliance/http.rs",
@@ -52,15 +57,15 @@ OWNERS = {
     "protected_request": "api.rs",
     "registration_bind": "device.rs",
     "registration_read": "api.rs",
-    "software_binding": "software_publication/storage.rs",
-    "software_candidate": "software_publication/service.rs",
-    "software_validate": "software_publication/service.rs",
-    "software_approve": "software_publication/service.rs",
-    "software_authorize": "software_publication/service.rs",
-    "software_call": "software_publication/driver.rs",
-    "software_preflight": "software_publication/driver.rs",
-    "software_result": "software_publication/driver.rs",
-    "software_withdraw": "software_publication/driver.rs",
+    "software_binding": "../../software-service/src/publication/storage.rs",
+    "software_candidate": "../../software-service/src/publication/service.rs",
+    "software_validate": "../../software-service/src/publication/service.rs",
+    "software_approve": "../../software-service/src/publication/service.rs",
+    "software_authorize": "../../software-service/src/publication/service.rs",
+    "software_call": "../../software-service/src/publication/driver.rs",
+    "software_preflight": "../../software-service/src/publication/driver.rs",
+    "software_result": "../../software-service/src/publication/driver.rs",
+    "software_withdraw": "../../software-service/src/publication/driver.rs",
     "windows_discovery": "api.rs",
     "windows_management": "api.rs",
     "windows_policy": "api.rs",
@@ -130,7 +135,7 @@ DECLARATIONS = {
     ('management_read', 'execution/recovery.rs'),
     ('management_read', 'planning/http.rs'),
     ('management_read', 'software_publication/http.rs'),
-    ('management_write', 'task_content/http.rs'),
+    ('management_write', 'content/http.rs'),
     ('management_write', 'execution/actions/recovery.rs'),
     ('management_write', 'execution/recovery.rs'),
     ('management_write', 'assets/http.rs'),
@@ -143,16 +148,16 @@ DECLARATIONS = {
     ('protected_request', 'native/mod.rs'),
     ('registration_bind', 'device.rs'),
     ('registration_read', 'api.rs'),
-    ('software_approve', 'software_publication/service.rs'),
-    ('software_authorize', 'software_publication/service.rs'),
-    ('software_binding', 'software_publication/storage.rs'),
-    ('software_call', 'software_publication/driver.rs'),
-    ('software_candidate', 'software_publication/service.rs'),
+    ('software_approve', '../../software-service/src/publication/service.rs'),
+    ('software_authorize', '../../software-service/src/publication/service.rs'),
+    ('software_binding', '../../software-service/src/publication/storage.rs'),
+    ('software_call', '../../software-service/src/publication/driver.rs'),
+    ('software_candidate', '../../software-service/src/publication/service.rs'),
     ('software_preflight', 'software_publication/http.rs'),
-    ('software_preflight', 'software_publication/driver.rs'),
-    ('software_result', 'software_publication/driver.rs'),
-    ('software_validate', 'software_publication/service.rs'),
-    ('software_withdraw', 'software_publication/driver.rs'),
+    ('software_preflight', '../../software-service/src/publication/driver.rs'),
+    ('software_result', '../../software-service/src/publication/driver.rs'),
+    ('software_validate', '../../software-service/src/publication/service.rs'),
+    ('software_withdraw', '../../software-service/src/publication/driver.rs'),
     ('windows_discovery', 'api.rs'),
     ('windows_management', 'api.rs'),
     ('windows_management', 'native/mod.rs'),
@@ -163,6 +168,8 @@ DECLARATIONS = {
     ('command_read', 'flow/actions_http.rs'),
 }
 
+
+DECLARATIONS.update({('management_read','software_catalog.rs'),('management_read','content/http.rs'),('management_write','software_catalog.rs')})
 
 def arguments(source, start):
     """Read one Rust call's arguments, respecting nested delimiters and quoted strings."""
@@ -196,7 +203,7 @@ def declared_actions():
     calls = {"RequestAudit::new": 1, ".operation": 1, ".set_action": 0,
              "db::fact": 3, ".transition_audited": 3}
     result = set()
-    for path in ROOT.rglob("*.rs"):
+    for path in production_paths():
         if "test" in path.stem or "fixture" in path.stem or any(
                 part in ("tests", "identity_t2") for part in path.parts):
             continue
@@ -205,13 +212,13 @@ def declared_actions():
             for match in re.finditer(re.escape(call) + r"\s*\(", source):
                 args = arguments(source, match.end())
                 if len(args) > index:
-                    result.update((action, str(path.relative_to(ROOT))) for action in re.findall(r'"([a-z_]+)"', args[index]))
+                    result.update((action, os.path.relpath(path, ROOT)) for action in re.findall(r'"([a-z_]+)"', args[index]))
     for name, start, end in [("api.rs", "fn route_action", "pub(crate) async fn envelope"),
                               ("native/mod.rs", "const fn audit_action", "pub(crate) fn")]:
         source = (ROOT / name).read_text().split(start, 1)[1].split(end, 1)[0]
         result.update((action, name) for action in re.findall(r'"([a-z_]+)"', source))
     # These two labels are selected inside product dispatch, not passed literally to a call.
-    for action, name in [("software_binding", "software_publication/storage.rs"),
+    for action, name in [("software_binding", "../../software-service/src/publication/storage.rs"),
                          ("automation_completed", "automation/jobs.rs")]:
         if '"' + action + '"' in (ROOT / name).read_text():
             result.add((action, name))
@@ -236,10 +243,10 @@ class AuditSurface(unittest.TestCase):
 
 class PrincipalBindingBoundary(unittest.TestCase):
     def test_browser_and_native_producers_use_authorization_owner(self):
-        owners = {'authorization/context.rs', 'authorization/store.rs', 'software_publication/storage.rs'}
+        owners = {'authorization/context.rs', 'authorization/store.rs', '../../software-service/src/publication/storage.rs'}
         actual = set()
-        for path in ROOT.rglob('*.rs'):
-            relative = path.relative_to(ROOT).as_posix()
+        for path in production_paths():
+            relative = os.path.relpath(path, ROOT)
             if 'tests' in relative or 'identity_fixture' in relative or 'identity_t2' in relative:
                 continue
             source = path.read_text().split('#[cfg(test)]\nmod tests')[0]
