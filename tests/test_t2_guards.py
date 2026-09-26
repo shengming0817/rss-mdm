@@ -45,5 +45,5 @@ with tempfile.TemporaryDirectory() as directory:
    if str(e)!='rejected migrator performed DDL':raise SystemExit('wrong failure classification')
   else:raise SystemExit('unsafe installation passed')
 '''
-        result=subprocess.run([sys.executable,'-O','-c',code],cwd=ROOT,env={**os.environ,'PYTHONOPTIMIZE':'1'},capture_output=True,text=True)
+        result=subprocess.run([sys.executable,'-O','-c',code],cwd=ROOT,env={**{k:v for k,v in os.environ.items() if not k.startswith('_MDM_')},'PYTHONOPTIMIZE':'1'},capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)

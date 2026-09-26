@@ -13,6 +13,8 @@ import tempfile
 import time
 import uuid
 
+from build_run import lease_fds, require_lease
+
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = json.loads((ROOT / "deployment/providers.lock.json").read_text())["postgres"]
 
@@ -20,7 +22,7 @@ def require(condition,message):
     if not condition:raise RuntimeError(message)
 
 def run(args, **kw):
-    return subprocess.run(args, check=True, text=True, **kw)
+    return subprocess.run(args, pass_fds=lease_fds(), check=True, text=True, **kw)
 
 def verify_exact_result(output, selected):
     passed = re.findall(r'^test (\S+) \.\.\. ok$', output, re.MULTILINE)
@@ -31,7 +33,7 @@ def run_exact_test(env, selected, integration=False):
     args = ["cargo", "test", "--locked", "-p", "rss-mdm-app"]
     if integration: args += ["--features", "integration"]
     args += ["--lib", selected, "--", "--ignored", "--exact", "--test-threads=1"]
-    result = subprocess.run(args, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(args, pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     print(result.stdout, flush=True)
     require(result.returncode == 0, 'T2 failed: ' + selected)
     verify_exact_result(result.stdout, selected)
@@ -53,7 +55,7 @@ def verify_migrations(container, binary, config, root, env):
     def sql(statement):
         return run(["docker", "exec", "-i", container, "psql", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=statement, capture_output=True, timeout=10).stdout.strip()
     def migrate(path=config, accepted=True):
-        result = subprocess.run([binary,"migrate","--config",str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=70)
+        result = subprocess.run([binary,"migrate","--config",str(path)],pass_fds=lease_fds(), cwd=ROOT,env=env,capture_output=True,text=True,timeout=70)
         if (result.returncode == 0) != accepted:
             raise RuntimeError("migration admission/ledger expectation failed: " + result.stderr)
     admin = json.loads(config.read_text())
@@ -79,7 +81,7 @@ def verify_migrations(container, binary, config, root, env):
         while sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=2346 AND granted") != "1":
             if time.monotonic()>deadline: raise RuntimeError("migration lock holder deadline")
             time.sleep(.1)
-        children=[subprocess.Popen([binary,"migrate","--config",str(config)],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(2)]
+        children=[subprocess.Popen([binary,"migrate","--config",str(config)],pass_fds=lease_fds(), cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(2)]
         deadline=time.monotonic()+5
         while sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=2346 AND NOT granted") != "2":
             if time.monotonic()>deadline: raise RuntimeError("concurrent migrators did not serialize")
@@ -103,7 +105,7 @@ def verify_startup_deadlines(binary, root, env):
     config['runtime_database']['password_file'] = str(root/'missing-runtime-password')
     invalid_runtime = root/'invalid-runtime.json'
     invalid_runtime.write_text(json.dumps(config)); invalid_runtime.chmod(0o600)
-    result = subprocess.run([binary, 'serve', '--config', str(invalid_runtime)], cwd=ROOT, env=env, capture_output=True, text=True, timeout=22)
+    result = subprocess.run([binary, 'serve', '--config', str(invalid_runtime)], pass_fds=lease_fds(), cwd=ROOT, env=env, capture_output=True, text=True, timeout=22)
     require(result.returncode != 0 and 'startup.runtime_database_configuration' in result.stderr,
             'runtime database input lost its startup stage: ' + result.stderr)
     config['runtime_database']['password_file'] = runtime_password
@@ -123,7 +125,7 @@ def verify_startup_deadlines(binary, root, env):
         config['identity']['database']['port']=stalled_port
         path=root/'stalled.json';path.write_text(json.dumps(config));path.chmod(0o600)
         start=time.monotonic()
-        result=subprocess.run([binary,'serve','--config',str(path)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
+        result=subprocess.run([binary,'serve','--config',str(path)],pass_fds=lease_fds(), cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
         verify(result,start,'startup.access_store')
     # Keep the same physical PG identity required by production configuration.
     # This table is probed only by Identity; the earlier product stores remain healthy.
@@ -139,7 +141,7 @@ def verify_startup_deadlines(binary, root, env):
             require(holder.poll() is None and time.monotonic()<end,'identity startup lock holder deadline')
             time.sleep(.1)
         start=time.monotonic()
-        child=subprocess.Popen([binary,'serve','--config',str(root/'runtime.json')],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        child=subprocess.Popen([binary,'serve','--config',str(root/'runtime.json')],pass_fds=lease_fds(), cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         end=time.monotonic()+8
         while sql("SELECT count(*) FROM pg_stat_activity WHERE usename='mdm_identity_runtime' AND wait_event_type='Lock'") != '1':
             require(child.poll() is None and time.monotonic()<end,'startup did not reach the blocked Identity probe')
@@ -173,11 +175,12 @@ def configure_identity(root, port, binary, env):
     password=write('account-password','Fixture-only-correct-horse-battery-2026!')
     for tenant in TENANTS:
         path=write('initialize.json',dict(database=maintenance,installation=installation(),tenant_id=tenant,principal_id=ADMIN,login='admin',password_file=password))
-        result=subprocess.run([binary,'initialize','--config',path],env=env,cwd=ROOT,text=True,capture_output=True,timeout=30)
+        result=subprocess.run([binary,'initialize','--config',path],pass_fds=lease_fds(), env=env,cwd=ROOT,text=True,capture_output=True,timeout=30)
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
 def main(task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False):
+    require_lease(ROOT)
     installation_only = sys.argv[1:] == ["--installation"]
     foundation_only = sys.argv[1:] == ["--foundation"]
     device_only = sys.argv[1:] == ["--device"]
@@ -232,7 +235,7 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
             run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="GRANT CREATE ON DATABASE mdm_installation,mdm_installation_tasks TO mdm_audit_owner,mdm_ledger_owner;", stdout=subprocess.DEVNULL, timeout=10)
-            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], cwd=ROOT, env=env, capture_output=True, text=True)
+            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], pass_fds=lease_fds(), cwd=ROOT, env=env, capture_output=True, text=True)
             print(upgrade.stdout, end='', flush=True)
             require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
             verify_migrations(name, migrators[0], migration_config, root, env)
@@ -250,7 +253,7 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 from apple_ca import running
                 from apple_oracle import running as oracle
                 with running(root, env), oracle(root, env):
-                    result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                    result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                     print(result.stdout,flush=True)
                     expected={'apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'}
                     passed=set(re.findall(r'^test (\S+) \.\.\. ok$',result.stdout,re.MULTILINE))
@@ -261,17 +264,17 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 run_foundation_tests(env)
                 return
             if task_only:
-                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
                 return
             if asset_only:
-                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 require(result.returncode==0 and 'test identity_t2::assets::asset_write_query_group_and_isolation ... ok' in result.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'asset Router/PG T2 failed')
                 return
             if command_only:
-                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')
                 diagnostics=[json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
@@ -294,11 +297,11 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
             if not device_only and not windows_only and not identity_only:
                 run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2", *sys.argv[1:]], cwd=ROOT, env=env)
                 run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
-            windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1","--skip","windows::tests::native_command_operations_and_observation"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1","--skip","windows::tests::native_command_operations_and_observation"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             print(windows.stdout,end='',flush=True)
             require(windows.returncode == 0, 'Windows T2 failed')
             verify_windows_result(windows.stdout)
-            collection=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","inventory_runtime::tests::durable_report_recovery_and_projection","--","--ignored","--nocapture","--test-threads=1"],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            collection=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","inventory_runtime::tests::durable_report_recovery_and_projection","--","--ignored","--nocapture","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             print(collection.stdout,end='',flush=True)
             require(collection.returncode == 0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in collection.stdout, 'collection recovery T2 did not execute successfully')
             require('"event":"mdm_inventory_failure"' in collection.stdout and '"phase":"projection_run"' in collection.stdout,

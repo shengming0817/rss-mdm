@@ -3,6 +3,8 @@
 import argparse,contextlib,json,os,re,subprocess,sys,tempfile,time,uuid
 from pathlib import Path
 from t2 import IMAGE,run,require
+from build_run import lease_fds, require_lease
+
 ROOT=Path(__file__).resolve().parents[1]
 NAMES=('policy','resource','software-release')
 SCHEMAS=('mdm_policy','mdm_resource','mdm_software_release')
@@ -64,6 +66,7 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
             yield dict(os.environ,BACKEND_PG_CONFIG=str(config)),sql
         finally:subprocess.run(['docker','rm','-f',name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20)
 def main():
+    require_lease(ROOT)
     parser=argparse.ArgumentParser();parser.add_argument('--write-catalogs',action='store_true');parser.add_argument('--serve',action='store_true');parser.add_argument('--app',action='store_true');args=parser.parse_args()
     with fixture(write_catalogs=args.write_catalogs,app=args.app) as(env,sql):
         if args.serve:
@@ -74,7 +77,7 @@ def main():
             suites=[('behavior',BEHAVIORS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]
             if name=='policy': suites.append(('candidates',{'paged_candidate_save_preserves_execution_facts_and_source_invalidation'}))
             for target,expected in suites:
-                result=subprocess.run(['cargo','test','--locked','-p',f'rss-mdm-{name}-postgres','--features','integration','--test',target,'--','--ignored','--test-threads=1'],cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                result=subprocess.run(['cargo','test','--locked','-p',f'rss-mdm-{name}-postgres','--features','integration','--test',target,'--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 try:
                     require(result.returncode==0,'PG suite failed');verify_tests(result.stdout,expected)

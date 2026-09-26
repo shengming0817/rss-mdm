@@ -8,7 +8,7 @@ CI 直接验证当前工作区，不要求预先提交、clean HEAD 或冷构建
 
 选中 Rust 包后检查当前 normal/all-features metadata 与依赖来源、必要 T1/T2；不克隆独立消费者、不重新打包逐 crate、不另起隔离冷构建或百万容量脚手架。功能预算边界仍用小输入或算术边界验证；规模与性能承诺须另立有场景的验证任务。
 
-Make 默认缓存行为由 Makefile/hack 持有。需要隔离 worktree 产物时显式设置 CARGO_TARGET_DIR/SCCACHE_DIR；本次规则不改变默认缓存布局。缓存与工具链记录是诊断信息，不是通过证明。
+Make 的正式构建、测试与 CI 由统一启动器持有 worktree/target 独占租约；显式 target 和关闭池只改变目录选择，不关闭租约。正式 CI/T2 脚本拒绝无租约执行，ci-plan 仅预览。配置、直接 Cargo 边界及故障恢复见[本地开发](../guides/local-development.md#构建槽位与缓存)。缓存与工具链记录是诊断信息，不是通过证明。
 
 artifacts/local-ci 中 selection/result 记录选中 gate、命令及 passed/failed/skipped；skipped 不表示通过，affected 不称为全量。计划不覆盖正式结果，正式执行清理本入口自有旧记录。源码版本、lock 与工具链可作普通运行记录，不作“干净提交”准入。
 

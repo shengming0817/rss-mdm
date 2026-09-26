@@ -5,6 +5,8 @@ import copy
 import tempfile
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hack"))
+
 spec = importlib.util.spec_from_file_location("local_ci", Path(__file__).resolve().parents[1] / "hack/ci.py")
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
@@ -13,7 +15,7 @@ sys.path.insert(0, str(ci.ROOT / "hack"))
 class DependencyPolicy(unittest.TestCase):
     def test_t2_umbrella_runs_enterprise_tasks(self):
         lines=(ci.ROOT/'Makefile').read_text().splitlines()
-        start=lines.index('t2:')+1
+        start=lines.index('_t2:')+1
         recipe=[]
         for line in lines[start:]:
             if not line.startswith('\t'):
@@ -157,6 +159,28 @@ class AdvisoryPolicy(unittest.TestCase):
 
 
 class WorkingTreeStability(unittest.TestCase):
+    def test_access_time_is_not_a_source_change(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
+            source = root / 'source.rs'; source.write_text('unchanged')
+            original = Path.lstat
+            calls = 0
+            def accessed(path, *args, **kwargs):
+                nonlocal calls
+                value = original(path, *args, **kwargs)
+                if path != source:
+                    return value
+                calls += 1
+                fields = {name: getattr(value, name) for name in dir(value) if name.startswith('st_')}
+                fields['st_atime_ns'] += calls
+                return SimpleNamespace(**fields)
+            with mock.patch.object(ci, 'ROOT', root), mock.patch.object(Path, 'lstat', accessed):
+                self.assertEqual(ci.working_source_state(), ci.working_source_state())
+
     def test_ci_accepts_stable_dirty_inputs(self):
         self.run_ci_with_edit(False)
 
@@ -179,7 +203,7 @@ class WorkingTreeStability(unittest.TestCase):
                     source.write_text('after')
                 return subprocess.CompletedProcess(args, 0, 'revision')
             selection = {'full': False, 'packages': []}
-            with mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'identity_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN':'0'}):
+            with mock.patch.object(ci, "require_lease"), mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'identity_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN':'0'}):
                 self.assertEqual(ci.main(), int(edit))
             result = json.loads((root / 'artifacts/result.json').read_text())
             self.assertEqual(result['gates']['source-stability'], 'failed' if edit else 'passed')
