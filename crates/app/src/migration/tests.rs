@@ -12,6 +12,7 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
             .ssl_root_cert(std::env::var("PG_CA_FILE")?);
         let installation = Installation {
+            audit_mode: AuditMode::Plain,
             instance_id: crate::identity_fixture::INSTANCE.into(),
             target: [1; 16],
             lineage: [2; 16],
@@ -26,10 +27,11 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
                 .await?;
         ensure!(before.len() == units().len() && before.iter().all(|r| r.2));
         migrate_on(&mut owner, &installation).await?;
-        for field in ["instance_id", "target", "tenants"] {
+        for field in ["instance_id", "target", "tenants", "audit_mode"] {
             let mut changed = installation.configuration();
             changed[field] = match field {
                 "instance_id" => serde_json::json!("55555555-5555-4555-8555-555555555555"),
+                "audit_mode" => serde_json::json!("ledger"),
                 "target" => serde_json::json!(vec![3; 16]),
                 _ => serde_json::json!(["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]),
             };

@@ -29,7 +29,7 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 `migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 和 audit worker 权限，脚本成功不代表角色准入成功。
 
-迁移输入含 database 和 installation；installation 固定 instance_id、target、lineage、epoch 和所有租户。初始化输入另含 tenant_id、principal_id、login、password_file；通过组件维护接口初始化，日常账户与 IdP 管理使用受保护公共 HTTP 接口。
+迁移输入含 database 和 installation；installation 固定 instance_id、target、lineage、epoch、所有租户及 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装按该模式授予 Identity audit worker 权限；Plain 不授予 Ledger 权限，Ledger 仅授予公开追加与验证所需权限。模式纳入安装记录，重放不得改变。初始化输入另含 tenant_id、principal_id、login、password_file；通过组件维护接口初始化，日常账户与 IdP 管理使用受保护公共 HTTP 接口。
 
 ~~~sh
 docker load --input server.oci.tar

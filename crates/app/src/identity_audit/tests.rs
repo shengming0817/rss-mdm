@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -48,6 +48,11 @@ async fn exercise(ledger: bool) -> Result<()> {
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let installation = crate::migration::Installation {
+        audit_mode: if ledger {
+            crate::migration::AuditMode::Ledger
+        } else {
+            crate::migration::AuditMode::Plain
+        },
         instance_id: crate::identity_fixture::INSTANCE.into(),
         target: [1; 16],
         lineage: [2; 16],
@@ -121,6 +126,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         .max_connections(3)
         .connect_with(admin_options.clone().database(&database))
         .await?;
+    verify_ledger_privileges(&config, &observer, &options, &installation, ledger).await?;
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records")
         .fetch_one(&observer)
         .await?;
@@ -204,6 +210,104 @@ async fn exercise(ledger: bool) -> Result<()> {
     administrator.close().await?;
     Ok(())
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "real PostgreSQL privilege matrix keeps grant/reject/revoke cases together"
+)]
+async fn verify_ledger_privileges(
+    config: &Config,
+    observer: &PgPool,
+    options: &PgConnectOptions,
+    installation: &crate::migration::Installation,
+    ledger: bool,
+) -> Result<()> {
+    let mut worker_connection =
+        PgConnection::connect_with(&config.identity.audit_worker.options()?).await?;
+    verify_profile(&mut worker_connection, config.audit.mode())
+        .await
+        .context("worker privilege baseline")?;
+    worker_connection.close().await?;
+    for (grant, revoke) in [
+        (
+            "GRANT CREATE ON SCHEMA rss_ledger TO mdm_identity_audit",
+            "REVOKE CREATE ON SCHEMA rss_ledger FROM mdm_identity_audit",
+        ),
+        (
+            "GRANT INSERT ON rss_ledger.entries TO mdm_identity_audit",
+            "REVOKE INSERT ON rss_ledger.entries FROM mdm_identity_audit",
+        ),
+        (
+            "GRANT UPDATE(tag) ON rss_ledger.entries TO mdm_identity_audit",
+            "REVOKE UPDATE(tag) ON rss_ledger.entries FROM mdm_identity_audit",
+        ),
+        (
+            "CREATE ROLE audit_set_only NOLOGIN; GRANT audit_set_only TO mdm_identity_audit WITH INHERIT FALSE; GRANT DELETE ON rss_ledger.entries TO audit_set_only",
+            "REVOKE DELETE ON rss_ledger.entries FROM audit_set_only; REVOKE audit_set_only FROM mdm_identity_audit; DROP ROLE audit_set_only",
+        ),
+        (
+            "GRANT INSERT ON rss_ledger.entries TO PUBLIC",
+            "REVOKE INSERT ON rss_ledger.entries FROM PUBLIC",
+        ),
+        (
+            "CREATE FUNCTION rss_ledger.unexpected() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
+            "DROP FUNCTION rss_ledger.unexpected()",
+        ),
+    ] {
+        sqlx::raw_sql(grant).execute(observer).await?;
+        rejected(config)
+            .await
+            .with_context(|| format!("worker accepted {grant}"))?;
+        ensure!(
+            crate::migration::migrate(options, installation)
+                .await
+                .is_err(),
+            "installer accepted {grant}"
+        );
+        sqlx::raw_sql(revoke).execute(observer).await?;
+    }
+    if !ledger {
+        for (grant, revoke) in [
+            (
+                "GRANT USAGE ON SCHEMA rss_ledger TO mdm_identity_audit",
+                "REVOKE USAGE ON SCHEMA rss_ledger FROM mdm_identity_audit",
+            ),
+            (
+                "GRANT SELECT ON rss_ledger.entries TO mdm_identity_audit",
+                "REVOKE SELECT ON rss_ledger.entries FROM mdm_identity_audit",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) TO mdm_identity_audit",
+                "REVOKE EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) FROM mdm_identity_audit",
+            ),
+        ] {
+            sqlx::raw_sql(grant).execute(observer).await?;
+            rejected(config).await?;
+            ensure!(
+                crate::migration::migrate(options, installation)
+                    .await
+                    .is_err()
+            );
+            sqlx::raw_sql(revoke).execute(observer).await?;
+        }
+    }
+    crate::migration::migrate(options, installation).await?;
+    let mut transaction = observer.begin().await?;
+    sqlx::raw_sql("SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog")
+        .execute(&mut *transaction)
+        .await?;
+    let actual: String = sqlx::query_scalar(include_str!("../execution/dependencies.sql"))
+        .fetch_one(&mut *transaction)
+        .await?;
+    ensure!(
+        serde_json::from_str::<serde_json::Value>(&actual)?
+            == serde_json::from_str::<serde_json::Value>(include_str!(
+                "../execution/dependencies.json"
+            ))?,
+        "command dependency admission must support both audit modes"
+    );
+    transaction.rollback().await?;
+    Ok(())
+}
 async fn rejected(config: &Config) -> Result<()> {
     let mut resources = Vec::new();
     let result = Worker::open(config, Arc::default(), |r| resources.push(r)).await;
@@ -248,7 +352,7 @@ async fn run_worker(
         tokio::time::timeout(Duration::from_secs(30), check)
             .await
             .map_err(std::io::Error::other)?
-            .map_err(|_| std::io::Error::other("worker verification failed"))
+            .map_err(std::io::Error::other)
     };
     let outcome = scope
         .drive(
@@ -266,6 +370,9 @@ async fn run_worker(
             signal,
         )
         .await?;
+    if let ScopeExit::StopRequested(Err(error)) = outcome.exit() {
+        return Err(anyhow::anyhow!("worker verification: {error}"));
+    }
     ensure!(matches!(outcome.exit(), ScopeExit::StopRequested(Ok(()))));
     ensure!(outcome.shutdown().is_ok());
     ensure!(!readiness.ready());
@@ -359,4 +466,29 @@ fn fenced_progress_is_terminal_even_when_other_events_succeeded() {
     assert_eq!(should_wait(1, 1, 0), Ok(true));
     assert_eq!(should_wait(1, 0, 0), Ok(false));
     assert_eq!(should_wait(0, 0, 0), Ok(true));
+}
+
+#[test]
+fn retry_backoff_empty_polls_do_not_restore_health() {
+    let readiness = Readiness::default();
+    readiness.progress(0, 0);
+    assert!(readiness.healthy.load(Ordering::Acquire));
+    readiness.progress(1, 1);
+    readiness.transient_failure();
+    for _ in 0..3 {
+        readiness.progress(0, 0);
+        assert!(!readiness.healthy.load(Ordering::Acquire));
+    }
+    readiness.progress(1, 0);
+    assert!(readiness.healthy.load(Ordering::Acquire));
+}
+
+#[test]
+fn empty_success_recovers_claim_failure_without_a_pending_retry() {
+    let readiness = Readiness::default();
+    readiness.progress(0, 0);
+    readiness.transient_failure();
+    assert!(!readiness.healthy.load(Ordering::Acquire));
+    readiness.progress(0, 0);
+    assert!(readiness.healthy.load(Ordering::Acquire));
 }

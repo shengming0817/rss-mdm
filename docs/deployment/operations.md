@@ -50,7 +50,7 @@ relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 
 
 `identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多一条，有进展时继续；空闲或暂时失败后一秒再试。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
 
-组件日志 `component=identity-audit` 中的 `transactional_messaging.outbox.*` 提供发布、重试和租约信息；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时故障或重试中的批次令 readiness 为 false，后续成功轮次恢复；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
+组件日志 `component=identity-audit` 中的 `transactional_messaging.outbox.*` 提供发布、重试和租约信息；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障令 readiness 为 false，后续成功轮询可恢复。若已有事件报告重试，则保持不就绪，直到实际领取并成功处理事件；退避中的空轮询不恢复就绪，初始空闲仍可就绪；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
 
 只读查询示例（psql 的 `tenant_id` 变量由已授权操作员提供）：
 

@@ -43,13 +43,11 @@ pub(super) async fn checkin(
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
     let operation_control = budget.operation_control();
     let attempt = app
         .audit_store
         .execute_with_operation(
             principal.tenant(),
-            &control,
             &operation_control,
             (
                 &app.audit_store,

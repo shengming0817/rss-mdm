@@ -7,18 +7,38 @@ use tokio_util::sync::CancellationToken;
 
 /// Borrow one timer domain, absolute work deadline and cancellation source.
 /// This guards only the borrowed product callback; it cannot begin or settle a transaction.
-pub struct OperationControl<'a, T> {
+/// Owner control is derived internally; callers cannot pair an independent control with this budget.
+/// ```compile_fail
+/// use rss_audit_postgres::Control;
+/// use rss_mdm_audit_integration::OperationBudget;
+/// use rss_request_context::{Deadline, ExecutionTimer};
+/// use tokio_util::sync::CancellationToken;
+/// fn mismatched<T: ExecutionTimer>(timer: &T, owner: Control<'_, T>, cutoff: Deadline, token: &CancellationToken) {
+///     let _ = OperationBudget::new(timer, owner, cutoff, token);
+/// }
+/// ```
+pub struct OperationBudget<'a, T> {
     timer: &'a T,
     deadline: Deadline,
+    total: Deadline,
     cancel: &'a CancellationToken,
 }
-impl<'a, T: ExecutionTimer> OperationControl<'a, T> {
-    pub const fn new(timer: &'a T, deadline: Deadline, cancel: &'a CancellationToken) -> Self {
+impl<'a, T: ExecutionTimer> OperationBudget<'a, T> {
+    pub fn new(
+        timer: &'a T,
+        total: Deadline,
+        deadline: Deadline,
+        cancel: &'a CancellationToken,
+    ) -> Self {
         Self {
             timer,
-            deadline,
+            deadline: deadline.shortened_to(total.instant()),
+            total,
             cancel,
         }
+    }
+    pub(crate) fn owner(&self) -> rss_audit_postgres::Control<'_, T> {
+        rss_audit_postgres::Control::new(self.timer, self.total, self.cancel)
     }
     pub fn remaining(&self) -> Duration {
         self.deadline
@@ -36,15 +56,9 @@ impl<'a, T: ExecutionTimer> OperationControl<'a, T> {
     }
     pub(crate) async fn run<R, E: From<Error>>(
         &self,
-        total: &rss_audit_postgres::Control<'_, T>,
         work: impl Future<Output = Result<R, E>>,
     ) -> Result<R, E> {
-        // Observe before reading remaining total time, so this conversion cannot extend it.
-        let observed = self.timer.now();
-        let cap = observed
-            .checked_add(total.remaining())
-            .unwrap_or(self.deadline.instant());
-        let deadline = self.deadline.shortened_to(cap);
+        let deadline = self.deadline;
         self.check(deadline).map_err(E::from)?;
         tokio::select! {
             biased;
@@ -99,6 +113,24 @@ mod tests {
         }
     }
     #[test]
+    #[allow(clippy::disallowed_methods, reason = "manual clock fixture anchor")]
+    fn owner_cancellation_cannot_be_replaced_by_another_token() {
+        let timer = Manual {
+            now: Mutex::new(Instant::now()),
+            wake: AtomicWaker::new(),
+        };
+        let owner_cancel = CancellationToken::new();
+        let deadline = Deadline::from_timeout(&timer, Duration::from_secs(60)).unwrap();
+        let operation = OperationBudget::new(&timer, deadline, deadline, &owner_cancel);
+        owner_cancel.cancel();
+        assert!(matches!(
+            operation
+                .run(std::future::pending::<Result<(), Error>>())
+                .now_or_never(),
+            Some(Err(_))
+        ));
+    }
+    #[test]
     #[allow(
         clippy::disallowed_methods,
         reason = "fixture supplies one real anchor; execution advances only the injected manual clock"
@@ -115,10 +147,15 @@ mod tests {
             &cancel,
         );
         let deadline = Deadline::from_timeout(&timer, Duration::from_secs(6)).unwrap();
-        let control = OperationControl::new(&timer, deadline, &cancel);
+        let control = OperationBudget::new(
+            &timer,
+            Deadline::from_timeout(&timer, owner.remaining()).unwrap(),
+            deadline,
+            &cancel,
+        );
         timer.advance(Duration::from_secs(4)); // callback arrives late; no new relative budget
         assert_eq!(control.remaining(), Duration::from_secs(2));
-        let wait = control.run(&owner, std::future::pending::<Result<(), Error>>());
+        let wait = control.run(std::future::pending::<Result<(), Error>>());
         futures::pin_mut!(wait);
         assert!(wait.as_mut().now_or_never().is_none());
         timer.advance(Duration::from_secs(2));
@@ -129,14 +166,19 @@ mod tests {
             )))
         ));
         let ran = AtomicBool::new(false);
-        let result = futures::executor::block_on(control.run(&owner, async {
+        let result = futures::executor::block_on(control.run(async {
             ran.store(true, Ordering::Release);
             Ok::<_, Error>(())
         }));
         assert!(result.is_err() && !ran.load(Ordering::Acquire));
         let deadline = Deadline::from_timeout(&timer, Duration::from_secs(1)).unwrap();
-        let control = OperationControl::new(&timer, deadline, &cancel);
-        let wait = control.run(&owner, std::future::pending::<Result<(), Error>>());
+        let control = OperationBudget::new(
+            &timer,
+            Deadline::from_timeout(&timer, owner.remaining()).unwrap(),
+            deadline,
+            &cancel,
+        );
+        let wait = control.run(std::future::pending::<Result<(), Error>>());
         futures::pin_mut!(wait);
         assert!(wait.as_mut().now_or_never().is_none());
         cancel.cancel();
@@ -146,7 +188,7 @@ mod tests {
                 LocalTxDeadlineStage::Operation
             )))
         ));
-        let result = futures::executor::block_on(control.run(&owner, async {
+        let result = futures::executor::block_on(control.run(async {
             ran.store(true, Ordering::Release);
             Ok::<_, Error>(())
         }));
@@ -168,12 +210,13 @@ mod tests {
             Deadline::from_timeout(&timer, Duration::from_secs(2)).unwrap(),
             &cancel,
         );
-        let control = OperationControl::new(
+        let control = OperationBudget::new(
             &timer,
+            Deadline::from_timeout(&timer, owner.remaining()).unwrap(),
             Deadline::from_timeout(&timer, Duration::from_secs(10)).unwrap(),
             &cancel,
         );
-        let wait = control.run(&owner, std::future::pending::<Result<(), Error>>());
+        let wait = control.run(std::future::pending::<Result<(), Error>>());
         futures::pin_mut!(wait);
         assert!(wait.as_mut().now_or_never().is_none());
         timer.advance(Duration::from_secs(2));
@@ -185,7 +228,7 @@ mod tests {
         ));
         let ran = AtomicBool::new(false);
         assert!(
-            futures::executor::block_on(control.run(&owner, async {
+            futures::executor::block_on(control.run(async {
                 ran.store(true, Ordering::Release);
                 Ok::<_, Error>(())
             }))

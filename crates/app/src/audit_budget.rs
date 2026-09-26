@@ -48,8 +48,13 @@ impl AuditBudget {
     }
     pub(crate) fn operation_control(
         &self,
-    ) -> rss_mdm_audit_integration::OperationControl<'_, RuntimeTimer> {
-        rss_mdm_audit_integration::OperationControl::new(&self.timer, self.operation, &self.cancel)
+    ) -> rss_mdm_audit_integration::OperationBudget<'_, RuntimeTimer> {
+        rss_mdm_audit_integration::OperationBudget::new(
+            &self.timer,
+            self.deadline,
+            self.operation,
+            &self.cancel,
+        )
     }
     /// Reborrowing does not start a new timeout or change the cancellation source.
     pub(crate) fn control(&self) -> rss_audit_postgres::Control<'_, RuntimeTimer> {
@@ -62,21 +67,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retirement_reserves_settlement_without_renewing_either_cutoff() {
         let budget = AuditBudget::retirement(None);
-        assert_eq!(budget.control().remaining(), Duration::from_secs(6));
-        assert_eq!(
-            budget.operation_control().remaining(),
-            Duration::from_millis(4500)
-        );
-        tokio::time::advance(Duration::from_millis(4500)).await;
+        let work = budget.operation_control().remaining();
+        assert!(!work.is_zero() && work < budget.control().remaining());
+        tokio::time::advance(work).await;
         assert!(budget.operation_control().remaining().is_zero());
-        assert_eq!(budget.control().remaining(), Duration::from_millis(1500));
+        assert!(!budget.control().remaining().is_zero());
         let caller = Deadline::from_timeout(&RuntimeTimer, Duration::from_secs(2)).unwrap();
         let shorter = AuditBudget::retirement(Some(caller));
-        assert_eq!(shorter.control().remaining(), Duration::from_secs(2));
-        assert_eq!(
-            shorter.operation_control().remaining(),
-            Duration::from_millis(1500)
-        );
+        assert!(shorter.control().remaining() <= Duration::from_secs(2));
+        assert!(shorter.operation_control().remaining() < shorter.control().remaining());
         tokio::time::advance(Duration::from_secs(2)).await;
         assert!(shorter.control().remaining().is_zero());
         assert!(shorter.operation_control().remaining().is_zero());

@@ -187,7 +187,6 @@ def main(software_only=False, task_only=False, identity_only=False, asset_only=F
     require_lease(ROOT)
     installation_only = sys.argv[1:] == ["--installation"]
     audit_only = sys.argv[1:] == ["--identity-audit"]
-    audit_baseline = sys.argv[1:] == ["--audit-baseline"]
     foundation_only = sys.argv[1:] == ["--foundation"]
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
@@ -250,16 +249,11 @@ def main(software_only=False, task_only=False, identity_only=False, asset_only=F
                 verify_migrations(name, migrators[0], migration_config, root, env)
             # Every specialized run still proves installation and actual runtime admission.
             # Batch/recovery correctness belongs to the installation gate, once per CI.
-            if installation_only or not (task_only or identity_only or asset_only or command_only or catalog_mode or apple_only or software_only or compliance_only or audit_only or audit_baseline or foundation_only or device_only or windows_only):
+            if installation_only or not (task_only or identity_only or asset_only or command_only or catalog_mode or apple_only or software_only or compliance_only or audit_only or foundation_only or device_only or windows_only):
                 run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
                 run_exact_test(env, "audit_integration_tests::operation_cutoff_leaves_owner_time_to_rollback")
             for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
                 run_exact_test(env, audit_test)
-            if audit_baseline:
-                env['MDM_AUDIT_DIAGNOSTIC'] = '1'
-                run_exact_test(env, "audit_integration_tests::original_six_second_batch_diagnostic")
-                return
-
             if installation_only:
                 return
             if catalog_mode:

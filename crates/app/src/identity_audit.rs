@@ -1,7 +1,7 @@
 //! Product-owned lifetime for Identity's sole audit projection.
 //! ref: sqlx sqlx-core/src/transaction.rs@v0.9.0 (await the original settlement owner).
 use crate::{ConfigIssue, Error, Failure, config::Config};
-use rss_identity_postgres::audit::{AuditDelivery, AuditDeliveryError, verify_worker};
+use rss_identity_postgres::audit::{AuditDelivery, AuditDeliveryError};
 use rss_runtime::{
     DynManagedResource, ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError,
     TaskStatus,
@@ -24,9 +24,22 @@ pub(crate) const ROLE: &str = "mdm_identity_audit";
 #[derive(Default)]
 pub(crate) struct Readiness {
     healthy: AtomicBool,
+    retrying: AtomicBool,
     task: OnceLock<TaskStatus>,
 }
 impl Readiness {
+    fn progress(&self, claimed: usize, retried: usize) {
+        if retried > 0 {
+            self.retrying.store(true, Ordering::Release);
+        } else if claimed > 0 {
+            self.retrying.store(false, Ordering::Release);
+        }
+        self.healthy
+            .store(!self.retrying.load(Ordering::Acquire), Ordering::Release);
+    }
+    fn transient_failure(&self) {
+        self.healthy.store(false, Ordering::Release);
+    }
     pub(crate) fn ready(&self) -> bool {
         self.healthy.load(Ordering::Acquire) && self.task.get().is_some_and(TaskStatus::is_running)
     }
@@ -37,6 +50,27 @@ pub(crate) struct Worker {
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::IdentityStorage)
+}
+/// Shared installation/startup admission; probing never grants or repairs privileges.
+pub(crate) async fn verify_profile(
+    connection: &mut sqlx::PgConnection,
+    mode: crate::migration::AuditMode,
+) -> Result<(), sqlx::Error> {
+    rss_identity_postgres::audit::verify_worker(connection, ROLE)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("identity audit profile rejected".into()))?;
+    let valid: bool = sqlx::query_scalar(include_str!("../schema/identity-audit-ledger-probe.sql"))
+        .bind(ROLE)
+        .bind(mode == crate::migration::AuditMode::Ledger)
+        .fetch_one(connection)
+        .await?;
+    if valid {
+        Ok(())
+    } else {
+        Err(sqlx::Error::Protocol(
+            "identity audit Ledger profile rejected".into(),
+        ))
+    }
 }
 impl Worker {
     pub(crate) async fn open(
@@ -55,7 +89,7 @@ impl Worker {
         let control = budget.control();
         tokio::time::timeout(control.remaining(), async {
             let mut connection = pool.acquire().await.map_err(|_| unavailable())?;
-            verify_worker(&mut connection, ROLE)
+            verify_profile(&mut connection, config.audit.mode())
                 .await
                 .map_err(|_| unavailable())
         })
@@ -142,13 +176,11 @@ impl Worker {
             {
                 Ok(report) => {
                     let retry = should_wait(report.claimed(), report.retried(), report.fenced())?;
-                    self.readiness
-                        .healthy
-                        .store(report.retried() == 0, Ordering::Release);
+                    self.readiness.progress(report.claimed(), report.retried());
                     retry
                 }
                 Err(error) if error.is_retryable() => {
-                    self.readiness.healthy.store(false, Ordering::Release);
+                    self.readiness.transient_failure();
                     diagnose(error);
                     true
                 }

@@ -19,9 +19,16 @@ impl MigrationError {
     }
 }
 type Result<T> = std::result::Result<T, MigrationError>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditMode {
+    Plain,
+    Ledger,
+}
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Installation {
+    pub audit_mode: AuditMode,
     pub instance_id: String,
     pub target: [u8; 16],
     pub lineage: [u8; 16],
@@ -359,7 +366,7 @@ async fn apply_unit(
         install_audit_component(conn, name, sql).await?;
     } else if name == "identity-authority-v11" {
         install_identity(conn, installation, instance).await?;
-    } else {
+    } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
         sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
             MigrationError::at(
                 name,
@@ -504,7 +511,7 @@ async fn install_identity(
             sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)")
                 .bind(tenant).bind(installation.epoch).execute(&mut *tx).await?;
         }
-        verify_profiles(&mut tx, instance).await?;
+        verify_profiles(&mut tx, instance, installation.audit_mode).await?;
         tx.commit().await
     }
     install(conn, installation, instance).await.map_err(|_| {
@@ -517,6 +524,7 @@ async fn install_identity(
 async fn verify_profiles(
     conn: &mut PgConnection,
     instance: rss_identity_core::InstanceId,
+    audit_mode: AuditMode,
 ) -> std::result::Result<(), sqlx::Error> {
     for (statement, profile) in [
         (
@@ -536,7 +544,7 @@ async fn verify_profiles(
             .execute(&mut *conn)
             .await?;
     }
-    rss_identity_postgres::audit::verify_worker(conn, crate::identity_audit::ROLE)
+    crate::identity_audit::verify_profile(conn, audit_mode)
         .await
         .map_err(|_| sqlx::Error::Protocol("identity audit profile rejected".into()))?;
     Ok(())
@@ -578,7 +586,7 @@ async fn verify_installation(
                 return Err(sqlx::Error::Protocol("tenant epoch mismatch".into()));
             }
         }
-        verify_profiles(&mut tx, instance).await?;
+        verify_profiles(&mut tx, instance, installation.audit_mode).await?;
         tx.rollback().await
     }
     verify(conn, installation, instance).await.map_err(|_| {

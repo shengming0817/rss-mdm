@@ -378,13 +378,11 @@ pub(super) async fn bind(
     let fingerprint =
         crate::enrollment::digest(&(leaf.attempt, leaf.fingerprint, udid, auth.operation));
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
     let operation_control = budget.operation_control();
     let attempt = app
         .audit_store
         .execute_with_operation(
             app.identity.tenant,
-            &control,
             &operation_control,
             (
                 app,

@@ -45,8 +45,6 @@ impl From<Error> for PgError {
 pub struct AuditStore {
     adapter: PgAudit,
     ledger: bool,
-    #[cfg(feature = "integration")]
-    diagnostic_clock: Option<std::sync::Arc<dyn rss_request_context::Clock>>,
 }
 impl AuditStore {
     #[cfg(feature = "integration")]
@@ -84,33 +82,7 @@ impl AuditStore {
         Ok(Self {
             adapter: PgAudit::new(pool, integrity, control).await?,
             ledger,
-            #[cfg(feature = "integration")]
-            diagnostic_clock: None,
         })
-    }
-    /// Fixture diagnostics use the host's explicitly injected clock, never a second timer domain.
-    #[cfg(feature = "integration")]
-    pub fn with_diagnostic_clock(
-        mut self,
-        clock: std::sync::Arc<dyn rss_request_context::Clock>,
-    ) -> Self {
-        self.diagnostic_clock = Some(clock);
-        self
-    }
-    async fn measure<F: std::future::Future>(&self, phase: &'static str, future: F) -> F::Output {
-        #[cfg(feature = "integration")]
-        let started = self.diagnostic_clock.as_ref().map(|clock| clock.now());
-        #[cfg(not(feature = "integration"))]
-        let _ = phase;
-        let value = future.await;
-        #[cfg(feature = "integration")]
-        if let (Some(started), Some(clock)) = (started, &self.diagnostic_clock) {
-            eprintln!(
-                "{}",
-                serde_json::json!({"audit_phase":phase,"elapsed_micros":clock.now().saturating_duration_since(started).as_micros()})
-            );
-        }
-        value
     }
     /// Admit the configured tenant before serving requests. Verify a bounded authenticated
     /// record when present so a wrong secret fails startup, even with the same key ID.
@@ -191,33 +163,25 @@ impl AuditStore {
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        self.measure(
-            "owner_total",
-            self.adapter.local_tx_with_context(
+        self.adapter
+            .local_tx_with_context(
                 tenant,
                 control,
-                (context, Some(operation), self),
-                |(context, operation, store), tx| {
+                (context, Some(operation)),
+                |(context, operation), tx| {
                     Box::pin(async move {
                         tx.with_connection(|c| Box::pin(admit_receipts(c)))
                             .await
                             .map_err(E::from)?;
-                        store
-                            .measure("lock_head", tx.lock_head())
-                            .await
-                            .map_err(Error::from)
-                            .map_err(E::from)?;
+                        tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
                         let operation = operation
                             .take()
                             .expect("component invokes its transaction callback once");
-                        store
-                            .measure("product_callback", operation(context, tx))
-                            .await
+                        operation(context, tx).await
                     })
                 },
-            ),
-        )
-        .await
+            )
+            .await
     }
     /// Cap product work by the owner's total cutoff, then await the owner's settlement.
     /// Select an earlier operation deadline to reserve settlement time.
@@ -232,8 +196,7 @@ impl AuditStore {
     >(
         &self,
         tenant: rss_request_context::TenantId,
-        total: &Control<'_, T>,
-        operation_control: &crate::OperationControl<'_, T>,
+        budget: &crate::OperationBudget<'_, T>,
         context: C,
         operation: F,
     ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
@@ -247,37 +210,27 @@ impl AuditStore {
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        self.measure(
-            "owner_total",
-            self.adapter.local_tx_with_context(
+        let total = budget.owner();
+        self.adapter
+            .local_tx_with_context(
                 tenant,
-                total,
-                (context, Some(operation), operation_control, total, self),
-                |(context, operation, operation_control, total, store), tx| {
+                &total,
+                (context, Some(operation), budget),
+                |(context, operation, budget), tx| {
                     Box::pin(async move {
-                        let work = async {
-                            tx.with_connection(|c| Box::pin(admit_receipts(c)))
-                                .await
-                                .map_err(E::from)?;
-                            store
-                                .measure("lock_head", tx.lock_head())
-                                .await
-                                .map_err(Error::from)
-                                .map_err(E::from)?;
-                            let value = store
-                                .measure(
-                                    "product_callback",
-                                    operation.take().expect("one owner callback")(context, tx),
-                                )
-                                .await?;
-                            Ok(value)
-                        };
-                        operation_control.run(total, work).await
+                        budget
+                            .run(async {
+                                tx.with_connection(|c| Box::pin(admit_receipts(c)))
+                                    .await
+                                    .map_err(E::from)?;
+                                tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
+                                operation.take().expect("one owner callback")(context, tx).await
+                            })
+                            .await
                     })
                 },
-            ),
-        )
-        .await
+            )
+            .await
     }
     /// First operation in an RSS transaction: validate isolation/receipts, then lock Audit and Ledger.
     /// Must precede business and outbox locks. Reuses the owner's connection and remaining budget;
@@ -365,35 +318,23 @@ impl AuditStore {
             return Err(rss_audit_postgres::Error::ScopeMismatch.into());
         }
         let identity = fact.identity().clone();
-        let receipt = self
-            .measure(
-                "receipt_read",
-                tx.with_connection(move |c| {
-                    Box::pin(async move { read_receipt(c, &identity).await })
-                }),
-            )
+        let receipt = tx
+            .with_connection(move |c| Box::pin(async move { read_receipt(c, &identity).await }))
             .await?;
-        let record = self
-            .measure("record_find", tx.find(fact.identity()))
-            .await?;
+        let record = tx.find(fact.identity()).await?;
         if let Some(prepared) = restore(fact, receipt, record, self.ledger, existing)? {
-            self.measure("append_replay", tx.append(&prepared)).await?;
+            tx.append(&prepared).await?;
             return Ok(());
         }
-        let at = self
-            .measure("timestamp", tx.with_connection(|c| Box::pin(now(c))))
-            .await?;
-        let prepared = self.measure("prepare", tx.prepare(fact.event(at)?)).await?;
+        let at = tx.with_connection(|c| Box::pin(now(c))).await?;
+        let prepared = tx.prepare(fact.event(at)?).await?;
         let save = prepared.clone();
         let fingerprint = *fact.fingerprint();
-        self.measure(
-            "receipt_write",
-            tx.with_connection(move |c| {
-                Box::pin(async move { save_receipt(c, &save, fingerprint).await })
-            }),
-        )
+        tx.with_connection(move |c| {
+            Box::pin(async move { save_receipt(c, &save, fingerprint).await })
+        })
         .await?;
-        self.measure("append", tx.append(&prepared)).await?;
+        tx.append(&prepared).await?;
         Ok(())
     }
     /// Stage a business fact in the existing RSS owner after `lock_in`.

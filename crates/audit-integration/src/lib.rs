@@ -9,7 +9,7 @@ mod fact;
 pub use fact::{Fact, InvalidFact};
 
 mod operation;
-pub use operation::OperationControl;
+pub use operation::OperationBudget;
 mod store;
 pub use store::{AuditStore, Error};
 
