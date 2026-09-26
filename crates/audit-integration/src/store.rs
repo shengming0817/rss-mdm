@@ -45,6 +45,8 @@ impl From<Error> for PgError {
 pub struct AuditStore {
     adapter: PgAudit,
     ledger: bool,
+    #[cfg(feature = "integration")]
+    diagnostic_clock: Option<std::sync::Arc<dyn rss_request_context::Clock>>,
 }
 impl AuditStore {
     #[cfg(feature = "integration")]
@@ -82,7 +84,33 @@ impl AuditStore {
         Ok(Self {
             adapter: PgAudit::new(pool, integrity, control).await?,
             ledger,
+            #[cfg(feature = "integration")]
+            diagnostic_clock: None,
         })
+    }
+    /// Fixture diagnostics use the host's explicitly injected clock, never a second timer domain.
+    #[cfg(feature = "integration")]
+    pub fn with_diagnostic_clock(
+        mut self,
+        clock: std::sync::Arc<dyn rss_request_context::Clock>,
+    ) -> Self {
+        self.diagnostic_clock = Some(clock);
+        self
+    }
+    async fn measure<F: std::future::Future>(&self, phase: &'static str, future: F) -> F::Output {
+        #[cfg(feature = "integration")]
+        let started = self.diagnostic_clock.as_ref().map(|clock| clock.now());
+        #[cfg(not(feature = "integration"))]
+        let _ = phase;
+        let value = future.await;
+        #[cfg(feature = "integration")]
+        if let (Some(started), Some(clock)) = (started, &self.diagnostic_clock) {
+            eprintln!(
+                "{}",
+                serde_json::json!({"audit_phase":phase,"elapsed_micros":clock.now().saturating_duration_since(started).as_micros()})
+            );
+        }
+        value
     }
     /// Admit the configured tenant before serving requests. Verify a bounded authenticated
     /// record when present so a wrong secret fails startup, even with the same key ID.
@@ -163,25 +191,28 @@ impl AuditStore {
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        measure(
+        self.measure(
             "owner_total",
             self.adapter.local_tx_with_context(
                 tenant,
                 control,
-                (context, Some(operation)),
-                |(context, operation), tx| {
+                (context, Some(operation), self),
+                |(context, operation, store), tx| {
                     Box::pin(async move {
                         tx.with_connection(|c| Box::pin(admit_receipts(c)))
                             .await
                             .map_err(E::from)?;
-                        measure("lock_head", tx.lock_head())
+                        store
+                            .measure("lock_head", tx.lock_head())
                             .await
                             .map_err(Error::from)
                             .map_err(E::from)?;
                         let operation = operation
                             .take()
                             .expect("component invokes its transaction callback once");
-                        measure("product_callback", operation(context, tx)).await
+                        store
+                            .measure("product_callback", operation(context, tx))
+                            .await
                     })
                 },
             ),
@@ -201,7 +232,7 @@ impl AuditStore {
         &self,
         tenant: rss_request_context::TenantId,
         total: &Control<'_, T>,
-        operation_control: &Control<'_, T>,
+        operation_control: &crate::OperationControl<'_, T>,
         context: C,
         operation: F,
     ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
@@ -215,43 +246,32 @@ impl AuditStore {
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        measure(
+        self.measure(
             "owner_total",
             self.adapter.local_tx_with_context(
                 tenant,
                 total,
-                (context, Some(operation), operation_control, total),
-                |(context, operation, operation_control, total), tx| {
+                (context, Some(operation), operation_control, self),
+                |(context, operation, operation_control, store), tx| {
                     Box::pin(async move {
-                        let expired = || {
-                            E::from(Error::Audit(rss_audit_postgres::Error::Deadline(
-                        rss_transactional_messaging::transaction::LocalTxDeadlineStage::Operation)))
-                        };
-                        let remaining = operation_control.remaining().min(total.remaining());
-                        if remaining.is_zero() {
-                            return Err(expired());
-                        }
                         let work = async {
                             tx.with_connection(|c| Box::pin(admit_receipts(c)))
                                 .await
                                 .map_err(E::from)?;
-                            measure("lock_head", tx.lock_head())
+                            store
+                                .measure("lock_head", tx.lock_head())
                                 .await
                                 .map_err(Error::from)
                                 .map_err(E::from)?;
-                            let value = measure(
-                                "product_callback",
-                                operation.take().expect("one owner callback")(context, tx),
-                            )
-                            .await?;
-                            if operation_control.remaining().is_zero() {
-                                return Err(expired());
-                            }
+                            let value = store
+                                .measure(
+                                    "product_callback",
+                                    operation.take().expect("one owner callback")(context, tx),
+                                )
+                                .await?;
                             Ok(value)
                         };
-                        tokio::time::timeout(remaining, work)
-                            .await
-                            .map_err(|_| expired())?
+                        operation_control.run(work).await
                     })
                 },
             ),
@@ -344,28 +364,35 @@ impl AuditStore {
             return Err(rss_audit_postgres::Error::ScopeMismatch.into());
         }
         let identity = fact.identity().clone();
-        let receipt = measure(
-            "receipt_read",
-            tx.with_connection(move |c| Box::pin(async move { read_receipt(c, &identity).await })),
-        )
-        .await?;
-        let record = measure("record_find", tx.find(fact.identity())).await?;
+        let receipt = self
+            .measure(
+                "receipt_read",
+                tx.with_connection(move |c| {
+                    Box::pin(async move { read_receipt(c, &identity).await })
+                }),
+            )
+            .await?;
+        let record = self
+            .measure("record_find", tx.find(fact.identity()))
+            .await?;
         if let Some(prepared) = restore(fact, receipt, record, self.ledger, existing)? {
-            measure("append_replay", tx.append(&prepared)).await?;
+            self.measure("append_replay", tx.append(&prepared)).await?;
             return Ok(());
         }
-        let at = measure("timestamp", tx.with_connection(|c| Box::pin(now(c)))).await?;
-        let prepared = measure("prepare", tx.prepare(fact.event(at)?)).await?;
+        let at = self
+            .measure("timestamp", tx.with_connection(|c| Box::pin(now(c))))
+            .await?;
+        let prepared = self.measure("prepare", tx.prepare(fact.event(at)?)).await?;
         let save = prepared.clone();
         let fingerprint = *fact.fingerprint();
-        measure(
+        self.measure(
             "receipt_write",
             tx.with_connection(move |c| {
                 Box::pin(async move { save_receipt(c, &save, fingerprint).await })
             }),
         )
         .await?;
-        measure("append", tx.append(&prepared)).await?;
+        self.measure("append", tx.append(&prepared)).await?;
         Ok(())
     }
     /// Stage a business fact in the existing RSS owner after `lock_in`.
@@ -506,22 +533,4 @@ fn transaction_error(error: rss_audit_postgres::TransactionError<Error>) -> Erro
         rss_audit_postgres::TransactionError::Audit(error) => Error::Audit(error),
         rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
-}
-
-// Fixture-only phase timing; production has no environment switch or diagnostic payload.
-async fn measure<F: std::future::Future>(phase: &'static str, future: F) -> F::Output {
-    #[cfg(feature = "integration")]
-    let started =
-        (std::env::var_os("MDM_AUDIT_DIAGNOSTIC").is_some()).then(tokio::time::Instant::now);
-    #[cfg(not(feature = "integration"))]
-    let _ = phase;
-    let value = future.await;
-    #[cfg(feature = "integration")]
-    if let Some(started) = started {
-        eprintln!(
-            "{}",
-            serde_json::json!({"audit_phase":phase,"elapsed_micros":started.elapsed().as_micros()})
-        );
-    }
-    value
 }

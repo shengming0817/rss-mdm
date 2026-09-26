@@ -68,6 +68,24 @@ impl Worker {
         );
         let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
+        if matches!(config.audit, crate::config::AuditConfig::Ledger { .. }) {
+            audit
+                .read_verified(
+                    tenant,
+                    rss_ledger::Sequence::new(0),
+                    rss_ledger_postgres::ReadLimit::new(1, 262144).map_err(|_| unavailable())?,
+                    &control,
+                )
+                .await
+                .fold(
+                    |_| Ok(()),
+                    |_| Err(unavailable()),
+                    |_| Err(unavailable()),
+                    |_| Err(Error::RollbackFailed),
+                    |_| Err(Error::CommitUnknown),
+                    |_| Err(unavailable()),
+                )?;
+        }
         let runtime = crate::identity::open_consumer_runtime(
             database,
             &config.flow.storage.target,
@@ -123,11 +141,11 @@ impl Worker {
                 .await
             {
                 Ok(report) => {
-                    self.readiness.healthy.store(
-                        report.retried() == 0 && report.fenced() == 0,
-                        Ordering::Release,
-                    );
-                    report.claimed() == 0 || report.retried() > 0 || report.fenced() > 0
+                    let retry = should_wait(report.claimed(), report.retried(), report.fenced())?;
+                    self.readiness
+                        .healthy
+                        .store(report.retried() == 0, Ordering::Release);
+                    retry
                 }
                 Err(error) if error.is_retryable() => {
                     self.readiness.healthy.store(false, Ordering::Release);
@@ -145,6 +163,12 @@ impl Worker {
         }
         Ok(())
     }
+}
+fn should_wait(claimed: usize, retried: usize, fenced: usize) -> Result<bool, AuditDeliveryError> {
+    if fenced > 0 {
+        return Err(AuditDeliveryError::OwnershipLost);
+    }
+    Ok(claimed == 0 || retried > 0)
 }
 fn diagnose(error: AuditDeliveryError) {
     eprintln!(

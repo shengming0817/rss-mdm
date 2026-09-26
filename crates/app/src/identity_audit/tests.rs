@@ -21,6 +21,10 @@ async fn http_events_deliver_replay_and_fail_closed() -> Result<()> {
     }
     Ok(())
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "sequential real-PG failure/recovery matrix preserves ownership and cleanup assertions; production code remains checked"
+)]
 async fn exercise(ledger: bool) -> Result<()> {
     let fixture = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
     let root = fixture.parent().unwrap();
@@ -149,7 +153,24 @@ async fn exercise(ledger: bool) -> Result<()> {
             .fetch_all(&observer)
             .await?;
     ensure!(original == replay);
-    fatal_worker(&config, &observer).await?;
+    fatal_worker(&config, &observer, false).await?;
+    fatal_worker(&config, &observer, true).await?;
+    if ledger {
+        for (revoke, grant) in [
+            (
+                "REVOKE SELECT ON rss_ledger.entries FROM mdm_identity_audit",
+                "GRANT SELECT ON rss_ledger.entries TO mdm_identity_audit",
+            ),
+            (
+                "REVOKE EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) FROM mdm_identity_audit",
+                "GRANT EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) TO mdm_identity_audit",
+            ),
+        ] {
+            sqlx::raw_sql(revoke).execute(&observer).await?;
+            rejected(&config).await?; // empty/published Outbox must not bypass Ledger admission
+            sqlx::raw_sql(grant).execute(&observer).await?;
+        }
+    }
     // Excess privileges are not silently repaired by construction or installation replay.
     sqlx::raw_sql("GRANT SELECT ON identity_authority.accounts TO mdm_identity_audit")
         .execute(&observer)
@@ -277,7 +298,7 @@ async fn manipulate(pool: &PgPool, statement: &str) -> Result<()> {
     Ok(())
 }
 
-async fn fatal_worker(config: &Config, observer: &PgPool) -> Result<()> {
+async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result<()> {
     let readiness = Arc::new(Readiness::default());
     let mut resources = Vec::new();
     let worker = Worker::open(config, readiness.clone(), |r| resources.push(r)).await?;
@@ -289,8 +310,15 @@ async fn fatal_worker(config: &Config, observer: &PgPool) -> Result<()> {
         while !readiness.ready() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        sqlx::raw_sql("REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint) FROM mdm_identity_audit")
-            .execute(observer).await.map_err(|_| std::io::Error::other("fixture revoke"))?;
+        let change = if fence {
+            "UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2"
+        } else {
+            "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint) FROM mdm_identity_audit"
+        };
+        sqlx::raw_sql(change)
+            .execute(observer)
+            .await
+            .map_err(|_| std::io::Error::other("fixture revoke/fence"))?;
         std::future::pending::<Result<(), std::io::Error>>().await
     };
     let outcome = tokio::time::timeout(
@@ -315,7 +343,20 @@ async fn fatal_worker(config: &Config, observer: &PgPool) -> Result<()> {
         matches!(outcome.exit(), ScopeExit::CriticalTaskExited(exit) if exit.name() == "identity-audit")
     );
     ensure!(!readiness.ready());
+    if fence {
+        sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=1")
+            .execute(observer)
+            .await?;
+    }
     let mut owner = observer.acquire().await?;
     rss_identity_postgres::audit::grant_worker(&mut owner, ROLE).await?;
     Ok(())
+}
+
+#[test]
+fn fenced_progress_is_terminal_even_when_other_events_succeeded() {
+    assert_eq!(should_wait(1, 0, 1), Err(AuditDeliveryError::OwnershipLost));
+    assert_eq!(should_wait(1, 1, 0), Ok(true));
+    assert_eq!(should_wait(1, 0, 0), Ok(false));
+    assert_eq!(should_wait(0, 0, 0), Ok(true));
 }

@@ -279,23 +279,36 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
         Deadline::from_timeout(&timer, Duration::from_secs(3))?,
         &cancel,
     );
+    let operation = rss_mdm_audit_integration::OperationControl::new(
+        &timer,
+        Deadline::from_timeout(&timer, Duration::from_secs(3))?,
+        &cancel,
+    );
     let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
     let fact = Fact::business(&request, "commit-ack-loss", b"A", 200, "success", None)?;
     store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let attempt = store
-        .execute_with_operation(tenant, &control, &control, (&store, &fact), |(s, f), tx| {
-            Box::pin(async move { s.append(tx, f, false).await })
-        })
+        .execute_with_operation(
+            tenant,
+            &control,
+            &operation,
+            (&store, &fact),
+            |(s, f), tx| Box::pin(async move { s.append(tx, f, false).await }),
+        )
         .await;
     ensure!(state(attempt) == "unknown");
     let original = bytes(pool, tenant).await?;
     ensure!(original.len() == 1);
     let attempt = store
-        .execute_with_operation(tenant, &control, &control, (&store, &fact), |(s, f), tx| {
-            Box::pin(async move { s.append(tx, f, true).await })
-        })
+        .execute_with_operation(
+            tenant,
+            &control,
+            &operation,
+            (&store, &fact),
+            |(s, f), tx| Box::pin(async move { s.append(tx, f, true).await }),
+        )
         .await;
     ensure!(state(attempt) == "committed");
     ensure!(bytes(pool, tenant).await? == original);
@@ -305,7 +318,7 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
         .execute_with_operation(
             tenant,
             &control,
-            &control,
+            &operation,
             (&store, &failed),
             |(s, f), tx| {
                 Box::pin(async move {
@@ -580,6 +593,11 @@ async fn retirement_batch_using(
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = Control::new(&timer, Deadline::from_timeout(&timer, timeout)?, &cancel);
     let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
+    let store = if std::env::var_os("MDM_AUDIT_DIAGNOSTIC").is_some() {
+        store.with_diagnostic_clock(std::sync::Arc::new(crate::lifecycle::RuntimeTimer))
+    } else {
+        store
+    };
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let request = RequestAudit::new(tenant.to_string(), "collection_finish");
     request.identify_service("service:collection-finalizer");
@@ -698,7 +716,7 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
             "success",
             None,
         )?;
-        let operation = Control::new(
+        let operation = rss_mdm_audit_integration::OperationControl::new(
             &timer,
             Deadline::from_timeout(&timer, Duration::from_secs(2))?,
             &cancel,

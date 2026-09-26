@@ -41,7 +41,7 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
             for schema in SCHEMAS:sql(f"ALTER ROLE {schema}_runtime LOGIN PASSWORD 'backend-fixture';")
             if app:
                 sql((source/'crates/app/schema/identity-roles.sql').read_text()+(source/'crates/app/schema/audit-roles.sql').read_text())
-                sql("ALTER ROLE mdm_flow_runtime LOGIN PASSWORD 'backend-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'backend-fixture';")
+                sql("ALTER ROLE mdm_identity_audit LOGIN PASSWORD 'backend-fixture'; ALTER ROLE mdm_flow_runtime LOGIN PASSWORD 'backend-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'backend-fixture';")
                 sql("ALTER ROLE mdm_software_driver LOGIN PASSWORD 'backend-fixture'; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS;")
                 password=root/'owner-password';password.write_text('owner-fixture');password.chmod(0o600)
                 config=root/'migration.json';config.write_text(json.dumps({'installation':{'instance_id':'33333333-3333-4333-8333-333333333333','target':[1]*16,'lineage':[2]*16,'epoch':1,'tenants':['11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222']},'database':{'host':'localhost','port':port,'name':'backend','user':'mdm_owner','password_file':str(password),'ca_file':str(root/'ca.crt')}}));config.chmod(0o600)
