@@ -1,14 +1,7 @@
--- PostgreSQL catalog projection; no OIDs, owners or locale-sensitive order.
-WITH tables AS (
- SELECT c.oid,c.relname FROM pg_catalog.pg_class c
- JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname IN('mdm_planning','mdm_flow','mdm_assets','mdm_automation') AND c.relkind='r'
-)
+WITH tables AS (SELECT c.oid,c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_planning' AND c.relkind='r')
 SELECT jsonb_build_object(
- 'actionTargets',(SELECT jsonb_build_array(pg_get_functiondef(oid),pg_get_userbyid(proowner),prosecdef,proconfig) FROM pg_proc WHERE oid='mdm_planning.action_targets(uuid,bigint)'::regprocedure),
- 'executionAdmission',(SELECT jsonb_build_array(pg_get_functiondef(oid),pg_get_userbyid(proowner),prosecdef,proconfig) FROM pg_proc WHERE oid='mdm_planning.plan_execution_admission(uuid)'::regprocedure),
- 'policyAdmission',(SELECT jsonb_build_array(pg_get_functiondef(oid),pg_get_userbyid(proowner),prosecdef,proconfig) FROM pg_proc WHERE pronamespace=(SELECT oid FROM pg_namespace WHERE nspname='mdm_policy_projection') AND proname='execution_admission'),
- 'policyFacts',(SELECT jsonb_build_array(pg_get_functiondef(oid),pg_get_userbyid(proowner),prosecdef,proconfig) FROM pg_proc WHERE oid='mdm_commands.policy_facts(text)'::regprocedure),
+ 'executionAdmission',(SELECT pg_get_functiondef('mdm_planning.plan_execution_admission(uuid)'::regprocedure)),
+ 'actionTargets',(SELECT pg_get_functiondef('mdm_planning.action_targets(uuid,bigint)'::regprocedure)),
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,
    format_type(a.atttypid,a.atttypmod),a.attnotnull,pg_get_expr(d.adbin,d.adrelid),
    a.attidentity,a.attgenerated) ORDER BY t.relname COLLATE "C",a.attnum)

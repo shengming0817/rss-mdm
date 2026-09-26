@@ -20,11 +20,11 @@ pub(crate) async fn forward_jobs(
                 sqlx::query_scalar::<_,String>("SELECT j.id::text FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND NOT j.forwarded AND (j.kind<>'policy' OR EXISTS(SELECT 1 FROM mdm_automation.automation_jobs source WHERE source.tenant_id=j.tenant_id AND source.id=(j.input->>'resolution')::uuid AND source.kind='scope' AND source.completed)) ORDER BY j.id LIMIT 64")
                     .bind(tenant).fetch_all(c).await
             })).await
-        })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::ManagementStorage)))?;
+        })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::AutomationStorage)))?;
     let timer = Timer::new();
     let cancel = CancellationToken::new();
     for id in &ids {
-        let id = Uuid::parse_str(id).map_err(|_| Error::Unavailable(Failure::ManagementStorage))?;
+        let id = Uuid::parse_str(id).map_err(|_| Error::Unavailable(Failure::AutomationStorage))?;
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
         runtime.local_tx_with_context(
     tenant,
@@ -40,7 +40,7 @@ pub(crate) async fn forward_jobs(
                 })).await
             })).await
     }),
-).await.fold(Ok,|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::Unavailable(Failure::ManagementStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::ManagementStorage)))?;
+).await.fold(Ok,|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::AutomationStorage)))?;
     }
     Ok(ids.len())
 }
@@ -68,7 +68,7 @@ pub(crate) async fn enqueue_job_in(
     input: &JobInput,
 ) -> Result<Value> {
     let tenant = tx.tenant_id().to_string();
-    let document = crate::mutation::input(serde_json::to_string(input))?;
+    let document = crate::transaction::checked_input(serde_json::to_string(input))?;
     let kind = input.kind();
     let target = input.target();
     tx.with_connection(move |c|Box::pin(async move {

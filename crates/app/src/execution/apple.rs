@@ -20,7 +20,7 @@ pub(super) async fn own(
     let identifier = profile::identifier(&tenant, &device);
     let enabled = matches!(input.task, Task::ProfileInstall { enabled: true });
     let result=tx.with_connection(move|c|Box::pin(async move {
-        let old=sqlx::query("SELECT p.profile::text,p.registration::text,d.terminal_at IS NOT NULL AS terminal FROM mdm_apple.profiles p JOIN rss_device_command.execution d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 FOR UPDATE OF p")
+        let old=sqlx::query("SELECT p.profile::text,p.registration::text,d.terminal_at IS NOT NULL AS terminal FROM mdm_apple.profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 FOR UPDATE OF p")
             .bind(&tenant).bind(&device).fetch_optional(&mut *c).await?;
         if old.as_ref().is_some_and(|r|r.try_get::<bool,_>("terminal").ok()!=Some(true)) {return Ok(Err(Error::Conflict))}
         if !present && !old.as_ref().is_some_and(|r|r.try_get::<String,_>("profile").ok()==Some(profile.to_string()) && r.try_get::<String,_>("registration").ok()==Some(registration.to_string())) {return Ok(Err(Error::Conflict))}
@@ -86,12 +86,12 @@ impl ExecutionService {
     ) -> std::result::Result<Vec<u8>, Error> {
         let dictionary = wire::decode(bytes)?;
         let message = wire::management(&dictionary)?;
-        crate::execution_transaction::transact(
-            &self.runtime,
+        crate::transaction::run(
             &self.audit_store,
+            &self.runtime,
             self.tenant,
-            (self, apple, p, bytes, &dictionary, &message, audit),
             audit,
+            (self, apple, p, bytes, &dictionary, &message, audit),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, apple, p, bytes, dictionary, message, audit) = *ctx;
@@ -116,6 +116,7 @@ impl ExecutionService {
                     Ok(response)
                 })
             },
+            crate::transaction::TransactionOwner::Execution,
         )
         .await
     }
@@ -266,11 +267,11 @@ async fn send(
     let registration = p.registration().to_string();
     let generation = p.generation();
     let ids=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.execution d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.request->'task'->>'kind' IN ('profile_install','profile_remove') AND d.status IN ('published','received') ORDER BY o.id LIMIT 64")
+        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.request->'task'->>'kind' IN ('profile_install','profile_remove') AND d.status IN ('published','received') ORDER BY o.id LIMIT 64")
             .bind(tenant).bind(registration).bind(generation).fetch_all(c).await
     })).await?;
     for id in ids {
-        let op = storage::load(tx, corrupt(Uuid::parse_str(&id))?).await?;
+        let op = storage::load(tx, stored(Uuid::parse_str(&id))?).await?;
         if !eligible(service, tx, p, &op).await? {
             continue;
         }
@@ -315,7 +316,7 @@ async fn send_one(
         {
             return Ok(None);
         }
-        let id = corrupt(Uuid::parse_str(&row.try_get::<String, _>("id")?))?;
+        let id = stored(Uuid::parse_str(&row.try_get::<String, _>("id")?))?;
         mark_sent(tx, id).await?;
         return Ok(Some(row.try_get("request")?));
     }

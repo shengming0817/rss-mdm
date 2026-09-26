@@ -90,8 +90,8 @@ async fn run(
         .assets
         .execute(&command, audit, &|| authorize(auth, &command))
         .await?;
-    let envelope: AssetEnvelope = serde_json::from_value(value)
-        .map_err(|_| Error::Unavailable(Failure::ManagementStorage))?;
+    let envelope: AssetEnvelope =
+        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
     let status = if matches!(&envelope.asset, Response::Accepted { .. }) {
         StatusCode::ACCEPTED
     } else {

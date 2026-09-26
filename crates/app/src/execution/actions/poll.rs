@@ -1,5 +1,5 @@
 //! Offers and cancellation pages have independent progress coordinates.
-use crate::execution::{Result, corrupt};
+use crate::execution::{Result, stored};
 use rss_mdm_agent_wire as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
@@ -32,9 +32,9 @@ pub(super) async fn cancellations(
     })).await?;
     rows.into_iter()
         .map(|row| {
-            corrupt(wire::TaskCancellation::new(
-                corrupt(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
-                corrupt(Uuid::parse_str(&row.try_get::<String, _>("attempt")?))?,
+            stored(wire::TaskCancellation::new(
+                stored(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
+                stored(Uuid::parse_str(&row.try_get::<String, _>("attempt")?))?,
             ))
         })
         .collect()

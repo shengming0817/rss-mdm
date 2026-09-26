@@ -18,7 +18,6 @@ pub(crate) mod storage;
 mod wire;
 use crate::{Error, Failure};
 
-use crate::ObjectKind as Missing;
 use admission::*;
 pub(crate) use http::routes_v2;
 pub use model::Permission;
@@ -34,15 +33,16 @@ pub(crate) struct Planning {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     pub(crate) runtime: Arc<PgRuntime>,
-    asset_cursor_key: ring::hmac::Key,
-    pub(crate) asset_reader: assets::snapshot::SnapshotReader,
+    cursor_key: ring::hmac::Key,
+    pub(crate) asset_reader: assets::planning::SnapshotReader,
     pub(crate) tenant: TenantId,
     pub(crate) clock: Arc<dyn crate::clock::Clock>,
     pub(crate) groups: rss_mdm_group_postgres::GroupStore,
     policies: rss_mdm_policy_postgres::PolicyStore,
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
 }
-use crate::mutation::*;
+use crate::http_operation::Operation;
+use crate::transaction::*;
 impl Planning {
     pub(crate) async fn new(
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -50,21 +50,20 @@ impl Planning {
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
         catalog: Arc<crate::resource_catalog::ResourceCatalog>,
+        cursor_key: &[u8],
     ) -> std::result::Result<Self, Error> {
-        storage::admit(&runtime, tenant).await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
             .await
-            .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
+            .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
         let policies =
             rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, deadline())
                 .await
-                .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
-        let key = storage::cursor_key(&runtime, tenant).await?;
+                .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
         Ok(Self {
             audit_store: audit_store.clone(),
             automation_task: std::sync::OnceLock::new(),
-            asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
-            asset_reader: assets::snapshot::SnapshotReader { tenant },
+            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
+            asset_reader: assets::planning::SnapshotReader { tenant },
             runtime,
             tenant,
             clock,
@@ -82,7 +81,7 @@ impl Planning {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
-        crate::mutation::run(
+        crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
@@ -102,6 +101,7 @@ impl Planning {
                     s.execute_in(tx, command, audit, authorize).await
                 })
             },
+            crate::transaction::TransactionOwner::Planning,
         )
         .await
     }
@@ -112,15 +112,15 @@ impl Planning {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
-        crate::mutation::lock(tx).await?;
+        crate::transaction::lock(tx).await?;
         authorize()?;
         let (operation, fingerprint) = storage::identity(command, audit)?;
         if let Some(id) = operation
-            && let Some(old) = crate::mutation::replay(tx, id, &fingerprint).await?
+            && let Some(old) = crate::planning::receipts::replay(tx, id, &fingerprint).await?
         {
             wire::Response::decode(old.clone())?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            crate::mutation::audit(
+            crate::planning::receipts::audit(
                 tx,
                 &self.audit_store,
                 audit,
@@ -136,14 +136,14 @@ impl Planning {
             .unix_seconds()
             .map_err(|_| Error::Unavailable(Failure::Clock))?;
         let value = self
-            .dispatch(tx, command, input(Timepoint::try_from(at))?)
+            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?)
             .await?;
         // Reject a projection/schema defect before any mutation can commit.
         wire::Response::decode(value.clone())?;
         if let Some(id) = operation {
-            crate::mutation::receipt(tx, id, &fingerprint, &value).await?;
+            crate::planning::receipts::receipt(tx, id, &fingerprint, &value).await?;
         }
-        crate::mutation::audit(
+        crate::planning::receipts::audit(
             tx,
             &self.audit_store,
             audit,
@@ -292,9 +292,10 @@ mod tests;
 fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>) -> Result<T> {
     r.map_err(|e| match e {
         rss_mdm_group_postgres::Rejection::NotFound
-        | rss_mdm_group_postgres::Rejection::Deleted => {
-            Error::ObjectNotFound(Missing::Group).into()
-        }
+        | rss_mdm_group_postgres::Rejection::Deleted => Error::Planning(
+            crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Group),
+        )
+        .into(),
         rss_mdm_group_postgres::Rejection::CapacityExceeded => {
             Error::Unavailable(Failure::AssetObjectLimit).into()
         }
@@ -306,16 +307,10 @@ fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>
     })
 }
 
-impl From<crate::authorization::error::AuthorizationError> for Fault {
-    fn from(error: crate::authorization::error::AuthorizationError) -> Self {
-        Error::from(error).into()
-    }
-}
-
-impl From<crate::device::DeviceError> for Fault {
-    fn from(error: crate::device::DeviceError) -> Self {
-        Error::from(error).into()
-    }
-}
-
 use rss_mdm_audit_integration::RequestAudit;
+mod receipts;
+
+pub(crate) mod action_contract;
+pub(crate) mod action_schedule;
+
+pub mod error;

@@ -141,12 +141,12 @@ impl Client {
         }
         let audit = RequestAudit::new(TENANT.into(), "management_read");
         let service = self.app.execution.as_ref();
-        let result = crate::execution_transaction::transact(
-            &service.runtime,
+        let result = crate::transaction::run(
             &service.audit_store,
+            &service.runtime,
             service.tenant,
-            (service, id),
             &audit,
+            (service, id),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, id) = *ctx;
@@ -158,6 +158,7 @@ impl Client {
                     Ok(())
                 })
             },
+            crate::transaction::TransactionOwner::Execution,
         )
         .await;
         audit.finalize(None);

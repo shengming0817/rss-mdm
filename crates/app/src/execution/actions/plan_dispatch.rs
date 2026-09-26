@@ -1,49 +1,45 @@
-use super::*;
-use crate::execution::ExecutionService;
-use crate::execution_transaction::Result;
-use crate::planning::actions::{ActionDispatch, storage::Plan};
+use super::{production, storage};
+use crate::execution::{ExecutionService, recovery_scope};
+use crate::{Error, transaction::Result};
 use rss_transactional_messaging_postgres::PgTransaction;
-use std::{future::Future, pin::Pin};
 use uuid::Uuid;
-impl ActionDispatch for ExecutionService {
-    fn target(&self, id: Uuid) -> rss_reconcile::Target {
-        rss_reconcile::Target::new(
-            crate::execution::recovery_scope(self.tenant),
-            format!("action.{id}"),
-        )
-        .expect("bounded action target")
-    }
-    fn admit_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(crate::execution::storage::admit(tx))
-    }
-
-    fn initialize_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
+impl ExecutionService {
+    pub(crate) async fn initialize_action_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
         id: Uuid,
         now: i64,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            let tenant = tx.tenant_id().to_string();
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.action_progress(tenant_id,id,scan_at) VALUES($1::uuid,$2::uuid,$3)").bind(tenant).bind(id.to_string()).bind(now-1).execute(c).await?;Ok(())})).await?;
-            Ok(())
-        })
+    ) -> Result<()> {
+        let tenant = tx.tenant_id().to_string();
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_progress(tenant_id,id,scan_at) VALUES($1::uuid,$2::uuid,$3)").bind(tenant).bind(id.to_string()).bind(now-1).execute(c).await?;Ok(())})).await?;
+        Ok(())
     }
-    fn manual_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        plan: &'a Plan,
-        now: i64,
-    ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>> {
-        Box::pin(async move {
-            let plan = storage::load_plan(tx, plan.id).await?;
-            Ok(
-                production::produce(self, tx, &plan, now, "manual", now, None).await?
-                    != production::ProduceOutcome::CapacityBlocked,
-            )
+    pub(crate) async fn start_action_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        writer: &rss_transactional_messaging_postgres::PgOutboxWriter,
+        id: Uuid,
+    ) -> Result<()> {
+        let plan = storage::load_plan(tx, id).await?;
+        let now = crate::action_admission::now(tx).await?;
+        if matches!(
+            plan.definition.frozen.input.schedule.trigger,
+            crate::planning::action_schedule::Trigger::Manual
+        ) && production::produce(self, writer, tx, &plan, now, "manual", now, None).await?
+            == production::ProduceOutcome::CapacityBlocked
+        {
+            return Err(Error::from(crate::planning::error::ActionRejection::Capacity).into());
+        }
+        Ok(())
+    }
+    pub(crate) async fn wake_action_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
+        let target =
+            rss_reconcile::Target::new(recovery_scope(tx.tenant_id()), format!("action.{id}"))
+                .expect("bounded action target");
+        rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| {
+            Box::pin(async { Ok(()) })
         })
+        .await?;
+        Ok(())
     }
 }

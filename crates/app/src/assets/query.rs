@@ -68,7 +68,7 @@ impl AssetService {
             as_of,
         } = job
         else {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::AssetsStorage).into());
         };
         let watermark = *watermark;
         let at = stored(Timepoint::try_from(*as_of))?;
@@ -79,13 +79,13 @@ impl AssetService {
             .transpose()?;
         let mut limit = 128;
         let (page, decisions) = loop {
-            let page = match (super::snapshot::SnapshotReader {
+            let page = match (super::planning::SnapshotReader {
                 tenant: self.tenant,
             })
             .asset_page_in(tx, watermark, after.clone(), limit, scope)
             .await
             {
-                Err(crate::mutation::Fault::Request(Error::Unavailable(
+                Err(crate::transaction::Fault::Request(Error::Unavailable(
                     Failure::AssetBytesLimit | Failure::AssetSourceLimit,
                 ))) if limit > 1 => {
                     limit = (limit / 2).max(1);
@@ -93,7 +93,7 @@ impl AssetService {
                 }
                 result => result?,
             };
-            let snapshot = stored(criteria::page(self.tenant, &page.devices))?;
+            let snapshot = stored(filter::page(self.tenant, &page.devices))?;
             let key = after
                 .as_ref()
                 .map(|s| stored(g::ObjectKey::new(self.tenant, s)))
@@ -123,7 +123,7 @@ impl AssetService {
                     Err(g::Error::LimitExceeded(_)) => {
                         return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
                     }
-                    Err(_) => return Err(Error::Unavailable(Failure::ManagementStorage).into()),
+                    Err(_) => return Err(Error::Unavailable(Failure::AssetsStorage).into()),
                 }
             } else {
                 vec![g::Decision::Match; page.devices.len()]

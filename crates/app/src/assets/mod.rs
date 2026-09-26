@@ -1,7 +1,7 @@
 //! One product asset composition; Inventory resolves facts, Group evaluates conditions.
 pub(crate) mod collection;
-use crate::mutation::Operation;
-use crate::mutation::*;
+use crate::http_operation::Operation;
+use crate::transaction::*;
 use crate::{Error, Failure};
 use rss_contract::Timepoint;
 use rss_mdm_audit_integration::RequestAudit;
@@ -12,22 +12,22 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
-pub(crate) mod criteria;
+pub(crate) mod filter;
 pub(crate) mod http;
 mod model;
+pub(crate) mod planning;
 mod quality;
 mod query;
 mod query_read;
 mod query_sort;
-pub(crate) mod snapshot;
 mod store;
-pub(crate) use criteria::{criteria_view, rule};
+pub(crate) use filter::{criteria_view, rule};
 pub(crate) use http::routes;
 pub(crate) use model::*;
 fn digest(value: &(impl serde::Serialize + ?Sized)) -> Result<String> {
     Ok(format!(
         "{:x}",
-        Sha256::digest(input(serde_json::to_vec(value))?)
+        Sha256::digest(checked_input(serde_json::to_vec(value))?)
     ))
 }
 impl AssetService {
@@ -42,7 +42,7 @@ impl AssetService {
                 dictionary: rss_mdm_inventory::DICTIONARY.into(),
                 fields: FieldKey::ALL
                     .into_iter()
-                    .map(|f| input(serde_json::to_value(f.definition())))
+                    .map(|f| checked_input(serde_json::to_value(f.definition())))
                     .collect::<Result<_>>()?,
             },
             Command::Detail { device, scope } => {
@@ -231,7 +231,7 @@ impl AssetService {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
-        crate::mutation::run(
+        crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
@@ -243,6 +243,7 @@ impl AssetService {
                     service.execute_in(tx, command, audit, authorize).await
                 })
             },
+            crate::transaction::TransactionOwner::Assets,
         )
         .await
     }
@@ -253,15 +254,15 @@ impl AssetService {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
-        crate::mutation::lock(tx).await?;
+        crate::transaction::lock(tx).await?;
         authorize()?;
         let (operation, fingerprint) = operation_identity(command, audit)?;
         if let Some(id) = operation
-            && let Some(old) = crate::mutation::replay(tx, id, &fingerprint).await?
+            && let Some(old) = crate::assets::receipts::replay(tx, id, &fingerprint).await?
         {
             stored(serde_json::from_value::<AssetEnvelope>(old.clone()))?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            crate::mutation::audit(
+            crate::assets::receipts::audit(
                 tx,
                 &self.audit_store,
                 audit,
@@ -277,13 +278,13 @@ impl AssetService {
             .unix_seconds()
             .map_err(|_| Error::Unavailable(Failure::Clock))?;
         let value = self
-            .dispatch(tx, command, input(Timepoint::try_from(at))?)
+            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?)
             .await?;
         stored(serde_json::from_value::<AssetEnvelope>(value.clone()))?;
         if let Some(id) = operation {
-            crate::mutation::receipt(tx, id, &fingerprint, &value).await?;
+            crate::assets::receipts::receipt(tx, id, &fingerprint, &value).await?;
         }
-        crate::mutation::audit(
+        crate::assets::receipts::audit(
             tx,
             &self.audit_store,
             audit,
@@ -307,7 +308,7 @@ fn operation_identity(command: &Command, audit: &RequestAudit) -> Result<(Option
         return Err(Error::Malformed.into());
     }
     let actor = audit.snapshot();
-    let bytes = input(serde_json::to_vec(&(
+    let bytes = checked_input(serde_json::to_vec(&(
         audit.tenant(),
         actor.actor,
         actor.instance,
@@ -319,10 +320,9 @@ fn operation_identity(command: &Command, audit: &RequestAudit) -> Result<(Option
     Ok((operation, Sha256::digest(bytes).to_vec()))
 }
 
-#[derive(Clone, Debug, thiserror::Error)]
-pub(crate) enum AssetError {
-    #[error("operation requires the full authorized inventory scope")]
-    RestrictedScope,
-}
+mod error;
+use error::AssetError;
 
 pub(crate) const ASSETS_MIGRATION_SQL: &str = include_str!("../../migrations/0011_assets.sql");
+
+mod receipts;

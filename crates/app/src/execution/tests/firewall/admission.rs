@@ -149,7 +149,7 @@ async fn effects(pg: &mut sqlx::PgConnection) -> anyhow::Result<Vec<String>> {
     let mut effects = Vec::new();
     for table in [
         "mdm_commands.operations",
-        "rss_device_command.execution",
+        "rss_device_command.commands",
         "rss_transactional_messaging.outbox",
         "mdm_commands.firewall_owners",
         "mdm_commands.plan_executions",

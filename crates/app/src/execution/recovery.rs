@@ -223,7 +223,7 @@ impl ExecutionService {
         let audit = RequestAudit::new(self.tenant.to_string(), "command_dispatch");
         audit.operation(id, "command_dispatch");
         audit.identify_service("command-dispatch");
-        let result=crate::execution_transaction::transact(&self.runtime, &self.audit_store, self.tenant, (self,id,fingerprint,&audit),&audit,|ctx,tx|Box::pin(async move {
+        let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
             let fact=Fact::business(audit,&format!("command:{id}:dispatch"),fingerprint,200,"success",None)?;
             let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
@@ -234,7 +234,7 @@ impl ExecutionService {
             })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             if old {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             service.audit_store.append_in(tx,&fact,old).await?;Ok(())
-        })).await;
+        }),crate::transaction::TransactionOwner::Execution).await;
         audit.finalize(
             result
                 .as_ref()
@@ -261,7 +261,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
         Box::pin(async move {
             control.check()?;
             let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
-            let active=crate::execution_transaction::transact(&self.runtime, &self.audit_store, self.tenant, (self,claim.target().entity()),&audit,|ctx,tx|Box::pin(async move {
+            let active=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
             if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::active(tx,id).await;}
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
@@ -271,13 +271,13 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND id>$3::uuid ORDER BY id LIMIT 64").bind(tenant).bind(name).bind(after.to_string()).fetch_all(c).await})).await?;
                 if ids.is_empty(){return Ok(false);}
                 for id in ids {
-                    after=corrupt(Uuid::parse_str(&id))?;let op=storage::load(tx,after).await?;
+                    after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,after).await?;
                     if service.required_command(tx,&op).await?.status().is_terminal(){continue;}
                     if matches!(op.request.task,Task::Firewall{..}) && firewall_finished(tx,&op).await? {continue;}
                     return Ok(true);
                 }
             }
-        })).await;
+        }),crate::transaction::TransactionOwner::Execution).await;
             audit.finalize(
                 active
                     .as_ref()
@@ -302,7 +302,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let error = Mutex::new(None);
             control.check()?;
             let attempt=self.runtime.local_tx_with_context(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(self,claim,(self,claim.target().entity(),&audit,&error)),|(service,claim,context),tx|Box::pin(async move {
-                if let Err(e)=service.audit_store.lock_in(tx).await {return Err(rejection(Fault::Request(e.into()),context.3));}
+                if let Err(e)=service.audit_store.lock_in(tx).await {return Err(rejection(Fault::Request(e.into()),context.3,crate::transaction::TransactionOwner::Execution));}
                 rss_reconcile_postgres::messaging::protect_in(tx,claim,context,|ctx,tx|Box::pin(async move {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
@@ -312,19 +312,19 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 storage::lock(tx,&name).await?;
                 let tenant=service.tenant.to_string();let key=name.clone();
                 let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,recovery_after FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(key).fetch_one(c).await})).await?;
-                let scope=dc::Scope::new(service.tenant,corrupt(dc::DeviceId::parse(&row.try_get::<String,_>("command_device")?))?);
-                let after=row.try_get::<Option<String>,_>("recovery_after")?.map(|s|corrupt(dc::CommandId::parse(&s))).transpose()?;
+                let scope=dc::Scope::new(service.tenant,stored(dc::DeviceId::parse(&row.try_get::<String,_>("command_device")?))?);
+                let after=row.try_get::<Option<String>,_>("recovery_after")?.map(|s|stored(dc::CommandId::parse(&s))).transpose()?;
                 let registration=storage::current_registration(tx,&name).await;
                 if let Ok((id,generation))=registration {storage::authority(service,tx,&name,id,generation).await?;}
                 let tenant=service.tenant.to_string();let command_device=scope.device().as_uuid().to_string();let cursor=after.as_ref().map(|v|v.as_str().to_owned());
-                let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.execution WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
-                let page=service.store.recover(tx,scope,invalid(dc::BatchLimit::new(64))?,after.as_ref()).await?;
+                let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
+                let page=service.store.recover(tx,scope,checked_input(dc::BatchLimit::new(64))?,after.as_ref()).await?;
                 if matches!(registration,Err(Fault::Request(Error::Conflict))) {
                     for command in &page.commands {if !command.status().is_terminal(){let transition=service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?;if transition.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into());}}}
                 } else {registration?;}
                 for command in &page.commands {
                     if !command.status().is_terminal(){
-                        let operation=storage::load(tx,corrupt(Uuid::parse_str(command.spec().id().as_str()))?).await?;
+                        let operation=storage::load(tx,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
                         if let Task::Firewall{plan,..}=operation.request.task {
                             let current=tx.with_connection(move|c|Box::pin(async move{Ok(super::native::current_plan_on(c,plan).await)})).await??;
                             if !current && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into())}
@@ -332,12 +332,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     }
                 }
                 for (id,version,status) in previous {
-                    let operation=storage::load(tx,corrupt(Uuid::parse_str(&id))?).await?;
+                    let operation=storage::load(tx,stored(Uuid::parse_str(&id))?).await?;
                     let command=service.required_command(tx,&operation).await?;
                     if command.version()!=version {
                         let fact_audit=audit.transaction_copy();fact_audit.identify_service("command-recovery");fact_audit.operation(operation.id,"command_reconcile");fact_audit.target(&operation.device);fact_audit.registration(operation.registration);
                         let details=serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
-                        let fingerprint=invalid(serde_json::to_vec(&details))?;
+                        let fingerprint=checked_input(serde_json::to_vec(&details))?;
                         let fact=Fact::business(&fact_audit,&format!("command:{id}:recover:{}",command.version()),&fingerprint,200,"success",None)?.with_details(details)?;
                         fact_audit.finalize(None);
                         service.audit_store.append_in(tx,&fact,false).await?;
@@ -347,10 +347,15 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
                 Ok(())
             }.await;
-            match result {Ok(())=>{audit.mark_commit_started();Ok(())},Err(e)=>Err(rejection(e,failure))}
+            match result {Ok(())=>{audit.mark_commit_started();Ok(())},Err(e)=>Err(rejection(e,failure,crate::transaction::TransactionOwner::Execution))}
         })).await
             })).await;
-            let result = settle(attempt, &audit, error);
+            let result = settle(
+                attempt,
+                &audit,
+                error,
+                crate::transaction::TransactionOwner::Execution,
+            );
             audit.finalize(
                 result
                     .as_ref()

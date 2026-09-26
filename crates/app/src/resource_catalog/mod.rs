@@ -1,6 +1,7 @@
 //! Resource directory use cases; metadata remains owned by ResourceStore.
-use crate::mutation::*;
-use crate::{Error, Failure, ObjectKind as Missing};
+use crate::http_operation::Operation;
+use crate::transaction::*;
+use crate::{Error, Failure};
 use rss_contract::Timepoint;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_request_context::TenantId;
@@ -117,10 +118,10 @@ pub(crate) enum Change {
     },
 }
 fn id(s: &str) -> Result<r::Id> {
-    input(r::Id::new(s))
+    checked_input(r::Id::new(s))
 }
 fn artifact(a: &Artifact) -> Result<r::Artifact> {
-    input(r::Artifact::new(
+    checked_input(r::Artifact::new(
         id(&a.reference)?,
         a.length,
         r::Digest::from_bytes(a.sha256),
@@ -197,7 +198,7 @@ impl ResourceCatalog {
                 version,
                 kind,
                 variants,
-            } => pg::Command::Insert(input(r::Version::new(
+            } => pg::Command::Insert(checked_input(r::Version::new(
                 self.tenant,
                 rid.clone(),
                 id(version)?,
@@ -239,8 +240,9 @@ impl ResourceCatalog {
         tx: &mut PgTransaction<'_>,
         resource: &str,
     ) -> Result<Value> {
-        let stored = checked(self.resources.get_in(tx, &id(resource)?).await?)?
-            .ok_or(Error::ObjectNotFound(Missing::Resource))?;
+        let stored = checked(self.resources.get_in(tx, &id(resource)?).await?)?.ok_or(
+            Error::Resource(crate::resource_catalog::error::ResourceError::Missing),
+        )?;
         let snapshot = stored.resource.snapshot();
         let configurations = self.author.read_in(tx, resource).await?;
         Ok(
@@ -385,7 +387,7 @@ impl ResourceCatalog {
     ) -> std::result::Result<Self, Error> {
         let resources = pg::ResourceStore::new(runtime.clone(), tenant, deadline())
             .await
-            .map_err(|_| Error::Unavailable(Failure::ManagementAdmission))?;
+            .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
         Ok(Self {
             audit_store,
             runtime,
@@ -415,7 +417,7 @@ impl ResourceCatalog {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
-        crate::mutation::run(
+        crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
@@ -428,7 +430,7 @@ impl ResourceCatalog {
                         tx.prepare_outbox_partitions(&[s.resources.partition(id)?])
                             .await?;
                     }
-                    crate::mutation::lock(tx).await?;
+                    crate::transaction::lock(tx).await?;
                     authorize()?;
                     let operation = match command {
                         Command::Resource { change, .. } => Some(change.operation_id),
@@ -438,21 +440,23 @@ impl ResourceCatalog {
                         return Err(Error::Malformed.into());
                     }
                     use sha2::Digest;
-                    let fingerprint = sha2::Sha256::digest(input(serde_json::to_vec(&(
+                    let fingerprint = sha2::Sha256::digest(checked_input(serde_json::to_vec(&(
                         "resource",
                         audit.tenant(),
                         audit.snapshot().actor,
+                        audit.snapshot().instance,
                         command,
                     )))?)
                     .to_vec();
                     if let Some(id) = operation
-                        && let Some(old) = crate::mutation::replay(tx, id, &fingerprint).await?
+                        && let Some(old) =
+                            crate::resource_catalog::receipts::replay(tx, id, &fingerprint).await?
                     {
                         wire::Response::decode(old.clone())?;
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
                         );
-                        crate::mutation::audit(
+                        crate::resource_catalog::receipts::audit(
                             tx,
                             &s.audit_store,
                             audit,
@@ -463,7 +467,7 @@ impl ResourceCatalog {
                         authorize()?;
                         return Ok(old);
                     }
-                    let at = input(Timepoint::try_from(
+                    let at = checked_input(Timepoint::try_from(
                         s.clock
                             .unix_seconds()
                             .map_err(|_| Error::Unavailable(Failure::Clock))?,
@@ -476,9 +480,10 @@ impl ResourceCatalog {
                     };
                     wire::Response::decode(value.clone())?;
                     if let Some(id) = operation {
-                        crate::mutation::receipt(tx, id, &fingerprint, &value).await?;
+                        crate::resource_catalog::receipts::receipt(tx, id, &fingerprint, &value)
+                            .await?;
                     }
-                    crate::mutation::audit(
+                    crate::resource_catalog::receipts::audit(
                         tx,
                         &s.audit_store,
                         audit,
@@ -490,7 +495,12 @@ impl ResourceCatalog {
                     Ok(value)
                 })
             },
+            crate::transaction::TransactionOwner::ResourceCatalog,
         )
         .await
     }
 }
+
+mod receipts;
+
+pub mod error;

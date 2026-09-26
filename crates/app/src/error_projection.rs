@@ -32,13 +32,6 @@ impl From<crate::collection::CollectionError> for Error {
         }
     }
 }
-impl From<crate::assets::AssetError> for Error {
-    fn from(error: crate::assets::AssetError) -> Self {
-        match error {
-            crate::assets::AssetError::RestrictedScope => Self::Forbidden,
-        }
-    }
-}
 
 pub(crate) fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -> crate::Error {
     match outcome {
@@ -268,38 +261,6 @@ mod tests {
                 ),
                 Error::Unavailable(crate::Failure::Audit)
             ));
-        }
-    }
-}
-
-/// Closed missing-object categories for product planning endpoints.
-#[derive(Clone, Copy, Debug, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ObjectKind {
-    Operation,
-    Device,
-    Group,
-    Scope,
-    Policy,
-    Preview,
-    Resource,
-    Source,
-    Candidate,
-    Rule,
-}
-impl ObjectKind {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Operation => "operation_not_found",
-            Self::Device => "management_device_not_found",
-            Self::Group => "group_not_found",
-            Self::Scope => "scope_not_found",
-            Self::Policy => "policy_not_found",
-            Self::Preview => "plan_preview_not_found",
-            Self::Resource => "resource_not_found",
-            Self::Source => "software_source_not_found",
-            Self::Candidate => "software_candidate_not_found",
-            Self::Rule => "group_rule_not_found",
         }
     }
 }

@@ -34,7 +34,7 @@ fn fingerprint(revision: u64, frozen: &ScopeInput) -> Result<Vec<u8>> {
             )
         })
         .collect();
-    Ok(sha2::Sha256::digest(input(serde_json::to_vec(&(
+    Ok(sha2::Sha256::digest(checked_input(serde_json::to_vec(&(
         revision,
         &frozen.definition,
         sources,
@@ -116,7 +116,8 @@ impl Planning {
             };
             match reference {
                 Reference::Group(id) => {
-                    let gid = input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
+                    let gid =
+                        checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
                     let group =
                         group_checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
                     source.member_set = checked(self.groups.current_member_set_in(tx, gid).await?)?
@@ -125,19 +126,19 @@ impl Planning {
                     if group.kind == rss_mdm_group_postgres::GroupKind::Dynamic {
                         let run = source
                             .member_set
-                            .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+                            .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
                         let build = checked(
                             self.groups
                                 .build_in(
                                     tx,
-                                    input(rss_mdm_group_postgres::OperationId::parse(
+                                    checked_input(rss_mdm_group_postgres::OperationId::parse(
                                         &run.to_string(),
                                     ))?,
                                 )
                                 .await?,
                         )?;
                         if build.request.rule_version != group.rule_version {
-                            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+                            return Err(Error::Unavailable(Failure::PlanningStorage).into());
                         }
                     }
                     source.member_version = group.member_version as u64;
@@ -183,7 +184,7 @@ impl Planning {
                 .unix_seconds()
                 .map_err(|_| Error::Unavailable(Failure::Clock))?,
         };
-        let document = input(serde_json::to_string(&frozen))?;
+        let document = checked_input(serde_json::to_string(&frozen))?;
         let fingerprint = fingerprint(revision, &frozen)?;
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c|Box::pin(async move {
@@ -211,7 +212,7 @@ impl Planning {
         let frozen: ScopeInput = stored(serde_json::from_str(row.try_get("input")?))?;
         let revision = row.try_get::<i64, _>("definition_revision")? as u64;
         if fingerprint(revision, &frozen)? != row.try_get::<Vec<u8>, _>("fingerprint")? {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::PlanningStorage).into());
         }
         let watermark: i64 = row.try_get("asset_watermark")?;
         match row.try_get::<&str, _>("phase")? {
@@ -224,7 +225,7 @@ impl Planning {
                 let source = frozen
                     .sources
                     .get(index)
-                    .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+                    .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
                 let devices = match &source.reference {
                     Reference::Device(device) => {
                         if after.is_none() {
@@ -236,20 +237,20 @@ impl Planning {
                     Reference::Group(_) => match source.member_set {
                         None => vec![],
                         Some(run) => {
-                            let operation = input(rss_mdm_group_postgres::OperationId::parse(
-                                &run.to_string(),
-                            ))?;
+                            let operation = checked_input(
+                                rss_mdm_group_postgres::OperationId::parse(&run.to_string()),
+                            )?;
                             let build = checked(self.groups.build_in(tx, operation).await?)?;
                             let receipt = build
                                 .receipt
-                                .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+                                .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
                             if source.reference
                                 != Reference::Group(stored(Uuid::parse_str(
                                     &receipt.group.id.to_string(),
                                 ))?)
                                 || receipt.group.member_version as u64 != source.member_version
                             {
-                                return Err(Error::Unavailable(Failure::ManagementStorage).into());
+                                return Err(Error::Unavailable(Failure::PlanningStorage).into());
                             }
                             checked(
                                 self.groups
@@ -295,7 +296,7 @@ impl Planning {
                 )
                 .await
             }
-            _ => Err(Error::Unavailable(Failure::ManagementStorage).into()),
+            _ => Err(Error::Unavailable(Failure::PlanningStorage).into()),
         }
     }
 
@@ -345,7 +346,7 @@ impl Planning {
                 .or_default()
                 .insert(row.try_get::<i32, _>("source")? as usize);
         }
-        let at = input(Timepoint::try_from(frozen.as_of))?;
+        let at = checked_input(Timepoint::try_from(frozen.as_of))?;
         let live = self
             .asset_reader
             .live_devices_at_in(tx, watermark, &devices)
@@ -359,10 +360,10 @@ impl Planning {
         let mut matched = Vec::new();
         let mut explanations = Vec::new();
         for device in &devices {
-            let key = input(s::DeviceId::new(self.tenant, device))?;
+            let key = checked_input(s::DeviceId::new(self.tenant, device))?;
             let source_hits = hits
                 .get(device)
-                .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+                .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
             let resolve = |refs: &BTreeSet<Reference>| -> Result<Vec<s::SourceMembership>> {
                 frozen
                     .sources
@@ -372,11 +373,14 @@ impl Planning {
                     .map(|(index, source)| {
                         let (identity, version) = match &source.reference {
                             Reference::Device(d) => (
-                                s::SourceId::Direct(input(s::DeviceId::new(self.tenant, d))?),
+                                s::SourceId::Direct(checked_input(s::DeviceId::new(
+                                    self.tenant,
+                                    d,
+                                ))?),
                                 source.authority_version.max(1),
                             ),
                             Reference::Group(g) => (
-                                s::SourceId::Group(input(s::GroupId::new(
+                                s::SourceId::Group(checked_input(s::GroupId::new(
                                     self.tenant,
                                     g.to_string(),
                                 ))?),
@@ -384,13 +388,13 @@ impl Planning {
                             ),
                         };
                         Ok(s::SourceMembership {
-                            source: input(s::SourceRef::new(identity, version, at))?,
+                            source: checked_input(s::SourceRef::new(identity, version, at))?,
                             contains: s::Membership::Known(source_hits.contains(&index)),
                         })
                     })
                     .collect()
             };
-            let result = input(s::resolve_device(&s::DeviceInput {
+            let result = checked_input(s::resolve_device(&s::DeviceInput {
                 device: key,
                 targets: resolve(&frozen.definition.targets)?,
                 limitations: frozen
@@ -401,9 +405,9 @@ impl Planning {
                     .transpose()?,
                 exclusions: resolve(&frozen.definition.exclusions)?,
             }))?
-            .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+            .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
             matched.push(result.reasons.is_empty() && live.contains(device));
-            explanations.push(input(serde_json::to_string(&serde_json::json!({"device":device,"identity":if live.contains(device){"active"}else{"inactive"},"reasons":result.reasons.iter().map(|r|match r {s::ExclusionReason::MissingLimitationMatch=>"missing_limitation_match",s::ExclusionReason::ExplicitExclusion=>"explicit_exclusion"}).collect::<Vec<_>>(),"sources":source_hits})))?);
+            explanations.push(checked_input(serde_json::to_string(&serde_json::json!({"device":device,"identity":if live.contains(device){"active"}else{"inactive"},"reasons":result.reasons.iter().map(|r|match r {s::ExclusionReason::MissingLimitationMatch=>"missing_limitation_match",s::ExclusionReason::ExplicitExclusion=>"explicit_exclusion"}).collect::<Vec<_>>(),"sources":source_hits})))?);
         }
         let tenant = self.tenant.to_string();
         let count = devices.len() as i64;
@@ -489,7 +493,7 @@ impl Planning {
                 self.policies
                     .get_in(
                         tx,
-                        &input(rss_mdm_policy::PolicyId::new(self.tenant, &policy))?,
+                        &checked_input(rss_mdm_policy::PolicyId::new(self.tenant, &policy))?,
                     )
                     .await?,
             )?

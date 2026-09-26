@@ -5,9 +5,10 @@ use serde_json::json;
 use sqlx::Row;
 impl Planning {
     pub(super) async fn policy_read(&self, tx: &mut PgTransaction<'_>, id: &str) -> Result<Value> {
-        let id = input(p::PolicyId::new(self.tenant, id))?;
-        let state = checked(self.policies.get_in(tx, &id).await?)?
-            .ok_or(Error::ObjectNotFound(Missing::Policy))?;
+        let id = checked_input(p::PolicyId::new(self.tenant, id))?;
+        let state = checked(self.policies.get_in(tx, &id).await?)?.ok_or(Error::Planning(
+            crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy),
+        ))?;
         Ok(
             json!({"id":id.value(),"storage_revision":state.storage_revision(),"revision":state.policy().revision(),"status":policy_status(state.policy().status()),"plan":state.current_plan_id().map(|id|hex(*id.bytes())),"fresh":state.plan_is_fresh()}),
         )
@@ -19,7 +20,7 @@ impl Planning {
         op: &Operation<PolicyChange>,
         at: Timepoint,
     ) -> Result<Value> {
-        let id = input(p::PolicyId::new(self.tenant, id))?;
+        let id = checked_input(p::PolicyId::new(self.tenant, id))?;
         let command = match &op.input {
             PolicyChange::Create => pg::Command::Create { policy: id.clone() },
             PolicyChange::Activate {
@@ -27,8 +28,8 @@ impl Planning {
                 resource,
                 resource_version,
             } => {
-                let rid = input(rss_mdm_resource::Id::new(resource))?;
-                let vid = input(rss_mdm_resource::Id::new(resource_version))?;
+                let rid = checked_input(rss_mdm_resource::Id::new(resource))?;
+                let vid = checked_input(rss_mdm_resource::Id::new(resource_version))?;
                 let (v, state, _) = self.catalog.lock_version_in(tx, &rid, &vid).await?;
                 if !matches!(
                     state,
@@ -36,8 +37,8 @@ impl Planning {
                 ) {
                     return Err(Error::Conflict.into());
                 }
-                let payload = input(p::PayloadRef::new(
-                    input(p::PayloadId::new(
+                let payload = checked_input(p::PayloadRef::new(
+                    checked_input(p::PayloadId::new(
                         self.tenant,
                         format!("r-{}", hex(v.digest().bytes())),
                     ))?,
@@ -45,7 +46,7 @@ impl Planning {
                     v.digest().bytes(),
                 ))?;
                 let version_number = *version;
-                let version = input(p::Version::new(
+                let version = checked_input(p::Version::new(
                     id.clone(),
                     *version,
                     payload,
@@ -79,7 +80,7 @@ impl Planning {
             },
         };
         let request = pg::Request {
-            id: input(p::RequestId::new(self.tenant, op.operation_id.to_string()))?,
+            id: checked_input(p::RequestId::new(self.tenant, op.operation_id.to_string()))?,
             expected_storage_revision: op.expected_revision,
             as_of: at,
             command,

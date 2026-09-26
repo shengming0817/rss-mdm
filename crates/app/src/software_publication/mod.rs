@@ -180,3 +180,7 @@ pub(crate) mod http;
 mod wire;
 
 pub(crate) mod references;
+
+mod receipts;
+
+pub mod error;

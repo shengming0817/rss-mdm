@@ -20,7 +20,7 @@ pub(crate) struct Config {
     pub key_id: String,
     pub trusted_keys: BTreeMap<String, String>,
 }
-pub(crate) struct Content {
+struct Content {
     directory: PathBuf,
     key_id: String,
     key: Ed25519KeyPair,
@@ -375,21 +375,41 @@ mod tests {
     }
 }
 
-pub(crate) trait ContentPort: Send + Sync {
+pub(crate) trait ArtifactReader: Send + Sync {
     fn read(&self, artifact: &Artifact) -> Result<Vec<u8>, Error>;
+}
+pub(crate) trait ArtifactWriter: Send + Sync {
     fn put(&self, artifact: &Artifact, bytes: &[u8]) -> Result<(), Error>;
+}
+pub(crate) trait TaskSigner: Send + Sync {
     fn sign(&self, payload: TaskPayload) -> Result<SignedTask, Error>;
 }
-impl ContentPort for Content {
+impl ArtifactReader for Content {
     fn read(&self, a: &Artifact) -> Result<Vec<u8>, Error> {
         Content::read(self, a)
     }
+}
+impl ArtifactWriter for Content {
     fn put(&self, a: &Artifact, b: &[u8]) -> Result<(), Error> {
         Content::put(self, a, b)
     }
+}
+impl TaskSigner for Content {
     fn sign(&self, p: TaskPayload) -> Result<SignedTask, Error> {
         Content::sign(self, p)
     }
 }
-
+pub(crate) struct Capabilities {
+    pub reader: std::sync::Arc<dyn ArtifactReader>,
+    pub writer: std::sync::Arc<dyn ArtifactWriter>,
+    pub signer: std::sync::Arc<dyn TaskSigner>,
+}
+pub(crate) fn open(config: &Config, tenant: &str) -> Result<Capabilities, Error> {
+    let content = std::sync::Arc::new(Content::open(config, tenant)?);
+    Ok(Capabilities {
+        reader: content.clone(),
+        writer: content.clone(),
+        signer: content,
+    })
+}
 pub(crate) mod http;

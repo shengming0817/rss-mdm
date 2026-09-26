@@ -3,8 +3,8 @@ use super::{
     state::{Cancellation, Execution},
     storage as db,
 };
-use crate::execution::{ExecutionService, Result, corrupt, storage};
-use crate::planning::actions::schedule::Trigger;
+use crate::execution::{ExecutionService, Result, storage, stored};
+use crate::planning::action_schedule::Trigger;
 use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
@@ -19,7 +19,7 @@ pub(in crate::execution) async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -
     let plan = db::load_plan(tx, id).await?;
     let now = storage::now(tx).await?;
     let scheduled = plan.definition.active
-        && plan.definition.reviewer.is_some()
+        && plan.definition.approved
         && now < plan.definition.frozen.input.schedule.until
         && !matches!(
             plan.definition.frozen.input.schedule.trigger,
@@ -42,17 +42,14 @@ pub(in crate::execution) async fn recover(
     let runs=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND ((state->>'execution'='not_started' AND state->>'cancellation'<>'confirmed') OR state->>'execution'='running') AND id>coalesce((SELECT recovery_after FROM mdm_commands.action_progress WHERE tenant_id=$1::uuid AND id=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await})).await?;
     let next = runs.last().cloned();
     for id in runs {
-        let mut run = db::load_run(tx, corrupt(Uuid::parse_str(&id))?).await?;
+        let mut run = db::load_run(tx, stored(Uuid::parse_str(&id))?).await?;
         let previous = run.state.clone();
         let stale = stale_registration(tx, &run.target).await?;
         if stale
-            || !crate::planning::actions::storage::valid(
-                tx,
-                &plan.definition,
-                &run.target.device,
-                now,
-            )
-            .await?
+            || !plan
+                .definition
+                .authorized_in(tx, &run.target.device, now)
+                .await?
         {
             run.state.cancel();
         }
@@ -88,7 +85,7 @@ pub(super) async fn audit_recovery(
         audit.plan(run.plan);
         audit.target(&run.target.device);
         audit.registration(run.target.registration);
-        let bytes = crate::execution::invalid(serde_json::to_vec(&(&previous, &run.state)))?;
+        let bytes = crate::execution::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
         let fact = Fact::business(
             &audit,
@@ -120,7 +117,7 @@ impl ExecutionService {
         );
         audit.operation(id, "command_dispatch");
         audit.identify_service("command-dispatch");
-        let result=crate::execution_transaction::transact(&self.runtime, &self.audit_store, self.tenant, (self,id,fingerprint,&audit),&audit,|ctx,tx|Box::pin(async move{
+        let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             let fact=Fact::business(audit,&format!("action:{id}:dispatch"),fingerprint,200,"success",None)?;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
@@ -131,7 +128,7 @@ impl ExecutionService {
             })).await?.ok_or(crate::Error::Unavailable(crate::Failure::CommandInvariant))?;
             if old{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             service.audit_store.append_in(tx,&fact,old).await?;Ok(())
-        })).await;
+        }),crate::transaction::TransactionOwner::Execution).await;
         audit.finalize(
             result
                 .as_ref()
@@ -153,18 +150,19 @@ impl ExecutionService {
             self.tenant.to_string(),
             "management_write",
         );
-        let result = crate::execution_transaction::transact(
-            &self.runtime,
+        let result = crate::transaction::run(
             &self.audit_store,
+            &self.runtime,
             self.tenant,
-            (self, id),
             &audit,
+            (self, id),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, id) = *ctx;
                     recover(service, tx, id).await
                 })
             },
+            crate::transaction::TransactionOwner::Execution,
         )
         .await;
         audit.finalize(
@@ -186,12 +184,12 @@ impl ExecutionService {
             self.tenant.to_string(),
             "management_write",
         );
-        let result = crate::execution_transaction::transact(
-            &self.runtime,
+        let result = crate::transaction::run(
             &self.audit_store,
+            &self.runtime,
             self.tenant,
-            (self, id, now),
             &audit,
+            (self, id, now),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, id, now) = *ctx;
@@ -200,6 +198,7 @@ impl ExecutionService {
                     production::tick(service, tx, &plan, now).await
                 })
             },
+            crate::transaction::TransactionOwner::Execution,
         )
         .await;
         audit.finalize(

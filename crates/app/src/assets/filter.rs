@@ -1,15 +1,15 @@
 use super::*;
 use rss_mdm_group_postgres::core as g;
-pub(super) fn scalar(value: &Scalar) -> Result<g::Scalar> {
-    input(value.validate())?;
+pub(crate) fn scalar(value: &Scalar) -> Result<g::Scalar> {
+    checked_input(value.validate())?;
     Ok(match value {
         Scalar::String(v) => g::Scalar::String(v.clone()),
         Scalar::Integer(v) => g::Scalar::Integer(*v),
         Scalar::Boolean(v) => g::Scalar::Boolean(*v),
-        Scalar::Time(v) => g::Scalar::Time(input(Timepoint::try_from(*v))?),
+        Scalar::Time(v) => g::Scalar::Time(checked_input(Timepoint::try_from(*v))?),
     })
 }
-pub(super) fn op(value: Operator) -> g::Op {
+pub(crate) fn op(value: Operator) -> g::Op {
     match value {
         Operator::Eq => g::Op::Eq,
         Operator::Ne => g::Op::Ne,
@@ -39,13 +39,13 @@ fn criteria(c: &Criteria, depth: usize, nodes: &mut usize) -> Result<g::Criteria
         return Err(Error::Malformed.into());
     }
     match c {
-        Criteria::And { children } => input(g::Criteria::and(
+        Criteria::And { children } => checked_input(g::Criteria::and(
             children
                 .iter()
                 .map(|c| criteria(c, depth + 1, nodes))
                 .collect::<Result<_>>()?,
         )),
-        Criteria::Or { children } => input(g::Criteria::or(
+        Criteria::Or { children } => checked_input(g::Criteria::or(
             children
                 .iter()
                 .map(|c| criteria(c, depth + 1, nodes))
@@ -79,7 +79,7 @@ fn criteria(c: &Criteria, depth: usize, nodes: &mut usize) -> Result<g::Criteria
                 )?)),
                 _ => return Err(Error::Malformed.into()),
             };
-            input(g::Criteria::predicate(g::Predicate {
+            checked_input(g::Criteria::predicate(g::Predicate {
                 field: field.as_str().into(),
                 op: op(*operation),
                 operand: operand.map(|value| g::Operand { value, unit: None }),
@@ -88,7 +88,7 @@ fn criteria(c: &Criteria, depth: usize, nodes: &mut usize) -> Result<g::Criteria
     }
 }
 pub(crate) fn rule(tenant: TenantId, id: Uuid, c: &Criteria) -> Result<g::Rule> {
-    input(g::Rule::new(
+    checked_input(g::Rule::new(
         tenant,
         id.to_string(),
         rss_mdm_inventory::DICTIONARY,
@@ -125,7 +125,7 @@ pub(crate) fn criteria_view(c: &g::Criteria) -> Result<Criteria> {
             children: cs.iter().map(criteria_view).collect::<Result<_>>()?,
         },
         g::CriteriaView::Predicate(p) => {
-            let field = input(FieldKey::parse(&p.field))?;
+            let field = checked_input(FieldKey::parse(&p.field))?;
             let operation = field
                 .definition()
                 .operations
@@ -172,7 +172,7 @@ pub(crate) fn page(tenant: TenantId, devices: &[DeviceView]) -> Result<FactPage>
                             state,
                             source: "resolved-inventory".into(),
                             snapshot_id: digest(f)?,
-                            observed_at: input(Timepoint::try_from(
+                            observed_at: checked_input(Timepoint::try_from(
                                 f.sources
                                     .iter()
                                     .map(|s| s.evidence.observed_at)
@@ -184,7 +184,7 @@ pub(crate) fn page(tenant: TenantId, devices: &[DeviceView]) -> Result<FactPage>
                 })
                 .collect::<Result<_>>()?;
             Ok(g::ObjectSnapshot {
-                key: input(g::ObjectKey::new(tenant, device.device.clone()))?,
+                key: checked_input(g::ObjectKey::new(tenant, device.device.clone()))?,
                 facts,
             })
         })

@@ -550,9 +550,9 @@ async fn credential_race(
     let pb = proof(A, Channel::Mdm, 61);
     let (_, a) = bind(service, admin, &pa, "locator-left", 0).await?;
     let (_, b) = bind(service, admin, &pb, "locator-right", 0).await?;
-    let mut execution = Vec::new();
+    let mut commands = Vec::new();
     for device in [&a.device, &b.device] {
-        execution.push(BindRegistration {
+        commands.push(BindRegistration {
             operation_id: Uuid::new_v4(),
             request_id: request(&service.access, admin, device, Channel::Mdm).await?,
             expected_generation: 1,
@@ -578,8 +578,8 @@ async fn credential_race(
         Ok::<_, anyhow::Error>(())
     };
     let (left, right, released) = tokio::join!(
-        service.bind(admin, &shared, execution[0].clone()),
-        service.bind(admin, &shared, execution[1].clone()),
+        service.bind(admin, &shared, commands[0].clone()),
+        service.bind(admin, &shared, commands[1].clone()),
         release
     );
     released?;

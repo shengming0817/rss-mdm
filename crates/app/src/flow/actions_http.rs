@@ -1,7 +1,4 @@
-use super::{
-    ActionPlans,
-    model::{Change, Create, CreateInput},
-};
+use crate::planning::actions::model::{Change, Create, CreateInput};
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
@@ -14,7 +11,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) struct HttpState {
-    pub(crate) plans: Arc<ActionPlans>,
+    pub(crate) plans: Arc<crate::flow::actions::ActionWorkflow>,
 }
 type Body<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(v: Body<T>) -> Result<T, Error> {

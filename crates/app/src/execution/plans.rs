@@ -1,6 +1,6 @@
-//! Frozen product plans are the only admission path for firewall writes.
+//! FrozenAction product plans are the only admission path for firewall writes.
 use super::*;
-use crate::{PlanFailureReason as Reason, PlanStage};
+use crate::planning::error::{PlanFailureReason as Reason, PlanStage};
 use crate::{
     authorization::Permission,
     authorization::context::AuthorizedPrincipal,
@@ -36,12 +36,12 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.require(Permission::PlanExecute, None)?;
-        crate::execution_transaction::transact(
-            &self.runtime,
+        crate::transaction::run(
             &self.audit_store,
+            &self.runtime,
             self.tenant,
-            (self, proof, policy, plan, input, audit),
             audit,
+            (self, proof, policy, plan, input, audit),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, proof, policy, plan, input, audit) = *ctx;
@@ -50,6 +50,7 @@ impl ExecutionService {
                         .await
                 })
             },
+            crate::transaction::TransactionOwner::Execution,
         )
         .await
     }
@@ -64,7 +65,7 @@ impl ExecutionService {
     ) -> Result<Value> {
         let s = self;
         self.lock_plan_request(tx, proof, input).await?;
-        let fingerprint = Sha256::digest(invalid(serde_json::to_vec(&(
+        let fingerprint = Sha256::digest(checked_input(serde_json::to_vec(&(
             "mdm.plan-execute/v2",
             proof.user(),
             policy,
@@ -179,7 +180,7 @@ impl ExecutionService {
             let policy = preview.policy.clone();
             let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND request->'task'->>'policy'=$3 AND request->'task'->>'kind'='firewall' AND (request->'task'->>'version')::bigint=$4 ORDER BY id").bind(tenant).bind(device).bind(policy).bind(version as i64).fetch_all(c).await})).await?;
             for id in ids {
-                let op = storage::load(tx, corrupt(Uuid::parse_str(&id))?).await?;
+                let op = storage::load(tx, stored(Uuid::parse_str(&id))?).await?;
                 let command = self.required_command(tx, &op).await?;
                 if !command.status().is_terminal()
                     && self
@@ -229,7 +230,7 @@ impl ExecutionService {
             }
             let old = storage::load(
                 tx,
-                corrupt(Uuid::parse_str(&owner.try_get::<String, _>("operation")?))?,
+                stored(Uuid::parse_str(&owner.try_get::<String, _>("operation")?))?,
             )
             .await?;
             if !s.required_command(tx, &old).await?.status().is_terminal()
@@ -453,7 +454,7 @@ async fn load_saved_plan(
     }
     let preview = admission.plan;
     if preview.devices.len() > crate::planning::admission::MAX_TARGETS {
-        return Err(Error::ConfigurationTargetLimit.into());
+        return Err(Error::Planning(crate::planning::error::PlanningError::TargetLimit).into());
     }
     let frozen = preview.configuration.as_ref().ok_or(Error::Malformed)?;
     if frozen.ddf != rss_mdm_windows_mdm::configuration::REVISION || preview.policy != policy {

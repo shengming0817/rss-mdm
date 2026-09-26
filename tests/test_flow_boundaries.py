@@ -23,6 +23,29 @@ class FlowOwnership(unittest.TestCase):
                               "crate::management::", "crate::planning::configuration"):
                 self.assertNotIn(forbidden, text, str(path))
 
+    def test_private_plan_model_and_authority_do_not_escape_to_execution(self):
+        for path in (APP / "execution").rglob("*.rs"):
+            text = path.read_text()
+            for forbidden in ("planning::actions::storage", "planning::actions::model", "ActionDispatch"):
+                self.assertNotIn(forbidden, text, str(path))
+        role_sql = (ROOT / "crates/app/migrations/0016_enterprise_tasks.sql").read_text()
+        for statement in role_sql.split(";"):
+            if "GRANT" in statement and "mdm_planning.action_plans" in statement and "TO mdm_command_runtime" in statement:
+                self.assertNotIn("INSERT", statement)
+                self.assertNotIn("UPDATE", statement)
+
+    def test_content_capabilities_and_settlement_have_one_owner(self):
+        content = (APP / "task_content.rs").read_text()
+        for capability in ("ArtifactReader", "ArtifactWriter", "TaskSigner"):
+            self.assertIn("trait " + capability, content)
+        self.assertNotIn("ContentPort", content)
+        self.assertFalse((APP / "mutation.rs").exists())
+        self.assertFalse((APP / "execution_transaction.rs").exists())
+        for path in (APP / "planning").rglob("*.rs"):
+            if path.name.endswith("tests.rs"):
+                continue
+            self.assertNotIn("crate::flow::", path.read_text(), str(path))
+
     def test_plan_and_execution_progress_have_distinct_storage(self):
         sql = "\n".join(p.read_text() for p in (ROOT / "crates/app/migrations").glob("*.sql"))
         self.assertIn("CREATE TABLE mdm_planning.action_plans", sql)

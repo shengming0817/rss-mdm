@@ -82,7 +82,7 @@ impl Planning {
                 .bind(tenant).bind(consumed).bind(watermark).fetch_all(c).await
         })).await?;
         if changes.len() > 1000 {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::PlanningStorage).into());
         }
         let mut devices = std::collections::BTreeSet::new();
         let mut fields = std::collections::BTreeSet::new();

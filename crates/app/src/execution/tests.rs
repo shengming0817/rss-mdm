@@ -182,12 +182,12 @@ impl Client {
         // Drive the public bounded recovery seam without a competing fault consumer.
         let s = self.app.execution.clone();
         let id = self.operation;
-        crate::execution_transaction::transact(
-            &s.runtime,
+        crate::transaction::run(
             &s.audit_store,
+            &s.runtime,
             s.tenant,
-            (s.as_ref(), id),
             &audit,
+            (s.as_ref(), id),
             |ctx, tx| {
                 Box::pin(async move {
                     let op = storage::load(tx, ctx.1).await?;
@@ -199,6 +199,7 @@ impl Client {
                     Ok(())
                 })
             },
+            crate::transaction::TransactionOwner::Execution,
         )
         .await?;
         audit.finalize(None);

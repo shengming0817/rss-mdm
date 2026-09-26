@@ -85,17 +85,17 @@ GRANT UPDATE(status,value,received_at,receipt_accepted) ON mdm_commands.attempts
 GRANT UPDATE(generation,os_version,edition,session,observed_at) ON mdm_commands.capabilities TO mdm_command_runtime;
 GRANT UPDATE(os_version,edition,version_status,edition_status) ON mdm_commands.capability_queries TO mdm_command_runtime;
 GRANT USAGE ON SCHEMA mdm_planning TO mdm_command_runtime;
-GRANT UPDATE(saved_revision) ON mdm_planning.firewall_plans TO mdm_planning_runtime;
-GRANT SELECT,INSERT ON mdm_planning.firewall_plans,mdm_planning.firewall_resources,mdm_planning.firewall_versions TO mdm_planning_runtime;
-GRANT USAGE ON SCHEMA mdm_commands TO mdm_planning_runtime;
-GRANT SELECT ON mdm_commands.capabilities TO mdm_planning_runtime;
+GRANT UPDATE(saved_revision) ON mdm_planning.firewall_plans TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_planning.firewall_plans,mdm_planning.firewall_resources,mdm_planning.firewall_versions TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_commands TO mdm_flow_runtime;
+GRANT SELECT ON mdm_commands.capabilities TO mdm_flow_runtime;
 -- Narrow read projection; the RSS component still admits only its command runtime.
 CREATE FUNCTION mdm_commands.policy_facts(p_policy text) RETURNS TABLE(device text,version bigint,status text,write_status integer)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,mdm_commands AS $facts$
 SELECT o.device,(o.request->'task'->>'version')::bigint AS version,d.status,(SELECT a.status FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.receipt_accepted ORDER BY ordinal DESC LIMIT 1) AS write_status FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND o.request->'task'->>'kind'='firewall' AND o.request->'task'->>'policy'=p_policy ORDER BY o.id LIMIT 10001;
 $facts$;
 REVOKE ALL ON FUNCTION mdm_commands.policy_facts(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_commands.policy_facts(text) TO mdm_planning_runtime;
+GRANT EXECUTE ON FUNCTION mdm_commands.policy_facts(text) TO mdm_flow_runtime;
 -- Immutable execution inputs plus a single owner-composed freshness predicate.
 CREATE FUNCTION mdm_planning.plan_execution_admission(p_plan uuid)
 RETURNS TABLE(document jsonb,saved_revision bigint,current boolean)
@@ -115,9 +115,9 @@ FROM mdm_planning.firewall_plans f
 WHERE f.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND f.id=p_plan;
 $admission$;
 REVOKE ALL ON FUNCTION mdm_planning.plan_execution_admission(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_planning.plan_execution_admission(uuid) TO mdm_planning_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_planning.plan_execution_admission(uuid) TO mdm_flow_runtime,mdm_command_runtime;
 ALTER TABLE mdm_automation.automation_jobs ADD COLUMN failure_detail jsonb;
 ALTER TABLE mdm_automation.automation_jobs DROP CONSTRAINT automation_jobs_failure_check;
 ALTER TABLE mdm_automation.automation_jobs ADD CONSTRAINT automation_jobs_failure_check CHECK(failure IN('superseded','capacity_exceeded','source_unavailable','invalid_input','storage_invariant','automation_suspended','configuration_target_limit','capability_unknown','platform_unsupported','stale_plan','owner_conflict'));
-GRANT UPDATE(failure_detail) ON mdm_automation.automation_jobs TO mdm_planning_runtime;
+GRANT UPDATE(failure_detail) ON mdm_automation.automation_jobs TO mdm_flow_runtime;
 COMMIT;

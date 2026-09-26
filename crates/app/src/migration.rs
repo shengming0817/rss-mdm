@@ -138,8 +138,17 @@ fn units() -> [(&'static str, &'static str); 49] {
             crate::software_publication::MIGRATION_SQL,
         ),
         (
-            "planning-v1",
-            include_str!("../migrations/0007_management.sql"),
+            "flow-v1",
+            concat!(
+                "BEGIN;\n",
+                include_str!("../migrations/0007_flow.sql"),
+                include_str!("planning/install.sql"),
+                include_str!("assets/install.sql"),
+                include_str!("resource_catalog/install.sql"),
+                include_str!("software_publication/install.sql"),
+                include_str!("automation/install.sql"),
+                "COMMIT;\n",
+            ),
         ),
         (
             "group-outbox-writer-v1",
@@ -186,7 +195,7 @@ fn units() -> [(&'static str, &'static str); 49] {
             "inventory-v2",
             rss_mdm_inventory_postgres::ASSETS_MIGRATION_SQL,
         ),
-        ("assets-planning-v1", crate::assets::ASSETS_MIGRATION_SQL),
+        ("assets-v1", crate::assets::ASSETS_MIGRATION_SQL),
         ("agent-access-v1", crate::device::AGENT_ACCESS_MIGRATION_SQL),
         (
             "policy-candidates-v2",
@@ -225,7 +234,7 @@ fn units() -> [(&'static str, &'static str); 49] {
             include_str!("../migrations/0012_windows_configuration.sql"),
         ),
         (
-            "apple-planning-v1",
+            "apple-management-v1",
             include_str!("../migrations/0015_apple_management.sql"),
         ),
         (

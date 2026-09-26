@@ -23,6 +23,6 @@ pub(super) enum Response {
 }
 impl Response {
     pub fn decode(value: Value) -> std::result::Result<Self, Error> {
-        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::ManagementStorage))
+        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::ResourceStorage))
     }
 }

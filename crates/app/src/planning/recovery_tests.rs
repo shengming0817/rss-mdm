@@ -107,7 +107,14 @@ async fn unknown_policy_result_is_not_found() {
     )
     .await;
     assert!(
-        matches!(result, Err(Error::ObjectNotFound(Missing::Preview))),
+        matches!(
+            result,
+            Err(Error::Planning(
+                crate::planning::error::PlanningError::Missing(
+                    crate::planning::error::Missing::Preview
+                )
+            ))
+        ),
         "{result:?}"
     );
     let missing = execute(
@@ -120,7 +127,14 @@ async fn unknown_policy_result_is_not_found() {
     )
     .await;
     assert!(
-        matches!(missing, Err(Error::ObjectNotFound(Missing::Preview))),
+        matches!(
+            missing,
+            Err(Error::Planning(
+                crate::planning::error::PlanningError::Missing(
+                    crate::planning::error::Missing::Preview
+                )
+            ))
+        ),
         "{missing:?}"
     );
     service.runtime.close().await;
@@ -132,7 +146,7 @@ fn options() -> sqlx::postgres::PgConnectOptions {
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
         .database("backend")
-        .username("mdm_planning_runtime")
+        .username("mdm_flow_runtime")
         .password("backend-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap())
@@ -270,7 +284,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
     // Failure of the companion audit must leave both job and RSS claim retryable.
-    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_planning_runtime");
+    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime");
     let result = worker
         .finish(
             &claim,
@@ -278,7 +292,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
             &control,
         )
         .await;
-    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_planning_runtime");
+    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime");
     assert!(result.is_err());
     assert_eq!(
         serde_json::from_str::<Value>(&snapshot(task)).unwrap()[1],
@@ -286,7 +300,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     );
     worker.release(&claim, &control).await.unwrap();
     // Let the actual RSS worker select Suspended after an unrecoverable page write.
-    sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_planning_runtime");
+    sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime");
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
         concurrency: 1,
         lease_ttl: Duration::from_secs(3),
@@ -306,18 +320,18 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         &control,
         |_| {},
     );
-    let target = sql(&format!(
-        "SELECT target FROM mdm_automation.automation_jobs WHERE id='{task}'"
-    ));
+    let query_scope: assets::ReadScope = serde_json::from_str(&sql(&format!(
+        "SELECT (input->'scope')::text FROM mdm_automation.automation_jobs WHERE id='{task}'"
+    )))
+    .unwrap();
     let inspect = async {
         let outcome = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let state = execute(
+                let state = execute_asset(
                     &service,
-                    &Command::TaskRead {
-                        id: task,
-                        target: target.clone(),
-                        family: crate::automation::TaskKind::AssetQuery,
+                    &assets::Command::QueryStatus {
+                        task,
+                        scope: query_scope.clone(),
                     },
                 )
                 .await;
@@ -334,7 +348,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         outcome
     };
     let (_, state) = tokio::join!(runner, inspect);
-    sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_planning_runtime");
+    sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime");
     assert_eq!(state.unwrap()["failure"], "automation_suspended");
     assert_eq!(
         audit_records()

@@ -18,7 +18,7 @@ impl Planning {
         else {
             return Ok(());
         };
-        let group = input(g::GroupId::parse(&id.to_string()))?;
+        let group = checked_input(g::GroupId::parse(&id.to_string()))?;
         let current = match self.groups.lock_reference_target_in(tx, group).await? {
             Ok(group) => group,
             Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
@@ -51,7 +51,7 @@ impl Planning {
                     patch,
                     publish: true,
                     automatic: true,
-                    at: input(Timepoint::try_from(
+                    at: checked_input(Timepoint::try_from(
                         self.clock
                             .unix_seconds()
                             .map_err(|_| Error::Unavailable(Failure::Clock))?,
@@ -77,7 +77,7 @@ impl Planning {
             .input_version
             .strip_prefix("assets:")
             .and_then(|v| v.parse::<i64>().ok())
-            .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+            .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
         Ok(observed >= watermark && built.request.rule_version == current.rule_version)
     }
 
@@ -95,7 +95,7 @@ impl Planning {
             automatic,
             at,
         } = start;
-        let group = input(g::GroupId::parse(&id.to_string()))?;
+        let group = checked_input(g::GroupId::parse(&id.to_string()))?;
         let current = group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
         if current.revision.get() as u64 != expected {
             return Err(Error::Conflict.into());
@@ -111,7 +111,7 @@ impl Planning {
             })
             .await?;
         let request = g::BuildRequest {
-            id: input(g::OperationId::parse(&task.to_string()))?,
+            id: checked_input(g::OperationId::parse(&task.to_string()))?,
             group,
             expected: current.revision,
             rule_version: current.rule_version,
@@ -185,7 +185,7 @@ impl Planning {
                 if total > g::MAX_MEMBERS {
                     return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
                 }
-                let data = stored(assets::criteria::page(self.tenant, &page.devices))?;
+                let data = stored(assets::filter::page(self.tenant, &page.devices))?;
                 if !data.objects.is_empty() {
                     let page_input = g::core::PageInput {
                         tenant: self.tenant,
@@ -253,9 +253,9 @@ impl Planning {
             ..
         } = *job
         else {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::PlanningStorage).into());
         };
-        let operation = input(g::OperationId::parse(&task.to_string()))?;
+        let operation = checked_input(g::OperationId::parse(&task.to_string()))?;
         let build = checked(self.groups.build_in(tx, operation).await?)?;
         if build.receipt.is_some() {
             return self.propagate_group_in(tx, task, id, cursor).await;
@@ -328,7 +328,7 @@ impl Planning {
                     patch,
                     publish: true,
                     automatic: true,
-                    at: input(Timepoint::try_from(
+                    at: checked_input(Timepoint::try_from(
                         self.clock
                             .unix_seconds()
                             .map_err(|_| Error::Unavailable(Failure::Clock))?,

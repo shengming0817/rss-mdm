@@ -57,9 +57,9 @@ impl AssetService {
             for dataset in rss_mdm_inventory::datasets(source) {
                 let scope = crate::device::scope_dataset(
                     self.tenant,
-                    input(Uuid::parse_str(row.try_get("registration")?))?,
+                    checked_input(Uuid::parse_str(row.try_get("registration")?))?,
                     source.as_str(),
-                    input(Uuid::parse_str(row.try_get("epoch")?))?,
+                    checked_input(Uuid::parse_str(row.try_get("epoch")?))?,
                     dataset,
                 )?;
                 devices
@@ -68,10 +68,10 @@ impl AssetService {
                     .channels
                     .insert(row.try_get("channel")?);
                 generations.insert(
-                    input(scope.encode())?,
+                    checked_input(scope.encode())?,
                     stored(u64::try_from(row.try_get::<i64, _>("generation")?))?,
                 );
-                subjects.insert(input(scope.encode())?, device.clone());
+                subjects.insert(checked_input(scope.encode())?, device.clone());
                 scopes.push(scope);
             }
         }
@@ -156,7 +156,7 @@ impl AssetService {
             }
         }
         let devices: Vec<_> = devices.into_values().collect();
-        if input(serde_json::to_vec(&devices))?.len()
+        if checked_input(serde_json::to_vec(&devices))?.len()
             > rss_mdm_group_postgres::core::limits::BATCH_BYTES
         {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
@@ -178,7 +178,7 @@ impl AssetService {
         if !field.definition().manual || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed.into());
         }
-        input(rss_observation::Id::new(device))?;
+        checked_input(rss_observation::Id::new(device))?;
         let tenant = self.tenant.to_string();
         let id = device.to_owned();
         let exists: bool = tx
@@ -204,7 +204,7 @@ impl AssetService {
         let old = prior.into_iter().find(|a| a.field == field);
         let state = match &change.input {
             ManualChange::Set { value } => {
-                input(field.validate_scalar(value))?;
+                checked_input(field.validate_scalar(value))?;
                 State::Known(value.clone())
             }
             ManualChange::Null {} => State::Null,
@@ -289,7 +289,7 @@ impl AssetService {
             .take(100)
             .map(|r| {
                 Ok(SavedView {
-                    id: input(Uuid::parse_str(r.try_get("id")?))?,
+                    id: checked_input(Uuid::parse_str(r.try_get("id")?))?,
                     revision: r.try_get("revision")?,
                     definition: r
                         .try_get::<Option<String>, _>("document")?
@@ -320,7 +320,7 @@ impl AssetService {
             SavedChange::Put { definition } => {
                 crate::authorization::exact_id(&definition.name)?;
                 self.validate_query(&definition.query)?;
-                if input(serde_json::to_vec(definition))?.len() > 16384 {
+                if checked_input(serde_json::to_vec(definition))?.len() > 16384 {
                     return Err(Error::Malformed.into());
                 }
                 Some(definition.clone())

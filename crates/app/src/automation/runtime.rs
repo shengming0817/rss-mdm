@@ -31,7 +31,7 @@ impl Automation {
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await
-            .map_err(|_| Error::Unavailable(Failure::ManagementConnection))?;
+            .map_err(|_| Error::Unavailable(Failure::AutomationConnection))?;
         let timer = Timer::new();
         let cancel = CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
@@ -39,7 +39,7 @@ impl Automation {
             Ok(store) => store,
             Err(_) => {
                 pool.close().await;
-                return Err(Error::Unavailable(Failure::ManagementAdmission));
+                return Err(Error::Unavailable(Failure::AutomationAdmission));
             }
         };
         // Startup retries retained input without discarding its failure diagnosis.
@@ -48,7 +48,7 @@ impl Automation {
             .is_err()
         {
             let _ = store.close(&control).await;
-            return Err(Error::Unavailable(Failure::ManagementStorage));
+            return Err(Error::Unavailable(Failure::AutomationStorage));
         }
         Ok(Arc::new(Self {
             service,
@@ -169,17 +169,17 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                 .await
                 .fold(
                     Ok,
-                    |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                    |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                     |_| {
                         Err(failure
                             .lock()
                             .expect("failure slot")
                             .take()
-                            .unwrap_or(Error::Unavailable(Failure::ManagementStorage)))
+                            .unwrap_or(Error::Unavailable(Failure::AutomationStorage)))
                     },
                     |_| Err(Error::CommitUnknown),
                     |_| Err(Error::CommitUnknown),
-                    |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                    |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                 );
             Ok(ReconcileDiff::between(
                 DesiredState::present(false),
@@ -232,7 +232,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                                 ctx.0.dispatch_assets_in(tx).await?;
                                                 return ctx.0.clear_ingress_failure_in(tx).await;
                                             }
-                                            let id = input(
+                                            let id = checked_input(
                                                 ctx.1
                                                     .strip_prefix("job:")
                                                     .ok_or(Error::Malformed)
@@ -291,7 +291,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
             let rejection = attempt
                 .fold(
                     |_| Ok(None),
-                    |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                    |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                     |error| {
                         eprintln!("{}",serde_json::json!({"event":"mdm_automation_rollback","target":claim.target().entity(),"diagnostic":format!("{error:?}")}));
                         failure
@@ -299,15 +299,17 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                             .expect("failure slot")
                             .take()
                             .map(Some)
-                            .ok_or(Error::Unavailable(Failure::ManagementStorage))
+                            .ok_or(Error::Unavailable(Failure::AutomationStorage))
                     },
                     |_| Err(Error::CommitUnknown),
                     |_| Err(Error::CommitUnknown),
-                    |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                    |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                 )
                 .map_err(reconcile_error)?;
             let detail = match &rejection {
-                Some(Error::Plan(detail)) => Some(detail.clone()),
+                Some(Error::Planning(crate::planning::error::PlanningError::Plan(detail))) => {
+                    Some(detail.clone())
+                }
                 _ => None,
             };
             let terminal = match rejection {
@@ -317,11 +319,13 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     | Failure::AssetBytesLimit
                     | Failure::AssetSourceLimit,
                 )) => Some("capacity_exceeded"),
-                Some(Error::ObjectNotFound(_)) | Some(Error::NotFound) => {
-                    Some("source_unavailable")
+                Some(ref error) if error.is_not_found() => Some("source_unavailable"),
+                Some(Error::Planning(crate::planning::error::PlanningError::Plan(ref detail))) => {
+                    Some(detail.reason.code())
                 }
-                Some(Error::Plan(ref detail)) => Some(detail.reason.code()),
-                Some(Error::ConfigurationTargetLimit) => Some("configuration_target_limit"),
+                Some(Error::Planning(crate::planning::error::PlanningError::TargetLimit)) => {
+                    Some("configuration_target_limit")
+                }
                 Some(Error::Malformed) => Some("invalid_input"),
                 Some(error) => return Err(reconcile_error(error)),
                 None => return Ok(()),

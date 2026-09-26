@@ -80,7 +80,7 @@ async fn authenticate(
 fn task_error(error: Error) -> crate::agent::AgentError {
     match error {
         Error::Forbidden => crate::agent::AgentError::Wire(wire::ErrorCode::PermissionDenied),
-        Error::NotFound | Error::ObjectNotFound(_) => {
+        error if error.is_not_found() => {
             crate::agent::AgentError::Wire(wire::ErrorCode::TaskNotFound)
         }
         other => other.into(),

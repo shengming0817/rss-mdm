@@ -1,7 +1,7 @@
 use super::{state::RunState, storage as db};
 use crate::Error;
-use crate::execution::{ExecutionService, Result, invalid, messaging_domain};
-use crate::planning::actions::schedule::Trigger;
+use crate::execution::{ExecutionService, Result, checked_input, messaging_domain};
+use crate::planning::action_schedule::Trigger;
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging::{
@@ -59,8 +59,10 @@ async fn admission(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn produce(
     service: &ExecutionService,
+    writer: &rss_transactional_messaging_postgres::PgOutboxWriter,
     tx: &mut PgTransaction<'_>,
     plan: &db::ScheduledPlan,
     coordinate: i64,
@@ -73,10 +75,10 @@ pub(super) async fn produce(
         if only.is_some_and(|value| value != device) {
             continue;
         }
-        if !crate::planning::actions::storage::valid(tx, &plan.definition, device, now).await? {
+        if !plan.definition.authorized_in(tx, device, now).await? {
             continue;
         }
-        let identity = invalid(serde_json::to_vec(&(
+        let identity = checked_input(serde_json::to_vec(&(
             tx.tenant_id().to_string(),
             plan.definition.id,
             1,
@@ -95,7 +97,7 @@ pub(super) async fn produce(
         if trigger == "timer"
             && matches!(
                 plan.definition.frozen.input.schedule.misfire,
-                crate::planning::actions::schedule::Misfire::Skip
+                crate::planning::action_schedule::Misfire::Skip
             )
             && occurrence.available_at < now.saturating_sub(30)
         {
@@ -139,8 +141,7 @@ pub(super) async fn produce(
         let id = Uuid::new_v4();
         let message = dispatch(tx.tenant_id(), plan.definition.id, id, &target, now)?;
         let digest = message.fingerprint().as_bytes().to_vec();
-        if service
-            .outbox
+        if writer
             .append(tx, message)
             .await
             .map_err(rss_transactional_messaging_postgres::PgError::from)?
@@ -152,7 +153,7 @@ pub(super) async fn produce(
         let registration = target.registration;
         let tenant = tx.tenant_id().to_string();
         let plan_id = plan.definition.id.to_string();
-        let state = invalid(serde_json::to_value(RunState::new(deadline, now)?))?;
+        let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,plan,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9,$10,$11,$12)").bind(tenant).bind(id.to_string()).bind(plan_id).bind(target.device).bind(target.registration.to_string()).bind(target.generation).bind(key).bind(occurrence.available_at).bind(deadline).bind(state).bind(digest).bind(now).execute(c).await?;Ok(())})).await?;
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             tx.tenant_id().to_string(),
@@ -194,21 +195,21 @@ fn dispatch(
     target: &super::model::Target,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
-    let payload = invalid(serde_json::to_vec(
+    let payload = checked_input(serde_json::to_vec(
         &json!({"version":2,"planId":plan,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
-        invalid(MessageId::parse(&format!("action.{id}")))?,
+        checked_input(MessageId::parse(&format!("action.{id}")))?,
         MessageMetadata::new(
             AuthoredMessageMetadata::new(
                 tenant,
-                invalid(Timepoint::try_from(now))?,
+                checked_input(Timepoint::try_from(now))?,
                 messaging_domain(),
-                invalid(MessageRoute::parse("agent.task"))?,
+                checked_input(MessageRoute::parse("agent.task"))?,
                 ContractIdentity::new(
-                    invalid(ContractId::parse("mdm.action-dispatch"))?,
+                    checked_input(ContractId::parse("mdm.action-dispatch"))?,
                     ContractVersion::from_static_major(2),
-                    invalid(SchemaDigest::parse(&format!(
+                    checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
                         Sha256::digest(include_bytes!("dispatch-v2.json"))
                     )))?,
@@ -225,14 +226,14 @@ pub(super) async fn tick(
     plan: &db::ScheduledPlan,
     now: i64,
 ) -> Result<()> {
-    if !plan.definition.active || plan.definition.reviewer.is_none() {
+    if !plan.definition.active || !plan.definition.approved {
         return Ok(());
     }
     // Select the shared coordinate without device jitter; each insertion applies its own jitter.
     let mut schedule = plan.definition.frozen.input.schedule.clone();
     schedule.jitter_seconds = 0;
     schedule.window = None;
-    schedule.misfire = crate::planning::actions::schedule::Misfire::CoalesceOne;
+    schedule.misfire = crate::planning::action_schedule::Misfire::CoalesceOne;
     let coordinate = if let Some(blocked) = plan.blocked_at {
         Some(blocked)
     } else {
@@ -242,7 +243,20 @@ pub(super) async fn tick(
     };
     if let Some(coordinate) = coordinate
         && matches!(
-            produce(service, tx, plan, coordinate, "timer", now, None).await?,
+            produce(
+                service,
+                &rss_transactional_messaging_postgres::PgOutboxWriter::new(
+                    service.runtime.clone(),
+                    messaging_domain()
+                ),
+                tx,
+                plan,
+                coordinate,
+                "timer",
+                now,
+                None
+            )
+            .await?,
             ProduceOutcome::CapacityBlocked
         )
     {
@@ -293,5 +307,18 @@ pub(super) async fn event(
     } else {
         "checkin".to_owned()
     };
-    produce(service, tx, plan, now, &key, now, Some(&target.device)).await
+    produce(
+        service,
+        &rss_transactional_messaging_postgres::PgOutboxWriter::new(
+            service.runtime.clone(),
+            messaging_domain(),
+        ),
+        tx,
+        plan,
+        now,
+        &key,
+        now,
+        Some(&target.device),
+    )
+    .await
 }

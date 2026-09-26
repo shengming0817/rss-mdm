@@ -13,9 +13,10 @@ impl Planning {
         scope: Uuid,
         at: Timepoint,
     ) -> Result<Value> {
-        let key = input(p::PolicyId::new(self.tenant, policy))?;
-        let state = checked(self.policies.get_in(tx, &key).await?)?
-            .ok_or(Error::ObjectNotFound(Missing::Policy))?;
+        let key = checked_input(p::PolicyId::new(self.tenant, policy))?;
+        let state = checked(self.policies.get_in(tx, &key).await?)?.ok_or(Error::Planning(
+            crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy),
+        ))?;
         if state.storage_revision() != expected {
             return Err(Error::Conflict.into());
         }
@@ -45,7 +46,7 @@ impl Planning {
         let (job, complete, failure, _, _) =
             crate::automation::jobs::read_in(tx, resolution).await?;
         if !complete || !matches!(job, JobInput::Scope { .. }) {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::PlanningStorage).into());
         }
         Ok(failure.is_none())
     }
@@ -83,10 +84,10 @@ impl Planning {
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
         })).await?;
         let Some(resolved) = resolved else {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::PlanningStorage).into());
         };
         if resolved.try_get::<&str, _>("phase")? != "published" {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::PlanningStorage).into());
         }
         if !resolved.try_get::<bool, _>("current")? {
             return Err(Error::Conflict.into());
@@ -123,7 +124,7 @@ impl Planning {
         self.revalidate_assignment_in(tx, policy, *scope, *assignment_revision)
             .await?;
         let resolved = self.resolved_policy_scope_in(tx, *resolution).await?;
-        let candidate_id = input(p::RequestId::new(self.tenant, task.to_string()))?;
+        let candidate_id = checked_input(p::RequestId::new(self.tenant, task.to_string()))?;
         let candidate = match self.policies.candidate_in(tx, &candidate_id).await? {
             Ok(c) => c,
             Err(pg::Rejection::NotFound) => {
@@ -146,9 +147,12 @@ impl Planning {
                     .await?;
                 let request = pg::CandidateRequest {
                     id: candidate_id.clone(),
-                    policy: input(p::PolicyId::new(self.tenant, policy))?,
+                    policy: checked_input(p::PolicyId::new(self.tenant, policy))?,
                     expected_revision: revision,
-                    targets: input(p::TargetSnapshotId::new(self.tenant, scope.to_string()))?,
+                    targets: checked_input(p::TargetSnapshotId::new(
+                        self.tenant,
+                        scope.to_string(),
+                    ))?,
                     target_revision: version,
                     references,
                     as_of: stored(Timepoint::try_from(*as_of))?,
@@ -212,12 +216,12 @@ impl Planning {
         if !devices.is_empty() {
             let devices = devices
                 .into_iter()
-                .map(|d| input(p::DeviceId::new(self.tenant, d)))
+                .map(|d| checked_input(p::DeviceId::new(self.tenant, d)))
                 .collect::<Result<Vec<_>>>()?;
             let after = candidate
                 .target_cursor
                 .clone()
-                .map(|d| input(p::DeviceId::new(self.tenant, d)))
+                .map(|d| checked_input(p::DeviceId::new(self.tenant, d)))
                 .transpose()?;
             checked(
                 self.policies
@@ -266,11 +270,11 @@ impl Planning {
         if !self.scope_authority_current_in(tx, resolution).await? {
             return Err(Error::Conflict.into());
         }
-        let candidate = input(p::RequestId::new(
+        let candidate = checked_input(p::RequestId::new(
             self.tenant,
             request.input.preview.to_string(),
         ))?;
-        let operation = input(p::RequestId::new(
+        let operation = checked_input(p::RequestId::new(
             self.tenant,
             request.operation_id.to_string(),
         ))?;

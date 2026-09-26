@@ -4,7 +4,7 @@
 
 当前版本只支持空库安装，以及完全一致的当前安装记录重放。旧版本、前缀、缺失、未知、摘要修改或未完成的迁移记录均拒绝；不提供旧审计表导入或兼容迁移。拒绝时保留数据库及安装记录，不自动清库或重写摘要。
 
-部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v3`、Execution `/api/v2`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
+部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v3`、状态型设备命令 `/api/v2`、企业脚本计划及运行 `/api/v3/script-plans`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
 
 每个 tenant 制品目录必须允许服务创建并锁定 `.upload.lock`；启动持有跨实例独占锁时清理精确命名的 `.upload-<canonical hyphenated UUID>` 残留普通文件，失败则阻止启动。回退使用配套数据库、制品、密钥备份和服务，不能仅降级二进制。
 
@@ -28,7 +28,7 @@ Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID �
 `AuditIntegrity` 类别；超时仍是 `RequestDeadline`。若业务结算已未知，响应继续保留
 `operation_unknown` 或 `operation_rollback_unconfirmed`，具体审计失败原因单独记入日志。
 
-监控 mdm_inventory_progress、mdm_planning_retention_failure、mdm_shutdown_failure、mdm_maintenance_shutdown_failure 和 audit_failure；日志记录闭合类别与操作坐标，不打印凭据或协议正文。提交未知按原操作查询恢复，不更换幂等键或删除 ledger。
+监控 mdm_inventory_progress、mdm_management_retention_failure、mdm_shutdown_failure、mdm_maintenance_shutdown_failure 和 audit_failure；日志记录闭合类别与操作坐标，不打印凭据或协议正文。提交未知按原操作查询恢复，不更换幂等键或删除 ledger。
 
 命令闭环另监控 `mdm_command_relay_failure` 与 `mdm_command_recovery_failure`：
 

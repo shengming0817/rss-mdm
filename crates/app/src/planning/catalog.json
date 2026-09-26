@@ -208,249 +208,6 @@
       ""
     ],
     [
-      "asset_query_facets",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_facets",
-      "run",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_facets",
-      "kind",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_facets",
-      "label",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_facets",
-      "total",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_results",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_results",
-      "run",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_results",
-      "device",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_results",
-      "sort_key",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_results",
-      "document",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_results",
-      "digest",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_runs",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_runs",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_query_runs",
-      "total",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "asset_query_runs",
-      "matched",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "asset_query_runs",
-      "unknown",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "kind",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "target",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "input",
-      "jsonb",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "forwarded",
-      "boolean",
-      true,
-      "false",
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "completed",
-      "boolean",
-      true,
-      "false",
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "cursor",
-      "text",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "authority_revision",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "failure",
-      "text",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "automation_jobs",
-      "failure_detail",
-      "jsonb",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
       "candidate_heads",
       "tenant_id",
       "uuid",
@@ -482,24 +239,6 @@
       "candidate",
       "uuid",
       false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "cursor_keys",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "cursor_keys",
-      "secret",
-      "bytea",
-      true,
       null,
       "",
       ""
@@ -788,60 +527,6 @@
       "policy",
       "text",
       true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "saved_queries",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "saved_queries",
-      "instance",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "saved_queries",
-      "owner",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "saved_queries",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "saved_queries",
-      "revision",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "saved_queries",
-      "document",
-      "jsonb",
-      false,
       null,
       "",
       ""
@@ -1215,65 +900,9 @@
       true
     ],
     [
-      "asset_query_facets",
-      "asset_query_facets_pkey",
-      "CREATE UNIQUE INDEX asset_query_facets_pkey ON mdm_assets.asset_query_facets USING btree (tenant_id, run, kind, label)",
-      true,
-      true,
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_order",
-      "CREATE INDEX asset_query_results_order ON mdm_assets.asset_query_results USING btree (tenant_id, run, sort_key, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_pkey",
-      "CREATE UNIQUE INDEX asset_query_results_pkey ON mdm_assets.asset_query_results USING btree (tenant_id, run, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "asset_query_runs",
-      "asset_query_runs_pkey",
-      "CREATE UNIQUE INDEX asset_query_runs_pkey ON mdm_assets.asset_query_runs USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_pending",
-      "CREATE INDEX automation_jobs_pending ON mdm_automation.automation_jobs USING btree (tenant_id, id) WHERE (NOT forwarded)",
-      true,
-      true,
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_pkey",
-      "CREATE UNIQUE INDEX automation_jobs_pkey ON mdm_automation.automation_jobs USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
       "candidate_heads",
       "candidate_heads_pkey",
       "CREATE UNIQUE INDEX candidate_heads_pkey ON mdm_planning.candidate_heads USING btree (tenant_id, policy)",
-      true,
-      true,
-      true
-    ],
-    [
-      "cursor_keys",
-      "cursor_keys_pkey",
-      "CREATE UNIQUE INDEX cursor_keys_pkey ON mdm_flow.cursor_keys USING btree (tenant_id)",
       true,
       true,
       true
@@ -1321,7 +950,7 @@
     [
       "operations",
       "operations_pkey",
-      "CREATE UNIQUE INDEX operations_pkey ON mdm_flow.operations USING btree (tenant_id, id)",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_planning.operations USING btree (tenant_id, id)",
       true,
       true,
       true
@@ -1346,14 +975,6 @@
       "resource_references",
       "resource_references_pkey",
       "CREATE UNIQUE INDEX resource_references_pkey ON mdm_planning.resource_references USING btree (tenant_id, resource, version, policy)",
-      true,
-      true,
-      true
-    ],
-    [
-      "saved_queries",
-      "saved_queries_pkey",
-      "CREATE UNIQUE INDEX saved_queries_pkey ON mdm_assets.saved_queries USING btree (tenant_id, instance, owner, id)",
       true,
       true,
       true
@@ -1524,160 +1145,6 @@
       true
     ],
     [
-      "asset_query_facets",
-      "asset_query_facets_kind_check",
-      "c",
-      "CHECK ((kind = ANY (ARRAY['os_versions'::text, 'channels'::text, 'asset_states'::text])))",
-      true
-    ],
-    [
-      "asset_query_facets",
-      "asset_query_facets_label_check",
-      "c",
-      "CHECK ((octet_length(label) <= 256))",
-      true
-    ],
-    [
-      "asset_query_facets",
-      "asset_query_facets_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, run, kind, label)",
-      true
-    ],
-    [
-      "asset_query_facets",
-      "asset_query_facets_tenant_id_run_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_assets.asset_query_runs(tenant_id, id)",
-      true
-    ],
-    [
-      "asset_query_facets",
-      "asset_query_facets_total_check",
-      "c",
-      "CHECK ((total > 0))",
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_device_check",
-      "c",
-      "CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256)))",
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_digest_check",
-      "c",
-      "CHECK ((octet_length(digest) = 32))",
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_document_check",
-      "c",
-      "CHECK ((octet_length(document) <= 1048576))",
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, run, device)",
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_sort_key_check",
-      "c",
-      "CHECK ((octet_length(sort_key) <= 1024))",
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_tenant_id_run_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_assets.asset_query_runs(tenant_id, id)",
-      true
-    ],
-    [
-      "asset_query_runs",
-      "asset_query_runs_check",
-      "c",
-      "CHECK (((matched >= 0) AND (matched <= total)))",
-      true
-    ],
-    [
-      "asset_query_runs",
-      "asset_query_runs_check1",
-      "c",
-      "CHECK (((unknown >= 0) AND (unknown <= total)))",
-      true
-    ],
-    [
-      "asset_query_runs",
-      "asset_query_runs_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
-      true
-    ],
-    [
-      "asset_query_runs",
-      "asset_query_runs_tenant_id_id_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, id) REFERENCES mdm_automation.automation_jobs(tenant_id, id)",
-      true
-    ],
-    [
-      "asset_query_runs",
-      "asset_query_runs_total_check",
-      "c",
-      "CHECK (((total >= 0) AND (total <= 1000000)))",
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_authority_revision_check",
-      "c",
-      "CHECK ((authority_revision >= 0))",
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_failure_check",
-      "c",
-      "CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text])))",
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_input_check",
-      "c",
-      "CHECK ((octet_length((input)::text) <= 1048576))",
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_kind_check",
-      "c",
-      "CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'scope'::text, 'policy'::text, 'asset_query'::text])))",
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_target_check",
-      "c",
-      "CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))",
-      true
-    ],
-    [
       "candidate_heads",
       "candidate_heads_pkey",
       "p",
@@ -1703,20 +1170,6 @@
       "candidate_heads_tenant_id_policy_fkey",
       "f",
       "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
-      true
-    ],
-    [
-      "cursor_keys",
-      "cursor_keys_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id)",
-      true
-    ],
-    [
-      "cursor_keys",
-      "cursor_keys_secret_check",
-      "c",
-      "CHECK ((octet_length(secret) = 32))",
       true
     ],
     [
@@ -1836,27 +1289,6 @@
       "resource_references_pkey",
       "p",
       "PRIMARY KEY (tenant_id, resource, version, policy)",
-      true
-    ],
-    [
-      "saved_queries",
-      "saved_queries_document_check",
-      "c",
-      "CHECK ((octet_length((document)::text) <= 16384))",
-      true
-    ],
-    [
-      "saved_queries",
-      "saved_queries_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, instance, owner, id)",
-      true
-    ],
-    [
-      "saved_queries",
-      "saved_queries_revision_check",
-      "c",
-      "CHECK ((revision > 0))",
       true
     ],
     [
@@ -2056,36 +1488,6 @@
       true
     ]
   ],
-  "policyFacts": [
-    "CREATE OR REPLACE FUNCTION mdm_commands.policy_facts(p_policy text)\n RETURNS TABLE(device text, version bigint, status text, write_status integer)\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog', 'mdm_commands'\nAS $function$\nSELECT o.device,(o.request->'task'->>'version')::bigint AS version,d.status,(SELECT a.status FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.receipt_accepted ORDER BY ordinal DESC LIMIT 1) AS write_status FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND o.request->'task'->>'kind'='firewall' AND o.request->'task'->>'policy'=p_policy ORDER BY o.id LIMIT 10001;\n$function$\n",
-    "mdm_owner",
-    true,
-    [
-      "search_path=pg_catalog, mdm_commands"
-    ]
-  ],
-  "actionTargets": [
-    "CREATE OR REPLACE FUNCTION mdm_planning.action_targets(p_scope uuid, p_revision bigint)\n RETURNS jsonb\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE s record; r record; targets jsonb; token record;\nBEGIN\n SELECT * INTO s FROM mdm_planning.scopes\n WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_scope FOR UPDATE;\n IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('missing',true); END IF;\n IF s.resolution IS NULL OR s.resolution_revision<>p_revision THEN RETURN NULL; END IF;\n SELECT * INTO r FROM mdm_planning.scope_runs WHERE tenant_id=s.tenant_id AND id=s.resolution;\n IF NOT FOUND OR r.phase<>'published' OR r.result_fingerprint IS NULL OR r.definition_revision<>s.revision THEN RETURN NULL; END IF;\n IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=s.tenant_id AND h.revision>r.asset_watermark\n AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))) THEN RETURN NULL; END IF;\n FOR token IN\n SELECT 'group-'||v.kind||'.'||(source->'reference'->>'id') AS id,(source->>v.field)::bigint AS revision\n FROM jsonb_array_elements(r.input->'sources') source\n CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)\n WHERE source->'reference'->>'kind'='group'\n LOOP\n IF NOT EXISTS(SELECT 1 FROM mdm_policy.reference_heads h WHERE h.tenant_id=s.tenant_id AND h.id=token.id AND h.revision=token.revision) THEN RETURN NULL; END IF;\n END LOOP;\n SELECT coalesce(jsonb_agg(device ORDER BY device COLLATE \"C\"),'[]'::jsonb) INTO targets FROM (\n SELECT device FROM mdm_planning.scope_results WHERE tenant_id=s.tenant_id AND run=r.id AND matched ORDER BY device COLLATE \"C\" LIMIT 257) bounded;\n RETURN jsonb_build_object('devices',targets,'scope',jsonb_build_object('id',s.id,'resolution',r.id,'resolutionRevision',s.resolution_revision,'definitionRevision',r.definition_revision,'sources',r.input->'sources','fingerprint',encode(r.result_fingerprint,'hex')));\nEND;\n$function$\n",
-    "mdm_owner",
-    true,
-    [
-      "search_path=pg_catalog"
-    ]
-  ],
-  "policyAdmission": [
-    "CREATE OR REPLACE FUNCTION mdm_policy_projection.execution_admission(p_policy text, p_candidate text, p_revision bigint, p_saved boolean)\n RETURNS boolean\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nSELECT EXISTS(\n SELECT 1 FROM mdm_policy.candidates c JOIN mdm_policy.aggregates a\n ON (a.tenant_id,a.id)=(c.tenant_id,c.policy)\n WHERE c.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid\n AND c.id=p_candidate AND c.policy=p_policy AND a.revision=p_revision\n AND CASE WHEN p_saved THEN c.phase='saved' AND EXISTS(\n  SELECT 1 FROM mdm_policy.current_plans p WHERE (p.tenant_id,p.policy,p.candidate)=(c.tenant_id,c.policy,c.id))\n ELSE c.phase='ready' AND c.expected_revision=p_revision END\n AND NOT EXISTS(SELECT 1 FROM mdm_policy.candidate_references r\n LEFT JOIN mdm_policy.reference_heads h ON (h.tenant_id,h.id)=(r.tenant_id,r.reference)\n WHERE (r.tenant_id,r.candidate)=(c.tenant_id,c.id)\n AND (h.revision IS NULL OR h.revision<>r.revision OR h.observed_input<h.required_input)))\n$function$\n",
-    "mdm_owner",
-    true,
-    [
-      "search_path=pg_catalog"
-    ]
-  ],
-  "executionAdmission": [
-    "CREATE OR REPLACE FUNCTION mdm_planning.plan_execution_admission(p_plan uuid)\n RETURNS TABLE(document jsonb, saved_revision bigint, current boolean)\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nSELECT f.document,f.saved_revision,\n mdm_policy_projection.execution_admission(f.policy,f.id::text,coalesce(f.saved_revision,f.revision),f.saved_revision IS NOT NULL)\n AND EXISTS(SELECT 1 FROM mdm_planning.scope_runs r JOIN mdm_planning.scopes s\n ON (s.tenant_id,s.id)=(r.tenant_id,r.scope)\n JOIN mdm_planning.scope_runs live ON (live.tenant_id,live.id)=(s.tenant_id,s.resolution)\n WHERE (r.tenant_id,r.id)=(f.tenant_id,f.resolution) AND NOT s.deleted\n AND s.revision=r.definition_revision AND live.result_fingerprint=r.result_fingerprint\n AND NOT EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h\n WHERE h.tenant_id=r.tenant_id AND h.revision>r.asset_watermark\n AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m\n WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))))\nFROM mdm_planning.firewall_plans f\nWHERE f.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND f.id=p_plan;\n$function$\n",
-    "mdm_owner",
-    true,
-    [
-      "search_path=pg_catalog"
-    ]
-  ]
+  "actionTargets": "CREATE OR REPLACE FUNCTION mdm_planning.action_targets(p_scope uuid, p_revision bigint)\n RETURNS jsonb\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE s record; r record; targets jsonb; token record;\nBEGIN\n SELECT * INTO s FROM mdm_planning.scopes\n WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_scope FOR UPDATE;\n IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('missing',true); END IF;\n IF s.resolution IS NULL THEN RETURN jsonb_build_object('rejection','unavailable'); END IF;\n IF s.resolution_revision<>p_revision THEN RETURN jsonb_build_object('rejection','stale'); END IF;\n SELECT * INTO r FROM mdm_planning.scope_runs WHERE tenant_id=s.tenant_id AND id=s.resolution;\n IF NOT FOUND OR r.phase<>'published' OR r.result_fingerprint IS NULL OR r.definition_revision<>s.revision THEN RETURN jsonb_build_object('rejection','stale'); END IF;\n IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=s.tenant_id AND h.revision>r.asset_watermark\n AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))) THEN RETURN jsonb_build_object('rejection','stale'); END IF;\n FOR token IN\n SELECT 'group-'||v.kind||'.'||(source->'reference'->>'id') AS id,(source->>v.field)::bigint AS revision\n FROM jsonb_array_elements(r.input->'sources') source\n CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)\n WHERE source->'reference'->>'kind'='group'\n LOOP\n IF NOT EXISTS(SELECT 1 FROM mdm_policy.reference_heads h WHERE h.tenant_id=s.tenant_id AND h.id=token.id AND h.revision=token.revision) THEN RETURN jsonb_build_object('rejection','stale'); END IF;\n END LOOP;\n SELECT coalesce(jsonb_agg(device ORDER BY device COLLATE \"C\"),'[]'::jsonb) INTO targets FROM (\n SELECT device FROM mdm_planning.scope_results WHERE tenant_id=s.tenant_id AND run=r.id AND matched ORDER BY device COLLATE \"C\" LIMIT 257) bounded;\n RETURN jsonb_build_object('devices',targets,'scope',jsonb_build_object('id',s.id,'resolution',r.id,'resolutionRevision',s.resolution_revision,'definitionRevision',r.definition_revision,'sources',r.input->'sources','fingerprint',encode(r.result_fingerprint,'hex')));\nEND;\n$function$\n",
+  "executionAdmission": "CREATE OR REPLACE FUNCTION mdm_planning.plan_execution_admission(p_plan uuid)\n RETURNS TABLE(document jsonb, saved_revision bigint, current boolean)\n LANGUAGE sql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nSELECT f.document,f.saved_revision,\n mdm_policy_projection.execution_admission(f.policy,f.id::text,coalesce(f.saved_revision,f.revision),f.saved_revision IS NOT NULL)\n AND EXISTS(SELECT 1 FROM mdm_planning.scope_runs r JOIN mdm_planning.scopes s\n ON (s.tenant_id,s.id)=(r.tenant_id,r.scope)\n JOIN mdm_planning.scope_runs live ON (live.tenant_id,live.id)=(s.tenant_id,s.resolution)\n WHERE (r.tenant_id,r.id)=(f.tenant_id,f.resolution) AND NOT s.deleted\n AND s.revision=r.definition_revision AND live.result_fingerprint=r.result_fingerprint\n AND NOT EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h\n WHERE h.tenant_id=r.tenant_id AND h.revision>r.asset_watermark\n AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m\n WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))))\nFROM mdm_planning.firewall_plans f\nWHERE f.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND f.id=p_plan;\n$function$\n"
 }

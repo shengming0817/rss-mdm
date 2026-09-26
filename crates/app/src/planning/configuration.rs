@@ -1,7 +1,7 @@
 //! Product-owned authored configuration and immutable execution inputs.
 use super::admission::{Evidence, FrozenConfiguration as Frozen, MAX_TARGETS};
 use super::*;
-use crate::{PlanFailureReason as Reason, PlanStage};
+use crate::planning::error::{PlanFailureReason as Reason, PlanStage};
 use rss_mdm_resource as r;
 use sqlx::Row;
 impl Planning {
@@ -20,7 +20,7 @@ impl Planning {
         let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT r.enabled,r.digest FROM mdm_planning.firewall_versions v JOIN mdm_planning.firewall_resources r ON(r.tenant_id,r.resource,r.version)=(v.tenant_id,v.resource,v.resource_version) WHERE v.tenant_id=$1::uuid AND v.policy=$2 AND v.version=$3").bind(tenant).bind(key).bind(number as i64).fetch_optional(c).await})).await?;
         let Some(row) = row else { return Ok(None) };
         if devices.len() > MAX_TARGETS {
-            return Err(Error::ConfigurationTargetLimit.into());
+            return Err(Error::Planning(crate::planning::error::PlanningError::TargetLimit).into());
         }
         let enabled: bool = row.try_get("enabled")?;
         use sha2::{Digest, Sha256};
@@ -96,7 +96,7 @@ impl Planning {
             })
             .await?;
         if rows.len() > MAX_EXECUTIONS {
-            return Err(Error::ConfigurationTargetLimit.into());
+            return Err(Error::Planning(crate::planning::error::PlanningError::TargetLimit).into());
         }
         let tenant = self.tenant.to_string();
         let key = policy.value().to_owned();
@@ -115,7 +115,7 @@ impl Planning {
                 let digest: [u8; 32] = stored(
                     versions
                         .get(&number)
-                        .ok_or(Error::Unavailable(Failure::ManagementStorage))?
+                        .ok_or(Error::Unavailable(Failure::PlanningStorage))?
                         .as_slice()
                         .try_into(),
                 )?;
@@ -123,12 +123,12 @@ impl Planning {
                     .iter()
                     .map(|b| format!("{b:02x}"))
                     .collect::<String>();
-                let payload = input(p::PayloadRef::new(
-                    input(p::PayloadId::new(self.tenant, format!("r-{label}")))?,
+                let payload = checked_input(p::PayloadRef::new(
+                    checked_input(p::PayloadId::new(self.tenant, format!("r-{label}")))?,
                     1,
                     digest,
                 ))?;
-                let version = input(p::Version::new(
+                let version = checked_input(p::Version::new(
                     policy.clone(),
                     row.try_get::<i64, _>("version")? as u64,
                     payload,
@@ -143,9 +143,9 @@ impl Planning {
                     (_, "timed_out") => p::Progress::Unknown,
                     _ => p::Progress::Running,
                 };
-                input(p::ExecutionRecord::new(
+                checked_input(p::ExecutionRecord::new(
                     version,
-                    input(p::DeviceId::new(
+                    checked_input(p::DeviceId::new(
                         self.tenant,
                         row.try_get::<String, _>("device")?,
                     ))?,
@@ -168,7 +168,7 @@ impl Planning {
     ) -> Result<u64> {
         use rss_mdm_policy as p;
         use rss_mdm_policy_postgres as pg;
-        let policy_key = input(p::PolicyId::new(self.tenant, policy))?;
+        let policy_key = checked_input(p::PolicyId::new(self.tenant, policy))?;
         let facts = self.firewall_facts(tx, &policy_key).await?;
         if facts.is_empty() {
             return Ok(expected);
@@ -182,7 +182,7 @@ impl Planning {
                     .execute_in(
                         tx,
                         &pg::Request {
-                            id: input(p::RequestId::new(
+                            id: checked_input(p::RequestId::new(
                                 self.tenant,
                                 format!("{task}-facts-{page}"),
                             ))?,
@@ -209,11 +209,11 @@ async fn authored_version(
     enabled: bool,
 ) -> Result<r::Version> {
     use sha2::{Digest, Sha256};
-    let id = |s: &str| input(r::Id::new(s));
+    let id = |s: &str| checked_input(r::Id::new(s));
     let bytes = serde_json::to_vec(&serde_json::json!({"enabled":enabled}))
         .map_err(|_| Error::Malformed)?;
     let digest: [u8; 32] = Sha256::digest(&bytes).into();
-    let v = input(r::Version::new(
+    let v = checked_input(r::Version::new(
         tx.tenant_id(),
         id(resource)?,
         id(version)?,
@@ -223,7 +223,7 @@ async fn authored_version(
             r::Architecture::X86_64,
             id("domain-firewall")?,
             r::Declaration::Configuration {
-                artifact: input(r::Artifact::new(
+                artifact: checked_input(r::Artifact::new(
                     id("inline-domain-firewall")?,
                     bytes.len() as u64,
                     r::Digest::from_bytes(digest),

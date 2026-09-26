@@ -404,9 +404,9 @@ pub(super) async fn matrix(
         );
     }
     set_management_grants(&member, json!(["group_write"])).await?;
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_planning_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
     let failed=browser.call(&router,Method::POST,&format!("/api/v2/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_planning_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
     ensure!(
         failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error"
     );
@@ -510,7 +510,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         );
         ensure!(
             pg(&format!(
-                "SELECT count(*) FROM mdm_flow.operations WHERE id='{blocked}'"
+                "SELECT count(*) FROM mdm_planning.operations WHERE id='{blocked}'"
             ))?
             .trim()
                 == "0"
@@ -590,7 +590,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
             ),
             (
                 "publication Audit lock",
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_planning_runtime' AND wait_event_type='Lock' AND query LIKE '%rss_audit.reserve%')",
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_flow_runtime' AND wait_event_type='Lock' AND query LIKE '%rss_audit.reserve%')",
             ),
         ] {
             tokio::time::timeout(Duration::from_secs(1), async {
@@ -1037,7 +1037,7 @@ async fn permission_matrix(
     let expected_denied = cases.len() * (grants.len() - 1);
     let counts = || {
         pg(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_flow.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_planning.policy_assignments),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_planning.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_planning.policy_assignments),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
         )
     };
     // Exercise every permission change against the same running service. Rebuilding

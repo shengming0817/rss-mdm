@@ -1,7 +1,7 @@
 //! Task result intake shares the existing durable CollectionRun delivery owner.
 use super::storage::Run;
-use crate::execution::{Result, corrupt};
-use crate::planning::actions::model::Frozen;
+use crate::execution::{Result, stored};
+use crate::planning::action_contract::FrozenAction;
 use rss_mdm_inventory::{CollectedValue, FieldKey, Scalar};
 use rss_mdm_resource::{ScriptField, ScriptPurpose};
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -9,7 +9,7 @@ use serde_json::Value;
 
 pub(super) async fn accept(
     tx: &mut PgTransaction<'_>,
-    frozen: &Frozen,
+    frozen: &FrozenAction,
     run: &Run,
     output: &Value,
     trusted: bool,
@@ -31,7 +31,7 @@ pub(super) async fn accept(
             } else {
                 Scalar::String(value.as_str().ok_or(crate::Error::Malformed)?.into())
             };
-            Some(corrupt(CollectedValue::Scalar(scalar).encode(field))?)
+            Some(stored(CollectedValue::Scalar(scalar).encode(field))?)
         } else {
             None
         };

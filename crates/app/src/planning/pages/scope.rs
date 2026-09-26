@@ -55,7 +55,7 @@ impl Planning {
         let after = query
             .cursor
             .as_ref()
-            .map(|token| decode(&self.asset_cursor_key, token, &tenant, result, &binding))
+            .map(|token| decode(&self.cursor_key, token, &tenant, result, &binding))
             .transpose()?;
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT r.phase,r.object_count,r.member_count,r.input::text,(NOT s.deleted AND s.resolution=r.id) AS current FROM mdm_planning.scope_runs r JOIN mdm_planning.scopes s ON (s.tenant_id,s.id)=(r.tenant_id,r.scope) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.scope=$3::uuid")
@@ -91,7 +91,7 @@ impl Planning {
             .cloned()
             .map(|after| {
                 encode(
-                    &self.asset_cursor_key,
+                    &self.cursor_key,
                     Cursor {
                         tenant: self.tenant.to_string(),
                         result,
@@ -118,7 +118,7 @@ impl Planning {
                         .iter()
                         .any(|index| *index >= frozen.sources.len())
                 {
-                    return Err(Error::Unavailable(Failure::ManagementStorage).into());
+                    return Err(Error::Unavailable(Failure::PlanningStorage).into());
                 }
                 items.push(item);
             }

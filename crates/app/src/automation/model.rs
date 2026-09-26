@@ -7,7 +7,6 @@ pub(crate) enum TaskKind {
     Group,
     Scope,
     Policy,
-    AssetQuery,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -1,8 +1,8 @@
 use super::model::Target;
 use super::state::RunState;
 use crate::Error;
-use crate::execution::{Result, corrupt, invalid, storage};
-use crate::planning::actions::{model::*, storage::Plan};
+use crate::execution::{Result, checked_input, storage, stored};
+use crate::planning::actions::admission::Plan;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use sqlx::Row;
@@ -42,7 +42,7 @@ pub(super) async fn registration(tx: &mut PgTransaction<'_>, device: &str) -> Re
     })).await?.ok_or(Error::Conflict)?;
     Ok(Target {
         device: target_device,
-        registration: corrupt(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
+        registration: stored(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
         generation: row.try_get("generation")?,
     })
 }
@@ -51,22 +51,22 @@ pub(super) async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run
     let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT plan::text,device,registration::text,generation,available_at,deadline,state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
     Ok(Run {
         id,
-        plan: corrupt(Uuid::parse_str(&row.try_get::<String, _>("plan")?))?,
+        plan: stored(Uuid::parse_str(&row.try_get::<String, _>("plan")?))?,
         target: Target {
             device: row.try_get("device")?,
-            registration: corrupt(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
+            registration: stored(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
             generation: row.try_get("generation")?,
         },
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
-        state: corrupt(serde_json::from_value(row.try_get("state")?))?,
+        state: stored(serde_json::from_value(row.try_get("state")?))?,
         result: row.try_get("result")?,
     })
 }
 pub(super) async fn save_run(tx: &mut PgTransaction<'_>, run: &Run) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let id = run.id.to_string();
-    let state = invalid(serde_json::to_value(&run.state))?;
+    let state = checked_input(serde_json::to_value(&run.state))?;
     let result = run.result.clone();
     tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(state).bind(result).execute(c).await?;Ok(())})).await?;
     Ok(())
@@ -109,9 +109,9 @@ pub(super) struct ScheduledPlan {
     pub blocked_at: Option<i64>,
 }
 pub(super) async fn load_plan(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<ScheduledPlan> {
-    let definition = crate::planning::actions::storage::load_plan(tx, id).await?;
+    let definition = crate::planning::actions::admission::read_in(tx, id).await?;
     let tenant = tx.tenant_id().to_string();
-    let (scan_at,blocked_at)=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,Option<i64>)>("SELECT scan_at,blocked_at FROM mdm_commands.action_progress WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_one(c).await})).await?;
+    let (scan_at,blocked_at)=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,Option<i64>)>("SELECT scan_at,blocked_at FROM mdm_commands.action_progress WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).fetch_one(c).await})).await?;
     Ok(ScheduledPlan {
         definition,
         scan_at,

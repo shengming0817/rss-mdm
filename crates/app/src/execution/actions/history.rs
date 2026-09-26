@@ -26,7 +26,7 @@ impl ExecutionService {
         {
             return Err(Error::Malformed);
         }
-        crate::execution_transaction::transact(&self.runtime, &self.audit_store, self.tenant, (&self.audit_store,proof,id,page,audit),audit,|ctx,tx|Box::pin(async move {
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,proof,id,page,audit),|ctx,tx|Box::pin(async move {
             let (store,proof,id,page,audit)=*ctx;
             storage::lock(tx,"action-owner").await?;
             let plan=db::load_plan(tx,id).await?;
@@ -40,7 +40,7 @@ impl ExecutionService {
             let next=if more {rows.last().map(|row|json!({"availableAt":row["availableAt"],"taskId":row["taskId"]}))}else{None};
             store.append_request_in(tx,audit,200,"success").await?;
             Ok(json!({"items":rows,"nextCursor":next}))
-        })).await
+        }),crate::transaction::TransactionOwner::Execution).await
     }
     pub(super) async fn action_run(
         &self,
@@ -49,7 +49,7 @@ impl ExecutionService {
         id: Uuid,
         audit: &RequestAudit,
     ) -> Result<Value, Error> {
-        crate::execution_transaction::transact(&self.runtime, &self.audit_store, self.tenant, (&self.audit_store,proof,plan,id,audit),audit,|ctx,tx|Box::pin(async move {
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,proof,plan,id,audit),|ctx,tx|Box::pin(async move {
             let (store,proof,plan,id,audit)=*ctx;
             storage::lock(tx,"action-owner").await?;
             let run=db::load_run(tx,id).await?;
@@ -57,7 +57,7 @@ impl ExecutionService {
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
             store.append_request_in(tx,audit,200,"success").await?;
             Ok(json!({"planId":plan,"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":"unverified","result":run.result}))
-        })).await
+        }),crate::transaction::TransactionOwner::Execution).await
     }
 }
 

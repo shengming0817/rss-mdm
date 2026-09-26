@@ -15,7 +15,7 @@ pub(crate) async fn open(
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> std::result::Result<Arc<ExecutionService>, Error> {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
-    let database = &config.command_database;
+    let database = &config.execution.database;
     let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| bad())?;
     let binding = ExecutionBinding::new(
         StorageIdentity::new(config.flow.storage.target, config.flow.storage.lineage)
@@ -40,6 +40,11 @@ pub(crate) async fn open(
             .await
             .map_err(|_| Error::Unavailable(Failure::CommandStorage))?,
     );
+    let content = config
+        .tasks
+        .as_ref()
+        .map(|c| crate::task_content::open(c, &tenant.to_string()))
+        .transpose()?;
     let result = async {
         crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
         let outbox = Arc::new(
@@ -113,14 +118,8 @@ pub(crate) async fn open(
             reconcile,
             tenant,
             instance: config.identity.instance_id.clone(),
-            content: config
-                .tasks
-                .as_ref()
-                .map(|c| {
-                    crate::task_content::Content::open(c, &tenant.to_string())
-                        .map(|v| Arc::new(v) as Arc<dyn crate::task_content::ContentPort>)
-                })
-                .transpose()?,
+            content: content.as_ref().map(|c| c.reader.clone()),
+            signer: content.map(|c| c.signer),
         }))
     }
     .await;

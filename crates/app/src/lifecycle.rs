@@ -181,7 +181,7 @@ pub async fn serve(
                                 },
                             )
                             .await
-                            .map_err(|e| ProcessError::at("startup.planning", e))?;
+                            .map_err(|e| ProcessError::at("startup.flow", e))?;
                         let execution =
                             crate::flow::execution::open(&compiled.config, audit_store.clone())
                                 .await

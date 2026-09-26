@@ -62,7 +62,7 @@ impl Planning {
                 sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT forwarded)")
                     .bind(tenant).fetch_one(c).await
             })).await
-        })).await.fold(Ok, |_| Err(Error::Unavailable(Failure::ManagementStorage)), |_| Err(Error::Unavailable(Failure::ManagementStorage)), |_| Err(Error::CommitUnknown), |_| Err(Error::CommitUnknown), |_| Err(Error::Unavailable(Failure::ManagementStorage)))?;
+        })).await.fold(Ok, |_| Err(Error::Unavailable(Failure::PlanningStorage)), |_| Err(Error::Unavailable(Failure::PlanningStorage)), |_| Err(Error::CommitUnknown), |_| Err(Error::CommitUnknown), |_| Err(Error::Unavailable(Failure::PlanningStorage)))?;
         if !pending {
             return Ok(0);
         }
@@ -111,11 +111,11 @@ impl Planning {
             .await
             .fold(
                 Ok,
-                |_| Err(Error::Unavailable(Failure::ManagementStorage)),
-                |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                |_| Err(Error::Unavailable(Failure::PlanningStorage)),
+                |_| Err(Error::Unavailable(Failure::PlanningStorage)),
                 |_| Err(Error::CommitUnknown),
                 |_| Err(Error::CommitUnknown),
-                |_| Err(Error::Unavailable(Failure::ManagementStorage)),
+                |_| Err(Error::Unavailable(Failure::PlanningStorage)),
             )
     }
 }

@@ -1,3 +1,4 @@
+//! Transaction-borrowing, bounded asset snapshot projection consumed by target planning.
 //! Fixed-watermark enumeration. No transaction survives a returned page.
 use super::*;
 use rss_mdm_inventory::SourceFact;
@@ -18,7 +19,7 @@ impl SnapshotReader {
         devices: &[String],
     ) -> Result<BTreeSet<String>> {
         if devices.len() > 1000 {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         let tenant = self.tenant.to_string();
         let devices = devices.to_vec();
@@ -40,7 +41,7 @@ impl SnapshotReader {
         scope: &ReadScope,
     ) -> Result<AssetPage> {
         if watermark < 0 || !(1..=1000).contains(&limit) {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         let tenant = self.tenant.to_string();
         let all = scope.devices.is_none();
@@ -126,7 +127,7 @@ impl SnapshotReader {
                 let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
                 devices
                     .get_mut(&device)
-                    .ok_or(Error::Unavailable(Failure::ManagementStorage))?
+                    .ok_or(Error::Unavailable(Failure::AssetsStorage))?
                     .channels
                     .insert(channel.to_owned());
                 subjects.insert(stored(scope.encode())?, (device.clone(), generation));
@@ -158,7 +159,7 @@ impl SnapshotReader {
         for mut row in observed {
             let (device, generation) = subjects
                 .get(&row.scope)
-                .ok_or(Error::Unavailable(Failure::ManagementStorage))?;
+                .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
             row.fact.evidence.registration_generation = Some(*generation);
             if let Some(old) = &mut row.fact.last_known {
                 old.evidence.registration_generation = Some(*generation);
@@ -171,7 +172,7 @@ impl SnapshotReader {
         for row in manual {
             devices
                 .get_mut(&row.device)
-                .ok_or(Error::Unavailable(Failure::ManagementStorage))?
+                .ok_or(Error::Unavailable(Failure::AssetsStorage))?
                 .revisions
                 .insert(row.field, row.revision);
             facts
@@ -195,7 +196,7 @@ impl SnapshotReader {
                 .ok_or(Error::Unavailable(Failure::CollectionQuery))?;
             devices
                 .get_mut(device)
-                .ok_or(Error::Unavailable(Failure::ManagementStorage))?
+                .ok_or(Error::Unavailable(Failure::AssetsStorage))?
                 .quality
                 .push(quality::decode(&row, *generation)?);
         }

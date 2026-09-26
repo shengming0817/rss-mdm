@@ -261,7 +261,7 @@ async fn app_with_access(
 ) -> Result<(Router, Arc<rss_mdm_audit_integration::AuditStore>)> {
     let c: Config = serde_json::from_value(value.clone())?;
     let audit_store = access.audit_store(&c.audit).await?;
-    let (router, _) = crate::api::application_fixture(
+    let (router, _, _) = crate::api::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
@@ -508,11 +508,11 @@ async fn enrollment_matrix(
             == StatusCode::CONFLICT
     );
     // RequestAudit is mandatory for both reads and denied requests; never disclose assets on failure.
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_planning_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_flow_runtime")?;
     let read = browser.call(router, Method::GET, query, None).await?;
     let mut anonymous = Browser::default();
     let denied = anonymous.call(router, Method::GET, query, None).await?;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_planning_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
     ensure!(
         read.0 == StatusCode::INTERNAL_SERVER_ERROR
             && read.1["code"] == "audit_contract_error"
@@ -1613,7 +1613,7 @@ async fn native_accounts(
     );
     // The component owns its atomic security event; a second product audit cannot
     // overwrite a committed account mutation or discard the native response.
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_planning_runtime")?;
+    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_flow_runtime")?;
     let created = admin
         .call(
             admin_router,
@@ -1622,7 +1622,7 @@ async fn native_accounts(
             Some(json!({"login":"managed-user","password":PASSWORD})),
         )
         .await;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_planning_runtime")?;
+    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
     let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();

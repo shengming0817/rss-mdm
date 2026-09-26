@@ -59,9 +59,9 @@ CREATE TRIGGER asset_authority AFTER INSERT OR UPDATE OR DELETE ON mdm_access.re
 CREATE TRIGGER asset_authority AFTER INSERT OR UPDATE OR DELETE ON mdm_access.credentials
  FOR EACH ROW EXECUTE FUNCTION mdm_access.capture_asset_authority();
 GRANT SELECT ON mdm.asset_clock,mdm.asset_changes,mdm.inventory_history,mdm.manual_history,
- mdm_access.asset_authority_history TO mdm_planning_runtime;
-GRANT UPDATE(forwarded) ON mdm.asset_changes TO mdm_planning_runtime;
-GRANT USAGE ON SCHEMA rss_reconcile TO mdm_planning_runtime;
-GRANT SELECT ON ALL TABLES IN SCHEMA rss_reconcile TO mdm_planning_runtime;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA rss_reconcile TO mdm_planning_runtime;
+ mdm_access.asset_authority_history TO mdm_flow_runtime;
+GRANT UPDATE(forwarded) ON mdm.asset_changes TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA rss_reconcile TO mdm_flow_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA rss_reconcile TO mdm_flow_runtime;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA rss_reconcile TO mdm_flow_runtime;
 COMMIT;

@@ -1,4 +1,4 @@
-use super::ContentPort;
+use super::ArtifactWriter;
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Router,
@@ -15,7 +15,7 @@ pub(crate) struct HttpState {
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) tenant: TenantId,
-    pub(crate) content: Option<Arc<dyn ContentPort>>,
+    pub(crate) content: Option<Arc<dyn ArtifactWriter>>,
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new().route(
@@ -28,8 +28,8 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
 struct Upload {
     version: String,
     variant: String,
-    platform: crate::planning::actions::model::Platform,
-    architecture: crate::planning::actions::model::Architecture,
+    platform: crate::planning::action_contract::Platform,
+    architecture: crate::planning::action_contract::Architecture,
 }
 async fn upload(
     State(app): State<Arc<HttpState>>,
@@ -43,12 +43,12 @@ async fn upload(
         .require(crate::authorization::Permission::ResourceWrite, None)?;
     audit.set_action("management_write");
     audit.target(&id);
-    crate::execution_transaction::transact(
-        &app.runtime,
+    crate::transaction::run(
         &app.audit_store,
+        &app.runtime,
         app.tenant,
-        (&app, &auth.proof, id, input, bytes, &audit),
         &audit,
+        (&app, &auth.proof, id, input, bytes, &audit),
         |ctx, tx| {
             Box::pin(async move {
                 let (service, proof, id, input, bytes, audit) = ctx;
@@ -82,18 +82,18 @@ async fn upload(
                 let variant = version
                     .resolve(
                         match input.platform {
-                            crate::planning::actions::model::Platform::Windows => {
+                            crate::planning::action_contract::Platform::Windows => {
                                 rss_mdm_resource::Platform::Windows
                             }
-                            crate::planning::actions::model::Platform::Macos => {
+                            crate::planning::action_contract::Platform::Macos => {
                                 rss_mdm_resource::Platform::MacOS
                             }
                         },
                         match input.architecture {
-                            crate::planning::actions::model::Architecture::X86_64 => {
+                            crate::planning::action_contract::Architecture::X86_64 => {
                                 rss_mdm_resource::Architecture::X86_64
                             }
-                            crate::planning::actions::model::Architecture::Aarch64 => {
+                            crate::planning::action_contract::Architecture::Aarch64 => {
                                 rss_mdm_resource::Architecture::Aarch64
                             }
                         },
@@ -127,6 +127,7 @@ async fn upload(
                 Ok(())
             })
         },
+        crate::transaction::TransactionOwner::ResourceCatalog,
     )
     .await?;
     Ok(StatusCode::CREATED)

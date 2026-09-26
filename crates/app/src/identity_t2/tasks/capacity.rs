@@ -17,7 +17,7 @@ pub(super) async fn verify(
     .parse::<i64>()?;
     ensure!(active < 128, "capacity fixture requires room: {active}");
     pg(&format!(
-        "INSERT INTO mdm_commands.action_runs(tenant_id,id,plan,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) SELECT source.tenant_id,gen_random_uuid(),source.plan,source.device,source.registration,source.generation,'capacity-fixture:'||n,{now},{now},{},source.state,false,source.dispatch_fingerprint FROM (SELECT * FROM mdm_commands.action_runs WHERE device='{DEVICE_ID}' AND state->>'execution'='not_started' ORDER BY created_at DESC LIMIT 1) source CROSS JOIN generate_series(1,{}) n",
+        "INSERT INTO mdm_commands.action_runs(tenant_id,id,plan,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) SELECT source.tenant_id,gen_random_uuid(),source.plan,source.device,source.registration,source.generation,'capacity-fixture:'||n,{now},{now},{},source.state,false,source.dispatch_fingerprint FROM (SELECT * FROM mdm_commands.action_runs WHERE device='{DEVICE_ID}' AND state->>'execution'='not_started' AND state->>'cancellation'<>'confirmed' AND deadline>{now} ORDER BY created_at DESC LIMIT 1) source CROSS JOIN generate_series(1,{}) n",
         now + 3_600,
         128 - active
     ))?;
@@ -74,19 +74,19 @@ pub(super) async fn verify(
     )
     .await?;
     let before = pg(&format!(
-        "SELECT scan_at FROM mdm_planning.action_plans WHERE id='{timer}'"
+        "SELECT scan_at FROM mdm_commands.action_progress WHERE id='{timer}'"
     ))?;
     // The authoring requests advance database time; scan the next interval boundary,
     // not a timestamp captured before the plan existed.
     execution.scan_action_fixture(timer, now + 60).await?;
     ensure!(
         pg(&format!(
-            "SELECT scan_at FROM mdm_planning.action_plans WHERE id='{timer}'"
+            "SELECT scan_at FROM mdm_commands.action_progress WHERE id='{timer}'"
         ))? == before,
         "capacity-blocked timer advanced its cursor"
     );
     let blocked = pg(&format!(
-        "SELECT blocked_at FROM mdm_planning.action_plans WHERE id='{timer}'"
+        "SELECT blocked_at FROM mdm_commands.action_progress WHERE id='{timer}'"
     ))?
     .trim()
     .parse::<i64>()?;
@@ -110,7 +110,7 @@ pub(super) async fn verify(
     );
     ensure!(
         pg(&format!(
-            "SELECT scan_at={blocked} AND blocked_at IS NULL FROM mdm_planning.action_plans WHERE id='{timer}'"
+            "SELECT scan_at={blocked} AND blocked_at IS NULL FROM mdm_commands.action_progress WHERE id='{timer}'"
         ))?
         .trim()
             == "t"

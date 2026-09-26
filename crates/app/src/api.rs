@@ -23,6 +23,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub(crate) struct Assembly {
+    pub(crate) content_writer: Option<Arc<dyn crate::task_content::ArtifactWriter>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) flow: Arc<crate::flow::Flow>,
@@ -57,7 +58,14 @@ pub(crate) async fn application_fixture(
     access: Arc<Database>,
     identity: Option<Identity>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-) -> Result<(Router, Arc<crate::execution::ExecutionService>), Error> {
+) -> Result<
+    (
+        Router,
+        Arc<crate::execution::ExecutionService>,
+        Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    ),
+    Error,
+> {
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access.clone(),
@@ -89,6 +97,7 @@ pub(crate) async fn application_fixture(
             .await?
         }
     };
+    let plan_runtime = planning.runtime.clone();
     Ok((
         from_compiled(
             compiled,
@@ -105,6 +114,7 @@ pub(crate) async fn application_fixture(
         )?
         .browser,
         execution,
+        plan_runtime,
     ))
 }
 pub(crate) struct AssemblyDependencies {
@@ -155,7 +165,13 @@ pub(crate) fn from_compiled(
         .apple
         .map(|config| crate::apple::Apple::load(config, clock.unix_seconds()?).map(Arc::new))
         .transpose()?;
+    let content_writer = config
+        .tasks
+        .as_ref()
+        .map(|c| crate::task_content::open(c, &config.identity.tenant_id).map(|c| c.writer))
+        .transpose()?;
     let state = Arc::new(Assembly {
+        content_writer,
         audit_store,
         apple,
         execution,
@@ -191,14 +207,20 @@ pub(crate) fn from_state(
         devices: state.devices.clone(),
         collection: state.collection.clone(),
     });
-    let plans = Arc::new(crate::planning::actions::ActionPlans {
-        audit_store: state.audit_store.clone(),
-        runtime: state.execution.runtime.clone(),
+    let plans = Arc::new(crate::flow::actions::ActionWorkflow {
+        writer: rss_transactional_messaging_postgres::PgOutboxWriter::new(
+            state.flow.runtime.clone(),
+            crate::execution::messaging_domain(),
+        ),
+        runtime: state.flow.runtime.clone(),
         tenant: state.execution.tenant,
-        content: state.execution.content.clone(),
-        dispatch: state.execution.clone(),
+        audit: state.audit_store.clone(),
+        plans: crate::planning::actions::ActionPlans {
+            audit_store: state.audit_store.clone(),
+            content: state.execution.content.clone(),
+        },
+        execution: state.execution.clone(),
     });
-
     let execution = Arc::new(crate::execution::http::HttpState {
         execution: state.execution.clone(),
         devices: state.devices.clone(),
@@ -309,16 +331,15 @@ pub(crate) fn from_state(
         }))
         .merge(crate::execution::actions::http::routes().with_state(execution.clone()))
         .merge(
-            crate::planning::actions::http::routes().with_state(Arc::new(
-                crate::planning::actions::http::HttpState { plans },
-            )),
+            crate::flow::actions_http::routes()
+                .with_state(Arc::new(crate::flow::actions_http::HttpState { plans })),
         )
         .merge(crate::task_content::http::routes().with_state(Arc::new(
             crate::task_content::http::HttpState {
                 runtime: state.execution.runtime.clone(),
                 audit_store: state.audit_store.clone(),
                 tenant: state.execution.tenant,
-                content: state.execution.content.clone(),
+                content: state.content_writer.clone(),
             },
         )))
         .merge(crate::enrollment::http::routes().with_state(enrollment))

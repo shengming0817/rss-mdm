@@ -61,9 +61,12 @@ DO $$ DECLARE t text; BEGIN
  EXECUTE format('CREATE POLICY tenant ON mdm_commands.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
  END LOOP;
 END $$;
-GRANT SELECT,INSERT ON mdm_planning.action_plans,mdm_commands.action_runs,mdm_commands.action_receipts,mdm_commands.action_attempts TO mdm_command_runtime;
-GRANT UPDATE(reviewer,reviewer_approvals,active) ON mdm_planning.action_plans TO mdm_command_runtime;
-GRANT SELECT,INSERT ON mdm_commands.action_progress,mdm_planning.action_receipts TO mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_commands.action_runs,mdm_commands.action_receipts,mdm_commands.action_attempts TO mdm_command_runtime;
+GRANT SELECT ON mdm_planning.action_plans TO mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_planning.action_plans,mdm_planning.action_receipts,mdm_commands.action_runs,mdm_commands.action_progress TO mdm_flow_runtime;
+GRANT SELECT ON mdm_access.agent_bindings,mdm_access.authorization_rules,mdm_access.user_groups TO mdm_flow_runtime;
+GRANT UPDATE(reviewer,reviewer_approvals,active) ON mdm_planning.action_plans TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_commands.action_progress TO mdm_command_runtime;
 GRANT UPDATE(scan_at,recovery_after) ON mdm_commands.action_progress TO mdm_command_runtime;
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['action_plans','action_receipts'] LOOP
@@ -78,7 +81,7 @@ GRANT UPDATE(state,result,gateway_accepted) ON mdm_commands.action_runs TO mdm_c
 GRANT UPDATE(permit) ON mdm_commands.action_attempts TO mdm_command_runtime;
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_command_runtime;
 GRANT SELECT ON mdm_resource.aggregates,mdm_resource.immutable,mdm_access.agent_bindings TO mdm_command_runtime;
-GRANT SELECT ON mdm_planning.action_plans TO mdm_planning_runtime;
+GRANT SELECT ON mdm_planning.action_plans TO mdm_flow_runtime;
 -- Scope snapshots are resolved by the planning owner under the caller's transaction.
 CREATE FUNCTION mdm_planning.action_targets(p_scope uuid,p_revision bigint)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $targets$
@@ -87,18 +90,19 @@ BEGIN
  SELECT * INTO s FROM mdm_planning.scopes
  WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_scope FOR UPDATE;
  IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('missing',true); END IF;
- IF s.resolution IS NULL OR s.resolution_revision<>p_revision THEN RETURN NULL; END IF;
+ IF s.resolution IS NULL THEN RETURN jsonb_build_object('rejection','unavailable'); END IF;
+ IF s.resolution_revision<>p_revision THEN RETURN jsonb_build_object('rejection','stale'); END IF;
  SELECT * INTO r FROM mdm_planning.scope_runs WHERE tenant_id=s.tenant_id AND id=s.resolution;
- IF NOT FOUND OR r.phase<>'published' OR r.result_fingerprint IS NULL OR r.definition_revision<>s.revision THEN RETURN NULL; END IF;
+ IF NOT FOUND OR r.phase<>'published' OR r.result_fingerprint IS NULL OR r.definition_revision<>s.revision THEN RETURN jsonb_build_object('rejection','stale'); END IF;
  IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=s.tenant_id AND h.revision>r.asset_watermark
- AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))) THEN RETURN NULL; END IF;
+ AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))) THEN RETURN jsonb_build_object('rejection','stale'); END IF;
  FOR token IN
  SELECT 'group-'||v.kind||'.'||(source->'reference'->>'id') AS id,(source->>v.field)::bigint AS revision
  FROM jsonb_array_elements(r.input->'sources') source
  CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)
  WHERE source->'reference'->>'kind'='group'
  LOOP
- IF NOT EXISTS(SELECT 1 FROM mdm_policy.reference_heads h WHERE h.tenant_id=s.tenant_id AND h.id=token.id AND h.revision=token.revision) THEN RETURN NULL; END IF;
+ IF NOT EXISTS(SELECT 1 FROM mdm_policy.reference_heads h WHERE h.tenant_id=s.tenant_id AND h.id=token.id AND h.revision=token.revision) THEN RETURN jsonb_build_object('rejection','stale'); END IF;
  END LOOP;
  SELECT coalesce(jsonb_agg(device ORDER BY device COLLATE "C"),'[]'::jsonb) INTO targets FROM (
  SELECT device FROM mdm_planning.scope_results WHERE tenant_id=s.tenant_id AND run=r.id AND matched ORDER BY device COLLATE "C" LIMIT 257) bounded;
@@ -106,5 +110,5 @@ BEGIN
 END;
 $targets$;
 REVOKE ALL ON FUNCTION mdm_planning.action_targets(uuid,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_planning.action_targets(uuid,bigint) TO mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_planning.action_targets(uuid,bigint) TO mdm_flow_runtime;
 COMMIT;

@@ -158,7 +158,7 @@ fn sql(statement: &str) -> String {
     String::from_utf8(result.stdout).unwrap().trim().into()
 }
 async fn runtime(t: TenantId) -> Arc<PgRuntime> {
-    runtime_role(t, "mdm_planning_runtime").await
+    runtime_role(t, "mdm_flow_runtime").await
 }
 async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
     let c = fixture();
@@ -192,7 +192,9 @@ async fn planning(t: TenantId) -> Planning {
     let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), t, clock.clone())
         .await
         .unwrap();
-    Planning::new(audit, runtime, t, clock, catalog)
+    crate::flow::storage::admit(&runtime, t).await.unwrap();
+    let key = crate::flow::storage::cursor_key(&runtime, t).await.unwrap();
+    Planning::new(audit, runtime, t, clock, catalog, &key)
         .await
         .unwrap()
 }
@@ -257,7 +259,7 @@ async fn wait_task(
             .await;
             let value = match result {
                 Ok(value) => value,
-                Err(Error::Unavailable(Failure::ManagementStorage) | Error::CommitUnknown) => {
+                Err(Error::Unavailable(Failure::PlanningStorage) | Error::CommitUnknown) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     continue;
                 }
@@ -285,7 +287,7 @@ impl RunningAutomation {
             .host("localhost")
             .port(config["port"].as_u64().unwrap() as u16)
             .database("backend")
-            .username("mdm_planning_runtime")
+            .username("mdm_flow_runtime")
             .password("backend-fixture")
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
             .ssl_root_cert(config["ca"].as_str().unwrap());
@@ -323,7 +325,7 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
         .database("backend")
-        .username("mdm_planning_runtime")
+        .username("mdm_flow_runtime")
         .password("backend-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
@@ -973,7 +975,7 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     ));
     running.stop().await;
     let denied = Uuid::new_v4();
-    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_planning_runtime");
+    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime");
     let result = execute(
         &m,
         &Command::Group {
@@ -989,7 +991,7 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
         },
     )
     .await;
-    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_planning_runtime");
+    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime");
     assert!(matches!(
         result,
         Err(Error::Unavailable(Failure::AuditAdmission))
@@ -1081,24 +1083,26 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "ALTER TABLE mdm.manual_assignments DROP CONSTRAINT manual_assignments_revision_check; ALTER TABLE mdm.manual_assignments ADD CONSTRAINT manual_assignments_revision_check CHECK(revision>0)",
         ),
         (
-            "GRANT SELECT ON mdm_access.credentials TO mdm_planning_runtime",
-            "REVOKE SELECT ON mdm_access.credentials FROM mdm_planning_runtime; GRANT SELECT(tenant_id,registration,state) ON mdm_access.credentials TO mdm_planning_runtime",
+            "GRANT SELECT ON mdm_access.credentials TO mdm_flow_runtime",
+            "REVOKE SELECT ON mdm_access.credentials FROM mdm_flow_runtime; GRANT SELECT(tenant_id,registration,state) ON mdm_access.credentials TO mdm_flow_runtime",
         ),
         (
             "ALTER TABLE mdm_planning.scopes DISABLE ROW LEVEL SECURITY",
             "ALTER TABLE mdm_planning.scopes ENABLE ROW LEVEL SECURITY",
         ),
         (
-            "GRANT DELETE ON mdm_automation.automation_jobs TO mdm_planning_runtime",
-            "REVOKE DELETE ON mdm_automation.automation_jobs FROM mdm_planning_runtime",
+            "GRANT DELETE ON mdm_automation.automation_jobs TO mdm_flow_runtime",
+            "REVOKE DELETE ON mdm_automation.automation_jobs FROM mdm_flow_runtime",
         ),
         (
-            "GRANT SELECT ON mdm_access.authorization_rules TO mdm_planning_runtime",
-            "REVOKE SELECT ON mdm_access.authorization_rules FROM mdm_planning_runtime",
+            "GRANT SELECT ON mdm_access.authorization_rules TO mdm_flow_runtime",
+            "REVOKE SELECT ON mdm_access.authorization_rules FROM mdm_flow_runtime",
         ),
     ] {
         sql(change);
-        let rejected = storage::admit(&service.runtime, tenant()).await.is_err();
+        let rejected = crate::flow::storage::admit(&service.runtime, tenant())
+            .await
+            .is_err();
         sql(restore);
         assert!(rejected);
     }
@@ -1110,20 +1114,24 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
     ] {
         assert_eq!(
             sql(&format!(
-                "SELECT has_column_privilege('mdm_planning_runtime','{table}','{column}','UPDATE')"
+                "SELECT has_column_privilege('mdm_flow_runtime','{table}','{column}','UPDATE')"
             )),
             "f"
         );
         sql(&format!(
-            "GRANT UPDATE({column}) ON {table} TO mdm_planning_runtime"
+            "GRANT UPDATE({column}) ON {table} TO mdm_flow_runtime"
         ));
-        let rejected = storage::admit(&service.runtime, tenant()).await.is_err();
+        let rejected = crate::flow::storage::admit(&service.runtime, tenant())
+            .await
+            .is_err();
         sql(&format!(
-            "REVOKE UPDATE({column}) ON {table} FROM mdm_planning_runtime"
+            "REVOKE UPDATE({column}) ON {table} FROM mdm_flow_runtime"
         ));
         assert!(rejected);
     }
-    storage::admit(&service.runtime, tenant()).await.unwrap();
+    crate::flow::storage::admit(&service.runtime, tenant())
+        .await
+        .unwrap();
     let denied = service
         .runtime
         .local_tx(tenant(), deadline(), |tx| {
@@ -1373,7 +1381,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     ));
     assert!(matches!(
         execute(&m, &Command::ScopeRead { id }).await,
-        Err(Error::Unavailable(Failure::ManagementStorage))
+        Err(Error::Unavailable(Failure::PlanningStorage))
     ));
     sql(&format!(
         "UPDATE mdm_planning.scope_versions SET definition='{{\"targets\":[],\"limitations\":null,\"exclusions\":[]}}' WHERE id='{id}'"
@@ -1383,20 +1391,20 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
         _ => unreachable!(),
     };
     sql(&format!(
-        "UPDATE mdm_flow.operations SET response='[]' WHERE id='{operation}'"
+        "UPDATE mdm_planning.operations SET response='[]' WHERE id='{operation}'"
     ));
     let before = sql("SELECT count(*) FROM rss_audit.records");
     assert!(
         matches!(
             execute(&m, &command).await,
-            Err(Error::Unavailable(Failure::ManagementStorage))
+            Err(Error::Unavailable(Failure::PlanningStorage))
         ),
         "corrupt replay receipt must fail before success audit"
     );
     assert_eq!(before, sql("SELECT count(*) FROM rss_audit.records"));
     let document = serde_json::to_string(&receipt).unwrap().replace('\'', "''");
     sql(&format!(
-        "UPDATE mdm_flow.operations SET response='{document}' WHERE id='{operation}'"
+        "UPDATE mdm_planning.operations SET response='{document}' WHERE id='{operation}'"
     ));
     m.runtime.close().await;
 }
@@ -1557,11 +1565,9 @@ async fn asset_storage_failures_are_not_malformed() {
         ("mdm.manual_assignments", "manual_query"),
         ("mdm_access.collection_runs", "collection_query"),
     ] {
-        sql(&format!(
-            "REVOKE SELECT ON {table} FROM mdm_planning_runtime"
-        ));
+        sql(&format!("REVOKE SELECT ON {table} FROM mdm_flow_runtime"));
         let outcome = execute_asset(&m, &command).await;
-        sql(&format!("GRANT SELECT ON {table} TO mdm_planning_runtime"));
+        sql(&format!("GRANT SELECT ON {table} TO mdm_flow_runtime"));
         let error = outcome.unwrap_err();
         assert_eq!(
             serde_json::to_value(error).unwrap(),
@@ -1747,7 +1753,9 @@ async fn asset_capability_owns_execution_and_receipt_recovery() {
         ),
     ] {
         let runtime = runtime(tenant).await;
-        let key = storage::cursor_key(&runtime, tenant).await.unwrap();
+        let key = crate::flow::storage::cursor_key(&runtime, tenant)
+            .await
+            .unwrap();
         let service = assets::AssetService::new(
             audit_store_with_integrity(if ledger {
                 rss_audit_postgres::Integrity::Ledger(Arc::new(
@@ -1897,7 +1905,7 @@ async fn audit_store_with_integrity(
 async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
     let store = audit_store().await;
     for role in [
-        "mdm_planning_runtime",
+        "mdm_flow_runtime",
         "mdm_command_runtime",
         "mdm_software_driver",
     ] {
@@ -1923,7 +1931,7 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
 }
 
 async fn assets(service: &Planning) -> Arc<assets::AssetService> {
-    let key = storage::cursor_key(&service.runtime, service.tenant)
+    let key = crate::flow::storage::cursor_key(&service.runtime, service.tenant)
         .await
         .unwrap();
     Arc::new(assets::AssetService::new(

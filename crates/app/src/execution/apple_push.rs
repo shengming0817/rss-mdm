@@ -17,7 +17,7 @@ impl ExecutionService {
         let configuration = *configuration;
         let audit = RequestAudit::new(self.tenant.to_string(), "apple_push");
         audit.identify_service("apple-push");
-        let result=crate::execution_transaction::transact(&self.runtime, &self.audit_store, self.tenant, (self,&audit),&audit,|ctx,tx|Box::pin(async move {
+        let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,&audit),|ctx,tx|Box::pin(async move {
             let (service,audit)=*ctx;
             let tenant=service.tenant.to_string();let instance=service.instance.clone();
             tx.with_connection(move|c|Box::pin(async move {Ok(crate::authorization::lock_on(c,&tenant,&instance).await)})).await??;
@@ -27,7 +27,7 @@ impl ExecutionService {
                     .bind(tenant).bind(configuration.as_slice()).fetch_all(c).await
             })).await?;
             for row in rows {
-                let registration=corrupt(Uuid::parse_str(&row.try_get::<String,_>("registration")?))?;
+                let registration=stored(Uuid::parse_str(&row.try_get::<String,_>("registration")?))?;
                 if !pending(tx,registration).await? {
                     let tenant=service.tenant.to_string();
                     tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(c).await?;Ok(())})).await?;
@@ -42,13 +42,13 @@ impl ExecutionService {
                 audit.operation(id,"apple_push");
                 audit.target(&registration.to_string());
                 let revision: i64=row.try_get("token_revision")?;
-                let fingerprint=invalid(serde_json::to_vec(&(registration,revision,configuration)))?;
+                let fingerprint=checked_input(serde_json::to_vec(&(registration,revision,configuration)))?;
                 let fact=Fact::business(audit,&format!("apple-push:{id}:lease"),&fingerprint,200,"success",None)?;
                 service.audit_store.append_in(tx,&fact,false).await?;
                 return Ok(Some(Wake{id,registration,revision,token:row.try_get("token")?,magic:row.try_get("magic")?}))
             }
             Ok(None)
-        })).await;
+        }),crate::transaction::TransactionOwner::Execution).await;
         audit.finalize(
             result
                 .as_ref()
@@ -68,11 +68,11 @@ impl ExecutionService {
         audit.operation(wake.id, "apple_push");
         audit.target(&wake.registration.to_string());
         audit.identify_service("apple-push");
-        let result=crate::execution_transaction::transact(&self.runtime, &self.audit_store, self.tenant, (self,wake,status,outcome,&audit),&audit,|ctx,tx|Box::pin(async move {
+        let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,wake,status,outcome,&audit),|ctx,tx|Box::pin(async move {
             let (service,wake,status,outcome,audit)=*ctx;let tenant=service.tenant.to_string();let registration=wake.registration;let id=wake.id;let revision=wake.revision;
             let unregistered=outcome==crate::apple::push::Outcome::Unregistered;
             let outcome=match outcome {crate::apple::push::Outcome::Accepted=>"accepted",crate::apple::push::Outcome::Retryable=>"retryable",crate::apple::push::Outcome::Unregistered=>"unregistered",crate::apple::push::Outcome::Rejected=>"rejected"};
-            let fingerprint=invalid(serde_json::to_vec(&(registration,id,revision,status,outcome)))?;
+            let fingerprint=checked_input(serde_json::to_vec(&(registration,id,revision,status,outcome)))?;
             let fact=Fact::business(audit,&format!("apple-push:{id}:settle"),&fingerprint,200,"success",None)?
                 .with_details(serde_json::json!({"outcome":outcome,"status":status,"tokenRevision":revision}))?;
             let changed=tx.with_connection(move|c|Box::pin(async move {
@@ -91,7 +91,7 @@ impl ExecutionService {
                 None=>{service.audit_store.append_request_in(tx,audit,200,"success").await?;},
             }
             Ok(())
-        })).await;
+        }),crate::transaction::TransactionOwner::Execution).await;
         audit.finalize(
             result
                 .as_ref()
@@ -104,7 +104,7 @@ impl ExecutionService {
 async fn pending(tx: &mut PgTransaction<'_>, registration: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("SELECT o.request::text,o.approval::text,NULL::text AS collection,to_timestamp(0) AS due FROM mdm_commands.operations o JOIN rss_device_command.execution d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) UNION ALL SELECT NULL,r.apple_approval::text,r.id::text,a.next_attempt FROM mdm_access.collection_runs r JOIN mdm_apple.attempts a ON (a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.registration=$2::uuid AND r.source='mdm.apple' AND r.sealed_at IS NULL AND r.apple_deadline>clock_timestamp() AND a.next_attempt<=clock_timestamp() ORDER BY due,collection LIMIT 64")
+        sqlx::query("SELECT o.request::text,o.approval::text,NULL::text AS collection,to_timestamp(0) AS due FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) UNION ALL SELECT NULL,r.apple_approval::text,r.id::text,a.next_attempt FROM mdm_access.collection_runs r JOIN mdm_apple.attempts a ON (a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.registration=$2::uuid AND r.source='mdm.apple' AND r.sealed_at IS NULL AND r.apple_deadline>clock_timestamp() AND a.next_attempt<=clock_timestamp() ORDER BY due,collection LIMIT 64")
             .bind(tenant).bind(registration.to_string()).fetch_all(c).await
     })).await?;
     let tenant = tx.tenant_id().to_string();
@@ -118,13 +118,13 @@ async fn pending(tx: &mut PgTransaction<'_>, registration: Uuid) -> Result<bool>
     for row in rows {
         let request = row
             .try_get::<Option<String>, _>("request")?
-            .map(|s| corrupt(serde_json::from_str::<Create>(&s)))
+            .map(|s| stored(serde_json::from_str::<Create>(&s)))
             .transpose()?;
         let permission = request.map_or(crate::authorization::Permission::InventoryCollect, |r| {
             r.task.permission()
         });
         let approval: crate::authorization::Approval =
-            corrupt(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
+            stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
         if tx
             .with_connection(move |c| {
                 Box::pin(async move { Ok(approval.valid(c, permission, now).await) })

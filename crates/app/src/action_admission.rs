@@ -1,5 +1,5 @@
 //! Transaction-bound current authorization and owner locks for action requests.
-use crate::execution_transaction::*;
+use crate::transaction::*;
 use rss_transactional_messaging_postgres::PgTransaction;
 pub(crate) async fn lock(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
     let key = format!("{}:{device}", tx.tenant_id());
@@ -32,6 +32,14 @@ pub(crate) async fn authorized(
     device: &str,
     permission: crate::authorization::Permission,
 ) -> Result<crate::authorization::Snapshot> {
+    let snapshot = current(tx, proof).await?;
+    snapshot.require(proof, permission, Some(device))?;
+    Ok(snapshot)
+}
+pub(crate) async fn current(
+    tx: &mut PgTransaction<'_>,
+    proof: &crate::authorization::context::AuthorizedPrincipal,
+) -> Result<crate::authorization::Snapshot> {
     let tenant = proof.tenant_id().to_owned();
     let instance = proof.instance_id().to_owned();
     let snapshot = tx
@@ -44,6 +52,5 @@ pub(crate) async fn authorized(
             })
         })
         .await??;
-    snapshot.require(proof, permission, Some(device))?;
     Ok(snapshot)
 }

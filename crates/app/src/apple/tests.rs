@@ -103,6 +103,7 @@ impl Fixture {
         .await?;
         let config = compiled.config;
         let app = Arc::new(Assembly {
+            content_writer: None,
             audit_store: access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,

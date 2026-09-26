@@ -1,12 +1,12 @@
 use super::model::Target;
 use crate::Error;
-use crate::planning::actions::model::*;
+use crate::planning::action_contract::*;
 use rss_mdm_agent_wire as wire;
 use rss_mdm_resource as r;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
-impl Frozen {
+impl FrozenAction {
     pub fn task(
         &self,
         tenant: Uuid,

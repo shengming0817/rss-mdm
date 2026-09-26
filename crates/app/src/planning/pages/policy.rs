@@ -92,13 +92,18 @@ impl Planning {
         let after = query
             .cursor
             .as_ref()
-            .map(|token| decode(&self.asset_cursor_key, token, &tenant, result, &binding))
+            .map(|token| decode(&self.cursor_key, token, &tenant, result, &binding))
             .transpose()?;
-        let id = input(p::RequestId::new(self.tenant, result.to_string()))?;
+        let id = checked_input(p::RequestId::new(self.tenant, result.to_string()))?;
         let candidate = match self.policies.candidate_in(tx, &id).await? {
             Ok(candidate) => candidate,
             Err(pg::Rejection::NotFound) => {
-                return Err(Error::ObjectNotFound(Missing::Preview).into());
+                return Err(
+                    Error::Planning(crate::planning::error::PlanningError::Missing(
+                        crate::planning::error::Missing::Preview,
+                    ))
+                    .into(),
+                );
             }
             Err(_) => return Err(Error::Conflict.into()),
         };
@@ -124,7 +129,7 @@ impl Planning {
                 PolicyPageKind::Targets => unreachable!(),
             };
             let after = after
-                .map(|s| input(serde_json::from_str::<pg::IntentPosition>(&s)))
+                .map(|s| checked_input(serde_json::from_str::<pg::IntentPosition>(&s)))
                 .transpose()?;
             let rows = checked(
                 self.policies
@@ -133,7 +138,7 @@ impl Planning {
             )?;
             let next = rows
                 .last()
-                .map(|row| input(serde_json::to_string(&row.position)))
+                .map(|row| checked_input(serde_json::to_string(&row.position)))
                 .transpose()?;
             let items = rows
                 .into_iter()
@@ -192,7 +197,7 @@ impl Planning {
         let next_cursor = next
             .map(|after| {
                 encode(
-                    &self.asset_cursor_key,
+                    &self.cursor_key,
                     Cursor {
                         tenant,
                         result,

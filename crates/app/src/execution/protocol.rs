@@ -11,12 +11,12 @@ impl ExecutionService {
         bytes: &[u8],
         audit: &RequestAudit,
     ) -> std::result::Result<Vec<u8>, Error> {
-        crate::execution_transaction::transact(
-            &self.runtime,
+        crate::transaction::run(
             &self.audit_store,
+            &self.runtime,
             self.tenant,
-            (self, windows, principal, message, bytes, audit),
             audit,
+            (self, windows, principal, message, bytes, audit),
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, w, p, m, b, a) = *ctx;
@@ -74,6 +74,7 @@ impl ExecutionService {
                     Ok(bytes)
                 })
             },
+            crate::transaction::TransactionOwner::Execution,
         )
         .await
     }
@@ -87,7 +88,7 @@ async fn settle_reports(
     let tenant = s.tenant.to_string();
     let registration = p.registration().to_string();
     let generation = p.generation();
-    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT DISTINCT o.id::text FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN rss_device_command.execution d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.session=$4 AND a.phase=$5 AND a.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id::text LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).bind(AttemptPhase::Execute.as_str()).fetch_all(c).await})).await?;
+    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT DISTINCT o.id::text FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.session=$4 AND a.phase=$5 AND a.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id::text LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).bind(AttemptPhase::Execute.as_str()).fetch_all(c).await})).await?;
     for id in ids {
         settle_one(s, tx, &id).await?;
     }
@@ -95,7 +96,7 @@ async fn settle_reports(
 }
 async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: &str) -> Result<()> {
     let id = id.to_owned();
-    let op = storage::load(tx, corrupt(Uuid::parse_str(&id))?).await?;
+    let op = storage::load(tx, stored(Uuid::parse_str(&id))?).await?;
     let command = s.required_command(tx, &op).await?;
     if command.status().is_terminal() {
         return Ok(());

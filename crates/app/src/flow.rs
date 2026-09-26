@@ -36,12 +36,12 @@ impl Config {
         &self,
         database: &crate::config::Database,
     ) -> std::result::Result<(), Error> {
-        if self.storage.database.user != "mdm_planning_runtime"
+        if self.storage.database.user != "mdm_flow_runtime"
             || self.storage.database.host != database.host
             || self.storage.database.port != database.port
             || self.storage.database.name != database.name
         {
-            return Err(Error::Configuration(crate::ConfigIssue::Planning));
+            return Err(Error::Configuration(crate::ConfigIssue::Flow));
         }
         if self.publication.database.user != "mdm_software_driver"
             || self.publication.database.host != database.host
@@ -49,7 +49,7 @@ impl Config {
             || self.publication.database.name != database.name
             || self.publication.sources.len() > 16
         {
-            return Err(Error::Configuration(crate::ConfigIssue::Planning));
+            return Err(Error::Configuration(crate::ConfigIssue::Publication));
         }
         Ok(())
     }
@@ -60,7 +60,7 @@ impl Config {
         clock: Arc<dyn crate::clock::Clock>,
         mut acquire: impl FnMut(Resource),
     ) -> std::result::Result<Arc<Flow>, Error> {
-        let invalid = || Error::Configuration(crate::ConfigIssue::Planning);
+        let invalid = || Error::Configuration(crate::ConfigIssue::Flow);
         let binding = ExecutionBinding::new(
             StorageIdentity::new(self.storage.target, self.storage.lineage)
                 .map_err(|_| invalid())?,
@@ -85,11 +85,11 @@ impl Config {
         let runtime = Arc::new(
             PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
                 .await
-                .map_err(|_| Error::Unavailable(Failure::ManagementConnection))?,
+                .map_err(|_| Error::Unavailable(Failure::FlowConnection))?,
         );
         acquire(Resource {
             runtime: runtime.clone(),
-            role: Role::Planning,
+            role: Role::Storage,
         });
         if let Err(error) =
             crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await
@@ -97,6 +97,8 @@ impl Config {
             runtime.close().await;
             return Err(error);
         }
+        storage::admit(&runtime, tenant).await?;
+        let key = storage::cursor_key(&runtime, tenant).await?;
         let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
         match Planning::new(
             audit_store.clone(),
@@ -104,11 +106,11 @@ impl Config {
             tenant,
             clock.clone(),
             catalog.clone(),
+            &key,
         )
         .await
         {
             Ok(service) => {
-                let key = crate::planning::storage::cursor_key(&runtime, tenant).await?;
                 let assets = Arc::new(crate::assets::AssetService::new(
                     audit_store.clone(),
                     runtime.clone(),
@@ -117,6 +119,7 @@ impl Config {
                     &key,
                 ));
                 let mut service = Flow {
+                    runtime: runtime.clone(),
                     planning: Arc::new(service),
                     catalog,
                     assets,
@@ -158,7 +161,7 @@ impl Config {
         acquire: &mut impl FnMut(Resource),
     ) -> std::result::Result<(), Error> {
         use crate::software_publication as p;
-        let invalid = || Error::Configuration(crate::ConfigIssue::Planning);
+        let invalid = || Error::Configuration(crate::ConfigIssue::Publication);
         let db = &self.publication.database;
         let binding = ExecutionBinding::new(
             StorageIdentity::new(self.storage.target, self.storage.lineage)
@@ -181,7 +184,7 @@ impl Config {
         let runtime = Arc::new(
             PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
                 .await
-                .map_err(|_| Error::Unavailable(Failure::ManagementConnection))?,
+                .map_err(|_| Error::Unavailable(Failure::FlowConnection))?,
         );
         acquire(Resource {
             runtime: runtime.clone(),
@@ -214,7 +217,7 @@ impl Config {
                 .map_err(|_| invalid())?,
             )
             .await
-            .map_err(|_| Error::Unavailable(Failure::ManagementSource))?;
+            .map_err(|_| Error::Unavailable(Failure::FlowSource))?;
             if Arc::get_mut(&mut planning.publications)
                 .expect("unshared startup directory")
                 .services
@@ -229,7 +232,7 @@ impl Config {
 }
 #[derive(Clone, Copy)]
 enum Role {
-    Planning,
+    Storage,
     Publication,
 }
 pub(crate) struct Resource {
@@ -239,7 +242,7 @@ pub(crate) struct Resource {
 impl rss_runtime::ManagedResource for Resource {
     fn name(&self) -> &str {
         match self.role {
-            Role::Planning => "planning-runtime-postgres",
+            Role::Storage => "flow-runtime-postgres",
             Role::Publication => "software-driver-postgres",
         }
     }
@@ -284,6 +287,7 @@ mod tests {
 }
 
 pub(crate) struct Flow {
+    pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
     pub(crate) planning: Arc<Planning>,
     pub(crate) assets: Arc<crate::assets::AssetService>,
@@ -317,7 +321,7 @@ impl crate::resource_catalog::References for ResourceReferences {
         resource: &'a str,
         version: &'a str,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = crate::mutation::Result<u64>> + Send + 'a>,
+        Box<dyn std::future::Future<Output = crate::transaction::Result<u64>> + Send + 'a>,
     > {
         Box::pin(async move {
             let plans = crate::planning::references::count_in(tx, resource, version).await?;
@@ -325,9 +329,15 @@ impl crate::resource_catalog::References for ResourceReferences {
                 crate::software_publication::references::count_in(tx, resource, version).await?;
             plans
                 .checked_add(publications)
-                .ok_or_else(|| Error::Unavailable(Failure::ManagementStorage).into())
+                .ok_or_else(|| Error::Unavailable(Failure::FlowStorage).into())
         })
     }
 }
 
 pub(crate) mod execution;
+
+pub(crate) mod actions;
+
+pub(crate) mod storage;
+
+pub(crate) mod actions_http;

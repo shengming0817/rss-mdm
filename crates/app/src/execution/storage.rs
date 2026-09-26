@@ -16,30 +16,30 @@ pub(super) struct Operation {
 }
 impl Operation {
     pub fn command_id(&self) -> Result<dc::CommandId> {
-        invalid(dc::CommandId::parse(&self.id.to_string()))
+        checked_input(dc::CommandId::parse(&self.id.to_string()))
     }
 }
 
 pub(super) async fn load(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Operation> {
     let tenant = tx.tenant_id();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.request::text,o.approval::text,o.revision,o.generation,o.epoch,o.registration::text,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::ObjectNotFound(crate::ObjectKind::Operation))?;
+    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.request::text,o.approval::text,o.revision,o.generation,o.epoch,o.registration::text,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::execution::error::ExecutionError::MissingOperation))?;
     Ok(Operation {
         id,
         device: row.try_get("device")?,
-        request: corrupt(serde_json::from_str(&row.try_get::<String, _>("request")?))?,
-        approval: corrupt(serde_json::from_str(&row.try_get::<String, _>("approval")?))?,
+        request: stored(serde_json::from_str(&row.try_get::<String, _>("request")?))?,
+        approval: stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?,
         revision: row.try_get("revision")?,
         scope: dc::Scope::new(
             tenant,
-            corrupt(dc::DeviceId::parse(
+            stored(dc::DeviceId::parse(
                 &row.try_get::<String, _>("command_device")?,
             ))?,
         ),
-        coordinate: corrupt(dc::Coordinate::new(
+        coordinate: stored(dc::Coordinate::new(
             row.try_get("generation")?,
             row.try_get("epoch")?,
         ))?,
-        registration: corrupt(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
+        registration: stored(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
         registration_generation: row.try_get("registration_generation")?,
     })
 }
@@ -79,7 +79,7 @@ pub(super) async fn current_registration(
         return Err(Error::Conflict.into());
     }
     Ok((
-        corrupt(Uuid::parse_str(&rows[0].try_get::<String, _>("id")?))?,
+        stored(Uuid::parse_str(&rows[0].try_get::<String, _>("id")?))?,
         rows[0].try_get("generation")?,
     ))
 }
@@ -96,11 +96,11 @@ pub(super) async fn authority(
     if let Some(row) = row {
         let scope = dc::Scope::new(
             tenant,
-            corrupt(dc::DeviceId::parse(
+            stored(dc::DeviceId::parse(
                 &row.try_get::<String, _>("command_device")?,
             ))?,
         );
-        let old = corrupt(dc::Coordinate::new(
+        let old = stored(dc::Coordinate::new(
             row.try_get("generation")?,
             row.try_get("epoch")?,
         ))?;
@@ -109,7 +109,7 @@ pub(super) async fn authority(
         {
             return Ok((scope, old));
         }
-        let next = corrupt(dc::Coordinate::new(
+        let next = stored(dc::Coordinate::new(
             old.generation(),
             old.epoch().checked_add(1).ok_or(Error::Conflict)?,
         ))?;
@@ -119,8 +119,11 @@ pub(super) async fn authority(
         Ok((scope, next))
     } else {
         let uuid = Uuid::new_v4();
-        let scope = dc::Scope::new(tenant, invalid(dc::DeviceId::parse(&uuid.to_string()))?);
-        let coordinate = invalid(dc::Coordinate::new(1, 1))?;
+        let scope = dc::Scope::new(
+            tenant,
+            checked_input(dc::DeviceId::parse(&uuid.to_string()))?,
+        );
+        let coordinate = checked_input(dc::Coordinate::new(1, 1))?;
         let name = device.to_owned();
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.devices(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1::uuid,$2,$3::uuid,1,1,$4::uuid,$5)").bind(tenant.to_string()).bind(name).bind(uuid.to_string()).bind(registration.to_string()).bind(registration_generation).execute(c).await?;Ok(())})).await?;
         service.store.initialize(tx, scope, coordinate).await?;
@@ -161,10 +164,10 @@ pub(crate) async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
             })
         })
         .await?;
-    let actual: serde_json::Value = corrupt(serde_json::from_str(&raw))?;
+    let actual: serde_json::Value = stored(serde_json::from_str(&raw))?;
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("catalog.json")).expect("canonical catalog");
-    let dependencies: serde_json::Value = corrupt(serde_json::from_str(&dependencies))?;
+    let dependencies: serde_json::Value = stored(serde_json::from_str(&dependencies))?;
     let expected_dependencies: serde_json::Value =
         serde_json::from_str(include_str!("dependencies.json")).expect("canonical dependencies");
     if !allowed || actual != expected || dependencies != expected_dependencies {

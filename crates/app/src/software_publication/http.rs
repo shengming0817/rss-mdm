@@ -1,8 +1,9 @@
 //! The browser actor authorizes work; the controlled driver owns external effects.
 use super::wire;
 use crate::authorization::Permission;
-use crate::mutation::*;
-use crate::{Error, Failure, ObjectKind as Missing};
+use crate::http_operation::Operation;
+use crate::transaction::*;
+use crate::{Error, Failure};
 use rss_contract::Timepoint;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_request_context::{Deadline, TenantId};
@@ -103,7 +104,9 @@ fn failure(e: service::Error) -> Error {
         | service::Error::ArtifactAddress
         | service::Error::ArtifactBudget
         | service::Error::ArtifactDigest => Error::Malformed,
-        service::Error::CandidateNotFound => Error::ObjectNotFound(Missing::Candidate),
+        service::Error::CandidateNotFound => Error::Publication(
+            crate::software_publication::error::PublicationHttpError::MissingCandidate,
+        ),
         service::Error::Identity => Error::Forbidden,
         service::Error::Conflict | service::Error::Blocked => Error::Conflict,
         service::Error::CommitUnknown(_) => Error::CommitUnknown,
@@ -130,13 +133,17 @@ async fn read(
         .publications
         .services
         .get(&source)
-        .ok_or(Error::ObjectNotFound(Missing::Source))?;
+        .ok_or(Error::Publication(
+            crate::software_publication::error::PublicationHttpError::MissingSource,
+        ))?;
     let id = rel::CandidateId::new(app.publications.tenant, id).map_err(|_| Error::Malformed)?;
     let candidate = service
         .candidate(&id, cutoff())
         .await
         .map_err(failure)?
-        .ok_or(Error::ObjectNotFound(Missing::Candidate))?;
+        .ok_or(Error::Publication(
+            crate::software_publication::error::PublicationHttpError::MissingCandidate,
+        ))?;
     let mut view = summary(&candidate);
     view.submission = Some(
         service
@@ -170,7 +177,9 @@ async fn write(
         .publications
         .services
         .get(&source)
-        .ok_or(Error::ObjectNotFound(Missing::Source))?;
+        .ok_or(Error::Publication(
+            crate::software_publication::error::PublicationHttpError::MissingSource,
+        ))?;
     let tenant = app.publications.tenant;
     let candidate_id = rel::CandidateId::new(tenant, &id).map_err(|_| Error::Malformed)?;
     let operator = actor(tenant, auth.proof.instance_id(), auth.proof.principal_id())?;
@@ -257,7 +266,9 @@ async fn write(
                 .candidate(&candidate_id, cutoff())
                 .await
                 .map_err(failure)?
-                .ok_or(Error::ObjectNotFound(Missing::Candidate))?;
+                .ok_or(Error::Publication(
+                    crate::software_publication::error::PublicationHttpError::MissingCandidate,
+                ))?;
             Ok(Json(summary(&candidate)))
         }
         Err(e) => {
@@ -358,7 +369,9 @@ async fn perform(
                 .candidate(id, cutoff)
                 .await
                 .map_err(failure)?
-                .ok_or(Error::ObjectNotFound(Missing::Candidate))?;
+                .ok_or(Error::Publication(
+                    crate::software_publication::error::PublicationHttpError::MissingCandidate,
+                ))?;
             let snap = c.snapshot();
             let rel::RingState::Publication(p) = snap.ring_state(ring.core()) else {
                 return Err(Error::Conflict);
@@ -493,7 +506,9 @@ async fn withdraw(
         .candidate(id, cutoff)
         .await
         .map_err(failure)?
-        .ok_or(Error::ObjectNotFound(Missing::Candidate))?;
+        .ok_or(Error::Publication(
+            crate::software_publication::error::PublicationHttpError::MissingCandidate,
+        ))?;
     let result = service
         .withdraw(id, ring.core(), request, cutoff)
         .await
@@ -527,16 +542,16 @@ impl PublicationDirectory {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
-        crate::mutation::run(&self.audit_store,&self.runtime,self.tenant,audit,&(self,source,id,request,audit,authorize),|ctx,tx|Box::pin(async move{
-   let (s,source,id,request,audit,authorize)=*ctx;crate::mutation::lock(tx).await?;authorize()?;
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,&(self,source,id,request,audit,authorize),|ctx,tx|Box::pin(async move{
+   let (s,source,id,request,audit,authorize)=*ctx;crate::transaction::lock(tx).await?;authorize()?;
    if request.operation_id.is_nil(){return Err(Error::Malformed.into());}
    use sha2::Digest;
-   let hash=sha2::Sha256::digest(input(serde_json::to_vec(&("publication",audit.tenant(),audit.snapshot().actor,source,id,request)))?).to_vec();
-   if let Some(old)=crate::mutation::replay(tx,request.operation_id,&hash).await?{crate::mutation::audit(tx,&s.audit_store,audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
+   let hash=sha2::Sha256::digest(checked_input(serde_json::to_vec(&("publication",audit.tenant(),audit.snapshot().actor,audit.snapshot().instance,source,id,request)))?).to_vec();
+   if let Some(old)=crate::software_publication::receipts::replay(tx,request.operation_id,&hash).await?{crate::software_publication::receipts::audit(tx,&s.audit_store,audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
    let value=serde_json::json!({"as_of":s.clock.unix_seconds().map_err(|_|Error::Unavailable(Failure::Clock))?});
-   crate::mutation::receipt(tx,request.operation_id,&hash,&value).await?;
-   crate::mutation::audit(tx,&s.audit_store,audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
-  })).await
+   crate::software_publication::receipts::receipt(tx,request.operation_id,&hash,&value).await?;
+   crate::software_publication::receipts::audit(tx,&s.audit_store,audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
+  }),crate::transaction::TransactionOwner::Publication).await
     }
 }
 

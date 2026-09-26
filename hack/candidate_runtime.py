@@ -117,10 +117,11 @@ def inputs(root, example, gateway_file):
         return "/run/mdm/"+path.name
     config=json.loads(example.read_text())
     config["native_protocols"]={"windows":copy_inputs(windows)}
-    for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime"),("command_database","mdm_command_runtime")]:
+    for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
         config[field]=database(runtime,role)
+    config["execution"]["database"]=database(runtime,"mdm_command_runtime")
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
-    config["flow"]["storage"]["database"]=database(runtime,"mdm_planning_runtime")
+    config["flow"]["storage"]["database"]=database(runtime,"mdm_flow_runtime")
     config["flow"]["publication"]["database"]=database(runtime,"mdm_software_driver")
     config["identity_management"]=[dict(tenant_id=TENANT,instance_id=INSTANCE,principal_id=ADMIN,permissions=["accounts"])]
     write(operator,"authorization.json",dict(audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
@@ -328,7 +329,7 @@ class Candidate:
             roles="".join("CREATE ROLE "+r+" LOGIN PASSWORD '"+r+"-fixture' NOSUPERUSER NOBYPASSRLS;" for r in ["mdm_owner","mdm_api","mdm_access","mdm_runtime"])
             roles+="GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
             for owner in ROLE_NAMES:roles+=(self.directory/f"deployment/{owner}-roles.sql").read_text()
-            for role in ["mdm_command_runtime","mdm_planning_runtime","mdm_software_driver","mdm_identity_runtime","mdm_identity_maintenance"]:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
+            for role in ["mdm_command_runtime","mdm_flow_runtime","mdm_software_driver","mdm_identity_runtime","mdm_identity_maintenance"]:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.runtime_volume,self.operator_volume=self.name+"-runtime",self.name+"-operator"
             for volume,directory,volume_stage,input_stage in [(self.runtime_volume,self.runtime,Stage.RUNTIME_VOLUME,Stage.RUNTIME_INPUTS),(self.operator_volume,self.operator_root,Stage.OPERATOR_VOLUME,Stage.OPERATOR_INPUTS)]:

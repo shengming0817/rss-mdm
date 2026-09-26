@@ -9,10 +9,15 @@ impl Planning {
         kind: TaskKind,
     ) -> Result<Value> {
         let missing = || match kind {
-            TaskKind::Group => Error::ObjectNotFound(Missing::Group),
-            TaskKind::Scope => Error::ObjectNotFound(Missing::Scope),
-            TaskKind::Policy => Error::ObjectNotFound(Missing::Preview),
-            TaskKind::AssetQuery => Error::NotFound,
+            TaskKind::Group => Error::Planning(crate::planning::error::PlanningError::Missing(
+                crate::planning::error::Missing::Group,
+            )),
+            TaskKind::Scope => Error::Planning(crate::planning::error::PlanningError::Missing(
+                crate::planning::error::Missing::Scope,
+            )),
+            TaskKind::Policy => Error::Planning(crate::planning::error::PlanningError::Missing(
+                crate::planning::error::Missing::Preview,
+            )),
         };
         let (job, done, failure, _, forwarded) = crate::automation::jobs::read_in(tx, id)
             .await
@@ -23,8 +28,7 @@ impl Planning {
         if target.is_some_and(|t| t != job.target())
             || !matches!(
                 (kind, &job),
-                (TaskKind::AssetQuery, JobInput::AssetQuery { .. })
-                    | (TaskKind::Group, JobInput::Group { .. })
+                (TaskKind::Group, JobInput::Group { .. })
                     | (TaskKind::Scope, JobInput::Scope { .. })
                     | (TaskKind::Policy, JobInput::Policy { .. })
             )
@@ -37,13 +41,15 @@ impl Planning {
         let mut policy_revision = None;
         if failure.is_none() {
             match &job {
-                JobInput::AssetQuery { .. } => {}
+                JobInput::AssetQuery { .. } => return Err(Error::NotFound.into()),
                 JobInput::Group { .. } => {
                     let build = checked(
                         self.groups
                             .build_in(
                                 tx,
-                                input(rss_mdm_group_postgres::OperationId::parse(&id.to_string()))?,
+                                checked_input(rss_mdm_group_postgres::OperationId::parse(
+                                    &id.to_string(),
+                                ))?,
                             )
                             .await?,
                     )?;
@@ -65,7 +71,10 @@ impl Planning {
                     .policies
                     .candidate_in(
                         tx,
-                        &input(rss_mdm_policy::RequestId::new(self.tenant, id.to_string()))?,
+                        &checked_input(rss_mdm_policy::RequestId::new(
+                            self.tenant,
+                            id.to_string(),
+                        ))?,
                     )
                     .await?
                 {
@@ -96,10 +105,14 @@ impl Planning {
         } else {
             "pending"
         };
-        let execution = super::super::admission::read_in(tx, id, crate::PlanStage::Preview).await;
+        let execution =
+            super::super::admission::read_in(tx, id, crate::planning::error::PlanStage::Preview)
+                .await;
         let execution = match execution {
             Ok(a) => Some(a.plan),
-            Err(Fault::Request(Error::Plan(_))) => None,
+            Err(Fault::Request(Error::Planning(crate::planning::error::PlanningError::Plan(
+                _,
+            )))) => None,
             Err(e) => return Err(e),
         };
         let tenant = self.tenant.to_string();

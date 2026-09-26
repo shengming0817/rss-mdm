@@ -1720,13 +1720,5 @@
       "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_planning.firewall_plans(tenant_id, id)",
       true
     ]
-  ],
-  "actionTargets": [
-    "CREATE OR REPLACE FUNCTION mdm_planning.action_targets(p_scope uuid, p_revision bigint)\n RETURNS jsonb\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE s record; r record; targets jsonb; token record;\nBEGIN\n SELECT * INTO s FROM mdm_planning.scopes\n WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_scope FOR UPDATE;\n IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('missing',true); END IF;\n IF s.resolution IS NULL OR s.resolution_revision<>p_revision THEN RETURN NULL; END IF;\n SELECT * INTO r FROM mdm_planning.scope_runs WHERE tenant_id=s.tenant_id AND id=s.resolution;\n IF NOT FOUND OR r.phase<>'published' OR r.result_fingerprint IS NULL OR r.definition_revision<>s.revision THEN RETURN NULL; END IF;\n IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=s.tenant_id AND h.revision>r.asset_watermark\n AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m WHERE (m.tenant_id,m.run,m.device)=(r.tenant_id,r.id,h.device))) THEN RETURN NULL; END IF;\n FOR token IN\n SELECT 'group-'||v.kind||'.'||(source->'reference'->>'id') AS id,(source->>v.field)::bigint AS revision\n FROM jsonb_array_elements(r.input->'sources') source\n CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)\n WHERE source->'reference'->>'kind'='group'\n LOOP\n IF NOT EXISTS(SELECT 1 FROM mdm_policy.reference_heads h WHERE h.tenant_id=s.tenant_id AND h.id=token.id AND h.revision=token.revision) THEN RETURN NULL; END IF;\n END LOOP;\n SELECT coalesce(jsonb_agg(device ORDER BY device COLLATE \"C\"),'[]'::jsonb) INTO targets FROM (\n SELECT device FROM mdm_planning.scope_results WHERE tenant_id=s.tenant_id AND run=r.id AND matched ORDER BY device COLLATE \"C\" LIMIT 257) bounded;\n RETURN jsonb_build_object('devices',targets,'scope',jsonb_build_object('id',s.id,'resolution',r.id,'resolutionRevision',s.resolution_revision,'definitionRevision',r.definition_revision,'sources',r.input->'sources','fingerprint',encode(r.result_fingerprint,'hex')));\nEND;\n$function$\n",
-    "mdm_owner",
-    true,
-    [
-      "search_path=pg_catalog"
-    ]
   ]
 }

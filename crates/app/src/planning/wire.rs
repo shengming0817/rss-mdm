@@ -44,7 +44,7 @@ view!(JobAccepted {
     target: String,
     status_url: String
 });
-view!(TaskRead {task:Uuid,kind:String,target:String,status:String,processed:u64,members:u64,plan:Option<String>,failure:Option<String>,failure_detail:Option<crate::PlanFailure>,execution:Option<PlanExecutionAdmission>,policy_revision:Option<u64>});
+view!(TaskRead {task:Uuid,kind:String,target:String,status:String,processed:u64,members:u64,plan:Option<String>,failure:Option<String>,failure_detail:Option<crate::planning::error::PlanFailure>,execution:Option<PlanExecutionAdmission>,policy_revision:Option<u64>});
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum Response {
@@ -63,7 +63,7 @@ pub(super) enum Response {
 }
 impl Response {
     pub fn decode(value: Value) -> std::result::Result<Self, Error> {
-        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::ManagementStorage))
+        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::PlanningStorage))
     }
 }
 

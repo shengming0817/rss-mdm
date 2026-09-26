@@ -1064,9 +1064,9 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     std::fs::write(&management_password, "runtime-fixture")?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&management_password, std::fs::Permissions::from_mode(0o600))?;
-    value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_planning_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
-    value["command_database"] = value["flow"]["storage"]["database"].clone();
-    value["command_database"]["user"] = "mdm_command_runtime".into();
+    value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_flow_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
+    value["execution"]["database"] = value["flow"]["storage"]["database"].clone();
+    value["execution"]["database"]["user"] = "mdm_command_runtime".into();
     let config: crate::config::Config = serde_json::from_value(value)?;
     let clock = Arc::new(crate::clock::SystemClock);
     let identity_management = Arc::new(
@@ -1121,6 +1121,7 @@ async fn native_matrix(with_commands: bool) -> anyhow::Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
     let app = Arc::new(Assembly {
+        content_writer: None,
         audit_store: store
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,

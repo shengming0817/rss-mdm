@@ -1,6 +1,6 @@
 //! Planning's bounded execution projection for all command paths.
 use super::*;
-use crate::{PlanFailureReason as Reason, PlanStage};
+use crate::planning::error::{PlanFailureReason as Reason, PlanStage};
 use sqlx::{PgConnection, Row};
 
 pub(crate) struct Admission {
@@ -18,20 +18,20 @@ pub(crate) async fn read_on(
         .await
         .map_err(crate::database::db)?;
     row.map(|r| {
-        let invalid = || Error::Unavailable(Failure::ManagementStorage);
+        let bad_data = || Error::Unavailable(Failure::PlanningStorage);
         let plan: PlanExecutionAdmission =
-            serde_json::from_value(r.try_get("document").map_err(|_| invalid())?)
-                .map_err(|_| invalid())?;
+            serde_json::from_value(r.try_get("document").map_err(|_| bad_data())?)
+                .map_err(|_| bad_data())?;
         if plan.id != id
             || plan.devices.len() > MAX_TARGETS
             || plan.plan.intents.len() > MAX_EXECUTIONS
         {
-            return Err(invalid());
+            return Err(bad_data());
         }
         Ok(Admission {
             plan,
-            saved_revision: r.try_get("saved_revision").map_err(|_| invalid())?,
-            current: r.try_get("current").map_err(|_| invalid())?,
+            saved_revision: r.try_get("saved_revision").map_err(|_| bad_data())?,
+            current: r.try_get("current").map_err(|_| bad_data())?,
         })
     })
     .transpose()
@@ -69,7 +69,7 @@ impl Planning {
             return Err(Reason::StalePlan.at(None, PlanStage::Preview).into());
         }
         if candidate.target_count > MAX_TARGETS as u64 {
-            return Err(Error::ConfigurationTargetLimit.into());
+            return Err(Error::Planning(crate::planning::error::PlanningError::TargetLimit).into());
         }
         let devices = checked(
             self.policies
@@ -95,7 +95,10 @@ impl Planning {
                     break;
                 }
                 if intents.len() + rows.len() > MAX_EXECUTIONS {
-                    return Err(Error::ConfigurationTargetLimit.into());
+                    return Err(Error::Planning(
+                        crate::planning::error::PlanningError::TargetLimit,
+                    )
+                    .into());
                 }
                 after = rows.last().map(|r| r.position.clone());
                 intents.extend(
@@ -195,7 +198,7 @@ fn freeze_intent(intent: rss_mdm_policy_postgres::CandidateIntent) -> Result<Fro
             },
         },
         CandidateIntent::Predecessor { .. } => {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::PlanningStorage).into());
         }
     })
 }

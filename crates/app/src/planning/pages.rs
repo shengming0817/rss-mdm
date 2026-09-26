@@ -55,7 +55,7 @@ pub(super) enum GroupPageItems {
 }
 
 fn encode(key: &ring::hmac::Key, cursor: Cursor) -> Result<String> {
-    let mut bytes = input(serde_json::to_vec(&cursor))?;
+    let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
     let signature = ring::hmac::sign(key, &bytes);
     bytes.extend_from_slice(signature.as_ref());
     Ok(URL_SAFE_NO_PAD.encode(bytes))
@@ -70,7 +70,7 @@ fn decode(
     if token.len() > 4096 {
         return Err(Error::Malformed.into());
     }
-    let bytes = input(URL_SAFE_NO_PAD.decode(token))?;
+    let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
     if bytes.len() <= 32 {
         return Err(Error::Malformed.into());
     }
@@ -100,10 +100,10 @@ impl Planning {
         let after = query
             .cursor
             .as_ref()
-            .map(|token| decode(&self.asset_cursor_key, token, &tenant, result, &binding))
+            .map(|token| decode(&self.cursor_key, token, &tenant, result, &binding))
             .transpose()?;
-        let owner = input(pg::GroupId::parse(&group.to_string()))?;
-        let id = input(pg::OperationId::parse(&result.to_string()))?;
+        let owner = checked_input(pg::GroupId::parse(&group.to_string()))?;
+        let id = checked_input(pg::OperationId::parse(&result.to_string()))?;
         let build = group_checked(self.groups.build_in(tx, id).await?)?;
         if build.request.group != owner {
             return Err(Error::NotFound.into());
@@ -152,7 +152,7 @@ impl Planning {
         let next_cursor = next
             .map(|after| {
                 encode(
-                    &self.asset_cursor_key,
+                    &self.cursor_key,
                     Cursor {
                         tenant,
                         result,

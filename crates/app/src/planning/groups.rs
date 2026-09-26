@@ -4,7 +4,7 @@ use rss_mdm_group_postgres as pg;
 use serde_json::json;
 impl Planning {
     pub(super) async fn group_read(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Value> {
-        let id = input(pg::GroupId::parse(&id.to_string()))?;
+        let id = checked_input(pg::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.lock_reference_target_in(tx, id).await?)?;
         let member_set = checked(self.groups.current_member_set_in(tx, id).await?)?;
         let criteria = if let Some(version) = &group.rule_version {
@@ -13,7 +13,11 @@ impl Planning {
                 .rule(id, version, deadline())
                 .await
                 .map_err(|_| Error::Unavailable(Failure::Runtime))?
-                .ok_or(Error::ObjectNotFound(Missing::Rule))?;
+                .ok_or(Error::Planning(
+                    crate::planning::error::PlanningError::Missing(
+                        crate::planning::error::Missing::Rule,
+                    ),
+                ))?;
             if rule.view().dictionary_version != rss_mdm_inventory::DICTIONARY {
                 return Err(Error::Conflict.into());
             }
@@ -32,10 +36,10 @@ impl Planning {
         op: &Operation<GroupChange>,
         at: Timepoint,
     ) -> Result<Value> {
-        let group = input(pg::GroupId::parse(&id.to_string()))?;
-        let operation = input(pg::OperationId::parse(&op.operation_id.to_string()))?;
+        let group = checked_input(pg::GroupId::parse(&id.to_string()))?;
+        let operation = checked_input(pg::OperationId::parse(&op.operation_id.to_string()))?;
         let expected = || {
-            input(pg::Revision::new(
+            checked_input(pg::Revision::new(
                 i64::try_from(op.expected_revision).map_err(|_| Error::Malformed)?,
             ))
         };

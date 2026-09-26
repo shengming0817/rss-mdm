@@ -104,7 +104,7 @@ impl Client {
         let automation = crate::automation::Automation::connect(
             self.app.flow.planning.clone(),
             self.app.flow.assets.clone(),
-            crate::device::tests::options("mdm_planning_runtime")?.password("runtime-fixture"),
+            crate::device::tests::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?;
         let mut startup = automation_owner.startup()?;

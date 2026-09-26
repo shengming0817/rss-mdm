@@ -38,7 +38,7 @@ impl AssetService {
         })).await?.ok_or(Error::NotFound)?;
         let job: JobInput = stored(serde_json::from_str(row.try_get("input")?))?;
         let JobInput::AssetQuery { scope: owner, .. } = job else {
-            return Err(Error::Unavailable(Failure::ManagementStorage).into());
+            return Err(Error::Unavailable(Failure::AssetsStorage).into());
         };
         if &owner != scope {
             return Err(Error::Forbidden.into());
@@ -86,14 +86,14 @@ impl AssetService {
         if token.len() > 4096 {
             return Err(Error::Malformed.into());
         }
-        let bytes = input(URL_SAFE_NO_PAD.decode(token))?;
+        let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
         if bytes.len() <= 32 {
             return Err(Error::Malformed.into());
         }
         let (payload, signature) = bytes.split_at(bytes.len() - 32);
         ring::hmac::verify(&self.asset_cursor_key, payload, signature)
             .map_err(|_| Error::Conflict)?;
-        let cursor: Cursor = input(serde_json::from_slice(payload))?;
+        let cursor: Cursor = checked_input(serde_json::from_slice(payload))?;
         if cursor.tenant != self.tenant.to_string()
             || cursor.task != task
             || cursor.scope != digest(scope)?
@@ -114,7 +114,7 @@ impl AssetService {
             scope: digest(scope)?,
             position,
         };
-        let mut bytes = input(serde_json::to_vec(&cursor))?;
+        let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
         let signature = ring::hmac::sign(&self.asset_cursor_key, &bytes);
         bytes.extend(signature.as_ref());
         Ok(URL_SAFE_NO_PAD.encode(bytes))
@@ -172,11 +172,11 @@ impl AssetService {
         for row in rows {
             let raw: Vec<u8> = row.try_get("document")?;
             if Sha256::digest(&raw).as_slice() != row.try_get::<Vec<u8>, _>("digest")? {
-                return Err(Error::Unavailable(Failure::ManagementStorage).into());
+                return Err(Error::Unavailable(Failure::AssetsStorage).into());
             }
             let item: DeviceView = stored(serde_json::from_slice(&raw))?;
             if item.device != row.try_get::<String, _>("device")? {
-                return Err(Error::Unavailable(Failure::ManagementStorage).into());
+                return Err(Error::Unavailable(Failure::AssetsStorage).into());
             }
             items.push(item);
         }

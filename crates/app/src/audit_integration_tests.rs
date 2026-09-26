@@ -16,7 +16,7 @@ use uuid::Uuid;
 async fn installed_audit_receipts_replay_and_atomicity() -> Result<()> {
     for role in [
         "mdm_access",
-        "mdm_planning_runtime",
+        "mdm_flow_runtime",
         "mdm_command_runtime",
         "mdm_software_driver",
     ] {

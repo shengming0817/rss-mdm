@@ -19,7 +19,7 @@ impl Planning {
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT s.revision,v.definition::text FROM mdm_planning.scopes s JOIN mdm_planning.scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted FOR UPDATE OF s")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-        })).await?.ok_or(Error::ObjectNotFound(Missing::Scope))?;
+        })).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Scope)))?;
         Ok((
             row.try_get::<i64, _>("revision")? as u64,
             stored(serde_json::from_str(
@@ -42,7 +42,9 @@ impl Planning {
                         self.groups
                             .lock_reference_target_in(
                                 tx,
-                                input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?,
+                                checked_input(rss_mdm_group_postgres::GroupId::parse(
+                                    &id.to_string(),
+                                ))?,
                             )
                             .await?,
                     )?;
@@ -73,7 +75,7 @@ impl Planning {
             ScopeChange::Put { definition } => {
                 self.validate_scope_references_in(tx, definition).await?;
                 let tenant = self.tenant.to_string();
-                let definition = input(serde_json::to_string(definition))?;
+                let definition = checked_input(serde_json::to_string(definition))?;
                 let expected = op.expected_revision as i64;
                 let changed=tx.with_connection(move |c|Box::pin(async move {
                     let changed=if expected==0 {

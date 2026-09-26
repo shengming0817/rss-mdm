@@ -1,6 +1,6 @@
 use super::model::*;
 use crate::action_admission as storage;
-use crate::execution_transaction::{Result, corrupt};
+use crate::transaction::{Result, stored};
 use crate::{
     Error,
     authorization::{Approval, Permission, User},
@@ -19,20 +19,22 @@ pub(crate) struct Plan {
     pub active: bool,
 }
 pub(crate) async fn load_plan(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Plan> {
+    // This lock is shared by every plan mutation and action transition. Readers need no SQL UPDATE privilege.
+    storage::lock(tx, "action-owner").await?;
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT document,author,author_approvals,reviewer,reviewer_approvals,active FROM mdm_planning.action_plans WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT document,author,author_approvals,reviewer,reviewer_approvals,active FROM mdm_planning.action_plans WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Action)))?;
     Ok(Plan {
         id,
-        frozen: corrupt(serde_json::from_value(row.try_get("document")?))?,
-        author: corrupt(serde_json::from_value(row.try_get("author")?))?,
-        author_approvals: corrupt(serde_json::from_value(row.try_get("author_approvals")?))?,
+        frozen: stored(serde_json::from_value(row.try_get("document")?))?,
+        author: stored(serde_json::from_value(row.try_get("author")?))?,
+        author_approvals: stored(serde_json::from_value(row.try_get("author_approvals")?))?,
         reviewer: row
             .try_get::<Option<Value>, _>("reviewer")?
-            .map(|v| corrupt(serde_json::from_value(v)))
+            .map(|v| stored(serde_json::from_value(v)))
             .transpose()?,
         reviewer_approvals: row
             .try_get::<Option<Value>, _>("reviewer_approvals")?
-            .map(|v| corrupt(serde_json::from_value(v)))
+            .map(|v| stored(serde_json::from_value(v)))
             .transpose()?
             .unwrap_or_default(),
         active: row.try_get("active")?,

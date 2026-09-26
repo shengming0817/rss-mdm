@@ -1,5 +1,5 @@
-use super::schedule::Schedule;
 use crate::Error;
+use crate::planning::action_schedule::Schedule;
 use rss_mdm_agent_wire as wire;
 use rss_mdm_resource as r;
 use serde::{Deserialize, Serialize};
@@ -7,18 +7,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Platform {
-    Windows,
-    Macos,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Architecture {
-    X86_64,
-    Aarch64,
-}
+use crate::planning::action_contract::{Architecture, Platform};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ScopeRef {
@@ -146,17 +135,6 @@ pub(crate) struct Frozen {
     pub artifact_reference: String,
     pub content: wire::TaskContent,
 }
-impl Frozen {
-    pub fn artifact(&self) -> Result<r::Artifact, Error> {
-        r::Artifact::new(
-            r::Id::new(&self.artifact_reference).map_err(|_| Error::Malformed)?,
-            self.content.length,
-            r::Digest::from_bytes(self.content.sha256),
-        )
-        .map_err(|_| Error::Malformed)
-    }
-}
-
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Change {
@@ -164,10 +142,14 @@ pub(crate) struct Change {
 }
 
 pub(crate) fn validate_devices(devices: &[String]) -> Result<(), Error> {
-    if devices.is_empty()
-        || devices.len() > 256
-        || devices.iter().collect::<BTreeSet<_>>().len() != devices.len()
-    {
+    use crate::planning::error::ActionRejection;
+    if devices.is_empty() {
+        return Err(ActionRejection::TargetsEmpty.into());
+    }
+    if devices.len() > 256 {
+        return Err(ActionRejection::TargetsLimit.into());
+    }
+    if devices.iter().collect::<BTreeSet<_>>().len() != devices.len() {
         return Err(Error::Malformed);
     }
     for device in devices {
