@@ -54,14 +54,14 @@ pub(crate) struct BrewRecipe {
 #[serde(tag = "kind", deny_unknown_fields)]
 enum BrewPayload {
     Cask {
-        artifacts: Vec<crate::software_publication::BrewArtifact>,
-        install: crate::software_publication::CaskInstall,
+        artifacts: Vec<rss_mdm_software_service::publication::BrewArtifact>,
+        install: rss_mdm_software_service::publication::CaskInstall,
     },
     Formula {
-        source: crate::software_publication::PublicArtifact,
+        source: rss_mdm_software_service::publication::PublicArtifact,
         executable: String,
         bottles: Vec<Bottle>,
-        dependencies: Vec<crate::software_publication::BrewDependency>,
+        dependencies: Vec<rss_mdm_software_service::publication::BrewDependency>,
     },
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -69,11 +69,11 @@ enum BrewPayload {
 struct Bottle {
     tag: String,
     root_url: String,
-    artifact: crate::software_publication::PublicArtifact,
+    artifact: rss_mdm_software_service::publication::PublicArtifact,
 }
-impl From<crate::software_publication::Submission> for Submission {
-    fn from(value: crate::software_publication::Submission) -> Self {
-        use crate::software_publication as p;
+impl From<rss_mdm_software_service::publication::Submission> for Submission {
+    fn from(value: rss_mdm_software_service::publication::Submission) -> Self {
+        use rss_mdm_software_service::publication as p;
         match value {
             p::Submission::Winget { manifest } => Self::Winget { manifest },
             p::Submission::Brew { recipe: r } => Self::Brew {
@@ -111,9 +111,9 @@ impl From<crate::software_publication::Submission> for Submission {
         }
     }
 }
-impl From<Submission> for crate::software_publication::Submission {
+impl From<Submission> for rss_mdm_software_service::publication::Submission {
     fn from(value: Submission) -> Self {
-        use crate::software_publication as p;
+        use rss_mdm_software_service::publication as p;
         match value {
             Submission::Winget { manifest } => Self::Winget { manifest },
             Submission::Brew { recipe: r } => Self::Brew {

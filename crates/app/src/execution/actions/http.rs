@@ -3,8 +3,8 @@ use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
+    http::HeaderMap,
+    response::Response,
     routing::{get, post},
 };
 use rss_mdm_agent_wire as wire;
@@ -140,77 +140,14 @@ async fn download(
     crate::agent::bounded(async {
         let principal = authenticate(&app, &headers, &audit).await?;
         audit.operation(id, "command_read");
-        let (bytes, etag) = app
+        let content = app
             .execution
             .action_content(&principal, id, query.attempt, &audit)
             .await
             .map_err(task_error)?;
-        if headers.get_all(header::RANGE).iter().count() > 1 {
-            return Err(Error::Malformed.into());
-        }
-        let requested = headers
-            .get(header::RANGE)
-            .map(|h| h.to_str().map_err(|_| Error::Malformed))
-            .transpose()?;
-        let requested = if headers
-            .get(header::IF_RANGE)
-            .is_some_and(|value| value.as_bytes() != etag.as_bytes())
-        {
-            None
-        } else {
-            requested
-        };
-        let (start, end) = match crate::task_content::range(requested, bytes.len()) {
-            Ok(range) => range,
-            Err(_) => {
-                let mut response = (
-                    StatusCode::RANGE_NOT_SATISFIABLE,
-                    Json(wire::ErrorBody {
-                        code: wire::ErrorCode::RangeNotSatisfiable,
-                    }),
-                )
-                    .into_response();
-                response.headers_mut().insert(
-                    header::CONTENT_RANGE,
-                    format!("bytes */{}", bytes.len())
-                        .parse()
-                        .map_err(|_| Error::Malformed)?,
-                );
-                return Ok(response);
-            }
-        };
-        let mut response = (
-            if requested.is_some() {
-                StatusCode::PARTIAL_CONTENT
-            } else {
-                StatusCode::OK
-            },
-            bytes[start..end].to_vec(),
-        )
-            .into_response();
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            "application/octet-stream".parse().expect("constant"),
-        );
-        response
-            .headers_mut()
-            .insert(header::ETAG, etag.parse().map_err(|_| Error::Malformed)?);
-        response
-            .headers_mut()
-            .insert(header::ACCEPT_RANGES, "bytes".parse().expect("constant"));
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            "private, no-store".parse().expect("constant"),
-        );
-        if requested.is_some() {
-            response.headers_mut().insert(
-                header::CONTENT_RANGE,
-                format!("bytes {start}-{}/{}", end - 1, bytes.len())
-                    .parse()
-                    .map_err(|_| Error::Malformed)?,
-            );
-        }
-        Ok(response)
+        crate::content::http::response(content, &headers)
+            .await
+            .map_err(task_error)
     })
     .await
 }

@@ -419,8 +419,8 @@ pub(super) async fn matrix(
 async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser) -> Result<()> {
     let server = publication_support::Server::new().await;
     let mut cfg = base.clone();
-    let source_config = |ring: &str| json!({"Winget":{"base":format!("{}{ring}/",server.base),"addresses":[server.address],"private_ca":server.ca,"credential_reference":"source-key","credential_file":server.secret}});
-    cfg["flow"]["publication"]["sources"] = json!([{"name":server.logical,"rings":{"test":source_config("test"),"pilot":source_config("pilot"),"production":source_config("production")},"artifacts":[{"base":format!("{}artifacts/",server.base),"addresses":[server.address],"private_ca":server.ca}],"max_artifact_bytes":1048576}]);
+    let source_config = |ring: &str| json!({"Winget":{"base":format!("{}{ring}/",server.base),"addresses":[server.address],"private_ca":server.ca,"credential_reference":"source-key"}});
+    cfg["flow"]["publication"]["sources"] = json!([{"name":server.logical,"credentials":{"source-key":server.secret},"rings":{"test":source_config("test"),"pilot":source_config("pilot"),"production":source_config("production")},"artifacts":[{"base":format!("{}artifacts/",server.base),"addresses":[server.address],"private_ca":server.ca}],"max_artifact_bytes":1048576}]);
     let initial = app(&cfg, reader.clone()).await?;
     let member = browser_subject(session, &initial).await?;
     let publisher_grants = json!([
@@ -509,8 +509,7 @@ async fn software(base: &Value, reader: Arc<InventoryReader>, session: &Browser)
         )
         .await?;
     ensure!(status.is_success(), "assets identity: {saved_receipt}");
-    let digest = rss_mdm_resource::Digest::of(b"abc").bytes();
-    let variants=[("x86_64","x64"),("aarch64","arm64")].iter().map(|(arch,key)|json!({"platform":"windows","architecture":arch,"key":"msi.machine.no-id","declaration":{"kind":"software","source":server.logical,"package":"Acme.App","version":"1","artifact":{"reference":key,"length":3,"sha256":digest},"install":"install","detect":"detect","uninstall":null}})).collect::<Vec<_>>();
+    let variants=[("x86_64","x64"),("aarch64","arm64")].iter().map(|(arch,key)|json!({"platform":"windows","architecture":arch,"key":"msi.machine.no-id","declaration":{"kind":"software","definition":crate::publication_support::software_definition(&server.logical,"Acme.App","1",rss_mdm_resource::Platform::Windows,key)}})).collect::<Vec<_>>();
     call(
         &mut publisher,
         &router,
@@ -852,7 +851,7 @@ async fn await_ingress() -> Result<()> {
         return outcome;
     }
     let progress = pg(&format!(
-        "SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),'checkpoint',(SELECT to_jsonb(d)-'group_cursor' FROM mdm_planning.asset_dispatch d WHERE tenant_id='{TENANT}'),'jobs',(SELECT jsonb_agg(p) FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase,r.object_count FROM mdm_automation.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p))"
+        "SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),'checkpoint',(SELECT to_jsonb(d)-'cursor' FROM mdm_planning.asset_dispatch d WHERE tenant_id='{TENANT}'),'jobs',(SELECT jsonb_agg(p) FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase,r.object_count FROM mdm_automation.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p))"
     ))?;
     anyhow::bail!("fixture ingress did not settle: {progress}")
 }

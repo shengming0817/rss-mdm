@@ -172,8 +172,10 @@ use serde_json::Value;
 pub(crate) enum TransactionOwner {
     Planning,
     Assets,
+    Compliance,
     ResourceCatalog,
     Publication,
+    SoftwareCatalog,
     Execution,
 }
 impl TransactionOwner {
@@ -181,14 +183,17 @@ impl TransactionOwner {
         match self {
             Self::Planning => Failure::PlanningStorage,
             Self::Assets => Failure::AssetsStorage,
+            Self::Compliance => Failure::ComplianceStorage,
             Self::ResourceCatalog => Failure::ResourceStorage,
             Self::Publication => Failure::PublicationStorage,
+            Self::SoftwareCatalog => Failure::SoftwareCatalogStorage,
             Self::Execution => Failure::CommandStorage,
         }
     }
     fn invariant(self) -> Failure {
         match self {
             Self::Execution => Failure::CommandInvariant,
+            Self::SoftwareCatalog => Failure::SoftwareCatalogInvariant,
             _ => self.failure(),
         }
     }
@@ -217,4 +222,52 @@ impl From<crate::planning::error::PlanningError> for Fault {
     fn from(error: crate::planning::error::PlanningError) -> Self {
         Error::from(error).into()
     }
+}
+
+/// Short preflight read/row-lock transaction. It must not persist business changes or audit facts.
+/// It deliberately does not advance the outer request's single mutation settlement state.
+pub(crate) async fn inspect<C: Send, R: Send, F>(
+    runtime: &PgRuntime,
+    tenant: TenantId,
+    context: C,
+    operation: F,
+    owner: TransactionOwner,
+) -> std::result::Result<R, Error>
+where
+    F: for<'c> FnOnce(
+            &'c mut C,
+            &'c mut PgTransaction<'_>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
+        > + Send,
+{
+    let failure = Mutex::new(None);
+    let attempt = runtime
+        .local_tx_with_context(
+            tenant,
+            deadline(),
+            (context, Some(operation), &failure),
+            |state, tx| {
+                Box::pin(async move {
+                    let (context, operation, failure) = state;
+                    operation.take().expect("one preflight")(context, tx)
+                        .await
+                        .map_err(|e| rejection(e, failure, owner))
+                })
+            },
+        )
+        .await;
+    attempt.fold(
+        Ok,
+        |_| Err(Error::Unavailable(owner.failure())),
+        |_| {
+            Err(failure
+                .into_inner()
+                .expect("preflight result")
+                .unwrap_or(Error::Unavailable(owner.failure())))
+        },
+        |_| Err(Error::RollbackFailed),
+        |_| Err(Error::Unavailable(owner.failure())),
+        |_| Err(Error::Unavailable(owner.failure())),
+    )
 }

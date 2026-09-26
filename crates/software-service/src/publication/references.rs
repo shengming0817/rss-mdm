@@ -1,10 +1,6 @@
-use crate::transaction::Result;
+type Result<T> = std::result::Result<T, rss_transactional_messaging_postgres::PgError>;
 use rss_transactional_messaging_postgres::PgTransaction;
-pub(crate) async fn count_in(
-    tx: &mut PgTransaction<'_>,
-    resource: &str,
-    version: &str,
-) -> Result<u64> {
+pub async fn count_in(tx: &mut PgTransaction<'_>, resource: &str, version: &str) -> Result<u64> {
     let tenant = tx.tenant_id().to_string();
     let resource = resource.to_owned();
     let version = version.to_owned();

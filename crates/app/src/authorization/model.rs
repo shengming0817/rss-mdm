@@ -6,6 +6,10 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
     InventoryRead,
+    ComplianceRead,
+    ComplianceRuleRead,
+    ComplianceWrite,
+    ComplianceRecompute,
     InventoryCollect,
     InventoryAssign,
     Enrollment,
@@ -35,6 +39,10 @@ pub enum Permission {
     PlanExecute,
     ResourceRead,
     ResourceWrite,
+    SoftwareRead,
+    SoftwareWrite,
+    SoftwareApprove,
+    SoftwareWithdraw,
     ReleaseRead,
     ReleaseWrite,
     ReleaseValidate,
@@ -47,6 +55,7 @@ impl Permission {
     fn device(self) -> bool {
         match self {
             Self::InventoryRead
+            | Self::ComplianceRead
             | Self::InventoryCollect
             | Self::InventoryAssign
             | Self::Enrollment
@@ -59,6 +68,9 @@ impl Permission {
             | Self::OperationRead
             | Self::OperationCancel => true,
             Self::AuthorizationRead
+            | Self::ComplianceRuleRead
+            | Self::ComplianceWrite
+            | Self::ComplianceRecompute
             | Self::AuthorizationWrite
             | Self::UserGroupRead
             | Self::UserGroupWrite
@@ -75,6 +87,10 @@ impl Permission {
             | Self::PlanExecute
             | Self::ResourceRead
             | Self::ResourceWrite
+            | Self::SoftwareRead
+            | Self::SoftwareWrite
+            | Self::SoftwareApprove
+            | Self::SoftwareWithdraw
             | Self::ReleaseRead
             | Self::ReleaseWrite
             | Self::ReleaseValidate

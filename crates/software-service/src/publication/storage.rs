@@ -231,7 +231,7 @@ fn result_tag(result: &rel::PublicationResult) -> &'static str {
     }
 }
 pub(super) async fn register(
-    audit_store: &rss_mdm_audit_integration::AuditStore,
+    audit_store: &dyn crate::AuditPort,
     tx: &mut PgTransaction<'_>,
     sources: &Sources,
     heads: &[Option<String>; 3],

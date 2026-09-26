@@ -30,16 +30,47 @@ impl ActionWorkflow {
         input: &Create,
         audit: &RequestAudit,
     ) -> Result<Value, Error> {
+        if self.execution.signer.is_none() {
+            return Err(Error::Unsupported);
+        }
+        let artifact = transaction::inspect(
+            &self.runtime,
+            self.tenant,
+            (self, proof, input),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (s, p, i) = *ctx;
+                    s.plans.content_in(tx, p, i).await
+                })
+            },
+            TransactionOwner::Planning,
+        )
+        .await?;
+        let verified = if let Some(artifact) = artifact {
+            Some(
+                self.plans
+                    .content
+                    .as_ref()
+                    .ok_or(Error::Unsupported)?
+                    .verify(&artifact)
+                    .await?,
+            )
+        } else {
+            None
+        };
         transaction::run(
             &self.audit,
             &self.runtime,
             self.tenant,
             audit,
-            (self, proof, input, audit),
+            (self, proof, input, audit, &verified),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, proof, input, audit) = *ctx;
-                    let created = s.plans.create_in(tx, proof, input, audit).await?;
+                    let (s, proof, input, audit, verified) = *ctx;
+                    let created = s
+                        .plans
+                        .create_in(tx, proof, input, audit, verified.as_ref())
+                        .await?;
                     if created.created {
                         let now = crate::action_admission::now(tx).await?;
                         s.execution

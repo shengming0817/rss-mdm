@@ -436,7 +436,7 @@ AC-X01-02　Script EA 从真实执行产生值，再驱动分组与策略；脚�
 | 需求编号 / 名称 | 产品要求 | 历史基础 / 分级 |
 | --- | --- | --- |
 | WMD-H01<br>当前与历史合规 | 提供当前状态、策略执行证据及时间范围内历史；标明采集/评估时间，区分 unknown、pending 与明确不合规。 | 已有基础<br>一级 |
-| WMD-H02<br>规则与宽限期 | 支持基于受控资产/安全字段定义规则、严重性、宽限期及原因；未知数据不可直接判定合规。 | 规划<br>二级 |
+| WMD-H02<br>规则与组分配 | 支持基于受控资产字段定义规则、严重性、平台适用性、智能组分配及原因；未知数据不可直接判定合规。不设置宽限期或合规时限，新事实、规则及组资格变化触发重评估。 | 规划<br>二级 |
 | WMD-H03<br>漂移检测 / 修复 | 比对期望设置与观察状态；按授权策略告警或修复，保留修复前后证据和失败原因。 | 规划<br>二级 |
 | WMD-H04<br>合规反馈集成 | 合规变化进入智能组、Webhook/查询接口；向外部准入系统提供状态、原因及新鲜度。 | 规划<br>二级 |
 | WMD-H05<br>基线模板 / 证明 | 保留安全基线模板、健康证明/DHA/TPM 信号与规则结合；标准映射与证明验证需独立验收。 | 规划<br>三级 |
@@ -451,7 +451,7 @@ CSP 返回成功只能证明相应命令的结果，不能替代所有受控设�
 
 AC-H01-01　配置应用后再次读取对应状态；人为改变受控项可识别漂移并按策略修复，保留完整时间线。
 
-AC-H01-02　缺失/冲突资产事实、宽限期未结束、证据验证失败都不显示为已通过；历史结果能定位对应规则版本。
+AC-H01-02　缺失/冲突资产事实、用于判断的证据验证失败都不显示为已通过；历史结果能定位对应规则版本。无宽限期或合规时限。采集尝试 Partial/Failed 保留最近一次完整且仍有效的事实，尝试失败不使旧证据失效；只有新事实、显式删除或来源/注册失效改变事实结论。
 
 > 依据：[D04](../reference/historical-sources.md#d04) 019–022；[D05](../reference/historical-sources.md#d05)；[D06](../reference/historical-sources.md#d06) §8；[D07](../reference/historical-sources.md#d07) P8；[C01](../reference/historical-sources.md#c01)/C13/C14。
 
@@ -824,7 +824,7 @@ AC-06-20-03　用户自装同名 App、共享依赖及自更新 App 不被无提
 
 ## 关键规则与边界
 
-资产字段完全不支持 TTL、validUntil、expiresAt 或字段到期状态；采集、接收、修改时间仅用于溯源，时间流逝不会使值失效或自动触发组重算。时间类型字段仍可与显式常量比较。认证会话、凭据、任务期限及合规宽限期分别由其 owner 持有，不属于资产字段有效期。该范围由 #2463、#2464、#2469 同步执行。
+资产字段完全不支持 TTL、validUntil、expiresAt 或字段到期状态；采集、接收、修改时间仅用于溯源，时间流逝不会使值失效或自动触发组重算。时间类型字段仍可与显式常量比较。认证会话、凭据、任务期限分别由其 owner 持有；#2469 不实现宽限期或合规时限。该范围由 #2463、#2464、#2469 同步执行。
 
 统一模型区分 FieldDefinition（字段语义）、CollectorBinding（如何得到）、Observation（来源证据）、ResolvedAsset（当前选值）。不要把所有值直接覆盖进一个无类型 JSON 后交给每个功能自行解释。
 
@@ -909,7 +909,7 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 | Agent 任务 | 历史：pending → dispatched → completed/failed。[C27](../reference/historical-sources.md#c27)；D08 增 executing。 | 新增 executing 须协议升级；历史客户端尚不产生真实执行终态。 |
 | 统一设备 | 各通道在线状态 + lifecycleState；模型含 retired/pending_reenroll 等。[C14](../reference/historical-sources.md#c14) | 在线、注册有效、证书可用、合规是独立维度。 |
 | 应用安装 | 规划：not_installed → downloading → installing → installed/failed。[D05](../reference/historical-sources.md#d05) | installed 必须有检测或原生可靠结果；退出码不当然等于目标状态。 |
-| 合规 | 历史有 compliant/non_compliant/pending/unknown；规划包含宽限期。[C31](../reference/historical-sources.md#c31)[D05](../reference/historical-sources.md#d05)[D07](../reference/historical-sources.md#d07) | 资产缺失/冲突与证据验证失败不可当作通过。 |
+| 合规 | 历史有 compliant/non_compliant/pending/unknown；当前规则评估区分结论与待评估状态，不设置宽限期。[C31](../reference/historical-sources.md#c31)[D05](../reference/historical-sources.md#d05)[D07](../reference/historical-sources.md#d07) | 资产缺失/冲突与证据验证失败不可当作通过。 |
 | 预注册 | 规划：pending → matched/expired。[D05](../reference/historical-sources.md#d05) | 已匹配资产资料不代表已经持有有效管理证书。 |
 
 ## 最小可追溯数据要求

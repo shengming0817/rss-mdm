@@ -59,13 +59,7 @@ struct Artifact {
 )]
 enum Declaration {
     Software {
-        source: String,
-        package: String,
-        version: String,
-        artifact: Artifact,
-        install: String,
-        detect: String,
-        uninstall: Option<String>,
+        definition: r::SoftwareDefinition,
     },
     Script {
         artifact: Artifact,
@@ -129,20 +123,8 @@ fn artifact(a: &Artifact) -> Result<r::Artifact> {
 }
 fn variant(v: &Variant) -> Result<r::Variant> {
     let declaration = match &v.declaration {
-        Declaration::Software {
-            source,
-            package,
-            version,
-            artifact: a,
-            install,
-            detect,
-            uninstall,
-        } => r::Declaration::Software {
-            package: r::Package::new(id(source)?, id(package)?, id(version)?),
-            artifact: artifact(a)?,
-            install: id(install)?,
-            detect: id(detect)?,
-            uninstall: uninstall.as_ref().map(|s| id(s)).transpose()?,
+        Declaration::Software { definition } => r::Declaration::Software {
+            definition: definition.clone(),
         },
         Declaration::Script {
             artifact: a,
@@ -261,20 +243,8 @@ fn artifact_view(a: &r::Artifact) -> Artifact {
 fn variant_view(v: &r::Variant) -> Variant {
     let text = |id: &r::Id| id.as_str().to_owned();
     let declaration = match v.declaration() {
-        r::Declaration::Software {
-            package,
-            artifact,
-            install,
-            detect,
-            uninstall,
-        } => Declaration::Software {
-            source: text(package.source()),
-            package: text(package.package()),
-            version: text(package.version()),
-            artifact: artifact_view(artifact),
-            install: text(install),
-            detect: text(detect),
-            uninstall: uninstall.as_ref().map(text),
+        r::Declaration::Software { definition } => Declaration::Software {
+            definition: definition.clone(),
         },
         r::Declaration::Script {
             artifact,

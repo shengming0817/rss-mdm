@@ -132,5 +132,7 @@
       "password_file": "/run/secrets/command-password",
       "ca_file": "/run/mdm/database-ca.pem"
     }
-  }
+  },
+  "content": null,
+  "task_signing": null
 }

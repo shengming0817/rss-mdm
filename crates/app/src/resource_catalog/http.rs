@@ -9,7 +9,9 @@ pub(crate) struct HttpState {
     pub(crate) catalog: Arc<ResourceCatalog>,
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
-    Router::new().route("/resources/{id}", get(read).post(write))
+    Router::new()
+        .route("/resources/{id}", get(read).post(write))
+        .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
 }
 async fn run(
     app: &HttpState,

@@ -13,7 +13,6 @@ use std::{sync::Arc, time::Duration};
 
 use crate::authorization::context::RequestAuth;
 
-use crate::software_publication as service;
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
@@ -21,12 +20,14 @@ use axum::{
 };
 use rss_mdm_audit_integration::ManagementResult as Effect;
 use rss_mdm_software_release as rel;
+use rss_mdm_software_service::publication as service;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SourceConfig {
     pub name: String,
+    pub credentials: std::collections::BTreeMap<String, std::path::PathBuf>,
     pub rings: service::RingSources,
     pub artifacts: Vec<service::ArtifactOrigin>,
     pub max_artifact_bytes: u64,
@@ -547,10 +548,10 @@ impl PublicationDirectory {
    if request.operation_id.is_nil(){return Err(Error::Malformed.into());}
    use sha2::Digest;
    let hash=sha2::Sha256::digest(checked_input(serde_json::to_vec(&("publication",audit.tenant(),audit.snapshot().actor,audit.snapshot().instance,source,id,request)))?).to_vec();
-   if let Some(old)=crate::software_publication::receipts::replay(tx,request.operation_id,&hash).await?{crate::software_publication::receipts::audit(tx,&s.audit_store,audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
+   if let Some(old)=service::receipts::replay(tx,request.operation_id,&hash).await?{service::receipts::audit(tx,&super::host::Audit(s.audit_store.clone()),audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
    let value=serde_json::json!({"as_of":s.clock.unix_seconds().map_err(|_|Error::Unavailable(Failure::Clock))?});
-   crate::software_publication::receipts::receipt(tx,request.operation_id,&hash,&value).await?;
-   crate::software_publication::receipts::audit(tx,&s.audit_store,audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
+   service::receipts::receipt(tx,request.operation_id,&hash,&value).await?;
+   service::receipts::audit(tx,&super::host::Audit(s.audit_store.clone()),audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
   }),crate::transaction::TransactionOwner::Publication).await
     }
 }

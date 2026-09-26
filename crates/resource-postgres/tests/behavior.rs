@@ -15,12 +15,10 @@ fn version(resource: &r::Id, label: &str, byte: u8) -> r::Version {
             r::Architecture::X86_64,
             id("msi"),
             r::Declaration::Software {
-                package: r::Package::new(id("private"), id("Acme.App"), id(label)),
-                artifact: r::Artifact::new(id("installer"), 3, r::Digest::from_bytes([byte; 32]))
-                    .unwrap(),
-                install: id("msi"),
-                detect: id("product-code"),
-                uninstall: None,
+                definition: software(
+                    &r::Artifact::new(id("installer"), 3, r::Digest::from_bytes([byte; 32]))
+                        .unwrap(),
+                ),
             },
         )],
     )
@@ -342,4 +340,114 @@ async fn admission_rejects_noninherited_switchable_privileges() {
         "REVOKE {bridge} FROM mdm_resource_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
     ));
     dormant.unwrap();
+}
+
+fn software(artifact: &r::Artifact) -> r::SoftwareDefinition {
+    serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.2","format":"msi","primary":"package","artifacts":{"package":{"reference":artifact.reference().as_str(),"length":artifact.length(),"sha256":artifact.digest().bytes()}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null})).unwrap()
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: backend-t2"]
+async fn artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback() {
+    let runtime = runtime().await;
+    let store = ResourceStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let first = id(&unique());
+    let second = id(&unique());
+    let digest = r::Digest::from_bytes([201; 32]);
+    for key in [&first, &second] {
+        store
+            .execute(&req(key, 0, Command::Create(r::Kind::Software)), deadline())
+            .await
+            .unwrap();
+        store
+            .execute(
+                &req(key, 1, Command::Insert(version(key, "v1", 201))),
+                deadline(),
+            )
+            .await
+            .unwrap();
+    }
+    async fn referenced(
+        runtime: &rss_transactional_messaging_postgres::PgRuntime,
+        tenant: rss_request_context::TenantId,
+        digest: r::Digest,
+    ) -> bool {
+        runtime
+            .local_tx(tenant, deadline(), move |tx| {
+                Box::pin(async move { artifact_referenced_in(tx, digest).await })
+            })
+            .await
+            .fold(
+                |v| v,
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            )
+    }
+    assert!(referenced(&runtime, tenant(), digest).await);
+    assert!(!referenced(&runtime, foreign(), digest).await);
+    let rollback = req(
+        &first,
+        2,
+        Command::Archive {
+            version: id("v1"),
+            references: 0,
+        },
+    );
+    let result = runtime
+        .local_tx_with_context(tenant(), deadline(), (&store, &rollback), |(s, r), tx| {
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                    .await?;
+                s.execute_in(tx, r).await?.unwrap();
+                Err::<(), _>(rss_transactional_messaging_postgres::PgError::from(
+                    sqlx::Error::RowNotFound,
+                ))
+            })
+        })
+        .await;
+    assert!(result.fold(
+        |_| false,
+        |_| false,
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    for (index, key) in [&second, &first].into_iter().enumerate() {
+        let archive = req(
+            key,
+            2,
+            Command::Archive {
+                version: id("v1"),
+                references: 0,
+            },
+        );
+        let result = runtime
+            .local_tx_with_context(tenant(), deadline(), (&store, &archive), |(s, r), tx| {
+                Box::pin(async move {
+                    tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                        .await?;
+                    s.execute_in(tx, r).await
+                })
+            })
+            .await;
+        assert!(result.fold(
+            |v| v.is_ok(),
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false
+        ));
+        assert_eq!(
+            referenced(&runtime, tenant(), digest).await,
+            index == 0,
+            "another Resource reference must retain the shared bytes"
+        );
+    }
 }

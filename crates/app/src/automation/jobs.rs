@@ -84,6 +84,9 @@ pub(crate) async fn enqueue_job_in(
             })).await?;
     }
     let status_url = match input {
+        JobInput::Compliance { input } => {
+            format!("/api/v2/compliance-rules/{}/tasks/{id}", input.rule)
+        }
         JobInput::AssetQuery { .. } => format!("/api/v2/device-queries/{id}"),
         JobInput::Group { group, .. } => format!("/api/v2/groups/{group}/tasks/{id}"),
         JobInput::Scope { scope } => format!("/api/v2/scopes/{scope}/tasks/{id}"),

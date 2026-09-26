@@ -10,7 +10,7 @@ NAMES=('policy','resource','software-release')
 SCHEMAS=('mdm_policy','mdm_resource','mdm_software_release')
 BEHAVIORS={
  'policy':{'saving_intents_does_not_create_execution_facts','admission_rejects_noninherited_switchable_privileges','fact_pages_preserve_boundaries_and_reject_foreign_documents','persistence_replay_aba_and_old_facts','concurrent_cas_borrowed_rollback_and_runtime_owner','outbox_failure_and_immutable_inputs'},
- 'resource':{'admission_rejects_noninherited_switchable_privileges','resource_admission_rejects_schema_and_privilege_drift','resource_immutable_versions_restart_and_reference_rollback','resource_cas_events_and_owner_admission'},
+ 'resource':{'artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback','admission_rejects_noninherited_switchable_privileges','resource_admission_rejects_schema_and_privilege_drift','resource_immutable_versions_restart_and_reference_rollback','resource_cas_events_and_owner_admission'},
  'software-release':{'admission_rejects_noninherited_switchable_privileges','release_approval_unknown_retry_history_and_late_results','release_immutable_version_request_uniqueness_and_rollback','release_event_failure_and_runtime_admission'},
 }
 def verify_tests(output,expected):
@@ -61,7 +61,7 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None):
                     v=json.loads(sql(query.replace('$1::text', "'"+schema+"'")))
                     (d/'catalog.json').write_text(json.dumps(v,indent=2)+'\n')
             if write_catalogs and app:
-                d=source/'crates/app/src/software_publication';(d/'catalog.json').write_text(json.dumps(json.loads(sql((d/'catalog.sql').read_text())),indent=2)+'\n')
+                d=source/'crates/software-service/src/publication';(d/'catalog.json').write_text(json.dumps(json.loads(sql((d/'catalog.sql').read_text())),indent=2)+'\n')
             config=root/'config.json';config.write_text(json.dumps({'port':port,'ca':str(root/'ca.crt'),'container':name}));config.chmod(0o600)
             yield dict(os.environ,BACKEND_PG_CONFIG=str(config)),sql
         finally:subprocess.run(['docker','rm','-f',name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20)

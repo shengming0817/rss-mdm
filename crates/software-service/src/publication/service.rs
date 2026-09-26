@@ -44,7 +44,7 @@ impl ServiceRequest {
 }
 pub struct PublicationService {
     pub(super) runtime: Arc<PgRuntime>,
-    pub(super) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(super) audit_store: Arc<dyn crate::AuditPort>,
     pub(super) resources: ResourceStore,
     pub(super) releases: ReleaseStore,
     pub(super) sources: Sources,
@@ -53,7 +53,7 @@ pub struct PublicationService {
 }
 impl PublicationService {
     pub async fn connect(
-        persistence: (Arc<PgRuntime>, Arc<rss_mdm_audit_integration::AuditStore>),
+        host: crate::Host,
         tenant: TenantId,
         logical_source: String,
         config: RingSources,
@@ -61,11 +61,15 @@ impl PublicationService {
         actors: ServiceIdentity,
         cutoff: Deadline,
     ) -> Result<Self> {
-        let (runtime, audit_store) = persistence;
+        let crate::Host {
+            runtime,
+            audit: audit_store,
+            credentials,
+        } = host;
         actors.check(tenant)?;
         let sources = tokio::time::timeout_at(
             cutoff.instant().into(),
-            Sources::new(tenant, logical_source, config),
+            Sources::new(tenant, logical_source, config, credentials.as_ref()),
         )
         .await
         .map_err(|cause| Error::Source.context("service::connect", cause))??;
@@ -93,7 +97,7 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            db::register(audit, tx, s, h, a).await
+                            db::register(audit.as_ref(), tx, s, h, a).await
                         })
                     },
                 )

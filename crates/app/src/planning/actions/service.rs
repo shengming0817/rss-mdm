@@ -21,12 +21,43 @@ pub(crate) struct Approved {
     pub changed: bool,
 }
 impl ActionPlans {
+    pub(crate) async fn content_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        proof: &AuthorizedPrincipal,
+        input: &Create,
+    ) -> Result<Option<r::Artifact>> {
+        let (snapshot, _) = admit_creation_in(tx, proof, input).await?;
+        let actor = format!("user:{}", proof.principal_id());
+        let hash = fingerprint(&(proof.user(), input))?;
+        if db::replay(tx, &actor, input.operation_id, &hash)
+            .await?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let targets = super::targets::freeze_in(tx, &input.targets).await?;
+        snapshot.require_devices(proof, Permission::ScriptExecute, &targets.devices)?;
+        let (version, _) = rss_mdm_resource_postgres::lock_reference_in(
+            tx,
+            &checked_input(r::Id::new(&input.resource))?,
+            &checked_input(r::Id::new(&input.version))?,
+        )
+        .await?
+        .map_err(|_| Error::Conflict)?;
+        let artifact = input.variant(&version)?.declaration().artifact().clone();
+        if version.kind() != r::Kind::Script || artifact.length() > 16_777_216 {
+            return Err(Error::Malformed.into());
+        }
+        Ok(Some(artifact))
+    }
     pub(crate) async fn create_in(
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &AuthorizedPrincipal,
         input: &Create,
         audit: &RequestAudit,
+        content: Option<&crate::content::Verified>,
     ) -> Result<Created> {
         self.content.as_ref().ok_or(Error::Unsupported)?;
         let service = self;
@@ -63,7 +94,9 @@ impl ActionPlans {
         )?;
         check_capacity_in(tx, input, &targets, now).await?;
         let target_count = targets.devices.len();
-        let frozen = self.freeze_resource_in(tx, input, targets).await?;
+        let frozen = self
+            .freeze_resource_in(tx, input, targets, content.ok_or(Error::Conflict)?)
+            .await?;
         db::insert_plan_in(tx, &frozen, &proof.user(), &approvals, &hash).await?;
 
         let response = creation_receipt(input.operation_id, target_count);
@@ -205,6 +238,7 @@ impl ActionPlans {
         tx: &mut PgTransaction<'_>,
         input: &Create,
         targets: FrozenTargets,
+        content: &crate::content::Verified,
     ) -> Result<Frozen> {
         let (version, state) = rss_mdm_resource_postgres::lock_reference_in(
             tx,
@@ -230,13 +264,11 @@ impl ActionPlans {
         if artifact.length() > 16_777_216 {
             return Err(Error::Malformed.into());
         }
-        let content = self.content.clone().ok_or(Error::Unsupported)?;
-        let item = artifact.clone();
-        let bytes = tokio::task::spawn_blocking(move || content.read(&item))
-            .await
-            .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))??;
+        if !content.matches(artifact) {
+            return Err(Error::Conflict.into());
+        }
         if definition.spec().profile == r::ScriptProfile::OsqueryInfoV1
-            && bytes != b"SELECT version FROM osquery_info;\n"
+            && artifact.digest() != r::Digest::of(b"SELECT version FROM osquery_info;\n")
         {
             return Err(Error::Malformed.into());
         }

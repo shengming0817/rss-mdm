@@ -23,6 +23,14 @@ pub(crate) async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result:
         )
 }
 pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::verify_watermark_fence(c).await?;
+            rss_mdm_compliance_postgres::admit(c, tenant).await
+        })
+    })
+    .await?;
     let valid = tx
         .with_connection(|c| {
             Box::pin(async move {
@@ -36,6 +44,18 @@ pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
         return Err(Error::Unavailable(Failure::FlowAdmission).into());
     }
     let contracts = [
+        (
+            "software",
+            rss_mdm_software_service::catalog::CATALOG_SQL,
+            rss_mdm_software_service::catalog::CATALOG_JSON,
+            rss_mdm_software_service::catalog::ADMISSION_SQL,
+        ),
+        (
+            "content",
+            include_str!("../content/catalog.sql"),
+            include_str!("../content/catalog.json"),
+            include_str!("../content/admission.sql"),
+        ),
         (
             "execution handoff",
             include_str!("../execution/catalog.sql"),
@@ -80,9 +100,9 @@ pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
         ),
         (
             "publication",
-            include_str!("../software_publication/http_catalog.sql"),
-            include_str!("../software_publication/http_catalog.json"),
-            include_str!("../software_publication/http_admission.sql"),
+            rss_mdm_software_service::publication::HTTP_CATALOG_SQL,
+            rss_mdm_software_service::publication::HTTP_CATALOG_JSON,
+            rss_mdm_software_service::publication::HTTP_ADMISSION_SQL,
         ),
     ];
     for (owner, query, expected, admission) in contracts {

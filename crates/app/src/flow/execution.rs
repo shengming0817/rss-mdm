@@ -40,12 +40,18 @@ pub(crate) async fn open(
             .await
             .map_err(|_| Error::Unavailable(Failure::CommandStorage))?,
     );
-    let content = config
-        .tasks
-        .as_ref()
-        .map(|c| crate::task_content::open(c, &tenant.to_string()))
-        .transpose()?;
     let result = async {
+        let content = config
+            .content
+            .as_ref()
+            .map(|c| {
+                crate::content::Store::open(
+                    c,
+                    &tenant.to_string(),
+                    Arc::new(crate::lifecycle::RuntimeTimer),
+                )
+            })
+            .transpose()?;
         crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
         let outbox = Arc::new(
             PgOutboxStore::new(
@@ -118,8 +124,13 @@ pub(crate) async fn open(
             reconcile,
             tenant,
             instance: config.identity.instance_id.clone(),
-            content: content.as_ref().map(|c| c.reader.clone()),
-            signer: content.map(|c| c.signer),
+            content,
+            signer: config
+                .task_signing
+                .as_ref()
+                .map(crate::task_signing::Signer::open)
+                .transpose()?
+                .map(Arc::new),
         }))
     }
     .await;

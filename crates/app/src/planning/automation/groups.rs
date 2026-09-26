@@ -281,6 +281,7 @@ impl Planning {
                 .bind(tenant).bind(watermark).bind(id.to_string()).fetch_one(c).await
         })).await?;
         let receipt = checked(self.groups.publish_build_in(tx, operation).await?)?;
+        crate::compliance::group_changed(tx, id).await?;
         checked(
             self.policies
                 .advance_reference_in(
