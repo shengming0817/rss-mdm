@@ -377,7 +377,7 @@ pub(super) async fn bind(
     .await?;
     let fingerprint =
         crate::enrollment::digest(&(leaf.attempt, leaf.fingerprint, udid, auth.operation));
-    let budget = crate::audit_budget::AuditBudget::retirement(None);
+    let budget = app.devices.retirement_budget();
     let control = budget.control();
     let operation_control = budget.operation_control();
     let attempt = app

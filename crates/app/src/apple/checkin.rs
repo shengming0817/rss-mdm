@@ -42,7 +42,7 @@ pub(super) async fn checkin(
     audit.target(principal.device());
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
-    let budget = crate::audit_budget::AuditBudget::retirement(None);
+    let budget = app.devices.retirement_budget();
     let control = budget.control();
     let operation_control = budget.operation_control();
     let attempt = app

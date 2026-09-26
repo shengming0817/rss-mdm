@@ -25,10 +25,10 @@ impl<'a, T: ExecutionTimer> OperationControl<'a, T> {
             .remaining(self.timer.now())
             .unwrap_or_default()
     }
-    fn check(&self) -> Result<(), Error> {
+    fn check(&self, deadline: Deadline) -> Result<(), Error> {
         if self.cancel.is_cancelled() {
             Err(rss_audit_postgres::Error::Cancelled(LocalTxDeadlineStage::Operation).into())
-        } else if self.deadline.is_expired(self.timer.now()) {
+        } else if deadline.is_expired(self.timer.now()) {
             Err(rss_audit_postgres::Error::Deadline(LocalTxDeadlineStage::Operation).into())
         } else {
             Ok(())
@@ -36,16 +36,23 @@ impl<'a, T: ExecutionTimer> OperationControl<'a, T> {
     }
     pub(crate) async fn run<R, E: From<Error>>(
         &self,
+        total: &rss_audit_postgres::Control<'_, T>,
         work: impl Future<Output = Result<R, E>>,
     ) -> Result<R, E> {
-        self.check().map_err(E::from)?;
+        // Observe before reading remaining total time, so this conversion cannot extend it.
+        let observed = self.timer.now();
+        let cap = observed
+            .checked_add(total.remaining())
+            .unwrap_or(self.deadline.instant());
+        let deadline = self.deadline.shortened_to(cap);
+        self.check(deadline).map_err(E::from)?;
         tokio::select! {
             biased;
             () = self.cancel.cancelled() => Err(E::from(rss_audit_postgres::Error::Cancelled(LocalTxDeadlineStage::Operation).into())),
-            () = self.timer.sleep_until(self.deadline) => Err(E::from(rss_audit_postgres::Error::Deadline(LocalTxDeadlineStage::Operation).into())),
+            () = self.timer.sleep_until(deadline) => Err(E::from(rss_audit_postgres::Error::Deadline(LocalTxDeadlineStage::Operation).into())),
             result = work => match result {
                 Err(error) => Err(error),
-                Ok(value) => { self.check().map_err(E::from)?; Ok(value) },
+                Ok(value) => { self.check(deadline).map_err(E::from)?; Ok(value) },
             },
         }
     }
@@ -102,11 +109,16 @@ mod tests {
             wake: AtomicWaker::new(),
         };
         let cancel = CancellationToken::new();
+        let owner = rss_audit_postgres::Control::new(
+            &timer,
+            Deadline::from_timeout(&timer, Duration::from_secs(60)).unwrap(),
+            &cancel,
+        );
         let deadline = Deadline::from_timeout(&timer, Duration::from_secs(6)).unwrap();
         let control = OperationControl::new(&timer, deadline, &cancel);
         timer.advance(Duration::from_secs(4)); // callback arrives late; no new relative budget
         assert_eq!(control.remaining(), Duration::from_secs(2));
-        let wait = control.run(std::future::pending::<Result<(), Error>>());
+        let wait = control.run(&owner, std::future::pending::<Result<(), Error>>());
         futures::pin_mut!(wait);
         assert!(wait.as_mut().now_or_never().is_none());
         timer.advance(Duration::from_secs(2));
@@ -117,14 +129,14 @@ mod tests {
             )))
         ));
         let ran = AtomicBool::new(false);
-        let result = futures::executor::block_on(control.run(async {
+        let result = futures::executor::block_on(control.run(&owner, async {
             ran.store(true, Ordering::Release);
             Ok::<_, Error>(())
         }));
         assert!(result.is_err() && !ran.load(Ordering::Acquire));
         let deadline = Deadline::from_timeout(&timer, Duration::from_secs(1)).unwrap();
         let control = OperationControl::new(&timer, deadline, &cancel);
-        let wait = control.run(std::future::pending::<Result<(), Error>>());
+        let wait = control.run(&owner, std::future::pending::<Result<(), Error>>());
         futures::pin_mut!(wait);
         assert!(wait.as_mut().now_or_never().is_none());
         cancel.cancel();
@@ -134,10 +146,51 @@ mod tests {
                 LocalTxDeadlineStage::Operation
             )))
         ));
-        let result = futures::executor::block_on(control.run(async {
+        let result = futures::executor::block_on(control.run(&owner, async {
             ran.store(true, Ordering::Release);
             Ok::<_, Error>(())
         }));
         assert!(result.is_err() && !ran.load(Ordering::Acquire));
+    }
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "fixture supplies only an anchor for its injected manual clock"
+    )]
+    fn owner_cutoff_caps_a_later_operation_deadline() {
+        let timer = Manual {
+            now: Mutex::new(Instant::now()),
+            wake: AtomicWaker::new(),
+        };
+        let cancel = CancellationToken::new();
+        let owner = rss_audit_postgres::Control::new(
+            &timer,
+            Deadline::from_timeout(&timer, Duration::from_secs(2)).unwrap(),
+            &cancel,
+        );
+        let control = OperationControl::new(
+            &timer,
+            Deadline::from_timeout(&timer, Duration::from_secs(10)).unwrap(),
+            &cancel,
+        );
+        let wait = control.run(&owner, std::future::pending::<Result<(), Error>>());
+        futures::pin_mut!(wait);
+        assert!(wait.as_mut().now_or_never().is_none());
+        timer.advance(Duration::from_secs(2));
+        assert!(matches!(
+            futures::executor::block_on(wait),
+            Err(Error::Audit(rss_audit_postgres::Error::Deadline(
+                LocalTxDeadlineStage::Operation
+            )))
+        ));
+        let ran = AtomicBool::new(false);
+        assert!(
+            futures::executor::block_on(control.run(&owner, async {
+                ran.store(true, Ordering::Release);
+                Ok::<_, Error>(())
+            }))
+            .is_err()
+        );
+        assert!(!ran.load(Ordering::Acquire));
     }
 }

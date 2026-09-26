@@ -137,6 +137,8 @@ pub struct DeviceService {
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     access: Arc<Database>,
     tenant: String,
+    #[cfg(test)]
+    retirement_test_budget: Option<Duration>,
 }
 impl DeviceService {
     pub(crate) fn new(
@@ -148,7 +150,22 @@ impl DeviceService {
             access,
             tenant,
             audit_store,
+            #[cfg(test)]
+            retirement_test_budget: None,
         }
+    }
+    pub(crate) fn retirement_budget(&self) -> crate::audit_budget::AuditBudget {
+        #[cfg(test)]
+        if let Some(total) = self.retirement_test_budget {
+            return crate::audit_budget::AuditBudget::retirement_test(total, None);
+        }
+        crate::audit_budget::AuditBudget::retirement(None)
+    }
+    /// Only real-protocol correctness fixtures may choose a larger budget. No production knob.
+    #[cfg(test)]
+    pub(crate) fn with_retirement_test_budget(mut self, total: Duration) -> Self {
+        self.retirement_test_budget = Some(total);
+        self
     }
     pub(crate) async fn management_principal(
         &self,

@@ -65,7 +65,7 @@ impl DeviceService {
         {
             return Err(Error::Forbidden);
         }
-        let budget = crate::audit_budget::AuditBudget::retirement(None);
+        let budget = self.retirement_budget();
         let control = budget.control();
         let operation_control = budget.operation_control();
         let attempt = self
@@ -146,7 +146,7 @@ impl DeviceService {
             key,
             digest: &digest,
         };
-        let budget = crate::audit_budget::AuditBudget::retirement(None);
+        let budget = self.retirement_budget();
         let control = budget.control();
         let operation_control = budget.operation_control();
         let attempt = self

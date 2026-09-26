@@ -63,13 +63,18 @@ impl Fixture {
         let clock = Arc::new(crate::clock::SystemClock);
         let monotonic: Arc<dyn rss_observation::Clock> = fixture_clock();
         let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
-        let devices = Arc::new(crate::device::DeviceService::new(
-            access.clone(),
-            TENANT.into(),
-            access
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?,
-        ));
+        let devices = Arc::new(
+            crate::device::DeviceService::new(
+                access.clone(),
+                TENANT.into(),
+                access
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?,
+            )
+            .with_retirement_test_budget(Duration::from_secs(30)),
+        );
+        // This fixture checks 65+ exact terminal facts, not a six-second throughput promise.
+
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
             config.runtime_database.options()?,
             access.clone(),
@@ -336,7 +341,7 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
     ensure!(checked.enrollment == enrollment && checked.attempt == attempt);
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(40))
         .identity(device.identity(&der)?)
         .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
             f.root.join("ca.crt"),

@@ -219,7 +219,8 @@ impl AuditStore {
         )
         .await
     }
-    /// End product work before the owner's total cutoff, then await the owner's settlement.
+    /// Cap product work by the owner's total cutoff, then await the owner's settlement.
+    /// Select an earlier operation deadline to reserve settlement time.
     /// Only cancels the borrowed callback, never the enclosing transaction future. Provider
     /// acquisition/setup remain subject to its total cutoff and may have an unconfirmed rollback.
     pub async fn execute_with_operation<
@@ -251,8 +252,8 @@ impl AuditStore {
             self.adapter.local_tx_with_context(
                 tenant,
                 total,
-                (context, Some(operation), operation_control, self),
-                |(context, operation, operation_control, store), tx| {
+                (context, Some(operation), operation_control, total, self),
+                |(context, operation, operation_control, total, store), tx| {
                     Box::pin(async move {
                         let work = async {
                             tx.with_connection(|c| Box::pin(admit_receipts(c)))
@@ -271,7 +272,7 @@ impl AuditStore {
                                 .await?;
                             Ok(value)
                         };
-                        operation_control.run(work).await
+                        operation_control.run(total, work).await
                     })
                 },
             ),

@@ -29,8 +29,15 @@ impl AuditBudget {
     /// Preserve the existing six-second product cap, reserving a quarter for owner settlement.
     /// Caller cutoffs are absolute; neither a late callback nor reborrowing renews the budget.
     pub(crate) fn retirement(caller: Option<Deadline>) -> Self {
+        Self::retirement_with_total(Duration::from_secs(6), caller)
+    }
+    #[cfg(test)]
+    pub(crate) fn retirement_test(total: Duration, caller: Option<Deadline>) -> Self {
+        Self::retirement_with_total(total, caller)
+    }
+    fn retirement_with_total(total: Duration, caller: Option<Deadline>) -> Self {
         use rss_request_context::Clock;
-        let mut budget = Self::new(Duration::from_secs(6));
+        let mut budget = Self::new(total);
         if let Some(caller) = caller {
             budget.deadline = Deadline::at(budget.deadline.instant().min(caller.instant()));
         }

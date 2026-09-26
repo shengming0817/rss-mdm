@@ -770,6 +770,7 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
             .await;
         ensure!(state(recovery) == "committed");
         ensure!(bytes(&pool, tenant).await?.len() == 1);
+        lock_wait_uses_settlement_reserve(&store, &pool, tenant).await?;
         request.finalize(None);
     }
     pool.close().await;
@@ -784,5 +785,54 @@ async fn original_six_second_batch_diagnostic() -> Result<()> {
         retirement_batch_using(&pool, ledger, Duration::from_secs(6), false).await?;
     }
     pool.close().await;
+    Ok(())
+}
+
+async fn lock_wait_uses_settlement_reserve(
+    store: &AuditStore,
+    pool: &PgPool,
+    tenant: TenantId,
+) -> Result<()> {
+    let original = bytes(pool, tenant).await?;
+    let peers = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(pool.connect_options().as_ref().clone())
+        .await?;
+    let mut holder = peers.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *holder)
+        .await?;
+    sqlx::query("SELECT rss_audit.reserve($1::uuid)")
+        .bind(tenant.to_string())
+        .execute(&mut *holder)
+        .await?;
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let total = Control::new(
+        &timer,
+        Deadline::from_timeout(&timer, Duration::from_secs(4))?,
+        &cancel,
+    );
+    let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(1))?;
+    let work = rss_mdm_audit_integration::OperationControl::new(&timer, cutoff, &cancel);
+    let entered = std::sync::atomic::AtomicBool::new(false);
+    let attempt = store.execute_with_operation(tenant, &total, &work, &entered, |entered, _| {
+        Box::pin(async move {
+            entered.store(true, std::sync::atomic::Ordering::Release);
+            Ok::<(), Error>(())
+        })
+    });
+    let release = async {
+        // Release the actual PG lock after work cutoff but comfortably before total cutoff.
+        tokio::time::sleep_until((cutoff.instant() + Duration::from_millis(300)).into()).await;
+        holder.rollback().await
+    };
+    let (attempt, released) = tokio::join!(attempt, release);
+    released?;
+    ensure!(state(attempt) == "rolled_back");
+    ensure!(!entered.load(std::sync::atomic::Ordering::Acquire));
+    ensure!(bytes(pool, tenant).await? == original);
+    peers.close().await;
     Ok(())
 }
