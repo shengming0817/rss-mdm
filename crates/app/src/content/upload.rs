@@ -45,11 +45,19 @@ impl Store {
     pub(super) fn load_upload(&self, id: Uuid, now: i64) -> Result<Upload, Error> {
         let path = self.upload_path(id, "json");
         regular(&path)?;
-        let file = options().open(path).map_err(|_| storage())?;
-        if file.metadata().map_err(|_| storage())?.len() > 16_384 {
-            return Err(invariant());
+        let file = options()
+            .open(path)
+            .map_err(|_| Error::Unavailable(Failure::ContentMetadata))?;
+        if file
+            .metadata()
+            .map_err(|_| Error::Unavailable(Failure::ContentMetadata))?
+            .len()
+            > 16_384
+        {
+            return Err(Error::Unavailable(Failure::ContentMetadata));
         }
-        let upload: Upload = serde_json::from_reader(file).map_err(|_| invariant())?;
+        let upload: Upload = serde_json::from_reader(file)
+            .map_err(|_| Error::Unavailable(Failure::ContentMetadata))?;
         if upload.id != id || upload.expires <= now {
             return Err(Error::Conflict);
         }
@@ -219,7 +227,7 @@ impl Store {
             },
         )
         .await
-        .map_err(|_| storage())?
+        .map_err(|_| Error::Unavailable(Failure::ContentDeadline))?
     }
     pub(crate) async fn finish(self: &Arc<Self>, id: Uuid, now: i64) -> Result<Upload, Error> {
         let s = self.clone();

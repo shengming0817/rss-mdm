@@ -56,9 +56,10 @@ impl From<catalog::Error> for transaction::Fault {
             catalog::Error::Missing => {
                 Error::Resource(crate::resource_catalog::error::ResourceError::Missing).into()
             }
-            catalog::Error::Integrity | catalog::Error::Content => {
-                Error::Unavailable(crate::Failure::ResourceStorage).into()
+            catalog::Error::Integrity => {
+                Error::Unavailable(crate::Failure::SoftwareCatalogInvariant).into()
             }
+            catalog::Error::Content => Error::Unavailable(crate::Failure::ContentInvariant).into(),
         }
     }
 }
@@ -98,7 +99,7 @@ async fn read_source(
                 Ok(Json(value))
             })
         },
-        TransactionOwner::Publication,
+        TransactionOwner::SoftwareCatalog,
     )
     .await
 }
@@ -133,7 +134,7 @@ async fn write_source(
                 Ok(Json(value))
             })
         },
-        TransactionOwner::Publication,
+        TransactionOwner::SoftwareCatalog,
     )
     .await
 }
@@ -163,7 +164,7 @@ async fn read_version(
                 Ok(Json(value))
             })
         },
-        TransactionOwner::Publication,
+        TransactionOwner::SoftwareCatalog,
     )
     .await
 }
@@ -203,7 +204,7 @@ async fn write_version(
                     }
                 })
             },
-            TransactionOwner::Publication,
+            TransactionOwner::SoftwareCatalog,
         )
         .await?;
         if let Some(resource) = resource {
@@ -248,7 +249,7 @@ async fn write_version(
                 Ok(Json(value))
             })
         },
-        TransactionOwner::Publication,
+        TransactionOwner::SoftwareCatalog,
     )
     .await
 }
@@ -294,7 +295,7 @@ async fn download(
                     .await?)
             })
         },
-        TransactionOwner::Publication,
+        TransactionOwner::SoftwareCatalog,
     )
     .await?;
     let selected = frozen
@@ -333,7 +334,7 @@ async fn download(
                 Ok(())
             })
         },
-        TransactionOwner::Publication,
+        TransactionOwner::SoftwareCatalog,
     )
     .await?;
     crate::content::http::response(content, &headers).await

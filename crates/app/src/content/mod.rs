@@ -46,10 +46,10 @@ pub(crate) struct Store {
     timer: Arc<dyn Clock>,
 }
 fn storage() -> Error {
-    Error::Unavailable(Failure::CommandStorage)
+    Error::Unavailable(Failure::ContentStorage)
 }
 fn invariant() -> Error {
-    Error::Unavailable(Failure::CommandInvariant)
+    Error::Unavailable(Failure::ContentInvariant)
 }
 fn hex(bytes: [u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -70,6 +70,12 @@ fn options() -> OpenOptions {
     }
     options
 }
+fn lock_error(error: std::fs::TryLockError) -> Error {
+    match error {
+        std::fs::TryLockError::WouldBlock => Error::Conflict,
+        std::fs::TryLockError::Error(_) => storage(),
+    }
+}
 fn lock(path: &Path) -> Result<File, Error> {
     let file = options()
         .create(true)
@@ -77,7 +83,7 @@ fn lock(path: &Path) -> Result<File, Error> {
         .open(path)
         .map_err(|_| storage())?;
     regular(path)?;
-    file.try_lock().map_err(|_| Error::Conflict)?;
+    file.try_lock().map_err(lock_error)?;
     Ok(file)
 }
 fn sync_dir(path: &Path) -> Result<(), Error> {
@@ -142,7 +148,7 @@ impl Store {
         tenant: &str,
         timer: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, Error> {
-        let bad = || Error::Configuration(ConfigIssue::Execution);
+        let bad = || Error::Configuration(ConfigIssue::Content);
         let tenant = rss_request_context::TenantId::parse(tenant)
             .map_err(|_| bad())?
             .to_string();
@@ -187,15 +193,23 @@ impl Store {
         {
             return Err(bad());
         }
-        Ok(Arc::new(Self {
+        let store = Self {
             directory,
             config: config.clone(),
             transfers: Arc::new(Semaphore::new(config.max_uploads)),
             timer,
-        }))
+        };
+        {
+            let _recovery = lock(&store.directory.join(".upload.lock"))?;
+            // Validate metadata and settle completed tails without expiring resumable sessions.
+            store.clean_partials_locked(i64::MIN)?;
+        }
+        Ok(Arc::new(store))
     }
     fn blob_lock(&self, digest: [u8; 32]) -> PathBuf {
-        self.directory.join(format!(".blob-{}.lock", hex(digest)))
+        // Fixed stripes keep lock inodes stable and bounded across artifact churn.
+        // Collisions conservatively reject exclusive work; readers still share the stripe.
+        self.directory.join(format!(".blob-lock-{:02x}", digest[0]))
     }
     fn path(&self, a: &Artifact) -> PathBuf {
         self.directory.join(hex(a.digest().bytes()))
@@ -233,7 +247,7 @@ impl Store {
             .truncate(false)
             .open(self.blob_lock(artifact.digest().bytes()))
             .map_err(|_| storage())?;
-        guard.try_lock_shared().map_err(|_| Error::Conflict)?;
+        guard.try_lock_shared().map_err(lock_error)?;
         let path = self.path(artifact);
         regular(&path)?;
         let mut opts = OpenOptions::new();
@@ -271,7 +285,7 @@ fn verify_file(
     let mut count = 0u64;
     loop {
         if timer.now() >= deadline.instant() {
-            return Err(storage());
+            return Err(Error::Unavailable(Failure::ContentDeadline));
         }
         let n = file.read(&mut buffer).map_err(|_| storage())?;
         if n == 0 {

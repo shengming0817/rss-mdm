@@ -17,7 +17,7 @@ pub(crate) struct Signer {
     key: Ed25519KeyPair,
 }
 fn bad() -> Error {
-    Error::Configuration(ConfigIssue::Execution)
+    Error::Configuration(ConfigIssue::TaskSigning)
 }
 impl Signer {
     pub(crate) fn open(config: &Config) -> Result<Self, Error> {

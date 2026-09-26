@@ -76,6 +76,10 @@ fn incomplete_or_unbounded_software_is_rejected() {
         ("/install/timeoutSeconds", json!(0)),
         ("/install/environment", json!({"PATH":"evil"})),
         ("/primary", json!("missing")),
+        (
+            "/dependencies",
+            json!([{"resource":"app","version":"v1","sha256":vec![3;32]}]),
+        ),
         ("/detect", json!({"kind":"exit_zero"})),
     ] {
         let mut v = spec();

@@ -11,11 +11,11 @@ impl Garbage {
         tokio::task::spawn_blocking(move || {
             let _guard = self._guard;
             let parent = self.path.parent().ok_or_else(storage)?;
-            fs::remove_file(&self.path).map_err(|_| storage())?;
-            sync_dir(parent)
+            fs::remove_file(&self.path).map_err(|_| Error::Unavailable(Failure::ContentCleanup))?;
+            sync_dir(parent).map_err(|_| Error::Unavailable(Failure::ContentCleanup))
         })
         .await
-        .map_err(|_| storage())?
+        .map_err(|_| Error::Unavailable(Failure::ContentCleanup))?
     }
 }
 impl Store {

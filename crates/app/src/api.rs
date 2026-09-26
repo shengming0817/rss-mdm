@@ -165,17 +165,7 @@ pub(crate) fn from_compiled(
         .apple
         .map(|config| crate::apple::Apple::load(config, clock.unix_seconds()?).map(Arc::new))
         .transpose()?;
-    let content_writer = config
-        .content
-        .as_ref()
-        .map(|c| {
-            crate::content::Store::open(
-                c,
-                &config.identity.tenant_id,
-                Arc::new(crate::lifecycle::RuntimeTimer),
-            )
-        })
-        .transpose()?;
+    let content_writer = execution.content.clone();
     let state = Arc::new(Assembly {
         content_writer,
         audit_store,
@@ -588,7 +578,7 @@ pub(crate) async fn envelope(
     audit.finalize(audit_failure);
     eprintln!(
         "{}",
-        json!({"event":"mdm_request","request_id":request_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
+        json!({"event":"mdm_request","request_id":request_id,"operation_id":snapshot.operation_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
     );
     secure_response(response, request_id)
 }

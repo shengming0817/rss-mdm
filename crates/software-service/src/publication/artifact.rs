@@ -157,6 +157,22 @@ pub(super) fn checked_url(raw: &str) -> Result<url::Url> {
     if raw.len() > 2048 || raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(Error::Input);
     }
+    // A proxy or origin may decode again after URL parsing. Do not allow an
+    // encoded separator, dot segment or percent to escape the pinned base path.
+    let bytes = raw.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\\' {
+            return Err(Error::Input);
+        }
+        if *byte == b'%' {
+            let encoded = bytes.get(index + 1..index + 3).ok_or(Error::Input)?;
+            let high = (encoded[0] as char).to_digit(16).ok_or(Error::Input)?;
+            let low = (encoded[1] as char).to_digit(16).ok_or(Error::Input)?;
+            if matches!(high * 16 + low, 0x2e | 0x2f | 0x5c | 0x25) {
+                return Err(Error::Input);
+            }
+        }
+    }
     let u = url::Url::parse(raw)
         .map_err(|cause| Error::Input.context("artifact::checked_url", cause))?;
     if u.scheme() != "https"
@@ -169,4 +185,37 @@ pub(super) fn checked_url(raw: &str) -> Result<url::Url> {
         return Err(Error::Input);
     }
     Ok(u)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn artifact_urls_reject_ambiguous_encoded_paths() {
+        for suffix in [
+            "%2e%2e%2fadmin",
+            "%2E%2E%5Cadmin",
+            "%252e%252e%252fadmin",
+            "pkg%2fname.msi",
+            "pkg%5Cname.msi",
+            "bad%",
+            "bad%zz",
+        ] {
+            assert!(
+                checked_url(&format!("https://packages.example/artifacts/{suffix}")).is_err(),
+                "{suffix}"
+            );
+        }
+        for suffix in [
+            "product-1.2.msi",
+            "Acme%20Suite.pkg",
+            "%E4%BC%81%E4%B8%9A.zip",
+            "org%40name.zip",
+        ] {
+            assert!(
+                checked_url(&format!("https://packages.example/artifacts/{suffix}")).is_ok(),
+                "{suffix}"
+            );
+        }
+    }
 }

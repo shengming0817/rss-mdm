@@ -193,6 +193,7 @@ async fn current(
     id: &str,
     upload: Uuid,
 ) -> Result<Upload, Error> {
+    audit.operation(upload, "management_write");
     proof.require(Permission::ResourceWrite, None)?;
     let value = store(app)?
         .status(upload, app.clock.unix_seconds()?)
@@ -246,6 +247,7 @@ async fn begin(
     Path((id, upload)): Path<(String, Uuid)>,
     Query(input): Query<Selection>,
 ) -> Result<Json<Upload>, Error> {
+    audit.operation(upload, "management_write");
     let binding = resolve(&app, &auth.proof, &audit, &id, &input).await?;
     let result = store(&app)?
         .begin(upload, binding, app.clock.unix_seconds()?)
@@ -312,6 +314,7 @@ async fn upload(
     body: Body,
 ) -> Result<StatusCode, Error> {
     let operation = input.operation.ok_or(Error::Malformed)?;
+    audit.operation(operation, "management_write");
     let binding = resolve(&app, &auth.proof, &audit, &id, &input).await?;
     let now = app.clock.unix_seconds()?;
     let session = store(&app)?.begin(operation, binding, now).await?;
@@ -383,6 +386,7 @@ async fn mirror(
     Query(input): Query<Selection>,
 ) -> Result<StatusCode, Error> {
     let operation = input.operation.ok_or(Error::Malformed)?;
+    audit.operation(operation, "management_write");
     let binding = resolve(&app, &auth.proof, &audit, &id, &input).await?;
     let source = binding.source.as_ref().ok_or(Error::Malformed)?;
     let catalog = rss_mdm_software_service::catalog::Catalog::new(
@@ -424,7 +428,7 @@ async fn mirror(
     let reader = rss_mdm_software_service::publication::ArtifactReader::new(
         origins,
         content.config.max_artifact_bytes,
-        std::time::Duration::from_secs(content.config.transfer_seconds),
+        std::time::Duration::from_secs(content.config.transfer_seconds.min(3600)),
     )
     .map_err(|_| Error::Malformed)?;
     let now = app.clock.unix_seconds()?;
@@ -439,7 +443,7 @@ async fn mirror(
                 binding.length,
             )
             .await
-            .map_err(|_| Error::Unavailable(crate::Failure::PublicationStorage))?;
+            .map_err(|_| Error::Unavailable(crate::Failure::ContentImport))?;
         let stream = tokio_util::io::StreamReader::new(
             response.bytes_stream().map_err(std::io::Error::other),
         );
