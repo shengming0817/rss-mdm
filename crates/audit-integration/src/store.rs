@@ -183,6 +183,55 @@ impl AuditStore {
             )
             .await
     }
+    /// Cap product work by the owner's total cutoff, then await the owner's settlement.
+    /// Select an earlier operation deadline to reserve settlement time.
+    /// Only cancels the borrowed callback, never the enclosing transaction future. Provider
+    /// acquisition/setup remain subject to its total cutoff and may have an unconfirmed rollback.
+    pub async fn execute_with_operation<
+        T: ExecutionTimer,
+        C: Send,
+        R: Send,
+        E: Send + From<Error>,
+        F,
+    >(
+        &self,
+        tenant: rss_request_context::TenantId,
+        budget: &crate::OperationBudget<'_, T>,
+        context: C,
+        operation: F,
+    ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
+        rss_audit_postgres::Committed<R>,
+        rss_audit_postgres::TransactionError<E>,
+    >
+    where
+        F: for<'a> FnOnce(
+                &'a mut C,
+                &'a mut AuditTransaction<'_, '_, '_, T>,
+            ) -> futures::future::BoxFuture<'a, Result<R, E>>
+            + Send,
+    {
+        let total = budget.owner();
+        self.adapter
+            .local_tx_with_context(
+                tenant,
+                &total,
+                (context, Some(operation), budget),
+                |(context, operation, budget), tx| {
+                    Box::pin(async move {
+                        budget
+                            .run(async {
+                                tx.with_connection(|c| Box::pin(admit_receipts(c)))
+                                    .await
+                                    .map_err(E::from)?;
+                                tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
+                                operation.take().expect("one owner callback")(context, tx).await
+                            })
+                            .await
+                    })
+                },
+            )
+            .await
+    }
     /// First operation in an RSS transaction: validate isolation/receipts, then lock Audit and Ledger.
     /// Must precede business and outbox locks. Reuses the owner's connection and remaining budget;
     /// errors must propagate to that owner. This method neither commits nor proves prior rollback.

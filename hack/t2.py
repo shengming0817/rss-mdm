@@ -33,8 +33,10 @@ def run_exact_test(env, selected, integration=False):
     args = ["cargo", "test", "--locked", "-p", "rss-mdm-app"]
     if integration: args += ["--features", "integration"]
     args += ["--lib", selected, "--", "--ignored", "--exact", "--test-threads=1"]
-    result = subprocess.run(args, pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if env.get('MDM_AUDIT_DIAGNOSTIC'): args += ['--nocapture']
+    result = subprocess.run(args, pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, capture_output=True)
     print(result.stdout, flush=True)
+    print(result.stderr, file=sys.stderr, flush=True)
     require(result.returncode == 0, 'T2 failed: ' + selected)
     verify_exact_result(result.stdout, selected)
 
@@ -123,6 +125,7 @@ def verify_startup_deadlines(binary, root, env):
             config['flow']['storage' if key=='database' else 'publication']['database']['port']=stalled_port
         config['execution']['database']['port']=stalled_port
         config['identity']['database']['port']=stalled_port
+        config['identity']['audit_worker']['port']=stalled_port
         path=root/'stalled.json';path.write_text(json.dumps(config));path.chmod(0o600)
         start=time.monotonic()
         result=subprocess.run([binary,'serve','--config',str(path)],pass_fds=lease_fds(), cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
@@ -165,6 +168,7 @@ def configure_identity(root, port, binary, env):
         return dict(host='localhost',port=int(port),name='mdm_test',user=role,password_file=write(role+'-password',password),ca_file=str(root/'ca.crt'))
     for key,role,password in [('access_database','mdm_access','access-fixture'),('runtime_database','mdm_runtime','runtime-fixture')]:config[key]=database(role,password)
     config['identity']['database']=database('mdm_identity_runtime','identity-runtime-fixture')
+    config['identity']['audit_worker']=database('mdm_identity_audit','identity-audit-fixture')
     config['flow']['storage']['database']=database('mdm_flow_runtime','runtime-fixture')
     config['execution']['database']=database('mdm_command_runtime','runtime-fixture')
     config['flow']['publication']['database']=database('mdm_software_driver','runtime-fixture')
@@ -182,6 +186,7 @@ def configure_identity(root, port, binary, env):
 def main(software_only=False, task_only=False, identity_only=False, asset_only=False, command_only=False, catalog_mode=None, apple_only=False, compliance_only=False):
     require_lease(ROOT)
     installation_only = sys.argv[1:] == ["--installation"]
+    audit_only = sys.argv[1:] == ["--identity-audit"]
     foundation_only = sys.argv[1:] == ["--foundation"]
     device_only = sys.argv[1:] == ["--device"]
     windows_only = sys.argv[1:] == ["--windows"]
@@ -214,7 +219,7 @@ def main(software_only=False, task_only=False, identity_only=False, asset_only=F
                 time.sleep(0.2)
             sql = "CREATE ROLE mdm_owner LOGIN PASSWORD 'owner-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_runtime LOGIN PASSWORD 'runtime-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_api LOGIN PASSWORD 'api-fixture' NOSUPERUSER NOBYPASSRLS; CREATE ROLE mdm_access LOGIN PASSWORD 'access-fixture' NOSUPERUSER NOBYPASSRLS; GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;"
             sql += ((ROOT/'crates/app/schema/software-publication-roles.sql').read_text()+(ROOT/'crates/app/schema/flow-roles.sql').read_text()+(ROOT/'crates/app/schema/commands-roles.sql').read_text()+(ROOT/'crates/app/schema/identity-roles.sql').read_text()+(ROOT/'crates/app/schema/audit-roles.sql').read_text())
-            sql += "ALTER ROLE mdm_flow_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture';"
+            sql += "ALTER ROLE mdm_flow_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_command_runtime LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_software_driver LOGIN PASSWORD 'runtime-fixture'; ALTER ROLE mdm_identity_runtime LOGIN PASSWORD 'identity-runtime-fixture'; ALTER ROLE mdm_identity_maintenance LOGIN PASSWORD 'identity-maintenance-fixture'; ALTER ROLE mdm_identity_audit LOGIN PASSWORD 'identity-audit-fixture';"
             run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=sql, stdout=subprocess.DEVNULL, timeout=15)
             env = os.environ.copy()
             # Composed debug async tests include Audit ownership around existing business
@@ -242,11 +247,13 @@ def main(software_only=False, task_only=False, identity_only=False, asset_only=F
                 print(upgrade.stdout, end='', flush=True)
                 require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
                 verify_migrations(name, migrators[0], migration_config, root, env)
-            # Focused software/compliance gates cover their own transactions.
-            if not software_only and not compliance_only:
+            # Every specialized run still proves installation and actual runtime admission.
+            # Batch/recovery correctness belongs to the installation gate, once per CI.
+            if installation_only or not (task_only or identity_only or asset_only or command_only or catalog_mode or apple_only or software_only or compliance_only or audit_only or foundation_only or device_only or windows_only):
                 run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
-                for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
-                    run_exact_test(env, audit_test)
+                run_exact_test(env, "audit_integration_tests::operation_cutoff_leaves_owner_time_to_rollback")
+            for audit_test in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
+                run_exact_test(env, audit_test)
             if installation_only:
                 return
             if catalog_mode:
@@ -254,12 +261,16 @@ def main(software_only=False, task_only=False, identity_only=False, asset_only=F
                 capture(name, catalog_mode)
                 return
             configure_identity(root, port, migrators[0], env)
+            if audit_only:
+                run_exact_test(env, "identity_audit::tests::http_events_deliver_replay_and_fail_closed")
+                return
             if apple_only:
                 from apple_ca import running
                 from apple_oracle import running as oracle
                 with running(root, env), oracle(root, env):
-                    result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                    result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                     print(result.stdout,flush=True)
+                    print(result.stderr,file=sys.stderr,flush=True)
                     expected={'apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'}
                     passed=set(re.findall(r'^test (\S+) \.\.\. ok$',result.stdout,re.MULTILINE))
                     require(result.returncode==0 and passed==expected and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in result.stdout,'Apple T2 failed or omitted required real protocol tests')
@@ -301,6 +312,7 @@ def main(software_only=False, task_only=False, identity_only=False, asset_only=F
                 require(any(item.get('event')=='mdm_command_recovery_failure' and item.get('phase')=='runner' and item.get('reason')=='StorageContract' for item in diagnostics),'fatal recovery diagnostic was not emitted')
                 return
             if identity_only:
+                run_exact_test(env, "identity_audit::tests::http_events_deliver_replay_and_fail_closed")
                 import importlib.util
                 spec=importlib.util.spec_from_file_location('mdm_source_t2', ROOT/'hack/source-t2.py');source=importlib.util.module_from_spec(spec);spec.loader.exec_module(source)
                 source_root=root/'source';source_root.mkdir()

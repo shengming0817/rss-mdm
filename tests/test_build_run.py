@@ -311,7 +311,7 @@ print(json.dumps({'name':Path(sys.argv[0]).name,'target':os.environ.get('CARGO_T
                                         capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 records = [json.loads(line) for line in result.stdout.splitlines()]
-                self.assertEqual(len(records), 10 if target == 't2' else 1)
+                self.assertEqual(len(records), 11 if target == 't2' else 1)
                 self.assertEqual(len({record['lease'] for record in records}), 1)
                 self.assertTrue(records[0]['lease'])
                 self.assertIn(str(self.pool), records[0]['target'])

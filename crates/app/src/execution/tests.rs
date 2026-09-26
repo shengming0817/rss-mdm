@@ -24,7 +24,7 @@ pub(crate) struct Client {
     operation: Uuid,
     rule: Uuid,
     rule_revision: u64,
-    expiring: Option<Uuid>,
+    expiring: Option<(Uuid, i64)>,
 }
 impl Drop for Client {
     fn drop(&mut self) {
@@ -849,8 +849,9 @@ impl Client {
         self.other_native_outcomes(peer, url, &initial, &ack)
             .await?;
         let expiry = Uuid::new_v4();
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"task":{"kind":"state_verify","field":"model","expectedValue":"after-deadline"},"deadline":self.app.clock.unix_seconds()?+1}))).await?.0==StatusCode::ACCEPTED);
-        self.expiring = Some(expiry);
+        let expires_at = self.app.clock.unix_seconds()? + 5;
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"task":{"kind":"state_verify","field":"model","expectedValue":"after-deadline"},"deadline":expires_at}))).await?.0==StatusCode::ACCEPTED);
+        self.expiring = Some((expiry, expires_at));
         Ok(())
     }
     pub(crate) async fn new_registration_operation(&mut self) -> anyhow::Result<Value> {
@@ -915,7 +916,13 @@ impl Client {
         ))
         .await?;
         eprintln!("command T2: restarted runtime admitted");
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while self.app.clock.unix_seconds()? <= self.expiring.unwrap().1 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await??;
         let timer = recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);
@@ -936,7 +943,7 @@ impl Client {
             report
         );
         let read = self
-            .call(Method::GET, &format!("/{}", self.expiring.unwrap()), None)
+            .call(Method::GET, &format!("/{}", self.expiring.unwrap().0), None)
             .await?;
         ensure!(
             read.1["commandStatus"] == "timed_out" && read.1["observation"]["result"] == "unknown",
@@ -960,7 +967,7 @@ impl Client {
         // Exercise the same unbounded worker entry used by the runtime registration.
         // The expired operation has not been published; an autonomous relay must progress
         // without reviving the command, then stop via its normal cancellation signal.
-        let message_id = format!("dispatch.{}", self.expiring.unwrap());
+        let message_id = format!("dispatch.{}", self.expiring.unwrap().0);
         let pending: String = sqlx::query_scalar(
             "SELECT status FROM rss_transactional_messaging.outbox WHERE message_id=$1",
         )
@@ -983,7 +990,7 @@ impl Client {
         worker_cancel.cancel();
         tokio::time::timeout(Duration::from_secs(2), worker).await??;
         ensure!(
-            self.call(Method::GET, &format!("/{}", self.expiring.unwrap()), None)
+            self.call(Method::GET, &format!("/{}", self.expiring.unwrap().0), None)
                 .await?
                 .1["commandStatus"]
                 == "timed_out"

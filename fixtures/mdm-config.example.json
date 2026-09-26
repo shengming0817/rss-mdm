@@ -12,7 +12,15 @@
       "password_file": "/run/mdm/identity-runtime-password",
       "ca_file": "/run/mdm/database-ca.pem"
     },
-    "oidc": null
+    "oidc": null,
+    "audit_worker": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_identity_audit",
+      "password_file": "/run/mdm/identity-audit-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    }
   },
   "access_database": {
     "host": "postgres.example.test",

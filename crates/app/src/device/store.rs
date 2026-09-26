@@ -65,16 +65,14 @@ impl DeviceService {
         {
             return Err(Error::Forbidden);
         }
-        let budget = crate::audit_budget::AuditBudget::new(
-            crate::registration_lifecycle::TRANSACTION_BUDGET,
-        );
-        let control = budget.control();
+        let budget = self.retirement_budget();
+        let operation_control = budget.operation_control();
         let attempt = self
             .audit_store
-            .execute(
+            .execute_with_operation(
                 rss_request_context::TenantId::parse(admin.tenant_id())
                     .map_err(|_| Error::Malformed)?,
-                &control,
+                &operation_control,
                 (
                     &self.audit_store,
                     BindingInputs {
@@ -146,16 +144,14 @@ impl DeviceService {
             key,
             digest: &digest,
         };
-        let budget = crate::audit_budget::AuditBudget::new(
-            crate::registration_lifecycle::TRANSACTION_BUDGET,
-        );
-        let control = budget.control();
+        let budget = self.retirement_budget();
+        let operation_control = budget.operation_control();
         let attempt = self
             .audit_store
-            .execute(
+            .execute_with_operation(
                 rss_request_context::TenantId::parse(admin.tenant_id())
                     .map_err(|_| Error::Malformed)?,
-                &control,
+                &operation_control,
                 (
                     &self.audit_store,
                     RevokeInputs {

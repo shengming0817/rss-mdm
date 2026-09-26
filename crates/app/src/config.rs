@@ -19,6 +19,12 @@ pub enum AuditConfig {
     Ledger { key_id: String, key_file: PathBuf },
 }
 impl AuditConfig {
+    pub(crate) fn mode(&self) -> crate::migration::AuditMode {
+        match self {
+            Self::Plain => crate::migration::AuditMode::Plain,
+            Self::Ledger { .. } => crate::migration::AuditMode::Ledger,
+        }
+    }
     pub(crate) fn integrity(&self) -> Result<rss_audit_postgres::Integrity, Error> {
         match self {
             Self::Plain => Ok(rss_audit_postgres::Integrity::Plain),
@@ -78,6 +84,7 @@ pub struct Identity {
     pub instance_id: String,
     pub tenant_id: String,
     pub database: Database,
+    pub audit_worker: Database,
     pub oidc: Option<crate::identity::OidcConfig>,
 }
 #[derive(Deserialize)]
@@ -147,6 +154,14 @@ impl Config {
         {
             return Err(Error::Configuration(ConfigIssue::IdentityDatabase));
         }
+        let worker = &self.identity.audit_worker;
+        if worker.user != crate::identity_audit::ROLE
+            || worker.host != self.identity.database.host
+            || worker.port != self.identity.database.port
+            || worker.name != self.identity.database.name
+        {
+            return Err(Error::Configuration(ConfigIssue::IdentityAuditDatabase));
+        }
         let tenant = uuid::Uuid::parse_str(&self.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
@@ -180,6 +195,16 @@ impl Config {
                 &self.identity.instance_id,
                 std::mem::take(&mut self.identity_management),
             )?;
+        let worker = &self.identity.audit_worker;
+        let runtime = &self.identity.database;
+        if worker.password_file == runtime.password_file
+            || secret(&worker.password_file)
+                .map_err(|_| Error::Configuration(ConfigIssue::IdentityAuditDatabase))?
+                == secret(&runtime.password_file)
+                    .map_err(|_| Error::Configuration(ConfigIssue::IdentityAuditDatabase))?
+        {
+            return Err(Error::Configuration(ConfigIssue::IdentityAuditDatabase));
+        }
         Ok(Compiled {
             config: self,
             identity_management: Arc::new(identity_management),
@@ -245,11 +270,91 @@ pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("worker-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        for role in ["database", "audit_worker"] {
+            let path = root.join(role);
+            std::fs::write(&path, role).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            value["identity"][role]["password_file"] = serde_json::json!(path);
+        }
+        root
+    }
+    #[test]
+    fn worker_rejects_shared_password_path_and_contents() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("worker-secrets-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let runtime = root.join("runtime");
+        let worker = root.join("worker");
+        for path in [&runtime, &worker] {
+            std::fs::write(
+                path,
+                if path == &runtime {
+                    "same-secret\n"
+                } else {
+                    "same-secret"
+                },
+            )
+            .unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        value["identity"]["database"]["password_file"] = serde_json::json!(runtime);
+        for path in [&runtime, &worker] {
+            value["identity"]["audit_worker"]["password_file"] = serde_json::json!(path);
+            assert!(matches!(
+                serde_json::from_value::<Config>(value.clone())
+                    .unwrap()
+                    .compile(),
+                Err(Error::Configuration(ConfigIssue::IdentityAuditDatabase))
+            ));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn identity_worker_requires_its_own_same_database_credentials() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        value["identity"]["audit_worker"] = value["identity"]["database"].clone();
+        assert!(
+            serde_json::from_value::<Config>(value.clone())
+                .and_then(|c| c.compile().map_err(serde::de::Error::custom))
+                .is_err()
+        );
+        value["identity"]["audit_worker"]["user"] = "mdm_identity_audit".into();
+        let root = independent_secrets(&mut value);
+        assert!(
+            serde_json::from_value::<Config>(value.clone())
+                .unwrap()
+                .compile()
+                .is_ok()
+        );
+        value["identity"]["audit_worker"]["name"] = "other".into();
+        assert!(
+            serde_json::from_value::<Config>(value.clone())
+                .unwrap()
+                .compile()
+                .is_err()
+        );
+        value["identity"]
+            .as_object_mut()
+            .unwrap()
+            .remove("audit_worker");
+        assert!(serde_json::from_value::<Config>(value).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn static_business_permissions_are_rejected() {
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/mdm-config.example.json"))
                 .unwrap();
+        let root = independent_secrets(&mut value);
         value["bindings"] = serde_json::json!([]);
         assert!(serde_json::from_value::<Config>(value.clone()).is_err());
         value.as_object_mut().unwrap().remove("bindings");
@@ -262,6 +367,7 @@ mod tests {
         );
         value.as_object_mut().unwrap().remove("access_database");
         assert!(serde_json::from_value::<Config>(value).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn startup_configuration_diagnostics_identify_safe_fields() {

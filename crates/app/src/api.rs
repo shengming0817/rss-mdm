@@ -282,6 +282,7 @@ pub(crate) fn from_state(
     });
     let readiness = Arc::new(ReadinessState {
         readiness: state.readiness.clone(),
+        identity_audit: state.identity.audit_readiness.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         flow: state.flow.clone(),
@@ -790,6 +791,7 @@ pub(crate) fn write_key(
 
 async fn ready(State(app): State<Arc<ReadinessState>>) -> Response {
     if app.readiness.ready()
+        && app.identity_audit.ready()
         && app
             .apple
             .as_ref()
@@ -835,6 +837,7 @@ struct CollectionState {
 }
 
 struct ReadinessState {
+    identity_audit: Arc<crate::identity_audit::Readiness>,
     readiness: Arc<crate::inventory_runtime::Readiness>,
     apple: Option<Arc<crate::apple::Apple>>,
     clock: Arc<dyn crate::clock::Clock>,
