@@ -59,3 +59,33 @@ inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配�
 
 
 汇总 assetStates 统计字段状态，分母不是设备数；matched、unknown、total 分别统计匹配、未知和授权候选设备。没有合规评估事实时不从资产缺失推断合规。采集完整性见 [Windows 管理](windows-management.md)，升级见 [运维](../deployment/operations.md)。
+
+
+## 规则合规评估
+
+合规复用上述字段目录和三值 AND/OR 条件。规则条件、严重性、平台、启停和分配共用一个版本；设备执行成功不构成合规事实。不存在宽限期、字段 TTL 或时间触发：新报告、显式字段变更、注册/来源变化、规则和组资格变化才触发评估。
+
+| 方法、路径（前缀 `/api/v2`） | 内容 |
+| --- | --- |
+| GET /compliance-rules?after={uuid} | 规则分页，每页最多 50 条 |
+| GET /compliance-rules/{id} | 当前规则及版本 |
+| GET /compliance-rules/{id}/versions/{revision} | 历史规则定义，用于解释旧评估 |
+| PUT /compliance-rules/{id} | Operation 包装的完整定义；首次 expectedRevision=0 |
+| POST /compliance-rules/{id}/recompute | Operation 包装，input 为 `{}`，expectedRevision 为当前版本 |
+| GET /compliance-rules/{id}/tasks/{task} | completed 与闭合失败原因 |
+| GET /devices/{id}/compliance | 设备汇总、各规则 current；待评估时 previous 单独标识 |
+| GET /devices/{id}/compliance/history?from=…&until=…&limit=50&cursor=… | UTC 秒范围、最多 100 条，返回 nextCursor |
+
+规则 input 示例：
+
+```json
+{"name":"企业 Agent 健康","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":true}}}
+```
+
+severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windows/macos。平台选择使用冻结资产来源中的原生 Windows/Apple 注册证据，只有 Agent 或来源矛盾时为 unknown，不能按型号/版本字符串猜测平台。target 可为 `{ "kind":"groups", "ids":["组 UUID"] }`，取多个智能组的并集。每租户最多 100 条规则，每条最多 16 个组；条件沿用 Group 预算。规则停用保留历史；启用规则引用的组必须先解除分配才能删除。
+
+写入回传 id/revision/task，重评估回传 task；任务入口为 `/compliance-rules/{id}/tasks/{task}`。写入使用相同 operationId 重放，正文变化或旧版本返回冲突。规则读、写、重评估分别要求 tenant 范围的 compliance_rule_read、compliance_write、compliance_recompute；设备当前和历史要求 AllDevices/Device 范围的 compliance_read。每次读取重新授权，历史游标签名绑定主体、租户、设备和时间筛选。
+
+完成结论为 compliant/non_compliant/unknown/not_applicable；组资格不确定仍是 unknown。pending 只表示最新输入尚未完成，不能把 previous 当作当前合规。设备汇总优先明确失败、未知、待评估；至少一条适用规则且全部通过才是 compliant。无启用规则为 unknown/no_rules，全不适用为 not_applicable。
+
+历史保留规则版本、字典版本、资产水位、组成员集、评估时间、原因和无原始字段值的证据引用，以及 published/superseded/failed 标识。任务按固定输入分页，只有完整运行且输入仍有效才切换当前指针；旧运行不能覆盖新事实。失败诊断和恢复复用现有 automation，重启继续持久任务；本接口不提供自动修复或标准合规认证声明。

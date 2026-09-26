@@ -5,7 +5,7 @@ impl Planning {
     pub(crate) async fn asset_work_pending(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
         let tenant = self.tenant.to_string();
         Ok(tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid),0)")
+            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid),0) OR coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
                 .bind(tenant).fetch_one(c).await
         })).await?)
     }

@@ -1,0 +1,240 @@
+//! Compliance persistence. Every operation borrows the host tenant transaction.
+//! No worker, transaction settlement or audit producer lives here.
+use rss_request_context::TenantId;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sqlx::{PgConnection, Row};
+use uuid::Uuid;
+/// Immutable installation unit.
+pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_compliance.sql");
+type Result<T> = std::result::Result<T, sqlx::Error>;
+fn corrupt() -> sqlx::Error {
+    sqlx::Error::Protocol("compliance storage invariant".into())
+}
+/// Check the caller's transaction binding, including when no row exists.
+pub async fn tenant(c: &mut PgConnection, t: TenantId) -> Result<()> {
+    let actual: Option<String> = sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)")
+        .fetch_one(c)
+        .await?;
+    if actual.as_deref() != Some(t.to_string().as_str()) {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+/// Current rule identity and immutable definition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Rule {
+    pub id: Uuid,
+    pub revision: i64,
+    pub enabled: bool,
+    pub desired: Option<Uuid>,
+    pub current_run: Option<Uuid>,
+    pub definition: Value,
+}
+fn decode(r: sqlx::postgres::PgRow) -> Result<Rule> {
+    let uuid = |key| -> Result<Option<Uuid>> {
+        r.try_get::<Option<String>, _>(key)?
+            .map(|s| Uuid::parse_str(&s).map_err(|_| corrupt()))
+            .transpose()
+    };
+    Ok(Rule {
+        id: uuid("id")?.ok_or_else(corrupt)?,
+        revision: r.try_get("revision")?,
+        enabled: r.try_get("enabled")?,
+        desired: uuid("desired")?,
+        current_run: uuid("current_run")?,
+        definition: serde_json::from_str(r.try_get("definition")?).map_err(|_| corrupt())?,
+    })
+}
+/// Read a bounded rule page in identifier order.
+pub async fn rules(
+    c: &mut PgConnection,
+    t: TenantId,
+    after: Option<Uuid>,
+    limit: usize,
+) -> Result<Vec<Rule>> {
+    tenant(c, t).await?;
+    if !(1..=101).contains(&limit) {
+        return Err(corrupt());
+    }
+    sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND ($2::uuid IS NULL OR r.id>$2::uuid) ORDER BY r.id LIMIT $3")
+ .bind(t.to_string()).bind(after.map(|v|v.to_string())).bind(limit as i64).fetch_all(c).await?.into_iter().map(decode).collect()
+}
+/// Read a rule, optionally serializing changes to its current pointer.
+pub async fn rule(c: &mut PgConnection, t: TenantId, id: Uuid) -> Result<Option<Rule>> {
+    tenant(c, t).await?;
+    sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
+ .bind(t.to_string()).bind(id.to_string()).fetch_optional(c).await?.map(decode).transpose()
+}
+/// Write one immutable version and replace only the current dependency indexes.
+/// The caller holds its product transaction lock and checks expected revision.
+pub async fn put(
+    c: &mut PgConnection,
+    t: TenantId,
+    r: &Rule,
+    fields: &[String],
+    groups: &[Uuid],
+) -> Result<()> {
+    tenant(c, t).await?;
+    sqlx::query("INSERT INTO mdm_compliance.rules(tenant_id,id,revision,enabled) VALUES($1::uuid,$2::uuid,$3,$4) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,enabled=excluded.enabled,desired=NULL")
+ .bind(t.to_string()).bind(r.id.to_string()).bind(r.revision).bind(r.enabled).execute(&mut *c).await?;
+    sqlx::query("INSERT INTO mdm_compliance.versions VALUES($1::uuid,$2::uuid,$3,$4::jsonb)")
+        .bind(t.to_string())
+        .bind(r.id.to_string())
+        .bind(r.revision)
+        .bind(r.definition.to_string())
+        .execute(&mut *c)
+        .await?;
+    for statement in [
+        "DELETE FROM mdm_compliance.fields WHERE tenant_id=$1::uuid AND rule_id=$2::uuid",
+        "DELETE FROM mdm_compliance.groups WHERE tenant_id=$1::uuid AND rule_id=$2::uuid",
+    ] {
+        sqlx::query(statement)
+            .bind(t.to_string())
+            .bind(r.id.to_string())
+            .execute(&mut *c)
+            .await?;
+    }
+    for field in fields {
+        sqlx::query("INSERT INTO mdm_compliance.fields VALUES($1::uuid,$2::uuid,$3)")
+            .bind(t.to_string())
+            .bind(r.id.to_string())
+            .bind(field)
+            .execute(&mut *c)
+            .await?;
+    }
+    for group in groups {
+        sqlx::query("INSERT INTO mdm_compliance.groups VALUES($1::uuid,$2::uuid,$3::uuid)")
+            .bind(t.to_string())
+            .bind(r.id.to_string())
+            .bind(group.to_string())
+            .execute(&mut *c)
+            .await?;
+    }
+    Ok(())
+}
+/// Bind the only publishable task to a rule revision.
+pub async fn desired(
+    c: &mut PgConnection,
+    t: TenantId,
+    id: Uuid,
+    revision: i64,
+    task: Uuid,
+) -> Result<bool> {
+    tenant(c, t).await?;
+    Ok(sqlx::query("UPDATE mdm_compliance.rules SET desired=$4::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid AND revision=$3 AND enabled")
+ .bind(t.to_string()).bind(id.to_string()).bind(revision).bind(task.to_string()).execute(c).await?.rows_affected()==1)
+}
+/// Publish a complete task only when it is still desired.
+pub async fn publish(
+    c: &mut PgConnection,
+    t: TenantId,
+    id: Uuid,
+    revision: i64,
+    task: Uuid,
+) -> Result<bool> {
+    tenant(c, t).await?;
+    Ok(sqlx::query("UPDATE mdm_compliance.rules SET current_run=$4::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid AND revision=$3 AND desired=$4::uuid AND enabled")
+ .bind(t.to_string()).bind(id.to_string()).bind(revision).bind(task.to_string()).execute(c).await?.rows_affected()==1)
+}
+/// Append immutable per-device evidence. Host job progress is committed atomically.
+pub async fn result(
+    c: &mut PgConnection,
+    t: TenantId,
+    task: Uuid,
+    rule: Uuid,
+    device: &str,
+    at: i64,
+    document: &Value,
+) -> Result<()> {
+    tenant(c, t).await?;
+    sqlx::query(
+        "INSERT INTO mdm_compliance.results VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::jsonb)",
+    )
+    .bind(t.to_string())
+    .bind(task.to_string())
+    .bind(rule.to_string())
+    .bind(device)
+    .bind(at)
+    .bind(document.to_string())
+    .execute(c)
+    .await?;
+    Ok(())
+}
+/// Read one result from a specific immutable run.
+pub async fn result_at(
+    c: &mut PgConnection,
+    t: TenantId,
+    task: Uuid,
+    device: &str,
+) -> Result<Option<Value>> {
+    tenant(c, t).await?;
+    let raw:Option<String>=sqlx::query_scalar("SELECT document::text FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND task=$2::uuid AND device=$3").bind(t.to_string()).bind(task.to_string()).bind(device).fetch_optional(c).await?;
+    raw.map(|s| serde_json::from_str(&s).map_err(|_| corrupt()))
+        .transpose()
+}
+/// Exact operation receipt; a different fingerprint is rejected by the host.
+pub async fn replay(
+    c: &mut PgConnection,
+    t: TenantId,
+    id: Uuid,
+) -> Result<Option<(Vec<u8>, Value)>> {
+    tenant(c, t).await?;
+    sqlx::query("SELECT fingerprint,response::text FROM mdm_compliance.operations WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(t.to_string()).bind(id.to_string()).fetch_optional(c).await?.map(|r|Ok((r.try_get("fingerprint")?,serde_json::from_str(r.try_get("response")?).map_err(|_|corrupt())?))).transpose()
+}
+/// Append a receipt in the same transaction as the business change.
+pub async fn receipt(
+    c: &mut PgConnection,
+    t: TenantId,
+    id: Uuid,
+    fingerprint: &[u8],
+    response: &Value,
+) -> Result<()> {
+    tenant(c, t).await?;
+    sqlx::query("INSERT INTO mdm_compliance.operations VALUES($1::uuid,$2::uuid,$3,$4::jsonb)")
+        .bind(t.to_string())
+        .bind(id.to_string())
+        .bind(fingerprint)
+        .bind(response.to_string())
+        .execute(c)
+        .await?;
+    Ok(())
+}
+/// True when an enabled rule prevents deleting this group.
+pub async fn group_used(c: &mut PgConnection, t: TenantId, id: Uuid) -> Result<bool> {
+    tenant(c, t).await?;
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_compliance.groups g JOIN mdm_compliance.rules r ON (r.tenant_id,r.id)=(g.tenant_id,g.rule_id) WHERE g.tenant_id=$1::uuid AND g.group_id=$2::uuid AND r.enabled)").bind(t.to_string()).bind(id.to_string()).fetch_one(c).await
+}
+
+/// Compare structural and security contracts before using the adapter.
+pub async fn admit(c: &mut PgConnection, t: TenantId) -> Result<()> {
+    tenant(c, t).await?;
+    let valid: bool = sqlx::query_scalar(include_str!("admission.sql"))
+        .fetch_one(&mut *c)
+        .await?;
+    let raw: String = sqlx::query_scalar(include_str!("catalog.sql"))
+        .fetch_one(c)
+        .await?;
+    let actual: Value = serde_json::from_str(&raw).map_err(|_| corrupt())?;
+    let expected: Value =
+        serde_json::from_str(include_str!("catalog.json")).map_err(|_| corrupt())?;
+    if !valid || actual != expected {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
+/// Read an immutable definition for interpreting a historical assessment.
+pub async fn version(
+    c: &mut PgConnection,
+    t: TenantId,
+    id: Uuid,
+    revision: i64,
+) -> Result<Option<Value>> {
+    tenant(c, t).await?;
+    let value:Option<String>=sqlx::query_scalar("SELECT definition::text FROM mdm_compliance.versions WHERE tenant_id=$1::uuid AND rule_id=$2::uuid AND revision=$3").bind(t.to_string()).bind(id.to_string()).bind(revision).fetch_optional(c).await?;
+    value
+        .map(|v| serde_json::from_str(&v).map_err(|_| corrupt()))
+        .transpose()
+}

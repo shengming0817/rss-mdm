@@ -9,6 +9,7 @@ mod audit_integration_tests;
 pub mod authorization;
 mod automation;
 mod collection;
+mod compliance;
 mod database;
 pub mod device;
 mod enrollment;

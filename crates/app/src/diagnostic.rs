@@ -91,6 +91,8 @@ pub enum Failure {
     CommandInvariant,
     PlanningStorage,
     AssetsStorage,
+    ComplianceStorage,
+    ComplianceInputPending,
     ResourceStorage,
     PublicationStorage,
     AutomationStorage,

@@ -5,6 +5,8 @@
 //! Real MDM Router with its own PG authority and native component HTTP routes.
 mod assets;
 mod authorization;
+#[cfg(feature = "integration")]
+mod compliance;
 #[path = "identity_t2/management.rs"]
 mod planning;
 use crate::publication_support;

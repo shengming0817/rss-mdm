@@ -1,0 +1,23 @@
+use rss_mdm_compliance::{Current as C, Decision as D, Status as S, aggregate, assess};
+#[test]
+fn applicability_and_missing_evidence_cannot_pass() {
+    for condition in [D::Match, D::NoMatch, D::Unknown] {
+        assert_eq!(assess(D::NoMatch, condition), S::NotApplicable);
+        assert_eq!(assess(D::Unknown, condition), S::Unknown);
+    }
+    assert_eq!(assess(D::Match, D::Match), S::Compliant);
+    assert_eq!(assess(D::Match, D::NoMatch), S::NonCompliant);
+    assert_eq!(assess(D::Match, D::Unknown), S::Unknown);
+}
+#[test]
+fn complete_current_summary_distinguishes_missing_rules_and_unfinished_work() {
+    assert_eq!(aggregate([]), C::Unknown);
+    assert_eq!(aggregate([C::NotApplicable]), C::NotApplicable);
+    assert_eq!(aggregate([C::NotApplicable, C::Compliant]), C::Compliant);
+    assert_eq!(aggregate([C::Pending, C::Compliant]), C::Pending);
+    assert_eq!(aggregate([C::Pending, C::Unknown]), C::Unknown);
+    assert_eq!(
+        aggregate([C::NonCompliant, C::Unknown, C::Pending]),
+        C::NonCompliant
+    );
+}
