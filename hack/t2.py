@@ -270,8 +270,9 @@ def main(task_only=False, identity_only=False, asset_only=False, command_only=Fa
                 from apple_ca import running
                 from apple_oracle import running as oracle
                 with running(root, env), oracle(root, env):
-                    result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                    result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                     print(result.stdout,flush=True)
+                    print(result.stderr,file=sys.stderr,flush=True)
                     expected={'apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'}
                     passed=set(re.findall(r'^test (\S+) \.\.\. ok$',result.stdout,re.MULTILINE))
                     require(result.returncode==0 and passed==expected and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in result.stdout,'Apple T2 failed or omitted required real protocol tests')
