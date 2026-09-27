@@ -55,8 +55,8 @@ impl ExecutionService {
             .map(|id| stored(Uuid::parse_str(&id)))
             .transpose()?;
         let previous_digest: Option<Vec<u8>> = state.try_get("digest")?;
-        let (mut desired, waiting) = desired_in(tx, device).await?;
-        let prior = prior_claims(tx, device).await?;
+        let (mut desired, waiting) = desired_in(&self.policy_reader, tx, device).await?;
+        let prior = prior_claims(&self.policy_reader, tx, device).await?;
         if !waiting.is_empty()
             && (desired.is_empty()
                 || waiting
@@ -359,13 +359,17 @@ fn same_configuration(a: &Frozen, b: &Frozen) -> bool {
         _ => false,
     }
 }
-async fn prior_claims(tx: &mut PgTransaction<'_>, device: &str) -> Result<Vec<(Policy, Frozen)>> {
+async fn prior_claims(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+) -> Result<Vec<(Policy, Frozen)>> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let versions=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT version FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 ORDER BY policy").bind(tenant).bind(device).fetch_all(c).await})).await?;
     let mut result = Vec::new();
     for id in versions {
-        let (mut p, f) = policies::storage::version_in(tx, id).await?;
+        let (mut p, f) = policies::storage::version_in(reader, tx, id).await?;
         p.version = id;
         result.push((p, f));
     }
@@ -467,7 +471,11 @@ async fn native_configuration_in(
     ))?;
     Ok(Ok(NativeConfiguration { task, digest }))
 }
-async fn desired_in(tx: &mut PgTransaction<'_>, device: &str) -> Result<(Claims, Claims)> {
+async fn desired_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+) -> Result<(Claims, Claims)> {
     let mut desired = Vec::new();
     let mut waiting = Vec::new();
     let mut after = Uuid::nil();
@@ -483,13 +491,13 @@ async fn desired_in(tx: &mut PgTransaction<'_>, device: &str) -> Result<(Claims,
         }
         for id in ids {
             after = id;
-            let p = policies::storage::read_in(tx, id)
+            let p = policies::storage::read_in(reader, tx, id)
                 .await?
                 .ok_or(Error::NotFound)?;
             let eligible = policies::storage::eligible_in(tx, &p, device)
                 .await?
                 .is_some();
-            let (_, frozen) = policies::storage::version_in(tx, p.version).await?;
+            let (_, frozen) = policies::storage::version_in(reader, tx, p.version).await?;
             if eligible {
                 desired.push((p, frozen));
             } else {

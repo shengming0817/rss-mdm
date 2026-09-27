@@ -12,8 +12,12 @@ pub(crate) struct ExecutionPolicy {
     pub active: bool,
     authority: Authority,
 }
-pub(crate) async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<ExecutionPolicy> {
-    let (policy, frozen) = storage::version_in(tx, id).await?;
+pub(crate) async fn read_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<ExecutionPolicy> {
+    let (policy, frozen) = storage::version_in(reader, tx, id).await?;
     let Frozen::Execution { action, frequency } = frozen else {
         return Err(Error::Unsupported.into());
     };

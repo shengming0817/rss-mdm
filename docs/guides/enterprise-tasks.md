@@ -87,3 +87,11 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 
 归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。
+
+### 一次性结果与恢复阶段
+
+`GET /api/v2/remote-operations/{id}` 的结果摘要省略 output/stdout/stderr；`GET /api/v2/remote-operations/{id}/runs/{task}` 按设备 OperationRead 权限读取完整、已有预算约束的结果与诊断。Policy 与 Remote 使用同一 Run 结果过滤与详情投影。
+
+`cancellationRequested` 与 `deadlineElapsed` 是意图/时间事实。仍有工作时，phase 为 preparing、dispatched、cancelling 或 expiring；全部工作收敛后为 completed，存在无法确认的执行则为 unknown。completed 表示处理收敛，不表示每个设备执行成功，更不证明脚本效果回滚；各设备结果仍独立展示。取消返回 cancellationRequested，不把写入取消意图称为设备取消完成。
+
+当前服务端 Scope 预览只证明分配资格，尚无受检 OS/CPU 架构事实，不能宣称设备平台适用。终端仍严格核验签名任务的平台/架构。服务端统一 applicability 与其事实/协议前置合同由 [PBI #2572](https://dev.azure.com/shengming0923/rss/_workitems/edit/2572) 跟踪；本次不扩展 Agent V2。

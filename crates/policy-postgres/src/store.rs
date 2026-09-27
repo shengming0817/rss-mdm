@@ -14,7 +14,7 @@ use uuid::Uuid;
 pub struct PolicyStore {
     tenant: TenantId,
     runtime: Arc<PgRuntime>,
-    binding: PgOutboxWriter,
+    reader: PolicyReader,
 }
 /// Host-frozen immutable resource content. The adapter never interprets device protocols.
 pub struct Publication {
@@ -55,23 +55,19 @@ impl PolicyStore {
                 })
                 .await,
         )?;
-        let binding = PgOutboxWriter::new(
-            runtime.clone(),
-            MessagingDomain::parse("mdm-policy").expect("constant domain"),
-        );
+        let reader = PolicyReader::bind(runtime.clone(), tenant);
         Ok(Self {
             tenant,
             runtime,
-            binding,
+            reader,
         })
     }
+    /// Borrow the read capability bound to this store's exact runtime and tenant.
+    pub fn reader(&self) -> &PolicyReader {
+        &self.reader
+    }
     fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
-        self.binding.validate_transaction(tx)?;
-        Ok(if tx.tenant_id() == self.tenant {
-            Ok(())
-        } else {
-            Err(Rejection::TenantMismatch)
-        })
+        self.reader.check(tx)
     }
     /// Atomically persist the checked configuration and, only when changed, a new immutable version.
     pub async fn publish_in(
@@ -85,7 +81,7 @@ impl PolicyStore {
             return Ok(Err(Rejection::InvalidInput));
         }
         STORAGE.lock(tx, "policy", &p.id.to_string()).await?;
-        let old = read_in(tx, p.id).await?;
+        let old = read_snapshot(tx, p.id).await?;
         let expected = (p.revision - 1) as u64;
         let checked = input!(
             Policy::apply(
@@ -183,13 +179,13 @@ impl PolicyStore {
         if id.is_nil() || version.is_nil() || deadline <= at {
             return Ok(Err(Rejection::InvalidInput));
         }
-        let Some(binding) = version_in(tx, version).await? else {
+        let Some(binding) = version_snapshot(tx, version).await? else {
             return Ok(Err(Rejection::NotFound));
         };
         STORAGE
             .lock(tx, "policy", &binding.policy.to_string())
             .await?;
-        let Some(policy) = read_in(tx, binding.policy).await? else {
+        let Some(policy) = read_snapshot(tx, binding.policy).await? else {
             return Ok(Err(Rejection::NotFound));
         };
         if !policy.enabled
@@ -216,7 +212,7 @@ impl PolicyStore {
                 .local_tx_with_context(self.tenant, deadline, self, move |s, tx| {
                     Box::pin(async move {
                         input!(s.check(tx)?);
-                        Ok(Ok(read_in(tx, id).await?))
+                        s.reader.read_in(tx, id).await
                     })
                 })
                 .await,
@@ -225,7 +221,7 @@ impl PolicyStore {
 }
 /// Read a typed aggregate from the caller's tenant-scoped transaction.
 /// Mutating consumers must serialize via their owner lock before trusting this snapshot.
-pub async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Policy>, PgError> {
+async fn read_snapshot(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Policy>, PgError> {
     let tenant = tx.tenant_id().to_string();
     let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT revision,current_version,version_number,enabled,definition FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
     row.map(|r| {
@@ -244,7 +240,10 @@ pub async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Poli
     .transpose()
 }
 /// Read immutable host content together with its owning Policy identity.
-pub async fn version_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Version>, PgError> {
+async fn version_snapshot(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Option<Version>, PgError> {
     let tenant = tx.tenant_id().to_string();
     let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT policy,number,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
     row.map(|r| {
@@ -256,4 +255,50 @@ pub async fn version_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<V
         })
     })
     .transpose()
+}
+
+/// Read-only capability bound to one exact RSS runtime instance and tenant.
+/// Composition admits its read-role/schema contract before binding this handle;
+/// binding neither opens a connection nor grants database privileges.
+pub struct PolicyReader {
+    tenant: TenantId,
+    binding: PgOutboxWriter,
+}
+impl PolicyReader {
+    /// Bind a host-admitted runtime. Command readers retain their SELECT-only role.
+    pub fn bind(runtime: Arc<PgRuntime>, tenant: TenantId) -> Self {
+        Self {
+            tenant,
+            binding: PgOutboxWriter::new(
+                runtime,
+                MessagingDomain::parse("mdm-policy").expect("constant domain"),
+            ),
+        }
+    }
+    fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+        self.binding.validate_transaction(tx)?;
+        Ok(if tx.tenant_id() == self.tenant {
+            Ok(())
+        } else {
+            Err(Rejection::TenantMismatch)
+        })
+    }
+    /// Read an aggregate only through this capability's runtime and tenant.
+    pub async fn read_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> InTransaction<Option<Policy>> {
+        input!(self.check(tx)?);
+        Ok(Ok(read_snapshot(tx, id).await?))
+    }
+    /// Read immutable version content through this capability's runtime and tenant.
+    pub async fn version_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> InTransaction<Option<Version>> {
+        input!(self.check(tx)?);
+        Ok(Ok(version_snapshot(tx, id).await?))
+    }
 }

@@ -117,7 +117,7 @@ impl Policies {
                     )? {
                         return Ok(value);
                     }
-                    let old = storage::read_in(tx, id).await?;
+                    let old = storage::read_in(s.planning.policy_store.reader(), tx, id).await?;
                     if let Some(previous) = &old {
                         authorize_snapshot(&authorization, p, &previous.definition)?;
                     }

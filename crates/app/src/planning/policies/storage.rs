@@ -3,7 +3,11 @@ use super::*;
 pub(crate) async fn lock(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
     crate::action_admission::lock(tx, &format!("policy:{id}")).await
 }
-pub(crate) async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Policy>> {
+pub(crate) async fn read_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Option<Policy>> {
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query("SELECT mdm_planning.policy_lock($1)")
@@ -14,7 +18,7 @@ pub(crate) async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Opti
         })
     })
     .await?;
-    Ok(rss_mdm_policy_postgres::read_in(tx, id).await?)
+    checked(reader.read_in(tx, id).await?)
 }
 pub(crate) fn view(policy: &Policy) -> Result<Value> {
     Ok(
@@ -81,11 +85,15 @@ pub(crate) async fn wake_execution_in(tx: &mut PgTransaction<'_>, policy: Uuid) 
         .await?;
     Ok(())
 }
-pub(crate) async fn version_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<(Policy, Frozen)> {
-    let version = rss_mdm_policy_postgres::version_in(tx, id)
+pub(crate) async fn version_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<(Policy, Frozen)> {
+    let version = checked(reader.version_in(tx, id).await?)?.ok_or(Error::NotFound)?;
+    let owner = read_in(reader, tx, version.policy)
         .await?
         .ok_or(Error::NotFound)?;
-    let owner = read_in(tx, version.policy).await?.ok_or(Error::NotFound)?;
     Ok((owner, stored(serde_json::from_value(version.frozen))?))
 }
 /// A fresh eligible source plus its stable membership-entry coordinate.

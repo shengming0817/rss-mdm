@@ -117,6 +117,7 @@ pub(crate) async fn open(
             }
         };
         Ok(Arc::new(ExecutionService {
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             audit_store,
             runtime: runtime.clone(),
             outbox,

@@ -56,11 +56,13 @@ async fn read(
             Box::pin(async move {
                 let (s, a, audit) = *ctx;
                 a.proof.manage(Permission::PolicyRead)?;
-                let policy = storage::read_in(tx, id).await?.ok_or(Error::Planning(
-                    crate::planning::error::PlanningError::Missing(
-                        crate::planning::error::Missing::Policy,
-                    ),
-                ))?;
+                let policy = storage::read_in(s.planning.policy_store.reader(), tx, id)
+                    .await?
+                    .ok_or(Error::Planning(
+                        crate::planning::error::PlanningError::Missing(
+                            crate::planning::error::Missing::Policy,
+                        ),
+                    ))?;
                 let value = storage::view(&policy)?;
                 s.planning
                     .audit_store
@@ -88,7 +90,7 @@ async fn list(
             sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR id>$2::uuid) ORDER BY id LIMIT 65").bind(tenant).bind(after).fetch_all(c).await
         })).await?;
         let more=ids.len()>64;ids.truncate(64);
-        let mut items=Vec::new();for id in &ids {items.push(storage::view(&storage::read_in(tx,stored(Uuid::parse_str(id))?).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?)?);}
+        let mut items=Vec::new();for id in &ids {items.push(storage::view(&storage::read_in(s.planning.policy_store.reader(),tx,stored(Uuid::parse_str(id))?).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?)?);}
         s.planning.audit_store.append_request_in(tx,audit,200,"success").await?;
         Ok(Json(json!({"items":items,"nextCursor":if more {ids.last()} else {None}})))
     }),TransactionOwner::Planning).await
@@ -131,7 +133,7 @@ async fn devices(
     auth.proof.require_all_devices(Permission::InventoryRead)?;
     run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,&audit,(&service,&auth,&audit,page.after),|ctx,tx|Box::pin(async move {
         let (s,a,audit,after)=ctx;a.proof.manage(Permission::PolicyRead)?;a.proof.require_all_devices(Permission::InventoryRead)?;
-        let p=storage::read_in(tx,id).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?;
+        let p=storage::read_in(s.planning.policy_store.reader(),tx,id).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?;
         let tenant=tx.tenant_id().to_string();let after=after.clone();
         let mut rows=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("WITH wanted AS (SELECT r.device FROM mdm_policy.policies p JOIN mdm_planning.scopes s ON s.tenant_id=p.tenant_id AND s.id=(p.definition->>'scope')::uuid JOIN mdm_planning.scope_results r ON r.tenant_id=s.tenant_id AND r.run=s.resolution WHERE p.tenant_id=$1::uuid AND p.id=$2 UNION SELECT device FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2) SELECT w.device,c.operation,d.diagnosis FROM wanted w LEFT JOIN mdm_planning.configuration_claims c ON c.tenant_id=$1::uuid AND c.policy=$2 AND c.device=w.device LEFT JOIN mdm_planning.configuration_devices d ON d.tenant_id=c.tenant_id AND d.device=c.device WHERE w.device>coalesce($3,'') COLLATE \"C\" ORDER BY w.device COLLATE \"C\" LIMIT 65").bind(tenant).bind(id).bind(after).fetch_all(c).await

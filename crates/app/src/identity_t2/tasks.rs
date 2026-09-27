@@ -1,5 +1,6 @@
 //! Real Policy publication, lazy device admission, delivery, result intake and recovery.
 use super::*;
+use anyhow::Context;
 use base64::Engine;
 use ring::signature::KeyPair;
 use sha2::{Digest, Sha256};
@@ -548,6 +549,9 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     task_event(&router, &again, json!({"kind":"received"})).await?;
     task_event(&router, &again, json!({"kind":"start"})).await?;
     task_event(&router,&again,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
+    frequency::verify(&mut author, &router, id, &base)
+        .await
+        .context("persistent frequency matrix")?;
     let unknown_policy = policy(&mut author, &router, id, &plan_runtime).await?;
     let pending = claim(&router).await?;
     let pending = poll::verify(&router, pending).await?;
@@ -744,24 +748,26 @@ async fn group_matrix(author: &mut Browser, router: &Router, config: &Value) -> 
 }
 
 mod archive_race;
+mod frequency;
 mod history;
 mod poll;
+mod restart;
 
 async fn remote_matrix(
     author: &mut Browser,
     router: &Router,
     resource: Uuid,
     base: &Value,
-    execution: Arc<crate::execution::ExecutionService>,
+    _execution: Arc<crate::execution::ExecutionService>,
     original: &[crate::authorization::Grant],
 ) -> Result<()> {
     let member = browser_subject(author, router).await?;
     let mut grants = original.to_vec();
     grants.extend(crate::identity_fixture::device_grants(
         None,
-        &["operation_read", "operation_cancel"],
+        &["enrollment", "operation_read", "operation_cancel"],
     )?);
-    crate::identity_fixture::set_grants(TENANT, &member, grants).await?;
+    crate::identity_fixture::set_grants(TENANT, &member, grants.clone()).await?;
     let automation = start_automation(base).await?;
     let scope = Uuid::new_v4();
     let created=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE_ID}],"limitations":null,"exclusions":[]}}})).await?;
@@ -790,14 +796,7 @@ async fn remote_matrix(
         ),
     )
     .await?;
-    let mut owner = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let startup = owner.startup()?;
-    let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(execution.registration().critical());
-    launch.finish();
+    let mut owner = restart::worker(base).await?;
     let task=claim(router).await.map_err(|e|anyhow::anyhow!("remote snapshot claim: {e}; state {}",pg(&format!("SELECT jsonb_build_object('operation',(SELECT to_jsonb(o)-'frozen'-'author' FROM mdm_planning.remote_operations o WHERE id='{id}'),'targets',(SELECT jsonb_agg(t) FROM mdm_planning.remote_operation_targets t WHERE operation='{id}'),'runs',(SELECT jsonb_agg(jsonb_build_object('id',r.id,'state',r.state,'gateway',r.gateway_accepted)) FROM mdm_commands.action_runs r WHERE remote_operation='{id}'))" )).unwrap_or_default()))?;
     let task_id = task["payload"]["taskId"].as_str().unwrap();
     ensure!(
@@ -811,12 +810,103 @@ async fn remote_matrix(
     task_event(router, &task, json!({"kind":"received"})).await?;
     task_event(router, &task, json!({"kind":"start"})).await?;
     task_event(router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
-    let devices = (0..300)
-        .map(|n| format!("unregistered-{n:04}"))
-        .chain(std::iter::once(DEVICE_ID.to_owned()))
-        .collect::<Vec<_>>();
+    let summary = author
+        .call(
+            router,
+            Method::GET,
+            &format!("/api/v2/remote-operations/{id}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        summary.0 == StatusCode::OK && summary.1["items"][0]["result"]["exitCode"] == 0,
+        "remote result summary missing: {summary:?}"
+    );
+    ensure!(
+        summary.1["items"][0]["result"].get("output").is_none()
+            && summary.1["items"][0]["result"]["diagnostics"]
+                .get("stdout")
+                .is_none(),
+        "remote summary disclosed streams"
+    );
+    let detail = author
+        .call(
+            router,
+            Method::GET,
+            &format!("/api/v2/remote-operations/{id}/runs/{task_id}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        detail.0 == StatusCode::OK
+            && detail.1["result"]["output"]["version"] == "1.2"
+            && detail.1["result"]["diagnostics"]["stdout"] == "captured stdout",
+        "remote run detail unavailable: {detail:?}"
+    );
+    let wrong = author
+        .call(
+            router,
+            Method::GET,
+            &format!(
+                "/api/v2/remote-operations/{}/runs/{task_id}",
+                Uuid::new_v4()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        wrong.0 == StatusCode::NOT_FOUND,
+        "remote detail accepted the wrong parent: {wrong:?}"
+    );
+    let without_read = grants
+        .iter()
+        .filter(|g| g.operation != crate::authorization::Permission::OperationRead)
+        .cloned()
+        .collect();
+    crate::identity_fixture::set_grants(TENANT, &member, without_read).await?;
+    let denied = author
+        .call(
+            router,
+            Method::GET,
+            &format!("/api/v2/remote-operations/{id}/runs/{task_id}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        denied.0 == StatusCode::FORBIDDEN,
+        "remote detail bypassed OperationRead: {denied:?}"
+    );
+    crate::identity_fixture::set_grants(TENANT, &member, grants).await?;
+    ensure!(
+        summary.1["phase"] == "completed",
+        "successful remote work still appears unfinished"
+    );
+    ensure!(owner.shutdown().join().await?.is_clean());
+    let devices = restart::targets(author, router).await?;
     let bulk = Uuid::new_v4();
     post(author,router,"/api/v2/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,EMPTY_SCOPE)["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+    owner = restart::worker(base).await?;
+    restart::checkpoint(bulk, false).await?;
+    ensure!(owner.shutdown().join().await?.is_clean());
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_planning.remote_operation_targets WHERE operation='{bulk}'"
+        ))?
+        .trim()
+        .parse::<usize>()?
+            < 301
+    );
+    owner = restart::worker(base).await?;
+    restart::checkpoint(bulk, true).await?;
+    ensure!(owner.shutdown().join().await?.is_clean());
+    ensure!(
+        pg(&format!(
+            "SELECT run_after IS NOT NULL FROM mdm_planning.remote_operations WHERE id='{bulk}'"
+        ))?
+        .trim()
+            == "t"
+    );
+    owner = restart::worker(base).await?;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if pg(&format!(
@@ -838,8 +928,16 @@ async fn remote_matrix(
         .trim()
             == "301"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_planning.remote_operation_targets WHERE operation='{bulk}' AND status='blocked'"))?.trim()=="300");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_planning.remote_operation_targets WHERE operation='{bulk}' AND status='blocked'"))?.trim()=="171");
     ensure!(pg("SELECT count(*) FROM mdm_policy.policies")? == before);
+    ensure!(pg(&format!("SELECT count(DISTINCT delivery_id) FROM mdm_planning.remote_operation_targets WHERE operation='{bulk}' AND status='accepted'"))?.trim()=="130");
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.action_runs WHERE remote_operation='{bulk}'"
+        ))?
+        .trim()
+            == "130"
+    );
     let task = claim(router).await?;
     let task_id = task["payload"]["taskId"].as_str().unwrap();
     ensure!(
@@ -849,6 +947,7 @@ async fn remote_matrix(
         .trim()
             == bulk.to_string()
     );
+    ensure!(owner.shutdown().join().await?.is_clean());
     let cancelled = post(
         author,
         router,
@@ -856,7 +955,19 @@ async fn remote_matrix(
         json!({"operationId":Uuid::new_v4()}),
     )
     .await?;
-    ensure!(cancelled["cancelled"] == true);
+    ensure!(cancelled["cancellationRequested"] == true);
+    let progress = author
+        .call(
+            router,
+            Method::GET,
+            &format!("/api/v2/remote-operations/{bulk}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        progress.0 == StatusCode::OK && progress.1["phase"] == "cancelling",
+        "cancel intent was reported as completion: {progress:?}"
+    );
     let mut event = json!({"kind":"start"});
     ensure!(
         task_event_request(router, &task, Uuid::new_v4(), &mut event)
@@ -864,6 +975,9 @@ async fn remote_matrix(
             .0
             == StatusCode::FORBIDDEN
     );
+    owner = restart::worker(base).await?;
+    restart::cancelled(author, router, bulk).await?;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE remote_operation='{bulk}' AND state->>'cancellation'='confirmed'"))?.trim()=="130");
     super::planning::await_ingress().await?;
     ensure!(owner.shutdown().join().await?.is_clean());
     ensure!(automation.shutdown().join().await?.is_clean());

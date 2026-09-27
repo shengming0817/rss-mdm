@@ -41,6 +41,7 @@ pub(crate) fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub(crate) struct ExecutionService {
+    pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) signer: Option<Arc<crate::task_signing::Signer>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) runtime: Arc<PgRuntime>,

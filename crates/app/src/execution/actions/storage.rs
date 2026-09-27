@@ -105,20 +105,22 @@ pub(super) struct ScheduledPolicy {
     pub definition: ExecutionPolicy,
 }
 pub(super) async fn load_policy_version(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<ScheduledPolicy> {
     Ok(ScheduledPolicy {
-        definition: crate::planning::policies::admission::read_in(tx, id).await?,
+        definition: crate::planning::policies::admission::read_in(reader, tx, id).await?,
     })
 }
 
 pub(super) async fn load_source(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
     source: Source,
 ) -> Result<ScheduledPolicy> {
     match source {
-        Source::Policy { version } => load_policy_version(tx, version).await,
+        Source::Policy { version } => load_policy_version(reader, tx, version).await,
         Source::RemoteOperation { operation } => Ok(ScheduledPolicy {
             definition: crate::planning::policies::admission::remote_in(tx, operation).await?,
         }),

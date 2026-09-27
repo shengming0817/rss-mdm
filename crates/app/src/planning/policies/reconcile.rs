@@ -7,7 +7,7 @@ impl super::super::Planning {
         policy: Uuid,
         after: Option<String>,
     ) -> Result<()> {
-        let Some(p) = storage::read_in(tx, policy).await? else {
+        let Some(p) = storage::read_in(self.policy_store.reader(), tx, policy).await? else {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
         };
         let tenant = tx.tenant_id().to_string();

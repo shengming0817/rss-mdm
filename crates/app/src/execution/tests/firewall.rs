@@ -89,8 +89,8 @@ impl Client {
         ));
         let mut launch = startup.commit();
         launch.stage_deferred_task_with_token(automation.registration().critical());
-        launch.stage_deferred_task_with_token(self.app.execution.clone().registration().critical());
         launch.finish();
+        let mut command_owner = self.command_worker()?;
         let cap = native::begin(peer, url, initial, ack, 950, None).await?;
         let message = native::report(&cap.first, &cap.gets, "10.0.19045.0", 200);
         peer_reply(peer, url, &message).await?;
@@ -181,6 +181,7 @@ impl Client {
             s["task"].as_str().unwrap()
         ))
         .await?;
+        ensure!(command_owner.shutdown().join().await?.is_clean());
         let pending_policy = Uuid::new_v4().to_string();
         self.product(
             &format!("policies/{pending_policy}"),
@@ -190,6 +191,8 @@ impl Client {
             ),
         )
         .await?;
+        self.pending_configuration_input().await?;
+        command_owner = self.command_worker()?;
         self.settled_configuration(&pending_policy).await?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
@@ -203,6 +206,10 @@ impl Client {
             .await?;
         ensure!(accepted == self.product(&format!("policies/{policy}"), request).await?);
         let operation = self.wait_configuration(&policy, None).await?;
+        // The native command has been published but no device ACK exists yet.
+        ensure!(command_owner.shutdown().join().await?.is_clean());
+        command_owner = self.command_worker()?;
+        ensure!(self.wait_configuration(&policy, None).await? == operation);
         self.product(
             &format!("policies/{pending_policy}"),
             op(1, json!({"action":"disable"})),
@@ -365,11 +372,14 @@ impl Client {
         );
         // The original authoring assignment may exit while another still needs
         // the same effect; the accepted command remains valid without duplication.
+        ensure!(command_owner.shutdown().join().await?.is_clean());
         self.product(
             &format!("policies/{policy}"),
             op(1, json!({"action":"disable"})),
         )
         .await?;
+        self.pending_configuration_input().await?;
+        command_owner = self.command_worker()?;
         self.settled_configuration(&policy).await?;
         ensure!(self.wait_configuration(&shared, None).await? == operation);
         ensure!(
@@ -539,9 +549,28 @@ impl Client {
                 json!({"operationId":Uuid::new_v4()}),
             )
             .await?;
-        ensure!(cancelled["cancelled"] == true);
+        ensure!(cancelled["cancellationRequested"] == true);
+        ensure!(command_owner.shutdown().join().await?.is_clean());
         ensure!(automation_owner.shutdown().join().await?.is_clean());
         Ok(())
+    }
+    fn command_worker(&self) -> anyhow::Result<rss_runtime::ShutdownStack> {
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = owner.startup()?.commit();
+        launch.stage_deferred_task_with_token(self.app.execution.clone().registration().critical());
+        launch.finish();
+        Ok(owner)
+    }
+    async fn pending_configuration_input(&self) -> anyhow::Result<()> {
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        tokio::time::timeout(Duration::from_secs(30),async {loop {
+            let dirty:bool=sqlx::query_scalar("SELECT coalesce((SELECT input_revision>observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2),false)").bind(TENANT).bind(DEVICE).fetch_one(&mut db).await?;
+            if dirty {return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
+        }}).await?
     }
     async fn settled_configuration(&self, policy: &str) -> anyhow::Result<()> {
         let mut db =

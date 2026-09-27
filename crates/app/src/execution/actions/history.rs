@@ -6,6 +6,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+pub(crate) const RESULT_SUMMARY_SQL: &str = "CASE WHEN r.result IS NULL THEN NULL ELSE (r.result-'output') || jsonb_build_object('diagnostics',(r.result->'diagnostics')-'stdout'-'stderr') END";
+#[derive(Clone, Copy)]
+enum RunOwner {
+    Policy(Uuid),
+    Remote(Uuid),
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Page {
@@ -32,7 +38,9 @@ impl ExecutionService {
             proof.require_all_devices(Permission::OperationRead)?;
             let tenant=tx.tenant_id().to_string();let at=page.after_at;let after=page.after_id.map(|id|id.to_string());
             let mut rows=tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('taskId',id,'device',device,'registrationId',registration,'generation',generation,'occurrence',occurrence,'availableAt',available_at,'deadline',deadline,'state',state,'effect','unverified','result',CASE WHEN result IS NULL THEN NULL ELSE (result-'output') || jsonb_build_object('diagnostics',(result->'diagnostics')-'stdout'-'stderr') END) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version IN (SELECT id FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2::uuid) AND ($3::bigint IS NULL OR (available_at,id)<($3,$4::uuid)) ORDER BY available_at DESC,id DESC LIMIT 21")
+                let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT jsonb_build_object('taskId',id,'device',device,'registrationId',registration,'generation',generation,'occurrence',occurrence,'availableAt',available_at,'deadline',deadline,'state',state,'effect','unverified','result',");
+                query.push(RESULT_SUMMARY_SQL).push(") FROM mdm_commands.action_runs r WHERE tenant_id=$1::uuid AND policy_version IN (SELECT id FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2::uuid) AND ($3::bigint IS NULL OR (available_at,id)<($3,$4::uuid)) ORDER BY available_at DESC,id DESC LIMIT 21");
+                query.build_query_scalar::<Value>()
                     .bind(tenant).bind(id.to_string()).bind(at).bind(after).fetch_all(c).await
             })).await?;
             let more=rows.len()>20;rows.truncate(20);
@@ -44,17 +52,42 @@ impl ExecutionService {
     pub(super) async fn action_run(
         &self,
         proof: &AuthorizedPrincipal,
-        plan: Uuid,
+        policy: Uuid,
         id: Uuid,
         audit: &RequestAudit,
     ) -> Result<Value, Error> {
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,proof,plan,id,audit),|ctx,tx|Box::pin(async move {
-            let (store,proof,plan,id,audit)=*ctx;
+        self.run_detail(proof, RunOwner::Policy(policy), id, audit)
+            .await
+    }
+    pub(crate) async fn remote_action_run(
+        &self,
+        proof: &AuthorizedPrincipal,
+        operation: Uuid,
+        id: Uuid,
+        audit: &RequestAudit,
+    ) -> Result<Value, Error> {
+        self.run_detail(proof, RunOwner::Remote(operation), id, audit)
+            .await
+    }
+    async fn run_detail(
+        &self,
+        proof: &AuthorizedPrincipal,
+        owner: RunOwner,
+        id: Uuid,
+        audit: &RequestAudit,
+    ) -> Result<Value, Error> {
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,&self.policy_reader,proof,owner,id,audit),|ctx,tx|Box::pin(async move {
+            let (store,reader,proof,owner,id,audit)=*ctx;
             let run=db::load_run(tx,id).await?;
-            if !matches!(run.source,db::Source::Policy {..}) || db::load_source(tx,run.source).await?.definition.owner!=plan{return Err(Error::Execution(crate::execution::error::ExecutionError::MissingTask).into());}
+            let (field,parent)=match (owner,run.source) {
+                (RunOwner::Policy(policy),db::Source::Policy {..}) if db::load_source(reader,tx,run.source).await?.definition.owner==policy=>("policyId",policy),
+                (RunOwner::Remote(parent),db::Source::RemoteOperation {operation}) if parent==operation=>("operationId",parent),
+                _=>return Err(Error::Execution(crate::execution::error::ExecutionError::MissingTask).into()),
+            };
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
             store.append_request_in(tx,audit,200,"success").await?;
-            Ok(json!({"policyId":plan,"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":"unverified","result":run.result}))
+            let mut value=json!({"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":"unverified","result":run.result});
+            value[field]=json!(parent);Ok(value)
         }),crate::transaction::TransactionOwner::Execution).await
     }
 }

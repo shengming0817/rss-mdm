@@ -13,7 +13,7 @@ mod collection;
 
 mod poll;
 
-mod history;
+pub(crate) mod history;
 
 mod payload;
 

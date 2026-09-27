@@ -2,7 +2,7 @@ use super::{
     state::{Cancellation, Execution},
     storage as db,
 };
-use crate::execution::{ExecutionService, Result, storage, stored};
+use crate::execution::{ExecutionService, Result, storage};
 use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
@@ -27,16 +27,24 @@ pub(in crate::execution) async fn recover(
     let tenant = tx.tenant_id().to_string();
     let runs=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(id.to_string()).execute(&mut *c).await?;
-        sqlx::query_scalar::<_,String>("SELECT r.id::text FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
+        sqlx::query_as::<_,(Uuid,Option<Uuid>)>("SELECT r.id,(SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
     })).await?;
-    let next = if runs.len() == 128 {
-        runs.last().cloned()
+    let total = runs.len();
+    let mut last = runs.first().and_then(|(_, previous)| *previous);
+    let mut processed = 0;
+    for (id, _) in runs {
+        if tx.deadline().timeout() < std::time::Duration::from_secs(3) {
+            break;
+        }
+        recover_one(service, tx, id).await?;
+        last = Some(id);
+        processed += 1;
+    }
+    let next = if processed < total || total == 128 {
+        last
     } else {
         None
     };
-    for id in runs {
-        recover_one(service, tx, stored(Uuid::parse_str(&id))?).await?;
-    }
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.policy_recovery SET recovery_after=$3::uuid WHERE tenant_id=$1::uuid AND policy=$2::uuid").bind(tenant).bind(id.to_string()).bind(next).execute(c).await?;Ok(())})).await?;
     Ok(())
@@ -165,7 +173,7 @@ pub(in crate::execution) async fn recover_one(
 ) -> Result<()> {
     let now = storage::now(tx).await?;
     let mut run = db::load_run(tx, id).await?;
-    let plan = db::load_source(tx, run.source).await?;
+    let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
     let previous = run.state.clone();
     let stale = stale_registration(tx, &run.target).await?;
     if stale || plan.definition.withdrawn_in(tx, &run.target.device).await? {
