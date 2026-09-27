@@ -34,7 +34,7 @@ fn req(resource: &r::Id, revision: u64, command: Command) -> Request {
     }
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn resource_immutable_versions_restart_and_reference_rollback() {
     let runtime = runtime().await;
     let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
@@ -153,7 +153,7 @@ async fn resource_immutable_versions_restart_and_reference_rollback() {
     );
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn resource_cas_events_and_owner_admission() {
     let runtime = runtime().await;
     let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
@@ -249,7 +249,7 @@ fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn resource_admission_rejects_schema_and_privilege_drift() {
     let runtime = runtime().await;
     let cases = [
@@ -294,7 +294,7 @@ async fn resource_admission_rejects_schema_and_privilege_drift() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn admission_rejects_noninherited_switchable_privileges() {
     let runtime = runtime().await;
     let role = format!("acl_{}", unique().replace('-', "_"));
@@ -347,7 +347,7 @@ fn software(artifact: &r::Artifact) -> r::SoftwareDefinition {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback() {
     let runtime = runtime().await;
     let store = ResourceStore::new(runtime.clone(), tenant(), deadline())

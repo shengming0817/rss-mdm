@@ -46,6 +46,7 @@ class Environment:
     @contextlib.contextmanager
     def phase(self, name, **details):
         start = time.monotonic()
+        details.setdefault('reused',False)
         status='passed'
         try:
             yield
@@ -57,7 +58,7 @@ class Environment:
 
     def variables(self):
         images=json.loads((self.root/'images.json').read_text()) if (self.root/'images.json').exists() else {}
-        return {**images, **{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_')},
+        return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'], **getattr(self,'extra',{})}
@@ -82,6 +83,19 @@ class Environment:
              '-CAcreateserial','-days','30','-extfile',self.root/'extensions','-out',self.root/'server.crt'], **quiet)
         for name in ('ca.key','server.key'): (self.root/name).chmod(0o600)
 
+    def issue_leaf(self, directory, names):
+        directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+        if (directory/'server.crt').exists():
+            run(['openssl','x509','-checkend','300','-noout','-in',directory/'server.crt'],capture_output=True)
+            return
+        quiet=dict(capture_output=True)
+        run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+names[0],
+             '-keyout',directory/'server.key','-out',directory/'server.csr'],**quiet)
+        private(directory/'extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName='+','.join('DNS:'+name for name in names)+',IP:127.0.0.1\n')
+        run(['openssl','x509','-req','-in',directory/'server.csr','-CA',self.root/'ca.crt','-CAkey',self.root/'ca.key',
+             '-CAcreateserial','-days','30','-extfile',directory/'extensions','-out',directory/'server.crt'],**quiet)
+        (directory/'server.key').chmod(0o600)
+
     def container(self):
         ident = self.compose('ps','-q','postgres')
         if not ident or '\n' in ident: raise RuntimeError('environment PostgreSQL is not running')
@@ -95,24 +109,36 @@ class Environment:
         return int(self.compose('port','postgres','5432').rsplit(':',1)[1])
 
     def verify_ownership(self):
-        # Query by Compose identity, then require the independent owner label on every resource.
-        for kind, listing in [('container',['ps','-aq']),('volume',['volume','ls','-q']),('network',['network','ls','-q'])]:
-            ids = run(['docker',*listing,'--filter',f'label=com.docker.compose.project={self.project}'],capture_output=True).stdout.split()
-            if not ids: continue
-            for value in json.loads(run(['docker',kind,'inspect',*ids],capture_output=True).stdout):
-                labels = value.get('Config',{}).get('Labels',{}) if kind=='container' else value.get('Labels',{})
-                if (labels or {}).get('rss.mdm.worktree') != self.identity:
+        config=json.loads(self.compose('--profile','*','config','--format','json'))
+        expected={
+            'container':{service.get('container_name',self.project+'-'+name+'-1') for name,service in config.get('services',{}).items()},
+            'volume':{value['name'] for value in config.get('volumes',{}).values()},
+            'network':{value['name'] for value in config.get('networks',{}).values()},
+        }
+        for kind,listing,field in [('container',['ps','-a'],'Names'),('volume',['volume','ls'],'Name'),('network',['network','ls'],'Name')]:
+            ids=set(run(['docker',*listing,'-q','--filter',f'label=com.docker.compose.project={self.project}'],capture_output=True).stdout.split())
+            names=set(run(['docker',*listing,'--format','{{.'+field+'}}'],capture_output=True).stdout.split())
+            ids.update(names & expected[kind])
+            if not ids:continue
+            for value in json.loads(run(['docker',kind,'inspect',*sorted(ids)],capture_output=True).stdout):
+                labels=value.get('Config',{}).get('Labels',{}) if kind=='container' else value.get('Labels',{})
+                if (labels or {}).get('rss.mdm.worktree')!=self.identity or (labels or {}).get('com.docker.compose.project')!=self.project:
                     raise RuntimeError('refusing foreign environment resource')
 
     def up(self):
         require_lease(self.worktree)
-        reused=bool(self.compose('ps','-q','postgres'))
+        reused=bool(self.compose('ps','--all','-q','postgres'))
         with self.phase('prepare',reused=reused):
+            self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
+            marker=self.root/'owner.json'
+            expected={'worktree':str(self.worktree),'project':self.project}
+            if marker.exists() and json.loads(marker.read_text())!=expected:raise RuntimeError('foreign environment owner record')
+            private(marker,expected)
             self.certificate()
-            private(self.root/'pg-password','local-fixture')
+            self.issue_leaf(self.root/'pg',['localhost','postgres'])
+            private(self.root/'pg'/'pg-password','local-fixture')
             self.verify_ownership()
             self.compose('up','-d','--wait','--wait-timeout','90','postgres')
-            self.roles()
         return self
 
     def roles(self):
@@ -157,6 +183,7 @@ class Environment:
     def reset(self):
         self.verify_ownership()
         self.compose('--profile','product','--profile','idp','down','--volumes','--remove-orphans')
+        if (self.root/'host-ports.json').exists():self.host_ports(release=True)
         if self.root.exists(): shutil.rmtree(self.root)
 
     def status(self):
@@ -164,11 +191,46 @@ class Environment:
         services=json.loads(raw) if raw.startswith('[') else [json.loads(line) for line in raw.splitlines() if line.strip()]
         return dict(project=self.project,worktree=str(self.worktree),services=services)
 
+    def host_ports(self, release=False):
+        import fcntl
+        import socket
+        from build_run import owned_directory
+        registry=owned_directory(Path.home()/'.cache/rss-mdm-dev-ports','.mdm-dev-ports-v1')
+        with (registry/'lock').open('a+') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            index=registry/'allocations.json'
+            allocations=json.loads(index.read_text()) if index.exists() else {}
+            if release:
+                allocations.pop(self.project,None)
+                private(index,allocations)
+                return
+            ports=allocations.get(self.project)
+            def available(port):
+                try:
+                    with socket.socket() as sock:sock.bind(('127.0.0.1',port))
+                    return True
+                except OSError:return False
+            if ports:
+                if not all(available(port) for port in ports.values()):
+                    raise RuntimeError('allocated host port is occupied; stop its process or reset and init this environment')
+                return ports
+            used={port for pair in allocations.values() for port in pair.values()}
+            seed=int(hashlib.sha256(self.project.encode()).hexdigest()[:8],16)%20000
+            for offset in range(20000):
+                first=20000+2*((seed+offset)%20000)
+                candidate=dict(https=first,backend=first+1)
+                if not used.intersection(candidate.values()) and all(available(port) for port in candidate.values()):
+                    allocations[self.project]=candidate
+                    private(index,allocations)
+                    return candidate
+            raise RuntimeError('no host development port pair available')
+
     def initialize(self, mode='host', server_image=None, web_image=None):
         from candidate_fixture import installation, INSTANCE, TENANTS, ADMIN
         import secrets
         import socket
         self.up()
+        with self.phase('roles'):self.roles()
         if mode=='container':
             if not server_image or not web_image:raise ValueError('container mode requires --server-image and --web-image')
             images={}
@@ -179,12 +241,9 @@ class Environment:
             https_port=int(self.compose('port','runtime-netns','8445').rsplit(':',1)[1])
             backend_port=8081
         else:
-            def free_port():
-                with socket.socket() as sock:
-                    sock.bind(('127.0.0.1',0));return sock.getsockname()[1]
-            saved=self.root/'host-ports.json'
-            ports=json.loads(saved.read_text()) if saved.exists() else dict(https=free_port(),backend=free_port())
-            private(saved,ports);https_port=ports['https'];backend_port=ports['backend']
+            ports=self.host_ports()
+            private(self.root/'host-ports.json',ports)
+            https_port=ports['https'];backend_port=ports['backend']
         origin=f'https://localhost:{https_port}'
         runtime=self.root/mode/'runtime';operator=self.root/mode/'operator';gateway=self.root/mode/'gateway'
         for directory in (runtime,operator,gateway):
@@ -221,7 +280,8 @@ class Environment:
                          user=dict(instanceId=INSTANCE,tenantId=TENANTS[0],principalId=ADMIN)))
         if self.sql("SELECT count(*) FROM pg_database WHERE datname='mdm_dev'")=='0':self.sql('CREATE DATABASE mdm_dev OWNER mdm_owner')
         self.sql('GRANT CREATE ON DATABASE mdm_dev TO mdm_owner,mdm_audit_owner,mdm_ledger_owner; GRANT CREATE ON SCHEMA public TO mdm_owner','mdm_dev')
-        for name in ('server.crt','server.key'):private(gateway/name,(self.root/name).read_text())
+        self.issue_leaf(self.root/'gateway-cert',['localhost','mdm.example.test'])
+        for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/name).read_text())
         nginx=(ROOT/'deployment/nginx.conf').read_text().replace('listen 443 ssl;',f'listen {8445 if mode=="container" else https_port} ssl;')
         nginx=nginx.replace('server 127.0.0.1:8081;',f'server 127.0.0.1:{backend_port};').replace('server_name mdm.example.test;','server_name localhost;').replace('proxy_set_header Host mdm.example.test;','proxy_set_header Host $http_host;')
         prefix='/certs' if mode=='container' else str(gateway)
@@ -240,6 +300,7 @@ class Environment:
             if len(binaries)!=1:raise RuntimeError('product binary unavailable')
         for verb,file in [('migrate','migrate.json'),('initialize','initialize.json'),('initialize-authorization','authorization.json')]:
             if verb=='initialize' and self.sql(f"SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{TENANTS[0]}' AND principal_id='{ADMIN}'",'mdm_dev')=='1':
+                with self.phase('initialize',reused=True):pass
                 continue
             with self.phase(verb):
                 if mode=='container':self.compose('--profile','product','run','--rm','operator',verb,'--config','/run/mdm/'+file)
@@ -254,7 +315,8 @@ class Environment:
         actual=int(self.compose('port','runtime-netns','8445').rsplit(':',1)[1])
         expected=json.loads((self.root/'container-initialized.json').read_text())['origin']
         if expected!=f'https://localhost:{actual}':raise RuntimeError('product port changed; run init --mode container again')
-        self.compose('--profile','product','up','-d','server','gateway')
+        with self.phase('start-product'):
+            self.compose('--profile','product','up','-d','server','gateway')
         import ssl
         import urllib.request
         context=ssl.create_default_context(cafile=str(self.root/'ca.crt'))
@@ -267,14 +329,55 @@ class Environment:
             if time.monotonic()>deadline:raise RuntimeError('product HTTPS readiness deadline; inspect this environment logs')
             time.sleep(.2)
 
-@contextlib.contextmanager
-def cluster(*, destructive=False):
-    environment = Environment(group='fault-'+uuid.uuid4().hex[:10] if destructive else 'main')
-    try:
-        environment.up()
-        yield environment
-    finally:
-        if destructive: environment.reset()
+class Cancelled(BaseException):
+    pass
+
+class T2Context:
+    """One run owns preparation, isolation policy, cancellation and stale fault recovery."""
+    def __init__(self):
+        self.main=Environment()
+        self.prepared=False
+        self.spec=None
+        self.handlers={}
+
+    def __enter__(self):
+        import signal
+        require_lease(ROOT)
+        def cancel(number, frame):
+            # Further TERM signals must not interrupt the cleanup subprocesses.
+            for sig in self.handlers:signal.signal(sig,signal.SIG_IGN)
+            raise Cancelled('T2 cancelled')
+        for sig in (signal.SIGTERM,signal.SIGHUP,signal.SIGQUIT):
+            self.handlers[sig]=signal.signal(sig,cancel)
+        try:
+            for path in sorted((ROOT/'artifacts/dev-environment').glob('fault-*')):
+                environment=Environment(group=path.name)
+                marker=path/'owner.json'
+                if path.is_symlink() or not marker.exists() or json.loads(marker.read_text())!={'worktree':str(ROOT),'project':environment.project}:
+                    raise RuntimeError('unrecognized fault residue; inspect and reset explicitly')
+                environment.reset()
+        except BaseException:
+            self.__exit__(None,None,None)
+            raise
+        return self
+
+    def __exit__(self,*unused):
+        import signal
+        for sig,handler in self.handlers.items():signal.signal(sig,handler)
+
+    @contextlib.contextmanager
+    def cluster(self, case=None):
+        destructive=self.spec.isolation=='server' or case in self.spec.destructive
+        group='fault-'+self.spec.name+'-'+hashlib.sha256((case or self.spec.name).encode()).hexdigest()[:10]
+        environment=Environment(group=group) if destructive else self.main
+        try:
+            if destructive or not self.prepared:
+                environment.up()
+                with environment.phase('roles'):environment.roles()
+                if not destructive:self.prepared=True
+            yield environment
+        finally:
+            if destructive:environment.reset()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

@@ -81,8 +81,9 @@ def verify_windows_result(output):
             'Windows T2 did not execute both required protocol/recovery tests')
 
 def verify_migrations(container, binary, config, root, env):
+    database=json.loads(config.read_text())["database"]["name"]
     def sql(statement):
-        return run(["docker", "exec", "-i", container, "psql", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=statement, capture_output=True, timeout=10).stdout.strip()
+        return run(["docker", "exec", "-i", container, "psql", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input=statement, capture_output=True, timeout=10).stdout.strip()
     def migrate(path=config, accepted=True):
         result = subprocess.run([binary,"migrate","--config",str(path)],pass_fds=lease_fds(), cwd=ROOT,env=env,capture_output=True,text=True,timeout=70)
         if (result.returncode == 0) != accepted:
@@ -103,7 +104,7 @@ def verify_migrations(container, binary, config, root, env):
         migrate(accepted=False)
         sql("UPDATE public.mdm_migrations SET complete=true,digest='" + original + "' WHERE name='inventory-v1'")
     # An owned holder makes both independent installers visibly wait before release.
-    holder = subprocess.Popen(["docker","exec","-e","PGAPPNAME=mdm-t2-migration-lock",container,"psql","-U","postgres","-d","mdm_test","-c","SELECT pg_advisory_lock(2346); SELECT pg_sleep(30)"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    holder = subprocess.Popen(["docker","exec","-e","PGAPPNAME=mdm-t2-migration-lock",container,"psql","-U","postgres","-d",database,"-c","SELECT pg_advisory_lock(2346); SELECT pg_sleep(30)"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     children=[]
     try:
         deadline=time.monotonic()+5
@@ -161,8 +162,8 @@ def verify_startup_deadlines(binary, root, env):
     # This table is probed only by Identity; the earlier product stores remain healthy.
     container=env['MDM_TEST_PG_CONTAINER']
     def sql(statement):
-        return run(['docker','exec',container,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test','-c',statement],capture_output=True,timeout=5).stdout.strip()
-    holder=subprocess.Popen(['docker','exec','-e','PGAPPNAME=mdm-t2-identity-startup-holder',container,'psql','-X','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test','-c',
+        return run(['docker','exec',container,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d',config['access_database']['name'],'-c',statement],capture_output=True,timeout=5).stdout.strip()
+    holder=subprocess.Popen(['docker','exec','-e','PGAPPNAME=mdm-t2-identity-startup-holder',container,'psql','-X','-v','ON_ERROR_STOP=1','-U','postgres','-d',config['access_database']['name'],'-c',
         'BEGIN; LOCK TABLE identity_authority.deployment IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(60); ROLLBACK;'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     child=None
     try:
@@ -187,12 +188,12 @@ def verify_startup_deadlines(binary, root, env):
 
 from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 
-def configure_identity(root, port, binary, env):
+def configure_identity(root, port, binary, env, database_name):
     def write(name, value):
         path=root/name;path.write_text(value if isinstance(value,str) else json.dumps(value));path.chmod(0o600);return str(path)
     config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
     def database(role, password):
-        return dict(host='localhost',port=int(port),name='mdm_test',user=role,password_file=write(role+'-password',password),ca_file=str(root/'ca.crt'))
+        return dict(host='localhost',port=int(port),name=database_name,user=role,password_file=write(role+'-password',password),ca_file=str(root/'ca.crt'))
     for key,role,password in [('access_database','mdm_access','access-fixture'),('runtime_database','mdm_runtime','runtime-fixture')]:config[key]=database(role,password)
     config['identity']['database']=database('mdm_identity_runtime','identity-runtime-fixture')
     config['identity']['audit_worker']=database('mdm_identity_audit','identity-audit-fixture')
@@ -211,16 +212,17 @@ def configure_identity(root, port, binary, env):
         require(result.returncode==0,'component initialization failed: '+result.stderr)
     run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','identity_fixture::seed_accounts','--','--ignored'],env=env,cwd=ROOT)
 
-def execute(suite, *, catalog_action="check"):
+def run_scenario(context, scenario):
     require_lease(ROOT)
-    from t2_environment import cluster
-    build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
-    executables = [item["executable"] for line in build.stdout.splitlines() if (item := json.loads(line)).get("reason") == "compiler-artifact" and item.get("executable") and item["target"]["name"] == "rss-mdm-fixture"]
-    if len(executables) != 1: raise RuntimeError("cannot locate the tested fixture executable")
+    executables=[]
+    if 'examples' in context.spec.fixtures:
+        build = run(["cargo", "build", "--locked", "-p", "rss-mdm-examples", "--bin", "rss-mdm-fixture", "--message-format=json"], cwd=ROOT, capture_output=True)
+        executables = [item["executable"] for line in build.stdout.splitlines() if (item := json.loads(line)).get("reason") == "compiler-artifact" and item.get("executable") and item["target"]["name"] == "rss-mdm-fixture"]
+        if len(executables) != 1: raise RuntimeError("cannot locate the tested fixture executable")
     product = run(["cargo", "build", "--locked", "-p", "rss-mdm-app", "--bin", "rss-mdm", "--message-format=json"], cwd=ROOT, capture_output=True)
     migrators = [item["executable"] for line in product.stdout.splitlines() if (item := json.loads(line)).get("reason") == "compiler-artifact" and item.get("executable") and item["target"]["name"] == "rss-mdm"]
     if len(migrators) != 1: raise RuntimeError("cannot locate product migrator")
-    with cluster(destructive=suite in {'installation','foundation','identity','windows','commands'}) as owner, owner.database(name='mdm_test'), tempfile.TemporaryDirectory(prefix='mdm-product-inputs-') as directory:
+    with context.cluster() as owner, owner.database() as database, tempfile.TemporaryDirectory(prefix='mdm-product-inputs-') as directory:
         root=Path(directory)
         for file in ('ca.crt','server.crt','server.key'):
             (root/file).write_bytes((owner.root/file).read_bytes())
@@ -230,106 +232,133 @@ def execute(suite, *, catalog_action="check"):
         # Composed debug async tests include Audit ownership around existing business
         # frames. This is the Rust test thread stack, not a production runtime setting.
         env.setdefault('RUST_MIN_STACK', str(8 * 1024 * 1024))
-        env.update(MDM_FIXTURE_BIN=executables[0], PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/mdm_test", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/mdm_test", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/mdm_test")
+        env.update(PG_CA_FILE=str(root / "ca.crt"), DATABASE_URL=f"postgres://mdm_runtime:runtime-fixture@localhost:{port}/{database}", MDM_OWNER_URL=f"postgres://mdm_owner:owner-fixture@localhost:{port}/{database}", MDM_ADMIN_URL=f"postgres://postgres:local-fixture@localhost:{port}/{database}")
         (root / "owner-password").write_text("owner-fixture")
         os.chmod(root / "owner-password", 0o600)
         migration_config = root / "migrate.json"
-        migration_config.write_text(json.dumps({"installation":installation(),"database":{"host":"localhost","port":int(port),"name":"mdm_test","user":"mdm_owner","password_file":str(root/"owner-password"),"ca_file":str(root/"ca.crt")}}))
+        migration_config.write_text(json.dumps({"installation":installation(),"database":{"host":"localhost","port":int(port),"name":database,"user":"mdm_owner","password_file":str(root/"owner-password"),"ca_file":str(root/"ca.crt")}}))
         os.chmod(migration_config, 0o600)
-        if suite in {'windows','commands'}:
+        if 'windows' in context.spec.fixtures:
             from windows_fixtures import generate
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_WINDOWS_FIXTURES']=str(root)
-        if suite == 'apple':
+        if 'apple' in context.spec.fixtures:
             from apple_fixtures import generate
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_APPLE_FIXTURES']=str(root)
-        if suite != 'installation':
-            run([migrators[0],"migrate","--config",str(migration_config)],env=env,cwd=ROOT,timeout=70)
-        else:
-            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
-            run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
-            run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="GRANT CREATE ON DATABASE mdm_installation,mdm_installation_tasks TO mdm_audit_owner,mdm_ledger_owner;", stdout=subprocess.DEVNULL, timeout=10)
-            upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], pass_fds=lease_fds(), cwd=ROOT, env=env, capture_output=True, text=True)
-            print(upgrade.stdout, end='', flush=True)
-            require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
-            verify_migrations(name, migrators[0], migration_config, root, env)
-        if suite == 'installation':
-            run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
-            run_exact_test(env, "audit_integration_tests::operation_cutoff_leaves_owner_time_to_rollback")
-            return
-        if suite == 'catalog':
-            from command_catalog import capture
-            capture(name, catalog_action)
-            return
-        configure_identity(root, port, migrators[0], env)
-        if suite == 'apple':
-            from apple_ca import running
-            from apple_oracle import running as oracle
-            with running(root, env), oracle(root, env):
-                result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-                print(result.stdout,flush=True)
-                print(result.stderr,file=sys.stderr,flush=True)
-                expected={'apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'}
-                passed=set(re.findall(r'^test (\S+) \.\.\. ok$',result.stdout,re.MULTILINE))
-                require(result.returncode==0 and passed==expected and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in result.stdout,'Apple T2 failed or omitted required real protocol tests')
-            return
-        env['MDM_TEST_PG_CONTAINER'] = name
-        if suite == 'software':
-            result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::software::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-            print(result.stdout,flush=True)
-            require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise software T2 failed or did not execute')
-            return
-        if suite == 'tasks':
-            result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-            print(result.stdout,flush=True)
-            require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
-            return
-        if suite == 'compliance':
-            command=["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::compliance::","--","--ignored","--test-threads=1","--nocapture"]
-            with subprocess.Popen(command,pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT) as process:
-                lines=[]
-                for line in process.stdout:
-                    print(line,end='',flush=True)
-                    lines.append(line)
-                code=process.wait()
-            require(code==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in ''.join(lines),'compliance Router/PG T2 failed or omitted')
-            return
-        if suite == 'assets':
-            result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-            print(result.stdout,flush=True)
-            require(result.returncode==0 and 'test identity_t2::assets::asset_write_query_group_and_isolation ... ok' in result.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'asset Router/PG T2 failed')
-            return
-        if suite == 'commands':
-            result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-            print(result.stdout,flush=True)
-            require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')
-            diagnostics=[json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
-            require(any(item.get('event')=='mdm_command_recovery_failure' and item.get('phase')=='runner' and item.get('reason')=='StorageContract' for item in diagnostics),'fatal recovery diagnostic was not emitted')
-            return
-        if suite == 'identity':
-            run_exact_test(env, "identity_audit::tests::http_events_deliver_replay_and_fail_closed")
-            from t2_suites import sources as source
-            source_root=root/'source';source_root.mkdir()
-            env.update(source.tls_environment(source_root))
-            run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::authorization::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
-            run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
-            from enterprise_idp import fixture as enterprise
-            with enterprise(root, owner) as provider:
-                run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env={**env,**provider})
-            return
-        if suite == 'foundation':
-            verify_startup_deadlines(migrators[0],root,env)
-            run_foundation_tests(env)
-            for selected in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
-                run_exact_test(env, selected)
-            run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2"], cwd=ROOT, env=env)
-            run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
-            return
-        if suite == 'windows':
-            windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1","--skip","windows::tests::native_command_operations_and_observation"],pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,capture_output=True)
-            print(windows.stdout,flush=True)
-            require(windows.returncode == 0, windows.stderr)
-            verify_windows_result(windows.stdout)
-            return
-        raise ValueError('unregistered product suite: '+suite)
+        if executables:env['MDM_FIXTURE_BIN']=executables[0]
+        if 'unmigrated' not in context.spec.fixtures:
+            with owner.phase('migrate'):
+                run([migrators[0],'migrate','--config',str(migration_config)],env=env,cwd=ROOT,timeout=70)
+        if 'identity' in context.spec.fixtures:
+            with owner.phase('initialize'):
+                configure_identity(root,port,migrators[0],env,database)
+        env['MDM_TEST_PG_CONTAINER']=name
+        from types import SimpleNamespace
+        return scenario(SimpleNamespace(root=root,env=env,binary=migrators[0],migration_config=migration_config,
+                        owner=owner,name=name,database=database,context=context))
+
+def installation_tests(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation"], stdout=subprocess.DEVNULL, timeout=10)
+    run(["docker", "exec", name, "createdb", "-U", "postgres", "-O", "mdm_owner", "mdm_installation_tasks"], stdout=subprocess.DEVNULL, timeout=10)
+    run(["docker", "exec", "-i", name, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", f.database], input="GRANT CREATE ON DATABASE mdm_installation,mdm_installation_tasks TO mdm_audit_owner,mdm_ledger_owner;", stdout=subprocess.DEVNULL, timeout=10)
+    upgrade = subprocess.run(["cargo", "test", "--locked", "-p", "rss-mdm-app", "--lib", "migration::tests::fresh_installation_replay_and_mismatch_rejection", "--", "--ignored"], pass_fds=lease_fds(), cwd=ROOT, env=env, capture_output=True, text=True)
+    print(upgrade.stdout, end='', flush=True)
+    require(upgrade.returncode == 0 and 'test migration::tests::fresh_installation_replay_and_mismatch_rejection ... ok' in upgrade.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in upgrade.stdout, 'fresh installation test failed: ' + upgrade.stderr)
+    verify_migrations(name, f.binary, f.migration_config, root, env)
+    run_exact_test(env, "audit_integration_tests::installed_audit_receipts_replay_and_atomicity")
+    run_exact_test(env, "audit_integration_tests::operation_cutoff_leaves_owner_time_to_rollback")
+    return
+
+def catalog(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    from command_catalog import capture
+    capture(name, 'check', f.database)
+    return
+
+def apple(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    from apple_ca import running
+    from apple_oracle import running as oracle
+    with running(root, env), oracle(root, env):
+        result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib','apple::','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        print(result.stdout,flush=True)
+        print(result.stderr,file=sys.stderr,flush=True)
+        expected={'apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'}
+        passed=set(re.findall(r'^test (\S+) \.\.\. ok$',result.stdout,re.MULTILINE))
+        require(result.returncode==0 and passed==expected and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in result.stdout,'Apple T2 failed or omitted required real protocol tests')
+    return
+
+def software(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::software::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    print(result.stdout,flush=True)
+    require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise software T2 failed or did not execute')
+    return
+
+def tasks(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    print(result.stdout,flush=True)
+    require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
+    return
+
+def compliance(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    command=["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::compliance::","--","--ignored","--test-threads=1","--nocapture"]
+    with subprocess.Popen(command,pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT) as process:
+        lines=[]
+        for line in process.stdout:
+            print(line,end='',flush=True)
+            lines.append(line)
+        code=process.wait()
+    require(code==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in ''.join(lines),'compliance Router/PG T2 failed or omitted')
+    return
+
+def assets(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::assets::","--","--ignored","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    print(result.stdout,flush=True)
+    require(result.returncode==0 and 'test identity_t2::assets::asset_write_query_group_and_isolation ... ok' in result.stdout and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'asset Router/PG T2 failed')
+    return
+
+def commands(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    print(result.stdout,flush=True)
+    require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')
+    diagnostics=[json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+    require(any(item.get('event')=='mdm_command_recovery_failure' and item.get('phase')=='runner' and item.get('reason')=='StorageContract' for item in diagnostics),'fatal recovery diagnostic was not emitted')
+    return
+
+def identity(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    run_exact_test(env, "identity_audit::tests::http_events_deliver_replay_and_fail_closed")
+    from t2_suites import sources as source
+    source_root=root/'source';source_root.mkdir()
+    env.update(source.tls_environment(source_root))
+    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::authorization::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
+    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
+    from enterprise_idp import fixture as enterprise
+    with enterprise(root, owner) as provider:
+        run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env={**env,**provider})
+    return
+
+def foundation(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    verify_startup_deadlines(f.binary,root,env)
+    run_foundation_tests(env)
+    for selected in ["api::tests::audit_failure_logs_preserve_action_and_origin", "api::tests::request_diagnostics_keep_causes_internal_and_issue_request_ids"]:
+        run_exact_test(env, selected)
+    run(["cargo", "test", "--locked", "-p", "inventory-postgres-integration", "--features", "integration", "--test", "t2"], cwd=ROOT, env=env)
+    run(["cargo","test","--locked","-p","rss-mdm-app","--test","postgres","--","--ignored"],cwd=ROOT,env=env)
+    return
+
+def windows(f):
+    root,env,name,owner=f.root,f.env,f.name,f.owner
+    windows=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests","--","--ignored","--test-threads=1","--skip","windows::tests::native_command_operations_and_observation"],pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,capture_output=True)
+    print(windows.stdout,flush=True)
+    require(windows.returncode == 0, windows.stderr)
+    verify_windows_result(windows.stdout)
+    return

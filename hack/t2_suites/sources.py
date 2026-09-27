@@ -88,7 +88,7 @@ def tls_environment(root):
         subprocess.run(["openssl", *args], cwd=root, check=True, capture_output=True)
     return dict(os.environ, SOURCE_T2_TLS=str(root), SOURCE_T2_ADDRESS=address)
 
-def main():
+def main(context):
     require_lease(ROOT)
     failed = []
     with tempfile.TemporaryDirectory(prefix="mdm-source-tls-") as directory:
@@ -107,4 +107,3 @@ def main():
     if failed:
         print("Failed source T2 targets: " + ", ".join(failed), file=sys.stderr)
     return int(bool(failed))
-

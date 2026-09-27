@@ -379,7 +379,7 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "hack/asset-t2.py: real authenticated Router and TLS PostgreSQL"]
+#[ignore = "make t2 SUITE=assets: real authenticated Router and TLS PostgreSQL"]
 async fn asset_write_query_group_and_isolation() -> Result<()> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let config: Config = serde_json::from_value(base.clone())?;

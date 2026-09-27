@@ -17,6 +17,6 @@ def run(env):
         print(result.stdout,flush=True)
         if result.returncode:raise RuntimeError('planning resource archive T2 failed')
         pg.verify_tests(result.stdout, {'planning::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic'})
-def main():
+def main(context):
     require_lease(ROOT)
-    with pg.fixture(app=True) as(env,sql):run(env)
+    with pg.fixture(context,app=True) as(env,sql):run(env)

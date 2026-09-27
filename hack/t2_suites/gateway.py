@@ -91,3 +91,6 @@ def verify(image):
                 if primary is None:raise RuntimeError('login gateway cleanup failed') from None
                 primary.add_note('login gateway cleanup also failed')
 
+
+def main(context):
+    verify(json.loads((ROOT/'deployment/providers.lock.json').read_text())['nginx'])

@@ -89,7 +89,10 @@ impl Fixture {
         let denied = peer
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-apple-t2".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                ]),
             )
             .await?;
         ensure!(denied.0 == StatusCode::UNAUTHORIZED);

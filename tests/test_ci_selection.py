@@ -63,9 +63,9 @@ class Selection(unittest.TestCase):
             with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'dependency_graphs') as graphs, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((out / 'result.json').read_text())
-            self.assertEqual(evidence['gates']['script-tests'], 'skipped')
-            self.assertEqual(evidence['gates']['fmt'], 'failed')
-            self.assertEqual(evidence['gates']['t1'], 'skipped')
+            self.assertEqual(evidence['gates']['script-tests']['status'], 'skipped')
+            self.assertEqual(evidence['gates']['fmt']['status'], 'failed')
+            self.assertEqual(evidence['gates']['t1']['status'], 'skipped')
             self.assertFalse((out / 't1.log').exists())
             for path in stale_paths:
                 self.assertFalse(path.exists(), str(path))

@@ -69,6 +69,8 @@ fn audit_count(predicate: impl Fn(&crate::audit_test_support::Record) -> bool) -
 }
 fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
     uuid::Uuid::parse_str(tenant)?;
+    let config: Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     command(
         &[
             "exec",
@@ -79,7 +81,7 @@ fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
             "-U",
             "postgres",
             "-d",
-            "mdm_test",
+            &config.access_database.name,
             "-qAt",
             "-v",
             "ON_ERROR_STOP=1",

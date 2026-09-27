@@ -10,7 +10,8 @@ import sys
 import tempfile
 import time
 import uuid
-from t2_suites.product import IMAGE, run, require
+from t2_environment import run
+from verification_result import require
 
 from build_run import lease_fds, require_lease
 
@@ -34,9 +35,8 @@ def verify_tests(output, expected=EXPECTED):
     require(f'test result: ok. {len(expected)} passed; 0 failed; 0 ignored;' in output, 'Group T2 false green')
 
 @contextlib.contextmanager
-def fixture(migrations=None):
-    from t2_environment import cluster
-    with cluster(destructive=True) as owner, owner.database() as database, tempfile.TemporaryDirectory(prefix='mdm-group-inputs-') as directory:
+def fixture(context, migrations=None, case=None):
+    with context.cluster(case) as owner, owner.database() as database, tempfile.TemporaryDirectory(prefix='mdm-group-inputs-') as directory:
         root=Path(directory)
         (root/'ca.crt').write_bytes((owner.root/'ca.crt').read_bytes())
         name=owner.container();port=owner.port()
@@ -51,15 +51,17 @@ def fixture(migrations=None):
         path=root/'config.json';path.write_text(json.dumps({'port':port,'ca':str(root/'ca.crt'),'container':name,'database':database}));path.chmod(0o600)
         yield dict(os.environ,GROUP_PG_CONFIG=str(path)),sql
 
-def main():
+GENERATIONS={'staged_pages_publish_atomically_and_replay_without_duplicate_members','static_patches_use_the_same_sealed_publication_and_preserve_old_sets','static_commands_replay_and_borrowed_rollback','durable_recalculation_no_change_fences_stale_run','delta_evaluates_only_changed_devices_and_preserves_old_results'}
+
+def main(context):
     require_lease(ROOT)
-    with fixture() as (env,sql):
-        result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--features','integration','--test','t2','--','--ignored','--test-threads=1','--nocapture'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-        print(result.stdout,flush=True)
-        require(result.returncode==0,'Group PG behavioral suite failed')
-        verify_tests(result.stdout)
-        generations = subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--test','generations','--','--ignored','--test-threads=1'], pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        print(generations.stdout, flush=True)
-        require(generations.returncode == 0, 'Group immutable generations failed')
-        verify_tests(generations.stdout, {'staged_pages_publish_atomically_and_replay_without_duplicate_members','static_patches_use_the_same_sealed_publication_and_preserve_old_sets', 'static_commands_replay_and_borrowed_rollback', 'durable_recalculation_no_change_fences_stale_run', 'delta_evaluates_only_changed_devices_and_preserves_old_results'})
-        print(json.dumps({'provider':IMAGE,'tls':'verify-full','tests':sorted(EXPECTED),'T3':'not run'}))
+    failures=[]
+    for target,expected in [('t2',EXPECTED),('generations',GENERATIONS)]:
+        for test in sorted(expected):
+            with fixture(context,case=test) as(env,sql):
+                result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--features','integration','--test',target,test,'--','--ignored','--exact','--test-threads=1','--nocapture'],pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                print(result.stdout,flush=True)
+                try:
+                    require(result.returncode==0,'Group T2 failed');verify_tests(result.stdout,{test})
+                except Exception:failures.append(test)
+    require(not failures,'Group T2 failed: '+','.join(failures))

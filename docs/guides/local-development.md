@@ -109,3 +109,5 @@ make t3-auth T3_ARGS="--mode faults --candidate <候选目录> --tools-image <�
 ```
 
 重启、停 IdP、暂停 PG、安装失配及数据库白盒断言只在其新建专用环境运行。normal 和 faults 分别报告覆盖，normal 成功不表示完整候选或故障验证通过。
+
+更新受审查的 catalog 快照使用 `python3 hack/build_run.py -- python3 hack/command_catalog.py --write`，检查仍只用 `make t2 SUITE=catalog`。宿主端口由带锁的跨 worktree 分配记录协调，init 检查占用；出现外部进程占用时停止该进程，或 reset 后重新 init 获取空闲端口。

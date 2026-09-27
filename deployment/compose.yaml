@@ -9,7 +9,9 @@ services:
     ports: ["127.0.0.1::5432"]
     volumes:
       - pg:/var/lib/postgresql/data
-      - ${MDM_ENV_ROOT:?}:/inputs:ro
+      - ${MDM_ENV_ROOT:?}/pg/server.crt:/inputs/server.crt:ro
+      - ${MDM_ENV_ROOT:?}/pg/server.key:/inputs/server.key:ro
+      - ${MDM_ENV_ROOT:?}/pg/pg-password:/inputs/pg-password:ro
     command: [sh, -ec, 'cp /inputs/server.key /tmp/server.key; cp /inputs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key']
     healthcheck:
       test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres]

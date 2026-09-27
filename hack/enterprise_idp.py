@@ -42,7 +42,8 @@ def fixture(root, environment):
     environment.extra={'MDM_IDP_ORIGIN':origin}
     directory=environment.root/'idp';directory.mkdir(exist_ok=True,mode=0o700)
     from t2_environment import private
-    for file in ('server.crt','server.key'):private(directory/file,(root/file).read_text())
+    environment.issue_leaf(environment.root/'idp-cert',['localhost','idp.example.test'])
+    for file in ('server.crt','server.key'):private(directory/file,(environment.root/'idp-cert'/file).read_text())
     try:
         realm={'realm':'mdm','enabled':True,'sslRequired':'all','duplicateEmailsAllowed':True,'loginWithEmailAllowed':False,
             'clients':[{'clientId':'mdm','secret':'fixture-secret','publicClient':False,'standardFlowEnabled':True,

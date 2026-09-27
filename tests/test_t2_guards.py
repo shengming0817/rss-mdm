@@ -38,7 +38,7 @@ from unittest.mock import patch
 sys.path.insert(0,'hack')
 from t2_suites import product as t2
 with tempfile.TemporaryDirectory() as directory:
- root=Path(directory);config=root/'config.json';config.write_text(json.dumps({'database':{}}))
+ root=Path(directory);config=root/'config.json';config.write_text(json.dumps({'database':{'name':'fixture'}}))
  with patch.object(t2,'run',return_value=SimpleNamespace(stdout='f')),patch.object(t2.subprocess,'run',return_value=SimpleNamespace(returncode=1,stderr='')):
   try:t2.verify_migrations('fixture','binary',config,root,{})
   except RuntimeError as e:

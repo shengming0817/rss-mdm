@@ -164,20 +164,27 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         .parse::<PgConnectOptions>()?
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let database = administrator
+        .get_database()
+        .ok_or_else(|| anyhow::anyhow!("fixture database absent"))?
+        .replace('"', "\"\"");
+    let grant_database = format!("GRANT CREATE ON DATABASE \"{database}\" TO mdm_api");
+    let revoke_database = format!("REVOKE CREATE ON DATABASE \"{database}\" FROM mdm_api");
     let mut administrator = PgConnection::connect_with(&administrator).await?;
     for (grant, revoke) in [
-        (
-            "GRANT CREATE ON DATABASE mdm_test TO mdm_api",
-            "REVOKE CREATE ON DATABASE mdm_test FROM mdm_api",
-        ),
+        (grant_database.as_str(), revoke_database.as_str()),
         (
             "GRANT CREATE ON SCHEMA public TO mdm_api",
             "REVOKE CREATE ON SCHEMA public FROM mdm_api",
         ),
     ] {
-        administrator.execute(grant).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(grant))
+            .execute(&mut administrator)
+            .await?;
         let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
-        administrator.execute(revoke).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(revoke))
+            .execute(&mut administrator)
+            .await?;
         assert!(rejected, "reader accepted CREATE privilege");
     }
     administrator

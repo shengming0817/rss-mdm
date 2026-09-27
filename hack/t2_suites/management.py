@@ -11,13 +11,12 @@ EXPECTED.add("planning::tests::recovery::superseded_group_links_reused_successor
 EXPECTED.add("planning::tests::recovery::published_scope_job_does_not_swallow_new_definition")
 EXPECTED.add("planning::tests::asset_capability_owns_execution_and_receipt_recovery")
 EXPECTED.add("planning::tests::audit_startup_rejects_each_borrowed_owner_snapshot_isolation")
-DESTRUCTIVE = {name for name in EXPECTED if 'admission' in name or 'audit_startup' in name}
 
-def main():
+def main(context):
     require_lease(ROOT)
     failures=[]
     for test in sorted(EXPECTED):
-        with pg.fixture(app=True,destructive=test in DESTRUCTIVE) as(env,sql):
+        with pg.fixture(context,app=True,case=test) as(env,sql):
             result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--features','integration','--lib',test,'--','--ignored','--exact'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             print(result.stdout,flush=True)
             try:
@@ -25,7 +24,7 @@ def main():
                 pg.verify_tests(result.stdout,{test})
             except Exception:
                 failures.append(test)
-    with pg.fixture(app=True) as (env, sql):
+    with pg.fixture(context,app=True) as (env, sql):
         result = subprocess.run(['cargo', 'test', '--locked', '-p', 'rss-mdm-inventory-postgres', '--test', 'manual', '--', '--ignored'], pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(result.stdout, flush=True)
         try:
@@ -34,4 +33,3 @@ def main():
         except Exception:
             failures.append('inventory/manual')
     pg.require(not failures,'planning T2 failed: '+','.join(failures))
-

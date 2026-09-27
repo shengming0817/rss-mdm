@@ -201,7 +201,7 @@ class WorkingTreeStability(unittest.TestCase):
             with mock.patch.object(ci, "require_lease"), mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'identity_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN':'0'}):
                 self.assertEqual(ci.main(), int(edit))
             result = json.loads((root / 'artifacts/result.json').read_text())
-            self.assertEqual(result['gates']['source-stability'], 'failed' if edit else 'passed')
+            self.assertEqual(result['gates']['source-stability']['status'], 'failed' if edit else 'passed')
 
     def test_state_covers_working_file_lifecycle(self):
         from unittest import mock

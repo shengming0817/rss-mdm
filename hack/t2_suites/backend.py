@@ -2,7 +2,8 @@
 """Disposable TLS PG for N10/N11; no missing-service skips and no production setup."""
 import argparse,contextlib,json,os,re,subprocess,sys,tempfile,time,uuid
 from pathlib import Path
-from t2_suites.product import IMAGE,run,require
+from t2_environment import run
+from verification_result import require
 from build_run import lease_fds, require_lease
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -17,9 +18,8 @@ def verify_tests(output,expected):
     actual=set(re.findall(r'^test (\S+) \.\.\. ok$',output,re.MULTILINE))
     require(actual==expected and f'test result: ok. {len(expected)} passed; 0 failed; 0 ignored;' in output, 'backend T2 missing required behavior')
 @contextlib.contextmanager
-def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None,destructive=False):
-    from t2_environment import cluster
-    with cluster(destructive=destructive) as owner, owner.database() as database, tempfile.TemporaryDirectory(prefix='mdm-backend-inputs-') as directory:
+def fixture(context, source=ROOT,write_catalogs=False,app=False,migrations=None,case=None):
+    with context.cluster(case) as owner, owner.database() as database, tempfile.TemporaryDirectory(prefix='mdm-backend-inputs-') as directory:
         root=Path(directory)
         (root/'ca.crt').write_bytes((owner.root/'ca.crt').read_bytes())
         name=owner.container();port=owner.port()
@@ -46,16 +46,17 @@ def fixture(source=ROOT,write_catalogs=False,app=False,migrations=None,destructi
             d=source/'crates/software-service/src/publication';(d/'catalog.json').write_text(json.dumps(json.loads(sql((d/'catalog.sql').read_text())),indent=2)+'\n')
         config=root/'config.json';config.write_text(json.dumps({'port':port,'ca':str(root/'ca.crt'),'container':name,'database':database}));config.chmod(0o600)
         yield dict(os.environ,BACKEND_PG_CONFIG=str(config)),sql
-def main():
+def main(context):
     require_lease(ROOT)
-    with fixture(destructive=True) as(env,sql):
-        failed=[]
-        for name in NAMES:
-            suites=[('behavior',BEHAVIORS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]
-            for target,expected in suites:
-                result=subprocess.run(['cargo','test','--locked','-p',f'rss-mdm-{name}-postgres','--features','integration','--test',target,'--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-                print(result.stdout,flush=True)
-                try:
-                    require(result.returncode==0,'PG suite failed');verify_tests(result.stdout,expected)
-                except Exception:failed.append(name+'/'+target)
-        require(not failed,'backend PG failed: '+','.join(failed))
+    failed=[]
+    for name in NAMES:
+        suites=[('behavior',BEHAVIORS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]
+        for target,expected in suites:
+            for test in sorted(expected):
+                with fixture(context,case=test) as(env,sql):
+                    result=subprocess.run(['cargo','test','--locked','-p',f'rss-mdm-{name}-postgres','--features','integration','--test',target,test,'--','--ignored','--exact','--test-threads=1'],pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                    print(result.stdout,flush=True)
+                    try:
+                        require(result.returncode==0,'PG suite failed');verify_tests(result.stdout,{test})
+                    except Exception:failed.append(name+'/'+test)
+    require(not failed,'backend PG failed: '+','.join(failed))

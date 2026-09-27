@@ -10,6 +10,8 @@ import sys
 import time
 from build_run import require_lease
 from ci_registry import ROOT, SUITES, execute
+from t2_environment import T2Context
+from verification_result import result as stage_result
 
 def select_suites(suite,selection):
     if suite=='all':return sorted(SUITES)
@@ -20,32 +22,40 @@ def select_suites(suite,selection):
 def run_suites(names, output):
     require_lease(ROOT)
     output.mkdir(parents=True,exist_ok=True)
-    results={}
-    for name in names:
-        (output/(name+'.log')).write_text('')
-        started=time.monotonic()
-        try:
-            missing=[tool for tool in SUITES[name].tools if not shutil.which(tool)]
-            if missing:raise RuntimeError('missing dependencies: '+', '.join(missing))
-            print('T2: '+name,flush=True)
-            # FD redirection also captures inherited child output while preserving the build lease.
-            with (output/(name+'.log')).open('w') as log:
-                sys.stdout.flush();sys.stderr.flush()
-                saved=[os.dup(1),os.dup(2)]
-                try:
-                    os.dup2(log.fileno(),1);os.dup2(log.fileno(),2)
-                    outcome=execute(name)
-                    if outcome not in (None,0):raise RuntimeError('suite returned failure')
-                finally:
+    if output.is_symlink():raise RuntimeError('T2 output directory cannot be a symlink')
+    for name in SUITES:
+        path=output/(name+'.log')
+        if path.is_dir() and not path.is_symlink():shutil.rmtree(path)
+        else:path.unlink(missing_ok=True)
+    results={name:stage_result('skipped',reason='not-selected') for name in SUITES}
+    if not names:return results
+    with T2Context() as context:
+        for name in names:
+            (output/(name+'.log')).write_text('')
+            started=time.monotonic()
+            try:
+                missing=[tool for tool in SUITES[name].tools if not shutil.which(tool)]
+                if missing:raise RuntimeError('missing dependencies: '+', '.join(missing))
+                print('T2: '+name,flush=True)
+                # FD redirection also captures inherited child output while preserving the build lease.
+                with (output/(name+'.log')).open('w') as log:
                     sys.stdout.flush();sys.stderr.flush()
-                    os.dup2(saved[0],1);os.dup2(saved[1],2)
-                    for fd in saved:os.close(fd)
-            status='passed'
-        except Exception as error:
-            status='failed'
-            with (output/(name+'.log')).open('a') as log:log.write('\n'+str(error)+'\n')
-        results[name]={'status':status,'elapsedSeconds':round(time.monotonic()-started,3)}
-        print(f'T2 {name}: {status} ({results[name]["elapsedSeconds"]}s)',flush=True)
+                    saved=[os.dup(1),os.dup(2)]
+                    try:
+                        os.dup2(log.fileno(),1);os.dup2(log.fileno(),2)
+                        outcome=execute(name,context)
+                        if outcome not in (None,0):raise RuntimeError('suite returned failure')
+                    finally:
+                        sys.stdout.flush();sys.stderr.flush()
+                        os.dup2(saved[0],1);os.dup2(saved[1],2)
+                        for fd in saved:os.close(fd)
+                SUITES[name].verify((output/(name+'.log')).read_text())
+                status='passed'
+            except Exception as error:
+                status='failed'
+                with (output/(name+'.log')).open('a') as log:log.write('\n'+str(error)+'\n')
+            results[name]=stage_result(status,started)
+            print(f'T2 {name}: {status} ({results[name]["elapsedSeconds"]}s)',flush=True)
     return results
 
 def main(argv=None):
@@ -66,7 +76,7 @@ def main(argv=None):
     (output/'result.json').unlink(missing_ok=True)
     results=run_suites(names,output)
     if ci.working_source_state()!=source_state:
-        results['source-stability']={'status':'failed','reason':'source changed during T2'}
+        results['source-stability']=stage_result('failed',reason='source changed during T2')
     evidence={'selection':selection,'suite':args.suite,'status':'failed' if any(x['status']=='failed' for x in results.values()) else 'passed' if names else 'skipped','suites':results}
     (output/'result.json').write_text(json.dumps(evidence,indent=2)+'\n')
     return int(evidence['status']=='failed')

@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from build_run import lease_fds, require_lease
 from ci_registry import SUITES, all_tools
+from verification_result import result as stage_result
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
@@ -293,7 +294,7 @@ EXTRA_EVIDENCE = {"pin": ("pin.log",)}
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
     paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
-    paths.update({OUT / "result.json", OUT / "selection.json"})
+    paths.update({OUT / "result.json", OUT / "selection.json", OUT / "t2"})
     for path in paths:
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
@@ -359,17 +360,19 @@ def main():
     (OUT / "selection.json").write_text(json.dumps(plan, indent=2) + "\n")
     results = {}
     pin = None
+    started=time.monotonic()
     try:
         pin = workspace_pin(ROOT)
         if selection["full"] or selection["packages"]:
             dependency_graphs(pin)
-        results["pin"] = "passed"
+        results["pin"] = stage_result("passed",started)
     except Exception as error:
         (OUT / "pin.log").write_text(str(error))
-        results["pin"] = "failed"
+        results["pin"] = stage_result("failed",started)
     for name,args in gates:
+        started=time.monotonic()
         if not selected_gate(name, selection):
-            results[name] = "skipped"
+            results[name] = stage_result("skipped",reason="not-selected")
             print(f"{name}: skipped", flush=True)
             continue
         args = gate_command(name, args, selection)
@@ -379,21 +382,22 @@ def main():
                 result = subprocess.run(args,pass_fds=lease_fds(),cwd=ROOT/'tests',text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             else:result = command(args)
             (OUT / f"{name}.log").write_text(result.stdout)
-            results[name] = "passed" if result.returncode == 0 else "failed"
+            results[name] = stage_result("passed" if result.returncode == 0 else "failed",started,command=args)
         except Exception as error:
             (OUT / f"{name}.log").write_text(str(error))
-            results[name] = "failed"
+            results[name] = stage_result("failed",started,command=args)
         print(f"{name}: {results[name]}", flush=True)
-    integration = {}
+    integration = {name:stage_result('skipped',reason='not-run') for name in SUITES}
     if os.environ.get('CI_T2') == 'all':
         from t2 import run_suites
         integration = run_suites(sorted(SUITES), OUT/'t2')
+    started=time.monotonic()
     try:
         require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
-        results["source-stability"] = "passed"
+        results["source-stability"] = stage_result("passed",started)
     except Exception as error:
         (OUT / "source-stability.log").write_text(str(error))
-        results["source-stability"] = "failed"
+        results["source-stability"] = stage_result("failed",started)
     evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     evidence['recommendedT2'] = {'suites':selection['t2Suites'],'status':'not-run' if selection['t2Suites'] else 'not-selected'}
     evidence['t2'] = integration
@@ -401,6 +405,6 @@ def main():
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")
     print(json.dumps(evidence, indent=2))
-    return int(any(value == "failed" for value in results.values()) or any(value["status"] == "failed" for value in integration.values()))
+    return int(any(value["status"] == "failed" for value in results.values()) or any(value["status"] == "failed" for value in integration.values()))
 
 if __name__ == "__main__": sys.exit(main())
