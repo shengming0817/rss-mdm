@@ -136,6 +136,16 @@ impl RunState {
         };
         Ok(())
     }
+    /// Preserve an uncertain software effect and block blind re-execution.
+    pub fn uncertain_result(&mut self, attempt: Uuid) -> Result<(), Error> {
+        if self.attempt() != Some(attempt)
+            || !matches!(self.execution, Execution::Running | Execution::Unknown)
+        {
+            return Err(Error::Conflict);
+        }
+        self.execution = Execution::Unknown;
+        Ok(())
+    }
     pub fn cancel(&mut self) {
         self.cancellation = if self.execution == Execution::NotStarted {
             Cancellation::Confirmed

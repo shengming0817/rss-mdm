@@ -19,16 +19,6 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "cursor_keys",
-      "cursor_keys_pkey",
-      "CREATE UNIQUE INDEX cursor_keys_pkey ON mdm_flow.cursor_keys USING btree (tenant_id)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
     [
       "cursor_keys",
@@ -42,6 +32,16 @@
       "cursor_keys_secret_check",
       "c",
       "CHECK ((octet_length(secret) = 32))",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "cursor_keys",
+      "cursor_keys_pkey",
+      "CREATE UNIQUE INDEX cursor_keys_pkey ON mdm_flow.cursor_keys USING btree (tenant_id)",
+      true,
+      true,
       true
     ]
   ]

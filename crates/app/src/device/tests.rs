@@ -158,7 +158,7 @@ async fn postgres_boundary() -> anyhow::Result<()> {
     let agent = proof(A, Channel::Agent, 1);
     let (command, first) = bind(&service, &admin_a, &mdm, "same-serial", 0).await?;
     let (_, other_channel) = bind(&service, &admin_a, &agent, "same-serial", 0).await?;
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,'[\"inventory.basic.v2\"]')")
+    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,'[\"inventory.basic.v3\"]','macos','aarch64')")
         .bind(A)
         .bind(other_channel.registration.to_string())
         .execute(&mut root)

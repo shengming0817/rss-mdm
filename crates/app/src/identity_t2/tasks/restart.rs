@@ -36,7 +36,7 @@ pub(super) async fn targets(author: &mut Browser, router: &Router) -> Result<Vec
         author.operation = None;
         let credential = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(Sha256::digest(device.as_bytes()));
-        let registration=agent_call(router,Method::POST,"/api/agent/v2/registrations",None,Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":credential,"capabilities":["inventory.basic.v2","task.execute.v2"]}))).await?;
+        let registration=agent_call(router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","task.execute.v3"]}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "restart target registration: {registration:?}"

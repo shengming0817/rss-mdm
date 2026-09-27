@@ -25,13 +25,17 @@ pub(crate) async fn preview(
     run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,&audit,(&s,&a,&audit,&input),|ctx,tx|Box::pin(async move {
         let (s,a,audit,input)=*ctx;
         let version=s.resource_in(tx,&input.definition.resource).await?;
-        let selected=variant(&version,&input.definition.resource)?;
-        match (&input.definition.behavior,selected.declaration()) {
-            (Behavior::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
-            (Behavior::Configuration {exit},resource::Declaration::Configuration {remove,..})=>{
-                if matches!(exit,Exit::Remove) && remove.is_none(){return Err(Error::Unsupported.into());}
-            },
-            _=>return Err(Error::Malformed.into()),
+        if matches!(input.definition.behavior, Behavior::Software { .. }) {
+            s.freeze_in(tx, &input.definition.resource, &input.definition.behavior, None).await?;
+        } else {
+            let selected=variant(&version,&input.definition.resource)?;
+            match (&input.definition.behavior,selected.declaration()) {
+                (Behavior::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
+                (Behavior::Configuration {exit},resource::Declaration::Configuration {remove,..})=>{
+                    if matches!(exit,Exit::Remove) && remove.is_none(){return Err(Error::Unsupported.into());}
+                },
+                _=>return Err(Error::Malformed.into()),
+            }
         }
         a.proof.require_all_devices(Permission::InventoryRead)?;
         let tenant=tx.tenant_id().to_string();let id=input.definition.scope;

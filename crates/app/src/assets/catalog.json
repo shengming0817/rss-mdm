@@ -235,56 +235,6 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "asset_query_facets",
-      "asset_query_facets_pkey",
-      "CREATE UNIQUE INDEX asset_query_facets_pkey ON mdm_assets.asset_query_facets USING btree (tenant_id, run, kind, label)",
-      true,
-      true,
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_order",
-      "CREATE INDEX asset_query_results_order ON mdm_assets.asset_query_results USING btree (tenant_id, run, sort_key, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "asset_query_results",
-      "asset_query_results_pkey",
-      "CREATE UNIQUE INDEX asset_query_results_pkey ON mdm_assets.asset_query_results USING btree (tenant_id, run, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "asset_query_runs",
-      "asset_query_runs_pkey",
-      "CREATE UNIQUE INDEX asset_query_runs_pkey ON mdm_assets.asset_query_runs USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "operations",
-      "operations_pkey",
-      "CREATE UNIQUE INDEX operations_pkey ON mdm_assets.operations USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "saved_queries",
-      "saved_queries_pkey",
-      "CREATE UNIQUE INDEX saved_queries_pkey ON mdm_assets.saved_queries USING btree (tenant_id, instance, owner, id)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
     [
       "asset_query_facets",
@@ -438,6 +388,56 @@
       "saved_queries_revision_check",
       "c",
       "CHECK ((revision > 0))",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "asset_query_facets",
+      "asset_query_facets_pkey",
+      "CREATE UNIQUE INDEX asset_query_facets_pkey ON mdm_assets.asset_query_facets USING btree (tenant_id, run, kind, label)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_order",
+      "CREATE INDEX asset_query_results_order ON mdm_assets.asset_query_results USING btree (tenant_id, run, sort_key, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_results",
+      "asset_query_results_pkey",
+      "CREATE UNIQUE INDEX asset_query_results_pkey ON mdm_assets.asset_query_results USING btree (tenant_id, run, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "asset_query_runs",
+      "asset_query_runs_pkey",
+      "CREATE UNIQUE INDEX asset_query_runs_pkey ON mdm_assets.asset_query_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_assets.operations USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "saved_queries",
+      "saved_queries_pkey",
+      "CREATE UNIQUE INDEX saved_queries_pkey ON mdm_assets.saved_queries USING btree (tenant_id, instance, owner, id)",
+      true,
+      true,
       true
     ]
   ]

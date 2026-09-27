@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v2/report-status.schema.json",
+  "$id": "https://rss.example/mdm/agent/v3/report-status.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,7 +20,7 @@
       ],
       "properties": {
         "wireVersion": {
-          "const": 2
+          "const": 3
         },
         "reportId": {
           "type": "string",

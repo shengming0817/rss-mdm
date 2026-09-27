@@ -18,6 +18,7 @@ pub enum Permission {
     StateVerify,
     FirewallWrite,
     ScriptExecute,
+    SoftwareDeploy,
     OperationRead,
     OperationCancel,
     AuthorizationRead,
@@ -60,6 +61,7 @@ impl Permission {
             | Self::StateVerify
             | Self::FirewallWrite
             | Self::ScriptExecute
+            | Self::SoftwareDeploy
             | Self::OperationRead
             | Self::OperationCancel => true,
             Self::AuthorizationRead

@@ -16,5 +16,6 @@ mod poll;
 pub(crate) mod history;
 
 mod payload;
+mod software;
 
 pub(in crate::execution) mod model;

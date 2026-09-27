@@ -19,6 +19,35 @@ pub(super) struct Page {
     pub after_id: Option<Uuid>,
 }
 impl ExecutionService {
+    pub(super) async fn software_rollout(
+        &self,
+        proof: &AuthorizedPrincipal,
+        id: Uuid,
+        audit: &RequestAudit,
+    ) -> Result<Value, Error> {
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,id,audit),|ctx,tx|Box::pin(async move {
+            let (service,proof,id,audit)=*ctx;
+            proof.manage(Permission::PolicyRead)?;
+            proof.require_all_devices(Permission::OperationRead)?;
+            let policy=crate::planning::policies::storage::read_in(&service.policy_reader,tx,id).await?.ok_or(Error::Execution(crate::execution::error::ExecutionError::MissingTask))?;
+            let software=crate::planning::policies::software::read_in(&service.policy_reader,tx,policy.version).await?;
+            let now=storage::now(tx).await?;
+            let mut stages=Vec::new();
+            let mut prior=(0,0);
+            for (index,stage) in software.stages()?.iter().enumerate() {
+                let counts=software.stage_counts_in(tx,index).await?;
+                stages.push(json!({"scope":stage.scope,"opensAt":stage.opens_at,
+                    "minimumVerifiedPercent":stage.minimum_verified_percent,
+                    "open":policy.enabled && stage.open(now,prior.0,prior.1),
+                    "totalTargets":counts.total,"reported":counts.reported,
+                    "unknown":counts.unknown,"verifiedSuccess":counts.verified,
+                    "unsupportedCapability":counts.unsupported_capability}));
+                prior=(counts.total,counts.verified);
+            }
+            service.audit_store.append_request_in(tx,audit,200,"success").await?;
+            Ok(json!({"policyId":id,"versionId":policy.version,"paused":!policy.enabled,"asOf":now,"stages":stages}))
+        }),crate::transaction::TransactionOwner::Execution).await
+    }
     pub(super) async fn action_runs(
         &self,
         proof: &AuthorizedPrincipal,
@@ -80,7 +109,7 @@ impl ExecutionService {
             let (store,reader,proof,owner,id,audit)=*ctx;
             let run=db::load_run(tx,id).await?;
             let (field,parent)=match (owner,run.source) {
-                (RunOwner::Policy(policy),db::Source::Policy {..}) if db::load_source(reader,tx,run.source).await?.definition.owner==policy=>("policyId",policy),
+                (RunOwner::Policy(policy),db::Source::Policy {..}) if db::load_source(reader,tx,run.source).await?.owner()==policy=>("policyId",policy),
                 (RunOwner::Remote(parent),db::Source::RemoteOperation {operation}) if parent==operation=>("operationId",parent),
                 _=>return Err(Error::Execution(crate::execution::error::ExecutionError::MissingTask).into()),
             };

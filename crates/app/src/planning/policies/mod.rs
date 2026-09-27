@@ -1,12 +1,14 @@
 //! Authored Policy is the durable authority; execution progress never edits it.
-use super::action_contract::{Architecture, ExecutionInput, FrozenAction, Platform};
+use super::action_contract::{
+    Architecture, ExecutionInput, FrozenAction, FrozenSoftwareAction, Platform,
+};
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
-use rss_mdm_policy::{Behavior, Definition, Exit, Frequency, ResourceBinding};
+use rss_mdm_policy::{Behavior, Definition, Exit, Frequency, ResourceBinding, SoftwareIntent};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,7 @@ pub(crate) mod http;
 mod preview;
 pub(crate) mod reconcile;
 mod rerun;
+pub(crate) mod software;
 pub(crate) mod storage;
 
 pub(crate) use rss_mdm_policy::{Change, Policy};
@@ -34,6 +37,9 @@ pub(crate) enum Frozen {
         platform: Platform,
         exit: Exit,
         resource_digest: [u8; 32],
+    },
+    Software {
+        action: Box<FrozenSoftwareAction>,
     },
 }
 pub(crate) struct Policies {
@@ -65,13 +71,22 @@ impl Policies {
                     Box::pin(async move {
                         let (s, d) = *ctx;
                         let version = s.resource_in(tx, &d.resource).await?;
-                        let variant = variant(&version, &d.resource)?;
-                        Ok(match variant.declaration() {
-                            resource::Declaration::Script { artifact, .. } => {
-                                Some(artifact.clone())
+                        if matches!(d.behavior, Behavior::Software { .. }) {
+                            if d.resource.software().is_none()
+                                || version.kind() != resource::Kind::Software
+                            {
+                                return Err(Error::Malformed.into());
                             }
-                            _ => None,
-                        })
+                            Ok(None)
+                        } else {
+                            let variant = variant(&version, &d.resource)?;
+                            Ok(match variant.declaration() {
+                                resource::Declaration::Script { artifact, .. } => {
+                                    Some(artifact.clone())
+                                }
+                                _ => None,
+                            })
+                        }
                     })
                 },
                 TransactionOwner::Planning,
@@ -191,8 +206,8 @@ impl Policies {
             .catalog
             .lock_version_in(
                 tx,
-                &checked_input(resource::Id::new(&binding.id))?,
-                &checked_input(resource::Id::new(&binding.version))?,
+                &checked_input(resource::Id::new(binding.id()))?,
+                &checked_input(resource::Id::new(binding.version()))?,
             )
             .await?;
         if state != resource::State::Active {
@@ -208,7 +223,95 @@ impl Policies {
         verified: Option<&crate::content::Verified>,
     ) -> Result<Frozen> {
         let version = self.resource_in(tx, binding).await?;
+        if let (
+            ResourceBinding::Software(selection),
+            Behavior::Software {
+                intent,
+                admission_operation,
+                schedule,
+                run_lifetime_seconds,
+                ..
+            },
+        ) = (binding, behavior)
+        {
+            if version.kind() != resource::Kind::Software {
+                return Err(Error::Malformed.into());
+            }
+            let catalog = rss_mdm_software_service::catalog::Catalog::new(
+                self.planning.runtime.clone(),
+                self.planning.tenant,
+                std::sync::Arc::new(crate::software_publication::host::Audit(
+                    self.planning.audit_store.clone(),
+                )),
+            );
+            let mut approval = None;
+            for (target, key) in &selection.variants {
+                let (platform, architecture) = target.parts();
+                let selected = catalog
+                    .resolve_admitted_in(
+                        tx,
+                        binding.id(),
+                        binding.version(),
+                        match platform {
+                            Platform::Windows => resource::Platform::Windows,
+                            Platform::Macos => resource::Platform::MacOS,
+                        },
+                        match architecture {
+                            Architecture::X86_64 => resource::Architecture::X86_64,
+                            Architecture::Aarch64 => resource::Architecture::Aarch64,
+                        },
+                        &checked_input(resource::Id::new(key))?,
+                    )
+                    .await?;
+                if selected.version().digest() != version.digest() {
+                    return Err(Error::Conflict.into());
+                }
+                if let Some(previous) = approval
+                    && previous != selected.admission().operation
+                {
+                    return Err(Error::Conflict.into());
+                }
+                approval = Some(selected.admission().operation);
+                let variant = version
+                    .resolve(
+                        match platform {
+                            Platform::Windows => resource::Platform::Windows,
+                            Platform::Macos => resource::Platform::MacOS,
+                        },
+                        match architecture {
+                            Architecture::X86_64 => resource::Architecture::X86_64,
+                            Architecture::Aarch64 => resource::Architecture::Aarch64,
+                        },
+                        &checked_input(resource::Id::new(key))?,
+                    )
+                    .map_err(|_| Error::Malformed)?;
+                let resource::Declaration::Software { definition } = variant.declaration() else {
+                    return Err(Error::Malformed.into());
+                };
+                if matches!(intent, SoftwareIntent::ExplicitUninstall)
+                    && definition.spec().uninstall.is_none()
+                {
+                    return Err(Error::Unsupported.into());
+                }
+            }
+            if approval != Some(*admission_operation) {
+                return Err(Error::Conflict.into());
+            }
+            return Ok(Frozen::Software {
+                action: Box::new(FrozenSoftwareAction {
+                    resource_digest: version.digest().bytes(),
+                    resource: binding.id().to_owned(),
+                    version: binding.version().to_owned(),
+                    variants: selection.variants.clone(),
+                    admission_operation: *admission_operation,
+                    intent: *intent,
+                    schedule: schedule.clone(),
+                    run_lifetime_seconds: *run_lifetime_seconds,
+                }),
+            });
+        }
         let v = variant(&version, binding)?;
+        let exact = binding.exact().ok_or(Error::Malformed)?;
         match (behavior, v.declaration()) {
             (
                 Behavior::Execution {
@@ -239,8 +342,8 @@ impl Policies {
                 Ok(Frozen::Execution {
                     action: Box::new(FrozenAction {
                         input: ExecutionInput {
-                            platform: binding.platform.clone(),
-                            architecture: binding.architecture.clone(),
+                            platform: exact.platform,
+                            architecture: exact.architecture,
                             parameters: parameters.clone(),
                             schedule: schedule.clone(),
                             run_lifetime_seconds: *run_lifetime_seconds,
@@ -264,15 +367,15 @@ impl Policies {
                     return Err(Error::Unsupported.into());
                 }
                 let tenant = tx.tenant_id().to_string();
-                let resource = binding.id.clone();
-                let version_id = binding.version.clone();
+                let resource = binding.id().to_owned();
+                let version_id = binding.version().to_owned();
                 let enabled=tx.with_connection(move|c|Box::pin(async move {
                     sqlx::query_scalar::<_,bool>("SELECT enabled FROM mdm_planning.firewall_resources WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3")
                         .bind(tenant).bind(resource).bind(version_id).fetch_optional(c).await
                 })).await?.ok_or(Error::Unsupported)?;
                 Ok(Frozen::Configuration {
                     enabled,
-                    platform: binding.platform.clone(),
+                    platform: exact.platform,
                     exit: *exit,
                     resource_digest: version.digest().bytes(),
                 })
@@ -289,6 +392,7 @@ pub(crate) fn authorize_snapshot(
     let permission = match definition.behavior {
         Behavior::Execution { .. } => Permission::ScriptExecute,
         Behavior::Configuration { .. } => Permission::FirewallWrite,
+        Behavior::Software { .. } => Permission::SoftwareDeploy,
     };
     snapshot.require(proof, Permission::ScopeRead, None)?;
     snapshot.require_all_devices(proof, permission)?;
@@ -301,6 +405,7 @@ pub(crate) fn authorize(
     let permission = match definition.behavior {
         Behavior::Execution { .. } => Permission::ScriptExecute,
         Behavior::Configuration { .. } => Permission::FirewallWrite,
+        Behavior::Software { .. } => Permission::SoftwareDeploy,
     };
     proof.manage(Permission::ScopeRead)?;
     proof.require_all_devices(permission)
@@ -310,15 +415,16 @@ pub(crate) fn variant<'a>(
     version: &'a resource::Version,
     binding: &rss_mdm_policy::ResourceBinding,
 ) -> Result<&'a resource::Variant> {
+    let exact = binding.exact().ok_or(Error::Malformed)?;
     checked_input(version.resolve(
-        match binding.platform {
+        match exact.platform {
             Platform::Windows => resource::Platform::Windows,
             Platform::Macos => resource::Platform::MacOS,
         },
-        match binding.architecture {
+        match exact.architecture {
             Architecture::X86_64 => resource::Architecture::X86_64,
             Architecture::Aarch64 => resource::Architecture::Aarch64,
         },
-        &checked_input(resource::Id::new(&binding.variant))?,
+        &checked_input(resource::Id::new(&exact.variant))?,
     ))
 }

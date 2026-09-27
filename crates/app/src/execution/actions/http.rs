@@ -20,7 +20,20 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/policies/{id}/runs", get(runs))
+        .route("/policies/{id}/software/rollout", get(rollout))
         .route("/policies/{id}/runs/{task}", get(run))
+}
+async fn rollout(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, Error> {
+    audit.operation(id, "command_read");
+    app.execution
+        .software_rollout(&auth.proof, id, &audit)
+        .await
+        .map(Json)
 }
 pub(crate) fn agent_routes() -> Router<Arc<HttpState>> {
     Router::new()
@@ -30,6 +43,7 @@ pub(crate) fn agent_routes() -> Router<Arc<HttpState>> {
             post(event).layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
         )
         .route("/tasks/{id}/content", get(download))
+        .route("/tasks/{id}/content/{key}", get(download_software))
 }
 
 async fn runs(
@@ -142,7 +156,28 @@ async fn download(
         audit.operation(id, "command_read");
         let content = app
             .execution
-            .action_content(&principal, id, query.attempt, &audit)
+            .action_content(&principal, id, query.attempt, None, &audit)
+            .await
+            .map_err(task_error)?;
+        crate::content::http::response(content, &headers)
+            .await
+            .map_err(task_error)
+    })
+    .await
+}
+async fn download_software(
+    State(app): State<Arc<HttpState>>,
+    Extension(audit): Extension<RequestAudit>,
+    headers: HeaderMap,
+    Path((id, key)): Path<(Uuid, String)>,
+    Query(query): Query<Download>,
+) -> Result<Response, crate::agent::AgentError> {
+    crate::agent::bounded(async {
+        let principal = authenticate(&app, &headers, &audit).await?;
+        audit.operation(id, "command_read");
+        let content = app
+            .execution
+            .action_content(&principal, id, query.attempt, Some(&key), &audit)
             .await
             .map_err(task_error)?;
         crate::content::http::response(content, &headers)

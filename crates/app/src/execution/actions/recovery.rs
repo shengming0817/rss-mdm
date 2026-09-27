@@ -176,13 +176,10 @@ pub(in crate::execution) async fn recover_one(
     let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
     let previous = run.state.clone();
     let stale = stale_registration(tx, &run.target).await?;
-    if stale || plan.definition.withdrawn_in(tx, &run.target.device).await? {
+    if stale || plan.withdrawn_in(service, tx, &run.target, now).await? {
         run.state.cancel();
     }
-    run.state.expire(
-        now,
-        plan.definition.frozen.definition.spec().timeout_seconds,
-    );
+    run.state.expire(now, plan.timeout_seconds());
     if run.state.execution == Execution::NotStarted
         && run.state.cancellation == Cancellation::Requested
     {

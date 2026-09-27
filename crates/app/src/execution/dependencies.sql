@@ -4,7 +4,7 @@
 -- identity_audit::verify_profile at installation and worker startup. Other ACLs stay exact.
 WITH relations AS (
  SELECT c.*,n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE c.relkind='r' AND (n.nspname IN('rss_device_command','rss_reconcile','mdm_apple','rss_audit','rss_ledger','mdm_audit','mdm_planning','mdm_policy') OR (n.nspname='mdm_resource' AND c.relname IN ('aggregates','immutable')) OR (n.nspname='mdm_access' AND c.relname IN
+ WHERE c.relkind='r' AND (n.nspname IN('rss_device_command','rss_reconcile','mdm_apple','rss_audit','rss_ledger','mdm_audit','mdm_planning','mdm_policy','mdm_software') OR (n.nspname='mdm_resource' AND c.relname IN ('aggregates','immutable')) OR (n.nspname='mdm_access' AND c.relname IN
  ('requests','agent_bindings','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','authorization_rules','user_groups','management_sessions','management_messages','collection_runs')))
 ), contracts AS (
  SELECT t.nspname||'.'||t.relname AS name, encode(sha256(convert_to(jsonb_build_object(

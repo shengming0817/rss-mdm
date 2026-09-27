@@ -2,8 +2,7 @@
 //! Strict Agent protocol values for RSS MDM.
 //!
 //! This package owns JSON values only. Device authority, persistence and HTTP authentication
-//! remain product responsibilities. V2 is deliberately closed: extensions require a new wire
-//! version rather than an implicit compatibility path.
+//! remain product responsibilities. V3 binds script and software tasks to one strict major.
 
 mod tasks;
 pub use tasks::*;
@@ -14,19 +13,19 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Exact supported wire major.
-pub const WIRE_VERSION: u8 = 2;
+pub const WIRE_VERSION: u8 = 3;
 /// Maximum complete JSON request accepted by the product adapter.
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
-/// Canonical manifest for every public Agent V2 JSON shape.
-pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v2.schema-manifest.json");
+/// Canonical manifest for every public Agent V3 JSON shape.
+pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v3.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "d5c7e3cf7ab73c711d0eaca663c5bc622136b9f4b16453819f8d7a6138f7afc1";
+    "eb75291cfbdcd40927c7fad8836428c0bd6dd49d851ea9ea2c640a549612aa2b";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireError {
-    /// A value is malformed or outside the V2 profile.
+    /// A value is malformed or outside the V3 profile.
     InvalidValue,
 }
 impl std::fmt::Display for WireError {
@@ -96,21 +95,31 @@ impl<'de> Deserialize<'de> for Secret {
     }
 }
 
-/// Closed V2 capability set.
+/// Closed V3 capability set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Capability {
     /// Full/partial/failed reports for the two basic inventory fields.
-    #[serde(rename = "inventory.basic.v2")]
-    InventoryBasicV2,
+    #[serde(rename = "inventory.basic.v3")]
+    InventoryBasicV3,
     /// Receive and execute signed task offers.
-    #[serde(rename = "task.execute.v2")]
-    TaskExecuteV2,
+    #[serde(rename = "task.execute.v3")]
+    TaskExecuteV3,
+    /// Execute approved enterprise software tasks.
+    #[serde(rename = "software.execute.v3")]
+    SoftwareExecuteV3,
 }
 
 fn supported_capabilities(value: &[Capability]) -> bool {
     matches!(
         value,
-        [Capability::InventoryBasicV2] | [Capability::InventoryBasicV2, Capability::TaskExecuteV2]
+        [Capability::InventoryBasicV3]
+            | [Capability::InventoryBasicV3, Capability::TaskExecuteV3]
+            | [Capability::InventoryBasicV3, Capability::SoftwareExecuteV3]
+            | [
+                Capability::InventoryBasicV3,
+                Capability::TaskExecuteV3,
+                Capability::SoftwareExecuteV3
+            ]
     )
 }
 
@@ -126,6 +135,8 @@ pub struct RegistrationRequest {
     password: Secret,
     credential: Secret,
     capabilities: Vec<Capability>,
+    platform: TaskPlatform,
+    architecture: TaskArchitecture,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -138,6 +149,8 @@ struct RawRegistrationRequest {
     password: Secret,
     credential: Secret,
     capabilities: Vec<Capability>,
+    platform: TaskPlatform,
+    architecture: TaskArchitecture,
 }
 impl<'de> Deserialize<'de> for RegistrationRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -151,18 +164,22 @@ impl<'de> Deserialize<'de> for RegistrationRequest {
             raw.password,
             raw.credential,
             raw.capabilities,
+            raw.platform,
+            raw.architecture,
         )
         .map_err(D::Error::custom)
     }
 }
 impl RegistrationRequest {
-    /// Construct one supported V2 registration capability profile.
+    /// Construct one supported V3 registration capability profile.
     pub fn new(
         operation_id: Uuid,
         enrollment_id: Uuid,
         password: Secret,
         credential: Secret,
         capabilities: Vec<Capability>,
+        platform: TaskPlatform,
+        architecture: TaskArchitecture,
     ) -> Result<Self, WireError> {
         if operation_id.is_nil() || enrollment_id.is_nil() || !supported_capabilities(&capabilities)
         {
@@ -175,6 +192,8 @@ impl RegistrationRequest {
             password,
             credential,
             capabilities,
+            platform,
+            architecture,
         })
     }
     /// Stable retry identity selected by the Agent.
@@ -196,6 +215,14 @@ impl RegistrationRequest {
     /// Exact requested capabilities.
     pub fn capabilities(&self) -> &[Capability] {
         &self.capabilities
+    }
+    /// Target operating system asserted at enrollment and verified locally by the Agent.
+    pub const fn platform(&self) -> TaskPlatform {
+        self.platform
+    }
+    /// Target processor architecture asserted at enrollment and verified locally by the Agent.
+    pub const fn architecture(&self) -> TaskArchitecture {
+        self.architecture
     }
 }
 
@@ -320,7 +347,7 @@ pub enum FailureCode {
     CollectionFailed,
 }
 
-/// Closed V2 report body.
+/// Closed V3 report body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportBody {
     /// Complete coverage. Omitted fields are absent from this source.
@@ -373,7 +400,7 @@ impl<'de> Deserialize<'de> for ReportBody {
     }
 }
 
-/// Strict V2 inventory report.
+/// Strict V3 inventory report.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
@@ -404,7 +431,7 @@ impl<'de> Deserialize<'de> for ReportRequest {
     }
 }
 impl ReportRequest {
-    /// Construct and canonicalize one strict V2 report.
+    /// Construct and canonicalize one strict V3 report.
     pub fn new(
         report_id: Uuid,
         sequence: u64,

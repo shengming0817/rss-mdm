@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 /// Execution platform selected by the product resource resolver.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     /// Windows execution.
@@ -12,7 +12,7 @@ pub enum Platform {
     Macos,
 }
 /// Machine architecture required by a resource variant.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Architecture {
     /// 64-bit x86.
@@ -138,9 +138,23 @@ impl Policy {
 impl Definition {
     /// Resource/execution semantics, excluding Scope and the enabled flag.
     pub fn semantic(&self) -> Result<[u8; 32], Error> {
-        Ok(Sha256::digest(
-            serde_json::to_vec(&(&self.resource, &self.behavior)).map_err(|_| Error::Malformed)?,
-        )
-        .into())
+        let bytes = match &self.behavior {
+            crate::Behavior::Software {
+                intent,
+                admission_operation,
+                schedule,
+                run_lifetime_seconds,
+                ..
+            } => serde_json::to_vec(&(
+                &self.resource,
+                intent,
+                admission_operation,
+                schedule,
+                run_lifetime_seconds,
+            )),
+            _ => serde_json::to_vec(&(&self.resource, &self.behavior)),
+        }
+        .map_err(|_| Error::Malformed)?;
+        Ok(Sha256::digest(bytes).into())
     }
 }

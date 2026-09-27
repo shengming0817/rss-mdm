@@ -12,6 +12,8 @@ pub const MAX_TASK_REQUEST_BYTES: usize = 1_114_112;
 pub const MAX_TASK_CANCELLATIONS: usize = 128;
 /// Maximum UTF-8 bytes retained for each diagnostic stream.
 pub const MAX_TASK_DIAGNOSTIC_BYTES: usize = 16 * 1024;
+/// Seven-day upper bound for software execution evidence.
+pub const MAX_TASK_DURATION_MS: u64 = 604_800_000;
 
 fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     let value = u8::deserialize(d)?;
@@ -179,6 +181,66 @@ pub enum TaskEvent {
     Cancelled,
     /// Process evidence. Successful exit alone does not prove the requested side effect.
     Result(TaskResult),
+    /// Independent software detection evidence after local software-plan execution.
+    SoftwareResult(SoftwareTaskResult),
+}
+/// Device-side software detection, distinct from installer process completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareDetectionState {
+    /// Approved version detected.
+    Present,
+    /// Approved version absent.
+    Absent,
+    /// Detector could not establish a state.
+    Unknown,
+}
+/// Bounded software execution evidence; the server determines verified effect.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SoftwareTaskResult {
+    /// Operation from the signed task.
+    pub intent: SoftwareTaskIntent,
+    /// Installer process result, which is never sufficient proof of effect.
+    pub installer_exit_code: Option<i32>,
+    /// Independent post-operation detection.
+    pub detection: SoftwareDetectionState,
+    /// Digest of the signed definition whose detector produced this observation.
+    pub definition_digest: [u8; 32],
+    /// Exact observed ecosystem version for a present result.
+    pub observed_version: Option<String>,
+    /// Digest of retained local detector evidence; not an authority claim by itself.
+    pub evidence_digest: [u8; 32],
+    /// Whether the device reported that a reboot remains necessary.
+    pub reboot_required: bool,
+    /// Bounded diagnostic streams and failure category.
+    pub diagnostics: TaskDiagnostics,
+}
+impl SoftwareTaskResult {
+    /// Reject incoherent detection claims before the product evaluates effect.
+    pub fn validate(&self) -> Result<(), WireError> {
+        match self.detection {
+            SoftwareDetectionState::Present => {
+                if self.observed_version.as_deref().is_none_or(|v| {
+                    v.is_empty() || v.len() > 1024 || v.chars().any(char::is_control)
+                }) || self.evidence_digest == [0; 32]
+                {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+            SoftwareDetectionState::Absent => {
+                if self.observed_version.is_some() || self.evidence_digest == [0; 32] {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+            SoftwareDetectionState::Unknown => {
+                if self.observed_version.is_some() {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 /// Output completeness controls whether collection facts may be accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,7 +316,7 @@ impl TaskDiagnostics {
             || stderr.len() > MAX_TASK_DIAGNOSTIC_BYTES
             || stdout.contains('\0')
             || stderr.contains('\0')
-            || duration_ms > 3_600_000
+            || duration_ms > MAX_TASK_DURATION_MS
             || executed_at < 1
         {
             return Err(WireError::InvalidValue);
@@ -402,6 +464,9 @@ impl TaskEventRequest {
     pub fn new(operation_id: Uuid, attempt_id: Uuid, event: TaskEvent) -> Result<Self, WireError> {
         if operation_id.is_nil() || attempt_id.is_nil() {
             return Err(WireError::InvalidValue);
+        }
+        if let TaskEvent::SoftwareResult(result) = &event {
+            result.validate()?;
         }
         let input = EventInput {
             wire_version: WIRE_VERSION,
@@ -622,7 +687,7 @@ impl TaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-task-v2-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-script-task-v3-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
@@ -632,26 +697,266 @@ impl TaskSpec {
         Ok(bytes)
     }
 }
-/// Validated immutable task payload. Deserialization rejects invalid budgets and coordinates.
+/// Software operation selected by the server; detection remains independent evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareTaskIntent {
+    /// Install the frozen version.
+    Install,
+    /// Detect the current local state without installation.
+    Detect,
+    /// Remove the owned installation using the approved removal definition.
+    Uninstall,
+}
+/// Whether a signed task can start automatically or awaits trusted local user action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareStartMode {
+    /// Policy-required task may start when offered and locally admitted.
+    Automatic,
+    /// Agent must wait for a local user choice before requesting Start.
+    UserInitiated,
+}
+/// One exact artifact in an approved software definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "TaskSpec", into = "TaskSpec")]
-pub struct TaskPayload(TaskSpec);
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SoftwareTaskArtifact {
+    /// Key in the approved definition and content endpoint.
+    pub key: String,
+    /// Exact byte count.
+    pub length: u64,
+    /// Exact SHA-256 digest.
+    pub sha256: [u8; 32],
+}
+/// Signed software task with no script executor fallback.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SoftwareTaskSpec {
+    /// Exact wire major.
+    pub wire_version: u8,
+    /// Server-selected tenant.
+    #[serde(with = "strict_uuid")]
+    pub tenant_id: Uuid,
+    /// Server-selected device.
+    pub device_id: String,
+    /// Target platform.
+    pub platform: TaskPlatform,
+    /// Target architecture.
+    pub architecture: TaskArchitecture,
+    /// Current registration.
+    #[serde(with = "strict_uuid")]
+    pub registration_id: Uuid,
+    /// Registration generation.
+    pub generation: u64,
+    /// Immutable run.
+    #[serde(with = "strict_uuid")]
+    pub task_id: Uuid,
+    /// Exact attempt.
+    #[serde(with = "strict_uuid")]
+    pub attempt_id: Uuid,
+    /// Offer or Start authority.
+    pub permit: TaskPermit,
+    /// Unix expiry.
+    pub expires_at: i64,
+    /// Full immutable Resource digest.
+    pub resource_digest: [u8; 32],
+    /// Logical software resource.
+    pub software_resource: String,
+    /// Immutable software resource version.
+    pub software_version: String,
+    /// Exact target variant.
+    pub variant: String,
+    /// Enterprise approval operation.
+    #[serde(with = "strict_uuid")]
+    pub admission_operation: Uuid,
+    /// Canonical, complete approved SoftwareDefinition JSON.
+    pub definition: String,
+    /// SHA-256 of the canonical definition bytes.
+    pub definition_digest: [u8; 32],
+    /// Requested local operation.
+    pub intent: SoftwareTaskIntent,
+    /// Local start behavior; no Policy or rollout details are exposed.
+    pub start_mode: SoftwareStartMode,
+    /// Exact approved artifacts, including auxiliary scripts.
+    pub artifacts: Vec<SoftwareTaskArtifact>,
+    /// Optional external publication identity when relevant.
+    pub publication_id: Option<String>,
+    /// Optional package-manager export identity when relevant.
+    pub export_identity: Option<String>,
+}
+impl SoftwareTaskSpec {
+    /// Validate all signed coordinates, exact content and a bounded canonical definition.
+    pub fn validate(&self) -> Result<(), WireError> {
+        let valid_id = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 128
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+                && s.split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+        };
+        if self.wire_version != WIRE_VERSION
+            || self.tenant_id.is_nil()
+            || self.registration_id.is_nil()
+            || self.task_id.is_nil()
+            || self.attempt_id.is_nil()
+            || self.admission_operation.is_nil()
+            || self.generation == 0
+            || self.generation > i64::MAX as u64
+            || self.expires_at < 0
+            || self.device_id.is_empty()
+            || self.device_id.len() > 1024
+            || self.device_id.chars().any(char::is_control)
+            || !valid_id(&self.software_resource)
+            || !valid_id(&self.software_version)
+            || !valid_id(&self.variant)
+            || self.artifacts.len() > 64
+            || self.definition.len() > 4_194_304
+            || serde_json::from_str::<serde_json::Map<String, Value>>(&self.definition).is_err()
+            || ring::digest::digest(&ring::digest::SHA256, self.definition.as_bytes()).as_ref()
+                != self.definition_digest
+            || self.publication_id.as_deref().is_some_and(|v| !valid_id(v))
+            || self
+                .export_identity
+                .as_deref()
+                .is_some_and(|v| !valid_id(v))
+        {
+            return Err(WireError::InvalidValue);
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        for artifact in &self.artifacts {
+            if !valid_id(&artifact.key)
+                || !keys.insert(&artifact.key)
+                || artifact.length == 0
+                || artifact.length > 1_099_511_627_776
+            {
+                return Err(WireError::InvalidValue);
+            }
+        }
+        if !matches!(self.intent, SoftwareTaskIntent::Detect) && self.artifacts.is_empty() {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+    /// Domain-separated bytes bound to the selected key.
+    pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
+        self.validate()?;
+        if key_id.is_empty()
+            || key_id.len() > 128
+            || !key_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(WireError::InvalidValue);
+        }
+        let mut bytes = b"rss-mdm-agent-software-task-v3-ed25519\0".to_vec();
+        bytes.extend((key_id.len() as u32).to_be_bytes());
+        bytes.extend(key_id.as_bytes());
+        bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
+        Ok(bytes)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum RawTaskPayload {
+    Script(TaskSpec),
+    Software(SoftwareTaskSpec),
+}
+/// Validated immutable script or software task payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawTaskPayload", into = "RawTaskPayload")]
+pub enum TaskPayload {
+    /// Existing script task, upgraded to the current wire major.
+    Script(TaskSpec),
+    /// Approved software task.
+    Software(SoftwareTaskSpec),
+}
+impl TryFrom<RawTaskPayload> for TaskPayload {
+    type Error = WireError;
+    fn try_from(value: RawTaskPayload) -> Result<Self, Self::Error> {
+        match value {
+            RawTaskPayload::Script(v) => {
+                v.signing_bytes("validation")?;
+                Ok(Self::Script(v))
+            }
+            RawTaskPayload::Software(v) => {
+                v.signing_bytes("validation")?;
+                Ok(Self::Software(v))
+            }
+        }
+    }
+}
+impl From<TaskPayload> for RawTaskPayload {
+    fn from(value: TaskPayload) -> Self {
+        match value {
+            TaskPayload::Script(v) => Self::Script(v),
+            TaskPayload::Software(v) => Self::Software(v),
+        }
+    }
+}
 impl TryFrom<TaskSpec> for TaskPayload {
     type Error = WireError;
     fn try_from(value: TaskSpec) -> Result<Self, WireError> {
         value.signing_bytes("validation")?;
-        Ok(Self(value))
+        Ok(Self::Script(value))
     }
 }
-impl From<TaskPayload> for TaskSpec {
-    fn from(value: TaskPayload) -> Self {
-        value.0
+impl TryFrom<SoftwareTaskSpec> for TaskPayload {
+    type Error = WireError;
+    fn try_from(value: SoftwareTaskSpec) -> Result<Self, Self::Error> {
+        value.signing_bytes("validation")?;
+        Ok(Self::Software(value))
     }
 }
-impl std::ops::Deref for TaskPayload {
-    type Target = TaskSpec;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl TaskPayload {
+    /// Exact task identity.
+    pub fn task_id(&self) -> Uuid {
+        match self {
+            Self::Script(v) => v.task_id,
+            Self::Software(v) => v.task_id,
+        }
+    }
+    /// Exact attempt identity.
+    pub fn attempt_id(&self) -> Uuid {
+        match self {
+            Self::Script(v) => v.attempt_id,
+            Self::Software(v) => v.attempt_id,
+        }
+    }
+    /// Signed expiry.
+    pub fn expires_at(&self) -> i64 {
+        match self {
+            Self::Script(v) => v.expires_at,
+            Self::Software(v) => v.expires_at,
+        }
+    }
+    /// Selected permission.
+    pub fn permit(&self) -> TaskPermit {
+        match self {
+            Self::Script(v) => v.permit,
+            Self::Software(v) => v.permit,
+        }
+    }
+    /// Exact operating system.
+    pub fn platform(&self) -> TaskPlatform {
+        match self {
+            Self::Script(v) => v.platform,
+            Self::Software(v) => v.platform,
+        }
+    }
+    /// Exact architecture.
+    pub fn architecture(&self) -> TaskArchitecture {
+        match self {
+            Self::Script(v) => v.architecture,
+            Self::Software(v) => v.architecture,
+        }
+    }
+    /// Sign validated bytes for this task family.
+    pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
+        match self {
+            Self::Script(v) => v.signing_bytes(key_id),
+            Self::Software(v) => v.signing_bytes(key_id),
+        }
     }
 }
 
@@ -723,18 +1028,32 @@ impl SignedTask {
     /// Authenticate exact bytes, signing key identity, expiry and all local authority coordinates.
     pub fn verify(&self, context: &TaskVerification<'_>) -> Result<VerifiedTask<'_>, WireError> {
         let p = &self.payload;
+        let (tenant, device, registration, generation) = match p {
+            TaskPayload::Script(v) => (
+                v.tenant_id,
+                v.device_id.as_str(),
+                v.registration_id,
+                v.generation,
+            ),
+            TaskPayload::Software(v) => (
+                v.tenant_id,
+                v.device_id.as_str(),
+                v.registration_id,
+                v.generation,
+            ),
+        };
         if self.key_id != context.key_id
             || context.now < 0
-            || context.now >= p.expires_at
-            || p.permit != context.permit
-            || p.tenant_id != context.tenant_id
-            || p.device_id != context.device_id
-            || p.platform != context.platform
-            || p.architecture != context.architecture
-            || p.registration_id != context.registration_id
-            || p.generation != context.generation
-            || p.task_id != context.task_id
-            || p.attempt_id != context.attempt_id
+            || context.now >= p.expires_at()
+            || p.permit() != context.permit
+            || tenant != context.tenant_id
+            || device != context.device_id
+            || p.platform() != context.platform
+            || p.architecture() != context.architecture
+            || registration != context.registration_id
+            || generation != context.generation
+            || p.task_id() != context.task_id
+            || p.attempt_id() != context.attempt_id
             || self.signature.len() != 86
         {
             return Err(WireError::InvalidValue);

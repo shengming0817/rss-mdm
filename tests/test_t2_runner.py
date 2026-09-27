@@ -117,8 +117,8 @@ class SharedFixtureSelection(unittest.TestCase):
 class ToolGateSelection(unittest.TestCase):
     def test_wire_checker_change_runs_the_actual_compatibility_check(self):
         import ci
-        _,tests,_=registry.select_paths(['hack/agent_wire_compat.py'])
-        self.assertTrue(ci.selected_gate('agent-wire-compat',{'full':False,'packages':[],'toolTests':tests,'t2Suites':[]}))
+        _,tests,_=registry.select_paths(['hack/agent_wire_artifact.py'])
+        self.assertTrue(ci.selected_gate('agent-wire-artifact',{'full':False,'packages':[],'toolTests':tests,'t2Suites':[]}))
 
 class ReviewRegressions(unittest.TestCase):
     def test_app_shared_consumers(self):

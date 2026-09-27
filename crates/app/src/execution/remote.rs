@@ -181,6 +181,7 @@ impl ExecutionService {
         }
         let delivery = Uuid::new_v4();
         match &operation.frozen {
+            Frozen::Software { .. } => Err(Error::Unsupported.into()),
             Frozen::Execution { .. } => {
                 self.accept_remote_execution(tx, operation, device, delivery, now)
                     .await
@@ -218,7 +219,7 @@ impl ExecutionService {
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let registration=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_as::<_,(Uuid,i64)>("SELECT r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.agent_bindings b ON(b.tenant_id,b.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active' AND b.wire_version=2 AND b.capabilities::jsonb ? 'task.execute.v2' ORDER BY r.id LIMIT 2").bind(tenant).bind(name).fetch_all(c).await
+                    sqlx::query_as::<_,(Uuid,i64)>("SELECT r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.agent_bindings b ON(b.tenant_id,b.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active' AND b.wire_version=3 AND b.capabilities::jsonb ? 'task.execute.v3' ORDER BY r.id LIMIT 2").bind(tenant).bind(name).fetch_all(c).await
                 })).await?;
         if registration.len() != 1 {
             return record_target(tx, id, device, None, Some("agent_unavailable")).await;

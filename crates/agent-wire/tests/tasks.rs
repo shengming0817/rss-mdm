@@ -3,7 +3,7 @@ use serde_json::json;
 use uuid::Uuid;
 #[test]
 fn task_events_are_closed_bounded_and_cannot_claim_identity() {
-    let value = json!({"wireVersion":2,"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
+    let value = json!({"wireVersion":3,"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
     let request: TaskEventRequest = serde_json::from_value(value.clone()).unwrap();
     assert!(matches!(request.event(), TaskEvent::Received));
     for mutate in [
@@ -38,7 +38,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
     let id = Uuid::new_v4();
     let spec = TaskSpec {
-        wire_version: 2,
+        wire_version: 3,
         tenant_id: id,
         device_id: "device".into(),
         platform: TaskPlatform::Macos,
@@ -153,16 +153,133 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
 }
 
 #[test]
+fn software_task_binds_approved_definition_and_artifacts_without_script_fallback() {
+    use base64::Engine;
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+    use rss_mdm_agent_wire::*;
+    let id = Uuid::new_v4();
+    let definition = "{}".to_owned();
+    let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, definition.as_bytes())
+        .as_ref()
+        .try_into()
+        .unwrap();
+    let spec = SoftwareTaskSpec {
+        wire_version: 3,
+        tenant_id: id,
+        device_id: "device".into(),
+        platform: TaskPlatform::Windows,
+        architecture: TaskArchitecture::X86_64,
+        registration_id: id,
+        generation: 1,
+        task_id: id,
+        attempt_id: id,
+        permit: TaskPermit::Offer,
+        expires_at: 200,
+        resource_digest: [1; 32],
+        software_resource: "acme.editor".into(),
+        software_version: "v2".into(),
+        variant: "msi-x64".into(),
+        admission_operation: id,
+        definition,
+        definition_digest: digest,
+        intent: SoftwareTaskIntent::Install,
+        start_mode: SoftwareStartMode::Automatic,
+        artifacts: vec![SoftwareTaskArtifact {
+            key: "installer".into(),
+            length: 20_000_000,
+            sha256: [2; 32],
+        }],
+        publication_id: None,
+        export_identity: None,
+    };
+    let payload: TaskPayload = spec.clone().try_into().unwrap();
+    assert!(serde_json::from_value::<TaskSpec>(serde_json::to_value(&payload).unwrap()).is_err());
+    let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
+    let signed = SignedTask {
+        signature: base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(key.sign(&payload.signing_bytes("key").unwrap()).as_ref()),
+        key_id: "key".into(),
+        payload,
+    };
+    let context = TaskVerification {
+        key_id: "key",
+        public_key: key.public_key().as_ref(),
+        tenant_id: id,
+        device_id: "device",
+        platform: TaskPlatform::Windows,
+        architecture: TaskArchitecture::X86_64,
+        registration_id: id,
+        generation: 1,
+        task_id: id,
+        attempt_id: id,
+        permit: TaskPermit::Offer,
+        now: 100,
+    };
+    signed.verify(&context).unwrap();
+    let mut altered = spec;
+    altered.admission_operation = Uuid::new_v4();
+    let mut forged = signed;
+    forged.payload = altered.try_into().unwrap();
+    assert!(forged.verify(&context).is_err());
+}
+
+#[test]
+fn software_detection_requires_matching_evidence_shape() {
+    use rss_mdm_agent_wire::*;
+    let diagnostics = TaskDiagnostics::new(String::new(), String::new(), 1, 1, None).unwrap();
+    let mut result = SoftwareTaskResult {
+        intent: SoftwareTaskIntent::Install,
+        installer_exit_code: Some(0),
+        detection: SoftwareDetectionState::Present,
+        definition_digest: [1; 32],
+        observed_version: Some("1".into()),
+        evidence_digest: [2; 32],
+        reboot_required: false,
+        diagnostics,
+    };
+    assert!(
+        TaskEventRequest::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            TaskEvent::SoftwareResult(result.clone())
+        )
+        .is_ok()
+    );
+    result.observed_version = None;
+    assert!(
+        TaskEventRequest::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            TaskEvent::SoftwareResult(result.clone())
+        )
+        .is_err()
+    );
+    result.detection = SoftwareDetectionState::Unknown;
+    assert!(
+        TaskEventRequest::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            TaskEvent::SoftwareResult(result)
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     use rss_mdm_agent_wire::{MAX_TASK_CANCELLATIONS, TaskClaimResponse, TaskEventAck};
     let samples = [
         (
-            include_str!("../schema/task-claim-response-v2.schema.json"),
-            json!({"wireVersion":2,"task":null,"cancellations":[]}),
+            include_str!("../schema/task-claim-response-v3.schema.json"),
+            json!({"wireVersion":3,"task":null,"cancellations":[]}),
         ),
         (
-            include_str!("../schema/task-event-ack-v2.schema.json"),
-            json!({"wireVersion":2,"accepted":true,"permit":null,"cancelRequested":false}),
+            include_str!("../schema/task-event-ack-v3.schema.json"),
+            json!({"wireVersion":3,"accepted":true,"permit":null,"cancelRequested":false}),
         ),
     ];
     for (index, (schema, value)) in samples.into_iter().enumerate() {
@@ -193,17 +310,17 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     }
     let cancellation = json!({"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4()});
     let boundary = json!({
-        "wireVersion":2,
+        "wireVersion":3,
         "task":null,
         "cancellations":vec![cancellation.clone(); MAX_TASK_CANCELLATIONS]
     });
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-claim-response-v2.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-claim-response-v3.schema.json")).unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&boundary));
     assert!(serde_json::from_value::<TaskClaimResponse>(boundary).is_ok());
     let overflow = json!({
-        "wireVersion":2,
+        "wireVersion":3,
         "task":null,
         "cancellations":vec![cancellation; MAX_TASK_CANCELLATIONS + 1]
     });
@@ -231,7 +348,7 @@ fn task_response_producers_can_only_construct_valid_shapes() {
         .expect("boundary response");
     assert!(response.task().is_none());
     assert_eq!(response.cancellations().len(), MAX_TASK_CANCELLATIONS);
-    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 2);
+    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 3);
     assert_eq!(
         TaskClaimResponse::new(
             None,
@@ -277,7 +394,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
     assert_eq!(encoded["event"]["kind"], "result");
     assert_eq!(encoded["event"]["diagnostics"]["durationMs"], 42);
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-event-request-v2.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-event-request-v3.schema.json")).unwrap();
     assert!(
         jsonschema::draft202012::new(&schema)
             .unwrap()
@@ -339,7 +456,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
         Err(WireError::InvalidValue)
     );
     assert_eq!(
-        TaskDiagnostics::new(String::new(), String::new(), 3_600_001, 1, None),
+        TaskDiagnostics::new(String::new(), String::new(), 604_800_001, 1, None),
         Err(WireError::InvalidValue)
     );
     assert_eq!(
