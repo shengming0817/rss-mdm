@@ -626,7 +626,7 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "make t2 --installation: real owner settlement after a bounded callback"]
+#[ignore = "make t2 SUITE=installation: real owner settlement after a bounded callback"]
 async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
     let (pool, _) = request_store().await?;
     for ledger in [false, true] {

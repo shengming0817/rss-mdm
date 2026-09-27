@@ -38,7 +38,7 @@ class FoundationSelection(unittest.TestCase):
     def test_all_three_exact_tests_must_execute(self):
         def run(args, **kwargs):
             self.assertIn("--exact", args)
-            self.assertIn("--show-output", args)
+            self.assertIn("--nocapture", args)
             selected = args[args.index("--lib") + 1]
             return subprocess.CompletedProcess(args, 0, stdout=f'test {selected} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n'+'{"event":"mdm_inventory_failure","phase":"projection_run"}\n')
         with patch.object(t2.subprocess, "run", side_effect=run) as runner, patch("builtins.print"):

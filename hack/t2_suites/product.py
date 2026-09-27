@@ -24,8 +24,9 @@ def require(condition,message):
 
 def run(args, **kw):
     if args[:2]==['cargo','test']:
-        result=subprocess.run(args,pass_fds=lease_fds(),check=True,text=True,capture_output=True,**kw)
+        result=subprocess.run(args,pass_fds=lease_fds(),check=False,text=True,capture_output=True,**kw)
         print(result.stdout,flush=True);print(result.stderr,file=sys.stderr,flush=True)
+        require(result.returncode==0,'Cargo T2 failed; see captured output above')
         expected=None
         for key,names in CARGO_EXPECTED.items():
             if key in args:expected=names;break
@@ -53,7 +54,7 @@ def run_exact_test(env, selected, integration=True):
     args = ["cargo", "test", "--locked", "-p", "rss-mdm-app"]
     if integration: args += ["--features", "integration"]
     args += ["--lib", selected, "--", "--ignored", "--exact", "--test-threads=1"]
-    if env.get('MDM_AUDIT_DIAGNOSTIC'): args += ['--show-output']
+    if env.get('MDM_AUDIT_DIAGNOSTIC'): args += ['--nocapture']
     result = subprocess.run(args, pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, capture_output=True)
     print(result.stdout, flush=True)
     print(result.stderr, file=sys.stderr, flush=True)
@@ -292,21 +293,21 @@ def apple(f):
 
 def software(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::software::","--","--ignored","--test-threads=1","--show-output"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::software::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     print(result.stdout,flush=True)
     require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise software T2 failed or did not execute')
     return
 
 def tasks(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--show-output"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     print(result.stdout,flush=True)
     require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
     return
 
 def compliance(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    command=["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::compliance::","--","--ignored","--test-threads=1","--show-output"]
+    command=["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::compliance::","--","--ignored","--test-threads=1","--nocapture"]
     with subprocess.Popen(command,pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT) as process:
         lines=[]
         for line in process.stdout:
@@ -325,7 +326,7 @@ def assets(f):
 
 def commands(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--show-output","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     print(result.stdout,flush=True)
     require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')
     diagnostics=[json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
@@ -335,11 +336,11 @@ def commands(f):
 def identity(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
     run_exact_test(env, "identity_audit::tests::http_events_deliver_replay_and_fail_closed")
-    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::authorization::","--","--ignored","--test-threads=1","--show-output"],cwd=ROOT,env=env)
-    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--show-output"],cwd=ROOT,env=env)
+    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::authorization::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
+    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
     from enterprise_idp import fixture as enterprise
     with enterprise(root, owner) as provider:
-        run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--show-output"],cwd=ROOT,env={**env,**provider})
+        run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env={**env,**provider})
     return
 
 def foundation(f):
