@@ -6,12 +6,21 @@ use sha2::{Digest, Sha256};
 use sqlx::Connection;
 
 const DEVICE: &str = "software-deployment-device";
+const WINDOWS_DEVICE: &str = "windows-software-deployment-device";
 const CREDENTIAL: &str = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ";
 
 async fn agent(router: &Router, path: &str, body: Option<Value>) -> Result<(StatusCode, Value)> {
     agent_call(router, Method::POST, path, Some(CREDENTIAL), body).await
 }
-async fn event(router: &Router, task: &Value, mut event: Value) -> Result<(StatusCode, Value)> {
+async fn event(router: &Router, task: &Value, event: Value) -> Result<(StatusCode, Value)> {
+    event_with(router, CREDENTIAL, task, event).await
+}
+async fn event_with(
+    router: &Router,
+    credential: &str,
+    task: &Value,
+    mut event: Value,
+) -> Result<(StatusCode, Value)> {
     if event["kind"] == "software_result" {
         event["definitionDigest"] = task["payload"]["definitionDigest"].clone();
         event["evidenceDigest"] = json!(Sha256::digest(b"controlled detector evidence").to_vec());
@@ -25,15 +34,20 @@ async fn event(router: &Router, task: &Value, mut event: Value) -> Result<(Statu
             Value::Null
         };
     }
-    agent(router, &format!("/api/agent/v3/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),
+    agent_call(router,Method::POST,&format!("/api/agent/v3/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
         Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 async fn claim(router: &Router) -> Result<Value> {
+    claim_with(router, CREDENTIAL).await
+}
+async fn claim_with(router: &Router, credential: &str) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let response = agent(
+            let response = agent_call(
                 router,
+                Method::POST,
                 "/api/agent/v3/tasks/claim",
+                Some(credential),
                 Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
             )
             .await?;
@@ -45,6 +59,16 @@ async fn claim(router: &Router) -> Result<Value> {
         }
     })
     .await?
+}
+async fn upload_windows(author: &Browser, router: &Router, path: &str, bytes: &[u8]) -> Result<()> {
+    let request=Request::builder().method(Method::POST)
+        .uri(format!("{path}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={}",Uuid::new_v4()))
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
+        .header("x-csrf-token",author.csrf.as_ref().unwrap())
+        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
+    ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -124,6 +148,20 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
         registration.0 == StatusCode::CREATED,
         "registration: {registration:?}"
     );
+    let windows_password = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([6_u8; 32]);
+    let windows_credential = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; 32]);
+    author.operation = Some(Uuid::new_v4());
+    let windows_enrollment=author.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":WINDOWS_DEVICE,"password":windows_password,"source":"agent.builtin"}))).await?;
+    ensure!(
+        windows_enrollment.0.is_success(),
+        "windows enrollment: {windows_enrollment:?}"
+    );
+    author.operation = None;
+    let windows_registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":windows_enrollment.1["enrollmentId"],"password":windows_password,"credential":windows_credential,"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v3","software.execute.v3"]}))).await?;
+    ensure!(
+        windows_registration.0 == StatusCode::CREATED,
+        "windows registration: {windows_registration:?}"
+    );
     let scope = Uuid::new_v4();
     let automation = start_automation(&base).await?;
     let created=write(&mut author,&router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE}],"limitations":null,"exclusions":[]}})).await?;
@@ -133,6 +171,17 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
         &format!(
             "/api/v2/scopes/{scope}/tasks/{}",
             created["task"].as_str().unwrap()
+        ),
+    )
+    .await?;
+    let windows_scope = Uuid::new_v4();
+    let windows_scope_task=write(&mut author,&router,&format!("/api/v2/scopes/{windows_scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":WINDOWS_DEVICE}],"limitations":null,"exclusions":[]}})).await?;
+    await_task(
+        &mut author,
+        &router,
+        &format!(
+            "/api/v2/scopes/{windows_scope}/tasks/{}",
+            windows_scope_task["task"].as_str().unwrap()
         ),
     )
     .await?;
@@ -179,13 +228,17 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     let dependency_bytes = b"controlled dependency package";
     let dependency_digest: [u8; 32] = Sha256::digest(dependency_bytes).into();
     let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","format":"pkg","primary":"scripts/install.sh","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
-    write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":dependency_definition}}]})).await?;
+    let windows_dependency_bytes = b"controlled windows dependency msi";
+    let windows_dependency_digest: [u8; 32] = Sha256::digest(windows_dependency_bytes).into();
+    let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
+    write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":dependency_definition}},{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":windows_dependency_definition}}]})).await?;
     let request=Request::builder().method(Method::POST).uri(format!("{dependency_path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
     ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+    upload_windows(&author, &router, &dependency_path, windows_dependency_bytes).await?;
     write(
         &mut author,
         &router,
@@ -226,13 +279,17 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     let removal = b"#!/bin/sh\nexit 0\n";
     let removal_digest: [u8; 32] = Sha256::digest(removal).into();
     let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","format":"pkg","primary":"package","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":{"executor":"posix_sh","entry":"remove","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
-    write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    let windows_bytes = b"controlled windows root msi";
+    let windows_digest: [u8; 32] = Sha256::digest(windows_bytes).into();
+    let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
+    write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":definition}},{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":windows_definition}}]})).await?;
     let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
     ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+    upload_windows(&author, &router, &path, windows_bytes).await?;
     let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
@@ -395,6 +452,23 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
         detail.1["effect"] == "verified",
         "run detail effect: {detail:?}"
     );
+    let mut owner =
+        sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+    sqlx::query("UPDATE mdm_commands.action_runs SET created_at=created_at-120 WHERE id=$1::uuid")
+        .bind(task["payload"]["taskId"].as_str().unwrap())
+        .execute(&mut owner)
+        .await?;
+    owner.close().await?;
+    let repeated = agent(
+        &router,
+        "/api/agent/v3/tasks/claim",
+        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+    )
+    .await?;
+    ensure!(
+        repeated.1["task"].is_null(),
+        "verified software was scheduled again: {repeated:?}"
+    );
     write(
         &mut author,
         &router,
@@ -429,6 +503,25 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     ensure!(
         awaiting.1["stages"][0]["reported"] == 0,
         "self-service task auto-reported: {awaiting:?}"
+    );
+    ensure!(
+        awaiting.1["stages"][0]["waitingUser"] == 1,
+        "optional offer not visible as waiting_user: {awaiting:?}"
+    );
+    let optional_detail = author
+        .call(
+            &router,
+            Method::GET,
+            &format!(
+                "/api/v2/policies/{available}/runs/{}",
+                optional["payload"]["taskId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        optional_detail.1["userAction"] == "waiting_user",
+        "optional run missing user wait: {optional_detail:?}"
     );
     ensure!(
         event(&router, &optional, json!({"kind":"received"}))
@@ -819,6 +912,36 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
         failed_detail.1["effect"] == "failed",
         "known detector failure: {failed_detail:?}"
     );
+    let mut previous_failure = failed_task["payload"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for _ in 0..2 {
+        let mut owner =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        sqlx::query(
+            "UPDATE mdm_commands.action_runs SET created_at=created_at-600 WHERE id=$1::uuid",
+        )
+        .bind(&previous_failure)
+        .execute(&mut owner)
+        .await?;
+        owner.close().await?;
+        let retry = claim(&router).await?;
+        ensure!(event(&router, &retry, json!({"kind":"received"})).await?.0 == StatusCode::OK);
+        ensure!(event(&router, &retry, json!({"kind":"start"})).await?.0 == StatusCode::OK);
+        ensure!(event(&router,&retry,json!({"kind":"software_result","intent":"install","installerExitCode":1,"detection":"absent","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+        previous_failure = retry["payload"]["taskId"].as_str().unwrap().to_owned();
+    }
+    let exhausted = agent(
+        &router,
+        "/api/agent/v3/tasks/claim",
+        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+    )
+    .await?;
+    ensure!(
+        exhausted.1["task"].is_null(),
+        "failed deployment exceeded bounded retries: {exhausted:?}"
+    );
     write(
         &mut author,
         &router,
@@ -926,6 +1049,78 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     ensure!(
         after_reenroll.0 == StatusCode::OK && after_reenroll.1["task"].is_null(),
         "unknown side effect retried after registration replacement: {after_reenroll:?}"
+    );
+    let windows_policy = Uuid::new_v4();
+    write(&mut author,&router,&format!("/api/v2/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
+        "definition":{"resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"scope":windows_scope,
+        "behavior":{"kind":"software","intent":"required_install","admissionOperation":second_operation,"runLifetimeSeconds":600,
+        "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
+    let windows_page = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/policies/{windows_policy}/devices"),
+            None,
+        )
+        .await?;
+    ensure!(
+        windows_page.1["items"][0]["taskAdmission"]["state"] == "eligible",
+        "windows admission: {windows_page:?}"
+    );
+    let windows_task = claim_with(&router, &windows_credential).await?;
+    ensure!(
+        windows_task["payload"]["platform"] == "windows"
+            && windows_task["payload"]["architecture"] == "x86_64"
+            && windows_task["payload"]["steps"][0]["action"]["package"]
+                == "Private.WindowsDependency"
+            && windows_task["payload"]["steps"][1]["action"]["format"] == "msi",
+        "windows variant: {windows_task}"
+    );
+    let windows_content = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            windows_task["payload"]["taskId"].as_str().unwrap(),
+            windows_task["payload"]["attemptId"].as_str().unwrap()
+        ))
+        .header("host", "mdm.example.test")
+        .header("authorization", format!("Bearer {windows_credential}"))
+        .body(Body::empty())?;
+    let windows_content = router.clone().oneshot(windows_content).await?;
+    ensure!(windows_content.status() == StatusCode::OK);
+    ensure!(windows_content.into_body().collect().await?.to_bytes() == windows_bytes.as_slice());
+    ensure!(
+        event_with(
+            &router,
+            &windows_credential,
+            &windows_task,
+            json!({"kind":"received"})
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    ensure!(
+        event_with(
+            &router,
+            &windows_credential,
+            &windows_task,
+            json!({"kind":"start"})
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    ensure!(event_with(&router,&windows_credential,&windows_task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    let windows_rollout = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/policies/{windows_policy}/software/rollout"),
+            None,
+        )
+        .await?;
+    ensure!(
+        windows_rollout.1["stages"][0]["verifiedSuccess"] == 1,
+        "windows verification: {windows_rollout:?}"
     );
     ensure!(stack.shutdown().join().await?.is_clean());
     Ok(())

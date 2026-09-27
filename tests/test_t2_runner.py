@@ -43,7 +43,7 @@ class ExecutionTests(unittest.TestCase):
 class ConsumerSelectionTests(unittest.TestCase):
     def test_cross_crate_consumers_are_selected(self):
         cases={'resource':{'software','tasks'},'resource-postgres':{'software','tasks'},'inventory':{'compliance'},
-               'inventory-postgres':{'compliance'},'group-postgres':{'tasks'},'policy':{'tasks'}}
+               'inventory-postgres':{'compliance'},'group-postgres':{'tasks'},'policy':{'tasks'},'agent-wire':{'software','tasks'}}
         for owner,required in cases.items():
             with self.subTest(owner=owner):self.assertLessEqual(required,set(registry.select_paths(['crates/'+owner+'/src/lib.rs'])[0]))
 

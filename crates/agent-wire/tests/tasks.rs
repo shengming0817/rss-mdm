@@ -162,7 +162,10 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     use rss_mdm_agent_wire::*;
     let id = Uuid::new_v4();
     let steps = vec![SoftwareTaskStep {
-        action: json!({"package":"acme.editor","version":"2","format":"msi","primary":"installer","install":{},"uninstall":null,"detect":{},"reboot":"report","downgrade":"deny","ownership":"managed_only","bundle":null}),
+        action: serde_json::from_value(json!({"package":"acme.editor","version":"2","format":"msi","primary":"installer",
+            "install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},
+            "uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"2"},
+            "reboot":"report","downgrade":"deny","ownership":"managed_only","bundle":null})).unwrap(),
         artifacts: vec![SoftwareTaskArtifact {
             key: "0/installer".into(),
             length: 20_000_000,
@@ -202,6 +205,10 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         |v: &mut serde_json::Value| v["steps"][0]["artifacts"] = json!([]),
         |v: &mut serde_json::Value| v["steps"][0]["artifacts"][0]["key"] = json!("0/a//b"),
         |v: &mut serde_json::Value| v["steps"][0]["action"]["source"] = json!({}),
+        |v: &mut serde_json::Value| v["steps"][0]["action"]["format"] = json!("rpm"),
+        |v: &mut serde_json::Value| {
+            v["steps"][0]["action"]["install"]["timeoutSeconds"] = json!("never")
+        },
         |v: &mut serde_json::Value| v["publicationId"] = json!(null),
     ] {
         let mut bad = serde_json::to_value(&spec).unwrap();
@@ -234,7 +241,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     };
     signed.verify(&context).unwrap();
     let mut altered = spec;
-    altered.steps[0].action["package"] = json!("other.editor");
+    altered.steps[0].action.package = "other.editor".into();
     altered.definition_digest = ring::digest::digest(
         &ring::digest::SHA256,
         &serde_json::to_vec(&altered.steps).unwrap(),

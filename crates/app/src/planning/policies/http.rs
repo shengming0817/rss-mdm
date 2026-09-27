@@ -145,7 +145,7 @@ async fn devices(
             let eligible=storage::eligible_in(tx,&p,&device).await?.is_some();
             let withdrawn=storage::withdrawn_in(tx,&p,&device).await?;
             let task_admission=if let Some(software)=&software {let now=crate::execution::storage::now(tx).await?;Some(software.management_state_in(&s.execution,tx,&device,now).await?)}else{None};
-            let runnable=task_admission.as_ref().is_none_or(|v|v["state"]=="eligible");
+            let runnable=task_admission.as_ref().is_none_or(software::TaskAdmission::is_eligible);
             items.push(json!({"device":device,"assignment":if eligible && runnable{"eligible"}else if withdrawn{"excluded"}else{"pending"},"taskAdmission":task_admission,"operationId":row.try_get::<Option<Uuid>,_>("operation")?,"diagnosis":row.try_get::<Option<String>,_>("diagnosis")?}));
         }
         s.planning.audit_store.append_request_in(tx,audit,200,"success").await?;

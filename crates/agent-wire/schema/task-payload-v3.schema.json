@@ -359,18 +359,503 @@
                   "bundle"
                 ],
                 "properties": {
-                  "package": {},
-                  "version": {},
-                  "format": {},
-                  "primary": {},
-                  "install": {},
-                  "uninstall": {},
-                  "detect": {},
-                  "reboot": {},
-                  "downgrade": {},
-                  "ownership": {},
-                  "bundle": {}
-                }
+                  "package": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "pattern": "^[^\\p{Cc}]+$"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "pattern": "^[^\\p{Cc}]+$"
+                  },
+                  "format": {
+                    "enum": [
+                      "msi",
+                      "pkg",
+                      "bundle",
+                      "winget",
+                      "brew"
+                    ]
+                  },
+                  "primary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "pattern": "^[^\\p{Cc}]+$"
+                  },
+                  "install": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "executor",
+                      "entry",
+                      "runAs",
+                      "arguments",
+                      "environment",
+                      "timeoutSeconds",
+                      "outputBytes"
+                    ],
+                    "properties": {
+                      "executor": {
+                        "enum": [
+                          "msi",
+                          "package_installer",
+                          "power_shell7",
+                          "posix_sh",
+                          "bash",
+                          "winget",
+                          "brew"
+                        ]
+                      },
+                      "entry": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "pattern": "^[^\\p{Cc}]+$"
+                          }
+                        ]
+                      },
+                      "runAs": {
+                        "enum": [
+                          "system",
+                          "logged_in_user"
+                        ]
+                      },
+                      "arguments": {
+                        "type": "array",
+                        "maxItems": 128,
+                        "items": {
+                          "type": "string",
+                          "maxLength": 4096,
+                          "pattern": "^[^\\u0000]*$"
+                        }
+                      },
+                      "environment": {
+                        "type": "object",
+                        "maxProperties": 32,
+                        "propertyNames": {
+                          "type": "string",
+                          "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$",
+                          "maxLength": 128
+                        },
+                        "additionalProperties": {
+                          "type": "string",
+                          "maxLength": 4096,
+                          "pattern": "^[^\\u0000]*$"
+                        }
+                      },
+                      "timeoutSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400
+                      },
+                      "outputBytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1048576
+                      }
+                    }
+                  },
+                  "uninstall": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "executor",
+                          "entry",
+                          "runAs",
+                          "arguments",
+                          "environment",
+                          "timeoutSeconds",
+                          "outputBytes"
+                        ],
+                        "properties": {
+                          "executor": {
+                            "enum": [
+                              "msi",
+                              "package_installer",
+                              "power_shell7",
+                              "posix_sh",
+                              "bash",
+                              "winget",
+                              "brew"
+                            ]
+                          },
+                          "entry": {
+                            "anyOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024,
+                                "pattern": "^[^\\p{Cc}]+$"
+                              }
+                            ]
+                          },
+                          "runAs": {
+                            "enum": [
+                              "system",
+                              "logged_in_user"
+                            ]
+                          },
+                          "arguments": {
+                            "type": "array",
+                            "maxItems": 128,
+                            "items": {
+                              "type": "string",
+                              "maxLength": 4096,
+                              "pattern": "^[^\\u0000]*$"
+                            }
+                          },
+                          "environment": {
+                            "type": "object",
+                            "maxProperties": 32,
+                            "propertyNames": {
+                              "type": "string",
+                              "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$",
+                              "maxLength": 128
+                            },
+                            "additionalProperties": {
+                              "type": "string",
+                              "maxLength": 4096,
+                              "pattern": "^[^\\u0000]*$"
+                            }
+                          },
+                          "timeoutSeconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 86400
+                          },
+                          "outputBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1048576
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "detect": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "productCode",
+                          "version"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "msi_product"
+                          },
+                          "productCode": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "pattern": "^[^\\p{Cc}]+$"
+                          },
+                          "version": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "pattern": "^[^\\p{Cc}]+$"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "receipt",
+                          "version"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "pkg_receipt"
+                          },
+                          "receipt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "pattern": "^[^\\p{Cc}]+$"
+                          },
+                          "version": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "pattern": "^[^\\p{Cc}]+$"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "command"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "script"
+                          },
+                          "command": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "executor",
+                              "entry",
+                              "runAs",
+                              "arguments",
+                              "environment",
+                              "timeoutSeconds",
+                              "outputBytes"
+                            ],
+                            "properties": {
+                              "executor": {
+                                "enum": [
+                                  "msi",
+                                  "package_installer",
+                                  "power_shell7",
+                                  "posix_sh",
+                                  "bash",
+                                  "winget",
+                                  "brew"
+                                ]
+                              },
+                              "entry": {
+                                "anyOf": [
+                                  {
+                                    "type": "null"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "pattern": "^[^\\p{Cc}]+$"
+                                  }
+                                ]
+                              },
+                              "runAs": {
+                                "enum": [
+                                  "system",
+                                  "logged_in_user"
+                                ]
+                              },
+                              "arguments": {
+                                "type": "array",
+                                "maxItems": 128,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 4096,
+                                  "pattern": "^[^\\u0000]*$"
+                                }
+                              },
+                              "environment": {
+                                "type": "object",
+                                "maxProperties": 32,
+                                "propertyNames": {
+                                  "type": "string",
+                                  "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$",
+                                  "maxLength": 128
+                                },
+                                "additionalProperties": {
+                                  "type": "string",
+                                  "maxLength": 4096,
+                                  "pattern": "^[^\\u0000]*$"
+                                }
+                              },
+                              "timeoutSeconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 86400
+                              },
+                              "outputBytes": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 1048576
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "reboot": {
+                    "enum": [
+                      "forbid",
+                      "report"
+                    ]
+                  },
+                  "downgrade": {
+                    "enum": [
+                      "deny",
+                      "allow"
+                    ]
+                  },
+                  "ownership": {
+                    "enum": [
+                      "managed_only",
+                      "allow_user_existing"
+                    ]
+                  },
+                  "bundle": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "schema",
+                          "platform",
+                          "architecture",
+                          "entries"
+                        ],
+                        "properties": {
+                          "schema": {
+                            "const": 1
+                          },
+                          "platform": {
+                            "enum": [
+                              "windows",
+                              "macos"
+                            ]
+                          },
+                          "architecture": {
+                            "enum": [
+                              "x86_64",
+                              "aarch64"
+                            ]
+                          },
+                          "entries": {
+                            "type": "object",
+                            "minProperties": 1,
+                            "maxProperties": 4096,
+                            "additionalProperties": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "length",
+                                "sha256"
+                              ],
+                              "properties": {
+                                "length": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "sha256": {
+                                  "type": "array",
+                                  "minItems": 32,
+                                  "maxItems": 32,
+                                  "items": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 255
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "format": {
+                          "const": "bundle"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "bundle": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "schema",
+                            "platform",
+                            "architecture",
+                            "entries"
+                          ],
+                          "properties": {
+                            "schema": {
+                              "const": 1
+                            },
+                            "platform": {
+                              "enum": [
+                                "windows",
+                                "macos"
+                              ]
+                            },
+                            "architecture": {
+                              "enum": [
+                                "x86_64",
+                                "aarch64"
+                              ]
+                            },
+                            "entries": {
+                              "type": "object",
+                              "minProperties": 1,
+                              "maxProperties": 4096,
+                              "additionalProperties": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "length",
+                                  "sha256"
+                                ],
+                                "properties": {
+                                  "length": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "sha256": {
+                                    "type": "array",
+                                    "minItems": 32,
+                                    "maxItems": 32,
+                                    "items": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 255
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "bundle": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  }
+                ]
               },
               "artifacts": {
                 "type": "array",

@@ -16,11 +16,43 @@ pub(crate) struct SoftwareExecutionPolicy {
 pub(crate) struct StageCounts {
     pub total: u64,
     pub reported: u64,
+    pub waiting_user: u64,
     pub unknown: u64,
     pub waiting_reboot: u64,
     pub failed: u64,
     pub verified: u64,
     pub unsupported_capability: u64,
+}
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TaskAdmissionState {
+    Paused,
+    OutsideWindow,
+    OutsideScope,
+    ScopePending,
+    OutsideStage,
+    Scheduled,
+    SuccessGate,
+    MissingRegistration,
+    AmbiguousRegistration,
+    UnsupportedCapability,
+    MissingVariant,
+    ApprovalWithdrawn,
+    Eligible,
+}
+#[derive(serde::Serialize)]
+pub(crate) struct TaskAdmission {
+    state: TaskAdmissionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<usize>,
+}
+impl TaskAdmission {
+    fn new(state: TaskAdmissionState, stage: Option<usize>) -> Self {
+        Self { state, stage }
+    }
+    pub fn is_eligible(&self) -> bool {
+        matches!(self.state, TaskAdmissionState::Eligible)
+    }
 }
 
 pub(crate) async fn read_in(
@@ -147,13 +179,16 @@ impl SoftwareExecutionPolicy {
         let tenant = tx.tenant_id().to_string();
         let version = self.id;
         let prefix = format!("software:stage:{}:%", stage.scope);
-        let (total, reported, unknown, waiting_reboot, failed, verified, unsupported): (i64, i64, i64, i64, i64, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_as("WITH targets AS (SELECT r.device FROM mdm_planning.scopes s JOIN mdm_planning.scope_results r ON (r.tenant_id,r.run)=(s.tenant_id,s.resolution) JOIN mdm_planning.scopes root ON root.tenant_id=s.tenant_id AND root.id=$6::uuid AND NOT root.deleted JOIN mdm_planning.scope_results rr ON (rr.tenant_id,rr.run,rr.device)=(root.tenant_id,root.resolution,r.device) AND rr.matched WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted AND r.matched AND NOT EXISTS (SELECT 1 FROM mdm_planning.scopes p JOIN mdm_planning.scope_results x ON (x.tenant_id,x.run)=(p.tenant_id,p.resolution) WHERE p.tenant_id=s.tenant_id AND p.id=ANY($3::uuid[]) AND x.device=r.device AND x.matched)) SELECT count(*),count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='waiting_reboot'),count(*) FILTER(WHERE latest.result->>'effect'='failed'),count(*) FILTER(WHERE latest.result->>'effect'='verified'),count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM mdm_access.registrations reg JOIN mdm_access.agent_bindings b ON (b.tenant_id,b.registration)=(reg.tenant_id,reg.id) WHERE reg.tenant_id=$1::uuid AND reg.device=targets.device AND reg.state='active' AND reg.channel='agent' AND b.wire_version=3 AND b.capabilities::jsonb ? 'software.execute.v3')) FROM targets LEFT JOIN LATERAL (SELECT a.state,a.result FROM mdm_commands.action_runs a WHERE a.tenant_id=$1::uuid AND a.policy_version=$4::uuid AND a.device=targets.device AND a.occurrence LIKE $5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1) latest ON true")
-                .bind(tenant).bind(scope).bind(earlier).bind(version).bind(prefix).bind(root).fetch_one(c).await
+        let optional = matches!(self.intent(), SoftwareIntent::AvailableInstall);
+        let now = crate::execution::storage::now(tx).await?;
+        let (total, reported, waiting_user, unknown, waiting_reboot, failed, verified, unsupported): (i64, i64, i64, i64, i64, i64, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_as("WITH targets AS (SELECT r.device FROM mdm_planning.scopes s JOIN mdm_planning.scope_results r ON (r.tenant_id,r.run)=(s.tenant_id,s.resolution) JOIN mdm_planning.scopes root ON root.tenant_id=s.tenant_id AND root.id=$6::uuid AND NOT root.deleted JOIN mdm_planning.scope_results rr ON (rr.tenant_id,rr.run,rr.device)=(root.tenant_id,root.resolution,r.device) AND rr.matched WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted AND r.matched AND NOT EXISTS (SELECT 1 FROM mdm_planning.scopes p JOIN mdm_planning.scope_results x ON (x.tenant_id,x.run)=(p.tenant_id,p.resolution) WHERE p.tenant_id=s.tenant_id AND p.id=ANY($3::uuid[]) AND x.device=r.device AND x.matched)) SELECT count(*),count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE $7::boolean AND latest.state->>'execution'='not_started' AND latest.state->>'cancellation'='none' AND latest.state->'delivery'->>'kind' IN ('claimed','received') AND (latest.state->'delivery'->>'leaseUntil')::bigint>$8),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='waiting_reboot'),count(*) FILTER(WHERE latest.result->>'effect'='failed'),count(*) FILTER(WHERE latest.result->>'effect'='verified'),count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM mdm_access.registrations reg JOIN mdm_access.agent_bindings b ON (b.tenant_id,b.registration)=(reg.tenant_id,reg.id) WHERE reg.tenant_id=$1::uuid AND reg.device=targets.device AND reg.state='active' AND reg.channel='agent' AND b.wire_version=3 AND b.capabilities::jsonb ? $9)) FROM targets LEFT JOIN LATERAL (SELECT a.state,a.result FROM mdm_commands.action_runs a WHERE a.tenant_id=$1::uuid AND a.policy_version=$4::uuid AND a.device=targets.device AND a.occurrence LIKE $5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1) latest ON true")
+                .bind(tenant).bind(scope).bind(earlier).bind(version).bind(prefix).bind(root).bind(optional).bind(now).bind(rss_mdm_agent_wire::Capability::SoftwareExecuteV3.as_str()).fetch_one(c).await
         })).await?;
         Ok(StageCounts {
             total: total.try_into().map_err(|_| Error::Malformed)?,
             reported: reported.try_into().map_err(|_| Error::Malformed)?,
+            waiting_user: waiting_user.try_into().map_err(|_| Error::Malformed)?,
             unknown: unknown.try_into().map_err(|_| Error::Malformed)?,
             waiting_reboot: waiting_reboot.try_into().map_err(|_| Error::Malformed)?,
             failed: failed.try_into().map_err(|_| Error::Malformed)?,
@@ -337,18 +372,18 @@ impl SoftwareExecutionPolicy {
         tx: &mut PgTransaction<'_>,
         device: &str,
         now: i64,
-    ) -> Result<Value> {
+    ) -> Result<TaskAdmission> {
         if !self.active {
-            return Ok(serde_json::json!({"state":"paused"}));
+            return Ok(TaskAdmission::new(TaskAdmissionState::Paused, None));
         }
         if now < self.frozen.schedule.not_before || now >= self.frozen.schedule.ends_at() {
-            return Ok(serde_json::json!({"state":"outside_window"}));
+            return Ok(TaskAdmission::new(TaskAdmissionState::OutsideWindow, None));
         }
         if storage::eligible_in(tx, &self.policy, device)
             .await?
             .is_none()
         {
-            return Ok(serde_json::json!({"state":"outside_scope"}));
+            return Ok(TaskAdmission::new(TaskAdmissionState::OutsideScope, None));
         }
         let mut stage_index = None;
         for (index, stage) in self.stages()?.iter().enumerate() {
@@ -371,25 +406,34 @@ impl SoftwareExecutionPolicy {
                     break;
                 }
                 Some("pending") => {
-                    return Ok(serde_json::json!({"state":"scope_pending","stage":index}));
+                    return Ok(TaskAdmission::new(
+                        TaskAdmissionState::ScopePending,
+                        Some(index),
+                    ));
                 }
                 Some("excluded") => (),
                 _ => return Err(Error::Unavailable(crate::Failure::PlanningStorage).into()),
             }
         }
         let Some(index) = stage_index else {
-            return Ok(serde_json::json!({"state":"outside_stage"}));
+            return Ok(TaskAdmission::new(TaskAdmissionState::OutsideStage, None));
         };
         let stage = &self.stages()?[index];
         if now < stage.opens_at {
-            return Ok(serde_json::json!({"state":"scheduled","stage":index}));
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::Scheduled,
+                Some(index),
+            ));
         }
         if stage.minimum_verified_percent.is_some() {
             let (total, verified) = self
                 .stage_progress_in(tx, index.checked_sub(1).ok_or(Error::Malformed)?)
                 .await?;
             if !stage.open(now, total, verified) {
-                return Ok(serde_json::json!({"state":"success_gate","stage":index}));
+                return Ok(TaskAdmission::new(
+                    TaskAdmissionState::SuccessGate,
+                    Some(index),
+                ));
             }
         }
         let tenant = tx.tenant_id().to_string();
@@ -399,14 +443,25 @@ impl SoftwareExecutionPolicy {
                 .bind(tenant).bind(name).fetch_all(c).await
         })).await?;
         if registrations.is_empty() {
-            return Ok(serde_json::json!({"state":"missing_registration","stage":index}));
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::MissingRegistration,
+                Some(index),
+            ));
         }
         if registrations.len() != 1 {
-            return Ok(serde_json::json!({"state":"ambiguous_registration","stage":index}));
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::AmbiguousRegistration,
+                Some(index),
+            ));
         }
         let (platform, architecture, capabilities) = &registrations[0];
-        if !capabilities.contains("software.execute.v3") {
-            return Ok(serde_json::json!({"state":"unsupported_capability","stage":index}));
+        let capabilities: Vec<rss_mdm_agent_wire::Capability> =
+            serde_json::from_str(capabilities).map_err(|_| Error::Malformed)?;
+        if !capabilities.contains(&rss_mdm_agent_wire::Capability::SoftwareExecuteV3) {
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::UnsupportedCapability,
+                Some(index),
+            ));
         }
         let platform = match platform.as_str() {
             "windows" => Platform::Windows,
@@ -419,15 +474,24 @@ impl SoftwareExecutionPolicy {
             _ => return Err(Error::Malformed.into()),
         };
         if self.variant(platform, architecture).is_none() {
-            return Ok(serde_json::json!({"state":"missing_variant","stage":index}));
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::MissingVariant,
+                Some(index),
+            ));
         }
         if self
             .admitted_in(service, tx, platform, architecture)
             .await?
             .is_none()
         {
-            return Ok(serde_json::json!({"state":"approval_withdrawn","stage":index}));
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::ApprovalWithdrawn,
+                Some(index),
+            ));
         }
-        Ok(serde_json::json!({"state":"eligible","stage":index}))
+        Ok(TaskAdmission::new(
+            TaskAdmissionState::Eligible,
+            Some(index),
+        ))
     }
 }

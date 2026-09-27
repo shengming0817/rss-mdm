@@ -62,7 +62,7 @@ OWNERS={
  'software-service':('publication','software','catalog'), 'winget-source':('sources','publication'), 'brew-source':('sources','publication'),
  'compliance':('compliance',), 'compliance-postgres':('compliance',),
  'inventory':('foundation','assets','management','compliance'), 'inventory-postgres':('foundation','assets','management','compliance'),
- 'windows-mdm':('windows','commands','identity'), 'agent-wire':('commands','tasks'), 'scope':tuple(SUITES),
+ 'windows-mdm':('windows','commands','identity'), 'agent-wire':('commands','tasks','software'), 'scope':tuple(SUITES),
  'audit-integration':tuple(SUITES), 'examples':tuple(SUITES),
 }
 # These shared App services are composed by all product scenarios; propagate

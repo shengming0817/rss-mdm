@@ -728,12 +728,233 @@ pub struct SoftwareTaskArtifact {
     /// Exact SHA-256 digest.
     pub sha256: [u8; 32],
 }
+/// A finite package format the Agent can execute without a Catalog model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareTaskFormat {
+    /// Windows Installer package.
+    Msi,
+    /// macOS package installer.
+    Pkg,
+    /// Approved RSS bundle ZIP.
+    Bundle,
+    /// Frozen WinGet export.
+    Winget,
+    /// Frozen Brew export.
+    Brew,
+}
+/// A finite installer implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareTaskExecutor {
+    /// Windows Installer.
+    Msi,
+    /// macOS package installer.
+    PackageInstaller,
+    /// PowerShell 7 script.
+    PowerShell7,
+    /// POSIX shell script.
+    PosixSh,
+    /// Bash script.
+    Bash,
+    /// WinGet execution.
+    Winget,
+    /// Brew execution.
+    Brew,
+}
+/// One bounded device command, with literal arguments and no ambient shell fallback.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SoftwareTaskCommand {
+    /// Fixed executor profile.
+    pub executor: SoftwareTaskExecutor,
+    /// Declared script artifact or bundle member.
+    pub entry: Option<String>,
+    /// Explicit process identity.
+    pub run_as: ExecutionIdentity,
+    /// Literal command arguments.
+    pub arguments: Vec<String>,
+    /// Bounded product variables.
+    pub environment: BTreeMap<String, String>,
+    /// Wall time budget.
+    pub timeout_seconds: u32,
+    /// Combined diagnostic byte budget.
+    pub output_bytes: u32,
+}
+impl SoftwareTaskCommand {
+    fn validate(&self) -> Result<(), WireError> {
+        if !(1..=86400).contains(&self.timeout_seconds)
+            || !(1..=1_048_576).contains(&self.output_bytes)
+            || self.arguments.len() > 128
+            || self.environment.len() > 32
+            || self
+                .arguments
+                .iter()
+                .any(|arg| arg.len() > 4096 || arg.contains('\0'))
+            || self.environment.iter().any(|(key, value)| {
+                !key.starts_with("RSS_PARAM_")
+                    || key.len() > 128
+                    || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    || value.len() > 4096
+                    || value.contains('\0')
+            })
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+}
+/// Independent software detector, separate from process completion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SoftwareTaskDetection {
+    /// Match one Windows product code and version.
+    MsiProduct {
+        /// Exact product GUID.
+        product_code: String,
+        /// Expected version.
+        version: String,
+    },
+    /// Match one macOS package receipt and version.
+    PkgReceipt {
+        /// Exact receipt ID.
+        receipt: String,
+        /// Expected version.
+        version: String,
+    },
+    /// Run an approved detector script.
+    Script {
+        /// Bounded detector command.
+        command: SoftwareTaskCommand,
+    },
+}
+/// Permitted reboot handling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareTaskReboot {
+    /// Reboot requirement fails the task.
+    Forbid,
+    /// Report required reboot for separate authorization.
+    Report,
+}
+/// Exact downgrade permission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareTaskDowngrade {
+    /// Block downgrade.
+    Deny,
+    /// Permit the exact approved downgrade.
+    Allow,
+}
+/// Whether user-owned installs may be changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareTaskOwnership {
+    /// Change only organization-managed installations.
+    ManagedOnly,
+    /// May change a user-owned installation.
+    AllowUserExisting,
+}
+/// A declared member of a bounded bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoftwareTaskBundleEntry {
+    /// Uncompressed member size.
+    pub length: u64,
+    /// Member content digest.
+    pub sha256: [u8; 32],
+}
+/// Complete platform-bound bundle manifest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoftwareTaskBundle {
+    /// Bundle schema major.
+    pub schema: u32,
+    /// Target operating system.
+    pub platform: TaskPlatform,
+    /// Target architecture.
+    pub architecture: TaskArchitecture,
+    /// Complete declared member set.
+    pub entries: BTreeMap<String, SoftwareTaskBundleEntry>,
+}
+/// Closed executable action. Catalog source, approvals and dependency edges are server-only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoftwareTaskAction {
+    /// Exact ecosystem package identity.
+    pub package: String,
+    /// Exact ecosystem version.
+    pub version: String,
+    /// Package delivery format.
+    pub format: SoftwareTaskFormat,
+    /// Primary artifact key within this step.
+    pub primary: String,
+    /// Install command.
+    pub install: SoftwareTaskCommand,
+    /// Optional explicit removal command.
+    pub uninstall: Option<SoftwareTaskCommand>,
+    /// Independent post-action detector.
+    pub detect: SoftwareTaskDetection,
+    /// Reboot handling rule.
+    pub reboot: SoftwareTaskReboot,
+    /// Downgrade permission.
+    pub downgrade: SoftwareTaskDowngrade,
+    /// Existing installation ownership rule.
+    pub ownership: SoftwareTaskOwnership,
+    /// Complete manifest for Bundle format.
+    pub bundle: Option<SoftwareTaskBundle>,
+}
+impl SoftwareTaskAction {
+    fn validate(&self) -> Result<(), WireError> {
+        let text = |value: &str| {
+            !value.is_empty() && value.len() <= 1024 && !value.chars().any(char::is_control)
+        };
+        if !text(&self.package)
+            || !text(&self.version)
+            || !text(&self.primary)
+            || matches!(self.format, SoftwareTaskFormat::Bundle) != self.bundle.is_some()
+        {
+            return Err(WireError::InvalidValue);
+        }
+        self.install.validate()?;
+        if let Some(command) = &self.uninstall {
+            command.validate()?;
+        }
+        match &self.detect {
+            SoftwareTaskDetection::MsiProduct {
+                product_code,
+                version,
+            } => {
+                if !text(product_code) || !text(version) {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+            SoftwareTaskDetection::PkgReceipt { receipt, version } => {
+                if !text(receipt) || !text(version) {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+            SoftwareTaskDetection::Script { command } => command.validate()?,
+        }
+        if let Some(bundle) = &self.bundle
+            && (bundle.schema != 1 || bundle.entries.is_empty() || bundle.entries.len() > 4096)
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+}
 /// One locally executable step; the server has already ordered fixed prerequisites.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskStep {
     /// Device action and independent detector without Catalog source or dependency graph.
-    pub action: Value,
+    pub action: SoftwareTaskAction,
     /// Task-local artifacts for this step.
     pub artifacts: Vec<SoftwareTaskArtifact>,
     /// Frozen package-manager export identity, when the action uses one.
@@ -814,28 +1035,11 @@ impl SoftwareTaskSpec {
         }
         let mut keys = std::collections::BTreeSet::new();
         for (index, step) in self.steps.iter().enumerate() {
-            let Some(action) = step.action.as_object() else {
-                return Err(WireError::InvalidValue);
-            };
-            const FIELDS: [&str; 11] = [
-                "package",
-                "version",
-                "format",
-                "primary",
-                "install",
-                "uninstall",
-                "detect",
-                "reboot",
-                "downgrade",
-                "ownership",
-                "bundle",
-            ];
-            if action.len() != FIELDS.len()
-                || !FIELDS.iter().all(|name| action.contains_key(*name))
-                || step
-                    .export_identity
-                    .as_deref()
-                    .is_some_and(|v| !valid_id(v, 128))
+            step.action.validate()?;
+            if step
+                .export_identity
+                .as_deref()
+                .is_some_and(|v| !valid_id(v, 128))
                 || step.artifacts.is_empty()
                 || keys.len() + step.artifacts.len() > 64
             {

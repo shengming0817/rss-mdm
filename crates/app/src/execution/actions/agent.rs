@@ -85,7 +85,7 @@ impl ExecutionService {
                 let target=super::model::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
                     db::ScheduledPolicy::Script(_) if script_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
-                    db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,input.operation_id(),now).await?,
+                    db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,now).await?,
                     _ => (),
                 }
             }
@@ -186,7 +186,7 @@ impl ExecutionService {
                     })).await?;
                     let signed:wire::SignedTask=stored(serde_json::from_value(offer))?;
                     let wire::TaskPayload::Software(spec)=signed.payload else { return Err(Error::Malformed.into()); };
-                    let expected_version=spec.steps.last().and_then(|s|s.action["version"].as_str()).ok_or(Error::Malformed)?;
+                    let expected_version=spec.steps.last().map(|s|s.action.version.as_str()).ok_or(Error::Malformed)?;
                     let intended=match software.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall | rss_mdm_policy::SoftwareIntent::AvailableInstall => wire::SoftwareTaskIntent::Install,
                         rss_mdm_policy::SoftwareIntent::ExplicitUninstall => wire::SoftwareTaskIntent::Uninstall,

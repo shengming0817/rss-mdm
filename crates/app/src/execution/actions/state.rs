@@ -205,6 +205,11 @@ impl RunState {
             Delivery::Claimed { attempt, .. } | Delivery::Received { attempt, .. } => Some(attempt),
         }
     }
+    pub fn awaits_user(&self, now: i64) -> bool {
+        self.execution == Execution::NotStarted
+            && self.cancellation == Cancellation::None
+            && matches!(self.delivery,Delivery::Claimed {lease_until,..}|Delivery::Received {lease_until,..} if now<lease_until)
+    }
     fn live_attempt(&self, attempt: Uuid, now: i64) -> Result<i64, Error> {
         match self.delivery {
             Delivery::Claimed {

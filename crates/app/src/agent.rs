@@ -464,16 +464,9 @@ fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentErr
     let capabilities = value
         .get("capabilities")
         .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if capabilities != &serde_json::json!(["inventory.basic.v3"])
-        && capabilities != &serde_json::json!(["inventory.basic.v3", "task.execute.v3"])
-        && capabilities != &serde_json::json!(["inventory.basic.v3", "software.execute.v3"])
-        && capabilities
-            != &serde_json::json!([
-                "inventory.basic.v3",
-                "task.execute.v3",
-                "software.execute.v3"
-            ])
-    {
+    let capabilities: Vec<wire::Capability> = serde_json::from_value(capabilities.clone())
+        .map_err(|_| AgentError::Wire(wire::ErrorCode::UnsupportedCapability))?;
+    if !wire::supported_capabilities(&capabilities) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedCapability));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))

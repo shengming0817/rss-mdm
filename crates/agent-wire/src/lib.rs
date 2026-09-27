@@ -20,7 +20,7 @@ pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v3.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "cc76a04b502ae6e5d0826b2f0ba5bda91a5cb645cd9d937db1e817dd1a2f0a35";
+    "e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,8 +108,18 @@ pub enum Capability {
     #[serde(rename = "software.execute.v3")]
     SoftwareExecuteV3,
 }
-
-fn supported_capabilities(value: &[Capability]) -> bool {
+impl Capability {
+    /// Canonical persisted and queryable capability identity.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InventoryBasicV3 => "inventory.basic.v3",
+            Self::TaskExecuteV3 => "task.execute.v3",
+            Self::SoftwareExecuteV3 => "software.execute.v3",
+        }
+    }
+}
+/// The only supported ordered capability sets for Agent V3.
+pub fn supported_capabilities(value: &[Capability]) -> bool {
     matches!(
         value,
         [Capability::InventoryBasicV3]
