@@ -36,7 +36,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -111,7 +111,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )

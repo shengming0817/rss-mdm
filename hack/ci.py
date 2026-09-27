@@ -16,6 +16,8 @@ import tomllib
 from urllib.parse import urlsplit
 
 from build_run import lease_fds, require_lease
+from ci_registry import SUITES, all_tools
+from verification_result import result as stage_result, publish
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
@@ -235,34 +237,16 @@ def dependency_graphs(pin):
         verify_metadata(json.loads(result.stdout), ROOT, mode, pin)
 
 
-# T2 scripts also read fixture/source files outside Cargo edges. Keep those
-# inputs explicit; unclassified new CI gates run conservatively.
-APP_INPUTS = {"rss-mdm-app", "rss-mdm-examples"}
-GATE_PACKAGES = {
-    "management-t2": APP_INPUTS | {"rss-mdm-inventory-postgres"},
-    "agent-wire-compat": {"rss-mdm-agent-wire"},
-    "source-t2": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
-    "source-t2-oracle": {"rss-mdm-winget-source", "rss-mdm-brew-source"},
-    "compliance-t2": APP_INPUTS | {"rss-mdm-compliance", "rss-mdm-compliance-postgres", "rss-mdm-group-postgres"},
-    "group-t2": APP_INPUTS | {"rss-mdm-group-postgres"},
-    "backend-t2": APP_INPUTS | {"rss-mdm-policy-postgres", "rss-mdm-resource-postgres", "rss-mdm-software-release-postgres"},
-    "t2": APP_INPUTS | {"inventory-postgres-integration"},
-    **{name: APP_INPUTS for name in ("task-t2", "software-t2", "apple-t2", "asset-t2", "command-t2", "publication-t2", "gateway-t2", "identity-t2", "command-catalog")},
-}
+GATE_PACKAGES = {'agent-wire-compat': {'rss-mdm-agent-wire'}}
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
 
-def select_impact(head):
-    base = os.environ.get("CI_BASE", "origin/develop")
+def select_impact(head, base=None):
+    base = base or os.environ.get("CI_BASE", "origin/develop")
     selection = {"full": True, "packages": [], "reasons": [], "base": base, "head": head}
     try:
-        branch = command(["/usr/bin/git", "branch", "--show-current"])
         if os.environ.get("CI_FULL", "0") != "0":
             selection["reasons"] = ["explicit-full"]
-        elif branch.returncode != 0:
-            selection["reasons"] = ["branch-unavailable"]
-        elif branch.stdout.strip() == "develop":
-            selection["reasons"] = ["develop"]
         else:
             merge = command(["/usr/bin/git", "merge-base", base, head])
             require(merge.returncode == 0, "base-unavailable")
@@ -273,16 +257,21 @@ def select_impact(head):
             require(type(decision["full"]) is bool and isinstance(decision["packages"], list)
                     and set(decision["packages"]) <= set(LOCAL_PACKAGES)
                     and isinstance(decision["reasons"], list), "invalid-selection")
+            require(isinstance(decision['t2Suites'],list) and set(decision['t2Suites'])<=set(SUITES), 'invalid suites')
+            require(isinstance(decision['toolTests'],list) and set(decision['toolTests'])<=set(all_tools()), 'invalid tool tests')
             selection.update(decision)
             if getattr(result, "stderr", "").strip():
                 selection["diagnostic"] = result.stderr.strip()
     except Exception as error:
         selection.update(full=True, packages=[], reasons=["selection-unavailable: " + str(error)])
+    if selection['full']:selection.update(t2Suites=sorted(SUITES),toolTests=all_tools())
     return selection
 
 
 def selected_gate(name, selection):
-    if selection["full"] or name in {"script-tests", "fmt"}:
+    if name=="agent-wire-compat" and "test_agent_wire_compat" in selection["toolTests"]:return True
+    if name == "script-tests":return bool(selection["toolTests"])
+    if selection["full"] or name == "fmt":
         return True
     packages = set(selection["packages"])
     if name == "advisories":
@@ -291,6 +280,7 @@ def selected_gate(name, selection):
 
 
 def gate_command(name, args, selection):
+    if name == "script-tests":return [sys.executable,"-O","-m","unittest", *selection["toolTests"]]
     if name in CARGO_GATES and not selection["full"]:
         flags = [arg for package in selection["packages"] for arg in ("-p", package)]
         index = args.index("--workspace")
@@ -305,7 +295,7 @@ EXTRA_EVIDENCE = {"pin": ("pin.log",)}
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
     paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
-    paths.update({OUT / "result.json", OUT / "selection.json"})
+    paths.update({OUT / "result.json", OUT / "selection.json", OUT / "t2"})
     for path in paths:
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
@@ -334,40 +324,26 @@ def working_source_state():
     return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
 
 
-def main():
-    if os.environ.get("CI_PLAN", "0") != "1":
-        require_lease(ROOT)
-    OUT.mkdir(parents=True, exist_ok=True)
-    head = command(["/usr/bin/git", "rev-parse", "HEAD"])
-    require(head.returncode == 0, "cannot resolve base revision")
-    start_head = head.stdout.strip()
-    gates = [
+def fast_gates():
+    return [
         ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_*.py"]),
         ("fmt",["cargo","fmt","--all","--check"]),
         ("check",["cargo","check","--locked","--workspace","--all-targets"]),
         ("clippy",["cargo","clippy","--locked","--workspace","--all-targets","--all-features","--","-D","warnings"]),
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
-        ("t2",[sys.executable,"hack/t2.py"]),
-        ("group-t2",[sys.executable,"hack/group-t2.py"]),
-        ("management-t2",[sys.executable,"hack/management-t2.py"]),
-        ("task-t2",[sys.executable,"hack/task-t2.py"]),
-        ("asset-t2",[sys.executable,"hack/asset-t2.py"]),
-        ("compliance-t2",[sys.executable,"hack/compliance-t2.py"]),
-        ("command-catalog",[sys.executable,"hack/command_catalog.py","--check"]),
-        ("command-t2",[sys.executable,"hack/command-t2.py"]),
-        ("apple-t2",[sys.executable,"hack/apple-t2.py"]),
-        ("backend-t2",[sys.executable,"hack/backend-t2.py"]),
-        ("publication-t2",[sys.executable,"hack/publication-t2.py"]),
-        ("software-t2",[sys.executable,"hack/software-t2.py"]),
-        ("source-t2-oracle",[sys.executable,"hack/test_source_t2.py"]),
-        ("source-t2",[sys.executable,"hack/source-t2.py"]),
         ("agent-wire-compat",[sys.executable,"hack/agent_wire_compat.py"]),
-
-        ("gateway-t2",[sys.executable,"hack/login_gateway_t2.py"]),
-        ("identity-t2",[sys.executable,"hack/identity_t2.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
+
+def execute_ci():
+    if os.environ.get("CI_PLAN", "0") != "1":
+        require_lease(ROOT)
+    OUT.mkdir(parents=True, exist_ok=True)
+    head = command(["/usr/bin/git", "rev-parse", "HEAD"])
+    require(head.returncode == 0, "cannot resolve base revision")
+    start_head = head.stdout.strip()
+    gates=fast_gates()
     source_state = working_source_state()
     selection = select_impact(start_head)
     plan = {"selection": selection, "gates": {
@@ -388,40 +364,63 @@ def main():
     (OUT / "selection.json").write_text(json.dumps(plan, indent=2) + "\n")
     results = {}
     pin = None
+    started=time.monotonic()
     try:
         pin = workspace_pin(ROOT)
         if selection["full"] or selection["packages"]:
             dependency_graphs(pin)
-        results["pin"] = "passed"
+        results["pin"] = stage_result("passed",started)
     except Exception as error:
         (OUT / "pin.log").write_text(str(error))
-        results["pin"] = "failed"
+        results["pin"] = stage_result("failed",started)
     for name,args in gates:
+        started=time.monotonic()
         if not selected_gate(name, selection):
-            results[name] = "skipped"
+            results[name] = stage_result("skipped",reason="not-selected")
             print(f"{name}: skipped", flush=True)
             continue
         args = gate_command(name, args, selection)
         print(f"local CI: {name}", flush=True)
         try:
-            result = command(args)
+            if name == 'script-tests':
+                result = subprocess.run(args,pass_fds=lease_fds(),cwd=ROOT/'tests',text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            else:result = command(args)
             (OUT / f"{name}.log").write_text(result.stdout)
-            results[name] = "passed" if result.returncode == 0 else "failed"
+            results[name] = stage_result("passed" if result.returncode == 0 else "failed",started,command=args)
         except Exception as error:
             (OUT / f"{name}.log").write_text(str(error))
-            results[name] = "failed"
+            results[name] = stage_result("failed",started,command=args)
         print(f"{name}: {results[name]}", flush=True)
+    integration = {name:stage_result('skipped',reason='not-run') for name in SUITES}
+    if os.environ.get('CI_T2') == 'all':
+        from t2 import run_suites
+        integration = run_suites(sorted(SUITES), OUT/'t2')
+    started=time.monotonic()
     try:
         require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
-        results["source-stability"] = "passed"
+        results["source-stability"] = stage_result("passed",started)
     except Exception as error:
         (OUT / "source-stability.log").write_text(str(error))
-        results["source-stability"] = "failed"
+        results["source-stability"] = stage_result("failed",started)
     evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
+    evidence['recommendedT2'] = {'suites':selection['t2Suites'],'status':'not-run' if selection['t2Suites'] else 'not-selected'}
+    evidence['t2'] = integration
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
-    (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")
+    publish(OUT/"result.json",evidence)
     print(json.dumps(evidence, indent=2))
-    return int(any(value == "failed" for value in results.values()))
+    return int(any(value["status"] == "failed" for value in results.values()) or any(value["status"] == "failed" for value in integration.values()))
+
+def main():
+    if os.environ.get('CI_PLAN','0')=='1':return execute_ci()
+    require_lease(ROOT)
+    if OUT.is_symlink():raise RuntimeError('CI output directory cannot be a symlink')
+    OUT.mkdir(parents=True,exist_ok=True)
+    clear_execution_evidence([name for name,_ in fast_gates()])
+    started=time.monotonic()
+    try:return execute_ci()
+    except BaseException as error:
+        publish(OUT/'result.json',{'status':'failed','gates':{'execution':stage_result('failed',started,reason=type(error).__name__)}})
+        raise
 
 if __name__ == "__main__": sys.exit(main())

@@ -19,7 +19,7 @@ fn fixture() -> Value {
         .unwrap()
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn asset_history_rollback_replay_and_frozen_watermark() {
     let t = tenant();
     let device = format!("history-{}", Uuid::new_v4());
@@ -135,7 +135,7 @@ fn sql(statement: &str) -> String {
             "-U",
             "postgres",
             "-d",
-            "backend",
+            config["database"].as_str().unwrap(),
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -164,9 +164,9 @@ async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
     let config = PgConfig::new(
         "localhost",
         c["port"].as_u64().unwrap() as u16,
-        "backend",
+        c["database"].as_str().unwrap(),
         role,
-        PgPassword::new("backend-fixture"),
+        PgPassword::new("runtime-fixture"),
         PgPrivateCa::from_pem(std::fs::read(c["ca"].as_str().unwrap()).unwrap()).unwrap(),
     );
     let binding = ExecutionBinding::new(
@@ -293,9 +293,9 @@ impl RunningAutomation {
         let options = sqlx::postgres::PgConnectOptions::new()
             .host("localhost")
             .port(config["port"].as_u64().unwrap() as u16)
-            .database("backend")
+            .database(config["database"].as_str().unwrap())
             .username("mdm_flow_runtime")
-            .password("backend-fixture")
+            .password("runtime-fixture")
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
             .ssl_root_cert(config["ca"].as_str().unwrap());
         let automation = crate::automation::Automation::connect(
@@ -324,16 +324,16 @@ impl RunningAutomation {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn durable_asset_group_scope_pipeline() {
     let service = Arc::new(planning(tenant()).await);
     let config = fixture();
     let options = sqlx::postgres::PgConnectOptions::new()
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
-        .database("backend")
+        .database(config["database"].as_str().unwrap())
         .username("mdm_flow_runtime")
-        .password("backend-fixture")
+        .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
     let automation =
@@ -589,7 +589,7 @@ async fn durable_asset_group_scope_pipeline() {
     service.runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn group_scope_replay_and_audit_atomicity() {
     let m = Arc::new(planning(tenant()).await);
     let device = format!("设备-{}", Uuid::new_v4());
@@ -685,7 +685,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     m.runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn initial_empty_group_scope_and_revision_competition() {
     let m = planning(tenant()).await;
     let g = Uuid::new_v4();
@@ -743,7 +743,7 @@ async fn initial_empty_group_scope_and_revision_competition() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn management_admission_rejects_schema_and_privilege_drift() {
     let service = planning(tenant()).await;
     for (change, restore) in [
@@ -868,7 +868,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn registration_replacement_invalidates_direct_and_group_admission() {
     let m = Arc::new(planning(tenant()).await);
     let running = RunningAutomation::start(m.clone()).await;
@@ -963,7 +963,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn group_delete_scope_reference_compete_without_dangling_references() {
     let first = planning(tenant()).await;
     let second = planning(tenant()).await;
@@ -1017,7 +1017,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     let m = planning(tenant()).await;
     let id = Uuid::new_v4();
@@ -1069,7 +1069,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn expired_guard_after_lock_rejects_mutation_and_replay() {
     use sqlx::{
         Connection,
@@ -1080,9 +1080,9 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
     let options = PgConnectOptions::new()
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
-        .database("backend")
+        .database(config["database"].as_str().unwrap())
         .username("postgres")
-        .password("admin-fixture")
+        .password("local-fixture")
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
     let mut holder = sqlx::PgConnection::connect_with(&options).await.unwrap();
@@ -1141,7 +1141,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
 
 #[cfg(feature = "integration")]
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn asset_commit_unknown_recovers_original_receipts() {
     use assets::{
         Command as AssetCommand, FieldKey, ManualChange, Owner, Query, SavedChange,
@@ -1214,7 +1214,7 @@ async fn asset_commit_unknown_recovers_original_receipts() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
+#[ignore = "real PostgreSQL; make t2 SUITE=management"]
 async fn asset_storage_failures_are_not_malformed() {
     let m = planning(tenant()).await;
     let device = format!("storage-stages-{}", Uuid::new_v4());
@@ -1378,7 +1378,7 @@ async fn audit_store_with_integrity(
     let options = sqlx::postgres::PgConnectOptions::new()
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
-        .database("backend")
+        .database(config["database"].as_str().unwrap())
         .username("mdm_access")
         .password("access-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
@@ -1400,7 +1400,7 @@ async fn audit_store_with_integrity(
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
     let store = audit_store().await;
     for role in [

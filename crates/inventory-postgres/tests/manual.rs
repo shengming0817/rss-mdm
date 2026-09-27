@@ -6,7 +6,7 @@ use sqlx::{
     postgres::{PgConnectOptions, PgSslMode},
 };
 #[tokio::test]
-#[ignore = "management-t2: real TLS PostgreSQL"]
+#[ignore = "make t2 SUITE=management: real TLS PostgreSQL"]
 async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn std::error::Error>>
 {
     let config: serde_json::Value =
@@ -14,9 +14,9 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
     let options = PgConnectOptions::new()
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
-        .database("backend")
+        .database(config["database"].as_str().unwrap())
         .username("mdm_flow_runtime")
-        .password("backend-fixture")
+        .password("runtime-fixture")
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
     let mut c = sqlx::PgConnection::connect_with(&options).await?;

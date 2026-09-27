@@ -10,7 +10,7 @@ make t2
 make ci-plan CI_BASE=origin/develop
 ```
 
-`make t2` 创建真实 PostgreSQL 依赖；缺少 Docker 或必要工具时必须处理失败。编辑循环选择受影响测试，最终检查不要求先提交源码。
+`make ci` 只执行快速检查并报告建议 T2。`make t2` 默认按影响范围选择，显式 `SUITE=management` 运行专项，`SUITE=all` 运行全部；非法套件名立即失败。选中的套件按需启动真实依赖，缺少 Docker 或必要工具必须失败。编辑循环选择受影响测试，最终检查不要求先提交源码。
 
 ## 构建槽位与缓存
 
@@ -61,3 +61,55 @@ cargo run --locked -p rss-mdm-examples -- inspect snapshot-1
 持久 receipt 仅证明报告接收，资产查询须另看投影状态。完整 Snapshot 只替换其明确的 scope/coverage，Partial/Failed 不清空最后完整事实；Delta 需要连续来源序列。提交未知时保留原报告和操作身份查询、精确重放，暂时查不到不能证明回滚。
 
 产品运行和初始化使用 [安装指南](../deployment/installation.md)，不以示例 CLI 代替生产入口。
+
+## Worktree 开发环境
+
+默认四槽共享 target 池及其独占租约保持不变。环境归属由 worktree 绝对路径决定，和槽位分配、复用、换属无关；四个 worktree 可并行开发，槽满时构建明确失败。
+
+```sh
+make dev ACTION=up
+make dev ACTION=init
+make dev ACTION=status
+make dev ACTION=stop
+make dev ACTION=reset
+make t2 SUITE=management
+make t2 SUITE=affected CI_BASE=origin/develop
+make t2 SUITE=all
+```
+
+默认管理 `development` 环境；T2 普通 PG 使用同一 worktree 的 `main` 环境，破坏性实例按组自动销毁。显式管理 T2 环境使用 `DEV_ARGS="--group main"`。stop 保留数据，reset 核验归属后只删除指定环境，不清理共享 target 池。不要直接依赖 Docker Compose 自动推导的项目名。环境数据可丢弃，角色输入不兼容时 reset 后重新 init，没有旧环境升级或兼容解析。
+
+init 使用正式角色 SQL、产品 migrate、initialize 和 initialize-authorization。输出本机 Rust 的配置路径、HTTPS origin 和 nginx 配置路径，账号密码仅写入权限 0600 的 operator/account-password 文件。通过已有构建启动器运行 `rss-mdm serve --config <输出路径>`；本机 HTTPS 调试使用输出的 nginx 配置，设置 `MDM_WEB_ROOT` 指向已构建 UI，必要时设置 `MDM_NGINX_MIME_TYPES`。私有 CA 仅为该环境使用，不跳过 TLS 校验。
+
+完整容器联调使用已经构建的产品和 UI 镜像，init 固定其实际镜像 ID：
+
+```sh
+make dev ACTION=init MODE=container DEV_ARGS="--server-image <产品镜像> --web-image <UI镜像>"
+make dev ACTION=up MODE=container
+```
+
+产品构建仍使用 release.py 正式入口，`CARGO_BUILD_JOBS` 控制镜像编译并发，BuildKit 缓存按 worktree 命名。网关与应用共享容器网络命名空间，管理端口保持 loopback-only，PG 经 bridge DNS 访问；外部端口只绑定 127.0.0.1。容器重建导致端口变化时重新 init。运行容器不挂载操作员秘密。
+
+每个阶段报告耗时与环境标识。普通测试重建自己的数据库并保留真实提交，PG 与 CA 复用；角色、权限或停库故障不作用于普通 PG。Windows、Apple 和 IdP 按专项准备。NanoMDM 以校验源码、实际 Go 工具链、平台和参数识别缓存，损坏时只恢复该项。
+
+## 浏览器正常与故障验证
+
+正常模式消费已准备好的测试账号、数据及两个 HTTPS 地址，不要求 Docker 权限：
+
+```sh
+MDM_PLAYWRIGHT_MODULE=<本机playwright-core绝对路径> make t3-auth T3_ARGS="--mode normal --input <0600输入JSON> --output <新结果目录>"
+```
+
+输入包含 `mode: normal`、`origin`、`otherOrigin`、`tenant`、`otherTenant`、`wrongTenant`、`member`、`ssoMember`、`adminPassword`、`memberPassword`、`issuer`、`idpPassword`、`clientSecret`、`caFile`，不接受容器或服务控制坐标。运行前将该测试环境 CA 配置到本机浏览器信任库，准备专用测试账号与 Inventory 数据；正常用例会通过产品 API 修改这些测试账号及授权数据。
+
+故障模式继续消费固定候选及浏览器工具镜像：
+
+```sh
+make t3-auth T3_ARGS="--mode faults --candidate <候选目录> --tools-image <固定工具镜像> --output <新结果目录>"
+```
+
+重启、停 IdP、暂停 PG、安装失配及数据库白盒断言只在其新建专用环境运行。normal 和 faults 分别报告覆盖，normal 成功不表示完整候选或故障验证通过。
+
+更新受审查的 catalog 快照使用 `python3 hack/build_run.py -- python3 hack/command_catalog.py --write`，检查仍只用 `make t2 SUITE=catalog`。宿主端口由带锁的跨 worktree 分配记录协调，init 检查占用；出现外部进程占用时停止该进程，或 reset 后重新 init 获取空闲端口。
+
+多个 localhost 端口的浏览器调试使用独立浏览器 profile 或自动化 context；Cookie 按主机而非端口隔离。

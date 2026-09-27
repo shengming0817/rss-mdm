@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from build_run import lease_fds, require_lease
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED = {
     "winget": {
@@ -76,24 +76,17 @@ def local_address():
             continue
     raise RuntimeError("no reachable non-loopback local IPv4 address; set SOURCE_T2_ADDRESS")
 
-def tls_environment(root):
-    address = local_address()
-    (root / "ca.cnf").write_text("[req]\ndistinguished_name=dn\nx509_extensions=ca\nprompt=no\n[dn]\nCN=Source T2 CA\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n")
-    (root / "server.cnf").write_text("[req]\ndistinguished_name=dn\nreq_extensions=server\nprompt=no\n[dn]\nCN=source.invalid\n[server]\nsubjectAltName=DNS:source.invalid\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
-    for args in [
-        ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", "ca.key", "-out", "ca.pem", "-config", "ca.cnf"],
-        ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", "server.key", "-out", "server.csr", "-config", "server.cnf"],
-        ["x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "1", "-out", "server.pem", "-extfile", "server.cnf", "-extensions", "server"],
-    ]:
-        subprocess.run(["openssl", *args], cwd=root, check=True, capture_output=True)
-    return dict(os.environ, SOURCE_T2_TLS=str(root), SOURCE_T2_ADDRESS=address)
+def tls_environment(root, context):
+    address=local_address()
+    context.source_tls(root)
+    return dict(os.environ,SOURCE_T2_TLS=str(root),SOURCE_T2_ADDRESS=address)
 
-def main():
+def main(context):
     require_lease(ROOT)
     failed = []
     with tempfile.TemporaryDirectory(prefix="mdm-source-tls-") as directory:
         try:
-            env = tls_environment(Path(directory))
+            env = tls_environment(Path(directory),context)
             run_tests("rss-mdm-winget-source", ["--test", "t2_http"], EXPECTED["winget"], env)
         except Exception as error:
             print(f"HTTPS fixture setup failed: {error}", file=sys.stderr)
@@ -107,6 +100,3 @@ def main():
     if failed:
         print("Failed source T2 targets: " + ", ".join(failed), file=sys.stderr)
     return int(bool(failed))
-
-if __name__ == "__main__":
-    sys.exit(main())

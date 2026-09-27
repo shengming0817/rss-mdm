@@ -12,13 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOGS = {"compliance": "../../compliance-postgres/src/catalog", "catalog": "execution/catalog", "dependencies": "execution/dependencies", "planning": "planning/catalog", "assets": "assets/catalog", "automation": "automation/catalog", "resources": "resource_catalog/catalog", "publication": "../../software-service/src/publication/http_catalog", "software": "../../software-service/src/catalog/catalog", "content": "content/catalog", "flow": "flow/storage/catalog"}
 NAMES = tuple(CATALOGS)
 
-def capture(container, mode):
+def capture(container, mode, database):
     directory = ROOT / "crates/app/src/execution"
     query = "BEGIN; SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog;\n"
     paths = {name: ROOT / "crates/app/src" / (relative + ".sql") for name, relative in CATALOGS.items()}
     query += "\n".join(paths[name].read_text() + ";" for name in NAMES)
     query += "\nROLLBACK;"
-    result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input=query, text=True, capture_output=True, pass_fds=lease_fds())
+    result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input=query, text=True, capture_output=True, pass_fds=lease_fds())
     if result.returncode:
         raise RuntimeError("command catalog query failed: " + result.stderr)
     values = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
@@ -47,22 +47,26 @@ def capture(container, mode):
         raise ValueError("unknown catalog mode")
     # Check actual runtime authority as well as capturing shape. Session identity matters.
     admission = (directory / 'admission.sql').read_text()
-    probe = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + admission + ";\nROLLBACK;", text=True, capture_output=True, check=True, pass_fds=lease_fds())
+    probe = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + admission + ";\nROLLBACK;", text=True, capture_output=True, check=True, pass_fds=lease_fds())
     if probe.stdout.strip() != 't':
         import re
         prefix, predicates = admission.split('\nSELECT ', 1)
         terms = re.split(r'\n AND ', predicates.strip())
         diagnostics = prefix + '\nSELECT ' + ','.join('(' + term.rstrip(';') + ')' for term in terms) + ';'
-        result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test"], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + diagnostics + "\nROLLBACK;", text=True, capture_output=True, check=True, pass_fds=lease_fds())
+        result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + diagnostics + "\nROLLBACK;", text=True, capture_output=True, check=True, pass_fds=lease_fds())
         rejected = [terms[i][:200] for i, value in enumerate(result.stdout.strip().split('|')) if value != 't']
         raise RuntimeError('command runtime admission rejected: ' + repr(rejected))
     print(f"command catalog {mode}: all contracts match isolated migrations", flush=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    modes = parser.add_mutually_exclusive_group(required=True)
-    modes.add_argument("--check", action="store_true")
-    modes.add_argument("--write", action="store_true")
-    args = parser.parse_args()
-    import t2
-    t2.main(catalog_mode="check" if args.check else "write")
+    parser.add_argument('--write',action='store_true',required=True)
+    args=parser.parse_args()
+    from build_run import require_lease
+    require_lease(ROOT)
+    from t2_environment import T2Context
+    from ci_registry import SUITES
+    from t2_suites.product import run_scenario
+    with T2Context() as context:
+        context.spec=SUITES['catalog']
+        run_scenario(context,lambda fixture:capture(fixture.name,'write',fixture.database))

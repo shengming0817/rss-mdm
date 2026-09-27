@@ -15,7 +15,7 @@ fn committed<T>(attempt: LocalTxAttempt<std::result::Result<T, Rejection>, PgErr
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: group-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=group"]
 async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -190,7 +190,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: group-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=group"]
 async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -375,7 +375,7 @@ async fn affected(
 #[path = "support/builds.rs"]
 mod builds;
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
 async fn static_commands_replay_and_borrowed_rollback() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -479,7 +479,7 @@ async fn static_commands_replay_and_borrowed_rollback() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
 async fn durable_recalculation_no_change_fences_stale_run() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -528,7 +528,7 @@ async fn durable_recalculation_no_change_fences_stale_run() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
 async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
     let runtime = connect_runtime().await;
     let store = store(runtime.clone(), tenant()).await;

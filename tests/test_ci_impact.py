@@ -204,11 +204,11 @@ members = [
         if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
             raise AssertionError(f"selector stdout is not one JSON line: {raw!r}")
         decision = json.loads(raw)
-        if list(decision) != ["full", "packages", "reasons"]:
+        if list(decision) != ["full", "packages", "reasons", "t2Suites", "toolTests"]:
             raise AssertionError(f"unexpected schema/order: {decision!r}")
         if type(decision["full"]) is not bool:
             raise AssertionError(f"full is not bool: {decision!r}")
-        for key in ("packages", "reasons"):
+        for key in ("packages", "reasons", "t2Suites", "toolTests"):
             values = decision[key]
             if not isinstance(values, list):
                 raise AssertionError(f"{key} is not a list: {decision!r}")

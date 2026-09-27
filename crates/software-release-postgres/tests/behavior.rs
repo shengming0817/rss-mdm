@@ -104,7 +104,7 @@ async fn authorize(s: &ReleaseStore, c: &mut r::Candidate) -> r::Publication {
     *p
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn release_approval_unknown_retry_history_and_late_results() {
     let runtime = runtime().await;
     let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
@@ -200,7 +200,7 @@ async fn release_approval_unknown_retry_history_and_late_results() {
     );
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn release_immutable_version_request_uniqueness_and_rollback() {
     let runtime = runtime().await;
     let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
@@ -267,7 +267,7 @@ async fn release_immutable_version_request_uniqueness_and_rollback() {
     );
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn release_event_failure_and_runtime_admission() {
     let runtime = runtime().await;
     let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
@@ -351,7 +351,7 @@ fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: backend-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
 async fn admission_rejects_noninherited_switchable_privileges() {
     let runtime = runtime().await;
     let role = format!("acl_{}", unique().replace('-', "_"));

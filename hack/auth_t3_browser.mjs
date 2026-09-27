@@ -2,20 +2,20 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
-import {execFileSync} from 'node:child_process';
 const require=createRequire(import.meta.url);
-const {chromium}=require('/opt/playwright-core');
-const input=JSON.parse(fs.readFileSync('/fixture/browser-input.json','utf8'));
-const origin='https://mdm.example.test', other='https://mdm-other.example.test';
+const {chromium}=require(process.env.MDM_PLAYWRIGHT_MODULE || '/opt/playwright-core');
+const input=JSON.parse(fs.readFileSync(process.argv[2] || '/fixture/browser-input.json','utf8'));
+const origin=input.origin, other=input.otherOrigin;
+const faults=input.mode==='faults' ? await import('./auth_t3_faults.mjs') : null;
 const api=`/api/v2/tenants/${input.tenant}`;
 const inventory='/api/v2/devices/device-1/inventory';
 const checks={}, requests=[], privateValues=[];
 let stage='launch';
 const assert=(ok,message)=>{if(!ok)throw new Error(message)};
-const docker=(args,stdin)=>execFileSync('docker',args,{input:stdin,encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:65000}).trim();
+const docker=(...args)=>{assert(faults,'fault control unavailable in normal mode');return faults.docker(...args)};
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function poll(check,seconds=60){const end=Date.now()+seconds*1000;while(Date.now()<end){try{if(await check())return}catch{}await delay(500)}throw new Error('readiness deadline')}
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+let browser;
 const consoleText=[];
 async function pageAt(url=origin){const ctx=await browser.newContext({locale:'en-US'});const page=await ctx.newPage();page.setDefaultTimeout(15000);page.on('console',m=>consoleText.push(m.text()));page.on('request',r=>{const u=new URL(r.url());if(u.pathname==='/api/v2/oidc/callback')for(const name of ['code','state']){const value=u.searchParams.get(name);if(value)privateValues.push(value)}});await page.goto(`${url}/tenants/${url===origin?input.tenant:input.otherTenant}/login`);return page}
 async function request(page,path,method='GET',body,headers={}){
@@ -50,12 +50,17 @@ async function cloneSession(page,url=origin){const ctx=await browser.newContext(
 async function restart(){docker(['restart','--time','45',input.server]);await poll(async()=> (await request(admin,'/readyz')).status===200)}
 function sql(statement){return docker(['exec','-i',input.pg,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test'],statement)}
 async function keycloak(page,user){
-  await page.waitForURL('https://idp.example.test:8443/**');
-  await page.locator('#username').fill(user);await page.locator('#password').fill(input.idpPassword);
+  await page.waitForURL(new URL(input.issuer).origin+'/**');
+  await page.locator('#username').waitFor();
+  const trusted=()=>assert(new URL(page.url()).origin===new URL(input.issuer).origin,'untrusted IdP navigation');
+  trusted();await page.locator('#username').fill(user);
+  trusted();await page.locator('#password').fill(input.idpPassword);
+  trusted();
   await page.locator('#kc-login').click();
 }
 let admin,member;
 try{
+  browser=await chromium.launch({headless:true,chromiumSandbox:input.mode==='normal'});
   stage='local_ui';admin=await pageAt();await login(admin,'admin',input.adminPassword);
   member=await pageAt();const initial=await login(member,'member',input.memberPassword);
   assert(initial.identity.principalId===input.member,'member coordinate');
@@ -67,7 +72,7 @@ try{
   checks.local_ui=true;
 
   stage='account_ui';await admin.goto(origin+`/tenants/${input.tenant}/accounts`);
-  await admin.locator('#account-login').fill('ui-created');await admin.locator('#account-password').fill(input.memberPassword);
+  await admin.locator('#account-login').fill('ui-created-'+crypto.randomUUID());await admin.locator('#account-password').fill(input.memberPassword);
   const created=admin.waitForResponse(r=>new URL(r.url()).pathname===api+'/accounts'&&r.request().method()==='POST');
   await admin.locator('form').filter({has:admin.locator('#account-login')}).locator('button').click();
   assert((await created).status()===201,'UI account creation');await admin.getByRole('cell',{name:/ui-created/}).waitFor();checks.account_ui=true;
@@ -79,7 +84,8 @@ try{
   stage='permissions';const group=crypto.randomUUID(),groupPath='/api/v2/groups/'+group;
   const change={operationId:crypto.randomUUID(),expectedRevision:0,input:{action:'create',name:'T3-2364',description:'product authorization fixture',criteria:null}};
   assert((await post(member,groupPath,change)).status===403,'management deny');
-  assert(sql(`SELECT count(*) FROM mdm_group.groups WHERE id='${group}'`)==='0','denied write had effect');
+  assert((await request(admin,groupPath)).status===404,'denied write had effect');
+  if(faults)assert(sql(`SELECT count(*) FROM mdm_group.groups WHERE id='${group}'`)==='0','denied database write had effect');
   assert((await post(admin,groupPath,change)).status===200,'management permit');
   assert((await request(admin,groupPath)).status===200,'management read');
   const publisher='/api/v1/software-sources/unconfigured/candidates/candidate-2364';
@@ -88,7 +94,7 @@ try{
   assert((await request(member,api+'/accounts')).status===403,'hidden accounts not authoritative');checks.permissions=true;
 
   stage='cookie_csrf';const cookie=(await member.context().cookies(origin)).find(c=>c.name==='__Host-identity-session');
-  assert(cookie&&cookie.secure&&cookie.httpOnly&&cookie.sameSite==='Lax'&&cookie.path==='/'&&cookie.domain==='mdm.example.test','cookie attributes');
+  assert(cookie&&cookie.secure&&cookie.httpOnly&&cookie.sameSite==='Lax'&&cookie.path==='/'&&cookie.domain===new URL(origin).hostname,'cookie attributes');
   assert(!await member.evaluate(()=>document.cookie.includes('__Host-identity-session')),'HttpOnly');
   assert((await request(member,api+'/session/refresh','POST',undefined)).status===403,'missing csrf');
   assert((await request(member,api+'/session/refresh','POST',undefined,{'X-CSRF-Token':'wrong'})).status===403,'incorrect csrf');
@@ -100,8 +106,8 @@ try{
   assert((await post(member,api+'/session/refresh')).status===200,'refresh');
   assert((await request(stale,'/api/v1/authorization')).status===401,'rotated credential');await stale.context().close();checks.refresh=true;
 
-  stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
-  assert((await request(member,api+'/session')).value.session.id===before,'session restart persistence');checks.restart=true;
+  if(faults){stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
+  assert((await request(member,api+'/session')).value.session.id===before,'session restart persistence');checks.restart=true;}
 
   stage='isolation';assert((await request(attacker,'/api/v1/authorization')).status===401,'host cookie isolation');
   const replay=await cloneSession(member,other);assert((await request(replay,'/api/v1/authorization')).status===401,'instance replay');
@@ -114,7 +120,7 @@ try{
     assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:false})).status===200,'disable account/membership');
     assert((await request(member,inventory)).status===401,'disabled new request');
     assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:true})).status===200,'restore account/membership');
-    await restart();assert((await request(old,inventory)).status===401,'revocation resurrected');
+    if(faults)await restart();assert((await request(old,inventory)).status===401,'revocation resurrected');
     await old.context().close();await member.context().clearCookies();await login(member,'member',input.memberPassword);checks[key]=true;
   }
   stage='logout';const old=await cloneSession(member);await logoutUI(member);
@@ -126,7 +132,7 @@ try{
 
   stage='enterprise';const probe=await browser.newPage();await poll(async()=>{const r=await probe.goto(input.issuer+'/.well-known/openid-configuration');return r.status()===200});await probe.close();
   const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v2/oidc/callback',scopes:['openid','profile','email'],claims:{email:'email',groups:null},jit:false};
-  r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync('/fixture/ca.crt','utf8')});
+  r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
   assert(r.status===201,'provider create');const provider=r.value.id;
   assert((await post(admin,`${api}/providers/${provider}/enabled`,{expectedVersion:r.value.version,enabled:true})).status===200,'provider enable');
   await member.goto(origin+`/tenants/${input.tenant}/sessions`);
@@ -145,18 +151,20 @@ try{
   await unknown.waitForURL(origin+'/**');assert((await request(unknown,api+'/session')).status===401,'unknown subject');await unknown.context().close();checks.unknown_subject=true;
 
   stage='private_binding';const deniedSettings={...settings,clientId:'unapproved-client'};
-  r=await post(admin,api+'/providers',{settings:deniedSettings,clientSecret:input.clientSecret,caPem:fs.readFileSync('/fixture/ca.crt','utf8')});
+  r=await post(admin,api+'/providers',{settings:deniedSettings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
   assert(r.status===201,'unapproved provider persisted without network access');
   const tested=await post(admin,`${api}/providers/${r.value.id}/test`,{expectedVersion:r.value.version});
   assert(tested.status===200&&tested.value.passed===false&&tested.value.diagnostic.reason==='egress_denied','unapproved private client connected');checks.private_binding=true;
 
-  stage='idp_down';docker(['stop','--time','10',input.idp]);const independent=await pageAt();await login(independent,'admin',input.adminPassword);
+  let independent,persisted;
+  if(faults){
+  stage='idp_down';docker(['stop','--time','10',input.idp]);independent=await pageAt();await login(independent,'admin',input.adminPassword);
   assert((await request(independent,api+'/accounts')).status===200,'IdP-independent account management');
   assert((await request(independent,inventory)).status===200,'IdP-independent request');
   const createdLocal=await post(independent,api+'/accounts',{login:'while-idp-down',password:input.memberPassword});assert(createdLocal.status===201,'IdP-independent account write');checks.idp_down=true;
 
   await independent.goto(origin+`/tenants/${input.tenant}/sessions`);
-  stage='pg_down';const persisted=await cloneSession(independent);docker(['pause',input.pg]);
+  stage='pg_down';persisted=await cloneSession(independent);docker(['pause',input.pg]);
   try{
     const unavailable=await request(independent,inventory);assert([502,503].includes(unavailable.status),'PG unavailable authorizes');
     const response=independent.waitForResponse(r=>new URL(r.url()).pathname===api+'/session/logout'&&r.request().method()==='POST');
@@ -170,13 +178,21 @@ try{
   await restart();assert((await request(persisted,api+'/session')).status===200,'failed logout lost authoritative session');
   assert((await post(persisted,api+'/session/logout')).status===204,'recovery logout');checks.pg_down=true;
 
+  }
   stage='safe_logs';for(const value of [input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret])assert(!consoleText.join('\n').includes(value),'console secret');
   assert(!consoleText.some(v=>/[?&]code=/.test(v)),'console callback code');
-  for(const page of [admin,member,independent,persisted]){
+  for(const page of [admin,member,independent,persisted].filter(Boolean)){
     assert(!/[?&](code|state)=/.test(page.url()),'callback remains in application URL');
     const cookies=await page.context().cookies();for(const c of cookies)privateValues.push(c.value);
   }
   checks.safe_logs=true;
   const result={checks,requests,browser:browser.version(),privateValues};
   await browser.close();process.stdout.write(JSON.stringify(result));
-}catch(error){await browser.close();process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason:error.message.replace(/https?:\/\/\S+/g,'[url]')}));process.exitCode=1}
+ }catch(error){
+  if(browser)await browser.close().catch(()=>{});
+  let reason=error.message.replace(/https?:\/\/\S+/g,'[url]');
+  for(const value of [...privateValues,input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret]){
+    if(value)reason=reason.split(value).join('[private]');
+  }
+  process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason}));process.exitCode=1;
+}

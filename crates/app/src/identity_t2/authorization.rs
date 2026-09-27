@@ -28,7 +28,7 @@ fn grant(operation: &str, scope: Value) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "make t2-identity: persistent authorization through real PG and HTTP"]
+#[ignore = "make t2 SUITE=identity: persistent authorization through real PG and HTTP"]
 async fn persistent_rules_membership_cas_replay_and_restart() -> Result<()> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let config: Config = serde_json::from_value(base.clone())?;

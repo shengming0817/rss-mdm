@@ -35,7 +35,7 @@ impl Peer {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "TokenUpdate".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                     ("Topic", self.topic.clone().into()),
                     ("Token", plist::Value::Data(vec![value; 32])),
                     ("PushMagic", "fixture-magic".into()),
@@ -51,8 +51,10 @@ impl Peer {
         id: Option<Uuid>,
         extra: Option<(&str, plist::Value)>,
     ) -> Result<Vec<u8>> {
-        let mut d =
-            protocol::dictionary([("Status", status.into()), ("UDID", "rss-apple-t2".into())]);
+        let mut d = protocol::dictionary([
+            ("Status", status.into()),
+            ("UDID", "rss-make t2 SUITE=apple".into()),
+        ]);
         if let Some(id) = id {
             d.insert("CommandUUID".into(), id.to_string().into());
         }

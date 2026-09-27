@@ -50,25 +50,45 @@ if __name__ == '__main__':
         print(name, binary(name), flush=True)
 
 
+def nano_identity():
+    import subprocess
+    effective = json.loads(subprocess.check_output(
+        ['go','env','-json','GOOS','GOARCH','GOAMD64','GOARM','GOARM64','GOVERSION','GOROOT','GOTOOLCHAIN','CGO_ENABLED','CC','CXX','CGO_CFLAGS','CGO_CPPFLAGS','CGO_CXXFLAGS','CGO_LDFLAGS','GOFLAGS','GOEXPERIMENT'],text=True,env={**os.environ,'GOWORK':'off'}))
+    return dict(source=LOCK['nanomdm']['sourceArchiveSha256'], toolchain=effective,
+                flags=['-mod=readonly','-trimpath','./cmd/nanomdm'])
+
+
 def nano_binary():
-    """Build only the checksum-verified, unmodified upstream oracle with its go.sum."""
+    """Verify source and built artifact; reuse only the exact effective build identity."""
     import subprocess
     item = LOCK['nanomdm']
     cache = Path(os.environ.get('CARGO_TARGET_DIR', ROOT/'target'))/'apple-tools'/item['sourceArchiveSha256']
     cache.mkdir(parents=True, exist_ok=True)
-    archive = cache/'archive.tar.gz'
-    data = archive.read_bytes() if archive.exists() else urllib.request.urlopen(
-        'https://codeload.github.com/micromdm/nanomdm/tar.gz/'+item['revision'],timeout=60).read(16*1024*1024)
-    if hashlib.sha256(data).hexdigest() != item['sourceArchiveSha256']:
-        raise RuntimeError('NanoMDM oracle source checksum mismatch')
+    identity=nano_identity()
+    key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
+    output=cache/key
+    output.mkdir(exist_ok=True)
+    archive=cache/'archive.tar.gz'
+    for attempt in range(2):
+        data=archive.read_bytes() if archive.exists() else urllib.request.urlopen(
+            'https://codeload.github.com/micromdm/nanomdm/tar.gz/'+item['revision'],timeout=60).read(16*1024*1024)
+        if hashlib.sha256(data).hexdigest()==item['sourceArchiveSha256']:break
+        archive.unlink(missing_ok=True)
+    else:raise RuntimeError('NanoMDM oracle source checksum mismatch')
     archive.write_bytes(data)
-    destination = cache/'nanomdm'
-    with tempfile.TemporaryDirectory(prefix='build-', dir=cache) as temporary:
-        with tarfile.open(fileobj=io.BytesIO(data),mode='r:gz') as tar:
-            tar.extractall(temporary,filter='data')
-        source = Path(temporary)/('nanomdm-'+item['revision'])
-        built = Path(temporary)/'nanomdm'
+    destination=output/'nanomdm';manifest=output/'manifest.json'
+    try:
+        proof=json.loads(manifest.read_text())
+        if proof['identity']==identity and proof['sha256']==hashlib.sha256(destination.read_bytes()).hexdigest() and os.access(destination,os.X_OK):
+            return destination
+    except (OSError,ValueError,KeyError):pass
+    with tempfile.TemporaryDirectory(prefix='build-',dir=cache) as temporary:
+        with tarfile.open(fileobj=io.BytesIO(data),mode='r:gz') as tar:tar.extractall(temporary,filter='data')
+        source=Path(temporary)/('nanomdm-'+item['revision']);built=Path(temporary)/'nanomdm'
+        env={**os.environ,'GOWORK':'off','GOCACHE':str(cache/'go-build'),'GOMODCACHE':str(cache/'go-mod')}
         subprocess.run(['go','build','-mod=readonly','-trimpath','-o',str(built),'./cmd/nanomdm'],
-                       pass_fds=lease_fds(), cwd=source,env={**os.environ,'GOWORK':'off'},check=True,timeout=180)
-        built.replace(destination)
+                       pass_fds=lease_fds(),cwd=source,env=env,check=True,timeout=180)
+        built.chmod(0o700);built.replace(destination)
+        proof=dict(identity=identity,sha256=hashlib.sha256(destination.read_bytes()).hexdigest())
+        staged=output/'manifest.tmp';staged.write_text(json.dumps(proof));staged.replace(manifest)
     return destination

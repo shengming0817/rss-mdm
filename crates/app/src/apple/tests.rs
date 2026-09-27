@@ -350,7 +350,7 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
         .build()?;
     let body = protocol::xml(protocol::dictionary([
         ("MessageType", "Authenticate".into()),
-        ("UDID", "rss-apple-t2".into()),
+        ("UDID", "rss-make t2 SUITE=apple".into()),
         ("Topic", apple.config.apns_topic.clone().into()),
     ]))?;
     let oracle = oracle::Oracle::new(&der)?;

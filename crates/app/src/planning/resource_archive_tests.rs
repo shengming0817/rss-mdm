@@ -15,7 +15,7 @@ fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Com
 }
 
 #[tokio::test]
-#[ignore = "real PG reference/archival concurrency + HTTPS: publication-t2"]
+#[ignore = "real PG reference/archival concurrency + HTTPS: make t2 SUITE=publication"]
 async fn candidate_reference_blocks_archive_and_race_is_atomic() {
     let server = Server::new().await;
     let runtime = pg::runtime().await;

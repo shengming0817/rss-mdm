@@ -55,7 +55,10 @@ impl Fixture {
         let reply = peer
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-apple-t2".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                ]),
             )
             .await?;
         ensure!(
@@ -67,7 +70,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "UserAuthenticate".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                 ]),
             )
             .await?;
@@ -194,7 +197,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "CheckOut".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                 ]),
             )
             .await?;
@@ -216,7 +219,10 @@ impl Fixture {
         let stale = peer
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-apple-t2".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                ]),
             )
             .await?;
         ensure!(stale.0 == StatusCode::UNAUTHORIZED);
@@ -249,7 +255,7 @@ impl Fixture {
                 "/mdm",
                 protocol::dictionary([
                     ("Status", "Acknowledged".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                     ("CommandUUID", Uuid::new_v4().to_string().into()),
                 ]),
             )
@@ -339,7 +345,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -353,7 +359,10 @@ impl Fixture {
         let stale = old
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-apple-t2".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                ]),
             )
             .await?;
         ensure!(

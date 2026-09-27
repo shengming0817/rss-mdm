@@ -173,7 +173,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -192,7 +192,7 @@ impl Fixture {
                 &old_principal,
                 &protocol::xml(protocol::dictionary([
                     ("Status", "Idle".into()),
-                    ("UDID", "rss-apple-t2".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
                 ]))?,
                 &audit,
             )
@@ -207,7 +207,10 @@ impl Fixture {
         let refused = old
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-apple-t2".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                ]),
             )
             .await?;
         ensure!(

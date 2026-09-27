@@ -141,7 +141,7 @@ async fn policy(
     Ok(id)
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "make t2-tasks: isolated TLS PostgreSQL and actual product Router"]
+#[ignore = "make t2 SUITE=tasks: isolated TLS PostgreSQL and actual product Router"]
 async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir()?;

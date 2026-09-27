@@ -150,7 +150,12 @@ def build_staged(out, header, web_image):
         shutil.copy(source / "deployment/Dockerfile", context / "Dockerfile")
         image = "rss-mdm/server:build-" + uuid.uuid4().hex
         output = out / "server.oci.tar"
-        subprocess.run(["docker", "buildx", "build", "--provenance=false",
+        from t2_environment import project_name
+        jobs = os.environ.get('CARGO_BUILD_JOBS','4')
+        if not jobs.isdecimal() or int(jobs)<1:raise ValueError('CARGO_BUILD_JOBS must be positive')
+        subprocess.run(["docker", "buildx", "build",
+                        "--build-arg", "CACHE_NAMESPACE="+project_name(ROOT),
+                        "--build-arg", "CARGO_BUILD_JOBS="+jobs, "--provenance=false",
                         "--secret", "id=azure_header,src=" + str(header),
                         "--build-arg", "RUST_IMAGE=" + providers["rust"],
                         "--build-arg", "RUNTIME_IMAGE=" + providers["runtime"],

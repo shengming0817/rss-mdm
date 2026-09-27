@@ -422,7 +422,7 @@ async fn result_version_fk(base: &Value, value: &Value) -> Result<()> {
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "make t2-compliance: authenticated Router, real PG and production automation"]
+#[ignore = "make t2 SUITE=compliance: authenticated Router, real PG and production automation"]
 async fn rules_facts_groups_history_and_authorization() -> Result<()> {
     admission_drift().await?;
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;

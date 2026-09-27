@@ -5,7 +5,7 @@ mod publication_support;
 use publication_support::pg::*;
 use publication_support::*;
 #[tokio::test]
-#[ignore = "real PG + HTTPS + Git: publication-t2"]
+#[ignore = "real PG + HTTPS + Git: make t2 SUITE=publication"]
 async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let server = Server::new().await;
     let runtime = runtime().await;
@@ -95,7 +95,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PG + HTTPS: publication-t2"]
+#[ignore = "real PG + HTTPS: make t2 SUITE=publication"]
 async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
     let server = Server::new().await;
     let runtime = runtime().await;
@@ -219,7 +219,7 @@ async fn unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PG + HTTPS + bare Git: publication-t2"]
+#[ignore = "real PG + HTTPS + bare Git: make t2 SUITE=publication"]
 async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
     let server = Server::new().await;
     let runtime = runtime().await;
@@ -291,7 +291,7 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PG + HTTPS: publication-t2"]
+#[ignore = "real PG + HTTPS: make t2 SUITE=publication"]
 async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
     let server = Server::new().await;
     let runtime = runtime().await;
@@ -426,7 +426,7 @@ async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PG + HTTPS: publication-t2"]
+#[ignore = "real PG + HTTPS: make t2 SUITE=publication"]
 async fn complete_variant_mapping_and_resource_reference_protection() {
     let audit_store = audit_store().await;
     let server = Server::new().await;
@@ -531,7 +531,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
 }
 
 #[tokio::test]
-#[ignore = "real PG + HTTPS: publication-t2"]
+#[ignore = "real PG + HTTPS: make t2 SUITE=publication"]
 async fn preflight_failure_allows_explicit_retry_without_resubmitting_unknown() {
     let server = Server::new().await;
     let runtime = runtime().await;
@@ -581,7 +581,7 @@ async fn preflight_failure_allows_explicit_retry_without_resubmitting_unknown() 
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real HTTPS: publication-t2"]
+#[ignore = "real HTTPS: make t2 SUITE=publication"]
 async fn public_artifact_digest_length_tls_redirect_and_timeout_fail_closed() {
     let server = Server::new().await;
     let url = format!("{}artifacts/x64.msi", server.base);
@@ -640,7 +640,7 @@ async fn public_artifact_digest_length_tls_redirect_and_timeout_fail_closed() {
 }
 
 #[tokio::test]
-#[ignore = "real PG COMMIT ACK loss + HTTPS: publication-t2"]
+#[ignore = "real PG COMMIT ACK loss + HTTPS: make t2 SUITE=publication"]
 async fn publication_result_commit_unknown_recovers_one_external_call_and_audit() {
     let server = Server::new().await;
     let proxy = ack::AckProxy::start().await;

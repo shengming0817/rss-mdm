@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
+from ci_registry import select_paths, SUITES, TOOL_INPUTS, all_tools
 
 
 GLOBAL_FILES = {
@@ -18,7 +19,6 @@ GLOBAL_FILES = {
     "rust-toolchain.toml",
 }
 GLOBAL_PREFIXES = (
-    "hack/",
     ".cargo/",
     ".config/",
     ".github/actions/",
@@ -47,12 +47,15 @@ class SelectionError(Exception):
         self.reason = reason
 
 
-def emit(full: bool, packages: set[str] | None, reasons: set[str]) -> None:
+def emit(full: bool, packages: set[str] | None, reasons: set[str], paths=()) -> None:
     decision = {
         "full": full,
         "packages": [] if full else sorted(packages or set()),
         "reasons": sorted(reasons),
     }
+    suites, tests, extra = select_paths(paths)
+    decision.update(t2Suites=sorted(SUITES) if full else suites, toolTests=all_tools() if full else tests)
+    decision['reasons'] = sorted(set(decision['reasons']) | set(extra))
     print(json.dumps(decision, separators=(",", ":"), ensure_ascii=False))
 
 
@@ -265,6 +268,8 @@ def select(root: Path, base: str) -> tuple[bool, set[str], set[str]]:
         if is_docs(path):
             continue
         package = owner(path, roots)
+        if package is None and (path in TOOL_INPUTS or path.startswith(('hack/t2_suites/','tests/test_'))):
+            continue
         if package is None:
             reason = "unowned-deletion" if status == "D" else "unknown-path"
             return True, set(), {reason}
@@ -286,7 +291,7 @@ def main() -> None:
             raise SelectionError("invalid-path") from error
         phase = "selection"
         full, packages, reasons = select(root, base)
-        emit(full, packages, reasons)
+        emit(full, packages, reasons, [path for _,path in changed_paths(root, base)])
     except SelectionError as error:
         emit(True, set(), {error.reason})
     except Exception as error:

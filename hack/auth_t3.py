@@ -21,8 +21,11 @@ SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','re
 PLAYWRIGHT_INTEGRITY='sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA=='
 INVENTORY_GENERATION='inventory-v3'
 
-def validate_checks(checks):
-    require(set(checks)==set(SCENARIOS) and all(v is True for v in checks.values()),'incomplete browser acceptance')
+FAULT_SCENARIOS = {'restart','idp_down','pg_down','installation_mismatch'}
+
+def validate_checks(checks, mode='faults'):
+    expected = set(SCENARIOS) if mode=='faults' else set(SCENARIOS)-FAULT_SCENARIOS
+    require(set(checks)==expected and all(v is True for v in checks.values()),'incomplete browser acceptance')
 
 def enterprise(stack):
     """Production private access, not the integration-only loopback adapter."""
@@ -140,13 +143,14 @@ def run(candidate, tools_image, output):
                     stack.copy_secret_volume(stack.gateway_inputs,['server.crt','server.key','nginx.conf','ui.json'],10001)
                     docker('exec',stack.gateway,'nginx','-c','/certs/nginx.conf','-s','reload',stage=Stage.GATEWAY)
                 private=primary.private_values+other.private_values
-                params=dict(tenant=TENANT,member=primary.member,ssoMember=primary.sso_member,adminPassword=primary.password,memberPassword=primary.member_password,
+                params=dict(mode='faults',origin='https://mdm.example.test',otherOrigin='https://mdm-other.example.test',tenant=TENANT,member=primary.member,ssoMember=primary.sso_member,adminPassword=primary.password,memberPassword=primary.member_password,
                             idpPassword=primary.idp_password,clientSecret=primary.client_secret,issuer=primary.issuer,
                             server=primary.server,pg=primary.pg,idp=primary.idp,otherPg=other.pg,otherTenant=other.tenant,wrongTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
                             runtimeVolume=primary.runtime_volume,runtimeImage=primary.providers['runtime'])
                 (primary.root/'browser-input.json').write_text(json.dumps(params));(primary.root/'browser-input.json').chmod(0o600)
                 (primary.root/'other-ca.crt').write_bytes((other.root/'ca.crt').read_bytes())
                 (primary.root/'browser.mjs').write_bytes(Path(__file__).with_name('auth_t3_browser.mjs').read_bytes())
+                (primary.root/'auth_t3_faults.mjs').write_bytes(Path(__file__).with_name('auth_t3_faults.mjs').read_bytes())
                 browser_name=primary.name+'-browser';primary.created.append(browser_name)
                 script='mkdir -p /root/.pki/nssdb; certutil -N --empty-password -d sql:/root/.pki/nssdb; certutil -A -d sql:/root/.pki/nssdb -n mdm -t "C,," -i /fixture/ca.crt; certutil -A -d sql:/root/.pki/nssdb -n other -t "C,," -i /fixture/other-ca.crt; exec node /fixture/browser.mjs'
                 try:
@@ -190,8 +194,61 @@ def run(candidate, tools_image, output):
         (output/'failure.json').write_text(json.dumps({'status':'failed','errorClass':type(error).__name__,'diagnostics':{p.name:sha(p) for p in output.glob('*failure*.json') if p.name!='failure.json'}})+'\n')
         raise
 
+def run_normal(input_file, output):
+    require(input_file.is_file() and not input_file.is_symlink() and not input_file.stat().st_mode & 0o077,
+            'normal browser input must be a private regular file')
+    params=json.loads(input_file.read_text())
+    require(params.get('mode')=='normal','normal input mode required')
+    require(not any(key in params for key in ('server','pg','idp','otherPg','runtimeVolume','runtimeImage')),
+            'normal mode cannot accept service control coordinates')
+    from urllib.parse import urlsplit
+    for key in ('origin','otherOrigin','issuer'):
+        value=params[key]
+        parsed=urlsplit(value)
+        require(parsed.scheme=='https' and parsed.hostname and parsed.port != 0 and
+                parsed.username is None and parsed.password is None and not parsed.query and not parsed.fragment and
+                not any(char.isspace() or ord(char)<32 or char=='\\' for char in value) and
+                (key=='issuer' or parsed.path in ('','/')),
+                'normal browser requires unambiguous HTTPS origins and issuer')
+    require(not output.exists(),'T3 output must be new')
+    output.mkdir(parents=True)
+    private=[params[key] for key in ('adminPassword','memberPassword','idpPassword','clientSecret')]
+    try:
+        result=subprocess.run(['node',str(Path(__file__).with_name('auth_t3_browser.mjs')),str(input_file)],
+                              capture_output=True,text=True,timeout=1200,check=True)
+        evidence=json.loads(result.stdout)
+        validate_checks(evidence['checks'],'normal')
+        private+=evidence.pop('privateValues',[])
+        evidence.update(mode='normal',status='passed',excluded=sorted(FAULT_SCENARIOS))
+        (output/'result.json').write_text(json.dumps(safe_evidence(evidence,private),indent=2)+'\n')
+    except BaseException as error:
+        failure={'status':'failed','errorClass':type(error).__name__,'stage':'browser','reason':'browser-execution-failed'}
+        if isinstance(error,subprocess.CalledProcessError):
+            try:
+                raw=json.loads(error.stderr)
+                diagnostic={key:raw[key] for key in ('stage','errorClass','reason')}
+                require(all(isinstance(value,str) and len(value)<=2000 for value in diagnostic.values()),'invalid diagnostic')
+                # Do not persist dynamic cookies/callback values from a failed browser.
+                secrets=private+raw.get('privateValues',[])
+                for key,value in diagnostic.items():
+                    try:failure[key]=safe_evidence(value,secrets)
+                    except RuntimeError:failure[key]='diagnostic-withheld'
+            except (ValueError,KeyError,TypeError,RuntimeError):
+                failure['reason']='unavailable-browser-diagnostic'
+        (output/'failure.json').write_text(json.dumps(failure)+'\n')
+        raise
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
-    for key in ['candidate','tools-image','output']:parser.add_argument('--'+key,required=True)
+    parser.add_argument('--mode',choices=['normal','faults'],required=True)
+    parser.add_argument('--input',type=Path)
+    parser.add_argument('--candidate',type=Path)
+    parser.add_argument('--tools-image')
+    parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
-    run(Path(args.candidate).resolve(),args.tools_image,Path(args.output).resolve())
+    if args.mode=='normal':
+        if not args.input or args.candidate or args.tools_image:parser.error('normal requires --input and rejects candidate controls')
+        run_normal(args.input.absolute(),args.output.resolve())
+    else:
+        if args.input or not args.candidate or not args.tools_image:parser.error('faults requires --candidate and --tools-image')
+        run(args.candidate.resolve(),args.tools_image,args.output.resolve())

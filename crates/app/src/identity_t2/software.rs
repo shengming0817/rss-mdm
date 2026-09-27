@@ -20,7 +20,7 @@ async fn write(
     Ok(response.1)
 }
 #[tokio::test]
-#[ignore = "make t2-software: real product TCP, TLS PostgreSQL and files"]
+#[ignore = "make t2 SUITE=software: real product TCP, TLS PostgreSQL and files"]
 async fn enterprise_catalog_content_and_atomic_admission() -> Result<()> {
     let origin_server = publication_support::Server::new().await;
     let directory = tempfile::tempdir()?;

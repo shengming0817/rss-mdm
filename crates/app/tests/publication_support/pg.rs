@@ -45,9 +45,9 @@ pub async fn runtime_at(port: Option<u16>) -> Arc<PgRuntime> {
     let config = PgConfig::new(
         "localhost",
         port.unwrap_or(c["port"].as_u64().unwrap() as u16),
-        "backend",
+        c["database"].as_str().unwrap(),
         "mdm_software_driver",
-        PgPassword::new("backend-fixture"),
+        PgPassword::new("runtime-fixture"),
         PgPrivateCa::from_pem(std::fs::read(c["ca"].as_str().unwrap()).unwrap()).unwrap(),
     );
     Arc::new(
@@ -72,9 +72,9 @@ pub async fn audit_store() -> Arc<rss_mdm_audit_integration::AuditStore> {
     let options = sqlx::postgres::PgConnectOptions::new()
         .host("localhost")
         .port(c["port"].as_u64().unwrap() as u16)
-        .database("backend")
+        .database(c["database"].as_str().unwrap())
         .username("mdm_software_driver")
-        .password("backend-fixture")
+        .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(c["ca"].as_str().unwrap());
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -113,7 +113,7 @@ pub fn sql(statement: &str) -> String {
             "-U",
             "postgres",
             "-d",
-            "backend",
+            c["database"].as_str().unwrap(),
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

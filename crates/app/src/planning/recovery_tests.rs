@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn result_cursors_survive_instances_restart_and_group_deletion() {
     let first = Arc::new(planning(tenant()).await);
     let running = RunningAutomation::start(first.clone()).await;
@@ -94,9 +94,9 @@ fn options() -> sqlx::postgres::PgConnectOptions {
     sqlx::postgres::PgConnectOptions::new()
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
-        .database("backend")
+        .database(config["database"].as_str().unwrap())
         .username("mdm_flow_runtime")
-        .password("backend-fixture")
+        .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap())
 }
@@ -160,7 +160,7 @@ fn snapshot(task: Uuid) -> String {
     ))
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn live_checkpoint_restart_fences_old_worker() {
     use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
     let first = Arc::new(planning(tenant()).await);
@@ -219,7 +219,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
     second.runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     use rss_reconcile::DurableStore;
     let service = Arc::new(planning(tenant()).await);
@@ -314,7 +314,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input() {
     use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
@@ -449,7 +449,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn scope_history_survives_deletion() {
     let service = Arc::new(planning(tenant()).await);
     let devices: Vec<_> = (0..2).map(|n| format!("scope-history-{n}")).collect();
@@ -524,7 +524,7 @@ async fn scope_history_survives_deletion() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn corrupt_background_query_is_not_client_input() {
     use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
     let service = Arc::new(planning(tenant()).await);
@@ -615,7 +615,7 @@ async fn frozen_device(service: &Planning, device: &str, watermark: i64) -> Valu
         )
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback() {
     let t = tenant();
     let device = "all-histories";
@@ -732,7 +732,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn ingress_batches_reuse_published_group_coverage() {
     use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
@@ -838,7 +838,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn published_scope_job_does_not_swallow_new_definition() {
     let service = Arc::new(planning(tenant()).await);
     let id = Uuid::new_v4();
@@ -944,7 +944,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
+#[ignore = "real PostgreSQL: make t2 SUITE=management"]
 async fn superseded_group_links_reused_successor() {
     let service = planning(tenant()).await;
     let group = Uuid::new_v4();
