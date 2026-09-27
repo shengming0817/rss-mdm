@@ -269,6 +269,7 @@ def select_impact(head, base=None):
 
 
 def selected_gate(name, selection):
+    if name=="agent-wire-compat" and "test_agent_wire_compat" in selection["toolTests"]:return True
     if name == "script-tests":return bool(selection["toolTests"])
     if selection["full"] or name == "fmt":
         return True

@@ -98,3 +98,24 @@ class EarlyFailureEvidence(unittest.TestCase):
             with patch.object(t2,'ROOT',Path(tmp)),patch.object(t2,'require_lease'),patch.object(ci,'working_source_state',side_effect=RuntimeError('source changed')):
                 with self.assertRaises(RuntimeError):t2.main(['--suite','all'])
             self.assertEqual(json.loads((out/'result.json').read_text())['status'],'failed')
+
+
+class SharedFixtureSelection(unittest.TestCase):
+    def test_backend_helper_selects_its_composed_consumers(self):
+        self.assertLessEqual({'backend','management','publication'},set(registry.select_paths(['hack/t2_suites/backend.py'])[0]))
+
+    def test_source_tls_helper_selects_all_actual_consumers(self):
+        self.assertLessEqual({'sources','publication','software','identity'},set(registry.select_paths(['hack/t2_suites/sources.py'])[0]))
+
+    def test_unknown_suite_helper_is_conservative(self):
+        self.assertEqual(set(registry.SUITES),set(registry.select_paths(['hack/t2_suites/new_shared_helper.py'])[0]))
+
+    def test_windows_changes_select_identity_enrollment(self):
+        self.assertIn('identity',registry.select_paths(['crates/windows-mdm/src/lib.rs'])[0])
+
+
+class ToolGateSelection(unittest.TestCase):
+    def test_wire_checker_change_runs_the_actual_compatibility_check(self):
+        import ci
+        _,tests,_=registry.select_paths(['hack/agent_wire_compat.py'])
+        self.assertTrue(ci.selected_gate('agent-wire-compat',{'full':False,'packages':[],'toolTests':tests,'t2Suites':[]}))

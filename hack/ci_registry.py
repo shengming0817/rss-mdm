@@ -20,6 +20,7 @@ class Suite:
     isolation: str = 'database'
     destructive: frozenset[str] = frozenset()
     success_marker: str | None = None
+    input_modules: tuple[str,...] = ()
 
     def verify(self, output):
         if self.expected:verify_tests(output,self.expected)
@@ -41,10 +42,10 @@ SUITES={
  'apple':product_suite('apple',product.apple,('apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'),fixtures=('identity','apple'),tools=('cargo','docker','openssl','go')),
  'identity':product_suite('identity',product.identity,('identity_audit::tests::http_events_deliver_replay_and_fail_closed','identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity','identity_t2::authorization::persistent_rules_membership_cas_replay_and_restart','identity_t2::local_identity_mdm_authorization_and_revocation','identity_t2::sso::product_callback_link_step_up_and_provider_isolation'),fixtures=('identity','sources','windows'),isolation='server'),
  'catalog':product_suite('catalog',product.catalog,(),fixtures=(),success_marker='command catalog check: all contracts match isolated migrations'),
- 'management':Suite('management','management',management.main,tuple(sorted(management.EXPECTED))+('public_manual_cas_rollback_and_tenant_isolation',),destructive=frozenset({'planning::tests::management_admission_rejects_schema_and_privilege_drift','planning::tests::audit_startup_rejects_each_borrowed_owner_snapshot_isolation'})),
+ 'management':Suite('management','management',management.main,tuple(sorted(management.EXPECTED))+('public_manual_cas_rollback_and_tenant_isolation',),destructive=frozenset({'planning::tests::management_admission_rejects_schema_and_privilege_drift','planning::tests::audit_startup_rejects_each_borrowed_owner_snapshot_isolation'}),input_modules=('backend',)),
  'backend':Suite('backend','backend',backend.main,tuple(test for name in backend.NAMES for test in sorted(backend.BEHAVIORS[name]))+('protocol_ack_loss_and_fault_ack_recover_original_request',)*3,destructive=frozenset({'admission_rejects_schema_and_reachable_privilege_drift','admission_rejects_noninherited_switchable_privileges','resource_admission_rejects_schema_and_privilege_drift','release_event_failure_and_runtime_admission'})),
  'group':Suite('group','group',group.main,tuple(sorted(group.EXPECTED|group.GENERATIONS)),destructive=frozenset({'admission_rejects_catalog_and_security_drift'})),
- 'publication':Suite('publication','publication',publication.main,('publication_result_commit_unknown_recovers_one_external_call_and_audit','public_artifact_digest_length_tls_redirect_and_timeout_fail_closed','preflight_failure_allows_explicit_retry_without_resubmitting_unknown','full_version_publication_recovery_and_public_artifact_boundary','unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back','brew_full_version_recovery_shared_tap_and_old_version_withdrawal','ring_isolation_unstarted_withdrawal_and_lost_delete_ack','complete_variant_mapping_and_resource_reference_protection','planning::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic')),
+ 'publication':Suite('publication','publication',publication.main,('publication_result_commit_unknown_recovers_one_external_call_and_audit','public_artifact_digest_length_tls_redirect_and_timeout_fail_closed','preflight_failure_allows_explicit_retry_without_resubmitting_unknown','full_version_publication_recovery_and_public_artifact_boundary','unknown_publication_blocks_withdrawal_and_audit_failure_rolls_back','brew_full_version_recovery_shared_tap_and_old_version_withdrawal','ring_isolation_unstarted_withdrawal_and_lost_delete_ack','complete_variant_mapping_and_resource_reference_protection','planning::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic'),fixtures=('sources',),input_modules=('backend','sources')),
  'sources':Suite('sources','sources',sources.main,tuple(test for names in sources.EXPECTED.values() for test in sorted(names)),tools=('cargo','openssl','/usr/bin/git'),isolation='none'),
  'gateway':Suite('gateway','gateway',gateway.main,(),tools=('docker',),isolation='none',success_marker='login gateway T2: actual peer budget'),
 }
@@ -61,11 +62,11 @@ OWNERS={
  'software-service':('publication','software','catalog'), 'winget-source':('sources','publication'), 'brew-source':('sources','publication'),
  'compliance':('compliance',), 'compliance-postgres':('compliance',),
  'inventory':('foundation','assets','management','compliance'), 'inventory-postgres':('foundation','assets','management','compliance'),
- 'windows-mdm':('windows','commands'), 'agent-wire':('commands','tasks'), 'scope':tuple(SUITES),
+ 'windows-mdm':('windows','commands','identity'), 'agent-wire':('commands','tasks'), 'scope':tuple(SUITES),
  'audit-integration':tuple(SUITES), 'examples':tuple(SUITES),
 }
 APP={
- 'apple':('apple',),'windows':('windows','commands'),'planning':('management','publication','compliance'),
+ 'apple':('apple',),'windows':('windows','commands','identity'),'planning':('management','publication','compliance'),
  'execution':('commands','tasks','catalog'),'task_signing':('tasks',),'inventory_runtime':('foundation','assets','management','compliance'),
  'device':('foundation','windows','apple'),'flow':('management','publication','software','catalog'),
  'content':('software','publication','catalog'),'compliance':('compliance',),'assets':('assets','management'),
@@ -101,7 +102,9 @@ def select_paths(paths):
             continue
         if path.startswith('hack/t2_suites/'):
             module=Path(path).stem
-            suites.update(name for name,suite in SUITES.items() if suite.module==module)
+            consumers={name for name,suite in SUITES.items() if module==suite.module or module in suite.input_modules or (module=='sources' and 'sources' in suite.fixtures)}
+            suites.update(consumers or SUITES)
+            if not consumers:reasons.add('unmapped-suite-input:'+path)
             tests.update(('test_t2_guards','test_t2_runner','test_t2_environment'))
             if module=='__init__':suites.update(SUITES)
             continue
