@@ -717,18 +717,29 @@ pub enum SoftwareStartMode {
     /// Agent must wait for a local user choice before requesting Start.
     UserInitiated,
 }
-/// One exact artifact in an approved software definition.
+/// One exact artifact needed by an executable software step.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskArtifact {
-    /// Key in the approved definition and content endpoint.
+    /// Opaque task-local key in the content endpoint.
     pub key: String,
     /// Exact byte count.
     pub length: u64,
     /// Exact SHA-256 digest.
     pub sha256: [u8; 32],
 }
-/// Signed software task with no script executor fallback.
+/// One locally executable step; the server has already ordered fixed prerequisites.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SoftwareTaskStep {
+    /// Device action and independent detector without Catalog source or dependency graph.
+    pub action: Value,
+    /// Task-local artifacts for this step.
+    pub artifacts: Vec<SoftwareTaskArtifact>,
+    /// Frozen package-manager export identity, when the action uses one.
+    pub export_identity: Option<String>,
+}
+/// Signed software task with ordered executable steps and no Policy or Catalog model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskSpec {
@@ -758,38 +769,21 @@ pub struct SoftwareTaskSpec {
     pub permit: TaskPermit,
     /// Unix expiry.
     pub expires_at: i64,
-    /// Full immutable Resource digest.
-    pub resource_digest: [u8; 32],
-    /// Logical software resource.
-    pub software_resource: String,
-    /// Immutable software resource version.
-    pub software_version: String,
-    /// Exact target variant.
-    pub variant: String,
-    /// Enterprise approval operation.
-    #[serde(with = "strict_uuid")]
-    pub admission_operation: Uuid,
-    /// Canonical, complete approved SoftwareDefinition JSON.
-    pub definition: String,
-    /// SHA-256 of the canonical definition bytes.
+    /// Ordered prerequisites followed by the requested action.
+    pub steps: Vec<SoftwareTaskStep>,
+    /// SHA-256 of canonical serialized steps.
     pub definition_digest: [u8; 32],
     /// Requested local operation.
     pub intent: SoftwareTaskIntent,
     /// Local start behavior; no Policy or rollout details are exposed.
     pub start_mode: SoftwareStartMode,
-    /// Exact approved artifacts, including auxiliary scripts.
-    pub artifacts: Vec<SoftwareTaskArtifact>,
-    /// Optional external publication identity when relevant.
-    pub publication_id: Option<String>,
-    /// Optional package-manager export identity when relevant.
-    pub export_identity: Option<String>,
 }
 impl SoftwareTaskSpec {
-    /// Validate all signed coordinates, exact content and a bounded canonical definition.
+    /// Validate all signed coordinates and the bounded, self-contained execution plan.
     pub fn validate(&self) -> Result<(), WireError> {
-        let valid_id = |s: &str| {
+        let valid_id = |s: &str, max: usize| {
             !s.is_empty()
-                && s.len() <= 128
+                && s.len() <= max
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
                 && s.split('/')
@@ -800,41 +794,63 @@ impl SoftwareTaskSpec {
             || self.registration_id.is_nil()
             || self.task_id.is_nil()
             || self.attempt_id.is_nil()
-            || self.admission_operation.is_nil()
             || self.generation == 0
             || self.generation > i64::MAX as u64
             || self.expires_at < 0
             || self.device_id.is_empty()
             || self.device_id.len() > 1024
             || self.device_id.chars().any(char::is_control)
-            || !valid_id(&self.software_resource)
-            || !valid_id(&self.software_version)
-            || !valid_id(&self.variant)
-            || self.artifacts.len() > 64
-            || self.definition.len() > 4_194_304
-            || serde_json::from_str::<serde_json::Map<String, Value>>(&self.definition).is_err()
-            || ring::digest::digest(&ring::digest::SHA256, self.definition.as_bytes()).as_ref()
+            || self.steps.is_empty()
+            || self.steps.len() > 32
+        {
+            return Err(WireError::InvalidValue);
+        }
+        let encoded = serde_json::to_vec(&self.steps).map_err(|_| WireError::InvalidValue)?;
+        if encoded.len() > 4_194_304
+            || ring::digest::digest(&ring::digest::SHA256, &encoded).as_ref()
                 != self.definition_digest
-            || self.publication_id.as_deref().is_some_and(|v| !valid_id(v))
-            || self
-                .export_identity
-                .as_deref()
-                .is_some_and(|v| !valid_id(v))
         {
             return Err(WireError::InvalidValue);
         }
         let mut keys = std::collections::BTreeSet::new();
-        for artifact in &self.artifacts {
-            if !valid_id(&artifact.key)
-                || !keys.insert(&artifact.key)
-                || artifact.length == 0
-                || artifact.length > 1_099_511_627_776
+        for (index, step) in self.steps.iter().enumerate() {
+            let Some(action) = step.action.as_object() else {
+                return Err(WireError::InvalidValue);
+            };
+            const FIELDS: [&str; 11] = [
+                "package",
+                "version",
+                "format",
+                "primary",
+                "install",
+                "uninstall",
+                "detect",
+                "reboot",
+                "downgrade",
+                "ownership",
+                "bundle",
+            ];
+            if action.len() != FIELDS.len()
+                || !FIELDS.iter().all(|name| action.contains_key(*name))
+                || step
+                    .export_identity
+                    .as_deref()
+                    .is_some_and(|v| !valid_id(v, 128))
+                || step.artifacts.is_empty()
+                || keys.len() + step.artifacts.len() > 64
             {
                 return Err(WireError::InvalidValue);
             }
-        }
-        if !matches!(self.intent, SoftwareTaskIntent::Detect) && self.artifacts.is_empty() {
-            return Err(WireError::InvalidValue);
+            for artifact in &step.artifacts {
+                if !valid_id(&artifact.key, 132)
+                    || !artifact.key.starts_with(&format!("{index}/"))
+                    || !keys.insert(&artifact.key)
+                    || artifact.length == 0
+                    || artifact.length > 1_099_511_627_776
+                {
+                    return Err(WireError::InvalidValue);
+                }
+            }
         }
         Ok(())
     }

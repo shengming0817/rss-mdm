@@ -3,6 +3,7 @@ use super::super::action_contract::FrozenSoftwareAction;
 use super::*;
 use rss_mdm_policy::{SoftwareIntent, SoftwareRollout, SoftwareTarget};
 use rss_mdm_software_service::catalog::{Catalog, Error as CatalogError, FrozenSoftware};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub(crate) struct SoftwareExecutionPolicy {
@@ -16,6 +17,8 @@ pub(crate) struct StageCounts {
     pub total: u64,
     pub reported: u64,
     pub unknown: u64,
+    pub waiting_reboot: u64,
+    pub failed: u64,
     pub verified: u64,
     pub unsupported_capability: u64,
 }
@@ -38,6 +41,23 @@ pub(crate) async fn read_in(
     })
 }
 impl SoftwareExecutionPolicy {
+    pub fn draft(definition: rss_mdm_policy::Definition, frozen: FrozenSoftwareAction) -> Self {
+        let id = Uuid::nil();
+        Self {
+            id,
+            owner: id,
+            frozen,
+            active: true,
+            policy: Policy {
+                id,
+                revision: 0,
+                version: id,
+                number: 0,
+                enabled: true,
+                definition,
+            },
+        }
+    }
     pub fn intent(&self) -> SoftwareIntent {
         self.frozen.intent
     }
@@ -126,15 +146,17 @@ impl SoftwareExecutionPolicy {
         let earlier: Vec<Uuid> = stages[..index].iter().map(|s| s.scope).collect();
         let tenant = tx.tenant_id().to_string();
         let version = self.id;
-        let prefix = format!("software:stage:{index}:%");
-        let (total, reported, unknown, verified, unsupported): (i64, i64, i64, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_as("WITH targets AS (SELECT r.device FROM mdm_planning.scopes s JOIN mdm_planning.scope_results r ON (r.tenant_id,r.run)=(s.tenant_id,s.resolution) JOIN mdm_planning.scopes root ON root.tenant_id=s.tenant_id AND root.id=$6::uuid AND NOT root.deleted JOIN mdm_planning.scope_results rr ON (rr.tenant_id,rr.run,rr.device)=(root.tenant_id,root.resolution,r.device) AND rr.matched WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted AND r.matched AND NOT EXISTS (SELECT 1 FROM mdm_planning.scopes p JOIN mdm_planning.scope_results x ON (x.tenant_id,x.run)=(p.tenant_id,p.resolution) WHERE p.tenant_id=s.tenant_id AND p.id=ANY($3::uuid[]) AND x.device=r.device AND x.matched)) SELECT count(*),count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='verified'),count(*) FILTER(WHERE EXISTS(SELECT 1 FROM mdm_access.registrations reg JOIN mdm_access.agent_bindings b ON (b.tenant_id,b.registration)=(reg.tenant_id,reg.id) WHERE reg.tenant_id=$1::uuid AND reg.device=targets.device AND reg.state='active' AND reg.channel='agent') AND NOT EXISTS(SELECT 1 FROM mdm_access.registrations reg JOIN mdm_access.agent_bindings b ON (b.tenant_id,b.registration)=(reg.tenant_id,reg.id) WHERE reg.tenant_id=$1::uuid AND reg.device=targets.device AND reg.state='active' AND reg.channel='agent' AND b.wire_version=3 AND b.capabilities::jsonb ? 'software.execute.v3')) FROM targets LEFT JOIN LATERAL (SELECT a.state,a.result FROM mdm_commands.action_runs a WHERE a.tenant_id=$1::uuid AND a.policy_version=$4::uuid AND a.device=targets.device AND a.occurrence LIKE $5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1) latest ON true")
+        let prefix = format!("software:stage:{}:%", stage.scope);
+        let (total, reported, unknown, waiting_reboot, failed, verified, unsupported): (i64, i64, i64, i64, i64, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_as("WITH targets AS (SELECT r.device FROM mdm_planning.scopes s JOIN mdm_planning.scope_results r ON (r.tenant_id,r.run)=(s.tenant_id,s.resolution) JOIN mdm_planning.scopes root ON root.tenant_id=s.tenant_id AND root.id=$6::uuid AND NOT root.deleted JOIN mdm_planning.scope_results rr ON (rr.tenant_id,rr.run,rr.device)=(root.tenant_id,root.resolution,r.device) AND rr.matched WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted AND r.matched AND NOT EXISTS (SELECT 1 FROM mdm_planning.scopes p JOIN mdm_planning.scope_results x ON (x.tenant_id,x.run)=(p.tenant_id,p.resolution) WHERE p.tenant_id=s.tenant_id AND p.id=ANY($3::uuid[]) AND x.device=r.device AND x.matched)) SELECT count(*),count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='waiting_reboot'),count(*) FILTER(WHERE latest.result->>'effect'='failed'),count(*) FILTER(WHERE latest.result->>'effect'='verified'),count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM mdm_access.registrations reg JOIN mdm_access.agent_bindings b ON (b.tenant_id,b.registration)=(reg.tenant_id,reg.id) WHERE reg.tenant_id=$1::uuid AND reg.device=targets.device AND reg.state='active' AND reg.channel='agent' AND b.wire_version=3 AND b.capabilities::jsonb ? 'software.execute.v3')) FROM targets LEFT JOIN LATERAL (SELECT a.state,a.result FROM mdm_commands.action_runs a WHERE a.tenant_id=$1::uuid AND a.policy_version=$4::uuid AND a.device=targets.device AND a.occurrence LIKE $5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1) latest ON true")
                 .bind(tenant).bind(scope).bind(earlier).bind(version).bind(prefix).bind(root).fetch_one(c).await
         })).await?;
         Ok(StageCounts {
             total: total.try_into().map_err(|_| Error::Malformed)?,
             reported: reported.try_into().map_err(|_| Error::Malformed)?,
             unknown: unknown.try_into().map_err(|_| Error::Malformed)?,
+            waiting_reboot: waiting_reboot.try_into().map_err(|_| Error::Malformed)?,
+            failed: failed.try_into().map_err(|_| Error::Malformed)?,
             verified: verified.try_into().map_err(|_| Error::Malformed)?,
             unsupported_capability: unsupported.try_into().map_err(|_| Error::Malformed)?,
         })
@@ -147,6 +169,109 @@ impl SoftwareExecutionPolicy {
                 service.audit_store.clone(),
             )),
         )
+    }
+    /// Resolve exact fixed prerequisites on the server, in dependency-first order.
+    pub async fn execution_steps_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        platform: Platform,
+        architecture: Architecture,
+    ) -> Result<Vec<FrozenSoftware>> {
+        let catalog = self.catalog(service);
+        let target_platform = match platform {
+            Platform::Windows => resource::Platform::Windows,
+            Platform::Macos => resource::Platform::MacOS,
+        };
+        let target_architecture = match architecture {
+            Architecture::X86_64 => resource::Architecture::X86_64,
+            Architecture::Aarch64 => resource::Architecture::Aarch64,
+        };
+        let mut stack = vec![(
+            self.frozen.resource.clone(),
+            self.frozen.version.clone(),
+            self.frozen.resource_digest,
+            false,
+            true,
+            None,
+        )];
+        let mut active = BTreeSet::new();
+        let mut done = BTreeSet::new();
+        let mut ordered = Vec::new();
+        while let Some((resource_id, version_id, digest, exit, root, selected)) = stack.pop() {
+            let key = (resource_id.clone(), version_id.clone());
+            if exit {
+                active.remove(&key);
+                done.insert(key);
+                ordered.push(selected.ok_or(Error::Malformed)?);
+                continue;
+            }
+            if done.contains(&key) {
+                continue;
+            }
+            if !active.insert(key.clone()) || active.len() + done.len() > 256 {
+                return Err(Error::Malformed.into());
+            }
+            let version = catalog.version_in(tx, &resource_id, &version_id).await?;
+            if version.digest().bytes() != digest {
+                return Err(Error::Conflict.into());
+            }
+            let variant_key = if root {
+                self.variant(platform, architecture)
+                    .ok_or(Error::Unsupported)?
+                    .to_owned()
+            } else {
+                let mut matches = version.variants().iter().filter(|v| {
+                    v.platform() == target_platform && v.architecture() == target_architecture
+                });
+                let selected = matches.next().ok_or(Error::Unsupported)?;
+                if matches.next().is_some() {
+                    return Err(Error::Unsupported.into());
+                }
+                selected.key().as_str().to_owned()
+            };
+            let selected = catalog
+                .resolve_admitted_in(
+                    tx,
+                    &resource_id,
+                    &version_id,
+                    target_platform,
+                    target_architecture,
+                    &checked_input(resource::Id::new(&variant_key))?,
+                )
+                .await?;
+            if root && selected.admission().operation != self.frozen.admission_operation {
+                return Err(Error::Conflict.into());
+            }
+            let variant = selected
+                .version()
+                .resolve(target_platform, target_architecture, selected.variant())
+                .map_err(|_| Error::Malformed)?;
+            let resource::Declaration::Software { definition } = variant.declaration() else {
+                return Err(Error::Malformed.into());
+            };
+            let dependencies = if root && matches!(self.intent(), SoftwareIntent::ExplicitUninstall)
+            {
+                Vec::new()
+            } else {
+                definition.spec().dependencies.clone()
+            };
+            stack.push((resource_id, version_id, digest, true, root, Some(selected)));
+            for dependency in dependencies.into_iter().rev() {
+                stack.push((
+                    dependency.resource,
+                    dependency.version,
+                    dependency.sha256,
+                    false,
+                    false,
+                    None,
+                ));
+            }
+        }
+        if ordered.is_empty() || ordered.len() > 32 {
+            return Err(Error::Unsupported.into());
+        }
+        Ok(ordered)
     }
     /// Recheck the original enterprise approval and immutable target bytes in the transaction.
     pub async fn admitted_in(
@@ -204,5 +329,105 @@ impl SoftwareExecutionPolicy {
             .admitted_in(service, tx, platform, architecture)
             .await?
             .is_some())
+    }
+    /// Management uses the same stage, profile and current approval checks as task admission.
+    pub async fn management_state_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        now: i64,
+    ) -> Result<Value> {
+        if !self.active {
+            return Ok(serde_json::json!({"state":"paused"}));
+        }
+        if now < self.frozen.schedule.not_before || now >= self.frozen.schedule.ends_at() {
+            return Ok(serde_json::json!({"state":"outside_window"}));
+        }
+        if storage::eligible_in(tx, &self.policy, device)
+            .await?
+            .is_none()
+        {
+            return Ok(serde_json::json!({"state":"outside_scope"}));
+        }
+        let mut stage_index = None;
+        for (index, stage) in self.stages()?.iter().enumerate() {
+            let scope = stage.scope;
+            let name = device.to_owned();
+            let state: Value = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,$2)")
+                            .bind(scope)
+                            .bind(name)
+                            .fetch_one(c)
+                            .await
+                    })
+                })
+                .await?;
+            match state["state"].as_str() {
+                Some("eligible") => {
+                    stage_index = Some(index);
+                    break;
+                }
+                Some("pending") => {
+                    return Ok(serde_json::json!({"state":"scope_pending","stage":index}));
+                }
+                Some("excluded") => (),
+                _ => return Err(Error::Unavailable(crate::Failure::PlanningStorage).into()),
+            }
+        }
+        let Some(index) = stage_index else {
+            return Ok(serde_json::json!({"state":"outside_stage"}));
+        };
+        let stage = &self.stages()?[index];
+        if now < stage.opens_at {
+            return Ok(serde_json::json!({"state":"scheduled","stage":index}));
+        }
+        if stage.minimum_verified_percent.is_some() {
+            let (total, verified) = self
+                .stage_progress_in(tx, index.checked_sub(1).ok_or(Error::Malformed)?)
+                .await?;
+            if !stage.open(now, total, verified) {
+                return Ok(serde_json::json!({"state":"success_gate","stage":index}));
+            }
+        }
+        let tenant = tx.tenant_id().to_string();
+        let name = device.to_owned();
+        let registrations:Vec<(String,String,String)>=tx.with_connection(move|c|Box::pin(async move{
+            sqlx::query_as("SELECT b.platform,b.architecture,b.capabilities FROM mdm_access.registrations r JOIN mdm_access.agent_bindings b ON (b.tenant_id,b.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND r.channel='agent' ORDER BY r.id LIMIT 2")
+                .bind(tenant).bind(name).fetch_all(c).await
+        })).await?;
+        if registrations.is_empty() {
+            return Ok(serde_json::json!({"state":"missing_registration","stage":index}));
+        }
+        if registrations.len() != 1 {
+            return Ok(serde_json::json!({"state":"ambiguous_registration","stage":index}));
+        }
+        let (platform, architecture, capabilities) = &registrations[0];
+        if !capabilities.contains("software.execute.v3") {
+            return Ok(serde_json::json!({"state":"unsupported_capability","stage":index}));
+        }
+        let platform = match platform.as_str() {
+            "windows" => Platform::Windows,
+            "macos" => Platform::Macos,
+            _ => return Err(Error::Malformed.into()),
+        };
+        let architecture = match architecture.as_str() {
+            "x86_64" => Architecture::X86_64,
+            "aarch64" => Architecture::Aarch64,
+            _ => return Err(Error::Malformed.into()),
+        };
+        if self.variant(platform, architecture).is_none() {
+            return Ok(serde_json::json!({"state":"missing_variant","stage":index}));
+        }
+        if self
+            .admitted_in(service, tx, platform, architecture)
+            .await?
+            .is_none()
+        {
+            return Ok(serde_json::json!({"state":"approval_withdrawn","stage":index}));
+        }
+        Ok(serde_json::json!({"state":"eligible","stage":index}))
     }
 }

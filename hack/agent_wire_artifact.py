@@ -22,6 +22,14 @@ def check():
     actual = {path.name for path in SCHEMAS.glob("*.json")}
     if actual != set(files) | {MANIFEST.name}:
         raise ValueError("schema directory differs from the V3 manifest")
+    payload = json.loads((SCHEMAS / "task-payload-v3.schema.json").read_text())["oneOf"]
+    for name, nested in (
+        ("signed-task-v3.schema.json", lambda s: s["properties"]["payload"]["oneOf"]),
+        ("task-claim-response-v3.schema.json", lambda s: s["properties"]["task"]["oneOf"][1]["properties"]["payload"]["oneOf"]),
+        ("task-event-ack-v3.schema.json", lambda s: s["properties"]["permit"]["oneOf"][1]["properties"]["payload"]["oneOf"]),
+    ):
+        if nested(json.loads((SCHEMAS / name).read_text())) != payload:
+            raise ValueError(f"{name}: embedded task contract differs from the canonical payload")
     digest = hashlib.sha256()
     for name in files:
         data = (SCHEMAS / name).read_bytes()

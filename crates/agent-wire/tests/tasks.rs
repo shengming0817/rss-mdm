@@ -161,11 +161,20 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     };
     use rss_mdm_agent_wire::*;
     let id = Uuid::new_v4();
-    let definition = "{}".to_owned();
-    let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, definition.as_bytes())
-        .as_ref()
-        .try_into()
-        .unwrap();
+    let steps = vec![SoftwareTaskStep {
+        action: json!({"package":"acme.editor","version":"2","format":"msi","primary":"installer","install":{},"uninstall":null,"detect":{},"reboot":"report","downgrade":"deny","ownership":"managed_only","bundle":null}),
+        artifacts: vec![SoftwareTaskArtifact {
+            key: "0/installer".into(),
+            length: 20_000_000,
+            sha256: [2; 32],
+        }],
+        export_identity: None,
+    }];
+    let digest: [u8; 32] =
+        ring::digest::digest(&ring::digest::SHA256, &serde_json::to_vec(&steps).unwrap())
+            .as_ref()
+            .try_into()
+            .unwrap();
     let spec = SoftwareTaskSpec {
         wire_version: 3,
         tenant_id: id,
@@ -178,24 +187,28 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         attempt_id: id,
         permit: TaskPermit::Offer,
         expires_at: 200,
-        resource_digest: [1; 32],
-        software_resource: "acme.editor".into(),
-        software_version: "v2".into(),
-        variant: "msi-x64".into(),
-        admission_operation: id,
-        definition,
+        steps,
         definition_digest: digest,
         intent: SoftwareTaskIntent::Install,
         start_mode: SoftwareStartMode::Automatic,
-        artifacts: vec![SoftwareTaskArtifact {
-            key: "installer".into(),
-            length: 20_000_000,
-            sha256: [2; 32],
-        }],
-        publication_id: None,
-        export_identity: None,
     };
     let payload: TaskPayload = spec.clone().try_into().unwrap();
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../schema/task-payload-v3.schema.json")).unwrap();
+    let validator = jsonschema::draft202012::new(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::to_value(&payload).unwrap()));
+    for change in [
+        |v: &mut serde_json::Value| v["steps"] = json!([]),
+        |v: &mut serde_json::Value| v["steps"][0]["artifacts"] = json!([]),
+        |v: &mut serde_json::Value| v["steps"][0]["artifacts"][0]["key"] = json!("0/a//b"),
+        |v: &mut serde_json::Value| v["steps"][0]["action"]["source"] = json!({}),
+        |v: &mut serde_json::Value| v["publicationId"] = json!(null),
+    ] {
+        let mut bad = serde_json::to_value(&spec).unwrap();
+        change(&mut bad);
+        assert!(!validator.is_valid(&bad), "schema accepted {bad}");
+        assert!(serde_json::from_value::<TaskPayload>(bad).is_err());
+    }
     assert!(serde_json::from_value::<TaskSpec>(serde_json::to_value(&payload).unwrap()).is_err());
     let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
@@ -221,7 +234,14 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     };
     signed.verify(&context).unwrap();
     let mut altered = spec;
-    altered.admission_operation = Uuid::new_v4();
+    altered.steps[0].action["package"] = json!("other.editor");
+    altered.definition_digest = ring::digest::digest(
+        &ring::digest::SHA256,
+        &serde_json::to_vec(&altered.steps).unwrap(),
+    )
+    .as_ref()
+    .try_into()
+    .unwrap();
     let mut forged = signed;
     forged.payload = altered.try_into().unwrap();
     assert!(forged.verify(&context).is_err());

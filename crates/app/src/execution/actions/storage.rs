@@ -94,12 +94,22 @@ pub(super) async fn receipt(
     id: Uuid,
     fingerprint: Vec<u8>,
     response: &Value,
+    audit_details: Option<Value>,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
     let response = response.clone();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_receipts(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3::uuid,$4,$5)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_receipts(tenant_id,actor,id,fingerprint,response,audit_details) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).bind(audit_details).execute(c).await?;Ok(())})).await?;
     Ok(())
+}
+pub(super) async fn audit_details(
+    tx: &mut PgTransaction<'_>,
+    actor: &str,
+    id: Uuid,
+) -> Result<Option<Value>> {
+    let tenant = tx.tenant_id().to_string();
+    let actor = actor.to_owned();
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT audit_details FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3::uuid").bind(tenant).bind(actor).bind(id.to_string()).fetch_one(c).await})).await.map_err(Into::into)
 }
 
 pub(super) enum ScheduledPolicy {
@@ -178,60 +188,73 @@ impl ScheduledPolicy {
                 let (platform, architecture) = agent_profile_in(tx, target.registration)
                     .await?
                     .ok_or(Error::Forbidden)?;
-                let selected = v
-                    .admitted_in(service, tx, platform, architecture)
-                    .await?
-                    .ok_or(Error::Forbidden)?;
-                let variant = selected
-                    .version()
-                    .resolve(
-                        selected.platform(),
-                        selected.architecture(),
-                        selected.variant(),
-                    )
-                    .map_err(|_| Error::Malformed)?;
-                let rss_mdm_resource::Declaration::Software { definition } = variant.declaration()
-                else {
-                    return Err(Error::Malformed.into());
-                };
-                let canonical = definition.canonical();
-                let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &canonical)
+                let selected_steps = v
+                    .execution_steps_in(service, tx, platform, architecture)
+                    .await?;
+                let mut steps = Vec::new();
+                for (index, selected) in selected_steps.iter().enumerate() {
+                    let variant = selected
+                        .version()
+                        .resolve(
+                            selected.platform(),
+                            selected.architecture(),
+                            selected.variant(),
+                        )
+                        .map_err(|_| Error::Malformed)?;
+                    let rss_mdm_resource::Declaration::Software { definition } =
+                        variant.declaration()
+                    else {
+                        return Err(Error::Malformed.into());
+                    };
+                    let mut action = checked_input(serde_json::to_value(definition.spec()))?;
+                    let fields = action.as_object_mut().ok_or(Error::Malformed)?;
+                    fields.remove("source");
+                    fields.remove("dependencies");
+                    fields.remove("artifacts");
+                    let artifacts = definition
+                        .spec()
+                        .artifacts
+                        .iter()
+                        .map(|(key, artifact)| wire::SoftwareTaskArtifact {
+                            key: format!("{index}/{key}"),
+                            length: artifact.length,
+                            sha256: artifact.sha256,
+                        })
+                        .collect();
+                    let export_identity = if matches!(
+                        definition.spec().format,
+                        rss_mdm_resource::SoftwareFormat::Winget
+                            | rss_mdm_resource::SoftwareFormat::Brew
+                    ) {
+                        let identity = checked_input(serde_json::to_vec(&(
+                            &definition.spec().source,
+                            &definition.spec().package,
+                            &definition.spec().version,
+                            selected.variant().as_str(),
+                        )))?;
+                        let digest = ring::digest::digest(&ring::digest::SHA256, &identity);
+                        Some(format!(
+                            "sha256.{}",
+                            digest
+                                .as_ref()
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        ))
+                    } else {
+                        None
+                    };
+                    steps.push(wire::SoftwareTaskStep {
+                        action,
+                        artifacts,
+                        export_identity,
+                    });
+                }
+                let plan_bytes = checked_input(serde_json::to_vec(&steps))?;
+                let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &plan_bytes)
                     .as_ref()
                     .try_into()
                     .map_err(|_| Error::Malformed)?;
-                let artifacts = definition
-                    .spec()
-                    .artifacts
-                    .iter()
-                    .map(|(key, artifact)| wire::SoftwareTaskArtifact {
-                        key: key.clone(),
-                        length: artifact.length,
-                        sha256: artifact.sha256,
-                    })
-                    .collect();
-                let export_identity = if matches!(
-                    definition.spec().format,
-                    rss_mdm_resource::SoftwareFormat::Winget
-                        | rss_mdm_resource::SoftwareFormat::Brew
-                ) {
-                    let identity = checked_input(serde_json::to_vec(&(
-                        &definition.spec().source,
-                        &definition.spec().package,
-                        &definition.spec().version,
-                        selected.variant().as_str(),
-                    )))?;
-                    let digest = ring::digest::digest(&ring::digest::SHA256, &identity);
-                    Some(format!(
-                        "sha256.{}",
-                        digest
-                            .as_ref()
-                            .iter()
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect::<String>()
-                    ))
-                } else {
-                    None
-                };
                 let spec = wire::SoftwareTaskSpec {
                     wire_version: wire::WIRE_VERSION,
                     tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
@@ -250,12 +273,7 @@ impl ScheduledPolicy {
                     attempt_id: issue.attempt,
                     permit: issue.permit,
                     expires_at: issue.expiry,
-                    resource_digest: v.frozen.resource_digest,
-                    software_resource: v.frozen.resource.clone(),
-                    software_version: v.frozen.version.clone(),
-                    variant: selected.variant().as_str().to_owned(),
-                    admission_operation: v.frozen.admission_operation,
-                    definition: String::from_utf8(canonical).map_err(|_| Error::Malformed)?,
+                    steps,
                     definition_digest: digest,
                     intent: match v.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall
@@ -274,9 +292,6 @@ impl ScheduledPolicy {
                     } else {
                         wire::SoftwareStartMode::Automatic
                     },
-                    artifacts,
-                    publication_id: None,
-                    export_identity,
                 };
                 checked_input(spec.try_into())
             }

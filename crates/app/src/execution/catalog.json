@@ -145,6 +145,15 @@
       ""
     ],
     [
+      "action_receipts",
+      "audit_details",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "action_runs",
       "tenant_id",
       "uuid",
@@ -1391,6 +1400,14 @@
       "action_runs",
       "action_runs_pkey",
       "CREATE UNIQUE INDEX action_runs_pkey ON mdm_commands.action_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "action_runs",
+      "action_runs_software_stage_latest",
+      "CREATE INDEX action_runs_software_stage_latest ON mdm_commands.action_runs USING btree (tenant_id, policy_version, device, created_at DESC, id DESC)",
       true,
       true,
       true

@@ -37,11 +37,10 @@ pub(super) async fn accept_for_device(
     let tenant = tx.tenant_id().to_string();
     let resource = policy.frozen.resource.clone();
     let device = target.device.clone();
-    let registration = target.registration;
     let version = policy.id;
     let (pending, last): (bool, Option<i64>) = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT coalesce(bool_or(r.state->>'execution'='unknown' OR ((r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$5)) AND r.state->>'cancellation'<>'confirmed')),false),max(r.created_at) FILTER(WHERE r.policy_version=$4::uuid) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON (p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND p.definition->'resource'->>'id'=$2 AND r.device=$3 AND r.registration=$6::uuid")
-            .bind(tenant).bind(resource).bind(device).bind(version).bind(now).bind(registration).fetch_one(c).await
+        sqlx::query_as("SELECT coalesce(bool_or(r.state->>'execution' IN ('unknown','waiting_reboot') OR ((r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$5)) AND r.state->>'cancellation'<>'confirmed')),false),max(r.created_at) FILTER(WHERE r.policy_version=$4::uuid) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON (p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND p.definition->'resource'->>'id'=$2 AND r.device=$3")
+            .bind(tenant).bind(resource).bind(device).bind(version).bind(now).fetch_one(c).await
     })).await?;
     if pending {
         return Ok(());
@@ -80,7 +79,8 @@ pub(super) async fn accept_for_device(
     } else {
         format!("{event}:{}", target.registration)
     };
-    let occurrence = format!("software:stage:{stage}:{recurrence}");
+    let stage_scope = policy.stages()?[stage].scope;
+    let occurrence = format!("software:stage:{stage_scope}:{recurrence}");
     let tenant = tx.tenant_id().to_string();
     let version = policy.id;
     let device = target.device.clone();

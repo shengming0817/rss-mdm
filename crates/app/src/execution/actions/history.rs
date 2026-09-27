@@ -40,7 +40,7 @@ impl ExecutionService {
                     "minimumVerifiedPercent":stage.minimum_verified_percent,
                     "open":policy.enabled && stage.open(now,prior.0,prior.1),
                     "totalTargets":counts.total,"reported":counts.reported,
-                    "unknown":counts.unknown,"verifiedSuccess":counts.verified,
+                    "unknown":counts.unknown,"waitingReboot":counts.waiting_reboot,"failed":counts.failed,"verifiedSuccess":counts.verified,
                     "unsupportedCapability":counts.unsupported_capability}));
                 prior=(counts.total,counts.verified);
             }
@@ -67,7 +67,7 @@ impl ExecutionService {
             proof.require_all_devices(Permission::OperationRead)?;
             let tenant=tx.tenant_id().to_string();let at=page.after_at;let after=page.after_id.map(|id|id.to_string());
             let mut rows=tx.with_connection(move |c|Box::pin(async move {
-                let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT jsonb_build_object('taskId',id,'device',device,'registrationId',registration,'generation',generation,'occurrence',occurrence,'availableAt',available_at,'deadline',deadline,'state',state,'effect','unverified','result',");
+                let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT jsonb_build_object('taskId',id,'device',device,'registrationId',registration,'generation',generation,'occurrence',occurrence,'availableAt',available_at,'deadline',deadline,'state',state,'effect',coalesce(result->>'effect','unverified'),'result',");
                 query.push(RESULT_SUMMARY_SQL).push(") FROM mdm_commands.action_runs r WHERE tenant_id=$1::uuid AND policy_version IN (SELECT id FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2::uuid) AND ($3::bigint IS NULL OR (available_at,id)<($3,$4::uuid)) ORDER BY available_at DESC,id DESC LIMIT 21");
                 query.build_query_scalar::<Value>()
                     .bind(tenant).bind(id.to_string()).bind(at).bind(after).fetch_all(c).await
@@ -115,7 +115,8 @@ impl ExecutionService {
             };
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
             store.append_request_in(tx,audit,200,"success").await?;
-            let mut value=json!({"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":"unverified","result":run.result});
+            let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
+            let mut value=json!({"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"result":run.result});
             value[field]=json!(parent);Ok(value)
         }),crate::transaction::TransactionOwner::Execution).await
     }

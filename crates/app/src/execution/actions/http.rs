@@ -43,7 +43,6 @@ pub(crate) fn agent_routes() -> Router<Arc<HttpState>> {
             post(event).layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
         )
         .route("/tasks/{id}/content", get(download))
-        .route("/tasks/{id}/content/{key}", get(download_software))
 }
 
 async fn runs(
@@ -143,6 +142,7 @@ async fn event(
 #[serde(deny_unknown_fields)]
 struct Download {
     attempt: Uuid,
+    artifact: Option<String>,
 }
 async fn download(
     State(app): State<Arc<HttpState>>,
@@ -156,28 +156,13 @@ async fn download(
         audit.operation(id, "command_read");
         let content = app
             .execution
-            .action_content(&principal, id, query.attempt, None, &audit)
-            .await
-            .map_err(task_error)?;
-        crate::content::http::response(content, &headers)
-            .await
-            .map_err(task_error)
-    })
-    .await
-}
-async fn download_software(
-    State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
-    Path((id, key)): Path<(Uuid, String)>,
-    Query(query): Query<Download>,
-) -> Result<Response, crate::agent::AgentError> {
-    crate::agent::bounded(async {
-        let principal = authenticate(&app, &headers, &audit).await?;
-        audit.operation(id, "command_read");
-        let content = app
-            .execution
-            .action_content(&principal, id, query.attempt, Some(&key), &audit)
+            .action_content(
+                &principal,
+                id,
+                query.attempt,
+                query.artifact.as_deref(),
+                &audit,
+            )
             .await
             .map_err(task_error)?;
         crate::content::http::response(content, &headers)

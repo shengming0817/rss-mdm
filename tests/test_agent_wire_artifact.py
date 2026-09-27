@@ -27,12 +27,22 @@ class WireArtifactTests(unittest.TestCase):
         with patch.object(artifact, "SCHEMAS", schema), patch.object(artifact, "MANIFEST", schema / "agent-v3.schema-manifest.json"):
             artifact.check()
 
-    def test_schema_mutation_fails_fingerprint(self):
+    def test_task_mutation_fails_embedded_contract(self):
         directory, schema = self.fixture()
         with directory:
             path = schema / "task-payload-v3.schema.json"
             value = json.loads(path.read_text())
             value["oneOf"][1]["properties"]["intent"]["enum"].append("arbitrary")
+            path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "embedded task contract"):
+                self.check_copy(schema)
+
+    def test_other_schema_mutation_fails_fingerprint(self):
+        directory, schema = self.fixture()
+        with directory:
+            path = schema / "report-ack-v3.schema.json"
+            value = json.loads(path.read_text())
+            value["$id"] += "#changed"
             path.write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError, "fingerprint"):
                 self.check_copy(schema)

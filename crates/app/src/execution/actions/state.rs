@@ -21,6 +21,7 @@ pub(crate) enum Execution {
     Running,
     Succeeded,
     Failed,
+    WaitingReboot,
     Unknown,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -125,7 +126,10 @@ impl RunState {
     pub fn result(&mut self, attempt: Uuid, success: bool) -> Result<(), Error> {
         // Late evidence from the same attempt can resolve Unknown, but cannot authorize rerun.
         if self.attempt() != Some(attempt)
-            || !matches!(self.execution, Execution::Running | Execution::Unknown)
+            || !matches!(
+                self.execution,
+                Execution::Running | Execution::Unknown | Execution::WaitingReboot
+            )
         {
             return Err(Error::Conflict);
         }
@@ -139,11 +143,26 @@ impl RunState {
     /// Preserve an uncertain software effect and block blind re-execution.
     pub fn uncertain_result(&mut self, attempt: Uuid) -> Result<(), Error> {
         if self.attempt() != Some(attempt)
-            || !matches!(self.execution, Execution::Running | Execution::Unknown)
+            || !matches!(
+                self.execution,
+                Execution::Running | Execution::Unknown | Execution::WaitingReboot
+            )
         {
             return Err(Error::Conflict);
         }
         self.execution = Execution::Unknown;
+        Ok(())
+    }
+    pub fn waiting_reboot(&mut self, attempt: Uuid) -> Result<(), Error> {
+        if self.attempt() != Some(attempt)
+            || !matches!(
+                self.execution,
+                Execution::Running | Execution::Unknown | Execution::WaitingReboot
+            )
+        {
+            return Err(Error::Conflict);
+        }
+        self.execution = Execution::WaitingReboot;
         Ok(())
     }
     pub fn cancel(&mut self) {

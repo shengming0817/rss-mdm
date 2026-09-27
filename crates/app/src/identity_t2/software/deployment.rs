@@ -3,6 +3,7 @@ use super::*;
 use base64::Engine;
 use ring::signature::KeyPair;
 use sha2::{Digest, Sha256};
+use sqlx::Connection;
 
 const DEVICE: &str = "software-deployment-device";
 const CREDENTIAL: &str = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ";
@@ -15,9 +16,11 @@ async fn event(router: &Router, task: &Value, mut event: Value) -> Result<(Statu
         event["definitionDigest"] = task["payload"]["definitionDigest"].clone();
         event["evidenceDigest"] = json!(Sha256::digest(b"controlled detector evidence").to_vec());
         event["observedVersion"] = if event["detection"] == "present" {
-            let definition: Value =
-                serde_json::from_str(task["payload"]["definition"].as_str().unwrap())?;
-            definition["version"].clone()
+            task["payload"]["steps"]
+                .as_array()
+                .and_then(|steps| steps.last())
+                .ok_or_else(|| anyhow::anyhow!("missing executable step"))?["action"]["version"]
+                .clone()
         } else {
             Value::Null
         };
@@ -163,6 +166,51 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
         json!({"action":"approve","evidence":["enterprise-source"]}),
     )
     .await?;
+    let dependency = Uuid::new_v4();
+    let dependency_path = format!("/api/v3/resources/{dependency}");
+    write(
+        &mut author,
+        &router,
+        &dependency_path,
+        0,
+        json!({"action":"create","kind":"software"}),
+    )
+    .await?;
+    let dependency_bytes = b"controlled dependency package";
+    let dependency_digest: [u8; 32] = Sha256::digest(dependency_bytes).into();
+    let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","format":"pkg","primary":"scripts/install.sh","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
+    write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":dependency_definition}}]})).await?;
+    let request=Request::builder().method(Method::POST).uri(format!("{dependency_path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
+        .header("x-csrf-token",author.csrf.as_ref().unwrap())
+        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
+    ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+    write(
+        &mut author,
+        &router,
+        &dependency_path,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    write(
+        &mut author,
+        &router,
+        &format!("/api/v3/software/resources/{dependency}/versions/v1"),
+        0,
+        json!({"action":"approve","evidence":["fixed-prerequisite"]}),
+    )
+    .await?;
+    let dependency_version = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v3/software/resources/{dependency}/versions/v1"),
+            None,
+        )
+        .await?;
+    ensure!(dependency_version.0 == StatusCode::OK);
     let resource = Uuid::new_v4();
     let path = format!("/api/v3/resources/{resource}");
     write(
@@ -177,7 +225,7 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     let digest: [u8; 32] = Sha256::digest(bytes).into();
     let removal = b"#!/bin/sh\nexit 0\n";
     let removal_digest: [u8; 32] = Sha256::digest(removal).into();
-    let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","format":"pkg","primary":"package","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":{"executor":"posix_sh","entry":"remove","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
+    let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","format":"pkg","primary":"package","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":{"executor":"posix_sh","entry":"remove","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
     write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
     let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
@@ -239,15 +287,37 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     launch.finish();
     let task = claim(&router).await?;
     ensure!(
-        task["payload"]["softwareResource"] == resource.to_string()
+        task["payload"]["steps"][0]["action"]["package"] == "Private.Dependency"
+            && task["payload"]["steps"][1]["action"]["package"] == "Private.Controlled"
+            && task["payload"]["softwareResource"].is_null()
+            && task["payload"]["admissionOperation"].is_null()
             && task["payload"]["startMode"] == "automatic",
         "offer: {task}"
     );
-    ensure!(task["payload"]["artifacts"][0]["length"] == bytes.len());
+    ensure!(task["payload"]["steps"][1]["artifacts"][0]["length"] == bytes.len());
+    let mut owner =
+        sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+    sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,expiresAt}','0'::jsonb) WHERE id=$1::uuid")
+        .bind(task["payload"]["attemptId"].as_str().unwrap()).execute(&mut owner).await?;
+    let expired = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            task["payload"]["taskId"].as_str().unwrap(),
+            task["payload"]["attemptId"].as_str().unwrap()
+        ))
+        .header("host", "mdm.example.test")
+        .header("authorization", format!("Bearer {CREDENTIAL}"))
+        .body(Body::empty())?;
+    ensure!(router.clone().oneshot(expired).await?.status() == StatusCode::FORBIDDEN);
+    sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,expiresAt}',to_jsonb($2::bigint)) WHERE id=$1::uuid")
+        .bind(task["payload"]["attemptId"].as_str().unwrap())
+        .bind(task["payload"]["expiresAt"].as_i64().unwrap()).execute(&mut owner).await?;
+    owner.close().await?;
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content/package?attempt={}",
+            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -261,6 +331,19 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
         content.status()
     );
     ensure!(content.into_body().collect().await?.to_bytes() == bytes.as_slice());
+    let prerequisite = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
+            task["payload"]["taskId"].as_str().unwrap(),
+            task["payload"]["attemptId"].as_str().unwrap()
+        ))
+        .header("host", "mdm.example.test")
+        .header("authorization", format!("Bearer {CREDENTIAL}"))
+        .body(Body::empty())?;
+    let prerequisite = router.clone().oneshot(prerequisite).await?;
+    ensure!(prerequisite.status() == StatusCode::OK);
+    ensure!(prerequisite.into_body().collect().await?.to_bytes() == dependency_bytes.as_slice());
     ensure!(event(&router, &task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
     let start = event(&router, &task, json!({"kind":"start"})).await?;
     ensure!(
@@ -284,6 +367,33 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
             && status.1["stages"][0]["unknown"] == 0
             && status.1["stages"][0]["verifiedSuccess"] == 1,
         "counts: {status:?}"
+    );
+    let runs = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/policies/{policy}/runs"),
+            None,
+        )
+        .await?;
+    ensure!(
+        runs.1["items"][0]["effect"] == "verified",
+        "run list effect: {runs:?}"
+    );
+    let detail = author
+        .call(
+            &router,
+            Method::GET,
+            &format!(
+                "/api/v2/policies/{policy}/runs/{}",
+                task["payload"]["taskId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        detail.1["effect"] == "verified",
+        "run detail effect: {detail:?}"
     );
     write(
         &mut author,
@@ -327,7 +437,19 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
             == StatusCode::OK
     );
     ensure!(event(&router, &optional, json!({"kind":"start"})).await?.0 == StatusCode::OK);
-    ensure!(event(&router,&optional,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(event(&router,&optional,json!({"kind":"software_result","intent":"install","installerExitCode":17,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    let optional_status = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/policies/{available}/software/rollout"),
+            None,
+        )
+        .await?;
+    ensure!(
+        optional_status.1["stages"][0]["verifiedSuccess"] == 1,
+        "detector must be independent of installer exit: {optional_status:?}"
+    );
     write(
         &mut author,
         &router,
@@ -354,7 +476,7 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content/remove?attempt={}",
+            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=0%2Fremove",
             removal_task["payload"]["taskId"].as_str().unwrap(),
             removal_task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -428,7 +550,7 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     let denied = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content/package?attempt={}",
+            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             offered["payload"]["taskId"].as_str().unwrap(),
             offered["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -467,6 +589,23 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     )
     .await?;
     let frozen_version = future_policy["versionId"].clone();
+    let device_page = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/policies/{future}/devices"),
+            None,
+        )
+        .await?;
+    ensure!(
+        device_page.1["items"][0]["taskAdmission"]["state"] == "scheduled",
+        "device page misstates execution eligibility: {device_page:?}"
+    );
+    let preview=author.call(&router,Method::POST,"/api/v2/policies/previews",Some(json!({"definition":future_definition(now+3600,None),"after":null,"scopeResult":null}))).await?;
+    ensure!(
+        preview.1["items"][0]["taskAdmission"]["state"] == "scheduled",
+        "preview misstates execution eligibility: {preview:?}"
+    );
     let waiting = agent(
         &router,
         "/api/agent/v3/tasks/claim",
@@ -526,7 +665,7 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     ensure!(resumed["versionId"] == frozen_version);
     let resumed_task = claim(&router).await?;
     ensure!(
-        resumed_task["payload"]["softwareResource"] == resource.to_string(),
+        resumed_task["payload"]["steps"][1]["action"]["package"] == "Private.Controlled",
         "resume: {resumed_task}"
     );
     ensure!(
@@ -610,6 +749,24 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
         resolved.1["stages"][1]["unknown"] == 0 && resolved.1["stages"][1]["verifiedSuccess"] == 1,
         "late detection did not resolve unknown: {resolved:?}"
     );
+    let reordered=write(&mut author,&router,&future_path,5,json!({"action":"put","enabled":true,
+        "definition":{"resource":{"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"scope":scope,
+        "behavior":{"kind":"software","intent":"required_install","admissionOperation":second_operation,"runLifetimeSeconds":600,
+        "rollout":{"stages":[{"scope":scope,"opensAt":0},{"scope":empty_scope,"opensAt":1}]}}}})).await?;
+    ensure!(reordered["versionId"] == frozen_version);
+    let reordered_status = author
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/policies/{future}/software/rollout"),
+            None,
+        )
+        .await?;
+    ensure!(
+        reordered_status.1["stages"][0]["verifiedSuccess"] == 1
+            && reordered_status.1["stages"][1]["verifiedSuccess"] == 0,
+        "stage edit reused another scope's evidence: {reordered_status:?}"
+    );
     let rebound = write(
         &mut author,
         &router,
@@ -621,6 +778,154 @@ async fn enterprise_assignment_authorization_rollout_and_results() -> Result<()>
     ensure!(
         rebound["versionId"] != published["versionId"],
         "reapproval must create a new execution version: {rebound}"
+    );
+    write(
+        &mut author,
+        &router,
+        &future_path,
+        6,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let failed_policy = Uuid::new_v4();
+    let failed_path = format!("/api/v2/policies/{failed_policy}");
+    write(&mut author,&router,&failed_path,0,json!({"action":"put","enabled":true,"definition":authored("required_install",&second_operation)})).await?;
+    let failed_task = claim(&router).await?;
+    ensure!(
+        event(&router, &failed_task, json!({"kind":"received"}))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        event(&router, &failed_task, json!({"kind":"start"}))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(event(&router,&failed_task,json!({"kind":"software_result","intent":"install","installerExitCode":1,"detection":"absent","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    let failed_detail = author
+        .call(
+            &router,
+            Method::GET,
+            &format!(
+                "/api/v2/policies/{failed_policy}/runs/{}",
+                failed_task["payload"]["taskId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        failed_detail.1["effect"] == "failed",
+        "known detector failure: {failed_detail:?}"
+    );
+    write(
+        &mut author,
+        &router,
+        &failed_path,
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let reboot_policy = Uuid::new_v4();
+    let reboot_path = format!("/api/v2/policies/{reboot_policy}");
+    write(&mut author,&router,&reboot_path,0,json!({"action":"put","enabled":true,"definition":authored("required_install",&second_operation)})).await?;
+    let reboot_task = claim(&router).await?;
+    ensure!(
+        event(&router, &reboot_task, json!({"kind":"received"}))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        event(&router, &reboot_task, json!({"kind":"start"}))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(event(&router,&reboot_task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"absent","rebootRequired":true,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    let reboot_detail = author
+        .call(
+            &router,
+            Method::GET,
+            &format!(
+                "/api/v2/policies/{reboot_policy}/runs/{}",
+                reboot_task["payload"]["taskId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        reboot_detail.1["effect"] == "waiting_reboot",
+        "pending reboot: {reboot_detail:?}"
+    );
+    let reboot_retry = agent(
+        &router,
+        "/api/agent/v3/tasks/claim",
+        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+    )
+    .await?;
+    ensure!(
+        reboot_retry.1["task"].is_null(),
+        "reboot caused blind retry: {reboot_retry:?}"
+    );
+    ensure!(event(&router,&reboot_task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    write(
+        &mut author,
+        &router,
+        &reboot_path,
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let unknown_policy = Uuid::new_v4();
+    write(&mut author,&router,&format!("/api/v2/policies/{unknown_policy}"),0,json!({"action":"put","enabled":true,"definition":authored("required_install",&second_operation)})).await?;
+    let unknown_task = claim(&router).await?;
+    ensure!(
+        event(&router, &unknown_task, json!({"kind":"received"}))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        event(&router, &unknown_task, json!({"kind":"start"}))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(event(&router,&unknown_task,json!({"kind":"software_result","intent":"install","installerExitCode":null,"detection":"unknown","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
+    let next_credential = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    author.operation = Some(Uuid::new_v4());
+    let next_enrollment = author
+        .call(
+            &router,
+            Method::POST,
+            "/api/v3/enrollments",
+            Some(json!({"deviceId":DEVICE,"password":next_password,"source":"agent.builtin"})),
+        )
+        .await?;
+    ensure!(
+        next_enrollment.0.is_success(),
+        "replacement enrollment: {next_enrollment:?}"
+    );
+    author.operation = None;
+    let next_registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":next_enrollment.1["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","software.execute.v3"]}))).await?;
+    ensure!(
+        next_registration.0 == StatusCode::CREATED,
+        "replacement registration: {next_registration:?}"
+    );
+    let after_reenroll = agent_call(
+        &router,
+        Method::POST,
+        "/api/agent/v3/tasks/claim",
+        Some(next_credential),
+        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+    )
+    .await?;
+    ensure!(
+        after_reenroll.0 == StatusCode::OK && after_reenroll.1["task"].is_null(),
+        "unknown side effect retried after registration replacement: {after_reenroll:?}"
     );
     ensure!(stack.shutdown().join().await?.is_clean());
     Ok(())
