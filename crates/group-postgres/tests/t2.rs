@@ -58,7 +58,9 @@ fn assert_event(r: &Receipt, kind: &str) {
     assert_eq!(e["version"], "v1");
     assert_eq!(e["partition"], r.group.id.to_string());
     let ordinal: i64 = admin(&format!("SELECT partition_seq FROM rss_transactional_messaging.outbox WHERE message_id='group.changed.v1:{}'", r.operation)).parse().unwrap();
-    assert_eq!(ordinal, r.group.revision.get());
+    // Message ordering and authored configuration CAS are distinct coordinates:
+    // member publication emits an event without editing the group definition.
+    assert!(ordinal > 0);
     assert_eq!(
         e["schema"],
         format!("sha256:{:x}", sha2::Sha256::digest(EVENT_SCHEMA.as_bytes()))

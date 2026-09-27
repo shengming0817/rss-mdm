@@ -356,14 +356,14 @@ impl GroupStore {
             ),
         )
         .await?;
-        if let Some(devices) = &build.request.changed_devices {
-            if page.objects.iter().any(|o| {
+        if let Some(devices) = &build.request.changed_devices
+            && page.objects.iter().any(|o| {
                 devices
                     .binary_search_by(|d| d.as_str().cmp(o.key.id()))
                     .is_err()
-            }) {
-                return Ok(Err(Rejection::InvalidInput));
-            }
+            })
+        {
+            return Ok(Err(Rejection::InvalidInput));
         }
         let evaluated = input!(
             rule.evaluate_page(page, build.request.as_of)
@@ -596,25 +596,12 @@ impl GroupStore {
             vec![]
         };
         let new = input!(self.build_members_in(tx, id, after.clone(), 1000).await?);
-        let full = old.len() == 1000 || new.len() == 1000;
-        let mut keys = std::collections::BTreeMap::<String, (bool, bool)>::new();
-        for key in old {
-            keys.entry(key).or_default().0 = true;
-        }
-        for key in new {
-            keys.entry(key).or_default().1 = true;
-        }
-        let more = full || keys.len() > 1000;
-        let mut devices = Vec::new();
-        let mut ids = Vec::new();
-        let mut changes = Vec::new();
-        for (key, (old, new)) in keys.into_iter().take(1000) {
-            devices.push(key.clone());
-            if old != new {
-                ids.push(key);
-                changes.push(new);
-            }
-        }
+        let DifferencePage {
+            devices,
+            ids,
+            changes,
+            more,
+        } = difference_page(old, new);
         let last = devices.last().cloned().or(after);
         let added = changes.iter().filter(|v| **v).count() as i64;
         let removed = changes.len() as i64 - added;
@@ -805,6 +792,40 @@ fn member_count_after_patch(
         .and_then(|n| n.checked_sub(removed))
         .filter(|n| *n <= MAX_MEMBERS)
         .ok_or(Rejection::CapacityExceeded)
+}
+
+struct DifferencePage {
+    devices: Vec<String>,
+    ids: Vec<String>,
+    changes: Vec<bool>,
+    more: bool,
+}
+fn difference_page(old: Vec<String>, new: Vec<String>) -> DifferencePage {
+    let full = old.len() == 1000 || new.len() == 1000;
+    let mut keys = std::collections::BTreeMap::<String, (bool, bool)>::new();
+    for key in old {
+        keys.entry(key).or_default().0 = true;
+    }
+    for key in new {
+        keys.entry(key).or_default().1 = true;
+    }
+    let more = full || keys.len() > 1000;
+    let mut devices = Vec::new();
+    let mut ids = Vec::new();
+    let mut changes = Vec::new();
+    for (key, (old, new)) in keys.into_iter().take(1000) {
+        devices.push(key.clone());
+        if old != new {
+            ids.push(key);
+            changes.push(new);
+        }
+    }
+    DifferencePage {
+        devices,
+        ids,
+        changes,
+        more,
+    }
 }
 
 #[cfg(test)]

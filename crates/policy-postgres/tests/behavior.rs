@@ -17,7 +17,7 @@ async fn configuration_cas_replay_and_runtime_isolation() {
         id,
         None,
         Change::Put {
-            definition: definition(),
+            definition: Box::new(definition()),
             enabled: true,
         },
     );
@@ -83,7 +83,7 @@ async fn scope_changes_preserve_execution_version() {
         id,
         None,
         Change::Put {
-            definition: definition.clone(),
+            definition: Box::new(definition.clone()),
             enabled: true,
         },
     );
@@ -95,7 +95,7 @@ async fn scope_changes_preserve_execution_version() {
         id,
         Some(&first.policy),
         Change::Put {
-            definition,
+            definition: Box::new(definition),
             enabled: true,
         },
     );
@@ -134,7 +134,7 @@ async fn companion_failure_rolls_back_publication() {
         id,
         None,
         Change::Put {
-            definition: definition(),
+            definition: Box::new(definition()),
             enabled: true,
         },
     );
@@ -210,7 +210,7 @@ async fn explicit_trigger_does_not_edit_configuration() {
         id,
         None,
         Change::Put {
-            definition,
+            definition: Box::new(definition),
             enabled: true,
         },
     );

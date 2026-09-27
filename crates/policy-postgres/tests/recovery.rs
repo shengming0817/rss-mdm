@@ -22,7 +22,7 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
             id,
             None,
             core::Change::Put {
-                definition: definition(),
+                definition: Box::new(definition()),
                 enabled: true,
             },
         );

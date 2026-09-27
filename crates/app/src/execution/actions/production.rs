@@ -141,31 +141,45 @@ pub(super) async fn accept_for_device(
     queue_run_in(
         service,
         tx,
-        db::Source::Policy {
-            version: definition.id,
+        RunInput {
+            source: db::Source::Policy {
+                version: definition.id,
+            },
+            target,
+            id,
+            occurrence,
+            available,
+            deadline,
+            now,
         },
+    )
+    .await?;
+    crate::planning::policies::storage::wake_execution_in(tx, definition.owner).await?;
+    Ok(())
+}
+pub(in crate::execution) struct RunInput<'a> {
+    pub source: db::Source,
+    pub target: &'a super::model::Target,
+    pub id: Uuid,
+    pub occurrence: String,
+    pub available: i64,
+    pub deadline: i64,
+    pub now: i64,
+}
+pub(in crate::execution) async fn queue_run_in(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    input: RunInput<'_>,
+) -> Result<()> {
+    let RunInput {
+        source,
         target,
         id,
         occurrence,
         available,
         deadline,
         now,
-    )
-    .await?;
-    crate::planning::policies::storage::wake_execution_in(tx, definition.owner).await?;
-    Ok(())
-}
-pub(in crate::execution) async fn queue_run_in(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    source: db::Source,
-    target: &super::model::Target,
-    id: Uuid,
-    occurrence: String,
-    available: i64,
-    deadline: i64,
-    now: i64,
-) -> Result<()> {
+    } = input;
     let message = dispatch(tx.tenant_id(), source, id, target, now)?;
     let fingerprint = message.fingerprint().as_bytes().to_vec();
     let writer = rss_transactional_messaging_postgres::PgOutboxWriter::new(

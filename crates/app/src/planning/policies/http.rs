@@ -43,6 +43,7 @@ async fn read(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> std::result::Result<Json<Value>, Error> {
+    audit.set_action("management_read");
     audit.target(&id.to_string());
     auth.proof.manage(Permission::PolicyRead)?;
     run(
@@ -78,6 +79,7 @@ async fn list(
     Extension(audit): Extension<RequestAudit>,
     Query(page): Query<Page>,
 ) -> std::result::Result<Json<Value>, Error> {
+    audit.set_action("management_read");
     auth.proof.manage(Permission::PolicyRead)?;
     run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,&audit,(&service,&auth,&audit,page.after),|ctx,tx|Box::pin(async move {
         let (s,a,audit,after)=*ctx;a.proof.manage(Permission::PolicyRead)?;
@@ -123,6 +125,7 @@ async fn devices(
     Path(id): Path<Uuid>,
     Query(page): Query<DevicePage>,
 ) -> std::result::Result<Json<Value>, Error> {
+    audit.set_action("management_read");
     audit.target(&id.to_string());
     auth.proof.manage(Permission::PolicyRead)?;
     auth.proof.require_all_devices(Permission::InventoryRead)?;

@@ -27,6 +27,17 @@ impl ExecutionService {
         storage::lock(tx, &format!("remote:{id}")).await?;
         let operation = remote::storage::read_in(tx, id).await?;
         let now = storage::now(tx).await?;
+        self.stage_remote_in(tx, &operation, now, audit).await?;
+        self.recover_remote_page(tx, &operation, now).await
+    }
+    async fn stage_remote_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        operation: &Remote,
+        now: i64,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        let id = operation.id;
         if !operation.staged {
             if operation.cancelled || operation.deadline <= now {
                 checkpoint(tx, id, None, true).await?;
@@ -49,12 +60,21 @@ impl ExecutionService {
                 let more = devices.len() > 64;
                 devices.truncate(64);
                 for device in &devices {
-                    self.accept_remote_target(tx, &operation, device, now, audit)
+                    self.accept_remote_target(tx, operation, device, now, audit)
                         .await?;
                 }
                 checkpoint(tx, id, devices.last().cloned(), !more).await?;
             }
         }
+        Ok(())
+    }
+    async fn recover_remote_page(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        operation: &Remote,
+        now: i64,
+    ) -> Result<()> {
+        let id = operation.id;
         let tenant = tx.tenant_id().to_string();
         let rows=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("SELECT t.delivery_id,t.device,o.frozen->>'kind' AS kind FROM mdm_planning.remote_operation_targets t JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(t.tenant_id,t.operation) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND t.delivery_id>coalesce(o.run_after,'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY t.delivery_id LIMIT 128").bind(tenant).bind(id).fetch_all(c).await
@@ -109,157 +129,176 @@ impl ExecutionService {
         let delivery = Uuid::new_v4();
         match &operation.frozen {
             Frozen::Execution { .. } => {
-                let tenant = tx.tenant_id().to_string();
-                let name = device.to_owned();
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(crate::device::store::lock_channel(
-                            c,
-                            &tenant,
-                            &name,
-                            rss_mdm_inventory::Channel::Agent,
-                        )
-                        .await)
-                    })
-                })
-                .await??;
-                let tenant = tx.tenant_id().to_string();
-                let name = device.to_owned();
-                let registration=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_as::<_,(Uuid,i64)>("SELECT r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.agent_bindings b ON(b.tenant_id,b.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active' AND b.wire_version=2 AND b.capabilities::jsonb ? 'task.execute.v2' ORDER BY r.id LIMIT 2").bind(tenant).bind(name).fetch_all(c).await
-                })).await?;
-                if registration.len() != 1 {
-                    return record_target(tx, id, device, None, Some("agent_unavailable")).await;
-                }
-                let (registration, generation) = registration[0];
-                let tenant = tx.tenant_id().to_string();
-                let name = device.to_owned();
-                let count=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$3").bind(tenant).bind(name).bind(now).fetch_one(c).await})).await?;
-                if count >= 128 {
-                    return record_target(tx, id, device, None, Some("capacity_exceeded")).await;
-                }
-
-                record_target(tx, id, device, Some(delivery), None).await?;
-                actions::production::queue_run_in(
-                    self,
-                    tx,
-                    actions::storage::Source::RemoteOperation { operation: id },
-                    &actions::model::Target {
-                        device: device.into(),
-                        registration,
-                        generation,
-                    },
-                    delivery,
-                    format!("remote:{id}"),
-                    now,
-                    operation.deadline,
-                    now,
-                )
-                .await?;
-            }
-            Frozen::Configuration {
-                enabled, platform, ..
-            } => {
-                let (registration, generation) = match storage::current_registration(tx, device)
+                self.accept_remote_execution(tx, operation, device, delivery, now)
                     .await
-                {
-                    Ok(v) => v,
-                    Err(Fault::Request(Error::Conflict)) => {
-                        return record_target(tx, id, device, None, Some("mdm_unavailable")).await;
-                    }
-                    Err(e) => return Err(e),
-                };
-                let source = match platform {
-                    Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
-                    Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
-                };
-                match storage::require_source(tx, registration, source).await {
-                    Ok(()) => (),
-                    Err(Fault::Request(Error::Conflict | Error::Unsupported)) => {
-                        return record_target(tx, id, device, None, Some("channel_unsupported"))
-                            .await;
-                    }
-                    Err(e) => return Err(e),
-                };
-                let task = match platform {
-                    Platform::Windows => {
-                        let tenant = tx.tenant_id().to_string();
-                        let cap=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(tenant).bind(registration).bind(generation).fetch_optional(c).await})).await?;
-                        let Some((os_version, edition)) = cap else {
-                            return record_target(tx, id, device, None, Some("capability_unknown"))
-                                .await;
-                        };
-                        if rss_mdm_windows_mdm::configuration::Platform::new(
-                            &os_version,
-                            edition as u32,
-                        )
-                        .and_then(|p| {
-                            rss_mdm_windows_mdm::configuration::Firewall::compile(*enabled, &p)
-                        })
-                        .is_err()
-                        {
-                            return record_target(
-                                tx,
-                                id,
-                                device,
-                                None,
-                                Some("platform_unsupported"),
-                            )
-                            .await;
-                        }
-                        Task::Firewall {
-                            enabled: *enabled,
-                            os_version,
-                            edition: edition as u32,
-                        }
-                    }
-                    Platform::Macos => {
-                        let tenant = tx.tenant_id().to_string();
-                        let name = device.to_owned();
-                        let busy=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_apple.profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND d.terminal_at IS NULL)").bind(tenant).bind(name).fetch_one(c).await})).await?;
-                        if busy {
-                            return record_target(tx, id, device, None, Some("configuration_busy"))
-                                .await;
-                        }
-                        Task::ProfileInstall { enabled: *enabled }
-                    }
-                };
-                record_target(tx, id, device, Some(delivery), None).await?;
-                let input = Create {
-                    operation_id: delivery,
-                    task,
-                    deadline: operation.deadline,
-                };
-                let authority = crate::authorization::ExecutionAuthority::RemoteOperation {
-                    tenant: tx.tenant_id().to_string(),
-                    operation: id,
-                    device: device.into(),
-                };
-                let fingerprint = crate::transaction::fingerprint(&(id, device, &input))?;
-                let fact_audit = audit.transaction_copy();
-                fact_audit.identify_service("remote-operation");
-                fact_audit.operation(delivery, "command_accept");
-                fact_audit.target(device);
-                let result = self
-                    .queue_authorized_in(tx, device, &input, authority, fingerprint, &fact_audit)
-                    .await;
-                fact_audit.finalize(
-                    result
-                        .as_ref()
-                        .err()
-                        .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-                );
-                result?;
-                let target = service::target(tx.tenant_id(), device);
-                rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| {
-                    Box::pin(async { Ok(()) })
-                })
-                .await?;
+            }
+            Frozen::Configuration { .. } => {
+                self.accept_remote_configuration(tx, operation, device, delivery, audit)
+                    .await
             }
         }
+    }
+    async fn accept_remote_execution(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        operation: &Remote,
+        device: &str,
+        delivery: Uuid,
+        now: i64,
+    ) -> Result<()> {
+        let id = operation.id;
+
+        let tenant = tx.tenant_id().to_string();
+        let name = device.to_owned();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(crate::device::store::lock_channel(
+                    c,
+                    &tenant,
+                    &name,
+                    rss_mdm_inventory::Channel::Agent,
+                )
+                .await)
+            })
+        })
+        .await??;
+        let tenant = tx.tenant_id().to_string();
+        let name = device.to_owned();
+        let registration=tx.with_connection(move|c|Box::pin(async move {
+                    sqlx::query_as::<_,(Uuid,i64)>("SELECT r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.agent_bindings b ON(b.tenant_id,b.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active' AND b.wire_version=2 AND b.capabilities::jsonb ? 'task.execute.v2' ORDER BY r.id LIMIT 2").bind(tenant).bind(name).fetch_all(c).await
+                })).await?;
+        if registration.len() != 1 {
+            return record_target(tx, id, device, None, Some("agent_unavailable")).await;
+        }
+        let (registration, generation) = registration[0];
+        let tenant = tx.tenant_id().to_string();
+        let name = device.to_owned();
+        let count=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$3").bind(tenant).bind(name).bind(now).fetch_one(c).await})).await?;
+        if count >= 128 {
+            return record_target(tx, id, device, None, Some("capacity_exceeded")).await;
+        }
+
+        record_target(tx, id, device, Some(delivery), None).await?;
+        actions::production::queue_run_in(
+            self,
+            tx,
+            actions::production::RunInput {
+                source: actions::storage::Source::RemoteOperation { operation: id },
+                target: &actions::model::Target {
+                    device: device.into(),
+                    registration,
+                    generation,
+                },
+                id: delivery,
+                occurrence: format!("remote:{id}"),
+                available: now,
+                deadline: operation.deadline,
+                now,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+    async fn accept_remote_configuration(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        operation: &Remote,
+        device: &str,
+        delivery: Uuid,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        let id = operation.id;
+        let Frozen::Configuration {
+            enabled, platform, ..
+        } = &operation.frozen
+        else {
+            return Err(Error::Malformed.into());
+        };
+
+        let (registration, generation) = match storage::current_registration(tx, device).await {
+            Ok(v) => v,
+            Err(Fault::Request(Error::Conflict)) => {
+                return record_target(tx, id, device, None, Some("mdm_unavailable")).await;
+            }
+            Err(e) => return Err(e),
+        };
+        let source = match platform {
+            Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
+            Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
+        };
+        match storage::require_source(tx, registration, source).await {
+            Ok(()) => (),
+            Err(Fault::Request(Error::Conflict | Error::Unsupported)) => {
+                return record_target(tx, id, device, None, Some("channel_unsupported")).await;
+            }
+            Err(e) => return Err(e),
+        };
+        let task = match platform {
+            Platform::Windows => {
+                let tenant = tx.tenant_id().to_string();
+                let cap=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(tenant).bind(registration).bind(generation).fetch_optional(c).await})).await?;
+                let Some((os_version, edition)) = cap else {
+                    return record_target(tx, id, device, None, Some("capability_unknown")).await;
+                };
+                if rss_mdm_windows_mdm::configuration::Platform::new(&os_version, edition as u32)
+                    .and_then(|p| {
+                        rss_mdm_windows_mdm::configuration::Firewall::compile(*enabled, &p)
+                    })
+                    .is_err()
+                {
+                    return record_target(tx, id, device, None, Some("platform_unsupported")).await;
+                }
+                Task::Firewall {
+                    enabled: *enabled,
+                    os_version,
+                    edition: edition as u32,
+                }
+            }
+            Platform::Macos => {
+                let tenant = tx.tenant_id().to_string();
+                let name = device.to_owned();
+                let busy=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_apple.profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND d.terminal_at IS NULL)").bind(tenant).bind(name).fetch_one(c).await})).await?;
+                if busy {
+                    return record_target(tx, id, device, None, Some("configuration_busy")).await;
+                }
+                Task::ProfileInstall { enabled: *enabled }
+            }
+        };
+        record_target(tx, id, device, Some(delivery), None).await?;
+        let input = Create {
+            operation_id: delivery,
+            task,
+            deadline: operation.deadline,
+        };
+        let authority = crate::authorization::ExecutionAuthority::RemoteOperation {
+            tenant: tx.tenant_id().to_string(),
+            operation: id,
+            device: device.into(),
+        };
+        let fingerprint = crate::transaction::fingerprint(&(id, device, &input))?;
+        let fact_audit = audit.transaction_copy();
+        fact_audit.identify_service("remote-operation");
+        fact_audit.operation(delivery, "command_accept");
+        fact_audit.target(device);
+        let result = self
+            .queue_authorized_in(tx, device, &input, authority, fingerprint, &fact_audit)
+            .await;
+        fact_audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result?;
+        let target = service::target(tx.tenant_id(), device);
+        rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
+        .await?;
         Ok(())
     }
 }
+
 async fn record_target(
     tx: &mut PgTransaction<'_>,
     id: Uuid,

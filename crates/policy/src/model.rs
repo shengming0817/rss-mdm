@@ -32,7 +32,7 @@ pub enum Change {
     /// Create or replace the complete definition at an expected CAS.
     Put {
         /// Replacement definition.
-        definition: Definition,
+        definition: Box<Definition>,
         /// Requested enabled state.
         enabled: bool,
     },
@@ -100,7 +100,7 @@ impl Policy {
             Change::Put {
                 definition,
                 enabled,
-            } => (definition.clone(), *enabled),
+            } => ((**definition).clone(), *enabled),
             Change::Enable => (old.ok_or(Error::NotFound)?.definition.clone(), true),
             Change::Disable => (old.ok_or(Error::NotFound)?.definition.clone(), false),
         };

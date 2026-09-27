@@ -154,20 +154,12 @@ impl Planning {
             publish,
             automatic,
         };
-        if patch.is_none() {
-            let tenant = self.tenant.to_string();
-            let rule = current.rule_version.clone();
-            let version = format!("assets:{watermark}");
-            let calculation = current.calculation_revision;
-            let reusable=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar::<_,String>("SELECT j.id::text FROM mdm_automation.automation_jobs j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND j.kind=$5 AND j.failure IS NULL AND (b.base_calculation=$6 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id.to_string()).bind(rule).bind(version).bind(if publish{"group"}else{"group_preview"}).bind(calculation).fetch_optional(c).await
-            })).await?;
-            if let Some(existing) = reusable {
-                return Ok(crate::automation::jobs::accepted(
-                    stored(Uuid::parse_str(&existing))?,
-                    &job,
-                ));
-            }
+        if patch.is_none()
+            && let Some(existing) = self
+                .reusable_group_job_in(tx, &current, watermark, publish)
+                .await?
+        {
+            return Ok(crate::automation::jobs::accepted(existing, &job));
         }
         let request = g::BuildRequest {
             id: checked_input(g::OperationId::parse(&task.to_string()))?,
@@ -195,6 +187,23 @@ impl Planning {
         crate::automation::jobs::enqueue_job_in(tx, task, &job).await
     }
 
+    async fn reusable_group_job_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        current: &g::Group,
+        watermark: i64,
+        publish: bool,
+    ) -> Result<Option<Uuid>> {
+        let tenant = self.tenant.to_string();
+        let id = current.id.to_string();
+        let rule = current.rule_version.clone();
+        let version = format!("assets:{watermark}");
+        let calculation = current.calculation_revision;
+        let result=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_automation.automation_jobs j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND j.kind=$5 AND j.failure IS NULL AND (b.base_calculation=$6 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id).bind(rule).bind(version).bind(if publish {"group"}else{"group_preview"}).bind(calculation).fetch_optional(c).await
+        })).await?;
+        Ok(result)
+    }
     async fn append_group_input_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -306,7 +315,6 @@ impl Planning {
             group: id,
             watermark,
             publish,
-            automatic,
             ..
         } = *job
         else {
@@ -330,6 +338,25 @@ impl Planning {
         if !publish {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
         }
+        self.publish_group_job_in(tx, task, job, &build).await
+    }
+    async fn publish_group_job_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        job: &JobInput,
+        build: &g::MemberBuild,
+    ) -> Result<()> {
+        let JobInput::Group {
+            group: id,
+            watermark,
+            automatic,
+            ..
+        } = *job
+        else {
+            return Err(Error::Malformed.into());
+        };
+        let operation = checked_input(g::OperationId::parse(&task.to_string()))?;
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former watermark.
         let tenant = self.tenant.to_string();
@@ -376,7 +403,7 @@ impl Planning {
                 .await?,
         )?;
         if dirty && automatic {
-            let patch = build.request.patch.map(|_| g::MemberPatch {
+            let patch = build.request.patch.as_ref().map(|_| g::MemberPatch {
                 add: vec![],
                 remove: vec![],
             });

@@ -158,6 +158,7 @@ DECLARATIONS = {
 }
 
 
+DECLARATIONS.update({("management_read","planning/policies/http.rs"),("management_read","planning/policies/preview.rs"),("management_read","planning/remote_operations/http.rs")})
 DECLARATIONS.update({('command_accept', 'execution/configuration.rs'), ('command_accept', 'execution/remote.rs'), ('management_write', 'planning/policies/http.rs'), ('management_write', 'planning/remote_operations/http.rs')})
 DECLARATIONS.update({('management_read','software_catalog.rs'),('management_read','content/http.rs'),('management_write','software_catalog.rs')})
 

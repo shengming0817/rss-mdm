@@ -10,7 +10,7 @@ fn targets_and_enablement_do_not_create_execution_versions() {
         None,
         0,
         &Change::Put {
-            definition: definition.clone(),
+            definition: Box::new(definition.clone()),
             enabled: true,
         },
         Uuid::new_v4(),
@@ -28,7 +28,7 @@ fn targets_and_enablement_do_not_create_execution_versions() {
         Some(&disabled.policy),
         2,
         &Change::Put {
-            definition: expanded,
+            definition: Box::new(expanded),
             enabled: true,
         },
         Uuid::new_v4(),

@@ -38,6 +38,7 @@ async fn read(
     Path(id): Path<Uuid>,
     Query(page): Query<Page>,
 ) -> std::result::Result<Json<Value>, Error> {
+    audit.set_action("management_read");
     audit.target(&id.to_string());
     run(&s.execution.audit_store,&s.execution.runtime,s.planning.tenant,&audit,(&s,&a,&audit,page.after),|ctx,tx|Box::pin(async move {
         let (s,a,audit,after)=ctx;let remote=storage::read_in(tx,id).await?;storage::authorize(&a.proof,&remote.snapshot,Permission::OperationRead)?;

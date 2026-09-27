@@ -93,7 +93,7 @@ impl PolicyStore {
                 old.as_ref(),
                 expected,
                 &Change::Put {
-                    definition: p.definition.clone(),
+                    definition: Box::new(p.definition.clone()),
                     enabled: p.enabled
                 },
                 p.version

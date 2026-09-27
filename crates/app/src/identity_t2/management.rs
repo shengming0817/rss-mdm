@@ -1108,17 +1108,13 @@ async fn permission_matrix(
                 "grant {grant} failed to reach domain validation: {status} {result}"
             );
             if *method == Method::GET {
-                let code = if path.contains("plan-previews") {
-                    "plan_preview_not_found"
-                } else {
-                    match *grant {
-                        "group_read" => "group_not_found",
-                        "scope_read" => "scope_not_found",
-                        "policy_read" => "policy_not_found",
-                        "resource_read" => "resource_not_found",
-                        "release_read" => "software_candidate_not_found",
-                        _ => unreachable!(),
-                    }
+                let code = match *grant {
+                    "group_read" => "group_not_found",
+                    "scope_read" => "scope_not_found",
+                    "policy_read" => "policy_not_found",
+                    "resource_read" => "resource_not_found",
+                    "release_read" => "software_candidate_not_found",
+                    _ => unreachable!(),
                 };
                 ensure!(
                     status == StatusCode::NOT_FOUND && result["code"] == code,

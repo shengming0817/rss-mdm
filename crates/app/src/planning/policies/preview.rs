@@ -16,6 +16,7 @@ pub(crate) async fn preview(
     Extension(audit): Extension<RequestAudit>,
     body: std::result::Result<Json<Preview>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
+    audit.set_action("management_read");
     let Json(input) = body.map_err(|_| Error::Malformed)?;
     input.definition.validate()?;
     a.proof.manage(Permission::PolicyRead)?;
