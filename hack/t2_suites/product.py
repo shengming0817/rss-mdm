@@ -14,6 +14,7 @@ import time
 import uuid
 
 from build_run import lease_fds, require_lease
+from verification_result import verify_tests
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE = json.loads((ROOT / "deployment/providers.lock.json").read_text())["postgres"]
@@ -43,27 +44,22 @@ CARGO_EXPECTED={
 }
 
 def verify_set(output,expected):
-    passed=re.findall(r'^test (\S+) \.\.\. ok$',output,re.MULTILINE)
-    require(set(passed)==expected and len(passed)==len(expected) and
-            f'test result: ok. {len(expected)} passed; 0 failed; 0 ignored;' in output,
-            'T2 did not execute the complete expected behavior')
+    verify_tests(output,expected)
 
-def verify_exact_result(output, selected):
-    passed = re.findall(r'^test (\S+) \.\.\. ok$', output, re.MULTILINE)
-    require(passed == [selected] and re.search(r'^test result: ok\. 1 passed; 0 failed; 0 ignored;', output, re.MULTILINE),
-            'T2 did not execute exactly the selected test: ' + selected)
+def verify_exact_result(output,selected):
+    verify_tests(output,[selected])
 
 def run_exact_test(env, selected, integration=True):
     args = ["cargo", "test", "--locked", "-p", "rss-mdm-app"]
     if integration: args += ["--features", "integration"]
     args += ["--lib", selected, "--", "--ignored", "--exact", "--test-threads=1"]
-    if env.get('MDM_AUDIT_DIAGNOSTIC'): args += ['--nocapture']
+    if env.get('MDM_AUDIT_DIAGNOSTIC'): args += ['--show-output']
     result = subprocess.run(args, pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, capture_output=True)
     print(result.stdout, flush=True)
     print(result.stderr, file=sys.stderr, flush=True)
     require(result.returncode == 0, 'T2 failed: ' + selected)
     verify_exact_result(result.stdout, selected)
-    return result.stdout
+    return result.stdout+(result.stderr or "")
 
 def run_foundation_tests(env):
     for selected in ["identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity", "device::tests::postgres_boundary", "inventory_runtime::tests::durable_report_recovery_and_projection"]:
@@ -246,6 +242,10 @@ def run_scenario(context, scenario):
             from apple_fixtures import generate
             generate(root, root/'server.crt', root/'server.key')
             env['MDM_APPLE_FIXTURES']=str(root)
+        if 'sources' in context.spec.fixtures:
+            from t2_suites import sources
+            source_root=root/'source';source_root.mkdir()
+            env.update(sources.tls_environment(source_root,context))
         if executables:env['MDM_FIXTURE_BIN']=executables[0]
         if 'unmigrated' not in context.spec.fixtures:
             with owner.phase('migrate'):
@@ -292,21 +292,21 @@ def apple(f):
 
 def software(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::software::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::software::","--","--ignored","--test-threads=1","--show-output"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     print(result.stdout,flush=True)
     require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise software T2 failed or did not execute')
     return
 
 def tasks(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--nocapture"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::tasks::","--","--ignored","--test-threads=1","--show-output"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     print(result.stdout,flush=True)
     require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'enterprise task T2 failed or did not execute')
     return
 
 def compliance(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    command=["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::compliance::","--","--ignored","--test-threads=1","--nocapture"]
+    command=["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::compliance::","--","--ignored","--test-threads=1","--show-output"]
     with subprocess.Popen(command,pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT) as process:
         lines=[]
         for line in process.stdout:
@@ -325,7 +325,7 @@ def assets(f):
 
 def commands(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
-    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--nocapture","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    result=subprocess.run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","windows::tests::native_command_operations_and_observation","--","--ignored","--show-output","--test-threads=1"],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     print(result.stdout,flush=True)
     require(result.returncode==0 and 'test result: ok. 1 passed; 0 failed; 0 ignored;' in result.stdout,'command T2 failed or did not run')
     diagnostics=[json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
@@ -335,14 +335,11 @@ def commands(f):
 def identity(f):
     root,env,name,owner=f.root,f.env,f.name,f.owner
     run_exact_test(env, "identity_audit::tests::http_events_deliver_replay_and_fail_closed")
-    from t2_suites import sources as source
-    source_root=root/'source';source_root.mkdir()
-    env.update(source.tls_environment(source_root))
-    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::authorization::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
-    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env=env)
+    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::authorization::","--","--ignored","--test-threads=1","--show-output"],cwd=ROOT,env=env)
+    run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::local_identity_mdm_authorization_and_revocation","--","--ignored","--test-threads=1","--show-output"],cwd=ROOT,env=env)
     from enterprise_idp import fixture as enterprise
     with enterprise(root, owner) as provider:
-        run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--nocapture"],cwd=ROOT,env={**env,**provider})
+        run(["cargo","test","--locked","-p","rss-mdm-app","--features","integration","--lib","identity_t2::sso::","--","--ignored","--test-threads=1","--show-output"],cwd=ROOT,env={**env,**provider})
     return
 
 def foundation(f):

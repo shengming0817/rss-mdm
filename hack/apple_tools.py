@@ -53,7 +53,7 @@ if __name__ == '__main__':
 def nano_identity():
     import subprocess
     effective = json.loads(subprocess.check_output(
-        ['go','env','-json','GOOS','GOARCH','GOAMD64','GOARM','GOARM64','GOVERSION','GOROOT','GOTOOLCHAIN','CGO_ENABLED','CC','CXX','GOFLAGS','GOEXPERIMENT'],text=True))
+        ['go','env','-json','GOOS','GOARCH','GOAMD64','GOARM','GOARM64','GOVERSION','GOROOT','GOTOOLCHAIN','CGO_ENABLED','CC','CXX','CGO_CFLAGS','CGO_CPPFLAGS','CGO_CXXFLAGS','CGO_LDFLAGS','GOFLAGS','GOEXPERIMENT'],text=True,env={**os.environ,'GOWORK':'off'}))
     return dict(source=LOCK['nanomdm']['sourceArchiveSha256'], toolchain=effective,
                 flags=['-mod=readonly','-trimpath','./cmd/nanomdm'])
 

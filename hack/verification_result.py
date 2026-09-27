@@ -7,3 +7,36 @@ def result(status, started=None, **details):
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def publish(path, payload):
+    import json
+    import os
+    import tempfile
+    path.parent.mkdir(parents=True,exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,prefix='.result-',delete=False) as stream:
+        temporary=stream.name
+        try:
+            json.dump(payload,stream,indent=2)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            os.unlink(temporary)
+            raise
+    try:os.replace(temporary,path)
+    finally:
+        if os.path.exists(temporary):os.unlink(temporary)
+
+
+def verify_tests(output, expected):
+    from collections import Counter
+    import re
+    actual=Counter(re.findall(r'^test (\S+) \.\.\.',output,re.MULTILINE))
+    summaries=re.findall(r'^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;',output,re.MULTILINE)
+    rejected=re.search(r'^test \S+ \.\.\. (?:ignored|FAILED)\b',output,re.MULTILINE)
+    wanted=Counter(expected)
+    require(actual==wanted and bool(summaries) and not rejected and
+            sum(int(passed) for passed,_,_ in summaries)==sum(wanted.values()) and
+            all(int(passed)>0 and int(failed)==0 and int(ignored)==0 for passed,failed,ignored in summaries),
+            'T2 did not execute the exact required test identities and successful counts')

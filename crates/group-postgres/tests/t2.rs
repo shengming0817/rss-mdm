@@ -21,7 +21,7 @@ fn admin(sql: &str) -> String {
             "-U",
             "postgres",
             "-d",
-            "group_test",
+            config["database"].as_str().unwrap(),
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -250,7 +250,7 @@ async fn lost_commit_ack_replays_durable_result_once() {
     ));
     let config = fixture_config();
     let _holder = ChildGuard(std::process::Command::new("docker")
-        .args(["exec", config["container"].as_str().unwrap(), "psql", "-At", "-U", "postgres", "-d", "group_test", "-c", "SET application_name='group_ack_holder'; SELECT pg_advisory_lock(238701); SELECT pg_sleep(30)"])
+        .args(["exec", config["container"].as_str().unwrap(), "psql", "-At", "-U", "postgres", "-d", config["database"].as_str().unwrap(), "-c", "SET application_name='group_ack_holder'; SELECT pg_advisory_lock(238701); SELECT pg_sleep(30)"])
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());
     tokio::time::timeout(Duration::from_secs(5), async {
         while admin(

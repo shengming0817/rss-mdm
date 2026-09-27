@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from build_run import lease_fds, require_lease
 from ci_registry import SUITES, all_tools
-from verification_result import result as stage_result
+from verification_result import result as stage_result, publish
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
@@ -323,14 +323,8 @@ def working_source_state():
     return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
 
 
-def main():
-    if os.environ.get("CI_PLAN", "0") != "1":
-        require_lease(ROOT)
-    OUT.mkdir(parents=True, exist_ok=True)
-    head = command(["/usr/bin/git", "rev-parse", "HEAD"])
-    require(head.returncode == 0, "cannot resolve base revision")
-    start_head = head.stdout.strip()
-    gates = [
+def fast_gates():
+    return [
         ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_*.py"]),
         ("fmt",["cargo","fmt","--all","--check"]),
         ("check",["cargo","check","--locked","--workspace","--all-targets"]),
@@ -340,6 +334,15 @@ def main():
         ("agent-wire-compat",[sys.executable,"hack/agent_wire_compat.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
+
+def execute_ci():
+    if os.environ.get("CI_PLAN", "0") != "1":
+        require_lease(ROOT)
+    OUT.mkdir(parents=True, exist_ok=True)
+    head = command(["/usr/bin/git", "rev-parse", "HEAD"])
+    require(head.returncode == 0, "cannot resolve base revision")
+    start_head = head.stdout.strip()
+    gates=fast_gates()
     source_state = working_source_state()
     selection = select_impact(start_head)
     plan = {"selection": selection, "gates": {
@@ -403,8 +406,20 @@ def main():
     evidence['t2'] = integration
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
-    (OUT / "result.json").write_text(json.dumps(evidence,indent=2)+"\n")
+    publish(OUT/"result.json",evidence)
     print(json.dumps(evidence, indent=2))
     return int(any(value["status"] == "failed" for value in results.values()) or any(value["status"] == "failed" for value in integration.values()))
+
+def main():
+    if os.environ.get('CI_PLAN','0')=='1':return execute_ci()
+    require_lease(ROOT)
+    if OUT.is_symlink():raise RuntimeError('CI output directory cannot be a symlink')
+    OUT.mkdir(parents=True,exist_ok=True)
+    clear_execution_evidence([name for name,_ in fast_gates()])
+    started=time.monotonic()
+    try:return execute_ci()
+    except BaseException as error:
+        publish(OUT/'result.json',{'status':'failed','gates':{'execution':stage_result('failed',started,reason=type(error).__name__)}})
+        raise
 
 if __name__ == "__main__": sys.exit(main())

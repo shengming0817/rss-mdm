@@ -11,7 +11,7 @@ import time
 from build_run import require_lease
 from ci_registry import ROOT, SUITES, execute
 from t2_environment import T2Context
-from verification_result import result as stage_result
+from verification_result import result as stage_result, publish
 
 def select_suites(suite,selection):
     if suite=='all':return sorted(SUITES)
@@ -66,19 +66,27 @@ def main(argv=None):
     # Validate spelling before selection or starting any services.
     if args.suite not in ('all','affected',*SUITES):parser.error('unknown SUITE; available: '+', '.join(['affected','all',*sorted(SUITES)]))
     require_lease(ROOT)
+    output=ROOT/'artifacts/local-t2'
+    if output.is_symlink():raise RuntimeError('T2 output directory cannot be a symlink')
+    output.mkdir(parents=True,exist_ok=True)
+    (output/'result.json').unlink(missing_ok=True)
+    started=time.monotonic()
+    try:return execute_t2(args,output)
+    except BaseException as error:
+        publish(output/'result.json',{'status':'failed','suite':args.suite,'suites':{'execution':stage_result('failed',started,reason=type(error).__name__)}})
+        raise
+
+def execute_t2(args,output):
     import ci
     source_state=ci.working_source_state()
     selection=ci.select_impact(ci.command(['/usr/bin/git','rev-parse','HEAD']).stdout.strip(),base=args.base)
     names=select_suites(args.suite,selection)
     if not names:print('T2: no-t2-selected (integration verification not performed)',flush=True)
-    output=ROOT/'artifacts/local-t2'
-    output.mkdir(parents=True,exist_ok=True)
-    (output/'result.json').unlink(missing_ok=True)
     results=run_suites(names,output)
     if ci.working_source_state()!=source_state:
         results['source-stability']=stage_result('failed',reason='source changed during T2')
     evidence={'selection':selection,'suite':args.suite,'status':'failed' if any(x['status']=='failed' for x in results.values()) else 'passed' if names else 'skipped','suites':results}
-    (output/'result.json').write_text(json.dumps(evidence,indent=2)+'\n')
+    publish(output/'result.json',evidence)
     return int(evidence['status']=='failed')
 
 if __name__=='__main__':sys.exit(main())

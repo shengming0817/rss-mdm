@@ -6,9 +6,9 @@ from build_run import lease_fds, require_lease
 
 ROOT=Path(__file__).resolve().parents[2]
 from t2_suites import backend as pg, sources as source
-def run(env):
+def run(env,context):
     with tempfile.TemporaryDirectory(prefix='mdm-publication-https-') as directory:
-        tls=source.tls_environment(Path(directory));tls.update(env)
+        tls=source.tls_environment(Path(directory),context);tls.update(env)
         result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-app','--test','publication_t2','--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=tls,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
         print(result.stdout,flush=True)
         if result.returncode:raise RuntimeError('publication T2 failed')
@@ -19,4 +19,4 @@ def run(env):
         pg.verify_tests(result.stdout, {'planning::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic'})
 def main(context):
     require_lease(ROOT)
-    with pg.fixture(context,app=True) as(env,sql):run(env)
+    with pg.fixture(context,app=True) as(env,sql):run(env,context)

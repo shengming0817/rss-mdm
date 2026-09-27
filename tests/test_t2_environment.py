@@ -107,3 +107,36 @@ class EnvironmentTests(unittest.TestCase):
         with patch('t2_environment.Environment',return_value=owned):
             with self.assertRaises(Cancelled),context.cluster():raise Cancelled()
         owned.reset.assert_called_once()
+
+    def test_gateway_modes_have_distinct_keys_under_the_same_ca(self):
+        import hashlib
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            env=Environment(Path(tmp));env.prepare_inputs()
+            directories=[env.root/'gateway-cert'/mode for mode in ('host','container')]
+            for directory in directories:
+                env.issue_leaf(directory,['localhost','mdm.example.test'])
+                subprocess.run(['openssl','verify','-CAfile',str(env.root/'ca.crt'),str(directory/'server.crt')],check=True,capture_output=True)
+            for name in ('server.key','server.crt'):
+                self.assertNotEqual(hashlib.sha256((directories[0]/name).read_bytes()).digest(),hashlib.sha256((directories[1]/name).read_bytes()).digest())
+
+    def test_reset_rejects_damaged_owner_record(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            env=Environment(Path(tmp));env.root.mkdir(parents=True)
+            (env.root/'owner.json').write_text('{}')
+            with patch.object(env,'compose') as compose:
+                with self.assertRaisesRegex(RuntimeError,'owner record'):env.reset()
+                compose.assert_not_called()
+
+    def test_reset_releases_allocation_without_local_port_marker(self):
+        from unittest.mock import patch
+        import json
+        with tempfile.TemporaryDirectory() as tmp,patch.object(Path,'home',return_value=Path(tmp)):
+            env=Environment(Path(tmp)/'work');env.root.mkdir(parents=True)
+            (env.root/'owner.json').write_text(json.dumps({'worktree':str(env.worktree),'project':env.project}))
+            env.host_ports()
+            self.assertFalse((env.root/'host-ports.json').exists())
+            with patch.object(env,'verify_ownership'),patch.object(env,'compose'):env.reset()
+            allocations=json.loads((Path(tmp)/'.cache/rss-mdm-dev-ports/allocations.json').read_text())
+            self.assertNotIn(env.project,allocations)

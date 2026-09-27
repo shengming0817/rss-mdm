@@ -61,7 +61,7 @@ class Environment:
         return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
-                'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'], **getattr(self,'extra',{})}
+                'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'], **getattr(self,'extra',{})}
 
     def compose(self, *args, **kwargs):
         return run(['docker','compose','-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
@@ -125,16 +125,19 @@ class Environment:
                 if (labels or {}).get('rss.mdm.worktree')!=self.identity or (labels or {}).get('com.docker.compose.project')!=self.project:
                     raise RuntimeError('refusing foreign environment resource')
 
+    def prepare_inputs(self, certificates=True):
+        self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
+        marker=self.root/'owner.json'
+        expected={'worktree':str(self.worktree),'project':self.project}
+        if marker.exists() and json.loads(marker.read_text())!=expected:raise RuntimeError('foreign environment owner record')
+        private(marker,expected)
+        if certificates:self.certificate()
+
     def up(self):
         require_lease(self.worktree)
         reused=bool(self.compose('ps','--all','-q','postgres'))
         with self.phase('prepare',reused=reused):
-            self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
-            marker=self.root/'owner.json'
-            expected={'worktree':str(self.worktree),'project':self.project}
-            if marker.exists() and json.loads(marker.read_text())!=expected:raise RuntimeError('foreign environment owner record')
-            private(marker,expected)
-            self.certificate()
+            self.prepare_inputs()
             self.issue_leaf(self.root/'pg',['localhost','postgres'])
             private(self.root/'pg'/'pg-password','local-fixture')
             self.verify_ownership()
@@ -178,16 +181,20 @@ class Environment:
 
     def stop(self):
         self.verify_ownership()
-        self.compose('--profile','product','--profile','idp','stop')
+        self.compose('--profile','*','stop')
 
     def reset(self):
+        if self.root.exists() or self.root.is_symlink():
+            marker=self.root/'owner.json'
+            if self.root.is_symlink() or not marker.exists() or json.loads(marker.read_text())!={'worktree':str(self.worktree),'project':self.project}:
+                raise RuntimeError('refusing foreign or damaged environment owner record')
         self.verify_ownership()
-        self.compose('--profile','product','--profile','idp','down','--volumes','--remove-orphans')
-        if (self.root/'host-ports.json').exists():self.host_ports(release=True)
+        self.compose('--profile','*','down','--volumes','--remove-orphans')
+        self.host_ports(release=True)
         if self.root.exists(): shutil.rmtree(self.root)
 
     def status(self):
-        raw=self.compose('--profile','product','--profile','idp','ps','--all','--format','json')
+        raw=self.compose('--profile','*','ps','--all','--format','json')
         services=json.loads(raw) if raw.startswith('[') else [json.loads(line) for line in raw.splitlines() if line.strip()]
         return dict(project=self.project,worktree=str(self.worktree),services=services)
 
@@ -195,7 +202,9 @@ class Environment:
         import fcntl
         import socket
         from build_run import owned_directory
-        registry=owned_directory(Path.home()/'.cache/rss-mdm-dev-ports','.mdm-dev-ports-v1')
+        location=Path.home()/'.cache/rss-mdm-dev-ports'
+        if release and not location.exists():return
+        registry=owned_directory(location,'.mdm-dev-ports-v1')
         with (registry/'lock').open('a+') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
             index=registry/'allocations.json'
@@ -230,7 +239,7 @@ class Environment:
         import secrets
         import socket
         self.up()
-        with self.phase('roles'):self.roles()
+        with self.phase('roles',reused=self.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'")=='1'):self.roles()
         if mode=='container':
             if not server_image or not web_image:raise ValueError('container mode requires --server-image and --web-image')
             images={}
@@ -280,8 +289,8 @@ class Environment:
                          user=dict(instanceId=INSTANCE,tenantId=TENANTS[0],principalId=ADMIN)))
         if self.sql("SELECT count(*) FROM pg_database WHERE datname='mdm_dev'")=='0':self.sql('CREATE DATABASE mdm_dev OWNER mdm_owner')
         self.sql('GRANT CREATE ON DATABASE mdm_dev TO mdm_owner,mdm_audit_owner,mdm_ledger_owner; GRANT CREATE ON SCHEMA public TO mdm_owner','mdm_dev')
-        self.issue_leaf(self.root/'gateway-cert',['localhost','mdm.example.test'])
-        for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/name).read_text())
+        self.issue_leaf(self.root/'gateway-cert'/mode,['localhost','mdm.example.test'])
+        for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/mode/name).read_text())
         nginx=(ROOT/'deployment/nginx.conf').read_text().replace('listen 443 ssl;',f'listen {8445 if mode=="container" else https_port} ssl;')
         nginx=nginx.replace('server 127.0.0.1:8081;',f'server 127.0.0.1:{backend_port};').replace('server_name mdm.example.test;','server_name localhost;').replace('proxy_set_header Host mdm.example.test;','proxy_set_header Host $http_host;')
         prefix='/certs' if mode=='container' else str(gateway)
@@ -315,7 +324,8 @@ class Environment:
         actual=int(self.compose('port','runtime-netns','8445').rsplit(':',1)[1])
         expected=json.loads((self.root/'container-initialized.json').read_text())['origin']
         if expected!=f'https://localhost:{actual}':raise RuntimeError('product port changed; run init --mode container again')
-        with self.phase('start-product'):
+        running=self.compose('ps','-q','server','gateway').splitlines()
+        with self.phase('start-product',reused=len(running)==2):
             self.compose('--profile','product','up','-d','server','gateway')
         import ssl
         import urllib.request
@@ -373,11 +383,32 @@ class T2Context:
         try:
             if destructive or not self.prepared:
                 environment.up()
-                with environment.phase('roles'):environment.roles()
+                with environment.phase('roles',reused=environment.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'")=='1'):environment.roles()
                 if not destructive:self.prepared=True
             yield environment
         finally:
             if destructive:environment.reset()
+
+    def source_tls(self, root):
+        self.main.prepare_inputs()
+        directory=self.main.root/'source-cert'
+        self.main.issue_leaf(directory,['source.invalid'])
+        for source,target in ((self.main.root/'ca.crt','ca.pem'),(directory/'server.crt','server.pem'),(directory/'server.key','server.key')):
+            private(root/target,source.read_text())
+
+    @contextlib.contextmanager
+    def gateway(self, config):
+        environment=Environment(group='fault-gateway-probe')
+        try:
+            environment.prepare_inputs(certificates=False)
+            private(environment.root/'probe/nginx.conf',config)
+            environment.verify_ownership()
+            environment.compose('--profile','probe','up','-d','gateway-probe')
+            name=environment.compose('ps','-q','gateway-probe')
+            port=int(environment.compose('port','gateway-probe','8080').rsplit(':',1)[1])
+            yield name,port
+        finally:
+            environment.reset()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

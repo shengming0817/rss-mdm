@@ -59,7 +59,7 @@ def main(context):
     for target,expected in [('t2',EXPECTED),('generations',GENERATIONS)]:
         for test in sorted(expected):
             with fixture(context,case=test) as(env,sql):
-                result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--features','integration','--test',target,test,'--','--ignored','--exact','--test-threads=1','--nocapture'],pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                result=subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--features','integration','--test',target,test,'--','--ignored','--exact','--test-threads=1','--show-output'],pass_fds=lease_fds(),cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)
                 try:
                     require(result.returncode==0,'Group T2 failed');verify_tests(result.stdout,{test})

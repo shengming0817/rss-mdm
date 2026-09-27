@@ -78,3 +78,23 @@ class EvidenceTests(unittest.TestCase):
             self.assertFalse((out/'management.log').exists())
             self.assertFalse((out/'apple.log').exists())
             self.assertTrue(all(item['status']=='skipped' and item['elapsedSeconds']==0 for item in result.values()))
+
+class InterleavedCargoOutput(unittest.TestCase):
+    def test_diagnostics_between_test_prefix_and_status_keep_exact_identity(self):
+        from verification_result import verify_tests
+        output='test expected ... {"event":"diagnostic"}\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n'
+        verify_tests(output,['expected'])
+        for bad in (output.replace('expected','unrelated'),output.replace('1 passed','0 passed'),output.replace('0 ignored','1 ignored')):
+            with self.assertRaises(RuntimeError):verify_tests(bad,['expected'])
+
+class EarlyFailureEvidence(unittest.TestCase):
+    def test_preflight_error_replaces_old_success(self):
+        import json,tempfile
+        from unittest.mock import patch
+        import ci
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp)/'artifacts/local-t2';out.mkdir(parents=True)
+            (out/'result.json').write_text('{"status":"passed"}')
+            with patch.object(t2,'ROOT',Path(tmp)),patch.object(t2,'require_lease'),patch.object(ci,'working_source_state',side_effect=RuntimeError('source changed')):
+                with self.assertRaises(RuntimeError):t2.main(['--suite','all'])
+            self.assertEqual(json.loads((out/'result.json').read_text())['status'],'failed')
