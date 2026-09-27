@@ -71,7 +71,7 @@ pub(crate) async fn enqueue_job_in(
         let tenant = tx.tenant_id().to_string();
         let target = input.target();
         let pending=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND kind='scope' AND target=$2 AND NOT completed ORDER BY id LIMIT 1").bind(tenant).bind(target).fetch_optional(c).await
+            sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND j.kind='scope' AND j.target=$2 AND NOT j.completed AND NOT EXISTS(SELECT 1 FROM mdm_planning.scope_runs r WHERE(r.tenant_id,r.id)=(j.tenant_id,j.id) AND r.phase='published') ORDER BY j.id LIMIT 1").bind(tenant).bind(target).fetch_optional(c).await
         })).await?;
         if let Some(pending) = pending {
             return Ok(accepted(pending, input));

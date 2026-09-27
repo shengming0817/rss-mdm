@@ -50,13 +50,13 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
   "enabled": true,
   "definition": {
     "resource": {"id": "script", "version": "v1", "platform": "macos", "architecture": "aarch64", "variant": "default"},
-    "targets": {"kind": "scope", "id": "11111111-1111-1111-1111-111111111111"},
+    "scope": "11111111-1111-1111-1111-111111111111",
     "behavior": {"kind": "execution", "parameters": {}, "runLifetimeSeconds": 300}
   }
 }
 ```
 
-默认签入触发、每执行版本一次、没有结束时间。`targets` 也可为 `{"kind":"devices","devices":["device-id"]}`。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
+默认签入触发、每执行版本一次、没有结束时间。显式设备也通过 Scope 的直接设备来源表达。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
 
 管理需要 PolicyWrite，以及目标的 ScriptExecute；Scope 分配另需 ScopeRead 和全设备 ScriptExecute。发布受理后归组织持有，不再依赖发布者的登录会话、岗位或授权规则。没有 ScriptPlan 保存或强制第二人审批步骤。Agent 注册仍须声明 `task.execute.v2`，领取、下载和启动仍验证凭据、设备世代和当前分配。
 
@@ -68,7 +68,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 ## 一次性远程操作
 
-`POST /api/v2/remote-operations` 接受 `operationId`、Resource 绑定、`targets`、`deadline` 和 `action`。脚本动作是 `{"kind":"execute","parameters":{}}`，当前原生配置动作是 `{"kind":"apply_configuration"}`。不创建长期 Policy，也不接受触发器或频率。Scope 输入在受理时固定结果引用；后续入组或退出不改变本次目标。
+`POST /api/v2/remote-operations` 接受 `operationId`、Resource 绑定、`targets`、`deadline` 和 `action`。脚本动作是 `{"kind":"execute","parameters":{}}`，当前原生配置动作是 `{"kind":"apply_configuration"}`。不创建长期 Policy，也不接受触发器或频率。`targets` 使用 `{"kind":"devices","devices":["device-id"]}` 或 `{"kind":"scope","id":"scope-uuid"}`。Scope 输入在受理时固定结果引用；后续入组或退出不改变本次目标。交付受理绑定当前注册世代；后续重新注册会使旧交付取消，查询保留该子任务状态。需要向新世代再次执行时，提交新的显式远程操作。
 
 一个持久分页任务受理目标，Agent Run 等待主动领取，MDM 子 Operation 进入已有原生队列。单设备缺少通道、能力或容量会留下阻断原因并继续后续设备；离线但已有有效注册的设备仍可在期限内领取。过期后不再产生新子项或发放 Start permit。
 

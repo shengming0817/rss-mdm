@@ -102,6 +102,9 @@ impl Client {
             "policy_write",
             "scope_write",
             "scope_read",
+            "group_read",
+            "group_write",
+            "group_recompute",
         ]
         .iter()
         .map(|p| json!({"operation":p,"scope":{"kind":"tenant"}}))
@@ -160,12 +163,52 @@ impl Client {
                 == StatusCode::FORBIDDEN
         );
         grants.push(json!({"operation":"firewall_write","scope":{"kind":"all_devices"}}));
+        grants.push(json!({"operation":"inventory_read","scope":{"kind":"all_devices"}}));
         ensure!(self.browser.call(&self.router,Method::PUT,&format!("/api/v1/authorization/rules/{rule}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":{"subject":subject,"grants":grants}}))).await?.0==StatusCode::OK);
+        // A stable Unknown exclusion retains a pending owner. An independent
+        // fresh Scope requiring the identical effect must still be able to apply.
+        let unknown_group = Uuid::new_v4();
+        let g=self.product(&format!("groups/{unknown_group}"),op(0,json!({"action":"create","name":"unknown exclusion","description":"","criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":true}}}))).await?;
+        self.wait_preview(&format!(
+            "/api/v2/groups/{unknown_group}/tasks/{}",
+            g["task"].as_str().unwrap()
+        ))
+        .await?;
+        let uncertain_scope = Uuid::new_v4();
+        let s=self.product(&format!("scopes/{uncertain_scope}"),op(0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE}],"limitations":null,"exclusions":[{"kind":"group","id":unknown_group}]}}))).await?;
+        self.wait_preview(&format!(
+            "/api/v2/scopes/{uncertain_scope}/tasks/{}",
+            s["task"].as_str().unwrap()
+        ))
+        .await?;
+        let pending_policy = Uuid::new_v4().to_string();
+        self.product(
+            &format!("policies/{pending_policy}"),
+            op(
+                0,
+                configuration_definition(&resource, "v1", uncertain_scope),
+            ),
+        )
+        .await?;
+        self.settled_configuration(&pending_policy).await?;
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        let diagnosis:Option<String>=sqlx::query_scalar("SELECT diagnosis FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2").bind(TENANT).bind(DEVICE).fetch_one(&mut db).await?;
+        ensure!(
+            diagnosis.as_deref() == Some("waiting_scope"),
+            "Unknown exclusion did not retain pending claim: {diagnosis:?}"
+        );
         let accepted = self
             .product(&format!("policies/{policy}"), request.clone())
             .await?;
         ensure!(accepted == self.product(&format!("policies/{policy}"), request).await?);
         let operation = self.wait_configuration(&policy, None).await?;
+        self.product(
+            &format!("policies/{pending_policy}"),
+            op(1, json!({"action":"disable"})),
+        )
+        .await?;
+        self.settled_configuration(&pending_policy).await?;
         let write = native::begin(peer, url, initial, ack, 951, None).await?;
         let response = peer_reply(
             peer,
@@ -327,7 +370,14 @@ impl Client {
             op(1, json!({"action":"disable"})),
         )
         .await?;
+        self.settled_configuration(&policy).await?;
         ensure!(self.wait_configuration(&shared, None).await? == operation);
+        ensure!(
+            self.call(Method::GET, &format!("/{operation}"), None)
+                .await?
+                .1["commandStatus"]
+                == "received"
+        );
         self.product(
             &format!("policies/{policy}"),
             op(2, json!({"action":"enable"})),
@@ -493,6 +543,14 @@ impl Client {
         ensure!(automation_owner.shutdown().join().await?.is_clean());
         Ok(())
     }
+    async fn settled_configuration(&self, policy: &str) -> anyhow::Result<()> {
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+        tokio::time::timeout(Duration::from_secs(30),async {loop {
+            let ready:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND kind='policy_reconcile' AND target=$2 AND NOT completed) AND coalesce((SELECT observed_revision=input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$3),false)").bind(TENANT).bind(policy).bind(DEVICE).fetch_one(&mut db).await?;
+            if ready{return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
+        }}).await?
+    }
     async fn wait_configuration(
         &mut self,
         policy: &str,
@@ -617,5 +675,5 @@ fn assert_work(message: &s::Message, expected: &[(&str, &str)]) -> anyhow::Resul
 }
 
 fn configuration_definition(resource: &str, version: &str, scope: Uuid) -> Value {
-    json!({"action":"put","enabled":true,"definition":{"resource":{"id":resource,"version":version,"platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"targets":{"kind":"scope","id":scope},"behavior":{"kind":"configuration","exit":"retain"}}})
+    json!({"action":"put","enabled":true,"definition":{"resource":{"id":resource,"version":version,"platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"scope":scope,"behavior":{"kind":"configuration","exit":"retain"}}})
 }

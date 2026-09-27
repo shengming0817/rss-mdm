@@ -1,5 +1,4 @@
 //! One accepted operation owns one immutable target snapshot, without creating a Policy.
-use super::assignment::{Behavior, Definition, Exit, Frequency, ResourceBinding, Targets};
 use super::policies::{Frozen, Policies};
 use crate::{
     Error,
@@ -7,6 +6,7 @@ use crate::{
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
+use rss_mdm_policy::{Behavior, Exit, Frequency, ResourceBinding};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,6 +15,17 @@ use uuid::Uuid;
 mod http;
 pub(crate) mod storage;
 pub(crate) use http::routes;
+/// Explicit one-shot targets, distinct from a persistent Policy's Scope reference.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Targets {
+    Scope {
+        id: Uuid,
+    },
+    Devices {
+        devices: std::collections::BTreeSet<String>,
+    },
+}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Action {
@@ -58,35 +69,91 @@ pub(crate) struct Remote {
     pub snapshot: Snapshot,
 }
 impl Input {
-    fn definition(&self, now: i64) -> std::result::Result<Definition, Error> {
+    fn behavior(&self, now: i64) -> std::result::Result<Behavior, Error> {
         if self.operation_id.is_nil()
             || self.deadline < now.saturating_add(60)
             || self.deadline > now.saturating_add(604800)
         {
             return Err(Error::Malformed);
         }
-        Ok(Definition {
-            resource: self.resource.clone(),
-            targets: self.targets.clone(),
-            behavior: match &self.action {
-                Action::Execute { parameters } => Behavior::Execution {
-                    parameters: parameters.clone(),
-                    schedule: super::action_schedule::Schedule {
-                        trigger: super::action_schedule::Trigger::Once { at: now },
-                        misfire: Default::default(),
-                        not_before: now,
-                        until: Some(self.deadline),
-                        jitter_seconds: 0,
-                        window: None,
-                    },
-                    frequency: Frequency::OncePerVersion,
-                    run_lifetime_seconds: (self.deadline - now) as u32,
+        self.resource.validate()?;
+        if serde_json::to_vec(self)
+            .map_err(|_| Error::Malformed)?
+            .len()
+            > 4_194_304
+        {
+            return Err(Error::Malformed);
+        }
+        match &self.targets {
+            Targets::Scope { id } if id.is_nil() => return Err(Error::Malformed),
+            Targets::Devices { devices }
+                if devices
+                    .iter()
+                    .any(|d| d.is_empty() || d.len() > 256 || d.chars().any(char::is_control)) =>
+            {
+                return Err(Error::Malformed);
+            }
+            _ => (),
+        }
+        let behavior = match &self.action {
+            Action::Execute { parameters } => Behavior::Execution {
+                parameters: parameters.clone(),
+                schedule: rss_mdm_policy::schedule::Schedule {
+                    trigger: rss_mdm_policy::schedule::Trigger::Once { at: now },
+                    misfire: Default::default(),
+                    not_before: now,
+                    until: Some(self.deadline),
+                    jitter_seconds: 0,
+                    window: None,
                 },
-                Action::ApplyConfiguration => Behavior::Configuration { exit: Exit::Retain },
+                frequency: Frequency::OncePerVersion,
+                run_lifetime_seconds: (self.deadline - now) as u32,
             },
-        })
+            Action::ApplyConfiguration => Behavior::Configuration { exit: Exit::Retain },
+        };
+        behavior.validate()?;
+        Ok(behavior)
+    }
+    fn permission(&self) -> Permission {
+        match self.action {
+            Action::Execute { .. } => Permission::ScriptExecute,
+            Action::ApplyConfiguration => Permission::FirewallWrite,
+        }
+    }
+    fn authorize(&self, proof: &AuthorizedPrincipal) -> std::result::Result<(), Error> {
+        match &self.targets {
+            Targets::Scope { .. } => {
+                proof.manage(Permission::ScopeRead)?;
+                proof.require_all_devices(self.permission())
+            }
+            Targets::Devices { devices } => {
+                for d in devices {
+                    proof.require(self.permission(), Some(d))?;
+                }
+                Ok(())
+            }
+        }
+    }
+    fn authorize_snapshot(
+        &self,
+        auth: &crate::authorization::Snapshot,
+        proof: &AuthorizedPrincipal,
+    ) -> std::result::Result<(), Error> {
+        match &self.targets {
+            Targets::Scope { .. } => {
+                auth.require(proof, Permission::ScopeRead, None)?;
+                auth.require_all_devices(proof, self.permission())
+            }
+            Targets::Devices { devices } => {
+                for d in devices {
+                    auth.require(proof, self.permission(), Some(d))?;
+                }
+                Ok(())
+            }
+        }
     }
 }
+
 impl Policies {
     pub(crate) async fn create_remote(
         &self,
@@ -95,13 +162,12 @@ impl Policies {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.manage(Permission::ResourceRead)?;
-        let definition = input.definition(input.deadline.saturating_sub(60))?;
-        definition.validate()?;
-        super::policies::authorize(proof, &definition)?;
+        input.behavior(input.deadline.saturating_sub(60))?;
+        input.authorize(proof)?;
         let artifact = inspect(
             &self.planning.runtime,
             self.planning.tenant,
-            (self, &definition),
+            (self, input),
             |ctx, tx| {
                 Box::pin(async move {
                     let version = ctx.0.resource_in(tx, &ctx.1.resource).await?;
@@ -130,17 +196,17 @@ impl Policies {
         } else {
             None
         };
-        run(&self.planning.audit_store,&self.planning.runtime,self.planning.tenant,audit,(self,proof,input,audit,&definition,verified.as_ref()),|ctx,tx|Box::pin(async move {
-            let (s,proof,input,audit,definition,verified)=*ctx;
+        run(&self.planning.audit_store,&self.planning.runtime,self.planning.tenant,audit,(self,proof,input,audit,verified.as_ref()),|ctx,tx|Box::pin(async move {
+            let (s,proof,input,audit,verified)=*ctx;
             let auth=crate::action_admission::current(tx,proof).await?;
             auth.require(proof,Permission::ResourceRead,None)?;
-            super::policies::authorize_snapshot(&auth,proof,definition)?;
+            input.authorize_snapshot(&auth,proof)?;
             crate::transaction::lock(tx).await?;
             let hash=fingerprint(&(input,proof.user()))?;
             if let Some(receipt)=super::receipts::replay(tx,input.operation_id,&hash).await? {return Ok(receipt);}
             let at=crate::action_admission::now(tx).await?;
-            let definition=input.definition(at)?;
-            let frozen=s.freeze_in(tx,&definition,verified).await?;
+            let behavior=input.behavior(at)?;
+            let frozen=s.freeze_in(tx,&input.resource,&behavior,verified).await?;
             let snapshot=s.planning.capture_remote_targets_in(tx,&input.targets).await?;
             let tenant=tx.tenant_id().to_string();let id=input.operation_id;let resource=input.resource.id.clone();let version=input.resource.version.clone();let snapshot=checked_input(serde_json::to_value(snapshot))?;let content=checked_input(serde_json::to_value(frozen))?;let deadline=input.deadline;let author=checked_input(serde_json::to_value(proof.user()))?;
             tx.with_connection(move|c|Box::pin(async move {

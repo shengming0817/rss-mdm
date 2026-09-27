@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 NAMES=('policy','resource','software-release')
 SCHEMAS=('mdm_policy','mdm_resource','mdm_software_release')
 BEHAVIORS={
- 'policy':{'configuration_cas_replay_and_runtime_isolation','target_changes_preserve_execution_version_and_entries','companion_failure_rolls_back_publication','admission_rejects_schema_and_reachable_privilege_drift','explicit_trigger_does_not_edit_configuration'},
+ 'policy':{'configuration_cas_replay_and_runtime_isolation','scope_changes_preserve_execution_version','companion_failure_rolls_back_publication','admission_rejects_schema_and_reachable_privilege_drift','explicit_trigger_does_not_edit_configuration'},
  'resource':{'artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback','admission_rejects_noninherited_switchable_privileges','resource_admission_rejects_schema_and_privilege_drift','resource_immutable_versions_restart_and_reference_rollback','resource_cas_events_and_owner_admission'},
  'software-release':{'admission_rejects_noninherited_switchable_privileges','release_approval_unknown_retry_history_and_late_results','release_immutable_version_request_uniqueness_and_rollback','release_event_failure_and_runtime_admission'},
 }

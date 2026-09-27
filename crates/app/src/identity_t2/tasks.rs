@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 const CREDENTIAL: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
 const INVENTORY_CREDENTIAL: &str = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+const TASK_SCOPE: Uuid = Uuid::from_u128(0x90101010_1234_4321_8123_101010101010);
+const EMPTY_SCOPE: Uuid = Uuid::from_u128(0x90101010_1234_4321_8123_202020202020);
 const DEVICE_ID: &str = "enterprise-device";
 
 async fn post(browser: &mut Browser, router: &Router, path: &str, body: Value) -> Result<Value> {
@@ -102,8 +104,8 @@ fn business_event(operation: Uuid) -> Result<String> {
         .to_owned())
 }
 
-fn policy_definition(resource: Uuid, devices: Value) -> Value {
-    json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":devices},"behavior":{"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
+fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
+    json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"scope":scope,"behavior":{"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
 }
 async fn policy(
     author: &mut Browser,
@@ -113,7 +115,7 @@ async fn policy(
 ) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let operation = Uuid::new_v4();
-    let body = json!({"operationId":operation,"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,json!([DEVICE_ID]))}});
+    let body = json!({"operationId":operation,"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,TASK_SCOPE)}});
     let before = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
     runtime.inject_next_transaction_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
@@ -188,6 +190,8 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         crate::authorization::Permission::GroupRead,
         crate::authorization::Permission::GroupWrite,
         crate::authorization::Permission::GroupRecompute,
+        crate::authorization::Permission::ScopeRead,
+        crate::authorization::Permission::ScopeWrite,
     ] {
         grants.push(crate::authorization::Grant {
             operation,
@@ -198,6 +202,10 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         operation: crate::authorization::Permission::InventoryRead,
         scope: crate::authorization::Scope::AllDevices,
     });
+    grants.extend(crate::identity_fixture::device_grants(
+        None,
+        &["script_execute"],
+    )?);
     crate::identity_fixture::set_grants(TENANT, &author_id, grants.clone()).await?;
     author.operation = Some(Uuid::new_v4());
     let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -265,6 +273,23 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         .await?
         .0 == StatusCode::BAD_REQUEST
     );
+    let setup_automation = start_automation(&base).await?;
+    for (scope, targets) in [
+        (TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}])),
+        (EMPTY_SCOPE, json!([])),
+    ] {
+        let created=post(&mut author,&router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}})).await?;
+        await_task(
+            &mut author,
+            &router,
+            &format!(
+                "/api/v2/scopes/{scope}/tasks/{}",
+                created["task"].as_str().unwrap()
+            ),
+        )
+        .await?;
+    }
+    ensure!(setup_automation.shutdown().join().await?.is_clean());
     let id = Uuid::new_v4();
     let bytes = b"#!/bin/sh\nprintf '{\"version\":\"1.2\",\"healthy\":true}\n'\n";
     let digest: [u8; 32] = Sha256::digest(bytes).into();
@@ -290,6 +315,18 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     )
     .await?;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let without_resource = grants
+        .iter()
+        .filter(|g| g.operation != crate::authorization::Permission::ResourceRead)
+        .cloned()
+        .collect();
+    crate::identity_fixture::set_grants(TENANT, &author_id, without_resource).await?;
+    let denied=author.call(&router,Method::POST,&format!("/api/v2/policies/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,TASK_SCOPE)}}))).await?;
+    ensure!(
+        denied.0 == StatusCode::FORBIDDEN,
+        "publishing without ResourceRead: {denied:?}"
+    );
+    crate::identity_fixture::set_grants(TENANT, &author_id, grants.clone()).await?;
     let preview_before = pg(
         "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies),(SELECT count(*) FROM mdm_policy.versions),(SELECT count(*) FROM mdm_commands.action_runs),(SELECT count(*) FROM mdm_automation.automation_jobs))",
     )?;
@@ -297,7 +334,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         &mut author,
         &router,
         "/api/v2/policies/previews",
-        json!({"definition":policy_definition(id,json!([DEVICE_ID]))}),
+        json!({"definition":policy_definition(id,TASK_SCOPE)}),
     )
     .await?;
     ensure!(preview["items"][0]["eligibility"]["state"] == "eligible");
@@ -566,10 +603,10 @@ async fn pagination(author: &mut Browser, router: &Router, resource: Uuid) -> Re
     let before = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
     for n in 1..=70 {
         let id = Uuid::from_u128(n);
-        post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,json!([]))}})).await?;
+        post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,EMPTY_SCOPE)}})).await?;
     }
     let id = Uuid::from_u128(u128::MAX);
-    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,json!([DEVICE_ID]))}})).await?;
+    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,TASK_SCOPE)}})).await?;
     ensure!(pg("SELECT count(*) FROM mdm_commands.action_runs")? == before);
     pg("UPDATE mdm_commands.action_polls SET policy_after=NULL")?;
     let task = claim(router)
@@ -722,17 +759,8 @@ async fn remote_matrix(
     let mut grants = original.to_vec();
     grants.extend(crate::identity_fixture::device_grants(
         None,
-        &["script_execute", "operation_read", "operation_cancel"],
+        &["operation_read", "operation_cancel"],
     )?);
-    for operation in [
-        crate::authorization::Permission::ScopeRead,
-        crate::authorization::Permission::ScopeWrite,
-    ] {
-        grants.push(crate::authorization::Grant {
-            operation,
-            scope: crate::authorization::Scope::Tenant,
-        });
-    }
     crate::identity_fixture::set_grants(TENANT, &member, grants).await?;
     let automation = start_automation(base).await?;
     let scope = Uuid::new_v4();
@@ -748,7 +776,7 @@ async fn remote_matrix(
     .await?;
     let id = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let input = json!({"operationId":id,"resource":policy_definition(resource,json!([]))["resource"],"targets":{"kind":"scope","id":scope},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
+    let input = json!({"operationId":id,"resource":policy_definition(resource,EMPTY_SCOPE)["resource"],"targets":{"kind":"scope","id":scope},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
     let before = pg("SELECT count(*) FROM mdm_policy.policies")?;
     let accepted = post(author, router, "/api/v2/remote-operations", input.clone()).await?;
     ensure!(accepted == post(author, router, "/api/v2/remote-operations", input).await?);
@@ -788,7 +816,7 @@ async fn remote_matrix(
         .chain(std::iter::once(DEVICE_ID.to_owned()))
         .collect::<Vec<_>>();
     let bulk = Uuid::new_v4();
-    post(author,router,"/api/v2/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,json!([]))["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+    post(author,router,"/api/v2/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,EMPTY_SCOPE)["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if pg(&format!(

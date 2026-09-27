@@ -29,7 +29,8 @@ pub(crate) async fn write_in(
     proof: &AuthorizedPrincipal,
     now: i64,
 ) -> Result<()> {
-    if let Targets::Scope { id } = p.definition.targets {
+    {
+        let id = p.definition.scope;
         let tenant = tx.tenant_id().to_string();
         let exists=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT deleted)").bind(tenant).bind(id.to_string()).fetch_one(c).await
@@ -96,36 +97,19 @@ pub(crate) async fn eligible_in(
     if !policy.enabled {
         return Ok(None);
     }
-    match &policy.definition.targets {
-        Targets::Devices { devices } => {
-            if !devices.contains(device) {
-                return Ok(None);
-            }
-            let tenant = tx.tenant_id().to_string();
-            let id = policy.id;
-            let device = device.to_owned();
-            Ok(tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar("SELECT min(revision) FROM mdm_policy.target_revisions WHERE tenant_id=$1::uuid AND policy=$2 AND targets->>'kind'='devices' AND targets->'devices' ? $3 AND revision>coalesce((SELECT max(revision) FROM mdm_policy.target_revisions WHERE tenant_id=$1::uuid AND policy=$2 AND (targets->>'kind'<>'devices' OR NOT(targets->'devices' ? $3))),0)").bind(tenant).bind(id).bind(device).fetch_one(c).await
-            })).await?)
-        }
-        Targets::Scope { id } => {
-            let scope = *id;
-            let device = device.to_owned();
-            Ok(tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        sqlx::query_scalar(
-                            "SELECT (mdm_planning.scope_admission($1::uuid,$2)->>'entry')::bigint",
-                        )
-                        .bind(scope.to_string())
-                        .bind(device)
-                        .fetch_one(c)
-                        .await
-                    })
-                })
-                .await?)
-        }
-    }
+    let scope = policy.definition.scope;
+    let device = device.to_owned();
+    Ok(tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar("SELECT (mdm_planning.scope_admission($1,$2)->>'entry')::bigint")
+                    .bind(scope)
+                    .bind(device)
+                    .fetch_one(c)
+                    .await
+            })
+        })
+        .await?)
 }
 
 pub(crate) async fn withdrawn_in(
@@ -136,24 +120,19 @@ pub(crate) async fn withdrawn_in(
     if !policy.enabled {
         return Ok(true);
     }
-    match &policy.definition.targets {
-        Targets::Devices { devices } => Ok(!devices.contains(device)),
-        Targets::Scope { id } => {
-            let scope = *id;
-            let device = device.to_owned();
-            Ok(tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        sqlx::query_scalar(
-                            "SELECT mdm_planning.scope_admission($1::uuid,$2)->>'state'='excluded'",
-                        )
-                        .bind(scope.to_string())
-                        .bind(device)
-                        .fetch_one(c)
-                        .await
-                    })
-                })
-                .await?)
-        }
-    }
+    let scope = policy.definition.scope;
+    let device = device.to_owned();
+    Ok(tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    "SELECT mdm_planning.scope_admission($1,$2)->>'state'='excluded'",
+                )
+                .bind(scope)
+                .bind(device)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?)
 }

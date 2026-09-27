@@ -1,6 +1,6 @@
 CREATE TABLE mdm_planning.configuration_claims (
  tenant_id uuid NOT NULL, policy uuid NOT NULL, device text NOT NULL, version uuid NOT NULL,
- operation uuid, diagnosis text, PRIMARY KEY(tenant_id,policy,device),
+ operation uuid, PRIMARY KEY(tenant_id,policy,device),
  FOREIGN KEY(tenant_id,policy) REFERENCES mdm_policy.policies(tenant_id,id),
  FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id)
 );
@@ -13,9 +13,9 @@ DO $$ DECLARE t text; BEGIN
 END $$;
 GRANT SELECT ON mdm_planning.configuration_claims TO mdm_command_runtime,mdm_flow_runtime;
 GRANT USAGE ON SCHEMA mdm_policy TO mdm_command_runtime;
-GRANT SELECT ON mdm_policy.policies,mdm_policy.versions,mdm_policy.target_revisions,mdm_policy.triggers TO mdm_command_runtime;
+GRANT SELECT ON mdm_policy.policies,mdm_policy.versions,mdm_policy.triggers TO mdm_command_runtime;
 GRANT INSERT,DELETE ON mdm_planning.configuration_claims TO mdm_command_runtime;
-GRANT UPDATE(version,operation,diagnosis) ON mdm_planning.configuration_claims TO mdm_command_runtime;
+GRANT UPDATE(version,operation) ON mdm_planning.configuration_claims TO mdm_command_runtime;
 
 CREATE FUNCTION mdm_planning.scope_admission(p_scope uuid,p_device text)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $admission$
@@ -57,7 +57,7 @@ GRANT EXECUTE ON FUNCTION mdm_planning.scope_admission(uuid,text) TO mdm_command
 GRANT SELECT ON mdm_access.agent_bindings,mdm_access.authorization_rules,mdm_access.user_groups TO mdm_flow_runtime;
 CREATE TABLE mdm_planning.configuration_devices (
  tenant_id uuid NOT NULL,device text NOT NULL,input_revision bigint NOT NULL DEFAULT 1 CHECK(input_revision>0),
- observed_revision bigint NOT NULL DEFAULT 0 CHECK(observed_revision>=0),operation uuid,digest bytea,diagnosis text,
+ observed_revision bigint NOT NULL DEFAULT 0 CHECK(observed_revision>=0),operation uuid,digest bytea,diagnosis text CHECK(diagnosis IN('waiting_scope','waiting_registration','waiting_capability','not_applicable','configuration_conflict','removing','unassigned')),
  PRIMARY KEY(tenant_id,device)
 );
 ALTER TABLE mdm_planning.configuration_devices ENABLE ROW LEVEL SECURITY;

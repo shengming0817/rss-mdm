@@ -8,6 +8,7 @@ pub(crate) mod actions;
 mod apple;
 mod apple_push;
 mod configuration;
+pub(crate) use configuration::Diagnosis as ConfigurationDiagnosis;
 pub(crate) mod http;
 mod lifecycle;
 mod model;

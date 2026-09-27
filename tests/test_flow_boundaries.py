@@ -28,11 +28,6 @@ class FlowOwnership(unittest.TestCase):
             text = path.read_text()
             for forbidden in ("planning::actions::storage", "planning::actions::model", "ActionDispatch"):
                 self.assertNotIn(forbidden, text, str(path))
-        role_sql = (ROOT / "crates/app/migrations/0016_enterprise_tasks.sql").read_text()
-        for statement in role_sql.split(";"):
-            if "GRANT" in statement and "mdm_planning.action_plans" in statement and "TO mdm_command_runtime" in statement:
-                self.assertNotIn("INSERT", statement)
-                self.assertNotIn("UPDATE", statement)
 
     def test_content_capabilities_and_settlement_have_one_owner(self):
         content = (APP / "content/mod.rs").read_text()

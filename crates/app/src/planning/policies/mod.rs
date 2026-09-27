@@ -1,12 +1,12 @@
 //! Authored Policy is the durable authority; execution progress never edits it.
 use super::action_contract::{Architecture, ExecutionInput, FrozenAction, Platform};
-use super::assignment::{Behavior, Definition, Exit, Frequency, Targets};
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
+use rss_mdm_policy::{Behavior, Definition, Exit, Frequency, ResourceBinding};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,7 @@ impl Policies {
         proof.manage(Permission::PolicyWrite)?;
         // Verify content outside the database transaction, then bind that proof again at publication.
         let artifact = if let Change::Put { definition, .. } = &op.input {
+            proof.manage(Permission::ResourceRead)?;
             definition.validate()?;
             authorize(proof, definition)?;
             inspect(
@@ -102,6 +103,9 @@ impl Policies {
                     let (s, p, id, op, audit, verified) = *ctx;
                     let authorization = crate::action_admission::current(tx, p).await?;
                     authorization.require(p, Permission::PolicyWrite, None)?;
+                    if matches!(op.input, Change::Put { .. }) {
+                        authorization.require(p, Permission::ResourceRead, None)?;
+                    }
                     crate::transaction::lock(tx).await?;
                     storage::lock(tx, id).await?;
                     let hash = fingerprint(&(id, &op.input, op.expected_revision, p.user()))?;
@@ -130,7 +134,14 @@ impl Policies {
                     let policy = changed_policy.policy;
                     authorize_snapshot(&authorization, p, &policy.definition)?;
                     if changed {
-                        let frozen = s.freeze_in(tx, &policy.definition, verified).await?;
+                        let frozen = s
+                            .freeze_in(
+                                tx,
+                                &policy.definition.resource,
+                                &policy.definition.behavior,
+                                verified,
+                            )
+                            .await?;
                         storage::write_in(
                             &s.planning.policy_store,
                             tx,
@@ -143,14 +154,6 @@ impl Policies {
                     } else {
                         storage::write_in(&s.planning.policy_store, tx, &policy, None, p, now)
                             .await?;
-                    }
-                    if let Targets::Scope { id: scope } = policy.definition.targets {
-                        crate::automation::jobs::enqueue_job_in(
-                            tx,
-                            Uuid::new_v4(),
-                            &crate::automation::JobInput::Scope { scope },
-                        )
-                        .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
                     storage::enqueue_change_in(tx, &policy, old.as_ref()).await?;
@@ -181,7 +184,7 @@ impl Policies {
     pub(crate) async fn resource_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        binding: &super::assignment::ResourceBinding,
+        binding: &rss_mdm_policy::ResourceBinding,
     ) -> Result<resource::Version> {
         let (version, state, _) = self
             .planning
@@ -200,12 +203,13 @@ impl Policies {
     pub(crate) async fn freeze_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        definition: &Definition,
+        binding: &ResourceBinding,
+        behavior: &Behavior,
         verified: Option<&crate::content::Verified>,
     ) -> Result<Frozen> {
-        let version = self.resource_in(tx, &definition.resource).await?;
-        let v = variant(&version, &definition.resource)?;
-        match (&definition.behavior, v.declaration()) {
+        let version = self.resource_in(tx, binding).await?;
+        let v = variant(&version, binding)?;
+        match (behavior, v.declaration()) {
             (
                 Behavior::Execution {
                     parameters,
@@ -235,8 +239,8 @@ impl Policies {
                 Ok(Frozen::Execution {
                     action: Box::new(FrozenAction {
                         input: ExecutionInput {
-                            platform: definition.resource.platform.clone(),
-                            architecture: definition.resource.architecture.clone(),
+                            platform: binding.platform.clone(),
+                            architecture: binding.architecture.clone(),
                             parameters: parameters.clone(),
                             schedule: schedule.clone(),
                             run_lifetime_seconds: *run_lifetime_seconds,
@@ -260,15 +264,15 @@ impl Policies {
                     return Err(Error::Unsupported.into());
                 }
                 let tenant = tx.tenant_id().to_string();
-                let resource = definition.resource.id.clone();
-                let version_id = definition.resource.version.clone();
+                let resource = binding.id.clone();
+                let version_id = binding.version.clone();
                 let enabled=tx.with_connection(move|c|Box::pin(async move {
                     sqlx::query_scalar::<_,bool>("SELECT enabled FROM mdm_planning.firewall_resources WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3")
                         .bind(tenant).bind(resource).bind(version_id).fetch_optional(c).await
                 })).await?.ok_or(Error::Unsupported)?;
                 Ok(Frozen::Configuration {
                     enabled,
-                    platform: definition.resource.platform.clone(),
+                    platform: binding.platform.clone(),
                     exit: *exit,
                     resource_digest: version.digest().bytes(),
                 })
@@ -286,17 +290,8 @@ pub(crate) fn authorize_snapshot(
         Behavior::Execution { .. } => Permission::ScriptExecute,
         Behavior::Configuration { .. } => Permission::FirewallWrite,
     };
-    match &definition.targets {
-        Targets::Scope { .. } => {
-            snapshot.require(proof, Permission::ScopeRead, None)?;
-            snapshot.require_all_devices(proof, permission)?;
-        }
-        Targets::Devices { devices } => {
-            for device in devices {
-                snapshot.require(proof, permission, Some(device))?;
-            }
-        }
-    }
+    snapshot.require(proof, Permission::ScopeRead, None)?;
+    snapshot.require_all_devices(proof, permission)?;
     Ok(())
 }
 pub(crate) fn authorize(
@@ -307,22 +302,13 @@ pub(crate) fn authorize(
         Behavior::Execution { .. } => Permission::ScriptExecute,
         Behavior::Configuration { .. } => Permission::FirewallWrite,
     };
-    match &definition.targets {
-        Targets::Scope { .. } => {
-            proof.manage(Permission::ScopeRead)?;
-            proof.require_all_devices(permission)
-        }
-        Targets::Devices { devices } => {
-            for device in devices {
-                proof.require(permission, Some(device))?;
-            }
-            Ok(())
-        }
-    }
+    proof.manage(Permission::ScopeRead)?;
+    proof.require_all_devices(permission)
 }
+
 pub(crate) fn variant<'a>(
     version: &'a resource::Version,
-    binding: &super::assignment::ResourceBinding,
+    binding: &rss_mdm_policy::ResourceBinding,
 ) -> Result<&'a resource::Variant> {
     checked_input(version.resolve(
         match binding.platform {

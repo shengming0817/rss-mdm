@@ -1,9 +1,9 @@
 use super::{state::RunState, storage as db};
 use crate::Error;
 use crate::execution::{ExecutionService, Result, checked_input, messaging_domain};
-use crate::planning::action_schedule::Trigger;
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
+use rss_mdm_policy::schedule::Trigger;
 use rss_transactional_messaging::{
     message::*,
     outbox::{AppendOutcome, OutboxWriter, PendingMessage},
@@ -55,7 +55,7 @@ pub(super) async fn accept_for_device(
     request: Uuid,
     now: i64,
 ) -> Result<()> {
-    use crate::planning::assignment::Frequency;
+    use rss_mdm_policy::Frequency;
     let definition = &policy.definition;
     let Some(entry) = definition.entry_in(tx, &target.device, now).await? else {
         return Ok(());

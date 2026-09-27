@@ -63,7 +63,7 @@ pub struct Changed {
     pub policy: Policy,
     /// Whether a new immutable version must be persisted.
     pub semantic_changed: bool,
-    /// Digest of resource and behavior, excluding membership and enablement.
+    /// Digest of resource and behavior, excluding Scope membership and enablement.
     pub semantic: [u8; 32],
 }
 impl Policy {
@@ -77,6 +77,17 @@ impl Policy {
     ) -> Result<Changed, Error> {
         if id.is_nil() || next_version.is_nil() {
             return Err(Error::Malformed);
+        }
+        if let Some(p) = old {
+            if p.id.is_nil()
+                || p.version.is_nil()
+                || p.revision < 1
+                || p.number < 1
+                || p.number > p.revision
+            {
+                return Err(Error::Malformed);
+            }
+            p.definition.validate()?;
         }
         if old.is_some_and(|p| p.id != id) || old.map_or(0, |p| p.revision as u64) != expected {
             return Err(Error::Conflict);
@@ -96,6 +107,9 @@ impl Policy {
         definition.validate()?;
         let semantic = definition.semantic()?;
         let changed = old.map(|p| p.definition.semantic()).transpose()?.as_ref() != Some(&semantic);
+        if changed && old.is_some_and(|p| p.version == next_version) {
+            return Err(Error::Malformed);
+        }
         let number = if changed {
             old.map_or(Some(1), |p| p.number.checked_add(1))
                 .ok_or(Error::Conflict)?
@@ -122,7 +136,7 @@ impl Policy {
     }
 }
 impl Definition {
-    /// Resource/execution semantics, excluding targets and the enabled flag.
+    /// Resource/execution semantics, excluding Scope and the enabled flag.
     pub fn semantic(&self) -> Result<[u8; 32], Error> {
         Ok(Sha256::digest(
             serde_json::to_vec(&(&self.resource, &self.behavior)).map_err(|_| Error::Malformed)?,

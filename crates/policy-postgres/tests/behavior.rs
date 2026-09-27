@@ -1,7 +1,4 @@
-use rss_mdm_policy_postgres::{
-    core::{Change, Targets},
-    *,
-};
+use rss_mdm_policy_postgres::{core::Change, *};
 mod support;
 use support::*;
 #[path = "support/operations.rs"]
@@ -74,16 +71,14 @@ async fn configuration_cas_replay_and_runtime_isolation() {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL: backend-t2"]
-async fn target_changes_preserve_execution_version_and_entries() {
+async fn scope_changes_preserve_execution_version() {
     let runtime = runtime().await;
     let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();
     let id = Uuid::new_v4();
     let mut definition = definition();
-    definition.targets = Targets::Devices {
-        devices: ["a".into()].into(),
-    };
+    definition.scope = Uuid::new_v4();
     let first = publication(
         id,
         None,
@@ -95,9 +90,7 @@ async fn target_changes_preserve_execution_version_and_entries() {
     execute(&runtime, &store, Uuid::new_v4(), &first, deadline())
         .await
         .unwrap();
-    definition.targets = Targets::Devices {
-        devices: ["a".into(), "b".into()].into(),
-    };
+    definition.scope = Uuid::new_v4();
     let second = publication(
         id,
         Some(&first.policy),
@@ -117,22 +110,10 @@ async fn target_changes_preserve_execution_version_and_entries() {
         )),
         "1"
     );
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm_policy.target_revisions WHERE policy='{id}'"
-        )),
-        "2"
-    );
     let disabled = publication(id, Some(&second.policy), Change::Disable);
     execute(&runtime, &store, Uuid::new_v4(), &disabled, deadline())
         .await
         .unwrap();
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm_policy.target_revisions WHERE policy='{id}'"
-        )),
-        "2"
-    );
     assert_eq!(
         sql(
             "SELECT to_regclass('mdm_policy.facts') IS NULL AND to_regclass('mdm_policy.aggregates') IS NULL"

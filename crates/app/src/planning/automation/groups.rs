@@ -39,11 +39,13 @@ impl Planning {
         }
         let tenant = self.tenant.to_string();
         let revision = current.revision.get();
-        let exists:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND j.target=$2 AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND (j.input->>'base_revision')::bigint=$4 AND j.input->>'automatic'='true')")
-                .bind(tenant).bind(id.to_string()).bind(task.to_string()).bind(revision).fetch_one(c).await
+        let existing:Option<Uuid>=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar("SELECT j.id FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND j.target=$2 AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND (j.input->>'base_revision')::bigint=$4 AND j.input->>'automatic'='true' ORDER BY j.id LIMIT 1")
+                .bind(tenant).bind(id.to_string()).bind(task.to_string()).bind(revision).fetch_optional(c).await
         })).await?;
-        if !exists {
+        if let Some(successor) = existing {
+            crate::automation::jobs::replacement_in(tx, task, successor).await?;
+        } else {
             let patch = if current.kind == g::GroupKind::Static {
                 Some(g::MemberPatch {
                     add: vec![],

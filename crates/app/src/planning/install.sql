@@ -12,12 +12,8 @@ CREATE TABLE mdm_planning.operations (
  tenant_id uuid NOT NULL, id uuid NOT NULL, fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  response jsonb NOT NULL CHECK(octet_length(response::text)<=8388608), PRIMARY KEY(tenant_id,id)
 );
-CREATE TABLE mdm_planning.resource_references (
- tenant_id uuid NOT NULL, resource text NOT NULL, version text NOT NULL, policy text NOT NULL,
- PRIMARY KEY(tenant_id,resource,version,policy)
-);
 DO $$ DECLARE t text; n text; BEGIN
- FOREACH t IN ARRAY ARRAY['scopes','scope_versions','operations','resource_references'] LOOP
+ FOREACH t IN ARRAY ARRAY['scopes','scope_versions','operations'] LOOP
  n:='mdm_planning';
  EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY',n,t);
  EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY',n,t);
@@ -25,8 +21,6 @@ DO $$ DECLARE t text; n text; BEGIN
  END LOOP;
 END $$;
 GRANT USAGE ON SCHEMA mdm_planning,mdm_access,mdm TO mdm_flow_runtime;
-GRANT USAGE ON SCHEMA mdm_planning TO mdm_software_driver;
-GRANT SELECT ON mdm_planning.resource_references TO mdm_software_driver;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_planning TO mdm_flow_runtime;
 GRANT UPDATE(revision,deleted) ON mdm_planning.scopes TO mdm_flow_runtime;
 

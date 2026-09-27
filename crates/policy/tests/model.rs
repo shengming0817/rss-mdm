@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[test]
 fn targets_and_enablement_do_not_create_execution_versions() {
     let id = Uuid::new_v4();
-    let definition:Definition=serde_json::from_value(json!({"resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":[]},"behavior":{"kind":"execution","parameters":{},"runLifetimeSeconds":300}})).unwrap();
+    let definition:Definition=serde_json::from_value(json!({"resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"scope":"11111111-1111-1111-1111-111111111111","behavior":{"kind":"execution","parameters":{},"runLifetimeSeconds":300}})).unwrap();
     let first = Policy::apply(
         id,
         None,
@@ -22,9 +22,7 @@ fn targets_and_enablement_do_not_create_execution_versions() {
     assert!(!disabled.semantic_changed);
     assert_eq!(disabled.policy.revision, 2);
     let mut expanded = definition;
-    expanded.targets = Targets::Devices {
-        devices: ["device".into()].into(),
-    };
+    expanded.scope = Uuid::new_v4();
     let second = Policy::apply(
         id,
         Some(&disabled.policy),
@@ -48,4 +46,35 @@ fn targets_and_enablement_do_not_create_execution_versions() {
         ),
         Err(Error::Conflict)
     ));
+}
+
+#[test]
+fn invalid_restored_aggregate_cannot_produce_checked_change() {
+    let definition:Definition=serde_json::from_value(json!({"resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"scope":Uuid::new_v4(),"behavior":{"kind":"configuration"}})).unwrap();
+    let id = Uuid::new_v4();
+    for (revision, number, version) in [
+        (0, 0, Uuid::nil()),
+        (1, 0, Uuid::new_v4()),
+        (1, 1, Uuid::nil()),
+        (1, 2, Uuid::new_v4()),
+    ] {
+        let old = Policy {
+            id,
+            revision,
+            number,
+            version,
+            enabled: true,
+            definition: definition.clone(),
+        };
+        assert!(matches!(
+            Policy::apply(
+                id,
+                Some(&old),
+                revision as u64,
+                &Change::Enable,
+                Uuid::new_v4()
+            ),
+            Err(Error::Malformed)
+        ));
+    }
 }

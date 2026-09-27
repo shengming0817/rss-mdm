@@ -4,7 +4,6 @@ use crate::schedule::{Schedule, Trigger};
 use crate::{Architecture, Platform};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -21,21 +20,6 @@ pub struct ResourceBinding {
     pub architecture: Architecture,
     /// Exact resource variant key.
     pub variant: String,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-/// Persistent target definition; Scope membership is always owned by Scope.
-pub enum Targets {
-    /// Continuously resolve this Scope.
-    Scope {
-        #[doc = "Opaque Scope identity."]
-        id: Uuid,
-    },
-    /// Explicit identities, including an intentionally empty assignment.
-    Devices {
-        #[doc = "Canonical device identities in deterministic order."]
-        devices: BTreeSet<String>,
-    },
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,8 +90,8 @@ fn default_schedule() -> Schedule {
 pub struct Definition {
     /// Immutable resource selection.
     pub resource: ResourceBinding,
-    /// Current persistent target definition.
-    pub targets: Targets,
+    /// Opaque Scope identity; Scope alone owns membership and entry coordinates.
+    pub scope: Uuid,
     /// Closed action or configuration semantics.
     pub behavior: Behavior,
 }
@@ -121,11 +105,19 @@ impl Definition {
         {
             return Err(Error::Malformed);
         }
-        for id in [
-            &self.resource.id,
-            &self.resource.version,
-            &self.resource.variant,
-        ] {
+        self.resource.validate()?;
+        if self.scope.is_nil() {
+            return Err(Error::Malformed);
+        }
+        self.behavior.validate()?;
+        Ok(())
+    }
+}
+
+impl ResourceBinding {
+    /// Validate opaque immutable resource coordinates.
+    pub fn validate(&self) -> Result<(), Error> {
+        for id in [&self.id, &self.version, &self.variant] {
             if id.is_empty()
                 || id.len() > 128
                 || !id
@@ -136,25 +128,17 @@ impl Definition {
                 return Err(Error::Malformed);
             }
         }
-        match &self.targets {
-            Targets::Scope { id } if id.is_nil() => return Err(Error::Malformed),
-            Targets::Scope { .. } => (),
-            Targets::Devices { devices } => {
-                for device in devices {
-                    if device.is_empty()
-                        || device.len() > 256
-                        || device.chars().any(char::is_control)
-                    {
-                        return Err(Error::Malformed);
-                    }
-                }
-            }
-        }
+        Ok(())
+    }
+}
+impl Behavior {
+    /// Validate calendar and lifetime semantics without owning any targets.
+    pub fn validate(&self) -> Result<(), Error> {
         if let Behavior::Execution {
             schedule,
             run_lifetime_seconds,
             ..
-        } = &self.behavior
+        } = self
         {
             schedule.validate()?;
             if !(60..=604800).contains(run_lifetime_seconds) {
@@ -170,7 +154,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     fn configuration() -> serde_json::Value {
-        json!({"resource":{"id":"firewall","version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"targets":{"kind":"scope","id":"11111111-1111-1111-1111-111111111111"},"behavior":{"kind":"configuration","exit":"retain"}})
+        json!({"resource":{"id":"firewall","version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"scope":"11111111-1111-1111-1111-111111111111","behavior":{"kind":"configuration","exit":"retain"}})
     }
     #[test]
     fn configuration_cannot_accept_execution_fields() {
@@ -204,18 +188,9 @@ mod tests {
         assert!(matches!(frequency, Frequency::OncePerVersion));
     }
     #[test]
-    fn empty_and_large_assignments_do_not_become_execution_capacity_limits() {
+    fn policy_cannot_embed_a_device_membership_list() {
         let mut v = configuration();
-        v["targets"] = json!({"kind":"devices","devices":[]});
-        serde_json::from_value::<Definition>(v.clone())
-            .unwrap()
-            .validate()
-            .unwrap();
-        v["targets"]["devices"] =
-            json!((0..300).map(|i| format!("device-{i}")).collect::<Vec<_>>());
-        serde_json::from_value::<Definition>(v)
-            .unwrap()
-            .validate()
-            .unwrap();
+        v["targets"] = json!({"kind":"devices","devices":["device"]});
+        assert!(serde_json::from_value::<Definition>(v).is_err());
     }
 }

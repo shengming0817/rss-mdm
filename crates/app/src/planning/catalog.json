@@ -109,15 +109,6 @@
       ""
     ],
     [
-      "configuration_claims",
-      "diagnosis",
-      "text",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
       "configuration_devices",
       "tenant_id",
       "uuid",
@@ -455,42 +446,6 @@
       "run_after",
       "uuid",
       false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "resource_references",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "resource_references",
-      "resource",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "resource_references",
-      "version",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "resource_references",
-      "policy",
-      "text",
-      true,
       null,
       "",
       ""
@@ -1002,14 +957,6 @@
       true
     ],
     [
-      "resource_references",
-      "resource_references_pkey",
-      "CREATE UNIQUE INDEX resource_references_pkey ON mdm_planning.resource_references USING btree (tenant_id, resource, version, policy)",
-      true,
-      true,
-      true
-    ],
-    [
       "scope_results",
       "scope_results_members",
       "CREATE INDEX scope_results_members ON mdm_planning.scope_results USING btree (tenant_id, run, device) WHERE matched",
@@ -1151,6 +1098,13 @@
     ],
     [
       "configuration_devices",
+      "configuration_devices_diagnosis_check",
+      "c",
+      "CHECK ((diagnosis = ANY (ARRAY['waiting_scope'::text, 'waiting_registration'::text, 'waiting_capability'::text, 'not_applicable'::text, 'configuration_conflict'::text, 'removing'::text, 'unassigned'::text])))",
+      true
+    ],
+    [
+      "configuration_devices",
       "configuration_devices_input_revision_check",
       "c",
       "CHECK ((input_revision > 0))",
@@ -1273,13 +1227,6 @@
       "remote_operations_snapshot_check",
       "c",
       "CHECK ((octet_length((snapshot)::text) <= 4194304))",
-      true
-    ],
-    [
-      "resource_references",
-      "resource_references_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, resource, version, policy)",
       true
     ],
     [

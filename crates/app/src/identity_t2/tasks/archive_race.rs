@@ -26,7 +26,7 @@ pub(super) async fn verify(
     )
     .await?;
     let policy = Uuid::new_v4();
-    let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,json!([]))}});
+    let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,EMPTY_SCOPE)}});
     let policy_path = format!("/api/v2/policies/{policy}");
     let archive = json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"archive","version":"v1"}});
     let path = format!("/api/v3/resources/{id}");

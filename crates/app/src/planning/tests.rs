@@ -752,8 +752,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",
         ),
         (
-            "REVOKE INSERT ON mdm_policy.versions FROM mdm_flow_runtime",
-            "GRANT INSERT ON mdm_policy.versions TO mdm_flow_runtime",
+            "REVOKE INSERT ON mdm_policy.versions FROM mdm_policy_runtime",
+            "GRANT INSERT ON mdm_policy.versions TO mdm_policy_runtime",
         ),
         (
             "GRANT UPDATE(number) ON mdm_policy.versions TO mdm_flow_runtime",

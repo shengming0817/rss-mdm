@@ -119,7 +119,6 @@ impl PolicyStore {
         let definition = STORAGE.json("publish.definition", serde_json::to_value(&p.definition))?;
         tx.with_connection(move|c|Box::pin(async move {
    sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,enabled,definition,author,updated_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,enabled=excluded.enabled,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at").bind(&tenant).bind(p.id).bind(p.revision).bind(p.version).bind(p.number).bind(p.enabled).bind(definition).bind(author).bind(at).execute(&mut *c).await?;
-   sqlx::query("INSERT INTO mdm_policy.target_revisions(tenant_id,policy,revision,targets) SELECT tenant_id,id,revision,definition->'targets' FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND (SELECT targets FROM mdm_policy.target_revisions WHERE tenant_id=$1::uuid AND policy=$2 ORDER BY revision DESC LIMIT 1) IS DISTINCT FROM definition->'targets'").bind(&tenant).bind(p.id).execute(&mut *c).await?;
    if let Some(frozen)=frozen {sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)").bind(tenant).bind(p.version).bind(p.id).bind(p.number).bind(p.definition.resource.id).bind(p.definition.resource.version).bind(frozen).bind(hash).execute(c).await?;}
    Ok(())
   })).await?;

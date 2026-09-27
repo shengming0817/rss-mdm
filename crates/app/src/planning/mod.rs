@@ -2,7 +2,6 @@
 use crate::assets;
 pub(crate) mod automation;
 
-pub(crate) mod assignment;
 pub(crate) mod configuration;
 mod groups;
 pub(crate) mod http;
@@ -266,6 +265,5 @@ use rss_mdm_audit_integration::RequestAudit;
 mod receipts;
 
 pub(crate) mod action_contract;
-pub(crate) mod action_schedule;
 
 pub mod error;

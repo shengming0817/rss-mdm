@@ -44,12 +44,18 @@ impl Fixture {
             crate::authorization::Permission::ResourceWrite,
             crate::authorization::Permission::PolicyRead,
             crate::authorization::Permission::PolicyWrite,
+            crate::authorization::Permission::ScopeRead,
+            crate::authorization::Permission::ScopeWrite,
         ] {
             grants.push(crate::authorization::Grant {
                 operation,
                 scope: crate::authorization::Scope::Tenant,
             });
         }
+        grants.extend(crate::identity_fixture::device_grants(
+            None,
+            &["inventory_read", "firewall_write"],
+        )?);
         crate::identity_fixture::set_grants(TENANT, crate::identity_fixture::ADMIN, grants).await?;
         let mut owner = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
@@ -88,7 +94,9 @@ impl Fixture {
             json!({"action":"activate","version":"v1"}),
         )
         .await?;
-        let definition = json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"firewall-profile"},"targets":{"kind":"devices","devices":[DEVICE]},"behavior":{"kind":"configuration","exit":"remove"}});
+        let scope = Uuid::new_v4();
+        self.policy_post(&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE}],"limitations":null,"exclusions":[]}})).await?;
+        let definition = json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"firewall-profile"},"scope":scope,"behavior":{"kind":"configuration","exit":"remove"}});
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
         self.policy_post(

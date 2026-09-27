@@ -32,30 +32,16 @@ pub(crate) async fn preview(
             },
             _=>return Err(Error::Malformed.into()),
         }
-        let (mut devices,result)=match &input.definition.targets {
-            Targets::Devices {devices}=>{
-                if input.scope_result.is_some(){return Err(Error::Malformed.into());}
-                for device in devices {a.proof.require(Permission::InventoryRead,Some(device))?;}
-                (devices.iter().filter(|d|input.after.as_ref().is_none_or(|after|*d>after)).take(65).cloned().collect::<Vec<_>>(),None)
-            },
-            Targets::Scope {id}=>{
-                a.proof.require_all_devices(Permission::InventoryRead)?;
-                let tenant=tx.tenant_id().to_string();let id=*id;
-                let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE").bind(tenant).bind(id).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?.ok_or(Error::Conflict)?;
-                if input.scope_result.is_some_and(|v|v!=result){return Err(Error::Conflict.into());}
-                let tenant=tx.tenant_id().to_string();let after=input.after.clone();
-                let devices=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65").bind(tenant).bind(result).bind(after).fetch_all(c).await})).await?;
-                (devices,Some(result))
-            },
-        };
+        a.proof.require_all_devices(Permission::InventoryRead)?;
+        let tenant=tx.tenant_id().to_string();let id=input.definition.scope;
+        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE").bind(tenant).bind(id).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?.ok_or(Error::Conflict)?;
+        if input.scope_result.is_some_and(|v|v!=result){return Err(Error::Conflict.into());}
+        let tenant=tx.tenant_id().to_string();let after=input.after.clone();
+        let mut devices=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65").bind(tenant).bind(result).bind(after).fetch_all(c).await})).await?;
         let more=devices.len()>64;devices.truncate(64);let next=if more{devices.last().cloned()}else{None};let mut items=Vec::new();
         for device in devices {
-            let eligibility=match input.definition.targets {
-                Targets::Scope {id}=>{
-                    let name=device.clone();tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT mdm_planning.scope_admission($1,$2)").bind(id).bind(name).fetch_one(c).await})).await?
-                },
-                Targets::Devices {..}=>json!({"state":"eligible"}),
-            };
+            let name=device.clone();let id=input.definition.scope;
+            let eligibility=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT mdm_planning.scope_admission($1,$2)").bind(id).bind(name).fetch_one(c).await})).await?;
             items.push(json!({"device":device,"eligibility":eligibility}));
         }
         s.planning.audit_store.append_request_in(tx,audit,200,"success").await?;

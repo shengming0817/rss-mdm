@@ -45,7 +45,7 @@
 管理接口沿用 Identity 会话、Origin/CSRF 与产品授权。Resource 使用 `/api/v3`；Scope、Policy、远程操作和设备 operation 使用 `/api/v2`。
 
 1. `POST /api/v3/resources/{id}` 创建 configuration resource，再提交 `input: {action:"firewall_version", version:"v1", enabled:true}` 并 activate 资源版本。外层为 `operationId/expectedRevision/input`；版本内容不可变。
-2. `POST /api/v2/policies/{id}` 发布 `action: put`，绑定 resource 的平台与 variant、持续 Scope 或显式设备，以及 `behavior: {kind:"configuration",exit:"retain"}`。Windows 防火墙不支持 remove；macOS profile 可使用受支持的 remove。
+2. `POST /api/v2/policies/{id}` 发布 `action: put`，绑定 resource 的平台与 variant、持续 Scope（显式设备由 Scope 直接来源表达），以及 `behavior: {kind:"configuration",exit:"retain"}`。Windows 防火墙不支持 remove；macOS profile 可使用受支持的 remove。
 3. 相关成员、版本、注册或能力变化自动触发差分核对；没有保存 Plan 或人工 execute 步骤。`GET /api/v2/policies/{id}/devices` 分页返回当前资格、阻断诊断和必要的 operation 引用。
 4. 使用 `/api/v2/devices/{device}/operations/{operation}` 查询原生命令及观察。Policy 子命令不能通过重新批准脱离分配约束。修改或停用 Policy 使用配置 CAS，设备回执不推进该 CAS。
 

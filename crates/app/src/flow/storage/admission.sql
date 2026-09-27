@@ -6,7 +6,7 @@ WITH tables AS (
 )
 SELECT
  current_setting('transaction_isolation')='read committed'
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['asset_dispatch','asset_query_facets','asset_query_results','asset_query_runs','automation_jobs','configuration_claims','configuration_devices','cursor_keys','firewall_resources','group_fields','operations','operations','operations','operations','remote_operation_targets','remote_operations','resource_references','saved_queries','scope_results','scope_runs','scope_source_members','scope_sources','scope_versions','scopes','source_heads'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['asset_dispatch','asset_query_facets','asset_query_results','asset_query_runs','automation_jobs','configuration_claims','configuration_devices','cursor_keys','firewall_resources','group_fields','operations','operations','operations','operations','remote_operation_targets','remote_operations','saved_queries','scope_results','scope_runs','scope_source_members','scope_sources','scope_versions','scopes','source_heads'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN(SELECT relowner FROM tables))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity

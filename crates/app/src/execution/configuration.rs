@@ -1,10 +1,33 @@
 //! Native configuration is desired state. Work is created only for changed device inputs.
 use super::*;
-use crate::planning::{
-    assignment::{Behavior, Exit},
-    policies::{self, Frozen, Policy},
-};
+use crate::planning::policies::{self, Frozen, Policy};
+use rss_mdm_policy::{Behavior, Exit};
 use sqlx::Row;
+
+/// Closed durable reasons used by the native reconciler and Scope wakeup query.
+#[derive(Clone, Copy)]
+pub(crate) enum Diagnosis {
+    WaitingScope,
+    WaitingRegistration,
+    WaitingCapability,
+    NotApplicable,
+    Conflict,
+    Removing,
+    Unassigned,
+}
+impl Diagnosis {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::WaitingScope => "waiting_scope",
+            Self::WaitingRegistration => "waiting_registration",
+            Self::WaitingCapability => "waiting_capability",
+            Self::NotApplicable => "not_applicable",
+            Self::Conflict => "configuration_conflict",
+            Self::Removing => "removing",
+            Self::Unassigned => "unassigned",
+        }
+    }
+}
 
 pub(super) async fn pending(tx: &mut PgTransaction<'_>, device: &str) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
@@ -39,7 +62,7 @@ impl ExecutionService {
             let tenant = tx.tenant_id().to_string();
             let name = device.to_owned();
             let ids=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar::<_,Uuid>("SELECT p.id FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.id>$3 AND p.definition->'behavior'->>'kind'='configuration' AND ((p.definition->'targets'->>'kind'='devices' AND p.definition->'targets'->'devices' ? $2) OR (p.definition->'targets'->>'kind'='scope' AND mdm_planning.scope_admission(CASE WHEN p.definition->'targets'->>'kind'='scope' THEN (p.definition->'targets'->>'id')::uuid END,$2)->>'state'<>'excluded')) ORDER BY p.id LIMIT 64")
+                sqlx::query_scalar::<_,Uuid>("SELECT p.id FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.id>$3 AND p.definition->'behavior'->>'kind'='configuration' AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded') ORDER BY p.id LIMIT 64")
                     .bind(tenant).bind(name).bind(after).fetch_all(c).await
             })).await?;
             if ids.is_empty() {
@@ -62,7 +85,12 @@ impl ExecutionService {
             }
         }
         let prior = prior_claims(tx, device).await?;
-        if !waiting.is_empty() {
+        if !waiting.is_empty()
+            && (desired.is_empty()
+                || waiting
+                    .iter()
+                    .any(|(_, f)| !same_configuration(&desired[0].1, f)))
+        {
             desired.extend(waiting);
             replace_claims(tx, device, &desired, previous_operation).await?;
             return settle_input(
@@ -71,10 +99,13 @@ impl ExecutionService {
                 input,
                 previous_operation,
                 previous_digest,
-                Some("waiting_scope"),
+                Some(Diagnosis::WaitingScope),
             )
             .await;
         }
+        // A known owner can apply an identical effect while another source is
+        // pending. Keep both claims so later withdrawal cannot remove it early.
+        desired.extend(waiting);
         // A source still computing cannot authorize removal of a previously managed configuration.
         for (p, _) in &prior {
             if p.enabled
@@ -88,7 +119,7 @@ impl ExecutionService {
                     input,
                     previous_operation,
                     previous_digest,
-                    Some("waiting_scope"),
+                    Some(Diagnosis::WaitingScope),
                 )
                 .await;
             }
@@ -124,7 +155,7 @@ impl ExecutionService {
                                     input,
                                     Some(old_id),
                                     None,
-                                    Some("unassigned"),
+                                    Some(Diagnosis::Unassigned),
                                 )
                                 .await;
                             }
@@ -135,7 +166,7 @@ impl ExecutionService {
                                     input,
                                     Some(old_id),
                                     None,
-                                    Some("removing"),
+                                    Some(Diagnosis::Removing),
                                 )
                                 .await;
                             }
@@ -169,7 +200,7 @@ impl ExecutionService {
                                 input,
                                 Some(op.operation_id),
                                 None,
-                                Some("removing"),
+                                Some(Diagnosis::Removing),
                             )
                             .await;
                         }
@@ -183,7 +214,7 @@ impl ExecutionService {
                 input,
                 previous_operation,
                 previous_digest,
-                Some("unassigned"),
+                Some(Diagnosis::Unassigned),
             )
             .await;
         }
@@ -202,7 +233,7 @@ impl ExecutionService {
                 input,
                 previous_operation,
                 previous_digest,
-                Some("configuration_conflict"),
+                Some(Diagnosis::Conflict),
             )
             .await;
         }
@@ -210,8 +241,15 @@ impl ExecutionService {
             Ok(v) => v,
             Err(Fault::Request(Error::Conflict)) => {
                 replace_claims(tx, device, &desired, None).await?;
-                return settle_input(tx, device, input, None, None, Some("waiting_registration"))
-                    .await;
+                return settle_input(
+                    tx,
+                    device,
+                    input,
+                    None,
+                    None,
+                    Some(Diagnosis::WaitingRegistration),
+                )
+                .await;
             }
             Err(e) => return Err(e),
         };
@@ -226,8 +264,15 @@ impl ExecutionService {
                 })).await?;
                 let Some((os_version, edition)) = capability else {
                     replace_claims(tx, device, &desired, None).await?;
-                    return settle_input(tx, device, input, None, None, Some("waiting_capability"))
-                        .await;
+                    return settle_input(
+                        tx,
+                        device,
+                        input,
+                        None,
+                        None,
+                        Some(Diagnosis::WaitingCapability),
+                    )
+                    .await;
                 };
                 if rss_mdm_windows_mdm::configuration::Platform::new(&os_version, edition as u32)
                     .and_then(|p| {
@@ -236,8 +281,15 @@ impl ExecutionService {
                     .is_err()
                 {
                     replace_claims(tx, device, &desired, None).await?;
-                    return settle_input(tx, device, input, None, None, Some("not_applicable"))
-                        .await;
+                    return settle_input(
+                        tx,
+                        device,
+                        input,
+                        None,
+                        None,
+                        Some(Diagnosis::NotApplicable),
+                    )
+                    .await;
                 }
                 Task::Firewall {
                     enabled: *enabled,
@@ -394,11 +446,11 @@ async fn settle_input(
     revision: i64,
     operation: Option<Uuid>,
     digest: Option<Vec<u8>>,
-    diagnosis: Option<&str>,
+    diagnosis: Option<Diagnosis>,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
-    let diagnosis = diagnosis.map(str::to_owned);
+    let diagnosis = diagnosis.map(Diagnosis::as_str);
     tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("UPDATE mdm_planning.configuration_devices SET observed_revision=$3,operation=$4,digest=$5,diagnosis=$6 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).bind(revision).bind(operation).bind(digest).bind(diagnosis).execute(c).await?;Ok(())
     })).await?;

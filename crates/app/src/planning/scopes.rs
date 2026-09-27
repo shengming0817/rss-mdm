@@ -97,7 +97,7 @@ impl Planning {
                 }
                 let tenant = self.tenant.to_string();
                 let used=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->'targets'->>'kind'='scope' AND definition->'targets'->>'id'=$2)").bind(tenant).bind(id.to_string()).fetch_one(c).await
+                    sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND (definition->>'scope')::uuid=$2::uuid)").bind(tenant).bind(id.to_string()).fetch_one(c).await
                 })).await?;
                 if used {
                     return Err(Error::Conflict.into());

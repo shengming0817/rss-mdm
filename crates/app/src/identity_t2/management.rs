@@ -266,9 +266,46 @@ pub(super) async fn matrix(
     )
     .await?;
     let policy_path = format!("/api/v2/policies/{policy}");
-    let definition = json!({"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"targets":{"kind":"scope","id":scope},"behavior":{"kind":"configuration","exit":"retain"}});
+    let definition = json!({"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"scope":scope,"behavior":{"kind":"configuration","exit":"retain"}});
     let mut assigned = definition.clone();
-    assigned["targets"] = json!({"kind":"devices","devices":[]});
+    let empty_scope = uuid::Uuid::new_v4();
+    let empty = call(
+        &mut browser,
+        &router,
+        &format!("/api/v2/scopes/{empty_scope}"),
+        0,
+        json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}),
+    )
+    .await?;
+    await_task(
+        &mut browser,
+        &router,
+        &format!(
+            "/api/v2/scopes/{empty_scope}/tasks/{}",
+            empty["task"].as_str().unwrap()
+        ),
+    )
+    .await?;
+    assigned["scope"] = json!(empty_scope);
+    let mut grants =
+        crate::identity_fixture::device_grants(None, &["inventory_read", "firewall_write"])?;
+    for p in [
+        "group_read",
+        "group_write",
+        "group_recompute",
+        "scope_read",
+        "scope_write",
+        "policy_read",
+        "policy_write",
+        "resource_read",
+        "resource_write",
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation: serde_json::from_value(json!(p))?,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    crate::identity_fixture::set_grants(TENANT, &member, grants).await?;
     call(
         &mut browser,
         &router,
@@ -277,6 +314,11 @@ pub(super) async fn matrix(
         json!({"action":"put","enabled":true,"definition":assigned}),
     )
     .await?;
+    let referenced=browser.call(&router,Method::POST,&format!("/api/v2/scopes/{empty_scope}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?;
+    ensure!(
+        referenced.0 == StatusCode::CONFLICT,
+        "referenced Scope was deleted: {referenced:?}"
+    );
     Box::pin(derived_result_authorization(
         &mut browser,
         &router,
@@ -821,7 +863,7 @@ async fn scale_assignments(
     call(browser,router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let current = browser.call(router, Method::GET, policy, None).await?.1;
     let mut definition = current["definition"].clone();
-    definition["targets"] = json!({"kind":"scope","id":scope});
+    definition["scope"] = json!(scope);
     // This fixture grants publish authority separately from scope/member read authority.
     let member = browser_subject(browser, router).await?;
     let grants =

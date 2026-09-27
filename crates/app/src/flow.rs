@@ -336,7 +336,7 @@ impl crate::resource_catalog::References for ResourceReferences {
         Box<dyn std::future::Future<Output = crate::transaction::Result<u64>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let plans = crate::planning::references::count_in(tx, resource, version).await?;
+            let assignments = crate::planning::references::count_in(tx, resource, version).await?;
             let publications =
                 rss_mdm_software_service::publication::references::count_in(tx, resource, version)
                     .await?;
@@ -344,7 +344,7 @@ impl crate::resource_catalog::References for ResourceReferences {
             let resource = resource.to_owned();
             let version = version.to_owned();
             let approvals:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
-            plans
+            assignments
                 .checked_add(approvals as u64)
                 .and_then(|n| n.checked_add(publications))
                 .ok_or_else(|| Error::Unavailable(Failure::FlowStorage).into())

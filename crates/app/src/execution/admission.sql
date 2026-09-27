@@ -3,7 +3,7 @@ WITH tables AS (
 ), update_columns(relation, col) AS (VALUES
  ('mdm_planning.remote_operations','staged'),('mdm_planning.remote_operations','cursor'),('mdm_planning.remote_operations','run_after'),
  ('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
- ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),('mdm_planning.configuration_claims','diagnosis'),
+ ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_devices','operation'),('mdm_planning.configuration_devices','digest'),('mdm_planning.configuration_devices','diagnosis'),
  ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
  ('mdm_commands.attempts','receipt_accepted'),('mdm_commands.attempts','status'),
@@ -28,7 +28,7 @@ WITH tables AS (
  ('mdm_apple.profiles','profile'),('mdm_apple.profiles','operation'),('mdm_apple.profiles','registration'),('mdm_apple.profiles','version'),('mdm_apple.profiles','enabled'),
  ('mdm_apple.devices','token'),('mdm_apple.devices','magic'),('mdm_apple.devices','state'),('mdm_apple.devices','push_id'),('mdm_apple.devices','push_lease_until'),('mdm_apple.devices','next_push'),('mdm_apple.devices','push_status'),('mdm_apple.devices','push_outcome'),('mdm_apple.devices','push_configuration'),('mdm_apple.devices','push_failures')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_planning.remote_operations',true,false,false),('mdm_planning.remote_operation_targets',true,true,false),('mdm_commands.policy_recovery',true,true,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_policy.target_revisions',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
+ ('mdm_planning.remote_operations',true,false,false),('mdm_planning.remote_operation_targets',true,true,false),('mdm_commands.policy_recovery',true,true,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
  ('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_access.agent_bindings',true,false,false),
  ('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_access.requests',true,false,false),
 

@@ -29,17 +29,11 @@ pub(crate) async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Exec
 impl ExecutionPolicy {
     pub(crate) fn entry_source(&self) -> String {
         match &self.authority {
-            Authority::Policy(Policy {
-                definition:
-                    Definition {
-                        targets: Targets::Scope { id },
-                        ..
-                    },
-                ..
-            }) => format!("scope:{id}"),
-            _ => "devices".into(),
+            Authority::Policy(p) => format!("scope:{}", p.definition.scope),
+            Authority::Remote(_) => "remote".into(),
         }
     }
+
     pub(crate) async fn entry_in(
         &self,
         tx: &mut PgTransaction<'_>,
