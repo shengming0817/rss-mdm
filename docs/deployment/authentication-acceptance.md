@@ -8,7 +8,7 @@
 按 [安装指南](installation.md) 构建 V3 候选。使用与验收工具匹配的固定浏览器镜像，版本由 auth_t3.py 校验；运行不依赖源码 checkout。使用当前 Docker 默认平台。镜像须已存在，UI 由产品候选归档持有；工具输入仅接受不可变 image ID 或 repository digest，启动前导出 browser-tools.image.tar 并记录摘要，不接受 tag。
 
 ```sh
-python3 hack/auth_t3.py --candidate /absolute/candidate --tools-image "$MDM_BROWSER_IMAGE_ID" --output /absolute/new-result
+python3 hack/auth_t3.py --mode faults --candidate /absolute/candidate --tools-image "$MDM_BROWSER_IMAGE_ID" --output /absolute/new-result
 ```
 
 输出目录必须全新。失败不生成 result.json；成功记录只在全部场景及资源清理完成后写入。

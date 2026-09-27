@@ -65,11 +65,14 @@ OWNERS={
  'windows-mdm':('windows','commands','identity'), 'agent-wire':('commands','tasks'), 'scope':tuple(SUITES),
  'audit-integration':tuple(SUITES), 'examples':tuple(SUITES),
 }
+# These shared App services are composed by all product scenarios; propagate
+# through the App fixture rather than pretending their direct callers are exhaustive.
+APP_COMMON=tuple(name for name,suite in SUITES.items() if suite.module in ('product','management','publication'))
 APP={
- 'apple':('apple',),'windows':('windows','commands','identity'),'planning':('management','publication','compliance'),
- 'execution':('commands','tasks','catalog'),'task_signing':('tasks',),'inventory_runtime':('foundation','assets','management','compliance'),
- 'device':('foundation','windows','apple'),'flow':('management','publication','software','catalog'),
- 'content':('software','publication','catalog'),'compliance':('compliance',),'assets':('assets','management'),
+ 'apple':('apple',),'windows':('windows','commands','identity'),
+ 'planning':APP_COMMON,'execution':APP_COMMON,'inventory_runtime':APP_COMMON,
+ 'device':APP_COMMON,'flow':APP_COMMON,'assets':APP_COMMON,'content':APP_COMMON,
+ 'task_signing':('tasks',),'compliance':('compliance',),
 }
 TOOL_INPUTS={
  'hack/verification_result.py':('test_t2_runner','test_ci_selection','test_ci','test_t2_guards','test_foundation_t2','test_source_t2'),

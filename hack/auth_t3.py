@@ -202,10 +202,14 @@ def run_normal(input_file, output):
     require(not any(key in params for key in ('server','pg','idp','otherPg','runtimeVolume','runtimeImage')),
             'normal mode cannot accept service control coordinates')
     from urllib.parse import urlsplit
-    for key in ('origin','otherOrigin'):
-        parsed=urlsplit(params[key])
-        require(parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password,
-                'normal browser requires HTTPS origins')
+    for key in ('origin','otherOrigin','issuer'):
+        value=params[key]
+        parsed=urlsplit(value)
+        require(parsed.scheme=='https' and parsed.hostname and parsed.port != 0 and
+                parsed.username is None and parsed.password is None and not parsed.query and not parsed.fragment and
+                not any(char.isspace() or ord(char)<32 or char=='\\' for char in value) and
+                (key=='issuer' or parsed.path in ('','/')),
+                'normal browser requires unambiguous HTTPS origins and issuer')
     require(not output.exists(),'T3 output must be new')
     output.mkdir(parents=True)
     private=[params[key] for key in ('adminPassword','memberPassword','idpPassword','clientSecret')]
@@ -218,7 +222,20 @@ def run_normal(input_file, output):
         evidence.update(mode='normal',status='passed',excluded=sorted(FAULT_SCENARIOS))
         (output/'result.json').write_text(json.dumps(safe_evidence(evidence,private),indent=2)+'\n')
     except BaseException as error:
-        (output/'failure.json').write_text(json.dumps({'status':'failed','errorClass':type(error).__name__})+'\n')
+        failure={'status':'failed','errorClass':type(error).__name__,'stage':'browser','reason':'browser-execution-failed'}
+        if isinstance(error,subprocess.CalledProcessError):
+            try:
+                raw=json.loads(error.stderr)
+                diagnostic={key:raw[key] for key in ('stage','errorClass','reason')}
+                require(all(isinstance(value,str) and len(value)<=2000 for value in diagnostic.values()),'invalid diagnostic')
+                # Do not persist dynamic cookies/callback values from a failed browser.
+                secrets=private+raw.get('privateValues',[])
+                for key,value in diagnostic.items():
+                    try:failure[key]=safe_evidence(value,secrets)
+                    except RuntimeError:failure[key]='diagnostic-withheld'
+            except (ValueError,KeyError,TypeError,RuntimeError):
+                failure['reason']='unavailable-browser-diagnostic'
+        (output/'failure.json').write_text(json.dumps(failure)+'\n')
         raise
 
 if __name__=='__main__':
@@ -231,7 +248,7 @@ if __name__=='__main__':
     args=parser.parse_args()
     if args.mode=='normal':
         if not args.input or args.candidate or args.tools_image:parser.error('normal requires --input and rejects candidate controls')
-        run_normal(args.input.resolve(),args.output.resolve())
+        run_normal(args.input.absolute(),args.output.resolve())
     else:
         if args.input or not args.candidate or not args.tools_image:parser.error('faults requires --candidate and --tools-image')
         run(args.candidate.resolve(),args.tools_image,args.output.resolve())

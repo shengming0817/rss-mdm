@@ -45,3 +45,59 @@ class NormalModeTests(unittest.TestCase):
             with patch.object(auth_t3.subprocess,'run') as run:
                 with self.assertRaisesRegex(RuntimeError,'service control'):auth_t3.run_normal(path,Path(tmp)/'output')
                 run.assert_not_called()
+
+class NormalSafetyTests(unittest.TestCase):
+    def params(self):
+        return dict(mode='normal',origin='https://mdm.example.test',otherOrigin='https://other.example.test',issuer='https://idp.example.test/realms/mdm',adminPassword='admin-secret',memberPassword='member-secret',idpPassword='idp-secret',clientSecret='client-secret')
+
+    def test_issuer_rejects_insecure_or_ambiguous_urls_before_browser(self):
+        import json
+        from unittest.mock import patch
+        for url in ('http://idp.test','https:///realms/a','https://user@idp.test','https://idp.test?token=x','https://idp.test#fragment','https://idp.test:bad/a','https://idp.test/\\evil'):
+            with self.subTest(url=url),tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp)/'input.json';params=self.params();params['issuer']=url
+                path.write_text(json.dumps(params));path.chmod(0o600)
+                with patch.object(auth_t3.subprocess,'run') as run:
+                    with self.assertRaises((RuntimeError,ValueError)):auth_t3.run_normal(path,Path(tmp)/'out')
+                    run.assert_not_called()
+
+    def test_browser_failure_preserves_safe_stage_and_withholds_secrets(self):
+        import json,subprocess
+        from unittest.mock import patch
+        for reason,expected in [('login selector unavailable','login selector unavailable'),('idp-secret','diagnostic-withheld')]:
+            with self.subTest(reason=reason),tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp)/'input.json';path.write_text(json.dumps(self.params()));path.chmod(0o600)
+                error=subprocess.CalledProcessError(1,['node'],stderr=json.dumps(dict(stage='enterprise',errorClass='TimeoutError',reason=reason)))
+                with patch.object(auth_t3.subprocess,'run',side_effect=error):
+                    with self.assertRaises(subprocess.CalledProcessError):auth_t3.run_normal(path,Path(tmp)/'out')
+                value=json.loads((Path(tmp)/'out/failure.json').read_text())
+                self.assertEqual(value['stage'],'enterprise');self.assertEqual(value['reason'],expected)
+                self.assertNotIn('idp-secret',json.dumps(value))
+
+class BrowserBoundaryTests(unittest.TestCase):
+    def test_launch_modes_and_launch_failure_evidence(self):
+        import json,os,subprocess
+        source=Path(auth_t3.__file__).with_name('auth_t3_browser.mjs')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);module=root/'playwright.cjs';options=root/'launch.json';params=root/'input.json'
+            module.write_text("exports.chromium={launch:async options=>{require('fs').writeFileSync(process.env.PROBE_OUTPUT,JSON.stringify(options));throw new Error('launch-probe')}};")
+            for mode in ('normal','faults'):
+                params.write_text(json.dumps(dict(mode=mode,origin='https://mdm.test',otherOrigin='https://other.test')))
+                result=subprocess.run(['node',str(source),str(params)],capture_output=True,text=True,env={**os.environ,'MDM_PLAYWRIGHT_MODULE':str(module),'PROBE_OUTPUT':str(options)})
+                self.assertEqual(result.returncode,1)
+                self.assertEqual(json.loads(options.read_text())['chromiumSandbox'],mode=='normal')
+                self.assertEqual(json.loads(result.stderr)['stage'],'launch')
+
+    def test_cross_origin_redirect_cannot_receive_idp_password(self):
+        import subprocess
+        source=Path(auth_t3.__file__).with_name('auth_t3_browser.mjs').read_text()
+        function=source[source.index('async function keycloak('):source.index('let admin,member;')]
+        probe="""
+const input={issuer:'https://idp.test/realms/mdm',idpPassword:'private'};
+const assert=(ok,message)=>{if(!ok)throw new Error(message)};
+let filled=0;
+const page={waitForURL:async()=>{},url:()=> 'https://attacker.test/login',locator:()=>({waitFor:async()=>{},fill:async()=>{filled++},click:async()=>{}})};
+try{await keycloak(page,'alice');throw new Error('accepted redirect')}catch(e){if(e.message!=='untrusted IdP navigation'||filled!==0)throw e}
+"""
+        result=subprocess.run(['node','--input-type=module','-e',function+probe],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)

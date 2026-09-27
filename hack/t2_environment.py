@@ -64,8 +64,20 @@ class Environment:
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'], **getattr(self,'extra',{})}
 
     def compose(self, *args, **kwargs):
-        return run(['docker','compose','-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
-                   env=self.variables(), capture_output=True, **kwargs).stdout.strip()
+        try:
+            return run(['docker','compose','-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
+                       env=self.variables(), capture_output=True, **kwargs).stdout.strip()
+        except subprocess.CalledProcessError as error:
+            from candidate_runtime import safe_evidence
+            diagnostic=error.stderr or 'no Compose diagnostic'
+            private_values=[]
+            for path in self.root.rglob('*'):
+                if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
+                    private_values.append(path.read_text())
+            try:diagnostic=safe_evidence(diagnostic,private_values)
+            except RuntimeError:diagnostic='diagnostic-withheld'
+            print(f'Compose failed ({error.returncode}): {diagnostic}',file=sys.stderr,flush=True)
+            raise
 
     def certificate(self):
         if (self.root/'ca.crt').exists():

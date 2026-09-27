@@ -15,7 +15,7 @@ const assert=(ok,message)=>{if(!ok)throw new Error(message)};
 const docker=(...args)=>{assert(faults,'fault control unavailable in normal mode');return faults.docker(...args)};
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function poll(check,seconds=60){const end=Date.now()+seconds*1000;while(Date.now()<end){try{if(await check())return}catch{}await delay(500)}throw new Error('readiness deadline')}
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+let browser;
 const consoleText=[];
 async function pageAt(url=origin){const ctx=await browser.newContext({locale:'en-US'});const page=await ctx.newPage();page.setDefaultTimeout(15000);page.on('console',m=>consoleText.push(m.text()));page.on('request',r=>{const u=new URL(r.url());if(u.pathname==='/api/v2/oidc/callback')for(const name of ['code','state']){const value=u.searchParams.get(name);if(value)privateValues.push(value)}});await page.goto(`${url}/tenants/${url===origin?input.tenant:input.otherTenant}/login`);return page}
 async function request(page,path,method='GET',body,headers={}){
@@ -51,11 +51,16 @@ async function restart(){docker(['restart','--time','45',input.server]);await po
 function sql(statement){return docker(['exec','-i',input.pg,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test'],statement)}
 async function keycloak(page,user){
   await page.waitForURL(new URL(input.issuer).origin+'/**');
-  await page.locator('#username').fill(user);await page.locator('#password').fill(input.idpPassword);
+  await page.locator('#username').waitFor();
+  const trusted=()=>assert(new URL(page.url()).origin===new URL(input.issuer).origin,'untrusted IdP navigation');
+  trusted();await page.locator('#username').fill(user);
+  trusted();await page.locator('#password').fill(input.idpPassword);
+  trusted();
   await page.locator('#kc-login').click();
 }
 let admin,member;
 try{
+  browser=await chromium.launch({headless:true,chromiumSandbox:input.mode==='normal'});
   stage='local_ui';admin=await pageAt();await login(admin,'admin',input.adminPassword);
   member=await pageAt();const initial=await login(member,'member',input.memberPassword);
   assert(initial.identity.principalId===input.member,'member coordinate');
@@ -183,4 +188,11 @@ try{
   checks.safe_logs=true;
   const result={checks,requests,browser:browser.version(),privateValues};
   await browser.close();process.stdout.write(JSON.stringify(result));
-}catch(error){await browser.close();process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason:error.message.replace(/https?:\/\/\S+/g,'[url]')}));process.exitCode=1}
+ }catch(error){
+  if(browser)await browser.close().catch(()=>{});
+  let reason=error.message.replace(/https?:\/\/\S+/g,'[url]');
+  for(const value of [...privateValues,input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret]){
+    if(value)reason=reason.split(value).join('[private]');
+  }
+  process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason}));process.exitCode=1;
+}

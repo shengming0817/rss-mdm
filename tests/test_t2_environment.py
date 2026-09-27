@@ -140,3 +140,16 @@ class EnvironmentTests(unittest.TestCase):
             with patch.object(env,'verify_ownership'),patch.object(env,'compose'):env.reset()
             allocations=json.loads((Path(tmp)/'.cache/rss-mdm-dev-ports/allocations.json').read_text())
             self.assertNotIn(env.project,allocations)
+
+class ComposeDiagnostics(unittest.TestCase):
+    def test_failure_keeps_safe_stderr_without_disclosing_private_input(self):
+        import io,contextlib,subprocess
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            env=Environment(Path(tmp));env.root.mkdir(parents=True)
+            (env.root/'account-password').write_text('private-password')
+            for diagnostic,expected in [('port is already allocated','port is already allocated'),('private-password','diagnostic-withheld')]:
+                output=io.StringIO()
+                with patch('t2_environment.run',side_effect=subprocess.CalledProcessError(1,['docker','compose'],stderr=diagnostic)),contextlib.redirect_stderr(output):
+                    with self.assertRaises(subprocess.CalledProcessError):env.compose('up','-d','postgres')
+                self.assertIn(expected,output.getvalue());self.assertNotIn('private-password',output.getvalue())

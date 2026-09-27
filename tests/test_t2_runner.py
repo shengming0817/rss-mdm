@@ -119,3 +119,27 @@ class ToolGateSelection(unittest.TestCase):
         import ci
         _,tests,_=registry.select_paths(['hack/agent_wire_compat.py'])
         self.assertTrue(ci.selected_gate('agent-wire-compat',{'full':False,'packages':[],'toolTests':tests,'t2Suites':[]}))
+
+class ReviewRegressions(unittest.TestCase):
+    def test_app_shared_consumers(self):
+        cases={'flow':{'tasks','windows','apple','commands','identity'},'execution':{'windows','apple','management','identity'},'inventory_runtime':{'tasks','windows','apple','identity'},'device':{'assets','compliance','tasks','management','identity'}}
+        for module,expected in cases.items():
+            with self.subTest(module=module):self.assertLessEqual(expected,set(registry.select_paths(['crates/app/src/'+module+'.rs'])[0]))
+
+    def test_failed_suite_keeps_callsite_and_log_pointer(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp,patch.object(t2,'require_lease'),patch.object(t2,'T2Context'),patch.object(t2.shutil,'which',return_value='/tool'),patch.object(t2,'execute',side_effect=ValueError('fixture rejected')):
+            result=t2.run_suites(['catalog'],Path(tmp))['catalog']
+            self.assertEqual(result['reason'],'ValueError');self.assertEqual(result['log'],'catalog.log')
+            self.assertIn('Traceback',(Path(tmp)/'catalog.log').read_text())
+
+
+class CentralOracleTests(unittest.TestCase):
+    def test_executor_success_cannot_bypass_registry(self):
+        import tempfile
+        from unittest.mock import patch
+        for output in ('', 'test unrelated ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;'):
+            with self.subTest(output=output),tempfile.TemporaryDirectory() as tmp,patch.object(t2,'require_lease'),patch.object(t2,'T2Context'),patch.object(t2.shutil,'which',return_value='/tool'),patch.object(t2,'execute',side_effect=lambda *args:print(output)):
+                result=t2.run_suites(['windows'],Path(tmp))
+                self.assertEqual(result['windows']['status'],'failed')

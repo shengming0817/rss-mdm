@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import sys
 import time
+import traceback
 from build_run import require_lease
 from ci_registry import ROOT, SUITES, execute
 from t2_environment import T2Context
@@ -33,6 +34,7 @@ def run_suites(names, output):
         for name in names:
             (output/(name+'.log')).write_text('')
             started=time.monotonic()
+            details={}
             try:
                 missing=[tool for tool in SUITES[name].tools if not shutil.which(tool)]
                 if missing:raise RuntimeError('missing dependencies: '+', '.join(missing))
@@ -53,8 +55,9 @@ def run_suites(names, output):
                 status='passed'
             except Exception as error:
                 status='failed'
-                with (output/(name+'.log')).open('a') as log:log.write('\n'+str(error)+'\n')
-            results[name]=stage_result(status,started)
+                with (output/(name+'.log')).open('a') as log:traceback.print_exc(file=log)
+                details=dict(reason=type(error).__name__,log=name+'.log')
+            results[name]=stage_result(status,started,**details)
             print(f'T2 {name}: {status} ({results[name]["elapsedSeconds"]}s)',flush=True)
     return results
 
