@@ -40,13 +40,39 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 `POST /api/v3/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation=<UUID>`
 上传原始字节，最后 activate。上传需 ResourceWrite，精确长度与 SHA-256 必须匹配声明，同一摘要不可覆盖。osquery_info_v1 的唯一内容为 `SELECT version FROM osquery_info;` 加一个 LF，且 system、无参数、单行输出。
 
-## 计划和授权
+## Policy 分配与权限
 
-`POST /api/v3/script-plans` 接受 operationId、resource/version、platform/architecture/variant、parameters、目标选择、schedule、runLifetimeSeconds。目标选择必须恰有一个：`devices`（显式设备列表）或 `scopeRef: { id, resolutionRevision }`。Scope 的当前 resolution/revision 从 `GET /api/v2/scopes/{id}` 获取；尚未发布、已过期或来源变化的结果拒绝创建，不隐式触发重算。两种入口均冻结 1–256 台设备；每次产生任务绑定当前注册和 generation。未到期计划的关联容量有界，超额创建返回冲突，停用旧计划后释放额度。计划不可变、revision 固定为 1；变更需新建计划并重新审批。Scope 入口另外要求 ScopeRead 权限。批准后 Scope/Group 的变化不会扩大、缩小或阻断旧冻结集合；重新解析必须创建新计划并重新审批。同一 operationId 重试返回原冻结计划，不重新解析；创建和批准的成功回执在计划到期或取消后仍可恢复，同时复核当前权限。读取计划的 `definition.targets` 返回冻结设备及 Scope 来源 revisions/指纹。重试仍复核当前 ScopeRead 和冻结设备的 ScriptExecute 权限。未发布返回 `scope_unavailable`，过期返回 `scope_stale`；空集合与超过 256 台分别返回 `action_targets_empty`、`action_target_limit`。资源版本不可用返回 `script_resource_unavailable`，计划关联容量不足返回 `action_capacity_exceeded`。
+在 `POST /api/v2/policies/{id}` 发送 `operationId`、`expectedRevision` 和 `input`。`input.action` 为 `put`、`enable` 或 `disable`。执行型定义示例：
 
-作者对每台设备需要 ScriptExecute。另一主体调用 `/script-plans/{id}/approve`，需要对全部目标具有 ScriptApprove。独立审批者不能与作者相同；审批不会绕过当前权限。生产、领取、启动和下载重新检查授权规则及成员关系，并要求当前 Agent 注册显式声明 `task.execute.v2`。只有 `inventory.basic.v2` 的注册仍可报告库存，但不会成为任务目标，任务 HTTP 也返回 permission denied。读取需要 OperationRead。`GET /script-plans/{id}` 仅返回计划元数据；`/{id}/runs` 返回有界摘要页，不含 output、stdout 或 stderr，非空 nextCursor 用 afterAt/afterId 继续读取；`/{id}/runs/{taskId}` 返回单次完整执行证据。`/cancel` 需要 OperationCancel。停用计划后未开始任务不再执行；已启动任务的取消只表明请求或停止确认，不能证明副作用已撤销。
+```json
+{
+  "action": "put",
+  "enabled": true,
+  "definition": {
+    "resource": {"id": "script", "version": "v1", "platform": "macos", "architecture": "aarch64", "variant": "default"},
+    "scope": "11111111-1111-1111-1111-111111111111",
+    "behavior": {"kind": "execution", "parameters": {}, "runLifetimeSeconds": 300}
+  }
+}
+```
 
-schedule 包含 notBefore/until、jitterSeconds、可选 window、misfire（skip 或 coalesce_one），trigger 为 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration 或 check_in(minimumSeconds)。IANA 时区、星期 1–7；DST gap 跳过、fold 取较早时刻。窗口不跨午夜。有效期与抖动有界；错过默认跳过，coalesce_one 只合并最新一次。设备离线不会删除已生成任务，任务期限内可领取。窗口结束同时约束任务 deadline、offer 和 Start permit，窗口结束后不能启动。定时生产容量满时把原 occurrence 坐标持久化为 `blocked_at`，不推进 `scan_at`；重启和后续 tick 优先重试它。成功、重复或按原 occurrence 的 misfire/window/until/deadline 规则跳过后，才清空阻塞坐标并将扫描游标推进到该坐标，下一 tick 再合并后续触发。手动审批容量满返回 409；registration/check_in 使用各自稳定身份在后续事件或轮询重试。窗口等待保留原 occurrence 身份；重启不会产生同坐标重复任务。
+默认签入触发、每执行版本一次、没有结束时间。显式设备也通过 Scope 的直接设备来源表达。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
+
+管理需要 PolicyWrite，以及目标的 ScriptExecute；Scope 分配另需 ScopeRead 和全设备 ScriptExecute。发布受理后归组织持有，不再依赖发布者的登录会话、岗位或授权规则。没有 ScriptPlan 保存或强制第二人审批步骤。Agent 注册仍须声明 `task.execute.v2`，领取、下载和启动仍验证凭据、设备世代和当前分配。
+
+`frequency` 为 `once_per_version`、`once_per_entry` 或 `every_trigger`。可选 `schedule` 包含 trigger、notBefore、until、jitterSeconds、window 和 misfire。trigger 支持 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration、check_in(minimumSeconds)。`until` 可省略。misfire 为 `{"kind":"coalesce_one"}`（默认）或 `{"kind":"skip","maxLatenessSeconds":30}`；窗口可跨午夜，星期按开始日计算，DST gap 跳过、fold 取较早时刻。
+
+`POST /api/v2/policies/{id}/reruns` 使用 `operationId`、当前 `expectedRevision`、`input:{"deadline":...}` 请求显式重执行；只保存一个有期限触发，设备签入时才受理。已启动而结果未知的脚本不自动重跑。关闭分配阻止新执行并请求取消既有任务，取消不证明副作用回滚。
+
+`GET /api/v2/policies` 按 `after` UUID 分页；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/devices` 按设备 `after` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 afterAt/afterId 分页，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead。
+
+## 一次性远程操作
+
+`POST /api/v2/remote-operations` 接受 `operationId`、Resource 绑定、`targets`、`deadline` 和 `action`。脚本动作是 `{"kind":"execute","parameters":{}}`，当前原生配置动作是 `{"kind":"apply_configuration"}`。不创建长期 Policy，也不接受触发器或频率。`targets` 使用 `{"kind":"devices","devices":["device-id"]}` 或 `{"kind":"scope","id":"scope-uuid"}`。Scope 输入在受理时固定结果引用；后续入组或退出不改变本次目标。交付受理绑定当前注册世代；后续重新注册会使旧交付取消，查询保留该子任务状态。需要向新世代再次执行时，提交新的显式远程操作。
+
+一个持久分页任务受理目标，Agent Run 等待主动领取，MDM 子 Operation 进入已有原生队列。单设备缺少通道、能力或容量会留下阻断原因并继续后续设备；离线但已有有效注册的设备仍可在期限内领取。过期后不再产生新子项或发放 Start permit。
+
+`GET /api/v2/remote-operations/{id}?after=<device>` 返回有界目标页、子执行身份和状态；`POST /{id}/cancel` 携带新的 `operationId` 请求取消。重试创建时使用原 operationId 和原正文，恢复首次快照。取消只撤销本次尚未完成的执行资格，不表示已发生的副作用被回滚。
 
 ## Agent 状态与结果
 
@@ -60,4 +86,12 @@ schedule 包含 notBefore/until、jitterSeconds、可选 window、misfire（skip
 采集模板是 collection purpose 加固定字段 JSON Pointer 映射，不另建模板版本体系。只允许 corporate_agent.version（字符串）、corporate_agent.healthy（布尔）、osquery.version（字符串），完整键名均以 `custom.` 开头。前两项来源 agent.script，第三项来源 agent.osquery。完整、exitCode=0、schema 与字段类型均有效且权限仍有效、未超过任务或运行超时且未取消时，通过 CollectionRun → Observation → Inventory 发布。部分、截断、失败和非法输出只增加质量证据，保留可信事实及 lastKnown 的原始来源时间。没有 TTL。
 
 
-归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。审批、取消和执行事件的审计包含 plan；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。
+归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。
+
+### 一次性结果与恢复阶段
+
+`GET /api/v2/remote-operations/{id}` 的结果摘要省略 output/stdout/stderr；`GET /api/v2/remote-operations/{id}/runs/{task}` 按设备 OperationRead 权限读取完整、已有预算约束的结果与诊断。Policy 与 Remote 使用同一 Run 结果过滤与详情投影。
+
+`cancellationRequested` 与 `deadlineElapsed` 是意图/时间事实。仍有工作时，phase 为 preparing、dispatched、cancelling 或 expiring；全部工作收敛后为 completed，存在无法确认的执行则为 unknown。completed 表示处理收敛，不表示每个设备执行成功，更不证明脚本效果回滚；各设备结果仍独立展示。取消返回 cancellationRequested，不把写入取消意图称为设备取消完成。
+
+当前服务端 Scope 预览只证明分配资格，尚无受检 OS/CPU 架构事实，不能宣称设备平台适用。终端仍严格核验签名任务的平台/架构。服务端统一 applicability 与其事实/协议前置合同由 [PBI #2572](https://dev.azure.com/shengming0923/rss/_workitems/edit/2572) 跟踪；本次不扩展 Agent V2。

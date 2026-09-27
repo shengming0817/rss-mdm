@@ -231,3 +231,41 @@ fn source_and_role_budgets_are_bounded() {
     i.targets = vec![source("same", true); 3001];
     assert_eq!(resolve_device(&i), Err(ScopeError::SourceLimit));
 }
+
+#[test]
+fn unknown_exclusion_blocks_only_the_affected_device() {
+    let mut i = input();
+    let mut exclusion = source("exclude", false);
+    exclusion.contains = Membership::Unknown;
+    i.exclusions.push(exclusion);
+    let result = resolve_device(&i).unwrap().unwrap();
+    assert_eq!(result.reasons, vec![ExclusionReason::UnknownExclusion]);
+    i.exclusions[0].contains = Membership::Known(false);
+    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
+    i.exclusions[0].contains = Membership::Known(true);
+    assert_eq!(
+        resolve_device(&i).unwrap().unwrap().reasons,
+        vec![ExclusionReason::ExplicitExclusion]
+    );
+}
+
+#[test]
+fn known_or_match_satisfies_targets_and_limits_but_not_unknown_exclusions() {
+    let mut i = input();
+    let mut unknown = source("unknown", false);
+    unknown.contains = Membership::Unknown;
+    i.targets.push(unknown.clone());
+    i.limitations = Some(vec![unknown.clone(), source("limit", true)]);
+    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
+    i.limitations = Some(vec![unknown.clone()]);
+    assert_eq!(
+        resolve_device(&i).unwrap().unwrap().reasons,
+        vec![ExclusionReason::UnknownLimitation]
+    );
+    i.targets = vec![unknown];
+    i.limitations = None;
+    assert_eq!(
+        resolve_device(&i).unwrap().unwrap().reasons,
+        vec![ExclusionReason::UnknownTarget]
+    );
+}

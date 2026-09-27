@@ -2,56 +2,54 @@ use super::model::Target;
 use super::state::RunState;
 use crate::Error;
 use crate::execution::{Result, checked_input, storage, stored};
-use crate::planning::actions::admission::Plan;
+use crate::planning::policies::admission::ExecutionPolicy;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use sqlx::Row;
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(in crate::execution) enum Source {
+    Policy { version: Uuid },
+    RemoteOperation { operation: Uuid },
+}
+impl Source {
+    pub fn columns(self) -> (&'static str, Option<Uuid>, Option<Uuid>) {
+        match self {
+            Self::Policy { version } => ("policy", Some(version), None),
+            Self::RemoteOperation { operation } => ("remote_operation", None, Some(operation)),
+        }
+    }
+    pub fn audit(self, audit: &rss_mdm_audit_integration::RequestAudit) {
+        if let Self::Policy { version } = self {
+            audit.plan(version);
+        }
+    }
+}
 pub(super) struct Run {
     pub id: Uuid,
-    pub plan: Uuid,
+    pub source: Source,
     pub target: Target,
     pub available_at: i64,
     pub deadline: i64,
     pub state: RunState,
     pub result: Option<Value>,
 }
-pub(super) async fn registration(tx: &mut PgTransaction<'_>, device: &str) -> Result<Target> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let target_device = device.clone();
-    let d = device.clone();
-    let t = tenant.clone();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            Ok(
-                crate::device::store::lock_channel(c, &t, &d, rss_mdm_inventory::Channel::Agent)
-                    .await,
-            )
-        })
-    })
-    .await??;
-    let row=tx.with_connection(move|c|Box::pin(async move{
-        let row=sqlx::query("SELECT r.id::text,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active')").bind(&tenant).bind(&device).fetch_optional(&mut *c).await?;
-        if let Some(row)=&row {
-            let registration:String=row.try_get("id")?;
-            if !crate::device::store::task_capable(c,&tenant,&registration).await? {return Ok(None);}
-        }
-        Ok(row)
-    })).await?.ok_or(Error::Conflict)?;
-    Ok(Target {
-        device: target_device,
-        registration: stored(Uuid::parse_str(&row.try_get::<String, _>("id")?))?,
-        generation: row.try_get("generation")?,
-    })
-}
 pub(super) async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT plan::text,device,registration::text,generation,available_at,deadline,state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::execution::error::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,remote_operation,device,registration::text,generation,available_at,deadline,state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::execution::error::ExecutionError::MissingTask))?;
     Ok(Run {
         id,
-        plan: stored(Uuid::parse_str(&row.try_get::<String, _>("plan")?))?,
+        source: match row.try_get::<&str, _>("source_kind")? {
+            "policy" => Source::Policy {
+                version: row.try_get("policy_version")?,
+            },
+            "remote_operation" => Source::RemoteOperation {
+                operation: row.try_get("remote_operation")?,
+            },
+            _ => return Err(Error::Unavailable(crate::Failure::CommandInvariant).into()),
+        },
         target: Target {
             device: row.try_get("device")?,
             registration: stored(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
@@ -103,18 +101,28 @@ pub(super) async fn receipt(
     Ok(())
 }
 
-pub(super) struct ScheduledPlan {
-    pub definition: Plan,
-    pub scan_at: i64,
-    pub blocked_at: Option<i64>,
+pub(super) struct ScheduledPolicy {
+    pub definition: ExecutionPolicy,
 }
-pub(super) async fn load_plan(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<ScheduledPlan> {
-    let definition = crate::planning::actions::admission::read_in(tx, id).await?;
-    let tenant = tx.tenant_id().to_string();
-    let (scan_at,blocked_at)=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,Option<i64>)>("SELECT scan_at,blocked_at FROM mdm_commands.action_progress WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).fetch_one(c).await})).await?;
-    Ok(ScheduledPlan {
-        definition,
-        scan_at,
-        blocked_at,
+pub(super) async fn load_policy_version(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<ScheduledPolicy> {
+    Ok(ScheduledPolicy {
+        definition: crate::planning::policies::admission::read_in(reader, tx, id).await?,
     })
+}
+
+pub(super) async fn load_source(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    source: Source,
+) -> Result<ScheduledPolicy> {
+    match source {
+        Source::Policy { version } => load_policy_version(reader, tx, version).await,
+        Source::RemoteOperation { operation } => Ok(ScheduledPolicy {
+            definition: crate::planning::policies::admission::remote_in(tx, operation).await?,
+        }),
+    }
 }

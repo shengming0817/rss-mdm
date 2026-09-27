@@ -281,8 +281,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                                         .advance_scope_job_in(tx, id, scope, cursor)
                                                         .await
                                                 }
-                                                JobInput::Policy { .. } => {
-                                                    ctx.0.advance_policy_job_in(tx, id, &job).await
+                                                JobInput::PolicyReconcile { policy } => {
+                                                    ctx.0
+                                                        .advance_assignment_in(
+                                                            tx, id, policy, cursor,
+                                                        )
+                                                        .await
                                                 }
                                             }
                                         }
@@ -316,12 +320,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                 )
                 .map_err(reconcile_error)?;
-            let detail = match &rejection {
-                Some(Error::Planning(crate::planning::error::PlanningError::Plan(detail))) => {
-                    Some(detail.clone())
-                }
-                _ => None,
-            };
             let terminal = match rejection {
                 Some(Error::Conflict) => Some("superseded"),
                 Some(Error::Unavailable(
@@ -330,12 +328,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     | Failure::AssetSourceLimit,
                 )) => Some("capacity_exceeded"),
                 Some(ref error) if error.is_not_found() => Some("source_unavailable"),
-                Some(Error::Planning(crate::planning::error::PlanningError::Plan(ref detail))) => {
-                    Some(detail.reason.code())
-                }
-                Some(Error::Planning(crate::planning::error::PlanningError::TargetLimit)) => {
-                    Some("configuration_target_limit")
-                }
                 Some(Error::Malformed) => Some("invalid_input"),
                 Some(error) => return Err(reconcile_error(error)),
                 None => return Ok(()),
@@ -350,64 +342,78 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     rss_reconcile::ErrorKind::Transient,
                 ));
             };
-            self.service.runtime.local_tx_with_context(
-    self.service.tenant,
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
-    (&self.service, claim, &self.service),
-    |(service, claim, context), tx| Box::pin(async move {
-        service.audit_store.lock_in(tx).await.map_err(PgError::from)?;
-        rss_reconcile_postgres::messaging::protect_in(tx, claim, context, |service,tx| {
-                    Box::pin(async move {
-                        if let Some(detail) = detail {
-                            let tenant = tx.tenant_id().to_string();
-                            let document = serde_json::to_value(detail).expect("closed failure DTO");
-                            tx.with_connection(move |c| Box::pin(async move {
-                                sqlx::query("UPDATE mdm_automation.automation_jobs SET failure_detail=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                                    .bind(tenant).bind(id.to_string()).bind(document).execute(c).await?; Ok(())
-                            })).await?;
-                        }
-                        if terminal == Some("superseded") {
+            self.service
+                .runtime
+                .local_tx_with_context(
+                    self.service.tenant,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        control.remaining(),
+                    ),
+                    (&self.service, claim, &self.service),
+                    |(service, claim, context), tx| {
+                        Box::pin(async move {
                             service
-                                .retry_superseded_group_in(tx, id)
+                                .audit_store
+                                .lock_in(tx)
                                 .await
-                                .map_err(|e| fault(e, &Mutex::new(None)))?;
-                        }
-                        crate::automation::jobs::finish_job_in(tx, &service.audit_store, id, terminal)
+                                .map_err(PgError::from)?;
+                            rss_reconcile_postgres::messaging::protect_in(
+                                tx,
+                                claim,
+                                context,
+                                |service, tx| {
+                                    Box::pin(async move {
+                                        crate::automation::jobs::finish_job_in(
+                                            tx,
+                                            &service.audit_store,
+                                            id,
+                                            terminal,
+                                        )
+                                        .await
+                                        .map_err(|e| fault(e, &Mutex::new(None)))?;
+                                        if terminal == Some("superseded") {
+                                            service
+                                                .retry_superseded_group_in(tx, id)
+                                                .await
+                                                .map_err(|e| fault(e, &Mutex::new(None)))?;
+                                        }
+                                        Ok(())
+                                    })
+                                },
+                            )
                             .await
-                            .map_err(|e| fault(e, &Mutex::new(None)))
-                    })
-                }).await
-    }),
-)
-            .await
-            .fold(
-                Ok,
-                |_| {
-                    Err(rss_reconcile::Error::new(
-                        rss_reconcile::ErrorKind::Transient,
-                    ))
-                },
-                |_| {
-                    Err(rss_reconcile::Error::new(
-                        rss_reconcile::ErrorKind::Transient,
-                    ))
-                },
-                |_| {
-                    Err(rss_reconcile::Error::new(
-                        rss_reconcile::ErrorKind::CommitUnknown,
-                    ))
-                },
-                |_| {
-                    Err(rss_reconcile::Error::new(
-                        rss_reconcile::ErrorKind::CommitUnknown,
-                    ))
-                },
-                |_| {
-                    Err(rss_reconcile::Error::new(
-                        rss_reconcile::ErrorKind::Transient,
-                    ))
-                },
-            )
+                        })
+                    },
+                )
+                .await
+                .fold(
+                    Ok,
+                    |_| {
+                        Err(rss_reconcile::Error::new(
+                            rss_reconcile::ErrorKind::Transient,
+                        ))
+                    },
+                    |_| {
+                        Err(rss_reconcile::Error::new(
+                            rss_reconcile::ErrorKind::Transient,
+                        ))
+                    },
+                    |_| {
+                        Err(rss_reconcile::Error::new(
+                            rss_reconcile::ErrorKind::CommitUnknown,
+                        ))
+                    },
+                    |_| {
+                        Err(rss_reconcile::Error::new(
+                            rss_reconcile::ErrorKind::CommitUnknown,
+                        ))
+                    },
+                    |_| {
+                        Err(rss_reconcile::Error::new(
+                            rss_reconcile::ErrorKind::Transient,
+                        ))
+                    },
+                )
         })
     }
 }

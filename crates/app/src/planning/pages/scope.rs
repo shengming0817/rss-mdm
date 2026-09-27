@@ -23,6 +23,8 @@ enum ScopeItems {
 struct ScopeDecision {
     device: String,
     identity: Identity,
+    #[serde(rename = "identityRevision")]
+    identity_revision: i64,
     reasons: Vec<Reason>,
     sources: Vec<usize>,
 }
@@ -37,6 +39,9 @@ enum Identity {
 enum Reason {
     MissingLimitationMatch,
     ExplicitExclusion,
+    UnknownTarget,
+    UnknownLimitation,
+    UnknownExclusion,
 }
 impl Planning {
     pub(in crate::planning) async fn scope_page_in(

@@ -1,35 +1,45 @@
-use crate::{STORAGE, codec, core::*, error::*, event, model::*};
-use rss_mdm_backend_postgres_support::digest;
-use rss_mdm_backend_postgres_support::{AggregateRecord, RequestRecord};
+use crate::{
+    ADMISSION, STORAGE,
+    core::{Change, Policy},
+    error::*,
+};
 use rss_request_context::TenantId;
-use rss_transactional_messaging::policy::OperationDeadline;
+use rss_transactional_messaging::{message::MessagingDomain, policy::OperationDeadline};
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::Row;
-use std::{collections::BTreeMap, sync::Arc};
-/// Tenant-bound Policy persistence using the host-owned RSS PostgreSQL runtime.
+use std::sync::Arc;
+use uuid::Uuid;
+/// Tenant/runtime-bound Policy mutations. The caller owns commit and companion audit.
 pub struct PolicyStore {
-    pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
-    pub(crate) writer: PgOutboxWriter,
+    tenant: TenantId,
+    runtime: Arc<PgRuntime>,
+    reader: PolicyReader,
+}
+/// Host-frozen immutable resource content. The adapter never interprets device protocols.
+pub struct Publication {
+    /// Checked Policy aggregate or immutable owning Policy identity.
+    pub policy: Policy,
+    /// Opaque host content, present on publication only for a new semantic version.
+    pub frozen: Option<Value>,
+    /// Bounded caller provenance retained for audit; never a runtime authorization lease.
+    pub author: Value,
+    /// Publication Unix seconds.
+    pub at: i64,
+}
+/// One immutable Policy execution/configuration version.
+pub struct Version {
+    /// Immutable version identity.
+    pub id: Uuid,
+    /// Checked Policy aggregate or immutable owning Policy identity.
+    pub policy: Uuid,
+    /// Monotonic semantic version number.
+    pub number: i64,
+    /// Opaque host content, present on publication only for a new semantic version.
+    pub frozen: Value,
 }
 impl PolicyStore {
-    /// Identify this tenant's ordered event partition for a canonical aggregate ID.
-    /// The outer transaction declares every partition once, before any business locks.
-    pub fn partition(
-        &self,
-        id: &str,
-    ) -> Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
-        use rss_transactional_messaging::message::{PartitionIdentity, PartitionKey};
-        Ok(PartitionIdentity::new(
-            self.tenant,
-            event::domain(),
-            STORAGE.invalid("store::partition", PartitionKey::parse(id))?,
-        ))
-    }
-
-    /// Admit the exact schema and effective runtime privileges, then borrow the host runtime.
-    /// Returns a settlement error on admission failure; never migrates or closes the runtime.
+    /// Admit the exact owner schema and bind every mutation to this runtime instance.
     pub async fn new(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -39,535 +49,256 @@ impl PolicyStore {
             runtime
                 .local_tx(tenant, deadline, |tx| {
                     Box::pin(async move {
-                        STORAGE.verify(tx, crate::ADMISSION).await?;
+                        STORAGE.verify(tx, ADMISSION).await?;
                         Ok(Ok(()))
                     })
                 })
                 .await,
         )?;
+        let reader = PolicyReader::bind(runtime.clone(), tenant);
         Ok(Self {
-            writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
-            runtime,
             tenant,
+            runtime,
+            reader,
         })
     }
-    /// Return the tenant permanently bound to this store.
-    pub fn tenant(&self) -> TenantId {
-        self.tenant
+    /// Borrow the read capability bound to this store's exact runtime and tenant.
+    pub fn reader(&self) -> &PolicyReader {
+        &self.reader
     }
-    pub(crate) fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
-        self.writer.validate_transaction(tx)?;
+    fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+        self.reader.check(tx)
+    }
+    /// Atomically persist the checked configuration and, only when changed, a new immutable version.
+    pub async fn publish_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        input: &Publication,
+    ) -> InTransaction<()> {
+        input!(self.check(tx)?);
+        let p = &input.policy;
+        if p.revision < 1 || input.at < 0 {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        STORAGE.lock(tx, "policy", &p.id.to_string()).await?;
+        let old = read_snapshot(tx, p.id).await?;
+        let expected = (p.revision - 1) as u64;
+        let checked = input!(
+            Policy::apply(
+                p.id,
+                old.as_ref(),
+                expected,
+                &Change::Put {
+                    definition: Box::new(p.definition.clone()),
+                    enabled: p.enabled
+                },
+                p.version
+            )
+            .map_err(|e| match e {
+                crate::core::Error::Malformed => Rejection::InvalidInput,
+                crate::core::Error::Conflict => Rejection::Conflict,
+                crate::core::Error::NotFound => Rejection::NotFound,
+            })
+        );
+        if checked.policy.number != p.number
+            || checked.policy.version != p.version
+            || checked.semantic_changed != input.frozen.is_some()
+        {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let tenant = self.tenant.to_string();
+        let p = p.clone();
+        let frozen = input.frozen.clone();
+        let author = input.author.clone();
+        let at = input.at;
+        let hash = checked.semantic.to_vec();
+        let definition = STORAGE.json("publish.definition", serde_json::to_value(&p.definition))?;
+        tx.with_connection(move|c|Box::pin(async move {
+   sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,enabled,definition,author,updated_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,enabled=excluded.enabled,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at").bind(&tenant).bind(p.id).bind(p.revision).bind(p.version).bind(p.number).bind(p.enabled).bind(definition).bind(author).bind(at).execute(&mut *c).await?;
+   if let Some(frozen)=frozen {sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)").bind(tenant).bind(p.version).bind(p.id).bind(p.number).bind(p.definition.resource.id).bind(p.definition.resource.version).bind(frozen).bind(hash).execute(c).await?;}
+   Ok(())
+  })).await?;
+        Ok(Ok(()))
+    }
+    /// Recover a fixed request identity. A different body under that identity is rejected.
+    pub async fn replay_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        fingerprint: &[u8],
+    ) -> InTransaction<Option<Value>> {
+        input!(self.check(tx)?);
+        STORAGE.lock(tx, "request", &id.to_string()).await?;
+        let tenant = self.tenant.to_string();
+        let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT fingerprint,receipt FROM mdm_policy.requests WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+        if let Some(row) = row {
+            if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint {
+                return Ok(Err(Rejection::IdentityConflict));
+            }
+            return Ok(Ok(Some(row.try_get("receipt")?)));
+        }
+        Ok(Ok(None))
+    }
+    /// Record the host-visible receipt in the same transaction as the Policy and audit.
+    pub async fn receipt_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        fingerprint: &[u8],
+        value: &Value,
+    ) -> InTransaction<()> {
+        input!(self.check(tx)?);
+        let tenant = self.tenant.to_string();
+        let fingerprint = fingerprint.to_vec();
+        let value = value.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("INSERT INTO mdm_policy.requests VALUES($1::uuid,$2,$3,$4)")
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(fingerprint)
+                    .bind(value)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(Ok(()))
+    }
+    /// Publish one explicit trigger; devices consume it lazily without editing the Policy CAS.
+    pub async fn trigger_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        version: Uuid,
+        at: i64,
+        deadline: i64,
+    ) -> InTransaction<()> {
+        input!(self.check(tx)?);
+        if id.is_nil() || version.is_nil() || deadline <= at {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let Some(binding) = version_snapshot(tx, version).await? else {
+            return Ok(Err(Rejection::NotFound));
+        };
+        STORAGE
+            .lock(tx, "policy", &binding.policy.to_string())
+            .await?;
+        let Some(policy) = read_snapshot(tx, binding.policy).await? else {
+            return Ok(Err(Rejection::NotFound));
+        };
+        if !policy.enabled
+            || policy.version != version
+            || !matches!(
+                policy.definition.behavior,
+                crate::core::Behavior::Execution { .. }
+            )
+        {
+            return Ok(Err(Rejection::Conflict));
+        }
+        let tenant = self.tenant.to_string();
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_policy.triggers(tenant_id,id,version,created_at,deadline) VALUES($1::uuid,$2,$3,$4,$5)").bind(tenant).bind(id).bind(version).bind(at).bind(deadline).execute(c).await?;Ok(())})).await?;
+        Ok(Ok(()))
+    }
+    /// Read the current aggregate through the store's own tenant/runtime fence.
+    pub async fn get(
+        &self,
+        id: Uuid,
+        deadline: OperationDeadline,
+    ) -> Result<Option<Policy>, Error> {
+        settle(
+            self.runtime
+                .local_tx_with_context(self.tenant, deadline, self, move |s, tx| {
+                    Box::pin(async move {
+                        input!(s.check(tx)?);
+                        s.reader.read_in(tx, id).await
+                    })
+                })
+                .await,
+        )
+    }
+}
+/// Read a typed aggregate from the caller's tenant-scoped transaction.
+/// Mutating consumers must serialize via their owner lock before trusting this snapshot.
+async fn read_snapshot(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Policy>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT revision,current_version,version_number,enabled,definition FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    row.map(|r| {
+        Ok(Policy {
+            id,
+            revision: r.try_get("revision")?,
+            version: r.try_get("current_version")?,
+            number: r.try_get("version_number")?,
+            enabled: r.try_get("enabled")?,
+            definition: STORAGE.json(
+                "read.definition",
+                serde_json::from_value(r.try_get("definition")?),
+            )?,
+        })
+    })
+    .transpose()
+}
+/// Read immutable host content together with its owning Policy identity.
+async fn version_snapshot(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Option<Version>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT policy,number,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    row.map(|r| {
+        Ok(Version {
+            id,
+            policy: r.try_get("policy")?,
+            number: r.try_get("number")?,
+            frozen: r.try_get("frozen")?,
+        })
+    })
+    .transpose()
+}
+
+/// Read-only capability bound to one exact RSS runtime instance and tenant.
+/// Composition admits its read-role/schema contract before binding this handle;
+/// binding neither opens a connection nor grants database privileges.
+pub struct PolicyReader {
+    tenant: TenantId,
+    binding: PgOutboxWriter,
+}
+impl PolicyReader {
+    /// Bind a host-admitted runtime. Command readers retain their SELECT-only role.
+    pub fn bind(runtime: Arc<PgRuntime>, tenant: TenantId) -> Self {
+        Self {
+            tenant,
+            binding: PgOutboxWriter::new(
+                runtime,
+                MessagingDomain::parse("mdm-policy").expect("constant domain"),
+            ),
+        }
+    }
+    fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+        self.binding.validate_transaction(tx)?;
         Ok(if tx.tenant_id() == self.tenant {
             Ok(())
         } else {
             Err(Rejection::TenantMismatch)
         })
     }
-    /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
-    pub async fn get(
-        &self,
-        id: &PolicyId,
-        deadline: OperationDeadline,
-    ) -> Result<Option<Aggregate>, Error> {
-        settle(
-            self.runtime
-                .local_tx_with_context(self.tenant, deadline, (self, id), |(s, id), tx| {
-                    Box::pin(async move { s.get_in(tx, id).await })
-                })
-                .await,
-        )
-    }
-    /// Read through a borrowed transaction after runtime-owner and tenant validation.
-    /// Never commits; propagate outer errors to the transaction owner.
-    pub async fn get_in(
+    /// Read an aggregate only through this capability's runtime and tenant.
+    pub async fn read_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        id: &PolicyId,
-    ) -> InTransaction<Option<Aggregate>> {
+        id: Uuid,
+    ) -> InTransaction<Option<Policy>> {
         input!(self.check(tx)?);
-        if id.tenant() != self.tenant {
-            return Ok(Err(Rejection::TenantMismatch));
-        }
-        let row = STORAGE.read(tx, id.value()).await?;
-        let mut result = row
-            .map(
-                |AggregateRecord {
-                     revision: rev,
-                     document: b,
-                 }| {
-                    let a = Aggregate::restore(&b)?;
-                    if a.policy.key() != id || a.revision != rev {
-                        return Err(STORAGE.fault("store::get_in"));
-                    }
-                    Ok(a)
-                },
-            )
-            .transpose()?;
-        if let Some(aggregate) = &mut result {
-            if aggregate.plan.is_some() {
-                aggregate.references_current = self
-                    .installed_references_current(tx, id)
-                    .await?
-                    .unwrap_or(false);
-            }
-            if let Some(v) = aggregate.policy.version() {
-                for (owner, kind, key, expected) in version_documents(v)? {
-                    if STORAGE.immutable(tx, &owner, kind, &key).await?.as_ref() != Some(&expected)
-                    {
-                        return Err(STORAGE.fault("store::get_in"));
-                    }
-                }
-            }
-        }
-        Ok(Ok(result))
+        Ok(Ok(read_snapshot(tx, id).await?))
     }
-    /// Execute one fixed request atomically with its receipt and necessary RSS Outbox event.
-    /// An identical request replays before CAS; on `CommitUnknown`, retain the original request and query its receipt.
-    pub async fn execute(
-        &self,
-        r: &Request,
-        deadline: OperationDeadline,
-    ) -> Result<Receipt, Error> {
-        settle(
-            self.runtime
-                .local_tx_with_context(self.tenant, deadline, (self, r), |(s, r), tx| {
-                    Box::pin(async move {
-                        tx.prepare_outbox_partitions(&[s.partition(r.policy().value())?])
-                            .await?;
-                        s.execute_in(tx, r).await
-                    })
-                })
-                .await,
-        )
-    }
-    /// Execute using the caller transaction, validating runtime ownership and tenant before any path.
-    /// Propagate the outer PG error to roll back; inspect the inner business rejection. This method never commits.
-    /// The caller must declare the complete Outbox partition set before business locks.
-    pub async fn execute_in(
+    /// Read immutable version content through this capability's runtime and tenant.
+    pub async fn version_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        r: &Request,
-    ) -> InTransaction<Receipt> {
+        id: Uuid,
+    ) -> InTransaction<Option<Version>> {
         input!(self.check(tx)?);
-        if r.id.tenant() != self.tenant || r.policy().tenant() != self.tenant {
-            return Ok(Err(Rejection::TenantMismatch));
-        }
-        input!(validate_request(r));
-        let request_document = r.document()?;
-        let fingerprint = digest(&request_document);
-        STORAGE.lock(tx, "request", r.id.value()).await?;
-        if let Some(RequestRecord {
-            owner,
-            fingerprint: hash,
-            receipt: bytes,
-            ..
-        }) = STORAGE.receipt(tx, r.id.value()).await?
-        {
-            if owner != r.policy().value() || hash != fingerprint {
-                return Ok(Err(Rejection::IdentityConflict));
-            }
-            let receipt: Receipt = STORAGE.decode(&bytes)?;
-            if receipt.policy != owner || receipt.request != r.id.value() {
-                return Err(STORAGE.fault("store::execute_in"));
-            }
-            return Ok(Ok(receipt));
-        }
-        STORAGE.lock(tx, "policy", r.policy().value()).await?;
-        let old = input!(self.get_in(tx, r.policy()).await?);
-        let create = matches!(r.command, Command::Create { .. });
-        if create && old.is_some() {
-            return Ok(Err(Rejection::Conflict));
-        }
-        let mut aggregate = if create {
-            Aggregate::draft(r.policy().clone())
-        } else {
-            input!(old.ok_or(Rejection::NotFound))
-        };
-        if aggregate.revision != r.expected_storage_revision
-            || aggregate.at.is_some_and(|at| at > r.as_of)
-        {
-            return Ok(Err(Rejection::Conflict));
-        }
-        let previous = aggregate.revision;
-        let mut facts = match &r.command {
-            Command::RecordExecutions { facts: updates, .. } => {
-                load_selected_facts(tx, r.policy(), updates).await?
-            }
-            _ => BTreeMap::new(),
-        };
-        let changed = match &r.command {
-            Command::Create { .. } => true,
-            Command::Transition { transition, .. } => {
-                aggregate.policy = input!(
-                    aggregate
-                        .policy
-                        .transition(aggregate.policy.revision(), transition.clone())
-                        .map_err(|_| Rejection::Conflict)
-                );
-                true
-            }
-            Command::RecordExecutions { facts: updates, .. } => {
-                let mut changed = false;
-                let mut versions = BTreeMap::new();
-                for f in updates {
-                    let k = codec::key(f);
-                    if let Some(previous) = versions.insert(f.version().number(), f.version()) {
-                        if previous != f.version() {
-                            return Ok(Err(Rejection::IdentityConflict));
-                        }
-                    } else {
-                        input!(compatible_version(tx, f.version()).await?);
-                        if STORAGE
-                            .immutable(
-                                tx,
-                                r.policy().value(),
-                                "version",
-                                &f.version().number().to_string(),
-                            )
-                            .await?
-                            .is_none()
-                        {
-                            return Ok(Err(Rejection::NotFound));
-                        }
-                    }
-                    input!(
-                        classify_record(aggregate.policy(), false, f)
-                            .map_err(|_| Rejection::InvalidInput)
-                    );
-                    let existing = facts.get(&k);
-                    if existing.is_some_and(|old| old.version() != f.version()) {
-                        return Ok(Err(Rejection::IdentityConflict));
-                    }
-                    changed |= existing != Some(f);
-                    facts.insert(k, f.clone());
-                }
-                changed
-            }
-        };
-        if changed {
-            input!(aggregate.advance());
-            aggregate.at = Some(r.as_of);
-        }
-        // Immutable checks precede all business writes. Concurrent cross-policy payload conflicts
-        // become an outer storage error in STORAGE.freeze(), rolling back the entire transaction.
-        if let Some(v) = aggregate.policy.version() {
-            input!(compatible_version(tx, v).await?);
-        }
-
-        let response = Receipt::new(&aggregate, r);
-        if create || changed {
-            STORAGE
-                .write(
-                    tx,
-                    r.policy().value(),
-                    if create { None } else { Some(previous) },
-                    aggregate.revision,
-                    aggregate.document()?,
-                )
-                .await?;
-        }
-        if let Some(v) = aggregate.policy.version() {
-            freeze_version(tx, v).await?;
-        }
-
-        if changed {
-            save_facts(tx, r.policy(), &facts).await?;
-            event::append(
-                &self.writer,
-                tx,
-                self.tenant,
-                r.as_of,
-                r.policy().value(),
-                r.id.value(),
-                aggregate.revision,
-            )
-            .await?;
-        }
-        STORAGE
-            .save_receipt(
-                tx,
-                r.id.value(),
-                r.policy().value(),
-                request_document,
-                STORAGE.encode(&response)?,
-            )
-            .await?;
-        Ok(Ok(response))
+        Ok(Ok(version_snapshot(tx, id).await?))
     }
-    /// Read the original durable request receipt without changing current aggregate state.
-    /// Use this after an unconfirmed commit; absence alone is not permission to invent another request identity.
-    pub async fn operation(
-        &self,
-        id: &RequestId,
-        deadline: OperationDeadline,
-    ) -> Result<Option<Receipt>, Error> {
-        if id.tenant() != self.tenant {
-            return Err(Rejection::TenantMismatch.into());
-        }
-        settle(
-            self.runtime
-                .local_tx_with_context(self.tenant, deadline, id, |id, tx| {
-                    Box::pin(async move {
-                        Ok(Ok(STORAGE
-                            .receipt(tx, id.value())
-                            .await?
-                            .map(|record| STORAGE.decode(&record.receipt))
-                            .transpose()?))
-                    })
-                })
-                .await,
-        )
-    }
-    /// Read one immutable policy version, including versions never installed as plans.
-    pub async fn version(
-        &self,
-        policy: &PolicyId,
-        number: u64,
-        deadline: OperationDeadline,
-    ) -> Result<Option<Version>, Error> {
-        if policy.tenant() != self.tenant || number == 0 {
-            return Err(Rejection::InvalidInput.into());
-        }
-        settle(
-            self.runtime
-                .local_tx_with_context(self.tenant, deadline, policy, move |policy, tx| {
-                    Box::pin(async move {
-                        let bytes = STORAGE
-                            .immutable(tx, policy.value(), "version", &number.to_string())
-                            .await?;
-                        let value = bytes
-                            .map(|b| codec::read_version(&STORAGE.decode::<Value>(&b)?))
-                            .transpose()?;
-                        if value
-                            .as_ref()
-                            .is_some_and(|v| v.policy() != *policy || v.number() != number)
-                        {
-                            return Err(STORAGE.fault("store::version"));
-                        }
-                        Ok(Ok(value))
-                    })
-                })
-                .await,
-        )
-    }
-    /// Read at most `limit` authoritative facts (1–1000) and an opaque continuation cursor.
-    /// The adapter does not order device events; use caller-confirmed snapshots with complete execution keys.
-    pub async fn execution_facts(
-        &self,
-        policy: &PolicyId,
-        after: Option<String>,
-        limit: usize,
-        deadline: OperationDeadline,
-    ) -> Result<FactPage, Error> {
-        settle(
-            self.runtime
-                .local_tx_with_context(
-                    self.tenant,
-                    deadline,
-                    (self, policy),
-                    move |(store, policy), tx| {
-                        Box::pin(
-                            async move { store.execution_facts_in(tx, policy, after, limit).await },
-                        )
-                    },
-                )
-                .await,
-        )
-    }
-    /// Read one bounded fact page in the host transaction, preserving the same
-    /// snapshot as the aggregate. Validates both runtime provenance and tenant.
-    pub async fn execution_facts_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        policy: &PolicyId,
-        after: Option<String>,
-        limit: usize,
-    ) -> InTransaction<FactPage> {
-        input!(self.check(tx)?);
-        if policy.tenant() != self.tenant
-            || limit == 0
-            || limit > 1000
-            || after.as_ref().is_some_and(|s| {
-                s.len() > 512
-                    || s.split_once('/').is_none_or(|(version, device)| {
-                        version
-                            .parse::<u64>()
-                            .ok()
-                            .is_none_or(|n| n == 0 || n.to_string() != version)
-                            || DeviceId::new(self.tenant, device).is_err()
-                    })
-            })
-        {
-            return Ok(Err(Rejection::InvalidInput));
-        }
-        let owner = policy.value();
-        let rows = query_fact_page(tx, owner, after, limit).await?;
-        let records = decode_fact_page(rows, tx.tenant_id(), owner)?;
-        Ok(Ok(fact_page(records, limit)))
-    }
-}
-fn validate_request(r: &Request) -> Result<(), Rejection> {
-    if let Command::RecordExecutions { facts, .. } = &r.command {
-        if facts.len() > 1000 {
-            return Err(Rejection::BudgetExceeded);
-        }
-        let mut keys = std::collections::BTreeSet::new();
-        for f in facts {
-            if f.version().policy() != r.policy() || !keys.insert(f.key()) {
-                return Err(Rejection::InvalidInput);
-            }
-        }
-    }
-    Ok(())
-}
-async fn compatible_version(tx: &mut PgTransaction<'_>, v: &Version) -> InTransaction<()> {
-    for (owner, kind, key, doc) in version_documents(v)? {
-        if STORAGE
-            .immutable(tx, &owner, kind, &key)
-            .await?
-            .is_some_and(|b| b != doc)
-        {
-            return Ok(Err(Rejection::IdentityConflict));
-        }
-    }
-    Ok(Ok(()))
-}
-type VersionDocument = (String, &'static str, String, Vec<u8>);
-fn version_documents(v: &Version) -> Result<Vec<VersionDocument>, PgError> {
-    let p = v.payload();
-    Ok(vec![
-        (
-            v.policy().value().into(),
-            "version",
-            v.number().to_string(),
-            STORAGE.encode(&codec::version(v))?,
-        ),
-        (
-            "".into(),
-            "payload",
-            format!("{}@{}", p.object().value(), p.revision()),
-            STORAGE.encode(&json!([
-                p.object().tenant().to_string(),
-                p.object().value(),
-                p.revision(),
-                p.digest()
-            ]))?,
-        ),
-    ])
-}
-async fn freeze_version(tx: &mut PgTransaction<'_>, v: &Version) -> Result<(), PgError> {
-    for (o, k, i, d) in version_documents(v)? {
-        STORAGE.freeze(tx, &o, k, &i, d).await?;
-    }
-    Ok(())
-}
-fn read_fact_row(row: sqlx::postgres::PgRow) -> Result<ExecutionRecord, PgError> {
-    let b = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
-    let f = codec::read_fact(&STORAGE.decode::<Value>(&b)?)?;
-    if row.try_get::<String, _>("key")? != codec::key(&f) {
-        return Err(STORAGE.fault("store::read_fact_row"));
-    }
-    Ok(f)
-}
-async fn load_selected_facts(
-    tx: &mut PgTransaction<'_>,
-    policy: &PolicyId,
-    updates: &[ExecutionRecord],
-) -> Result<BTreeMap<String, ExecutionRecord>, PgError> {
-    let tenant = tx.tenant_id().to_string();
-    let owner = policy.value().to_owned();
-    let keys: Vec<_> = updates.iter().map(codec::key).collect();
-    let rows=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query("SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND key=ANY($3)")
-            .bind(tenant).bind(owner).bind(keys).fetch_all(c).await
-    })).await?;
-    let records = decode_fact_page(rows, tx.tenant_id(), policy.value())?;
-    Ok(records.into_iter().map(|f| (codec::key(&f), f)).collect())
-}
-async fn save_facts(
-    tx: &mut PgTransaction<'_>,
-    policy: &PolicyId,
-    facts: &BTreeMap<String, ExecutionRecord>,
-) -> Result<(), PgError> {
-    let t = tx.tenant_id().to_string();
-    let owner = policy.value().to_owned();
-    let docs = facts
-        .iter()
-        .map(|(k, f)| {
-            let b = STORAGE.encode(&codec::fact(f))?;
-            Ok((k.clone(), digest(&b), b))
-        })
-        .collect::<Result<Vec<_>, PgError>>()?;
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            let mut keys = Vec::with_capacity(docs.len());
-            let mut documents = Vec::with_capacity(docs.len());
-            let mut digests = Vec::with_capacity(docs.len());
-            for (key, digest, document) in docs {
-                keys.push(key);
-                documents.push(document);
-                digests.push(digest);
-            }
-            sqlx::query(SAVE_FACTS_SQL)
-                .bind(t)
-                .bind(owner)
-                .bind(keys)
-                .bind(documents)
-                .bind(digests)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await
-}
-const EXECUTION_FACTS_SQL: &str = "SELECT key,document,digest FROM mdm_policy.facts WHERE tenant_id=$1::uuid AND owner=$2 AND (version,device COLLATE \"C\")>(coalesce(split_part($3,'/',1)::numeric,0),coalesce(substring($3 FROM strpos($3,'/')+1),'') COLLATE \"C\") ORDER BY version,device COLLATE \"C\" LIMIT $4";
-const SAVE_FACTS_SQL: &str = "INSERT INTO mdm_policy.facts(tenant_id,owner,key,document,digest) SELECT $1::uuid,$2,k,d,h FROM unnest($3::text[],$4::bytea[],$5::bytea[]) AS batch(k,d,h) ON CONFLICT(tenant_id,owner,key) DO UPDATE SET document=EXCLUDED.document,digest=EXCLUDED.digest WHERE mdm_policy.facts.document<>EXCLUDED.document";
-
-async fn query_fact_page(
-    tx: &mut PgTransaction<'_>,
-    owner: &str,
-    after: Option<String>,
-    limit: usize,
-) -> Result<Vec<sqlx::postgres::PgRow>, PgError> {
-    let (tenant, owner) = (tx.tenant_id().to_string(), owner.to_owned());
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query(EXECUTION_FACTS_SQL)
-                .bind(tenant)
-                .bind(owner)
-                .bind(after)
-                .bind((limit + 1) as i64)
-                .fetch_all(c)
-                .await
-        })
-    })
-    .await
-}
-fn decode_fact_page(
-    rows: Vec<sqlx::postgres::PgRow>,
-    tenant: TenantId,
-    owner: &str,
-) -> Result<Vec<ExecutionRecord>, PgError> {
-    rows.into_iter()
-        .map(|row| {
-            let fact = read_fact_row(row)?;
-            if fact.version().policy().tenant() != tenant
-                || fact.version().policy().value() != owner
-            {
-                return Err(STORAGE.fault("store::execution_facts"));
-            }
-            Ok(fact)
-        })
-        .collect()
-}
-fn fact_page(mut records: Vec<ExecutionRecord>, limit: usize) -> FactPage {
-    let more = records.len() > limit;
-    records.truncate(limit);
-    let next = if more {
-        records.last().map(codec::key)
-    } else {
-        None
-    };
-    FactPage { records, next }
 }

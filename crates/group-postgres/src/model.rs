@@ -172,9 +172,11 @@ pub struct Group {
     pub name: String,
     /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.
     pub description: String,
-    /// Sole CAS revision; no-diff recalculations also advance it.
+    /// Configuration edit CAS, independent of background membership publication.
     pub revision: Revision,
-    /// Last group revision at which the member set changed; zero means initially empty.
+    /// Successful publication sequence; fences competing fixed-input calculations.
+    pub calculation_revision: i64,
+    /// Semantic membership sequence; zero means initially empty.
     pub member_version: i64,
     /// Number of current members, bounded by the core object limit.
     pub member_count: usize,

@@ -1,7 +1,7 @@
 {
   "columns": [
     [
-      "aggregates",
+      "policies",
       "tenant_id",
       "uuid",
       true,
@@ -10,16 +10,16 @@
       ""
     ],
     [
-      "aggregates",
+      "policies",
       "id",
-      "text",
+      "uuid",
       true,
       null,
       "",
       ""
     ],
     [
-      "aggregates",
+      "policies",
       "revision",
       "bigint",
       true,
@@ -28,26 +28,8 @@
       ""
     ],
     [
-      "aggregates",
-      "document",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "aggregates",
-      "digest",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_intents",
-      "tenant_id",
+      "policies",
+      "current_version",
       "uuid",
       true,
       null,
@@ -55,125 +37,8 @@
       ""
     ],
     [
-      "candidate_intents",
-      "candidate",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_intents",
-      "kind",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_intents",
-      "device",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_intents",
-      "execution_key",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_intents",
-      "document",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_intents",
-      "digest",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_pages",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_pages",
-      "candidate",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_pages",
-      "first_device",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_pages",
-      "fingerprint",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_references",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_references",
-      "candidate",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_references",
-      "reference",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidate_references",
-      "revision",
+      "policies",
+      "version_number",
       "bigint",
       true,
       null,
@@ -181,344 +46,38 @@
       ""
     ],
     [
-      "candidate_targets",
-      "tenant_id",
-      "uuid",
+      "policies",
+      "enabled",
+      "boolean",
       true,
       null,
       "",
       ""
     ],
     [
-      "candidate_targets",
-      "candidate",
-      "text",
+      "policies",
+      "definition",
+      "jsonb",
       true,
       null,
       "",
       ""
     ],
     [
-      "candidate_targets",
-      "device",
-      "text",
+      "policies",
+      "author",
+      "jsonb",
       true,
       null,
       "",
       ""
     ],
     [
-      "candidates",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "id",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "policy",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "expected_revision",
+      "policies",
+      "updated_at",
       "bigint",
       true,
       null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "input",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "fingerprint",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "phase",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "target_cursor",
-      "text",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "fact_cursor",
-      "text",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "target_count",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "fact_count",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "target_root",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "fact_root",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "candidates",
-      "plan_id",
-      "bytea",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "current_plans",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "current_plans",
-      "policy",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "current_plans",
-      "candidate",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "facts",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "facts",
-      "owner",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "facts",
-      "key",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "facts",
-      "document",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "facts",
-      "digest",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "facts",
-      "device",
-      "text",
-      false,
-      "SUBSTRING(key FROM (strpos(key, '/'::text) + 1))",
-      "",
-      "s"
-    ],
-    [
-      "facts",
-      "version",
-      "numeric(20,0)",
-      false,
-      "(split_part(key, '/'::text, 1))::numeric",
-      "",
-      "s"
-    ],
-    [
-      "immutable",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "immutable",
-      "owner",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "immutable",
-      "kind",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "immutable",
-      "key",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "immutable",
-      "document",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "immutable",
-      "digest",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "reference_heads",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "reference_heads",
-      "id",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "reference_heads",
-      "revision",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "reference_heads",
-      "required_input",
-      "bigint",
-      true,
-      "0",
-      "",
-      ""
-    ],
-    [
-      "reference_heads",
-      "observed_input",
-      "bigint",
-      true,
-      "0",
       "",
       ""
     ],
@@ -534,16 +93,7 @@
     [
       "requests",
       "id",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "requests",
-      "owner",
-      "text",
+      "uuid",
       true,
       null,
       "",
@@ -552,15 +102,6 @@
     [
       "requests",
       "fingerprint",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "requests",
-      "request",
       "bytea",
       true,
       null,
@@ -570,15 +111,123 @@
     [
       "requests",
       "receipt",
-      "bytea",
+      "jsonb",
       true,
       null,
       "",
       ""
     ],
     [
-      "requests",
-      "digest",
+      "triggers",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "triggers",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "triggers",
+      "version",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "triggers",
+      "created_at",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "triggers",
+      "deadline",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "policy",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "number",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "resource",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "resource_version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "frozen",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
+      "fingerprint",
       "bytea",
       true,
       null,
@@ -588,105 +237,17 @@
   ],
   "indexes": [
     [
-      "aggregates",
-      "aggregates_pkey",
-      "CREATE UNIQUE INDEX aggregates_pkey ON mdm_policy.aggregates USING btree (tenant_id, id)",
+      "policies",
+      "policies_pkey",
+      "CREATE UNIQUE INDEX policies_pkey ON mdm_policy.policies USING btree (tenant_id, id)",
       true,
       true,
       true
     ],
     [
-      "candidate_intents",
-      "candidate_intents_pkey",
-      "CREATE UNIQUE INDEX candidate_intents_pkey ON mdm_policy.candidate_intents USING btree (tenant_id, candidate, kind, device, execution_key)",
-      true,
-      true,
-      true
-    ],
-    [
-      "candidate_pages",
-      "candidate_pages_pkey",
-      "CREATE UNIQUE INDEX candidate_pages_pkey ON mdm_policy.candidate_pages USING btree (tenant_id, candidate, first_device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "candidate_references",
-      "candidate_references_pkey",
-      "CREATE UNIQUE INDEX candidate_references_pkey ON mdm_policy.candidate_references USING btree (tenant_id, candidate, reference)",
-      true,
-      true,
-      true
-    ],
-    [
-      "candidate_references",
-      "candidate_references_source",
-      "CREATE INDEX candidate_references_source ON mdm_policy.candidate_references USING btree (tenant_id, reference, candidate)",
-      true,
-      true,
-      true
-    ],
-    [
-      "candidate_targets",
-      "candidate_targets_pkey",
-      "CREATE UNIQUE INDEX candidate_targets_pkey ON mdm_policy.candidate_targets USING btree (tenant_id, candidate, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "candidates",
-      "candidates_pkey",
-      "CREATE UNIQUE INDEX candidates_pkey ON mdm_policy.candidates USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "current_plans",
-      "current_plans_pkey",
-      "CREATE UNIQUE INDEX current_plans_pkey ON mdm_policy.current_plans USING btree (tenant_id, policy)",
-      true,
-      true,
-      true
-    ],
-    [
-      "facts",
-      "facts_device_version",
-      "CREATE INDEX facts_device_version ON mdm_policy.facts USING btree (tenant_id, owner, device, version)",
-      true,
-      true,
-      true
-    ],
-    [
-      "facts",
-      "facts_pkey",
-      "CREATE UNIQUE INDEX facts_pkey ON mdm_policy.facts USING btree (tenant_id, owner, key)",
-      true,
-      true,
-      true
-    ],
-    [
-      "facts",
-      "facts_semantic_order",
-      "CREATE INDEX facts_semantic_order ON mdm_policy.facts USING btree (tenant_id, owner, version, device COLLATE \"C\")",
-      true,
-      true,
-      true
-    ],
-    [
-      "immutable",
-      "immutable_pkey",
-      "CREATE UNIQUE INDEX immutable_pkey ON mdm_policy.immutable USING btree (tenant_id, owner, kind, key)",
-      true,
-      true,
-      true
-    ],
-    [
-      "reference_heads",
-      "reference_heads_pkey",
-      "CREATE UNIQUE INDEX reference_heads_pkey ON mdm_policy.reference_heads USING btree (tenant_id, id)",
+      "policies",
+      "policy_scope",
+      "CREATE INDEX policy_scope ON mdm_policy.policies USING btree (tenant_id, (((definition ->> 'scope'::text))::uuid), id)",
       true,
       true,
       true
@@ -698,378 +259,81 @@
       true,
       true,
       true
+    ],
+    [
+      "triggers",
+      "policy_triggers_due",
+      "CREATE INDEX policy_triggers_due ON mdm_policy.triggers USING btree (tenant_id, version, deadline, created_at, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "triggers",
+      "triggers_pkey",
+      "CREATE UNIQUE INDEX triggers_pkey ON mdm_policy.triggers USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "versions",
+      "versions_pkey",
+      "CREATE UNIQUE INDEX versions_pkey ON mdm_policy.versions USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "versions",
+      "versions_tenant_id_policy_number_key",
+      "CREATE UNIQUE INDEX versions_tenant_id_policy_number_key ON mdm_policy.versions USING btree (tenant_id, policy, number)",
+      true,
+      true,
+      true
     ]
   ],
   "constraints": [
     [
-      "aggregates",
-      "aggregates_digest_check",
+      "policies",
+      "policies_definition_check",
       "c",
-      "CHECK ((octet_length(digest) = 32))",
+      "CHECK ((octet_length((definition)::text) <= 4194304))",
       true
     ],
     [
-      "aggregates",
-      "aggregates_document_check",
-      "c",
-      "CHECK (((octet_length(document) >= 1) AND (octet_length(document) <= 67108864)))",
-      true
-    ],
-    [
-      "aggregates",
-      "aggregates_id_check",
-      "c",
-      "CHECK (((octet_length(id) >= 1) AND (octet_length(id) <= 128)))",
-      true
-    ],
-    [
-      "aggregates",
-      "aggregates_pkey",
+      "policies",
+      "policies_pkey",
       "p",
       "PRIMARY KEY (tenant_id, id)",
       true
     ],
     [
-      "aggregates",
-      "aggregates_revision_check",
+      "policies",
+      "policies_revision_check",
       "c",
-      "CHECK ((revision >= 0))",
+      "CHECK ((revision > 0))",
       true
     ],
     [
-      "candidate_intents",
-      "candidate_intents_digest_check",
-      "c",
-      "CHECK ((octet_length(digest) = 32))",
-      true
-    ],
-    [
-      "candidate_intents",
-      "candidate_intents_document_check",
-      "c",
-      "CHECK ((octet_length(document) <= 1048576))",
-      true
-    ],
-    [
-      "candidate_intents",
-      "candidate_intents_kind_check",
-      "c",
-      "CHECK ((kind = ANY (ARRAY['add'::text, 'supersede'::text, 'retain'::text, 'cancel'::text])))",
-      true
-    ],
-    [
-      "candidate_intents",
-      "candidate_intents_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, candidate, kind, device, execution_key)",
-      true
-    ],
-    [
-      "candidate_intents",
-      "candidate_intents_tenant_id_candidate_fkey",
+      "policies",
+      "policies_tenant_id_current_version_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_policy.candidates(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, current_version) REFERENCES mdm_policy.versions(tenant_id, id) DEFERRABLE INITIALLY DEFERRED",
       true
     ],
     [
-      "candidate_pages",
-      "candidate_pages_fingerprint_check",
+      "policies",
+      "policies_updated_at_check",
       "c",
-      "CHECK ((octet_length(fingerprint) = 32))",
+      "CHECK ((updated_at >= 0))",
       true
     ],
     [
-      "candidate_pages",
-      "candidate_pages_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, candidate, first_device)",
-      true
-    ],
-    [
-      "candidate_pages",
-      "candidate_pages_tenant_id_candidate_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_policy.candidates(tenant_id, id)",
-      true
-    ],
-    [
-      "candidate_references",
-      "candidate_references_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, candidate, reference)",
-      true
-    ],
-    [
-      "candidate_references",
-      "candidate_references_revision_check",
+      "policies",
+      "policies_version_number_check",
       "c",
-      "CHECK ((revision >= 0))",
-      true
-    ],
-    [
-      "candidate_references",
-      "candidate_references_tenant_id_candidate_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_policy.candidates(tenant_id, id)",
-      true
-    ],
-    [
-      "candidate_references",
-      "candidate_references_tenant_id_reference_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, reference) REFERENCES mdm_policy.reference_heads(tenant_id, id)",
-      true
-    ],
-    [
-      "candidate_targets",
-      "candidate_targets_device_check",
-      "c",
-      "CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256)))",
-      true
-    ],
-    [
-      "candidate_targets",
-      "candidate_targets_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, candidate, device)",
-      true
-    ],
-    [
-      "candidate_targets",
-      "candidate_targets_tenant_id_candidate_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_policy.candidates(tenant_id, id)",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_check",
-      "c",
-      "CHECK (((phase = ANY (ARRAY['ready'::text, 'saved'::text])) = (plan_id IS NOT NULL)))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_expected_revision_check",
-      "c",
-      "CHECK ((expected_revision > 0))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_fact_count_check",
-      "c",
-      "CHECK ((fact_count >= 0))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_fact_root_check",
-      "c",
-      "CHECK ((octet_length(fact_root) = 32))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_fingerprint_check",
-      "c",
-      "CHECK ((octet_length(fingerprint) = 32))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_id_check",
-      "c",
-      "CHECK (((octet_length(id) >= 1) AND (octet_length(id) <= 128)))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_input_check",
-      "c",
-      "CHECK ((octet_length(input) <= 1048576))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_phase_check",
-      "c",
-      "CHECK ((phase = ANY (ARRAY['targets'::text, 'facts'::text, 'ready'::text, 'saved'::text, 'superseded'::text])))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_plan_id_check",
-      "c",
-      "CHECK (((plan_id IS NULL) OR (octet_length(plan_id) = 32)))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_target_count_check",
-      "c",
-      "CHECK (((target_count >= 0) AND (target_count <= 1000000)))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_target_root_check",
-      "c",
-      "CHECK ((octet_length(target_root) = 32))",
-      true
-    ],
-    [
-      "candidates",
-      "candidates_tenant_id_policy_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
-      true
-    ],
-    [
-      "current_plans",
-      "current_plans_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, policy)",
-      true
-    ],
-    [
-      "current_plans",
-      "current_plans_tenant_id_candidate_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_policy.candidates(tenant_id, id)",
-      true
-    ],
-    [
-      "current_plans",
-      "current_plans_tenant_id_policy_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
-      true
-    ],
-    [
-      "facts",
-      "facts_digest_check",
-      "c",
-      "CHECK ((octet_length(digest) = 32))",
-      true
-    ],
-    [
-      "facts",
-      "facts_document_check",
-      "c",
-      "CHECK (((octet_length(document) >= 1) AND (octet_length(document) <= 67108864)))",
-      true
-    ],
-    [
-      "facts",
-      "facts_key_check",
-      "c",
-      "CHECK (((octet_length(key) >= 1) AND (octet_length(key) <= 512)))",
-      true
-    ],
-    [
-      "facts",
-      "facts_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, owner, key)",
-      true
-    ],
-    [
-      "facts",
-      "facts_tenant_id_owner_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, owner) REFERENCES mdm_policy.aggregates(tenant_id, id)",
-      true
-    ],
-    [
-      "immutable",
-      "immutable_digest_check",
-      "c",
-      "CHECK ((octet_length(digest) = 32))",
-      true
-    ],
-    [
-      "immutable",
-      "immutable_document_check",
-      "c",
-      "CHECK (((octet_length(document) >= 1) AND (octet_length(document) <= 67108864)))",
-      true
-    ],
-    [
-      "immutable",
-      "immutable_key_check",
-      "c",
-      "CHECK (((octet_length(key) >= 1) AND (octet_length(key) <= 512)))",
-      true
-    ],
-    [
-      "immutable",
-      "immutable_kind_check",
-      "c",
-      "CHECK ((kind = ANY (ARRAY['version'::text, 'payload'::text])))",
-      true
-    ],
-    [
-      "immutable",
-      "immutable_owner_check",
-      "c",
-      "CHECK ((octet_length(owner) <= 128))",
-      true
-    ],
-    [
-      "immutable",
-      "immutable_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, owner, kind, key)",
-      true
-    ],
-    [
-      "reference_heads",
-      "reference_heads_id_check",
-      "c",
-      "CHECK (((octet_length(id) >= 1) AND (octet_length(id) <= 128)))",
-      true
-    ],
-    [
-      "reference_heads",
-      "reference_heads_observed_input_check",
-      "c",
-      "CHECK ((observed_input >= 0))",
-      true
-    ],
-    [
-      "reference_heads",
-      "reference_heads_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
-      true
-    ],
-    [
-      "reference_heads",
-      "reference_heads_required_input_check",
-      "c",
-      "CHECK ((required_input >= 0))",
-      true
-    ],
-    [
-      "reference_heads",
-      "reference_heads_revision_check",
-      "c",
-      "CHECK ((revision >= 0))",
-      true
-    ],
-    [
-      "requests",
-      "requests_digest_check",
-      "c",
-      "CHECK ((octet_length(digest) = 32))",
+      "CHECK ((version_number > 0))",
       true
     ],
     [
@@ -1077,13 +341,6 @@
       "requests_fingerprint_check",
       "c",
       "CHECK ((octet_length(fingerprint) = 32))",
-      true
-    ],
-    [
-      "requests",
-      "requests_id_check",
-      "c",
-      "CHECK (((octet_length(id) >= 1) AND (octet_length(id) <= 128)))",
       true
     ],
     [
@@ -1097,21 +354,70 @@
       "requests",
       "requests_receipt_check",
       "c",
-      "CHECK (((octet_length(receipt) >= 1) AND (octet_length(receipt) <= 67108864)))",
+      "CHECK ((octet_length((receipt)::text) <= 16777216))",
       true
     ],
     [
-      "requests",
-      "requests_request_check",
+      "triggers",
+      "triggers_check",
       "c",
-      "CHECK (((octet_length(request) >= 1) AND (octet_length(request) <= 67108864)))",
+      "CHECK ((deadline > created_at))",
       true
     ],
     [
-      "requests",
-      "requests_tenant_id_owner_fkey",
+      "triggers",
+      "triggers_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "triggers",
+      "triggers_tenant_id_version_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, owner) REFERENCES mdm_policy.aggregates(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, version) REFERENCES mdm_policy.versions(tenant_id, id)",
+      true
+    ],
+    [
+      "versions",
+      "versions_fingerprint_check",
+      "c",
+      "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "versions",
+      "versions_frozen_check",
+      "c",
+      "CHECK ((octet_length((frozen)::text) <= 1048576))",
+      true
+    ],
+    [
+      "versions",
+      "versions_number_check",
+      "c",
+      "CHECK ((number > 0))",
+      true
+    ],
+    [
+      "versions",
+      "versions_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "versions",
+      "versions_tenant_id_policy_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.policies(tenant_id, id)",
+      true
+    ],
+    [
+      "versions",
+      "versions_tenant_id_policy_number_key",
+      "u",
+      "UNIQUE (tenant_id, policy, number)",
       true
     ]
   ]

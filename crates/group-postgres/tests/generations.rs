@@ -39,6 +39,8 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
         id: op(),
         group,
         expected: created.group.revision,
+        base_calculation: created.group.calculation_revision,
+        changed_devices: None,
         rule_version: Some("rule-1".into()),
         patch: None,
         input_version: "watermark-1".into(),
@@ -216,6 +218,8 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             id: op(),
             group,
             expected: current.group.revision,
+            base_calculation: current.group.calculation_revision,
+            changed_devices: None,
             rule_version: None,
             patch: Some(MemberPatch { add, remove }),
             input_version: format!("members-{}", current.group.revision.get()),
@@ -515,10 +519,62 @@ async fn durable_recalculation_no_change_fences_stale_run() {
         published.group.member_version
     );
     assert_eq!((unchanged.added, unchanged.removed), (0, 0));
-    assert!(unchanged.group.revision.get() > published.group.revision.get());
+    assert_eq!(unchanged.group.revision, published.group.revision);
     assert_eq!(
         builds::members(&runtime, &s, first.id).await.unwrap(),
         vec!["device-1"]
+    );
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by hack/group-t2.py"]
+async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
+    let runtime = connect_runtime().await;
+    let store = store(runtime.clone(), tenant()).await;
+    let id = group_id();
+    let (rule, mut page) = inputs();
+    let mut second = page.objects[0].clone();
+    second.key = ObjectKey::new(tenant(), "device-2").unwrap();
+    page.objects.push(second);
+    let created = store
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group: id,
+                name: "delta".into(),
+                description: String::new(),
+                definition: Definition::Dynamic(Box::new(rule)),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let full = builds::request(&created, None);
+    builds::prepare(&runtime, &store, &full, &page)
+        .await
+        .unwrap();
+    let published = builds::publish(&runtime, &store, &full).await.unwrap();
+    let mut delta = builds::request(&published, None);
+    delta.changed_devices = Some(vec!["device-2".into()]);
+    page.objects.remove(0);
+    let built = builds::prepare(&runtime, &store, &delta, &page)
+        .await
+        .unwrap();
+    assert_eq!(built.processed, 1);
+    assert_eq!(built.objects, 2);
+    let same = builds::publish(&runtime, &store, &delta).await.unwrap();
+    assert_eq!(same.group.member_count, 2);
+    assert_eq!(same.group.revision, published.group.revision);
+    assert_eq!(same.group.member_version, published.group.member_version);
+    assert_eq!(
+        builds::members(&runtime, &store, delta.id).await.unwrap(),
+        vec!["device-1", "device-2"]
+    );
+    assert_eq!(
+        builds::members(&runtime, &store, full.id).await.unwrap(),
+        vec!["device-1", "device-2"]
     );
     runtime.close().await;
 }

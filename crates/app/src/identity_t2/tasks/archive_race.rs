@@ -25,14 +25,14 @@ pub(super) async fn verify(
         json!({"action":"activate","version":"v1"}),
     )
     .await?;
-    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let plan = Uuid::new_v4();
-    let create = json!({"operationId":plan,"resource":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default","parameters":{},"devices":[DEVICE_ID],"schedule":{"trigger":{"kind":"manual"},"notBefore":now,"until":now+3600,"jitterSeconds":0,"window":null},"runLifetimeSeconds":300});
+    let policy = Uuid::new_v4();
+    let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,EMPTY_SCOPE)}});
+    let policy_path = format!("/api/v2/policies/{policy}");
     let archive = json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"archive","version":"v1"}});
     let path = format!("/api/v3/resources/{id}");
     let mut archiver = author.clone();
     let (created, archived) = tokio::try_join!(
-        author.call(router, Method::POST, "/api/v3/script-plans", Some(create)),
+        author.call(router, Method::POST, &policy_path, Some(create)),
         archiver.call(router, Method::POST, &path, Some(archive.clone()))
     )?;
     ensure!(
@@ -44,8 +44,8 @@ pub(super) async fn verify(
         post(
             author,
             router,
-            &format!("/api/v3/script-plans/{plan}/cancel"),
-            json!({"operationId":Uuid::new_v4()}),
+            &policy_path,
+            json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
         )
         .await?;
         let historical = archiver
@@ -53,11 +53,11 @@ pub(super) async fn verify(
             .await?;
         ensure!(
             historical.0 == StatusCode::CONFLICT,
-            "cancelled plan lost historical reference: {historical:?}"
+            "disabled policy lost historical reference: {historical:?}"
         );
     } else {
         ensure!(
-            created.0 == StatusCode::CONFLICT && created.1["code"] == "script_resource_unavailable",
+            created.0 == StatusCode::CONFLICT,
             "archived resource admitted: {created:?}"
         );
     }

@@ -8,7 +8,8 @@ CREATE TABLE mdm_group.groups (
  name text NOT NULL CHECK(octet_length(name) BETWEEN 1 AND 4096),
  description text NOT NULL CHECK(octet_length(description)<=4096),
  revision bigint NOT NULL CHECK(revision>0),
- member_version bigint NOT NULL CHECK(member_version>=0 AND member_version<=revision),
+ calculation_revision bigint NOT NULL DEFAULT 0 CHECK(calculation_revision>=0),
+ member_version bigint NOT NULL CHECK(member_version>=0 AND member_version<=calculation_revision),
  member_count bigint NOT NULL CHECK(member_count BETWEEN 0 AND 10000),
  rule_version text CHECK(octet_length(rule_version) BETWEEN 1 AND 256),
  deleted boolean NOT NULL DEFAULT false,
@@ -83,6 +84,6 @@ BEGIN
 END $ddl$;
 GRANT USAGE ON SCHEMA mdm_group TO mdm_group_runtime;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_group TO mdm_group_runtime;
-GRANT UPDATE(name,description,revision,member_version,member_count,rule_version,deleted) ON mdm_group.groups TO mdm_group_runtime;
+GRANT UPDATE(name,description,revision,member_version,member_count,rule_version,deleted,calculation_revision) ON mdm_group.groups TO mdm_group_runtime;
 GRANT UPDATE(state,receipt,result,result_digest,failure,completed_at) ON mdm_group.operations TO mdm_group_runtime;
 GRANT DELETE ON mdm_group.members TO mdm_group_runtime;

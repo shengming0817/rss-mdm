@@ -7,16 +7,16 @@ publish.workspace = true
 [dependencies]
 rss-mdm-backend-postgres-support.workspace = true
 rss-mdm-policy.workspace = true
-rss-contract.workspace = true
 rss-request-context.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
-sqlx.workspace = true
-serde.workspace = true
+sqlx = { workspace = true, features = ["uuid"] }
 serde_json.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 [dev-dependencies]
+rss-contract.workspace = true
+sha2.workspace = true
 tokio = {workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync"]}
 [features]
 integration = ["rss-transactional-messaging-postgres/integration"]

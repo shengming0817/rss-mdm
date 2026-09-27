@@ -89,57 +89,6 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     restarted.runtime.close().await;
 }
 
-#[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
-async fn unknown_policy_result_is_not_found() {
-    let service = planning(tenant()).await;
-    let result = execute(
-        &service,
-        &Command::PolicyPage {
-            policy: Uuid::new_v4().to_string(),
-            result: Uuid::new_v4(),
-            projection: pages::PolicyPageKind::Targets,
-            query: pages::PageQuery {
-                limit: 1,
-                cursor: None,
-            },
-        },
-    )
-    .await;
-    assert!(
-        matches!(
-            result,
-            Err(Error::Planning(
-                crate::planning::error::PlanningError::Missing(
-                    crate::planning::error::Missing::Preview
-                )
-            ))
-        ),
-        "{result:?}"
-    );
-    let missing = execute(
-        &service,
-        &Command::TaskRead {
-            id: Uuid::new_v4(),
-            target: Uuid::new_v4().to_string(),
-            family: crate::automation::TaskKind::Policy,
-        },
-    )
-    .await;
-    assert!(
-        matches!(
-            missing,
-            Err(Error::Planning(
-                crate::planning::error::PlanningError::Missing(
-                    crate::planning::error::Missing::Preview
-                )
-            ))
-        ),
-        "{missing:?}"
-    );
-    service.runtime.close().await;
-}
-
 fn options() -> sqlx::postgres::PgConnectOptions {
     let config = fixture();
     sqlx::postgres::PgConnectOptions::new()
@@ -497,106 +446,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         .unwrap();
     peer_service.runtime.close().await;
     restarted.runtime.close().await;
-}
-
-#[tokio::test]
-#[ignore = "real PostgreSQL: management-t2"]
-async fn policy_waits_for_scope_and_inherits_failure() {
-    use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
-    let service = Arc::new(planning(tenant()).await);
-    let scope = Uuid::new_v4();
-    let resolution = Uuid::new_v4();
-    let task = Uuid::new_v4();
-    let policy = Uuid::new_v4().to_string();
-    let source = crate::automation::JobInput::Scope { scope };
-    let dependent = crate::automation::JobInput::Policy {
-        policy: policy.clone(),
-        scope,
-        resolution,
-        assignment_revision: None,
-        expected_revision: 1,
-        as_of: 1,
-    };
-    for (id, kind, target, input) in [
-        (resolution, "scope", scope.to_string(), source),
-        (task, "policy", policy, dependent),
-    ] {
-        let document = serde_json::to_string(&input).unwrap();
-        sql(&format!(
-            "INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input) VALUES('{}','{id}','{}','{}','{document}')",
-            tenant(),
-            kind,
-            target
-        ));
-    }
-    assert_eq!(
-        crate::automation::jobs::forward_jobs(
-            &service.runtime,
-            service.tenant,
-            &service.audit_store
-        )
-        .await
-        .unwrap(),
-        1,
-        "dependent policy was scheduled before its Scope completed"
-    );
-    assert_eq!(
-        sql(&format!(
-            "SELECT forwarded FROM mdm_automation.automation_jobs WHERE id='{task}'"
-        )),
-        "f"
-    );
-    assert_eq!(
-        crate::automation::jobs::forward_jobs(
-            &service.runtime,
-            service.tenant,
-            &service.audit_store
-        )
-        .await
-        .unwrap(),
-        0
-    );
-    // Model a prerequisite terminal rejection without producing a Scope result.
-    sql(&format!(
-        "UPDATE mdm_automation.automation_jobs SET completed=true,failure='capacity_exceeded' WHERE id='{resolution}'"
-    ));
-    assert_eq!(
-        crate::automation::jobs::forward_jobs(
-            &service.runtime,
-            service.tenant,
-            &service.audit_store
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    let worker =
-        crate::automation::Automation::connect(service.clone(), assets(&service).await, options())
-            .await
-            .unwrap();
-    let claim = claim_job(&worker, task, Duration::from_secs(6)).await;
-    let timer = automation::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    worker
-        .apply(
-            &claim,
-            ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
-            &control,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        sql(&format!(
-            "SELECT completed AND failure='source_unavailable' FROM mdm_automation.automation_jobs WHERE id='{task}'"
-        )),
-        "t"
-    );
-    assert_eq!(sql("SELECT count(*) FROM mdm_policy.facts"), "0");
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
-        .await
-        .unwrap();
-    service.runtime.close().await;
 }
 
 #[tokio::test]
@@ -985,5 +834,193 @@ async fn ingress_batches_reuse_published_group_coverage() {
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
         .await
         .unwrap();
+    service.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn published_scope_job_does_not_swallow_new_definition() {
+    let service = Arc::new(planning(tenant()).await);
+    let id = Uuid::new_v4();
+    let old = format!("scope-old-{id}");
+    let new = format!("scope-new-{id}");
+    seed_device(&old);
+    seed_device(&new);
+    let definition = |device: &str| {
+        serde_json::from_value(
+            json!({"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}),
+        )
+        .unwrap()
+    };
+    let created = execute(
+        &service,
+        &Command::Scope {
+            id,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: definition(&old),
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let first = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
+    // Stop at the real publication boundary before the final propagation page.
+    for _ in 0..10 {
+        service
+            .runtime
+            .local_tx_with_context(tenant(), deadline(), service.as_ref(), |s, tx| {
+                Box::pin(async move {
+                    s.advance_scope_job_in(tx, first, id, None)
+                        .await
+                        .map_err(|_| sqlx::Error::Protocol("scope step failed".into()).into())
+                })
+            })
+            .await
+            .fold(
+                |_| (),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        if sql(&format!(
+            "SELECT phase FROM mdm_planning.scope_runs WHERE id='{first}'"
+        )) == "published"
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        sql(&format!(
+            "SELECT phase FROM mdm_planning.scope_runs WHERE id='{first}'"
+        )),
+        "published"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT completed FROM mdm_automation.automation_jobs WHERE id='{first}'"
+        )),
+        "f"
+    );
+    let updated = execute(
+        &service,
+        &Command::Scope {
+            id,
+            change: operation(
+                1,
+                ScopeChange::Put {
+                    definition: definition(&new),
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let second = Uuid::parse_str(updated["task"].as_str().unwrap()).unwrap();
+    assert_ne!(
+        first, second,
+        "published work can no longer absorb an updated source"
+    );
+    let worker = RunningAutomation::start(service.clone()).await;
+    wait_task(
+        &service,
+        second,
+        crate::automation::TaskKind::Scope,
+        &id.to_string(),
+    )
+    .await;
+    assert_eq!(
+        sql(&format!(
+            "SELECT r.device FROM mdm_planning.scope_results r JOIN mdm_planning.scopes s ON(s.tenant_id,s.resolution)=(r.tenant_id,r.run) WHERE s.id='{id}' AND r.matched"
+        )),
+        new
+    );
+    worker.stop().await;
+    service.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: management-t2"]
+async fn superseded_group_links_reused_successor() {
+    let service = planning(tenant()).await;
+    let group = Uuid::new_v4();
+    seed_device(&format!("successor-{group}"));
+    let created = execute(
+        &service,
+        &Command::Group {
+            id: group,
+            change: operation(
+                0,
+                GroupChange::Create {
+                    name: "successor".into(),
+                    description: String::new(),
+                    criteria: Some(assets::Criteria::Predicate {
+                        field: assets::FieldKey::IsLoaner,
+                        op: assets::Operator::Eq,
+                        value: Some(assets::Scalar::Boolean(true)),
+                        values: None,
+                    }),
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let first = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
+    seed_device(&format!("successor-new-input-{group}"));
+    let next = execute(
+        &service,
+        &Command::Group {
+            id: group,
+            change: operation(1, GroupChange::Recompute {}),
+        },
+    )
+    .await
+    .unwrap();
+    let second = Uuid::parse_str(next["task"].as_str().unwrap()).unwrap();
+    assert_ne!(first, second);
+    service
+        .runtime
+        .local_tx_with_context(tenant(), deadline(), &service, |s, tx| {
+            Box::pin(async move {
+                async {
+                    crate::automation::jobs::finish_job_in(
+                        tx,
+                        &s.audit_store,
+                        first,
+                        Some("superseded"),
+                    )
+                    .await?;
+                    s.retry_superseded_group_in(tx, first).await
+                }
+                .await
+                .map_err(|_| sqlx::Error::Protocol("successor recovery".into()).into())
+            })
+        })
+        .await
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    assert_eq!(
+        sql(&format!(
+            "SELECT replacement_task FROM mdm_automation.automation_jobs WHERE id='{first}'"
+        )),
+        second.to_string()
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_automation.automation_jobs WHERE target='{group}' AND NOT completed"
+        )),
+        "1"
+    );
     service.runtime.close().await;
 }

@@ -57,6 +57,12 @@ pub enum ExclusionReason {
     MissingLimitationMatch,
     /// At least one exclusion source includes the target.
     ExplicitExclusion,
+    /// No target confirms membership and at least one target is unknown.
+    UnknownTarget,
+    /// No limitation confirms membership and at least one limitation is unknown.
+    UnknownLimitation,
+    /// No exclusion confirms membership but an exclusion cannot establish absence.
+    UnknownExclusion,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Deterministic source matches and exclusions for one targeted device.

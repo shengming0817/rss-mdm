@@ -6,12 +6,14 @@ use uuid::Uuid;
 pub(crate) enum TaskKind {
     Group,
     Scope,
-    Policy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum JobInput {
+    PolicyReconcile {
+        policy: Uuid,
+    },
     Compliance {
         input: Box<crate::compliance::Input>,
     },
@@ -31,14 +33,6 @@ pub(crate) enum JobInput {
     Scope {
         scope: Uuid,
     },
-    Policy {
-        policy: String,
-        scope: Uuid,
-        resolution: Uuid,
-        assignment_revision: Option<i64>,
-        expected_revision: u64,
-        as_of: i64,
-    },
 }
 impl JobInput {
     pub(crate) fn kind(&self) -> &'static str {
@@ -48,7 +42,7 @@ impl JobInput {
             Self::Group { publish: true, .. } => "group",
             Self::Group { publish: false, .. } => "group_preview",
             Self::Scope { .. } => "scope",
-            Self::Policy { .. } => "policy",
+            Self::PolicyReconcile { .. } => "policy_reconcile",
         }
     }
     pub(crate) fn target(&self) -> String {
@@ -57,7 +51,7 @@ impl JobInput {
             Self::AssetQuery { scope, .. } => scope.subject.clone(),
             Self::Group { group, .. } => group.to_string(),
             Self::Scope { scope } => scope.to_string(),
-            Self::Policy { policy, .. } => policy.clone(),
+            Self::PolicyReconcile { policy } => policy.to_string(),
         }
     }
 }

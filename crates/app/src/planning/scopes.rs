@@ -95,11 +95,11 @@ impl Planning {
                 if current != op.expected_revision {
                     return Err(Error::Conflict.into());
                 }
-                if checked(
-                    self.policies
-                        .has_saved_reference_in(tx, &format!("scope-definition.{id}"))
-                        .await?,
-                )? {
+                let tenant = self.tenant.to_string();
+                let used=tx.with_connection(move|c|Box::pin(async move {
+                    sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND (definition->>'scope')::uuid=$2::uuid)").bind(tenant).bind(id.to_string()).fetch_one(c).await
+                })).await?;
+                if used {
                     return Err(Error::Conflict.into());
                 }
                 let tenant = self.tenant.to_string();
@@ -136,19 +136,21 @@ impl Planning {
             sqlx::query("INSERT INTO mdm_planning.scope_sources SELECT $1::uuid,$2::uuid,* FROM unnest($3::text[],$4::text[])").bind(tenant).bind(id.to_string()).bind(kinds).bind(targets).execute(c).await?;Ok(())
         })).await?;
         checked(
-            self.policies
+            self.sources
                 .advance_reference_in(tx, &format!("scope-definition.{id}"), revision)
                 .await?,
         )?;
         let task = if matches!(op.input, ScopeChange::Put { .. }) {
             let task = Uuid::new_v4();
-            crate::automation::jobs::enqueue_job_in(
+            let accepted = crate::automation::jobs::enqueue_job_in(
                 tx,
                 task,
                 &crate::automation::JobInput::Scope { scope: id },
             )
             .await?;
-            Some(task)
+            Some(stored(serde_json::from_value::<Uuid>(
+                accepted["task"].clone(),
+            ))?)
         } else {
             None
         };
@@ -172,14 +174,7 @@ impl Planning {
                 })
             })
             .await?;
-        if used
-            || compliance_used
-            || checked(
-                self.policies
-                    .has_saved_reference_in(tx, &format!("group-members.{id}"))
-                    .await?,
-            )?
-        {
+        if used || compliance_used {
             return Err(Error::Conflict.into());
         }
         Ok(())

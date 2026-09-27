@@ -7,13 +7,15 @@
 pub(crate) mod actions;
 mod apple;
 mod apple_push;
+mod configuration;
+pub(crate) use configuration::Diagnosis as ConfigurationDiagnosis;
 pub(crate) mod http;
 mod lifecycle;
 mod model;
 pub(crate) mod native;
-mod plans;
 mod protocol;
 pub(crate) mod recovery;
+mod remote;
 mod service;
 pub(crate) mod storage;
 use crate::{Error, Failure};
@@ -34,11 +36,12 @@ const DOMAIN: &str = "mdm.commands.v2";
 pub(crate) fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
     rss_transactional_messaging::message::MessagingDomain::parse(DOMAIN).expect("fixed domain")
 }
-fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
+pub(crate) fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
     rss_reconcile::Scope::new(tenant, DOMAIN).expect("fixed scope")
 }
 
 pub(crate) struct ExecutionService {
+    pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) signer: Option<Arc<crate::task_signing::Signer>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) runtime: Arc<PgRuntime>,

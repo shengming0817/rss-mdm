@@ -73,32 +73,3 @@ pub enum ScopeChange {
     Put { definition: ScopeDefinition },
     Delete,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(
-    tag = "action",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum PolicyChange {
-    Create,
-    Activate {
-        version: u64,
-        resource: String,
-        resource_version: String,
-    },
-    Pause,
-    Resume,
-    Archive,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PreviewInput {
-    pub scope: Uuid,
-    pub expected_revision: u64,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SavePlan {
-    pub preview: Uuid,
-}

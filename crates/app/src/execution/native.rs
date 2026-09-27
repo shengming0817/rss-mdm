@@ -1,6 +1,6 @@
 //! One durable native exchange for tasks and capability evidence. No transaction commits.
 use super::*;
-use crate::{authorization::Approval, database::db, device::DevicePrincipal};
+use crate::{authorization::ExecutionAuthority, database::db, device::DevicePrincipal};
 use rss_mdm_windows_mdm::{
     CodecLimits,
     configuration::{Firewall, Platform},
@@ -209,8 +209,19 @@ async fn receive_capabilities(
                 && let Some(edition) = edition_id(edition)
                 && Platform::new(version, edition).is_ok()
             {
+                let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND os_version=$4 AND edition=$5)").bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).fetch_one(&mut *c).await.map_err(db)?;
                 sqlx::query("INSERT INTO mdm_commands.capabilities VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
     .bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).bind(session).execute(&mut *c).await.map_err(db)?;
+                if changed {
+                    sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(db)?;
+                    sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
+                        .bind(&tenant)
+                        .bind(super::DOMAIN)
+                        .bind(format!("configuration:{}", p.device()))
+                        .execute(&mut *c)
+                        .await
+                        .map_err(db)?;
+                }
             }
         }
     }
@@ -260,7 +271,7 @@ pub(crate) async fn send_on(
     for row in rows {
         let op: Create = serde_json::from_str(&row.try_get::<String, _>("request").map_err(db)?)
             .map_err(|_| protocol())?;
-        let approval: Approval =
+        let approval: ExecutionAuthority =
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
         let at = now(c).await?;
@@ -359,12 +370,11 @@ async fn command_for(
             enabled,
             os_version,
             edition,
-            plan,
             ..
         } => {
-            let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capabilities c JOIN mdm_commands.plan_executions e ON e.tenant_id=c.tenant_id AND e.plan=$6::uuid WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.generation=$3 AND c.os_version=$4 AND c.edition=$5 AND c.session=$7)")
-    .bind(&tenant).bind(&reg).bind(p.generation()).bind(os_version).bind(*edition as i32).bind(plan.to_string()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
-            if !eligible || !current_plan_on(c, *plan).await? {
+            let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capabilities c WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.generation=$3 AND c.os_version=$4 AND c.edition=$5 AND c.session=$6)")
+    .bind(&tenant).bind(&reg).bind(p.generation()).bind(os_version).bind(*edition as i32).bind(session).fetch_one(&mut *c).await.map_err(db)?;
+            if !eligible {
                 return Ok(None);
             }
             let firewall = Firewall::compile(
@@ -400,14 +410,9 @@ pub(crate) async fn replay_on(
         let request: Create =
             serde_json::from_str(&row.try_get::<String, _>("request").map_err(db)?)
                 .map_err(|_| protocol())?;
-        let approval: Approval =
+        let approval: ExecutionAuthority =
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
-        if let Task::Firewall { plan, .. } = request.task
-            && !current_plan_on(c, plan).await?
-        {
-            return Err(Error::Forbidden);
-        }
         if request.deadline <= now
             || !matches!(
                 row.try_get::<String, _>("status").map_err(db)?.as_str(),
@@ -419,15 +424,6 @@ pub(crate) async fn replay_on(
         }
     }
     Ok(())
-}
-
-pub(super) async fn current_plan_on(
-    c: &mut PgConnection,
-    plan: Uuid,
-) -> std::result::Result<bool, Error> {
-    Ok(crate::planning::admission::read_on(c, plan)
-        .await?
-        .is_some_and(|a| a.current && a.saved_revision.is_some()))
 }
 
 async fn receipt_acceptance(
@@ -453,13 +449,10 @@ async fn receipt_acceptance(
     let request: Create =
         serde_json::from_str(&row.try_get::<String, _>("task_request").map_err(db)?)
             .map_err(|_| protocol())?;
-    let approval: Approval =
+    let approval: ExecutionAuthority =
         serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
             .map_err(|_| protocol())?;
     let at = now(c).await?;
-    let mut valid = approval.valid(c, request.task.permission(), at).await?;
-    if let Task::Firewall { plan, .. } = request.task {
-        valid &= current_plan_on(c, plan).await?;
-    }
+    let valid = approval.valid(c, request.task.permission(), at).await?;
     Ok(Some(valid))
 }

@@ -100,8 +100,8 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> [(&'static str, &'static str); 56] {
-    [
+fn units() -> Vec<(&'static str, &'static str)> {
+    vec![
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
         (
@@ -208,10 +208,6 @@ fn units() -> [(&'static str, &'static str); 56] {
         ("assets-v1", crate::assets::ASSETS_MIGRATION_SQL),
         ("agent-access-v1", crate::device::AGENT_ACCESS_MIGRATION_SQL),
         (
-            "policy-candidates-v2",
-            rss_mdm_policy_postgres::CANDIDATES_MIGRATION_SQL,
-        ),
-        (
             "group-generations-v1",
             rss_mdm_group_postgres::GENERATIONS_MIGRATION_SQL,
         ),
@@ -236,10 +232,6 @@ fn units() -> [(&'static str, &'static str); 56] {
             rss_mdm_group_postgres::REVERSE_INDEX_MIGRATION_SQL,
         ),
         (
-            "policy-execution-admission-v1",
-            rss_mdm_policy_postgres::EXECUTION_ADMISSION_MIGRATION_SQL,
-        ),
-        (
             "windows-configuration-v1",
             include_str!("../migrations/0012_windows_configuration.sql"),
         ),
@@ -250,6 +242,14 @@ fn units() -> [(&'static str, &'static str); 56] {
         (
             "agent-access-v2",
             include_str!("../migrations/0015_agent_v2.sql"),
+        ),
+        (
+            "policy-assignments-v1",
+            include_str!("planning/policies/schema.sql"),
+        ),
+        (
+            "remote-operations-v1",
+            include_str!("planning/remote_operations/schema.sql"),
         ),
         (
             "enterprise-tasks-v1",

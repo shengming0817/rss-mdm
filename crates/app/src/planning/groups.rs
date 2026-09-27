@@ -120,7 +120,7 @@ impl Planning {
                             expected: op.expected_revision,
                             patch: None,
                             publish: true,
-                            automatic: false,
+                            automatic: true,
                             at,
                         },
                     )
@@ -140,20 +140,21 @@ impl Planning {
                 .await?;
             if criteria.is_some() {
                 let task = Uuid::new_v4();
-                self.start_group_job_in(
-                    tx,
-                    automation::GroupStart {
-                        id,
-                        task,
-                        expected: receipt.group.revision.get() as u64,
-                        patch: None,
-                        publish: true,
-                        automatic: true,
-                        at,
-                    },
-                )
-                .await?;
-                response["task"] = serde_json::json!(task);
+                let accepted = self
+                    .start_group_job_in(
+                        tx,
+                        automation::GroupStart {
+                            id,
+                            task,
+                            expected: receipt.group.revision.get() as u64,
+                            patch: None,
+                            publish: true,
+                            automatic: true,
+                            at,
+                        },
+                    )
+                    .await?;
+                response["task"] = accepted["task"].clone();
             }
         }
         Ok(response)

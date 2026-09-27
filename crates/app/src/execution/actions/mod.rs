@@ -3,20 +3,18 @@ mod agent;
 
 pub(crate) mod http;
 
-mod production;
+pub(in crate::execution) mod production;
 pub(in crate::execution) mod recovery;
 
 pub(crate) mod state;
-mod storage;
+pub(in crate::execution) mod storage;
 
 mod collection;
 
 mod poll;
 
-mod history;
-
-mod plan_dispatch;
+pub(crate) mod history;
 
 mod payload;
 
-mod model;
+pub(in crate::execution) mod model;

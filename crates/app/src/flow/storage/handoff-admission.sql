@@ -1,6 +1,5 @@
 -- Exact host authority for borrowed execution handoff and current authorization.
 WITH capabilities(name,append) AS (VALUES
- ('mdm_commands.action_runs',true),('mdm_commands.action_progress',true),
  ('mdm_access.agent_bindings',false),('mdm_access.authorization_rules',false),('mdm_access.user_groups',false)
 ), objects AS (
  SELECT name,append,to_regclass(name) AS oid FROM capabilities
@@ -8,7 +7,7 @@ WITH capabilities(name,append) AS (VALUES
  SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER')
 )
 SELECT
- (SELECT count(*)=5 AND bool_and(o.oid IS NOT NULL AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
+ (SELECT count(*)=3 AND bool_and(o.oid IS NOT NULL AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
   AND has_schema_privilege(current_user,c.relnamespace,'USAGE')
   AND has_table_privilege(current_user,c.oid,'SELECT')
   AND (NOT o.append OR has_table_privilege(current_user,c.oid,'INSERT')))

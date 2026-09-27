@@ -6,9 +6,6 @@ pub(super) fn identity(command: &Command, audit: &RequestAudit) -> Result<(Optio
         Command::Group { change, .. } => Some(change.operation_id),
         Command::GroupPreview { operation, .. } => Some(*operation),
         Command::Scope { change, .. } => Some(change.operation_id),
-        Command::Policy { change, .. } => Some(change.operation_id),
-        Command::Preview { request, .. } => Some(request.operation_id),
-        Command::Save { request, .. } => Some(request.operation_id),
         _ => None,
     };
     if id.is_some_and(|id| id.is_nil()) {

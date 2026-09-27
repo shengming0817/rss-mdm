@@ -128,6 +128,9 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: &str) 
     if result.outcome == dc::Outcome::OutOfOrder {
         return Ok(());
     }
+    if result.command.status().is_terminal() {
+        crate::planning::policies::reconcile::wake_native_in(tx, &op.device).await?;
+    }
     if let Task::StateVerify {
         field,
         expected_value,

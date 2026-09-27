@@ -143,26 +143,7 @@ impl GroupStore {
             let devices = crate::store::input!(self.build_members_in(tx, id, after, limit).await?);
             return Ok(Ok(devices.into_iter().map(manual).collect()));
         }
-        let tenant = self.tenant.to_string();
-        let metadata=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT object_id,octet_length(evidence) AS bytes FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND ($3::text IS NULL OR object_id>$3 COLLATE \"C\") ORDER BY object_id LIMIT $4")
-                .bind(tenant).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
-        })).await?;
-        let mut selected = Vec::new();
-        let mut bytes = 0usize;
-        for row in metadata {
-            let size = row.try_get::<i32, _>("bytes")? as usize + 1024;
-            if bytes + size > 16 * 1024 * 1024 {
-                break;
-            }
-            bytes += size;
-            selected.push(row.try_get::<String, _>("object_id")?);
-        }
-        let tenant = self.tenant.to_string();
-        let rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT object_id,matched,evidence,evidence_digest FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND object_id=ANY($3) ORDER BY object_id")
-                .bind(tenant).bind(id.to_string()).bind(selected).fetch_all(c).await
-        })).await?;
+        let rows = crate::history::rows(tx, id, after, limit).await?;
         let mut result = Vec::new();
         for row in rows {
             let bytes: Vec<u8> = row.try_get("evidence")?;

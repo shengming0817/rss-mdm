@@ -61,9 +61,6 @@
               "required": [
                 "kind",
                 "enabled",
-                "plan",
-                "policy",
-                "version",
                 "osVersion",
                 "edition"
               ],
@@ -73,18 +70,6 @@
                 },
                 "enabled": {
                   "type": "boolean"
-                },
-                "plan": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "policy": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "version": {
-                  "type": "integer",
-                  "minimum": 1
                 },
                 "osVersion": {
                   "type": "string",

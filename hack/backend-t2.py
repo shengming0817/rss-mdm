@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 NAMES=('policy','resource','software-release')
 SCHEMAS=('mdm_policy','mdm_resource','mdm_software_release')
 BEHAVIORS={
- 'policy':{'saving_intents_does_not_create_execution_facts','admission_rejects_noninherited_switchable_privileges','fact_pages_preserve_boundaries_and_reject_foreign_documents','persistence_replay_aba_and_old_facts','concurrent_cas_borrowed_rollback_and_runtime_owner','outbox_failure_and_immutable_inputs'},
+ 'policy':{'borrowed_reads_reject_foreign_runtime_and_tenant','configuration_cas_replay_and_runtime_isolation','scope_changes_preserve_execution_version','companion_failure_rolls_back_publication','admission_rejects_schema_and_reachable_privilege_drift','explicit_trigger_does_not_edit_configuration'},
  'resource':{'artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback','admission_rejects_noninherited_switchable_privileges','resource_admission_rejects_schema_and_privilege_drift','resource_immutable_versions_restart_and_reference_rollback','resource_cas_events_and_owner_admission'},
  'software-release':{'admission_rejects_noninherited_switchable_privileges','release_approval_unknown_retry_history_and_late_results','release_immutable_version_request_uniqueness_and_rollback','release_event_failure_and_runtime_admission'},
 }
@@ -75,7 +75,6 @@ def main():
         failed=[]
         for name in NAMES:
             suites=[('behavior',BEHAVIORS[name]),('recovery',{'protocol_ack_loss_and_fault_ack_recover_original_request'})]
-            if name=='policy': suites.append(('candidates',{'paged_candidate_save_preserves_execution_facts_and_source_invalidation'}))
             for target,expected in suites:
                 result=subprocess.run(['cargo','test','--locked','-p',f'rss-mdm-{name}-postgres','--features','integration','--test',target,'--','--ignored','--test-threads=1'],pass_fds=lease_fds(), cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                 print(result.stdout,flush=True)

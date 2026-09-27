@@ -252,8 +252,12 @@ async fn receive(
         coordinate: op.coordinate,
         event,
     };
-    if service.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
+    let transition = service.store.report(tx, &report).await?;
+    if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());
+    }
+    if transition.command.status().is_terminal() {
+        crate::planning::policies::reconcile::wake_native_in(tx, &op.device).await?;
     }
     Ok(())
 }

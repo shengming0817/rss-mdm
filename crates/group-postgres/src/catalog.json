@@ -56,6 +56,15 @@
     ],
     [
       "groups",
+      "calculation_revision",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "groups",
       "member_version",
       "bigint",
       true,
@@ -290,6 +299,24 @@
     ],
     [
       "member_runs",
+      "base_calculation",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "floor_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
       "rule_version",
       "text",
       false,
@@ -348,6 +375,15 @@
       "text",
       false,
       null,
+      "",
+      ""
+    ],
+    [
+      "member_runs",
+      "processed_count",
+      "bigint",
+      true,
+      "0",
       "",
       ""
     ],
@@ -590,6 +626,14 @@
     ],
     [
       "member_runs",
+      "member_runs_history",
+      "CREATE INDEX member_runs_history ON mdm_group.member_runs USING btree (tenant_id, group_id, base_calculation) WHERE (phase = 'published'::text)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_runs",
       "member_runs_pkey",
       "CREATE UNIQUE INDEX member_runs_pkey ON mdm_group.member_runs USING btree (tenant_id, id)",
       true,
@@ -624,9 +668,16 @@
   "constraints": [
     [
       "groups",
+      "groups_calculation_revision_check",
+      "c",
+      "CHECK ((calculation_revision >= 0))",
+      true
+    ],
+    [
+      "groups",
       "groups_check",
       "c",
-      "CHECK (((member_version >= 0) AND (member_version <= revision)))",
+      "CHECK (((member_version >= 0) AND (member_version <= calculation_revision)))",
       true
     ],
     [
@@ -799,6 +850,13 @@
     ],
     [
       "member_runs",
+      "member_runs_base_calculation_check",
+      "c",
+      "CHECK ((base_calculation >= 0))",
+      true
+    ],
+    [
+      "member_runs",
       "member_runs_base_revision_check",
       "c",
       "CHECK ((base_revision > 0))",
@@ -808,13 +866,6 @@
       "member_runs",
       "member_runs_check",
       "c",
-      "CHECK (((member_count >= 0) AND (member_count <= object_count)))",
-      true
-    ],
-    [
-      "member_runs",
-      "member_runs_check1",
-      "c",
       "CHECK (((phase = 'published'::text) = (receipt IS NOT NULL)))",
       true
     ],
@@ -823,6 +874,13 @@
       "member_runs_fingerprint_check",
       "c",
       "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_floor_revision_check",
+      "c",
+      "CHECK ((floor_revision >= 0))",
       true
     ],
     [
@@ -837,6 +895,13 @@
       "member_runs_input_version_check",
       "c",
       "CHECK (((octet_length(input_version) >= 1) AND (octet_length(input_version) <= 4096)))",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_member_count_check",
+      "c",
+      "CHECK (((member_count >= 0) AND (member_count <= 1000000)))",
       true
     ],
     [
@@ -858,6 +923,13 @@
       "member_runs_pkey",
       "p",
       "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_processed_count_check",
+      "c",
+      "CHECK (((processed_count >= 0) AND (processed_count <= 1000000)))",
       true
     ],
     [

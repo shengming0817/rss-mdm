@@ -1,9 +1,9 @@
 use super::{state::RunState, storage as db};
 use crate::Error;
 use crate::execution::{ExecutionService, Result, checked_input, messaging_domain};
-use crate::planning::action_schedule::Trigger;
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
+use rss_mdm_policy::schedule::Trigger;
 use rss_transactional_messaging::{
     message::*,
     outbox::{AppendOutcome, OutboxWriter, PendingMessage},
@@ -13,190 +13,15 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProduceOutcome {
-    Produced,
-    Duplicate,
-    SkippedByPolicy,
-    CapacityBlocked,
-}
-impl ProduceOutcome {
-    fn merge(self, next: Self) -> Self {
-        use ProduceOutcome::*;
-        match (self, next) {
-            (CapacityBlocked, _) | (_, CapacityBlocked) => CapacityBlocked,
-            (Produced, _) | (_, Produced) => Produced,
-            (Duplicate, _) | (_, Duplicate) => Duplicate,
-            _ => SkippedByPolicy,
-        }
-    }
-}
-
-enum Admission {
-    Available,
-    Duplicate,
-    CapacityBlocked,
-}
-
-async fn admission(
-    tx: &mut PgTransaction<'_>,
-    plan: Uuid,
-    device: &str,
-    occurrence: &str,
-    now: i64,
-) -> Result<Admission> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let plan = plan.to_string();
-    let occurrence = occurrence.to_owned();
-    let (duplicate, active)=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND device=$3 AND occurrence=$4), (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)").bind(tenant).bind(plan).bind(device).bind(occurrence).bind(now).fetch_one(c).await})).await?;
-    Ok(if duplicate {
-        Admission::Duplicate
-    } else if active >= 128 {
-        Admission::CapacityBlocked
-    } else {
-        Admission::Available
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn produce(
-    service: &ExecutionService,
-    writer: &rss_transactional_messaging_postgres::PgOutboxWriter,
-    tx: &mut PgTransaction<'_>,
-    plan: &db::ScheduledPlan,
-    coordinate: i64,
-    trigger: &str,
-    now: i64,
-    only: Option<&str>,
-) -> Result<ProduceOutcome> {
-    let mut outcome = ProduceOutcome::SkippedByPolicy;
-    for device in &plan.definition.frozen.targets.devices {
-        if only.is_some_and(|value| value != device) {
-            continue;
-        }
-        if !plan.definition.authorized_in(tx, device, now).await? {
-            continue;
-        }
-        let identity = checked_input(serde_json::to_vec(&(
-            tx.tenant_id().to_string(),
-            plan.definition.id,
-            1,
-            device,
-        )))?;
-        let Some(occurrence) = plan
-            .definition
-            .frozen
-            .input
-            .schedule
-            .occurrence(coordinate, &identity)?
-        else {
-            outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
-            continue;
-        };
-        if trigger == "timer"
-            && matches!(
-                plan.definition.frozen.input.schedule.misfire,
-                crate::planning::action_schedule::Misfire::Skip
-            )
-            && occurrence.available_at < now.saturating_sub(30)
-        {
-            outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
-            continue;
-        }
-        let target = match db::registration(tx, device).await {
-            Ok(target) => target,
-            Err(crate::execution::Fault::Request(Error::Conflict)) => {
-                outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
-        let key = if trigger.starts_with("registration:") {
-            trigger.to_owned()
-        } else {
-            format!("{trigger}:{coordinate}")
-        };
-        match admission(tx, plan.definition.id, device, &key, now).await? {
-            Admission::Available => (),
-            Admission::Duplicate => {
-                outcome = outcome.merge(ProduceOutcome::Duplicate);
-                continue;
-            }
-            Admission::CapacityBlocked => {
-                outcome = outcome.merge(ProduceOutcome::CapacityBlocked);
-                continue;
-            }
-        }
-        let deadline = occurrence
-            .available_at
-            .checked_add(i64::from(plan.definition.frozen.input.run_lifetime_seconds))
-            .ok_or(Error::Malformed)?
-            .min(plan.definition.frozen.input.schedule.until)
-            .min(occurrence.window_end.unwrap_or(i64::MAX));
-        if deadline <= now || deadline <= occurrence.available_at {
-            outcome = outcome.merge(ProduceOutcome::SkippedByPolicy);
-            continue;
-        }
-        let id = Uuid::new_v4();
-        let message = dispatch(tx.tenant_id(), plan.definition.id, id, &target, now)?;
-        let digest = message.fingerprint().as_bytes().to_vec();
-        if writer
-            .append(tx, message)
-            .await
-            .map_err(rss_transactional_messaging_postgres::PgError::from)?
-            != AppendOutcome::Inserted
-        {
-            return Err(Error::Conflict.into());
-        }
-        let fingerprint = digest.clone();
-        let registration = target.registration;
-        let tenant = tx.tenant_id().to_string();
-        let plan_id = plan.definition.id.to_string();
-        let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,plan,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9,$10,$11,$12)").bind(tenant).bind(id.to_string()).bind(plan_id).bind(target.device).bind(target.registration.to_string()).bind(target.generation).bind(key).bind(occurrence.available_at).bind(deadline).bind(state).bind(digest).bind(now).execute(c).await?;Ok(())})).await?;
-        let audit = rss_mdm_audit_integration::RequestAudit::new(
-            tx.tenant_id().to_string(),
-            "command_accept",
-        );
-        audit.operation(id, "command_accept");
-        audit.target(&id.to_string());
-        audit.identify_service("action-scheduler");
-        audit.plan(plan.definition.id);
-        audit.registration(registration);
-        let result: Result<()> = async {
-            let fact = Fact::business(
-                &audit,
-                &format!("action:{id}:accept"),
-                &fingerprint,
-                202,
-                "success",
-                None,
-            )?;
-            service.audit_store.append_in(tx, &fact, false).await?;
-            Ok(())
-        }
-        .await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result?;
-        outcome = outcome.merge(ProduceOutcome::Produced);
-    }
-    Ok(outcome)
-}
 fn dispatch(
     tenant: rss_request_context::TenantId,
-    plan: Uuid,
+    source: db::Source,
     id: Uuid,
     target: &super::model::Target,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(
-        &json!({"version":2,"planId":plan,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
+        &json!({"version":2,"source":source,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("action.{id}")))?,
@@ -220,105 +45,190 @@ fn dispatch(
         payload,
     )))
 }
-pub(super) async fn tick(
+
+/// Only the authenticated device can cause its own recurring execution to be admitted.
+pub(super) async fn accept_for_device(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
-    plan: &db::ScheduledPlan,
+    policy: &db::ScheduledPolicy,
+    target: &super::model::Target,
+    request: Uuid,
     now: i64,
 ) -> Result<()> {
-    if !plan.definition.active || !plan.definition.approved {
+    use rss_mdm_policy::Frequency;
+    let definition = &policy.definition;
+    let Some(entry) = definition.entry_in(tx, &target.device, now).await? else {
         return Ok(());
-    }
-    // Select the shared coordinate without device jitter; each insertion applies its own jitter.
-    let mut schedule = plan.definition.frozen.input.schedule.clone();
-    schedule.jitter_seconds = 0;
-    schedule.window = None;
-    schedule.misfire = crate::planning::action_schedule::Misfire::CoalesceOne;
-    let coordinate = if let Some(blocked) = plan.blocked_at {
-        Some(blocked)
-    } else {
-        schedule
-            .due(plan.scan_at, now, b"schedule")?
-            .map(|occurrence| occurrence.coordinate)
     };
-    if let Some(coordinate) = coordinate
-        && matches!(
-            produce(
-                service,
-                &rss_transactional_messaging_postgres::PgOutboxWriter::new(
-                    service.runtime.clone(),
-                    messaging_domain()
-                ),
-                tx,
-                plan,
-                coordinate,
-                "timer",
-                now,
-                None
-            )
-            .await?,
-            ProduceOutcome::CapacityBlocked
-        )
-    {
-        let tenant = tx.tenant_id().to_string();
-        let id = plan.definition.id.to_string();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_progress SET blocked_at=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(coordinate).execute(c).await?;Ok(())})).await?;
+    let input = &definition.frozen.input;
+    let schedule = &input.schedule;
+    let tenant = tx.tenant_id().to_string();
+    let version = definition.id;
+    let owner = definition.owner;
+    let device = target.device.clone();
+    let registration = target.registration.to_string();
+    let (pending,last)=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND device=$3 AND registration=$5::uuid")
+            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).fetch_one(c).await
+    })).await?;
+    if pending {
         return Ok(());
     }
-    if matches!(schedule.trigger, Trigger::Registration) {
-        for device in &plan.definition.frozen.targets.devices {
-            match db::registration(tx, device).await {
-                Ok(target) => {
-                    // Registration identity is stable across worker restarts. Production's device set
-                    // is narrowed without changing the approved plan or target authorization bases.
-                    // Capacity is retried from that identity on every tick; it does not use scan_at.
-                    let _ = event(service, tx, plan, &target, "registration", now).await?;
+    let tenant = tx.tenant_id().to_string();
+    let version = definition.id;
+    let device = target.device.clone();
+    let explicit=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as::<_,(Uuid,i64,i64)>("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1").bind(tenant).bind(version).bind(device).bind(now).fetch_optional(c).await
+    })).await?;
+    let (coordinate, event) = if let Some((id, at, _)) = explicit {
+        (at, format!("explicit:{id}"))
+    } else {
+        match &schedule.trigger {
+            Trigger::Manual => return Ok(()),
+            Trigger::CheckIn { minimum_seconds } => {
+                if last.is_some_and(|t| now.saturating_sub(t) < i64::from(*minimum_seconds)) {
+                    return Ok(());
                 }
-                Err(crate::execution::Fault::Request(Error::Conflict)) => (),
-                Err(error) => return Err(error),
+                (now, format!("checkin:{request}"))
+            }
+            Trigger::Registration => (now, format!("registration:{}", target.registration)),
+            Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
+                let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
+                    return Ok(());
+                };
+                (due.coordinate, format!("timer:{}", due.coordinate))
             }
         }
+    };
+    let occurrence = if explicit.is_some() {
+        event.clone()
+    } else {
+        match definition.frequency {
+            Frequency::OncePerVersion => format!("version:{}", target.registration),
+            Frequency::OncePerEntry => format!(
+                "entry:{}:{entry}:{}",
+                definition.entry_source(),
+                target.registration
+            ),
+            Frequency::EveryTrigger => format!("{event}:{}", target.registration),
+        }
+    };
+    let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
+        return Ok(());
+    };
+    let available = slot.available_at.max(now);
+    let deadline = available
+        .checked_add(i64::from(input.run_lifetime_seconds))
+        .ok_or(Error::Malformed)?
+        .min(schedule.ends_at())
+        .min(slot.window_end.unwrap_or(i64::MAX))
+        .min(explicit.map_or(i64::MAX, |v| v.2));
+    if deadline <= available {
+        return Ok(());
     }
-    let scan_at = coordinate.unwrap_or(now);
     let tenant = tx.tenant_id().to_string();
-    let id = plan.definition.id.to_string();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_progress SET scan_at=greatest(scan_at,$3),blocked_at=NULL WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(scan_at).execute(c).await?;Ok(())})).await?;
+    let device = target.device.clone();
+    let version = definition.id;
+    let key = occurrence.clone();
+    let (exists,active)=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)")
+            .bind(tenant).bind(version.to_string()).bind(device).bind(key).bind(now).fetch_one(c).await
+    })).await?;
+    if exists || active >= 128 {
+        return Ok(());
+    }
+    let id = Uuid::new_v4();
+    queue_run_in(
+        service,
+        tx,
+        RunInput {
+            source: db::Source::Policy {
+                version: definition.id,
+            },
+            target,
+            id,
+            occurrence,
+            available,
+            deadline,
+            now,
+        },
+    )
+    .await?;
+    crate::planning::policies::storage::wake_execution_in(tx, definition.owner).await?;
     Ok(())
 }
-pub(super) async fn event(
+pub(in crate::execution) struct RunInput<'a> {
+    pub source: db::Source,
+    pub target: &'a super::model::Target,
+    pub id: Uuid,
+    pub occurrence: String,
+    pub available: i64,
+    pub deadline: i64,
+    pub now: i64,
+}
+pub(in crate::execution) async fn queue_run_in(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
-    plan: &db::ScheduledPlan,
-    target: &super::model::Target,
-    kind: &str,
-    now: i64,
-) -> Result<ProduceOutcome> {
-    if let Trigger::CheckIn { minimum_seconds } = plan.definition.frozen.input.schedule.trigger {
-        let tenant = tx.tenant_id().to_string();
-        let plan_id = plan.definition.id.to_string();
-        let device = target.device.clone();
-        let last=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Option<i64>>("SELECT max(created_at) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND device=$3").bind(tenant).bind(plan_id).bind(device).fetch_one(c).await})).await?;
-        if last.is_some_and(|last| now.saturating_sub(last) < i64::from(minimum_seconds)) {
-            return Ok(ProduceOutcome::SkippedByPolicy);
-        }
+    input: RunInput<'_>,
+) -> Result<()> {
+    let RunInput {
+        source,
+        target,
+        id,
+        occurrence,
+        available,
+        deadline,
+        now,
+    } = input;
+    let message = dispatch(tx.tenant_id(), source, id, target, now)?;
+    let fingerprint = message.fingerprint().as_bytes().to_vec();
+    let writer = rss_transactional_messaging_postgres::PgOutboxWriter::new(
+        service.runtime.clone(),
+        messaging_domain(),
+    );
+    if writer
+        .append(tx, message)
+        .await
+        .map_err(rss_transactional_messaging_postgres::PgError::from)?
+        != AppendOutcome::Inserted
+    {
+        return Err(Error::Conflict.into());
     }
-    let key = if kind == "registration" {
-        format!("registration:{}", target.registration)
-    } else {
-        "checkin".to_owned()
-    };
-    produce(
-        service,
-        &rss_transactional_messaging_postgres::PgOutboxWriter::new(
-            service.runtime.clone(),
-            messaging_domain(),
-        ),
-        tx,
-        plan,
-        now,
-        &key,
-        now,
-        Some(&target.device),
-    )
-    .await
+    let tenant = tx.tenant_id().to_string();
+    let registration = target.registration;
+    let target = target.clone();
+    let digest = fingerprint.clone();
+    let (kind, version, remote) = source.columns();
+    let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
+    tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,remote_operation,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(remote).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).execute(c).await?;Ok(())
+    })).await?;
+    let audit =
+        rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");
+    audit.operation(id, "command_accept");
+    audit.identify_service("execution-admission");
+    source.audit(&audit);
+    audit.target(&id.to_string());
+    audit.registration(registration);
+    let result: Result<()> = async {
+        let fact = Fact::business(
+            &audit,
+            &format!("action:{id}:accept"),
+            &fingerprint,
+            202,
+            "success",
+            None,
+        )?;
+        service.audit_store.append_in(tx, &fact, false).await?;
+        Ok(())
+    }
+    .await;
+    audit.finalize(
+        result
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    result
 }

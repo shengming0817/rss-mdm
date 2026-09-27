@@ -1,8 +1,12 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
- ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_progress','scan_at'),('mdm_commands.action_progress','blocked_at'),('mdm_commands.action_progress','recovery_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
- ('mdm_commands.firewall_owners','version'),('mdm_commands.firewall_owners','operation'),('mdm_commands.attempts','receipt_accepted'),('mdm_commands.attempts','status'),
+ ('mdm_planning.remote_operations','staged'),('mdm_planning.remote_operations','cursor'),('mdm_planning.remote_operations','run_after'),
+ ('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
+ ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
+ ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_devices','operation'),('mdm_planning.configuration_devices','digest'),('mdm_planning.configuration_devices','diagnosis'),
+ ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
+ ('mdm_commands.attempts','receipt_accepted'),('mdm_commands.attempts','status'),
  ('mdm_commands.attempts','value'),
  ('mdm_commands.attempts','received_at'),
  ('mdm_commands.capabilities','generation'),
@@ -24,12 +28,13 @@ WITH tables AS (
  ('mdm_apple.profiles','profile'),('mdm_apple.profiles','operation'),('mdm_apple.profiles','registration'),('mdm_apple.profiles','version'),('mdm_apple.profiles','enabled'),
  ('mdm_apple.devices','token'),('mdm_apple.devices','magic'),('mdm_apple.devices','state'),('mdm_apple.devices','push_id'),('mdm_apple.devices','push_lease_until'),('mdm_apple.devices','next_push'),('mdm_apple.devices','push_status'),('mdm_apple.devices','push_outcome'),('mdm_apple.devices','push_configuration'),('mdm_apple.devices','push_failures')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_commands.action_polls',true,true,false),('mdm_planning.action_plans',true,false,false),('mdm_commands.action_progress',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_access.agent_bindings',true,false,false),
+ ('mdm_planning.remote_operations',true,false,false),('mdm_planning.remote_operation_targets',true,true,false),('mdm_commands.policy_recovery',true,true,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
+ ('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_access.agent_bindings',true,false,false),
  ('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_access.requests',true,false,false),
-('mdm_commands.firewall_owners',true,true,true),('mdm_commands.attempt_history',true,false,false),
+
 ('mdm_commands.capabilities',true,true,false),
 ('mdm_commands.capability_queries',true,true,false),
-('mdm_commands.plan_executions',true,true,false),
+
  ('mdm_commands.devices',true,true,false),('mdm_commands.operations',true,true,false),('mdm_commands.requests',true,true,false),('mdm_commands.attempts',true,true,false),
  ('mdm_access.devices',true,false,false),('mdm_access.registrations',true,false,false),('mdm_access.credentials',true,false,false),('mdm_access.report_sources',true,false,false),('mdm_access.enrollment_intents',true,false,false),('mdm_access.enrollment_certificates',true,false,false),('mdm_access.authorization_rules',true,false,false),('mdm_access.user_groups',true,false,false),
  ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('rss_audit.heads',true,false,false),('rss_audit.records',true,false,false),('rss_ledger.heads',true,false,false),('rss_ledger.entries',true,false,false),('mdm_audit.receipts',true,true,false),
@@ -46,7 +51,7 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR roleid=(SELECT oid FROM pg_roles WHERE rolname=current_user))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_attempts','action_polls','action_progress','action_receipts','action_runs','attempt_history','attempts','capabilities','capability_queries','devices','firewall_owners','operations','plan_executions','requests'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_attempts','action_polls','action_receipts','action_runs','attempts','capabilities','capability_queries','devices','operations','policy_recovery','requests'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind<>'r' OR relpersistence<>'p' OR NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
@@ -72,6 +77,6 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
     OR has_column_privilege(current_user,c.oid,col.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname NOT IN('information_schema','rss_device_command','rss_reconcile')
-  AND p.oid NOT IN('rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.plan_execution_admission(uuid)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure,'rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'::regprocedure,'rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'::regprocedure,'rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)'::regprocedure)
+  AND p.oid NOT IN('rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'mdm_planning.remote_target_page(uuid,text,integer)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure,'rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'::regprocedure,'rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'::regprocedure,'rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)'::regprocedure)
   AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT LIKE 'pg_%' AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))

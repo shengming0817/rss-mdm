@@ -35,9 +35,9 @@ OWNERS = {
     "collection_finish": "collection/store.rs",
     "collection_read": "api.rs",
     "collection_start": "collection/apple.rs",
-    "command_accept": "flow/actions_http.rs",
-    "command_approve": "flow/actions_http.rs",
-    "command_cancel": "flow/actions_http.rs",
+    "command_accept": "execution/actions/http.rs",
+    "command_approve": "execution/http.rs",
+    "command_cancel": "execution/http.rs",
     "command_dispatch": "execution/recovery.rs",
     "command_read": "execution/actions/http.rs",
     "command_reconcile": "execution/actions/recovery.rs",
@@ -51,9 +51,6 @@ OWNERS = {
     "inventory_read": "api.rs",
     "management_read": "execution/recovery.rs",
     "management_write": "resource_catalog/http.rs",
-    "plan_execute": "execution/http.rs",
-    "plan_preview": "planning/http.rs",
-    "plan_save": "planning/http.rs",
     "protected_request": "api.rs",
     "registration_bind": "device.rs",
     "registration_read": "api.rs",
@@ -107,14 +104,10 @@ DECLARATIONS = {
     ('collection_read', 'api.rs'),
     ('collection_start', 'api.rs'),
     ('collection_start', 'collection/apple.rs'),
-    ('command_accept', 'flow/actions_http.rs'),
     ('command_accept', 'execution/actions/http.rs'),
     ('command_accept', 'execution/actions/production.rs'),
     ('command_accept', 'execution/http.rs'),
-    ('command_accept', 'execution/plans.rs'),
-    ('command_approve', 'flow/actions_http.rs'),
     ('command_approve', 'execution/http.rs'),
-    ('command_cancel', 'flow/actions_http.rs'),
     ('command_cancel', 'execution/http.rs'),
     ('command_dispatch', 'execution/actions/recovery.rs'),
     ('command_dispatch', 'execution/recovery.rs'),
@@ -141,9 +134,6 @@ DECLARATIONS = {
     ('management_write', 'assets/http.rs'),
     ('management_write', 'planning/http.rs'),
     ('management_write', 'software_publication/http.rs'),
-    ('plan_execute', 'execution/http.rs'),
-    ('plan_preview', 'planning/http.rs'),
-    ('plan_save', 'planning/http.rs'),
     ('protected_request', 'api.rs'),
     ('protected_request', 'native/mod.rs'),
     ('registration_bind', 'device.rs'),
@@ -165,10 +155,12 @@ DECLARATIONS = {
     ('windows_policy', 'api.rs'),
     ('management_read', 'resource_catalog/http.rs'),
     ('management_write', 'resource_catalog/http.rs'),
-    ('command_read', 'flow/actions_http.rs'),
 }
 
 
+DECLARATIONS.update({("command_read","planning/remote_operations/http.rs")})
+DECLARATIONS.update({("management_read","planning/policies/http.rs"),("management_read","planning/policies/preview.rs"),("management_read","planning/remote_operations/http.rs")})
+DECLARATIONS.update({('command_accept', 'execution/configuration.rs'), ('command_accept', 'execution/remote.rs'), ('management_write', 'planning/policies/http.rs'), ('management_write', 'planning/remote_operations/http.rs')})
 DECLARATIONS.update({('management_read','software_catalog.rs'),('management_read','content/http.rs'),('management_write','software_catalog.rs')})
 
 def arguments(source, start):

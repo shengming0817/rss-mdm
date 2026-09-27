@@ -6,6 +6,7 @@
 mod boundaries;
 mod lifecycle;
 mod oracle;
+mod policy;
 #[path = "tests/production.rs"]
 mod production;
 #[path = "tests/push_cycle.rs"]
@@ -375,6 +376,7 @@ async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
     f.push_cycle(&peer).await?;
     f.collection_cycle(&peer).await?;
     f.profile_cycle(&peer).await?;
+    f.policy_cycle(&peer).await?;
     let (renewed, renewed_device) = f
         .renewal_cycle(&peer, &device)
         .await
