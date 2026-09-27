@@ -60,9 +60,9 @@ def capture(container, mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    modes = parser.add_mutually_exclusive_group(required=True)
-    modes.add_argument("--check", action="store_true")
-    modes.add_argument("--write", action="store_true")
-    args = parser.parse_args()
-    import t2
-    t2.main(catalog_mode="check" if args.check else "write")
+    parser.add_argument('--write',action='store_true',required=True)
+    args=parser.parse_args()
+    from build_run import require_lease
+    require_lease(ROOT)
+    from t2_suites.product import execute
+    execute('catalog',catalog_action='write')

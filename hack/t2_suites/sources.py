@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from build_run import lease_fds, require_lease
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED = {
     "winget": {
@@ -108,5 +108,3 @@ def main():
         print("Failed source T2 targets: " + ", ".join(failed), file=sys.stderr)
     return int(bool(failed))
 
-if __name__ == "__main__":
-    sys.exit(main())

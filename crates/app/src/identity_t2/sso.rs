@@ -156,7 +156,7 @@ async fn roundtrip(
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "make t2-identity: optional enterprise Keycloak, real MDM Router and PG"]
+#[ignore = "make t2 SUITE=identity: optional enterprise Keycloak, real MDM Router and PG"]
 async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;

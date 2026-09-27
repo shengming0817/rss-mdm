@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class T2Guards(unittest.TestCase):
     def test_exact_audit_gate_cannot_pass_when_removed_or_renamed(self):
         sys.path.insert(0, str(ROOT/'hack'))
-        import t2
+        from t2_suites import product as t2
         name = 'audit_integration_tests::installed_audit_receipts_replay_and_atomicity'
         for output in ['running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;',
                        'test renamed::test ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;',
@@ -19,7 +19,7 @@ class T2Guards(unittest.TestCase):
 
     def test_windows_runner_rejects_empty_or_partial_success(self):
         sys.path.insert(0,str(ROOT/'hack'))
-        import t2
+        from t2_suites import product as t2
         cases=[
             'running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;',
             'test windows::tests::issuance_recovery_and_enrollment_boundaries ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;',
@@ -36,7 +36,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,'hack')
-import t2
+from t2_suites import product as t2
 with tempfile.TemporaryDirectory() as directory:
  root=Path(directory);config=root/'config.json';config.write_text(json.dumps({'database':{}}))
  with patch.object(t2,'run',return_value=SimpleNamespace(stdout='f')),patch.object(t2.subprocess,'run',return_value=SimpleNamespace(returncode=1,stderr='')):

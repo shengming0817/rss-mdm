@@ -9,7 +9,7 @@ import uuid
 import json
 import sys
 from build_run import require_lease
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parents[2]
 
 def verify(image):
     if '@sha256:' not in image:raise RuntimeError('fixed gateway image required')
@@ -91,6 +91,3 @@ def verify(image):
                 if primary is None:raise RuntimeError('login gateway cleanup failed') from None
                 primary.add_note('login gateway cleanup also failed')
 
-if __name__ == "__main__":
-    require_lease(ROOT)
-    verify(json.loads((ROOT/"deployment/providers.lock.json").read_text())["nginx"])

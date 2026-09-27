@@ -14,14 +14,8 @@ sys.path.insert(0, str(ci.ROOT / "hack"))
 
 class DependencyPolicy(unittest.TestCase):
     def test_t2_umbrella_runs_enterprise_tasks(self):
-        lines=(ci.ROOT/'Makefile').read_text().splitlines()
-        start=lines.index('_t2:')+1
-        recipe=[]
-        for line in lines[start:]:
-            if not line.startswith('\t'):
-                break
-            recipe.append(line)
-        self.assertIn('\tpython3 hack/task-t2.py',recipe)
+        from t2 import select_suites
+        self.assertIn('tasks',select_suites('all',{}))
 
     def test_require_survives_optimized_python(self):
         with self.assertRaises(RuntimeError):
@@ -203,7 +197,7 @@ class WorkingTreeStability(unittest.TestCase):
                 if edit and args[0] != '/usr/bin/git':
                     source.write_text('after')
                 return subprocess.CompletedProcess(args, 0, 'revision')
-            selection = {'full': False, 'packages': []}
+            selection = {'full': False, 'packages': [], 't2Suites': [], 'toolTests': []}
             with mock.patch.object(ci, "require_lease"), mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'identity_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN':'0'}):
                 self.assertEqual(ci.main(), int(edit))
             result = json.loads((root / 'artifacts/result.json').read_text())

@@ -52,9 +52,9 @@ pub async fn connect_runtime_at(port: Option<u16>) -> Arc<PgRuntime> {
     let config = PgConfig::new(
         "localhost",
         port.unwrap_or(config["port"].as_u64().unwrap() as u16),
-        "group_test",
+        config["database"].as_str().unwrap(),
         "mdm_group_runtime",
-        PgPassword::new("group-fixture"),
+        PgPassword::new("runtime-fixture"),
         PgPrivateCa::from_pem(std::fs::read(config["ca"].as_str().unwrap()).unwrap()).unwrap(),
     );
     Arc::new(

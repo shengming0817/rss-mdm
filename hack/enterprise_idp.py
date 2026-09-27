@@ -35,15 +35,15 @@ def docker(*args):
     return subprocess.check_output(['docker', *args], text=True, timeout=120).strip()
 
 @contextlib.contextmanager
-def fixture(root):
-    images=json.loads((ROOT/'deployment/providers.lock.json').read_text())
-    name='mdm-idp-'+uuid.uuid4().hex[:12]
-    containers=[]
+def fixture(root, environment):
+    environment.compose('--profile','idp','up','-d','idp-netns')
+    port=int(environment.compose('port','idp-netns','8443').rsplit(':',1)[1])
+    origin=f'https://localhost:{port}'
+    environment.extra={'MDM_IDP_ORIGIN':origin}
+    directory=environment.root/'idp';directory.mkdir(exist_ok=True,mode=0o700)
+    from t2_environment import private
+    for file in ('server.crt','server.key'):private(directory/file,(root/file).read_text())
     try:
-        namespace=name+'-net';containers.append(namespace)
-        docker('run','-d','--name',namespace,'-p','127.0.0.1::8443','--entrypoint','sleep',images['runtime'],'infinity')
-        port=int(docker('port',namespace,'8443').rsplit(':',1)[1])
-        origin=f'https://localhost:{port}'
         realm={'realm':'mdm','enabled':True,'sslRequired':'all','duplicateEmailsAllowed':True,'loginWithEmailAllowed':False,
             'clients':[{'clientId':'mdm','secret':'fixture-secret','publicClient':False,'standardFlowEnabled':True,
                 'redirectUris':['https://mdm.example.test/api/v2/oidc/callback'],'attributes':{'pkce.code.challenge.method':'S256'}}],
@@ -57,15 +57,10 @@ def fixture(root):
             {'name':'stable-security-group-codes','protocol':'openid-connect','protocolMapper':'oidc-group-membership-mapper','config':{'claim.name':'groups','full.path':'false','id.token.claim':'true','access.token.claim':'false'}},
             {'name':'department-snapshot','protocol':'openid-connect','protocolMapper':'oidc-usermodel-attribute-mapper','config':{'user.attribute':'organization_snapshot','claim.name':'organization_snapshot','jsonType.label':'JSON','multivalued':'false','aggregate.attrs':'false','id.token.claim':'true','access.token.claim':'false'}}]
         realm.update(json.loads((ROOT/'fixtures/keycloak-step-up.json').read_text()))
-        realm_file=root/'realm.json';realm_file.write_text(json.dumps(realm));realm_file.chmod(0o644)
-        containers.append(name)
-        docker('run','-d','--name',name,'--network','container:'+namespace,
-            '-e','KC_BOOTSTRAP_ADMIN_USERNAME=fixture-operator','-e','KC_BOOTSTRAP_ADMIN_PASSWORD=fixture-operator-password',
-            '-v',str(realm_file)+':/opt/keycloak/data/import/mdm.json:ro',
-            '-v',str(root/'server.crt')+':/opt/keycloak/conf/tls.crt:ro',
-            '-v',str(root/'server.key')+':/opt/keycloak/conf/tls.key:ro',images['keycloak'],
-            'start-dev','--import-realm','--http-enabled=false','--hostname='+origin,
-            '--https-certificate-file=/opt/keycloak/conf/tls.crt','--https-certificate-key-file=/opt/keycloak/conf/tls.key')
+        private(directory/'realm.json',realm)
+        environment.compose('--profile','idp','run','--rm','idp-inputs')
+        environment.compose('--profile','idp','up','-d','idp')
+        name=environment.compose('ps','-q','idp')
         context=ssl.create_default_context(cafile=str(root/'ca.crt'))
         issuer=origin+'/realms/mdm';end=time.monotonic()+120
         while True:
@@ -78,10 +73,4 @@ def fixture(root):
         configure_department(origin,context)
         yield dict(MDM_TEST_SSO_ISSUER=issuer,MDM_TEST_SSO_CA=str(root/'ca.crt'),MDM_TEST_SSO_CONTAINER=name)
     finally:
-        failures=[]
-        for owned in reversed(containers):
-            try:docker('rm','-f',owned)
-            except Exception:failures.append(owned)
-        if failures:
-            if sys.exception():sys.exception().add_note('enterprise fixture cleanup failed')
-            else:raise RuntimeError('enterprise fixture cleanup failed')
+        environment.compose('--profile','idp','rm','--stop','--force','idp','idp-netns')

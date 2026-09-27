@@ -1264,7 +1264,7 @@ async fn revoke_http_matrix(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "make t2-identity: only MDM-owned TLS PostgreSQL; no central service"]
+#[ignore = "make t2 SUITE=identity: only MDM-owned TLS PostgreSQL; no central service"]
 async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let config: Config = serde_json::from_value(base.clone())?;

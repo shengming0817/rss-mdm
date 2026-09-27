@@ -45,9 +45,15 @@ class OracleSource(unittest.TestCase):
             # This isolated, mocked build owns a temporary target, not the enclosing CI lease.
             env = {key: value for key, value in os.environ.items() if not key.startswith('_MDM_')}
             env['CARGO_TARGET_DIR'] = temporary
-            with patch.dict(os.environ, env, clear=True), patch.object(tools, 'LOCK', {'nanomdm': {'revision': 'fixed', 'sourceArchiveSha256': digest}}), patch('subprocess.run', side_effect=build):
+            with patch.dict(os.environ, env, clear=True), patch.object(tools, 'LOCK', {'nanomdm': {'revision': 'fixed', 'sourceArchiveSha256': digest}}), patch('subprocess.run', side_effect=build), patch.object(tools,'nano_identity',return_value={'source':digest,'toolchain':'fixed','flags':[]}):
                 tools.nano_binary()
                 tools.nano_binary()
-            self.assertEqual(len(seen), 2)
-            self.assertNotEqual(seen[0], seen[1])
+            self.assertEqual(len(seen), 1)
             self.assertTrue(all(not path.exists() for path in seen))
+
+class NanoCache(unittest.TestCase):
+    def test_cache_identity_includes_effective_toolchain_and_flags(self):
+        with patch('subprocess.check_output',return_value='{"GOOS":"darwin","GOARCH":"arm64","GOVERSION":"go1.25.1","CGO_ENABLED":"1","GOFLAGS":"","GOROOT":"/go"}'):
+            first=tools.nano_identity()
+        with patch('subprocess.check_output',return_value='{"GOOS":"darwin","GOARCH":"arm64","GOVERSION":"go1.25.2","CGO_ENABLED":"1","GOFLAGS":"","GOROOT":"/go"}'):
+            self.assertNotEqual(first,tools.nano_identity())

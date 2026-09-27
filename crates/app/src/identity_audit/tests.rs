@@ -14,7 +14,7 @@ use tower::ServiceExt;
 const TENANT: &str = "11111111-1111-4111-8111-111111111111";
 
 #[tokio::test]
-#[ignore = "make t2-identity: installed same-database Identity/Audit worker"]
+#[ignore = "make t2 SUITE=identity: installed same-database Identity/Audit worker"]
 async fn http_events_deliver_replay_and_fail_closed() -> Result<()> {
     for ledger in [false, true] {
         exercise(ledger).await?;

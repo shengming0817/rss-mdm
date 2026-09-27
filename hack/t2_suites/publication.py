@@ -4,10 +4,8 @@ import importlib.util,os,subprocess,tempfile,sys
 from pathlib import Path
 from build_run import lease_fds, require_lease
 
-ROOT=Path(__file__).resolve().parents[1]
-def module(name,file):
-    spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(file));value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
-pg=module('backend_t2','backend-t2.py');source=module('source_t2','source-t2.py')
+ROOT=Path(__file__).resolve().parents[2]
+from t2_suites import backend as pg, sources as source
 def run(env):
     with tempfile.TemporaryDirectory(prefix='mdm-publication-https-') as directory:
         tls=source.tls_environment(Path(directory));tls.update(env)
@@ -21,9 +19,4 @@ def run(env):
         pg.verify_tests(result.stdout, {'planning::tests::resource_archive::candidate_reference_blocks_archive_and_race_is_atomic'})
 def main():
     require_lease(ROOT)
-    if '--existing' in sys.argv:
-        import json
-        config=json.loads((ROOT/'artifacts/backend/environment.json').read_text());run({**os.environ,**config})
-    else:
-        with pg.fixture(app=True) as(env,sql):run(env)
-if __name__=='__main__':main()
+    with pg.fixture(app=True) as(env,sql):run(env)

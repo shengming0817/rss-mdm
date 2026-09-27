@@ -3,9 +3,9 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-spec = importlib.util.spec_from_file_location("source_t2", Path(__file__).with_name("source-t2.py"))
-runner = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runner)
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'hack'))
+from t2_suites import sources as runner
 
 class ExecutionOracle(unittest.TestCase):
     def test_requires_exact_successful_execution(self):
