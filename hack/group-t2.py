@@ -80,6 +80,6 @@ def main():
         generations = subprocess.run(['cargo','test','--locked','-p','rss-mdm-group-postgres','--test','generations','--','--ignored','--test-threads=1'], pass_fds=lease_fds(), cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(generations.stdout, flush=True)
         require(generations.returncode == 0, 'Group immutable generations failed')
-        verify_tests(generations.stdout, {'staged_pages_publish_atomically_and_replay_without_duplicate_members','static_patches_use_the_same_sealed_publication_and_preserve_old_sets', 'static_commands_replay_and_borrowed_rollback', 'durable_recalculation_no_change_fences_stale_run'})
+        verify_tests(generations.stdout, {'staged_pages_publish_atomically_and_replay_without_duplicate_members','static_patches_use_the_same_sealed_publication_and_preserve_old_sets', 'static_commands_replay_and_borrowed_rollback', 'durable_recalculation_no_change_fences_stale_run', 'delta_evaluates_only_changed_devices_and_preserves_old_results'})
         print(json.dumps({'provider':IMAGE,'tls':'verify-full','tests':sorted(EXPECTED),'T3':'not run'}))
 if __name__=='__main__': main()

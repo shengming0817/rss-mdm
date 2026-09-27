@@ -91,45 +91,9 @@
       ""
     ],
     [
-      "action_progress",
-      "tenant_id",
+      "action_polls",
+      "policy_after",
       "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "action_progress",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "action_progress",
-      "scan_at",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "action_progress",
-      "recovery_after",
-      "uuid",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "action_progress",
-      "blocked_at",
-      "bigint",
       false,
       null,
       "",
@@ -200,9 +164,27 @@
     ],
     [
       "action_runs",
-      "plan",
-      "uuid",
+      "source_kind",
+      "text",
       true,
+      "'policy'::text",
+      "",
+      ""
+    ],
+    [
+      "action_runs",
+      "policy_version",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
+      "remote_operation",
+      "uuid",
+      false,
       null,
       "",
       ""
@@ -302,60 +284,6 @@
       "result",
       "jsonb",
       false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempt_history",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempt_history",
-      "operation",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempt_history",
-      "ordinal",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempt_history",
-      "id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempt_history",
-      "collection",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "attempt_history",
-      "credential",
-      "uuid",
-      true,
       null,
       "",
       ""
@@ -739,60 +667,6 @@
       ""
     ],
     [
-      "firewall_owners",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "firewall_owners",
-      "device",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "firewall_owners",
-      "node",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "firewall_owners",
-      "policy",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "firewall_owners",
-      "version",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "firewall_owners",
-      "operation",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
       "operations",
       "tenant_id",
       "uuid",
@@ -910,7 +784,34 @@
       ""
     ],
     [
-      "plan_executions",
+      "operations",
+      "source_kind",
+      "text",
+      true,
+      "'direct'::text",
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "policy_version",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "remote_operation",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_recovery",
       "tenant_id",
       "uuid",
       true,
@@ -919,37 +820,19 @@
       ""
     ],
     [
-      "plan_executions",
-      "plan",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_executions",
+      "policy_recovery",
       "policy",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_executions",
-      "policy_revision",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "plan_executions",
-      "request",
       "uuid",
       true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_recovery",
+      "recovery_after",
+      "uuid",
+      false,
       null,
       "",
       ""
@@ -976,7 +859,7 @@
       "requests",
       "operation",
       "uuid",
-      false,
+      true,
       null,
       "",
       ""
@@ -998,15 +881,6 @@
       null,
       "",
       ""
-    ],
-    [
-      "requests",
-      "plan",
-      "uuid",
-      false,
-      null,
-      "",
-      ""
     ]
   ],
   "indexes": [
@@ -1022,14 +896,6 @@
       "action_polls",
       "action_polls_pkey",
       "CREATE UNIQUE INDEX action_polls_pkey ON mdm_commands.action_polls USING btree (tenant_id, registration)",
-      true,
-      true,
-      true
-    ],
-    [
-      "action_progress",
-      "action_progress_pkey",
-      "CREATE UNIQUE INDEX action_progress_pkey ON mdm_commands.action_progress USING btree (tenant_id, id)",
       true,
       true,
       true
@@ -1060,32 +926,16 @@
     ],
     [
       "action_runs",
-      "action_runs_tenant_id_plan_occurrence_device_key",
-      "CREATE UNIQUE INDEX action_runs_tenant_id_plan_occurrence_device_key ON mdm_commands.action_runs USING btree (tenant_id, plan, occurrence, device)",
+      "action_runs_tenant_id_policy_version_occurrence_device_key",
+      "CREATE UNIQUE INDEX action_runs_tenant_id_policy_version_occurrence_device_key ON mdm_commands.action_runs USING btree (tenant_id, policy_version, occurrence, device)",
       true,
       true,
       true
     ],
     [
-      "attempt_history",
-      "attempt_history_pkey",
-      "CREATE UNIQUE INDEX attempt_history_pkey ON mdm_commands.attempt_history USING btree (tenant_id, operation, ordinal)",
-      true,
-      true,
-      true
-    ],
-    [
-      "attempt_history",
-      "attempt_history_tenant_id_id_key",
-      "CREATE UNIQUE INDEX attempt_history_tenant_id_id_key ON mdm_commands.attempt_history USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "attempt_history",
-      "attempt_history_tenant_id_operation_collection_key",
-      "CREATE UNIQUE INDEX attempt_history_tenant_id_operation_collection_key ON mdm_commands.attempt_history USING btree (tenant_id, operation, collection)",
+      "action_runs",
+      "action_runs_tenant_id_remote_operation_device_key",
+      "CREATE UNIQUE INDEX action_runs_tenant_id_remote_operation_device_key ON mdm_commands.action_runs USING btree (tenant_id, remote_operation, device)",
       true,
       true,
       true
@@ -1147,14 +997,6 @@
       true
     ],
     [
-      "firewall_owners",
-      "firewall_owners_pkey",
-      "CREATE UNIQUE INDEX firewall_owners_pkey ON mdm_commands.firewall_owners USING btree (tenant_id, device, node)",
-      true,
-      true,
-      true
-    ],
-    [
       "operations",
       "operations_pkey",
       "CREATE UNIQUE INDEX operations_pkey ON mdm_commands.operations USING btree (tenant_id, id)",
@@ -1163,17 +1005,17 @@
       true
     ],
     [
-      "plan_executions",
-      "plan_executions_pkey",
-      "CREATE UNIQUE INDEX plan_executions_pkey ON mdm_commands.plan_executions USING btree (tenant_id, plan)",
+      "operations",
+      "remote_native_once",
+      "CREATE UNIQUE INDEX remote_native_once ON mdm_commands.operations USING btree (tenant_id, remote_operation, device) WHERE (remote_operation IS NOT NULL)",
       true,
       true,
       true
     ],
     [
-      "plan_executions",
-      "plan_executions_tenant_id_request_key",
-      "CREATE UNIQUE INDEX plan_executions_tenant_id_request_key ON mdm_commands.plan_executions USING btree (tenant_id, request)",
+      "policy_recovery",
+      "policy_recovery_pkey",
+      "CREATE UNIQUE INDEX policy_recovery_pkey ON mdm_commands.policy_recovery USING btree (tenant_id, policy)",
       true,
       true,
       true
@@ -1245,34 +1087,6 @@
       true
     ],
     [
-      "action_progress",
-      "action_progress_blocked_at_check",
-      "c",
-      "CHECK ((blocked_at >= 0))",
-      true
-    ],
-    [
-      "action_progress",
-      "action_progress_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
-      true
-    ],
-    [
-      "action_progress",
-      "action_progress_scan_at_check",
-      "c",
-      "CHECK ((scan_at >= '-1'::integer))",
-      true
-    ],
-    [
-      "action_progress",
-      "action_progress_tenant_id_id_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, id) REFERENCES mdm_planning.action_plans(tenant_id, id)",
-      true
-    ],
-    [
       "action_receipts",
       "action_receipts_fingerprint_check",
       "c",
@@ -1303,6 +1117,13 @@
     [
       "action_runs",
       "action_runs_check",
+      "c",
+      "CHECK ((((source_kind = 'policy'::text) AND (policy_version IS NOT NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'remote_operation'::text) AND (policy_version IS NULL) AND (remote_operation IS NOT NULL))))",
+      true
+    ],
+    [
+      "action_runs",
+      "action_runs_check1",
       "c",
       "CHECK ((deadline > available_at))",
       true
@@ -1365,16 +1186,16 @@
     ],
     [
       "action_runs",
-      "action_runs_tenant_id_plan_fkey",
+      "action_runs_tenant_id_policy_version_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_planning.action_plans(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, policy_version) REFERENCES mdm_policy.versions(tenant_id, id)",
       true
     ],
     [
       "action_runs",
-      "action_runs_tenant_id_plan_occurrence_device_key",
+      "action_runs_tenant_id_policy_version_occurrence_device_key",
       "u",
-      "UNIQUE (tenant_id, plan, occurrence, device)",
+      "UNIQUE (tenant_id, policy_version, occurrence, device)",
       true
     ],
     [
@@ -1385,36 +1206,22 @@
       true
     ],
     [
-      "attempt_history",
-      "attempt_history_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, operation, ordinal)",
+      "action_runs",
+      "action_runs_tenant_id_remote_operation_device_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, remote_operation, device) REFERENCES mdm_planning.remote_operation_targets(tenant_id, operation, device)",
       true
     ],
     [
-      "attempt_history",
-      "attempt_history_tenant_id_id_key",
+      "action_runs",
+      "action_runs_tenant_id_remote_operation_device_key",
       "u",
-      "UNIQUE (tenant_id, id)",
-      true
-    ],
-    [
-      "attempt_history",
-      "attempt_history_tenant_id_operation_collection_key",
-      "u",
-      "UNIQUE (tenant_id, operation, collection)",
-      true
-    ],
-    [
-      "attempt_history",
-      "attempts_ordinal_check",
-      "c",
-      "CHECK ((ordinal > 0))",
+      "UNIQUE (tenant_id, remote_operation, device)",
       true
     ],
     [
       "attempts",
-      "attempts_ordinal_check1",
+      "attempts_ordinal_check",
       "c",
       "CHECK ((ordinal > 0))",
       true
@@ -1553,38 +1360,17 @@
       true
     ],
     [
-      "firewall_owners",
-      "firewall_owners_node_check",
+      "operations",
+      "operation_authority_source",
       "c",
-      "CHECK ((node = './Vendor/MSFT/Firewall/MdmStore/DomainProfile/EnableFirewall'::text))",
+      "CHECK (COALESCE(\nCASE source_kind\n    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = 'user'::text)\n    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) = 'policy'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))\n    WHEN 'remote_operation'::text THEN (((approval ->> 'kind'::text) = 'remote_operation'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'operation'::text) = (remote_operation)::text))\n    ELSE NULL::boolean\nEND, false))",
       true
     ],
     [
-      "firewall_owners",
-      "firewall_owners_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, device, node)",
-      true
-    ],
-    [
-      "firewall_owners",
-      "firewall_owners_tenant_id_operation_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
-      true
-    ],
-    [
-      "firewall_owners",
-      "firewall_owners_tenant_id_policy_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.aggregates(tenant_id, id)",
-      true
-    ],
-    [
-      "firewall_owners",
-      "firewall_owners_version_check",
+      "operations",
+      "operation_source",
       "c",
-      "CHECK ((version > 0))",
+      "CHECK ((((source_kind = 'direct'::text) AND (policy_version IS NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'remote_operation'::text) AND (policy_version IS NULL) AND (remote_operation IS NOT NULL))))",
       true
     ],
     [
@@ -1652,44 +1438,44 @@
     ],
     [
       "operations",
+      "operations_source_kind_check",
+      "c",
+      "CHECK ((source_kind = ANY (ARRAY['direct'::text, 'policy'::text, 'remote_operation'::text])))",
+      true
+    ],
+    [
+      "operations",
       "operations_tenant_id_device_fkey",
       "f",
       "FOREIGN KEY (tenant_id, device) REFERENCES mdm_commands.devices(tenant_id, device)",
       true
     ],
     [
-      "plan_executions",
-      "plan_executions_pkey",
+      "operations",
+      "operations_tenant_id_policy_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, policy_version) REFERENCES mdm_policy.versions(tenant_id, id)",
+      true
+    ],
+    [
+      "operations",
+      "operations_tenant_id_remote_operation_device_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, remote_operation, device) REFERENCES mdm_planning.remote_operation_targets(tenant_id, operation, device)",
+      true
+    ],
+    [
+      "policy_recovery",
+      "policy_recovery_pkey",
       "p",
-      "PRIMARY KEY (tenant_id, plan)",
+      "PRIMARY KEY (tenant_id, policy)",
       true
     ],
     [
-      "plan_executions",
-      "plan_executions_tenant_id_plan_fkey",
+      "policy_recovery",
+      "policy_recovery_tenant_id_policy_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_planning.firewall_plans(tenant_id, id)",
-      true
-    ],
-    [
-      "plan_executions",
-      "plan_executions_tenant_id_request_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, request) REFERENCES mdm_commands.requests(tenant_id, id)",
-      true
-    ],
-    [
-      "plan_executions",
-      "plan_executions_tenant_id_request_key",
-      "u",
-      "UNIQUE (tenant_id, request)",
-      true
-    ],
-    [
-      "requests",
-      "requests_check",
-      "c",
-      "CHECK (((operation IS NULL) <> (plan IS NULL)))",
+      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.policies(tenant_id, id)",
       true
     ],
     [
@@ -1711,13 +1497,6 @@
       "requests_tenant_id_operation_fkey",
       "f",
       "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
-      true
-    ],
-    [
-      "requests",
-      "requests_tenant_id_plan_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, plan) REFERENCES mdm_planning.firewall_plans(tenant_id, id)",
       true
     ]
   ]

@@ -651,7 +651,7 @@ AC-O01-02　演练进程重启、数据库短暂故障和版本升级失败，�
 | WMD-V02<br>前后端与 Agent 共用业务契约 | 统一定义 Operation、Target、DesiredState、CollectionRequest、ExecutionReceipt 与 Observation；控制台、服务端和 Agent 共享版本化 schema/SDK，原生 MDM 报文经适配器转换。 | 新增目标<br>一级 |
 | WMD-V03<br>逻辑意图与平台实现分离 | 提供 inventory.collect、configuration.apply、software.ensure、script.run、device.action 等操作族；模板绑定平台变体与校验器，禁止以任意 shell 字符串作为全部能力的统一抽象。 | 新增目标<br>一级 |
 | WMD-V04<br>适用性与前置条件 | 发布前计算 OS、版本、芯片、设备/用户上下文、解释器、包管理器、证书/监督状态等前提；不适用与暂时阻塞分开。 | 新增目标<br>一级 |
-| WMD-V05<br>计划预览与冻结 | 计划预览展示支持/不支持/阻塞设备、选定通道/执行器、权限、包/脚本/模板版本及风险。批准后冻结策略 generation 与产物摘要；派发前再次检查关键前提。 | 新增目标<br>一级 |
+| WMD-V05<br>分配预览与执行受理 | 草稿预览展示目标资格及阻断原因，不发布正式结果或执行事实。持续 Policy 引用当前 Scope，执行型由 Agent 签入时受理，配置型按差分通过原生 MDM 收敛；一次性 Operation 固定本次目标快照和期限。内容摘要及注册世代在实际受理时绑定，交付前重验。 | 新增目标<br>一级 |
 | WMD-V06<br>统一结果与原生明细 | 公共结果至少区分受理、等待、执行、等待用户、等待重启、结果不明、失败、状态已核实；保留原生状态码、命令 UUID、通道与证据强度。 | 新增目标<br>一级 |
 | WMD-V07<br>重复投递与执行恢复 | 业务执行标识稳定；Agent 有持久执行日志与结果补传。native MDM 无法共享本地幂等存储时按命令语义和状态核实恢复，不宣称任意动作 exactly-once。 | 新增目标<br>一级 |
 | WMD-V08<br>可信任务与回执 | 任务绑定设备、注册世代、用途、摘要、过期时间和授权；回执由实际通道认证入口产生并归属原任务。Agent 自报 capability 不得绕过服务端授权。 | 新增目标<br>一级 |
@@ -925,7 +925,7 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 | 对象 | 关键职责 |
 | --- | --- |
 | Device / Enrollment / CapabilitySnapshot | 统一业务设备、独立通道注册/认证、可执行能力及计算依据。Apple 用户通道保留用户主体。 |
-| Operation / Plan / Step / Execution | 请求意图、不可变目标计划、各步骤的唯一写通道、真实尝试与 generation；期望状态与历史分开。 |
+| Policy / Operation / Run / Attempt | Policy 是持续分配，分为执行型与配置型；一次性 Operation 独立持有固定目标快照与期限，Run/Attempt 持有设备执行、通道及注册世代；期望状态与执行历史分开。 |
 | Application / PlatformVariant / Source / Release | 逻辑软件与平台版本；元数据源/产物源及不可变批准快照；禁止 packageId 单独作为跨源唯一身份。 |
 | FieldDefinition / CollectorBinding / Observation | 字段语义、如何采集、逐来源证据；形成 ResolvedAsset 后供查询/分组/合规统一消费。 |
 | AppleDeclaration / NativeConfiguration | Apple 声明与传统 profile 各自的 ID、版本、状态与删除语义；不将声明集合强行塞入单条同步命令。 |
@@ -1117,3 +1117,15 @@ RSS MDM 的产品目标是：基于统一业务契约和可恢复执行，组合
 外部对标只采用厂商/项目官方资料。主要参考用途是产品对象、协议边界和可验证限制，不借用对方产品的性能或认证结论；尤其 Fleet 软件部署指南标记 Premium，不推导“开源即所有功能免费”。[E07](../reference/external-sources.md#e07)
 
 需求表、各模块 AC 场景与第 10 节 T3 表共同定义需求和验收映射。来源索引见 [参考资料](../reference/README.md)。
+
+
+### 当前 Group/Scope/Policy 交付约束（#2567、#2568、#2569）
+
+- Group/Scope 分离编辑 CAS、计算发布及成员/目标语义版本；无差分重算不重复派发。相关事实按字段和设备增量求值，计算竞争和重启使用持久检查点自动追赶。
+- Scope 是唯一目标计算 owner，Unknown 排除依据不得放行，草稿预览不发布正式结果。
+- 执行型 Policy 绑定 Resource、Scope、触发、频率、可选窗口及任务期限；配置型只绑定 Resource、Scope、启停和受支持退出行为，拒绝脚本调度字段。
+- 持续策略归组织持有，发布者人员或会话变化不触发重新确认。新执行仍检查当前分配、内容摘要、注册世代和通道能力。
+- Agent 发布不生成全设备 Run；签入分页查询有效策略，按需原子受理。默认每执行版本一次，支持重入、周期、注册和显式重执行；已启动而结果未知的脚本不自动重复。
+- 配置按必要差分创建原生命令，暂缺注册或能力时保留分配并在事实更新后核对；共享效果保留、冲突明确报告。命令期限和失败不等于持续分配失效。
+- 一次性操作使用固定快照、一个可恢复分页任务及现有 Agent/MDM 通道；不创建长期 Policy，不新增 Agent 推送、SSH 或远程终端。
+- 无旧部署，直接更新初始化 schema；删除 Candidate 保存执行、ScriptPlan 与服务端强制二人审批主链，不提供兼容路由或旧数据迁移。

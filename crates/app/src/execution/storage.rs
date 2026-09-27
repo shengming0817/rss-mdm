@@ -1,13 +1,13 @@
 use super::*;
 pub(crate) use crate::action_admission::{authorized, lock, now};
-use crate::authorization::Approval;
+use crate::authorization::ExecutionAuthority;
 use sqlx::{PgConnection, Row};
 
 pub(super) struct Operation {
     pub id: Uuid,
     pub device: String,
     pub request: Create,
-    pub approval: Approval,
+    pub approval: ExecutionAuthority,
     pub revision: i64,
     pub scope: dc::Scope,
     pub coordinate: dc::Coordinate,

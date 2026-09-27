@@ -48,9 +48,6 @@ pub(crate) enum Task {
     },
     Firewall {
         enabled: bool,
-        plan: Uuid,
-        policy: String,
-        version: u64,
         os_version: String,
         edition: u32,
     },
@@ -200,7 +197,7 @@ mod tests {
     fn old_requests_and_direct_write_fields_do_not_have_fallbacks() {
         let old = serde_json::json!({"operationId":Uuid::new_v4(),"field":"model","expectedValue":"x","deadline":100});
         assert!(serde_json::from_value::<Create>(old).is_err());
-        let task = serde_json::json!({"kind":"firewall","enabled":true,"plan":Uuid::new_v4(),"policy":"x","version":1,"osVersion":"10.0.19045.0","edition":48,"uri":"arbitrary"});
+        let task = serde_json::json!({"kind":"firewall","enabled":true,"policyVersion":Uuid::new_v4(),"policy":"x","version":1,"osVersion":"10.0.19045.0","edition":48,"uri":"arbitrary"});
         assert!(serde_json::from_value::<Task>(task).is_err());
         let verify = Task::StateVerify {
             field: Field::Model,
@@ -248,9 +245,6 @@ mod tests {
             },
             Task::Firewall {
                 enabled: false,
-                plan: id,
-                policy: "domain".into(),
-                version: 1,
                 os_version: "10.0.19045.0".into(),
                 edition: 48,
             },
@@ -260,7 +254,7 @@ mod tests {
                     serde_json::json!({"kind":"state_verify","field":"model","expectedValue":"Surface"})
                 }
                 _ => {
-                    serde_json::json!({"kind":"firewall","enabled":false,"plan":id,"policy":"domain","version":1,"osVersion":"10.0.19045.0","edition":48})
+                    serde_json::json!({"kind":"firewall","enabled":false,"osVersion":"10.0.19045.0","edition":48})
                 }
             };
             let dto = DispatchV2 {

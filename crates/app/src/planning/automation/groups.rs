@@ -8,6 +8,16 @@ impl Planning {
         task: Uuid,
     ) -> Result<()> {
         let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, task).await?;
+        if let JobInput::Scope { scope } = job {
+            let next = crate::automation::jobs::enqueue_job_in(
+                tx,
+                Uuid::new_v4(),
+                &JobInput::Scope { scope },
+            )
+            .await?;
+            let next = stored(serde_json::from_value::<Uuid>(next["task"].clone()))?;
+            return crate::automation::jobs::replacement_in(tx, task, next).await;
+        }
         let JobInput::Group {
             group: id,
             watermark,
@@ -42,21 +52,28 @@ impl Planning {
             } else {
                 None
             };
-            self.start_group_job_in(
+            let successor = self
+                .start_group_job_in(
+                    tx,
+                    GroupStart {
+                        id,
+                        task: Uuid::new_v4(),
+                        expected: revision as u64,
+                        patch,
+                        publish: true,
+                        automatic: true,
+                        at: checked_input(Timepoint::try_from(
+                            self.clock
+                                .unix_seconds()
+                                .map_err(|_| Error::Unavailable(Failure::Clock))?,
+                        ))?,
+                    },
+                )
+                .await?;
+            crate::automation::jobs::replacement_in(
                 tx,
-                GroupStart {
-                    id,
-                    task: Uuid::new_v4(),
-                    expected: revision as u64,
-                    patch,
-                    publish: true,
-                    automatic: true,
-                    at: checked_input(Timepoint::try_from(
-                        self.clock
-                            .unix_seconds()
-                            .map_err(|_| Error::Unavailable(Failure::Clock))?,
-                    ))?,
-                },
+                task,
+                stored(serde_json::from_value(successor["task"].clone()))?,
             )
             .await?;
         }
@@ -72,12 +89,9 @@ impl Planning {
             return Ok(false);
         };
         let built = checked(self.groups.build_in(tx, run).await?)?;
-        let observed = built
-            .request
-            .input_version
-            .strip_prefix("assets:")
-            .and_then(|v| v.parse::<i64>().ok())
-            .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
+        let tenant = self.tenant.to_string();
+        let reference = format!("group-members.{}", current.id);
+        let observed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_planning.source_heads WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(reference).fetch_one(c).await})).await?;
         Ok(observed >= watermark && built.request.rule_version == current.rule_version)
     }
 
@@ -101,7 +115,7 @@ impl Planning {
             return Err(Error::Conflict.into());
         }
         let tenant = self.tenant;
-        let watermark = tx
+        let mut watermark = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     rss_mdm_inventory_postgres::watermark_in(c, tenant)
@@ -110,10 +124,55 @@ impl Planning {
                 })
             })
             .await?;
+        let latest_watermark = watermark;
+        let mut changed_devices = None;
+        if automatic
+            && patch.is_none()
+            && let Some(previous) = checked(self.groups.current_member_set_in(tx, group).await?)?
+        {
+            let old = checked(self.groups.build_in(tx, previous).await?)?;
+            if old.request.rule_version == current.rule_version {
+                let tenant = self.tenant.to_string();
+                let reference = format!("group-members.{id}");
+                let base=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_planning.source_heads WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(reference).fetch_one(c).await})).await?;
+                let tenant = self.tenant.to_string();
+                watermark=tx.with_connection(move|c|Box::pin(async move {
+                    sqlx::query_scalar("SELECT coalesce(max(revision),$3) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 1000) b").bind(tenant).bind(base).bind(latest_watermark).fetch_one(c).await
+                })).await?;
+                let tenant = self.tenant.to_string();
+                changed_devices=Some(tx.with_connection(move|c|Box::pin(async move {
+                    sqlx::query_scalar::<_,String>("SELECT device FROM (SELECT DISTINCT coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.revision<=c.revision ORDER BY h.revision DESC LIMIT 1)) COLLATE \"C\" AS device FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_planning.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$4::uuid AND f.field=ANY(c.fields)))) changed WHERE device IS NOT NULL ORDER BY device").bind(tenant).bind(base).bind(watermark).bind(id.to_string()).fetch_all(c).await
+                })).await?);
+            }
+        }
+        let job = JobInput::Group {
+            group: id,
+            base_revision: current.revision.get(),
+            watermark,
+            publish,
+            automatic,
+        };
+        if patch.is_none() {
+            let tenant = self.tenant.to_string();
+            let rule = current.rule_version.clone();
+            let version = format!("assets:{watermark}");
+            let calculation = current.calculation_revision;
+            let reusable=tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query_scalar::<_,String>("SELECT j.id::text FROM mdm_automation.automation_jobs j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND j.kind=$5 AND j.failure IS NULL AND (b.base_calculation=$6 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id.to_string()).bind(rule).bind(version).bind(if publish{"group"}else{"group_preview"}).bind(calculation).fetch_optional(c).await
+            })).await?;
+            if let Some(existing) = reusable {
+                return Ok(crate::automation::jobs::accepted(
+                    stored(Uuid::parse_str(&existing))?,
+                    &job,
+                ));
+            }
+        }
         let request = g::BuildRequest {
             id: checked_input(g::OperationId::parse(&task.to_string()))?,
             group,
             expected: current.revision,
+            base_calculation: current.calculation_revision,
+            changed_devices,
             rule_version: current.rule_version,
             patch,
             input_version: format!("assets:{watermark}"),
@@ -122,27 +181,16 @@ impl Planning {
         checked(self.groups.begin_build_in(tx, &request).await?)?;
         if publish && automatic {
             checked(
-                self.policies
+                self.sources
                     .require_reference_input_in(
                         tx,
                         &format!("group-members.{id}"),
-                        watermark as u64,
+                        latest_watermark as u64,
                     )
                     .await?,
             )?;
         }
-        crate::automation::jobs::enqueue_job_in(
-            tx,
-            task,
-            &JobInput::Group {
-                group: id,
-                base_revision: current.revision.get(),
-                watermark,
-                publish,
-                automatic,
-            },
-        )
-        .await
+        crate::automation::jobs::enqueue_job_in(tx, task, &job).await
     }
 
     async fn append_group_input_in(
@@ -169,7 +217,14 @@ impl Planning {
                         watermark,
                         build.cursor.clone(),
                         limit,
-                        &assets::ReadScope::all(),
+                        &assets::ReadScope {
+                            subject: "group".into(),
+                            devices: build
+                                .request
+                                .changed_devices
+                                .as_ref()
+                                .map(|d| d.iter().cloned().collect()),
+                        },
                     )
                     .await
                 {
@@ -181,7 +236,7 @@ impl Planning {
                     }
                     result => result?,
                 };
-                let total = build.objects + page.devices.len();
+                let total = build.processed + page.devices.len();
                 if total > g::MAX_MEMBERS {
                     return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
                 }
@@ -276,14 +331,14 @@ impl Planning {
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former watermark.
         let tenant = self.tenant.to_string();
-        let dirty:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_planning.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
+        let (dirty,frontier)=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_planning.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields)))),coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)")
                 .bind(tenant).bind(watermark).bind(id.to_string()).fetch_one(c).await
         })).await?;
         let receipt = checked(self.groups.publish_build_in(tx, operation).await?)?;
         crate::compliance::group_changed(tx, id).await?;
         checked(
-            self.policies
+            self.sources
                 .advance_reference_in(
                     tx,
                     &format!("group-members.{id}"),
@@ -291,9 +346,12 @@ impl Planning {
                 )
                 .await?,
         )?;
+        // A single statement proved that no relevant fact exists through frontier.
+        // Fast-forward unrelated ingress without reevaluating or rewriting the immutable result.
+        let covered = if dirty { watermark } else { frontier };
         checked(
-            self.policies
-                .observe_reference_input_in(tx, &format!("group-members.{id}"), watermark as u64)
+            self.sources
+                .observe_reference_input_in(tx, &format!("group-members.{id}"), covered as u64)
                 .await?,
         )?;
         let tenant = self.tenant.to_string();
@@ -301,13 +359,13 @@ impl Planning {
             sqlx::query_scalar("SELECT authority_revision FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(task.to_string()).fetch_one(c).await
         })).await?;
         let old = checked(
-            self.policies
+            self.sources
                 .reference_in(tx, &format!("group-authority.{id}"))
                 .await?,
         )?
         .ok_or(Error::Conflict)?;
         checked(
-            self.policies
+            self.sources
                 .advance_reference_in(
                     tx,
                     &format!("group-authority.{id}"),
@@ -405,24 +463,24 @@ impl Planning {
             sqlx::query("INSERT INTO mdm_planning.group_fields SELECT $1::uuid,$2::uuid,f FROM unnest($3::text[]) f").bind(tenant).bind(id.to_string()).bind(fields).execute(c).await?;Ok(())
         })).await?;
         checked(
-            self.policies
+            self.sources
                 .advance_reference_in(tx, &format!("group-definition.{id}"), revision)
                 .await?,
         )?;
         if checked(
-            self.policies
+            self.sources
                 .reference_in(tx, &format!("group-members.{id}"))
                 .await?,
         )?
         .is_none()
         {
             checked(
-                self.policies
+                self.sources
                     .advance_reference_in(tx, &format!("group-members.{id}"), 0)
                     .await?,
             )?;
             checked(
-                self.policies
+                self.sources
                     .advance_reference_in(tx, &format!("group-authority.{id}"), 0)
                     .await?,
             )?;

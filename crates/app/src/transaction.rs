@@ -33,6 +33,8 @@ pub(crate) fn rejection(
     failure: &Mutex<Option<Error>>,
     owner: TransactionOwner,
 ) -> PgError {
+    #[cfg(test)]
+    eprintln!("transaction rejected: {error:?}");
     let (reason, db) = match error {
         Fault::Request(e) => {
             let e = match e {
@@ -270,4 +272,23 @@ where
         |_| Err(Error::Unavailable(owner.failure())),
         |_| Err(Error::Unavailable(owner.failure())),
     )
+}
+
+impl From<rss_mdm_policy::Error> for Error {
+    fn from(value: rss_mdm_policy::Error) -> Self {
+        match value {
+            rss_mdm_policy::Error::Malformed => Self::Malformed,
+            rss_mdm_policy::Error::Conflict => Self::Conflict,
+            rss_mdm_policy::Error::NotFound => {
+                Self::Planning(crate::planning::error::PlanningError::Missing(
+                    crate::planning::error::Missing::Policy,
+                ))
+            }
+        }
+    }
+}
+impl From<rss_mdm_policy::Error> for Fault {
+    fn from(value: rss_mdm_policy::Error) -> Self {
+        Self::Request(value.into())
+    }
 }

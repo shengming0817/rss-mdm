@@ -4,13 +4,13 @@ use std::collections::BTreeSet;
 
 pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) -> Result<()> {
     let task = pg(&format!(
-        "SELECT id FROM mdm_commands.action_runs WHERE plan='{plan}' AND occurrence NOT LIKE 'history-fixture:%' ORDER BY created_at,id LIMIT 1"
+        "SELECT id FROM mdm_commands.action_runs WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{plan}') AND occurrence NOT LIKE 'history-fixture:%' ORDER BY created_at,id LIMIT 1"
     ))?
     .trim()
     .to_owned();
     Uuid::parse_str(&task)?;
     pg(&format!(
-        "INSERT INTO mdm_commands.action_runs(tenant_id,id,plan,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result) SELECT tenant_id,gen_random_uuid(),plan,device,registration,generation,'history-fixture:'||n,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result FROM mdm_commands.action_runs CROSS JOIN generate_series(1,25) n WHERE id='{task}'"
+        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'history-fixture:'||n,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result FROM mdm_commands.action_runs CROSS JOIN generate_series(1,25) n WHERE id='{task}'"
     ))?;
 
     let result: Result<()> = async {
@@ -19,7 +19,7 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
         ))?
         .trim()
         .parse::<i64>()?;
-        let mut path = format!("/api/v3/script-plans/{plan}/runs");
+        let mut path = format!("/api/v2/policies/{plan}/runs");
         let mut ids = Vec::new();
         let mut unique = BTreeSet::new();
         loop {
@@ -52,7 +52,7 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
             let after_at = cursor["availableAt"].as_i64().context("cursor availableAt")?;
             let after_id = cursor["taskId"].as_str().context("cursor taskId")?;
             path = format!(
-                "/api/v3/script-plans/{plan}/runs?afterAt={after_at}&afterId={after_id}"
+                "/api/v2/policies/{plan}/runs?afterAt={after_at}&afterId={after_id}"
             );
         }
         ensure!(ids.len() == 26, "run history lost records: {ids:?}");
@@ -65,7 +65,7 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
             .call(
                 router,
                 Method::GET,
-                &format!("/api/v3/script-plans/{plan}/runs/{task}"),
+                &format!("/api/v2/policies/{plan}/runs/{task}"),
                 None,
             )
             .await?;
@@ -81,7 +81,7 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
                 .call(
                     router,
                     Method::GET,
-                    &format!("/api/v3/script-plans/{}/runs/{task}", Uuid::new_v4()),
+                    &format!("/api/v2/policies/{}/runs/{task}", Uuid::new_v4()),
                     None,
                 )
                 .await?
@@ -93,7 +93,7 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
                 .call(
                     router,
                     Method::GET,
-                    &format!("/api/v3/script-plans/{plan}/runs?afterAt={available_at}"),
+                    &format!("/api/v2/policies/{plan}/runs?afterAt={available_at}"),
                     None,
                 )
                 .await?
@@ -102,11 +102,10 @@ pub(super) async fn verify(author: &mut Browser, router: &Router, plan: Uuid) ->
         );
 
         let records=audit_records()?;
-        let found=records.iter().find(|r|r.payload["plan"]==plan.to_string() && r.target()==task && r.action()=="command_accept").expect("task/plan audit coordinates");
-        let registration=found.payload["registration"].as_str().expect("task registration");
-        uuid::Uuid::parse_str(registration)?;
+        let version=pg(&format!("SELECT policy_version FROM mdm_commands.action_runs WHERE id='{task}'"))?;
+        let found=records.iter().find(|r|r.payload["plan"]==version.trim() && r.target()==task && r.action()=="command_accept").expect("task/policy-version audit coordinates");
+        let registration=found.payload["registration"].as_str().expect("task registration");uuid::Uuid::parse_str(registration)?;
         ensure!(pg(&format!("SELECT device FROM mdm_access.registrations WHERE tenant_id='{TENANT}' AND id='{registration}'"))?.trim()==DEVICE_ID);
-        ensure!(records.iter().any(|r|r.payload["plan"]==plan.to_string() && r.action()=="command_approve"),"approval audit lost its plan coordinate");
         Ok(())
     }
     .await;

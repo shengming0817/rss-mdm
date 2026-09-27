@@ -6,7 +6,6 @@ mod dispatch;
 mod groups;
 pub(crate) mod jobs;
 mod model;
-mod plans;
 
 mod scopes;
 use crate::automation::{JobInput, TaskKind};

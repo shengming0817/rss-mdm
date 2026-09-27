@@ -29,8 +29,8 @@ SELECT
  WHERE n.nspname='mdm_group' AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
-  (t.relname='groups' AND a.attname IN('name','description','revision','member_version','member_count','rule_version','deleted','member_set')
-  OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','member_count','added','removed','receipt'))
+  (t.relname='groups' AND a.attname IN('name','description','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision')
+  OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','processed_count','member_count','added','removed','receipt'))
  OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0

@@ -194,7 +194,13 @@ impl GroupStore {
         }
         let removed = if matches!(command, Command::Delete { .. }) {
             group.member_count = 0;
-            group.member_version = group.revision.get();
+            group.calculation_revision = input!(
+                group
+                    .calculation_revision
+                    .checked_add(1)
+                    .ok_or(Rejection::VersionExhausted)
+            );
+            group.member_version = group.calculation_revision;
             previous_count
         } else {
             0
@@ -273,16 +279,6 @@ pub(crate) fn active(g: &Group) -> CommandOutcome<()> {
     } else {
         Ok(())
     }
-}
-pub(crate) fn dynamic(group: &Group, expected: Revision) -> CommandOutcome<()> {
-    active(group)?;
-    if group.kind != GroupKind::Dynamic {
-        return Err(Rejection::KindMismatch);
-    }
-    if group.revision != expected {
-        return Err(Rejection::VersionConflict);
-    }
-    Ok(())
 }
 pub(crate) fn core_rejection(e: rss_mdm_group::Error) -> Rejection {
     match e {
@@ -366,6 +362,7 @@ fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(
                     name: name.clone(),
                     description: description.clone(),
                     revision: Revision::new(1)?,
+                    calculation_revision: 0,
                     member_version: 0,
                     member_count: 0,
                     rule_version: version,

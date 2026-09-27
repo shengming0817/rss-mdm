@@ -22,6 +22,10 @@ pub struct BuildRequest {
     pub group: GroupId,
     /// Expected group CAS revision.
     pub expected: Revision,
+    /// Published calculation captured at admission, independent of descriptive edits.
+    pub base_calculation: i64,
+    /// Exact device changes; absent requests a full rule evaluation.
+    pub changed_devices: Option<Vec<String>>,
     /// Rule selected when the input was frozen.
     pub rule_version: Option<String>,
     /// Static membership patch, absent for a dynamic build.
@@ -42,7 +46,10 @@ pub struct MemberPatch {
 }
 fn check_build(group: &Group, request: &BuildRequest) -> CommandOutcome<()> {
     crate::store::active(group)?;
-    if group.revision != request.expected || group.rule_version != request.rule_version {
+    if (request.patch.is_some() && group.revision != request.expected)
+        || group.calculation_revision != request.base_calculation
+        || group.rule_version != request.rule_version
+    {
         return Err(Rejection::VersionConflict);
     }
     if (group.kind == GroupKind::Static) != request.patch.is_some() {
@@ -70,6 +77,8 @@ pub struct MemberBuild {
     pub difference_cursor: Option<String>,
     /// Number of input objects already persisted.
     pub objects: usize,
+    /// Devices evaluated in this calculation; deltas do not count unchanged devices.
+    pub processed: usize,
     /// Number of matches already persisted.
     pub members: usize,
     /// Whether input enumeration has been sealed.
@@ -207,6 +216,9 @@ impl GroupStore {
             }
             return self.build_in(tx, request.id).await;
         }
+        if group.revision != request.expected {
+            return Ok(Err(Rejection::VersionConflict));
+        }
         input!(check_build(&group, request));
         if let Some(patch) = &request.patch {
             if patch.add.len() + patch.remove.len() > 1000
@@ -224,12 +236,38 @@ impl GroupStore {
                 );
             }
         }
+        if let Some(devices) = &request.changed_devices {
+            if request.patch.is_some()
+                || devices.len() > 1000
+                || devices.windows(2).any(|v| v[0] >= v[1])
+            {
+                return Ok(Err(Rejection::InvalidInput));
+            }
+            for device in devices {
+                input!(
+                    rss_mdm_group::ObjectKey::new(self.tenant, device)
+                        .map_err(crate::store::core_rejection)
+                );
+            }
+        }
         let tenant = self.tenant.to_string();
         let r = request.clone();
+        let base_members = if request.changed_devices.is_some() {
+            group.member_count as i64
+        } else {
+            0
+        };
+        let base_objects = if request.changed_devices.is_some() {
+            let previous =
+                input!(self.current_member_set_in(tx, group.id).await?).ok_or_else(stored_shape)?;
+            input!(self.build_in(tx, previous).await?).objects as i64
+        } else {
+            0
+        };
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_group.member_runs(tenant_id,id,group_id,base_revision,rule_version,input_version,fingerprint,input,phase,as_of) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,'reading',$9)")
+            sqlx::query("INSERT INTO mdm_group.member_runs(tenant_id,id,group_id,base_revision,rule_version,input_version,fingerprint,input,phase,as_of,base_calculation,floor_revision,member_count,object_count) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,'reading',$9,$10,CASE WHEN $11 THEN (SELECT b.floor_revision FROM mdm_group.groups g JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set) WHERE g.tenant_id=$1::uuid AND g.id=$3::uuid) ELSE $10 END,$12,$13)")
                 .bind(tenant).bind(r.id.to_string()).bind(r.group.to_string()).bind(r.expected.get()).bind(r.rule_version)
-                .bind(r.input_version).bind(fingerprint).bind(document).bind(r.as_of.unix_seconds()).execute(c).await?;
+                .bind(r.input_version).bind(fingerprint).bind(document).bind(r.as_of.unix_seconds()).bind(r.base_calculation).bind(r.changed_devices.is_some()).bind(base_members).bind(base_objects).execute(c).await?;
             Ok(())
         })).await?;
         self.build_in(tx, request.id).await
@@ -244,7 +282,7 @@ impl GroupStore {
         input!(self.check_transaction(tx)?);
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT input,fingerprint,phase,cursor,diff_cursor,object_count,member_count,receipt FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
+            sqlx::query("SELECT input,fingerprint,phase,cursor,diff_cursor,object_count,processed_count,member_count,receipt FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
         })).await?;
         let row = input!(row.ok_or(Rejection::NotFound));
@@ -266,6 +304,7 @@ impl GroupStore {
             cursor: row.try_get("cursor")?,
             difference_cursor: row.try_get("diff_cursor")?,
             objects: data(usize::try_from(row.try_get::<i64, _>("object_count")?))?,
+            processed: data(usize::try_from(row.try_get::<i64, _>("processed_count")?))?,
             members: data(usize::try_from(row.try_get::<i64, _>("member_count")?))?,
             input_sealed: phase != "reading",
             ready: matches!(phase, "ready" | "published"),
@@ -292,7 +331,10 @@ impl GroupStore {
                 .ok_or(Rejection::NotFound)
         );
         let build = input!(self.build_in(tx, id).await?);
-        input!(crate::store::dynamic(&g, build.request.expected));
+        input!(check_build(&g, &build.request));
+        if g.kind != GroupKind::Dynamic {
+            return Ok(Err(Rejection::KindMismatch));
+        }
         if page.tenant != self.tenant
             || page.version != build.request.input_version
             || g.rule_version != build.request.rule_version
@@ -314,6 +356,15 @@ impl GroupStore {
             ),
         )
         .await?;
+        if let Some(devices) = &build.request.changed_devices {
+            if page.objects.iter().any(|o| {
+                devices
+                    .binary_search_by(|d| d.as_str().cmp(o.key.id()))
+                    .is_err()
+            }) {
+                return Ok(Err(Rejection::InvalidInput));
+            }
+        }
         let evaluated = input!(
             rule.evaluate_page(page, build.request.as_of)
                 .map_err(crate::store::core_rejection)
@@ -338,7 +389,8 @@ impl GroupStore {
         if build.input_sealed || build.cursor.as_deref() != page.after.map(|k| k.id()) {
             return Ok(Err(Rejection::InvalidInput));
         }
-        if !page_fits(build.objects, page.objects.len()) {
+        if build.request.changed_devices.is_none() && !page_fits(build.objects, page.objects.len())
+        {
             return Ok(Err(Rejection::CapacityExceeded));
         }
         let mut ids = Vec::new();
@@ -377,7 +429,19 @@ impl GroupStore {
         }
         let hashes: Vec<_> = evidence.iter().map(|bytes| digest(bytes)).collect();
         let count = ids.len() as i64;
-        let members = matches.iter().filter(|v| **v).count() as i64;
+        let mut members = matches.iter().filter(|v| **v).count() as i64;
+        let mut objects = count;
+        let build = input!(self.build_in(tx, id).await?);
+        if build.request.changed_devices.is_some() {
+            let previous = input!(self.current_member_set_in(tx, build.request.group).await?)
+                .ok_or_else(stored_shape)?;
+            let old = crate::history::metadata(tx, previous, None, Some(ids.clone()), 1000, false)
+                .await?;
+            objects -= old.len() as i64;
+            for row in old {
+                members -= i64::from(row.try_get::<bool, _>("matched")?);
+            }
+        }
         let tenant = self.tenant.to_string();
         let first = ids.first().ok_or_else(stored_shape)?.clone();
         let last = ids.last().ok_or_else(stored_shape)?.clone();
@@ -386,8 +450,8 @@ impl GroupStore {
                 .bind(&tenant).bind(id.to_string()).bind(ids).bind(matches).bind(evidence).bind(hashes).execute(&mut *c).await?;
             sqlx::query("INSERT INTO mdm_group.member_pages VALUES($1::uuid,$2::uuid,$3,$4,$5)")
                 .bind(&tenant).bind(id.to_string()).bind(first).bind(&last).bind(fingerprint).execute(&mut *c).await?;
-            sqlx::query("UPDATE mdm_group.member_runs SET cursor=$3,object_count=object_count+$4,member_count=member_count+$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).bind(last).bind(count).bind(members).execute(c).await?;
+            sqlx::query("UPDATE mdm_group.member_runs SET cursor=$3,object_count=object_count+$4,member_count=member_count+$5,processed_count=processed_count+$6 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant).bind(id.to_string()).bind(last).bind(objects).bind(members).bind(count).execute(c).await?;
             Ok(())
         })).await?;
         self.build_in(tx, id).await
@@ -441,11 +505,16 @@ impl GroupStore {
         let members = input!(member_count_after_patch(group.member_count, added, removed));
         let tenant = self.tenant.to_string();
         let group_id = group.id.to_string();
-        let revision = input!(group.revision.next()).get();
+        let revision = input!(
+            group
+                .calculation_revision
+                .checked_add(1)
+                .ok_or(Rejection::VersionExhausted)
+        );
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_id,group_id,revision,added) SELECT $1::uuid,$2::uuid,d,$3::uuid,$4,v FROM unnest($5::text[],$6::boolean[]) AS p(d,v)")
                 .bind(&tenant).bind(id.to_string()).bind(group_id).bind(revision).bind(ids).bind(values).execute(&mut *c).await?;
-            sqlx::query("UPDATE mdm_group.member_runs SET object_count=$3,member_count=$3,added=$4,removed=$5,phase='diff' WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='reading'")
+            sqlx::query("UPDATE mdm_group.member_runs SET object_count=$3,member_count=$3,processed_count=$3,added=$4,removed=$5,phase='diff' WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='reading'")
                 .bind(tenant).bind(id.to_string()).bind(members as i64).bind(added as i64).bind(removed as i64).execute(c).await?;Ok(())
         })).await?;
         self.build_in(tx, id).await
@@ -468,10 +537,14 @@ impl GroupStore {
         );
         let build = input!(self.build_in(tx, id).await?);
         input!(check_build(&group, &build.request));
-        if objects != build.objects {
+        if build.input_sealed {
+            return Ok(Ok(build));
+        }
+        if objects != build.processed {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
         if !build.input_sealed {
+            input!(self.seal_missing_delta_in(tx, id, &build).await?);
             let tenant = self.tenant.to_string();
             tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query("UPDATE mdm_group.member_runs SET phase='diff' WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='reading'")
@@ -510,6 +583,9 @@ impl GroupStore {
         if let Some(step) = input!(self.static_difference_in(tx, id, &build, previous).await?) {
             return Ok(Ok(step));
         }
+        if build.request.changed_devices.is_some() {
+            return self.delta_difference_in(tx, id, &build, previous).await;
+        }
         let after = build.difference_cursor.clone();
         let old = if let Some(previous) = previous {
             input!(
@@ -546,7 +622,7 @@ impl GroupStore {
         let dynamic = build.request.patch.is_none();
         tx.with_connection(move |c|Box::pin(async move {
             if dynamic {
-                sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_id,group_id,revision,added) SELECT r.tenant_id,r.id,d,r.group_id,r.base_revision+1,v FROM mdm_group.member_runs r CROSS JOIN unnest($3::text[],$4::boolean[]) AS p(d,v) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
+                sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_id,group_id,revision,added) SELECT r.tenant_id,r.id,d,r.group_id,r.base_calculation+1,v FROM mdm_group.member_runs r CROSS JOIN unnest($3::text[],$4::boolean[]) AS p(d,v) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
                     .bind(&tenant).bind(id.to_string()).bind(ids).bind(changes).execute(&mut *c).await?;
             }
             sqlx::query("UPDATE mdm_group.member_runs SET diff_cursor=$3,added=added+$4,removed=removed+$5,phase=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid")
@@ -623,10 +699,33 @@ impl GroupStore {
         })).await?;
         let added = data(usize::try_from(counts.try_get::<i64, _>("added")?))?;
         let removed = data(usize::try_from(counts.try_get::<i64, _>("removed")?))?;
-        group.revision = input!(group.revision.next());
+        group.calculation_revision = input!(
+            group
+                .calculation_revision
+                .checked_add(1)
+                .ok_or(Rejection::VersionExhausted)
+        );
+        if build
+            .request
+            .patch
+            .as_ref()
+            .is_some_and(|p| !p.add.is_empty() || !p.remove.is_empty())
+        {
+            group.revision = input!(group.revision.next());
+        }
         group.member_count = build.members;
-        if added != 0 || removed != 0 {
-            group.member_version = group.revision.get();
+        let tenant = self.tenant.to_string();
+        let owner = group.id.to_string();
+        let semantic_changed = if build.request.patch.is_some() {
+            added != 0 || removed != 0
+        } else {
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar::<_,bool>("WITH latest AS (SELECT DISTINCT ON(m.object_id) m.object_id,convert_from(m.evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND r.group_id=$2::uuid AND r.phase='published' AND r.base_calculation >= coalesce((SELECT floor_revision FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)),0) ORDER BY m.object_id,r.base_calculation DESC), current AS (SELECT object_id,convert_from(evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid) SELECT CASE WHEN $4 THEN EXISTS(SELECT 1 FROM current n LEFT JOIN latest o USING(object_id) WHERE n.decision<>coalesce(o.decision,'no_match')) ELSE EXISTS((SELECT * FROM latest WHERE decision<>'no_match' EXCEPT SELECT * FROM current WHERE decision<>'no_match') UNION ALL (SELECT * FROM current WHERE decision<>'no_match' EXCEPT SELECT * FROM latest WHERE decision<>'no_match')) END")
+                    .bind(tenant).bind(owner).bind(id.to_string()).bind(build.request.changed_devices.is_some()).fetch_one(c).await
+            })).await?
+        };
+        if semantic_changed {
+            group.member_version = group.calculation_revision;
         }
         let receipt = Receipt {
             operation: id,
@@ -634,7 +733,7 @@ impl GroupStore {
             added,
             removed,
         };
-        if added != 0 || removed != 0 {
+        if semantic_changed {
             self.append(
                 tx,
                 build.request.as_of,
@@ -676,17 +775,19 @@ impl GroupStore {
         if build.request.patch.is_some() {
             let tenant = self.tenant.to_string();
             let group = build.request.group.to_string();
-            let base = build.request.expected.get();
+            let base = build.request.base_calculation;
             return Ok(Ok(tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query_scalar("SELECT object_id FROM (SELECT DISTINCT ON (m.object_id) m.object_id,m.added FROM mdm_group.member_changes m WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND ((m.revision<=$3 AND EXISTS(SELECT 1 FROM mdm_group.member_runs r WHERE r.tenant_id=m.tenant_id AND r.id=m.run_id AND r.phase='published' OFFSET 0)) OR m.run_id=$4::uuid) AND m.object_id>coalesce($5::text,'') COLLATE \"C\" ORDER BY m.object_id,m.revision DESC) latest WHERE added ORDER BY object_id LIMIT $6")
                     .bind(tenant).bind(group).bind(base).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
             })).await?));
         }
-        let tenant = self.tenant.to_string();
-        Ok(Ok(tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND matched AND object_id>coalesce($3::text,'') COLLATE \"C\" ORDER BY object_id LIMIT $4")
-                .bind(tenant).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
-        })).await?))
+        Ok(Ok(crate::history::metadata(
+            tx, id, after, None, limit, true,
+        )
+        .await?
+        .into_iter()
+        .map(|r| r.try_get("object_id"))
+        .collect::<Result<Vec<String>, sqlx::Error>>()?))
     }
 }
 

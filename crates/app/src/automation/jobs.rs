@@ -17,7 +17,7 @@ pub(crate) async fn forward_jobs(
     let ids=runtime.local_tx(tenant,deadline(),|tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar::<_,String>("SELECT j.id::text FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND NOT j.forwarded AND (j.kind<>'policy' OR EXISTS(SELECT 1 FROM mdm_automation.automation_jobs source WHERE source.tenant_id=j.tenant_id AND source.id=(j.input->>'resolution')::uuid AND source.kind='scope' AND source.completed)) ORDER BY j.id LIMIT 64")
+                sqlx::query_scalar::<_,String>("SELECT j.id::text FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND NOT j.forwarded ORDER BY j.id LIMIT 64")
                     .bind(tenant).fetch_all(c).await
             })).await
         })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::AutomationStorage)))?;
@@ -67,6 +67,16 @@ pub(crate) async fn enqueue_job_in(
     id: Uuid,
     input: &JobInput,
 ) -> Result<Value> {
+    if matches!(input, JobInput::Scope { .. }) {
+        let tenant = tx.tenant_id().to_string();
+        let target = input.target();
+        let pending=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND kind='scope' AND target=$2 AND NOT completed ORDER BY id LIMIT 1").bind(tenant).bind(target).fetch_optional(c).await
+        })).await?;
+        if let Some(pending) = pending {
+            return Ok(accepted(pending, input));
+        }
+    }
     let tenant = tx.tenant_id().to_string();
     let document = crate::transaction::checked_input(serde_json::to_string(input))?;
     let kind = input.kind();
@@ -75,14 +85,9 @@ pub(crate) async fn enqueue_job_in(
             sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb)")
                 .bind(tenant).bind(id.to_string()).bind(kind).bind(target).bind(document).execute(c).await?;Ok(())
         })).await?;
-    if let JobInput::Policy { policy, .. } = input {
-        let tenant = tx.tenant_id().to_string();
-        let policy = policy.clone();
-        tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query("INSERT INTO mdm_planning.candidate_heads(tenant_id,policy,desired) VALUES($1::uuid,$2,$3::uuid) ON CONFLICT(tenant_id,policy) DO UPDATE SET desired=excluded.desired")
-                    .bind(tenant).bind(policy).bind(id.to_string()).execute(c).await?;Ok(())
-            })).await?;
-    }
+    Ok(accepted(id, input))
+}
+pub(crate) fn accepted(id: Uuid, input: &JobInput) -> Value {
     let status_url = match input {
         JobInput::Compliance { input } => {
             format!("/api/v2/compliance-rules/{}/tasks/{id}", input.rule)
@@ -90,11 +95,9 @@ pub(crate) async fn enqueue_job_in(
         JobInput::AssetQuery { .. } => format!("/api/v2/device-queries/{id}"),
         JobInput::Group { group, .. } => format!("/api/v2/groups/{group}/tasks/{id}"),
         JobInput::Scope { scope } => format!("/api/v2/scopes/{scope}/tasks/{id}"),
-        JobInput::Policy { .. } => format!("/api/v2/plan-previews/{id}"),
+        JobInput::PolicyReconcile { policy } => format!("/api/v2/policies/{policy}"),
     };
-    Ok(
-        serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"status_url":status_url}),
-    )
+    serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"status_url":status_url})
 }
 pub(crate) async fn finish_job_in(
     tx: &mut PgTransaction<'_>,
@@ -153,5 +156,13 @@ pub(crate) async fn finish_job_in(
         );
         result?;
     }
+    Ok(())
+}
+
+pub(crate) async fn replacement_in(tx: &mut PgTransaction<'_>, old: Uuid, new: Uuid) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("UPDATE mdm_automation.automation_jobs SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(old).bind(new).execute(c).await?;Ok(())
+    })).await?;
     Ok(())
 }

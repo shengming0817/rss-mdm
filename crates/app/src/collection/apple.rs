@@ -4,7 +4,7 @@ use crate::{
     Error,
     apple::protocol as wire,
     authorization::context::RequestAuth,
-    authorization::{Approval, Permission},
+    authorization::{ExecutionAuthority, Permission},
     database::db,
     device::DevicePrincipal,
     enrollment::store::uuid,
@@ -136,7 +136,8 @@ async fn create_on(
     let sequence:i64=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.apple' AND next_sequence<9223372036854775807 RETURNING next_sequence-1")
         .bind(tenant).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
     let id = Uuid::new_v4();
-    let approval = Approval::from_proof(&snapshot, proof, device, Permission::InventoryCollect)?;
+    let approval =
+        ExecutionAuthority::from_proof(&snapshot, proof, device, Permission::InventoryCollect)?;
     let request = wire::command(
         id,
         wire::dictionary([
@@ -179,7 +180,7 @@ pub(crate) async fn expire(
 async fn approved(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, Error> {
     let row=sqlx::query("SELECT apple_approval::text,apple_deadline>clock_timestamp() AND sealed_at IS NULL AND EXISTS(SELECT 1 FROM mdm_access.report_sources s WHERE (s.tenant_id,s.registration,s.source,s.epoch)=(collection_runs.tenant_id,collection_runs.registration,collection_runs.source,collection_runs.epoch) AND s.enabled) AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE")
         .bind(tenant).bind(id.to_string()).fetch_one(&mut *c).await.map_err(db)?;
-    let approval: Approval =
+    let approval: ExecutionAuthority =
         serde_json::from_str(&row.try_get::<String, _>("apple_approval").map_err(db)?)
             .map_err(|_| super::corrupt())?;
     Ok(row.try_get::<bool, _>("live").map_err(db)?

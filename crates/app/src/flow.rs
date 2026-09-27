@@ -354,8 +354,4 @@ impl crate::resource_catalog::References for ResourceReferences {
 
 pub(crate) mod execution;
 
-pub(crate) mod actions;
-
 pub(crate) mod storage;
-
-pub(crate) mod actions_http;

@@ -18,20 +18,22 @@ ALTER TABLE mdm_group.groups ADD CONSTRAINT groups_member_count_check CHECK(memb
 ALTER TABLE mdm_group.groups ADD COLUMN member_set uuid;
 CREATE TABLE mdm_group.member_runs (
  tenant_id uuid NOT NULL, id uuid NOT NULL, group_id uuid NOT NULL,
- base_revision bigint NOT NULL CHECK(base_revision>0), rule_version text,
+ base_revision bigint NOT NULL CHECK(base_revision>0), base_calculation bigint NOT NULL CHECK(base_calculation>=0), floor_revision bigint NOT NULL CHECK(floor_revision>=0), rule_version text,
  input_version text NOT NULL CHECK(octet_length(input_version) BETWEEN 1 AND 4096),
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  input bytea NOT NULL CHECK(octet_length(input)<=16777216),
  phase text NOT NULL CHECK(phase IN ('reading','diff','ready','published','superseded')),
  cursor text, diff_cursor text,
+ processed_count bigint NOT NULL DEFAULT 0 CHECK(processed_count BETWEEN 0 AND 1000000),
  object_count bigint NOT NULL DEFAULT 0 CHECK(object_count BETWEEN 0 AND 1000000),
- member_count bigint NOT NULL DEFAULT 0 CHECK(member_count BETWEEN 0 AND object_count),
+ member_count bigint NOT NULL DEFAULT 0 CHECK(member_count BETWEEN 0 AND 1000000),
  added bigint NOT NULL DEFAULT 0 CHECK(added>=0), removed bigint NOT NULL DEFAULT 0 CHECK(removed>=0),
  as_of bigint NOT NULL CHECK(as_of>=0), receipt bytea,
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,group_id,id),
  FOREIGN KEY(tenant_id,group_id) REFERENCES mdm_group.groups(tenant_id,id),
  CHECK((phase='published')=(receipt IS NOT NULL))
 );
+CREATE INDEX member_runs_history ON mdm_group.member_runs(tenant_id,group_id,base_calculation) WHERE phase='published';
 ALTER TABLE mdm_group.groups ADD FOREIGN KEY(tenant_id,id,member_set)
  REFERENCES mdm_group.member_runs(tenant_id,group_id,id) DEFERRABLE INITIALLY DEFERRED;
 CREATE TABLE mdm_group.member_rows (
@@ -65,6 +67,6 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('GRANT SELECT,INSERT ON mdm_group.%I TO mdm_group_runtime',t);
  END LOOP;
 END $$;
-GRANT UPDATE(phase,cursor,diff_cursor,object_count,member_count,added,removed,receipt) ON mdm_group.member_runs TO mdm_group_runtime;
+GRANT UPDATE(phase,cursor,diff_cursor,object_count,processed_count,member_count,added,removed,receipt) ON mdm_group.member_runs TO mdm_group_runtime;
 GRANT UPDATE(member_set) ON mdm_group.groups TO mdm_group_runtime;
 COMMIT;

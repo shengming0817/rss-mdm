@@ -460,11 +460,10 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
         for relation in [
-            "mdm_planning.firewall_plans",
+            "mdm_planning.scope_results",
             "mdm_planning.scopes",
             "mdm_planning.firewall_resources",
-            "mdm_planning.firewall_versions",
-            "mdm_policy.aggregates",
+            "mdm_policy.requests",
             "mdm_group.groups",
         ] {
             let permitted: bool =
@@ -479,12 +478,12 @@ impl Client {
         }
         for (damage, restore) in [
             (
-                "GRANT SELECT ON mdm_planning.firewall_plans TO mdm_command_runtime",
-                "REVOKE SELECT ON mdm_planning.firewall_plans FROM mdm_command_runtime",
+                "GRANT SELECT ON mdm_planning.scope_results TO mdm_command_runtime",
+                "REVOKE SELECT ON mdm_planning.scope_results FROM mdm_command_runtime",
             ),
             (
-                "ALTER FUNCTION mdm_planning.plan_execution_admission(uuid) SECURITY INVOKER",
-                "ALTER FUNCTION mdm_planning.plan_execution_admission(uuid) SECURITY DEFINER",
+                "ALTER FUNCTION mdm_planning.scope_admission(uuid,text) SECURITY INVOKER",
+                "ALTER FUNCTION mdm_planning.scope_admission(uuid,text) SECURITY DEFINER",
             ),
             (
                 "ALTER ROLE mdm_owner BYPASSRLS",

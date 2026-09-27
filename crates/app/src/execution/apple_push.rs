@@ -123,7 +123,7 @@ async fn pending(tx: &mut PgTransaction<'_>, registration: Uuid) -> Result<bool>
         let permission = request.map_or(crate::authorization::Permission::InventoryCollect, |r| {
             r.task.permission()
         });
-        let approval: crate::authorization::Approval =
+        let approval: crate::authorization::ExecutionAuthority =
             stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
         if tx
             .with_connection(move |c| {

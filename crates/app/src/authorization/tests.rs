@@ -136,7 +136,7 @@ fn model_capacity_limits_and_scope_categories_are_closed() {
         (true, "inventory_read enrollment credentials device_wipe"),
         (
             false,
-            "authorization_read authorization_write user_group_read user_group_write department_read group_read group_write group_recompute scope_read scope_write policy_read policy_write plan_preview plan_save resource_read resource_write release_read release_write release_validate release_approve release_publish release_withdraw release_recover",
+            "authorization_read authorization_write user_group_read user_group_write department_read group_read group_write group_recompute scope_read scope_write policy_read policy_write resource_read resource_write release_read release_write release_validate release_approve release_publish release_withdraw release_recover",
         ),
     ] {
         for name in names.split_whitespace() {

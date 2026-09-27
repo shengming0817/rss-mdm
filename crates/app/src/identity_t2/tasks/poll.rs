@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 pub(super) async fn verify(router: &Router, pending: Value) -> Result<Value> {
     let id = pending["payload"]["taskId"].as_str().unwrap();
     pg(&format!(
-        "INSERT INTO mdm_commands.action_runs(tenant_id,id,plan,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),plan,device,registration,generation,'starvation-fixture:'||n,created_at,0,1,jsonb_set(jsonb_set(state,'{{execution}}','\"unknown\"'),'{{cancellation}}','\"requested\"'),true,dispatch_fingerprint FROM mdm_commands.action_runs CROSS JOIN generate_series(1,129) n WHERE id='{id}'; UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE id='{id}'"
+        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'starvation-fixture:'||n,created_at,0,1,jsonb_set(jsonb_set(state,'{{execution}}','\"unknown\"'),'{{cancellation}}','\"requested\"'),true,dispatch_fingerprint FROM mdm_commands.action_runs CROSS JOIN generate_series(1,129) n WHERE id='{id}'; UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE id='{id}'"
     ))?;
     let before = pg("SELECT count(*) FROM mdm_commands.action_receipts")?
         .trim()

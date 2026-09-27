@@ -3,7 +3,6 @@ use super::{
     storage as db,
 };
 use crate::execution::{ExecutionService, Result, checked_input, storage, stored};
-use crate::planning::action_schedule::Trigger;
 use crate::transaction::fingerprint;
 use crate::{Error, device::DevicePrincipal};
 use rss_mdm_agent_wire as wire;
@@ -60,14 +59,14 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,input,audit),|ctx,tx|Box::pin(async move{
-            let (service,p,input,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
+            let (service,p,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(tx,p).await?;
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(input)?;let now=storage::now(tx).await?;
             let event_key = format!("agent:{}:offer:{}",p.registration(),input.operation_id());
             // Old successful polls are replayable only while their exact offer remains authorized.
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
                 if let Some(task)=response.get("task").filter(|v|!v.is_null()) {
                     let signed:wire::SignedTask=stored(serde_json::from_value(task.clone()))?;
-                    let run=db::load_run(tx,signed.payload.task_id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&run.id.to_string());let plan=db::load_plan(tx,run.plan).await?;
+                    let run=db::load_run(tx,signed.payload.task_id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&run.id.to_string());let plan=db::load_source(tx,run.source).await?;
                     if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || signed.payload.expires_at<=now || run.state.attempt()!=Some(signed.payload.attempt_id) || !plan.definition.authorized_in(tx,p.device(),now).await?{return Err(Error::Conflict.into());}
                 }
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -75,29 +74,29 @@ impl ExecutionService {
                 service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);
             }
             let _tenant=tx.tenant_id().to_string();let _device=p.device().to_owned();
-            let plans=crate::planning::actions::admission::event_plans_in(tx,p.device(),now).await?;
-            for id in plans {
-                let plan=db::load_plan(tx,stored(Uuid::parse_str(&id))?).await?;
-                let target=super::model::Target{device:p.device().into(),registration:p.registration(),generation:p.generation()};
-                let kind=if matches!(plan.definition.frozen.input.schedule.trigger,Trigger::Registration){"registration"}else{"checkin"};
-                super::production::event(service,tx,&plan,&target,kind,now).await?;
+            let versions=crate::planning::policies::admission::agent_versions_in(tx,p.registration()).await?;
+            for id in versions {
+                let policy=db::load_policy_version(tx,id).await?;
+                let target=super::model::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
+                super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?;
             }
             let ids=super::poll::offer_candidates(tx,p.registration(),now).await?;
             let mut offer=None;
             for id in ids {
-                let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_plan(tx,run.plan).await?;
+                let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.definition.frozen.definition.spec().timeout_seconds);
-                if !plan.definition.authorized_in(tx,p.device(),now).await?{run.state.cancel();}
+                let allowed=plan.definition.authorized_in(tx,p.device(),now).await?;
+                if plan.definition.withdrawn_in(tx,p.device()).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
-                if run.state.cancellation==Cancellation::None && run.available_at<=now {
+                if run.state.cancellation==Cancellation::None && run.available_at<=now && allowed {
                     let attempt=Uuid::new_v4();
                     if run.state.claim(attempt,now).is_ok(){
                         let signer=service.signer.as_ref().ok_or(Error::Unsupported)?;
                         let signed=signer.sign(plan.definition.frozen.task(checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,&run.target,run.id,attempt,wire::TaskPermit::Offer,(now+60).min(run.deadline))?)?;
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=checked_input(serde_json::to_value(&signed))?;
                         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6)").bind(tenant).bind(attempt.to_string()).bind(run_id).bind(reg).bind(now).bind(value).execute(c).await?;Ok(())})).await?;
-                        audit.plan(run.plan);audit.target(&run.id.to_string());offer=Some(signed);
+                        run.source.audit(audit);audit.target(&run.id.to_string());offer=Some(signed);
                     }
                 }
                 db::save_run(tx,&run).await?;
@@ -122,8 +121,8 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit),|ctx,tx|Box::pin(async move{
-            let (service,p,id,input,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
-            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&id.to_string());let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
+            let (service,p,id,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(tx,p).await?;
+            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(tx,run.source).await?;let now=storage::now(tx).await?;
             let allowed=plan.definition.authorized_in(tx,p.device(),now).await?;
             if matches!(input.event(),wire::TaskEvent::Start|wire::TaskEvent::Received) && !allowed{return Err(Error::Forbidden.into());}
             if run.state.attempt()!=Some(input.attempt_id()){return Err(Error::Conflict.into());}
@@ -192,8 +191,8 @@ impl ExecutionService {
     ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
         audit.require_request_settlement();
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,id,attempt,audit),|ctx,tx|Box::pin(async move{
-            let (_service,p,id,attempt,audit)=*ctx;storage::lock(tx,"action-owner").await?;principal(tx,p).await?;
-            let run=db::load_run(tx,id).await?;belongs(&run,p)?;audit.plan(run.plan);audit.target(&id.to_string());let plan=db::load_plan(tx,run.plan).await?;let now=storage::now(tx).await?;
+            let (_service,p,id,attempt,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(tx,p).await?;
+            let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(tx,run.source).await?;let now=storage::now(tx).await?;
             if run.state.attempt()!=Some(attempt) || run.deadline<=now || run.state.cancellation!=Cancellation::None || !plan.definition.authorized_in(tx,p.device(),now).await?{return Err(Error::Forbidden.into());}
             let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
             if now>=expiry{return Err(Error::Forbidden.into());}

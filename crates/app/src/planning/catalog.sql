@@ -1,7 +1,8 @@
 WITH tables AS (SELECT c.oid,c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_planning' AND c.relkind='r')
 SELECT jsonb_build_object(
- 'executionAdmission',(SELECT pg_get_functiondef('mdm_planning.plan_execution_admission(uuid)'::regprocedure)),
- 'actionTargets',(SELECT pg_get_functiondef('mdm_planning.action_targets(uuid,bigint)'::regprocedure)),
+ 'remotePage',(SELECT pg_get_functiondef('mdm_planning.remote_target_page(uuid,text,integer)'::regprocedure)),
+ 'policyLock',(SELECT pg_get_functiondef('mdm_planning.policy_lock(uuid)'::regprocedure)),
+ 'scopeAdmission',(SELECT pg_get_functiondef('mdm_planning.scope_admission(uuid,text)'::regprocedure)),
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,
    format_type(a.atttypid,a.atttypmod),a.attnotnull,pg_get_expr(d.adbin,d.adrelid),
    a.attidentity,a.attgenerated) ORDER BY t.relname COLLATE "C",a.attnum)

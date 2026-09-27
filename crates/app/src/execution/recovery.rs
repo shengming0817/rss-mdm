@@ -263,7 +263,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
             let active=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
-            if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::active(tx,id).await;}
+            if let Some(id)=remote::operation_id(entity){return remote::active(tx,id).await;}
+            if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
+            if let Some(device)=entity.strip_prefix("configuration:") {return configuration::pending(tx,device).await;}
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let mut after=Uuid::nil();
             loop {
@@ -307,7 +309,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
                 storage::admit(tx).await?;
-                if let Some(id)=actions::recovery::plan_id(entity){return actions::recovery::recover(service,tx,id).await;}
+                if let Some(id)=remote::operation_id(entity){return service.advance_remote_in(tx,id,audit).await;}
+                if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::recover(service,tx,id).await;}
+                if let Some(device)=entity.strip_prefix("configuration:") {return service.reconcile_configuration(tx,device,audit).await;}
                 let Some(name)=device(tx,entity).await? else{return Ok(())};
                 storage::lock(tx,&name).await?;
                 let tenant=service.tenant.to_string();let key=name.clone();
@@ -325,16 +329,16 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 for command in &page.commands {
                     if !command.status().is_terminal(){
                         let operation=storage::load(tx,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
-                        if let Task::Firewall{plan,..}=operation.request.task {
-                            let current=tx.with_connection(move|c|Box::pin(async move{Ok(super::native::current_plan_on(c,plan).await)})).await??;
-                            if !current && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into())}
-                        }
+                        let now=storage::now(tx).await?;
+                        if !storage::approval_valid(tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
+
                     }
                 }
                 for (id,version,status) in previous {
                     let operation=storage::load(tx,stored(Uuid::parse_str(&id))?).await?;
                     let command=service.required_command(tx,&operation).await?;
                     if command.version()!=version {
+                        if command.status().is_terminal() {crate::planning::policies::reconcile::wake_native_in(tx,&operation.device).await?;}
                         let fact_audit=audit.transaction_copy();fact_audit.identify_service("command-recovery");fact_audit.operation(operation.id,"command_reconcile");fact_audit.target(&operation.device);fact_audit.registration(operation.registration);
                         let details=serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
                         let fingerprint=checked_input(serde_json::to_vec(&details))?;

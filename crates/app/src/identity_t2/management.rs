@@ -80,8 +80,6 @@ pub(super) async fn matrix(
             "scope_write",
             "policy_read",
             "policy_write",
-            "plan_preview",
-            "plan_save",
             "resource_read",
             "resource_write"
         ]),
@@ -251,55 +249,34 @@ pub(super) async fn matrix(
         json!({"action":"create","kind":"configuration"}),
     )
     .await?;
-    call(&mut browser,&router,&resource_path,1,json!({"action":"version","version":"v1","kind":"configuration","variants":[{"platform":"windows","architecture":"x86_64","key":"config","declaration":{"kind":"configuration","artifact":{"reference":"config","length":1,"sha256":vec![1;32]},"schema":"v1","apply":"set","detect":"get","remove":null}}]})).await?;
+    call(
+        &mut browser,
+        &router,
+        &resource_path,
+        1,
+        json!({"action":"firewall_version","version":"v1","enabled":true}),
+    )
+    .await?;
+    call(
+        &mut browser,
+        &router,
+        &resource_path,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
     let policy_path = format!("/api/v2/policies/{policy}");
-    let created = call(
+    let definition = json!({"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"targets":{"kind":"scope","id":scope},"behavior":{"kind":"configuration","exit":"retain"}});
+    let mut assigned = definition.clone();
+    assigned["targets"] = json!({"kind":"devices","devices":[]});
+    call(
         &mut browser,
         &router,
         &policy_path,
         0,
-        json!({"action":"create"}),
+        json!({"action":"put","enabled":true,"definition":assigned}),
     )
     .await?;
-    let active = call(
-        &mut browser,
-        &router,
-        &policy_path,
-        created["storageRevision"].as_u64().unwrap(),
-        json!({"action":"activate","version":1,"resource":resource,"resourceVersion":"v1"}),
-    )
-    .await?;
-    let revision = active["storageRevision"].as_u64().unwrap();
-    let planned = call(
-        &mut browser,
-        &router,
-        &format!("{policy_path}/previews"),
-        revision,
-        json!({"scope":scope,"expectedRevision":revision}),
-    )
-    .await?;
-    let planned_id = planned["task"].as_str().unwrap();
-    let (_, targets) = browser
-        .call(
-            &router,
-            Method::GET,
-            &format!("{policy_path}/results/{planned_id}/targets"),
-            None,
-        )
-        .await?;
-    let (_, intents) = browser
-        .call(
-            &router,
-            Method::GET,
-            &format!("{policy_path}/results/{planned_id}/add"),
-            None,
-        )
-        .await?;
-    ensure!(
-        targets["page"]["items"] == json!(["device-1"])
-            && intents["page"]["items"][0]["kind"] == "add",
-        "policy result: {targets} {intents}"
-    );
     Box::pin(derived_result_authorization(
         &mut browser,
         &router,
@@ -309,7 +286,6 @@ pub(super) async fn matrix(
         scope,
         scope_receipt["task"].as_str().unwrap(),
         &policy_path,
-        planned_id,
     ))
     .await?;
     let (_, decisions) = browser
@@ -338,61 +314,12 @@ pub(super) async fn matrix(
                 .unwrap()
                 .contains(&json!("missing_limitation_match"))
     }));
-    let facts_before = pg("SELECT count(*) FROM mdm_policy.facts")?;
-    let saved = call(
-        &mut browser,
-        &router,
-        &format!("{policy_path}/plans"),
-        revision,
-        json!({"preview":planned["task"]}),
-    )
-    .await?;
-    ensure!(saved["plan"].is_string() && saved["dispatch"] == "not_requested");
-    ensure!(
-        pg("SELECT count(*) FROM mdm_policy.facts")? == facts_before,
-        "save created execution facts"
-    );
-    let policy_state = browser
+    let state = browser
         .call(&router, Method::GET, &policy_path, None)
         .await?
         .1;
-    ensure!(policy_state["plan"] == saved["plan"] && policy_state["status"] == "active");
-
-    let stored = browser
-        .call(
-            &router,
-            Method::GET,
-            &format!(
-                "/api/v2/plan-previews/{}",
-                planned["task"].as_str().unwrap()
-            ),
-            None,
-        )
-        .await?;
-    ensure!(
-        stored.0 == StatusCode::OK
-            && stored.1["status"] == "completed"
-            && stored.1["plan"] == saved["plan"]
-    );
-    let current_revision = policy_state["storageRevision"].as_u64().unwrap();
-    let stale = call(
-        &mut browser,
-        &router,
-        &format!("{policy_path}/previews"),
-        current_revision,
-        json!({"scope":scope,"expectedRevision":current_revision}),
-    )
-    .await?;
-    call(
-        &mut browser,
-        &router,
-        &format!("/api/v2/groups/{limit_group}"),
-        2,
-        json!({"action":"members","add":[],"remove":["device-1"]}),
-    )
-    .await?;
-    ensure!(settled_write(&mut browser,&router,&format!("{policy_path}/plans"),json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":current_revision,"input":{"preview":stale["task"]}})).await?.0==StatusCode::CONFLICT);
-    scale_preview(&mut browser, &router, &policy_path, current_revision).await?;
+    ensure!(state["revision"] == 1 && state["enabled"] == true);
+    scale_assignments(&mut browser, &router, &policy_path, 1).await?;
     // Revocation is persistent and visible to every existing router/session.
     software(base, reader.clone(), session).await?;
     set_management_grants(&member, json!([])).await?;
@@ -839,7 +766,7 @@ fn seed_management_device(device: &str) -> Result<()> {
 }
 // Establish a settled fixture boundary before introducing definitions: prior
 // enrollment/report writes legitimately supersede a concurrent preview.
-async fn await_ingress() -> Result<()> {
+pub(super) async fn await_ingress() -> Result<()> {
     let settled=tokio::time::timeout(Duration::from_secs(90),async {
         loop {
             let ready=pg(&format!("SELECT coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id='{TENANT}'),0)=coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id='{TENANT}'),0) AND NOT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed)"))?;
@@ -856,7 +783,7 @@ async fn await_ingress() -> Result<()> {
     anyhow::bail!("fixture ingress did not settle: {progress}")
 }
 
-async fn scale_preview(
+async fn scale_assignments(
     browser: &mut Browser,
     router: &Router,
     policy: &str,
@@ -892,69 +819,58 @@ async fn scale_preview(
         .await?;
     }
     call(browser,router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
-    let preview = call(
+    let current = browser.call(router, Method::GET, policy, None).await?.1;
+    let mut definition = current["definition"].clone();
+    definition["targets"] = json!({"kind":"scope","id":scope});
+    // This fixture grants publish authority separately from scope/member read authority.
+    let member = browser_subject(browser, router).await?;
+    let grants =
+        crate::identity_fixture::device_grants(None, &["firewall_write", "inventory_read"])?;
+    let mut grants = grants;
+    for permission in [
+        crate::authorization::Permission::PolicyRead,
+        crate::authorization::Permission::PolicyWrite,
+        crate::authorization::Permission::ScopeRead,
+        crate::authorization::Permission::ResourceRead,
+        crate::authorization::Permission::ResourceWrite,
+        crate::authorization::Permission::GroupRead,
+        crate::authorization::Permission::GroupWrite,
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation: permission,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    crate::identity_fixture::set_grants(TENANT, &member, grants).await?;
+    let before = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
+    call(
         browser,
         router,
-        &format!("{policy}/previews"),
+        policy,
         revision,
-        json!({"scope":scope,"expectedRevision":revision}),
+        json!({"action":"put","enabled":true,"definition":definition}),
     )
     .await?;
-    let task = preview["task"].as_str().unwrap();
-    ensure!(policy_item_count(browser, router, policy, task, "targets").await? == 1001);
-    let facts_before = pg("SELECT count(*) FROM mdm_policy.facts")?;
-    let saved = call(
-        browser,
-        router,
-        &format!("{policy}/plans"),
-        revision,
-        json!({"preview":task}),
-    )
-    .await?;
-    ensure!(
-        pg("SELECT count(*) FROM mdm_policy.facts")? == facts_before,
-        "save created execution facts"
-    );
-    let revision = saved["receipt"]["storageRevision"].as_u64().unwrap();
-    let next = call(
-        browser,
-        router,
-        &format!("{policy}/previews"),
-        revision,
-        json!({"scope":scope,"expectedRevision":revision}),
-    )
-    .await?;
-    let task = next["task"].as_str().unwrap();
-    ensure!(policy_item_count(browser, router, policy, task, "targets").await? == 1001);
-    ensure!(policy_item_count(browser, router, policy, task, "add").await? == 1001);
-    ensure!(policy_item_count(browser, router, policy, task, "retain").await? == 0);
-    Ok(())
-}
-
-async fn policy_item_count(
-    browser: &mut Browser,
-    router: &Router,
-    policy: &str,
-    task: &str,
-    kind: &str,
-) -> Result<usize> {
     let mut cursor = None;
     let mut count = 0;
     loop {
-        let mut path = format!("{policy}/results/{task}/{kind}?limit=500");
-        if let Some(c) = &cursor {
-            path.push_str(&format!("&cursor={c}"));
-        }
+        let path = match &cursor {
+            Some(after) => format!("{policy}/devices?after={after}"),
+            None => format!("{policy}/devices"),
+        };
         let (status, page) = browser.call(router, Method::GET, &path, None).await?;
-        ensure!(status == StatusCode::OK, "policy page: {status} {page}");
-        let items = page["page"]["items"].as_array().unwrap();
-        ensure!(items.len() <= 500);
+        ensure!(status == StatusCode::OK, "assignment page {page}");
+        let items = page["items"].as_array().unwrap();
+        ensure!(items.len() <= 64);
         count += items.len();
         cursor = page["nextCursor"].as_str().map(str::to_owned);
         if cursor.is_none() {
-            return Ok(count);
+            break;
         }
     }
+    ensure!(count == 1001);
+    ensure!(pg("SELECT count(*) FROM mdm_commands.action_runs")? == before);
+    Ok(())
 }
 
 // Exercise the route-to-capability map independently of the full business flow.
@@ -1014,19 +930,7 @@ async fn permission_matrix(
             "policy_write",
             Method::POST,
             format!("/api/v2/policies/{id}"),
-            op(json!({"action":"pause"})),
-        ),
-        (
-            "plan_preview",
-            Method::POST,
-            format!("/api/v2/policies/{id}/previews"),
-            op(json!({"scope":id,"expectedRevision":999})),
-        ),
-        (
-            "plan_save",
-            Method::POST,
-            format!("/api/v2/policies/{id}/plans"),
-            op(json!({"preview":id})),
+            op(json!({"action":"disable"})),
         ),
         (
             "resource_read",
@@ -1088,12 +992,6 @@ async fn permission_matrix(
             op(json!({})),
         ),
         (
-            "policy_read",
-            Method::GET,
-            format!("/api/v2/plan-previews/{id}"),
-            None,
-        ),
-        (
             "release_publish",
             Method::POST,
             format!("/api/v1/software-sources/{source}/candidates/{id}"),
@@ -1113,7 +1011,7 @@ async fn permission_matrix(
     let expected_denied = cases.len() * (grants.len() - 1);
     let counts = || {
         pg(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_planning.operations)+(SELECT count(*) FROM mdm_assets.operations)+(SELECT count(*) FROM mdm_resource_catalog.operations)+(SELECT count(*) FROM mdm_publication.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_planning.policy_assignments),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_planning.operations)+(SELECT count(*) FROM mdm_assets.operations)+(SELECT count(*) FROM mdm_resource_catalog.operations)+(SELECT count(*) FROM mdm_publication.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_policy.policies),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
         )
     };
     // Exercise every permission change against the same running service. Rebuilding
@@ -1190,10 +1088,7 @@ async fn permission_matrix(
     ensure!(
         audit_count(|r| r.target() == id.to_string()
             && r.result() == "denied"
-            && matches!(
-                r.action(),
-                "management_read" | "management_write" | "plan_preview" | "plan_save"
-            )
+            && matches!(r.action(), "management_read" | "management_write")
             && r.actor().is_some()
             && r.payload["instance"] == INSTANCE)?
         .to_string()
@@ -1213,7 +1108,6 @@ async fn derived_result_authorization(
     scope: uuid::Uuid,
     scope_result: &str,
     policy: &str,
-    policy_result: &str,
 ) -> Result<()> {
     let permissions = json!([
         "group_read",
@@ -1223,8 +1117,6 @@ async fn derived_result_authorization(
         "scope_write",
         "policy_read",
         "policy_write",
-        "plan_preview",
-        "plan_save",
         "resource_read",
         "resource_write"
     ]);
@@ -1246,14 +1138,6 @@ async fn derived_result_authorization(
             format!("/api/v2/scopes/{scope}/results/{absent}/members"),
             "scope_not_found",
         ),
-        (
-            format!("/api/v2/policies/{absent}/results/{policy_result}/targets"),
-            "plan_preview_not_found",
-        ),
-        (
-            format!("{policy}/results/{absent}/targets"),
-            "plan_preview_not_found",
-        ),
     ] {
         let response = browser.call(router, Method::GET, &route, None).await?;
         ensure!(
@@ -1264,7 +1148,7 @@ async fn derived_result_authorization(
     let mut paths = vec![
         format!("{group}/tasks/{group_result}"),
         format!("/api/v2/scopes/{scope}/tasks/{scope_result}"),
-        format!("/api/v2/plan-previews/{policy_result}"),
+        format!("{policy}/devices"),
     ];
     for kind in ["members", "changes", "decisions"] {
         paths.push(format!("{group}/results/{group_result}/{kind}?limit=1"));
@@ -1273,16 +1157,6 @@ async fn derived_result_authorization(
         paths.push(format!(
             "/api/v2/scopes/{scope}/results/{scope_result}/{kind}?limit=1"
         ));
-    }
-    for kind in [
-        "targets",
-        "add",
-        "supersede",
-        "retain",
-        "cancel",
-        "predecessors",
-    ] {
-        paths.push(format!("{policy}/results/{policy_result}/{kind}?limit=1"));
     }
     // Keep an actually issued cursor, then shrink the subject's device access.
     let (status, page) = Box::pin(browser.call(router, Method::GET, &paths[3], None)).await?;

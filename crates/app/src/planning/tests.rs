@@ -7,7 +7,6 @@ use rss_request_context::Deadline;
 use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
 use serde_json::json;
-use std::collections::BTreeSet;
 #[path = "recovery_tests.rs"]
 mod recovery;
 #[path = "resource_archive_tests.rs"]
@@ -326,7 +325,7 @@ impl RunningAutomation {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL: management-t2"]
-async fn durable_asset_group_scope_candidate_pipeline() {
+async fn durable_asset_group_scope_pipeline() {
     let service = Arc::new(planning(tenant()).await);
     let config = fixture();
     let options = sqlx::postgres::PgConnectOptions::new()
@@ -583,214 +582,6 @@ async fn durable_asset_group_scope_candidate_pipeline() {
         assert_eq!(page["totalMembers"], 1);
         assert!(wire::Response::decode(page).is_ok());
     }
-    let policy = Uuid::new_v4().to_string();
-    execute(
-        &service,
-        &Command::Policy {
-            id: policy.clone(),
-            change: operation(0, PolicyChange::Create),
-        },
-    )
-    .await
-    .unwrap();
-    let preview = Uuid::new_v4();
-    execute(
-        &service,
-        &Command::Preview {
-            id: policy.clone(),
-            request: Operation {
-                operation_id: preview,
-                expected_revision: 1,
-                input: PreviewInput {
-                    scope: scope_id,
-                    expected_revision: 1,
-                },
-            },
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        wait_task(
-            &service,
-            preview,
-            crate::automation::TaskKind::Policy,
-            &policy
-        )
-        .await["members"],
-        1
-    );
-    let page = execute(
-        &service,
-        &Command::PolicyPage {
-            policy: policy.clone(),
-            result: preview,
-            projection: pages::PolicyPageKind::Targets,
-            query: pages::PageQuery {
-                limit: 1000,
-                cursor: None,
-            },
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(page["page"]["items"], serde_json::json!([device]));
-    assert!(wire::Response::decode(page).is_ok());
-    let saved = execute(
-        &service,
-        &Command::Save {
-            id: policy.clone(),
-            request: operation(1, SavePlan { preview }),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(saved["dispatch"], "not_requested");
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm_policy.facts WHERE tenant_id='{}' AND owner='{policy}'",
-            tenant()
-        )),
-        "0"
-    );
-    execute_asset(
-        &service,
-        &assets::Command::Manual {
-            device: device.clone(),
-            field: assets::FieldKey::IsLoaner,
-            owner,
-            change: operation(1, assets::ManualChange::Delete {}),
-        },
-    )
-    .await
-    .unwrap();
-    // A failed RSS finish retains its 30s claim until lease recovery; the fixture
-    // must allow that recovery before asserting the eventual candidate.
-    let next=tokio::time::timeout(Duration::from_secs(90),async {
-        loop {
-            let raw=sql(&format!("SELECT candidate::text FROM mdm_planning.candidate_heads WHERE tenant_id='{}' AND policy='{policy}' AND candidate<> '{preview}'::uuid",tenant()));
-            if !raw.is_empty() {break Uuid::parse_str(&raw).unwrap();}
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }).await.unwrap_or_else(|error| panic!("asset deletion did not produce a candidate: {error:?}; jobs={}", sql("SELECT jsonb_agg(jsonb_build_object('kind',kind,'task',id,'completed',completed,'forwarded',forwarded,'input',input,'failure',failure,'cursor',cursor)) FROM mdm_automation.automation_jobs")));
-    assert_eq!(
-        wait_task(&service, next, crate::automation::TaskKind::Policy, &policy).await["members"],
-        0
-    );
-    assert_eq!(
-        execute(&service, &Command::PolicyRead { id: policy.clone() })
-            .await
-            .unwrap()["fresh"],
-        false
-    );
-    assert_eq!(
-        sql(&format!(
-            "SELECT candidate FROM mdm_policy.current_plans WHERE tenant_id='{}' AND policy='{policy}'",
-            tenant()
-        )),
-        preview.to_string(),
-        "automation must not save its candidate"
-    );
-    let frozen_query = execute_asset(
-        &service,
-        &assets::Command::QueryItems {
-            task: query_task,
-            scope: query_scope,
-            limit: 1,
-            cursor: None,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        frozen_query, query_items,
-        "fact changes must not rewrite query results"
-    );
-    let historical = execute(&service, &page_command).await.unwrap();
-    assert_eq!(historical["current"], false);
-    assert_eq!(historical["page"]["items"], serde_json::json!([device]));
-    // Admit an active canonical version through the public owner adapter, then
-    // exercise product lifecycle execution against the latest saved binding.
-    use rss_mdm_policy as core;
-    let policy_id = core::PolicyId::new(tenant(), &policy).unwrap();
-    let current = service
-        .policies
-        .get(&policy_id, deadline())
-        .await
-        .unwrap()
-        .unwrap();
-    let activated = service
-        .policies
-        .execute(
-            &rss_mdm_policy_postgres::Request {
-                id: core::RequestId::new(tenant(), Uuid::new_v4().to_string()).unwrap(),
-                expected_storage_revision: current.storage_revision(),
-                as_of: Timepoint::try_from(service.clock.unix_seconds().unwrap()).unwrap(),
-                command: rss_mdm_policy_postgres::Command::Transition {
-                    policy: policy_id.clone(),
-                    transition: core::Transition::Activate(
-                        core::Version::new(
-                            policy_id,
-                            1,
-                            core::PayloadRef::new(
-                                core::PayloadId::new(tenant(), "lifecycle-fixture").unwrap(),
-                                1,
-                                [7; 32],
-                            )
-                            .unwrap(),
-                            core::RemovalRule::CancelOutstandingRetainEffects,
-                        )
-                        .unwrap(),
-                    ),
-                },
-            },
-            deadline(),
-        )
-        .await
-        .unwrap();
-    let mut revision = activated.storage_revision;
-    for change in [PolicyChange::Pause, PolicyChange::Archive] {
-        let receipt = execute(
-            &service,
-            &Command::Policy {
-                id: policy.clone(),
-                change: operation(revision, change),
-            },
-        )
-        .await
-        .unwrap();
-        revision = receipt["storage_revision"].as_u64().unwrap();
-        let task = Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap();
-        assert_eq!(
-            wait_task(&service, task, crate::automation::TaskKind::Policy, &policy).await["members"],
-            0
-        );
-        assert_eq!(
-            sql(&format!(
-                "SELECT count(*) FROM mdm_policy.facts WHERE tenant_id='{}' AND owner='{policy}'",
-                tenant()
-            )),
-            "0"
-        );
-        assert_eq!(
-            sql(&format!(
-                "SELECT candidate FROM mdm_policy.current_plans WHERE tenant_id='{}' AND policy='{policy}'",
-                tenant()
-            )),
-            preview.to_string()
-        );
-    }
-    assert_eq!(
-        audit_records()
-            .iter()
-            .filter(|r| r.decoded.event().identity().tenant() == tenant()
-                && r.operation() == Some(task.to_string().as_str())
-                && r.action() == "automation_completed"
-                && r.actor() == Some("service:asset-automation")
-                && r.payload["instance"].is_null())
-            .count(),
-        1
-    );
     assert!(stack.shutdown().join().await.unwrap().is_clean());
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(automation))
         .await
@@ -799,7 +590,7 @@ async fn durable_asset_group_scope_candidate_pipeline() {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL; hack/management-t2.py"]
-async fn group_scope_plan_replay_stale_and_audit_atomicity() {
+async fn group_scope_replay_and_audit_atomicity() {
     let m = Arc::new(planning(tenant()).await);
     let device = format!("设备-{}", Uuid::new_v4());
     seed_device(&device);
@@ -855,132 +646,6 @@ async fn group_scope_plan_replay_stale_and_audit_atomicity() {
     )
     .await
     .unwrap();
-    let policy = Uuid::new_v4().to_string();
-    execute(
-        &m,
-        &Command::Policy {
-            id: policy.clone(),
-            change: operation(0, PolicyChange::Create),
-        },
-    )
-    .await
-    .unwrap();
-    let preview = Uuid::new_v4();
-    execute(
-        &m,
-        &Command::Preview {
-            id: policy.clone(),
-            request: Operation {
-                operation_id: preview,
-                expected_revision: 1,
-                input: PreviewInput {
-                    scope: scope_id,
-                    expected_revision: 1,
-                },
-            },
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        wait_task(&m, preview, crate::automation::TaskKind::Policy, &policy).await["members"],
-        1
-    );
-    let save = Command::Save {
-        id: policy.clone(),
-        request: operation(1, SavePlan { preview }),
-    };
-    let saved = execute(&m, &save).await.unwrap();
-    assert_eq!(saved, execute(&m, &save).await.unwrap());
-    assert_eq!(saved["dispatch"], "not_requested");
-    running.stop().await;
-    m.runtime.close().await;
-    drop(m);
-    let m = Arc::new(planning(tenant()).await);
-    assert_eq!(saved, execute(&m, &save).await.unwrap());
-    let historical = execute(&m, &Command::PlanRead { id: preview })
-        .await
-        .unwrap();
-    assert_eq!(historical["plan"], saved["plan"]);
-    assert!(matches!(
-        execute(
-            &m,
-            &Command::Group {
-                id: group,
-                change: operation(2, GroupChange::Delete)
-            }
-        )
-        .await,
-        Err(Error::Conflict)
-    ));
-    assert!(matches!(
-        execute(
-            &m,
-            &Command::Scope {
-                id: scope_id,
-                change: operation(1, ScopeChange::Delete)
-            }
-        )
-        .await,
-        Err(Error::Conflict)
-    ));
-    let running = RunningAutomation::start(m.clone()).await;
-    let revision = execute(&m, &Command::PolicyRead { id: policy.clone() })
-        .await
-        .unwrap()["storage_revision"]
-        .as_u64()
-        .unwrap();
-    let stale = Uuid::new_v4();
-    execute(
-        &m,
-        &Command::Preview {
-            id: policy.clone(),
-            request: Operation {
-                operation_id: stale,
-                expected_revision: revision,
-                input: PreviewInput {
-                    scope: scope_id,
-                    expected_revision: revision,
-                },
-            },
-        },
-    )
-    .await
-    .unwrap();
-    wait_task(&m, stale, crate::automation::TaskKind::Policy, &policy).await;
-    let edited = execute(
-        &m,
-        &Command::Group {
-            id: group,
-            change: operation(
-                2,
-                GroupChange::Members {
-                    add: vec![],
-                    remove: vec![device],
-                },
-            ),
-        },
-    )
-    .await
-    .unwrap();
-    wait_task(
-        &m,
-        Uuid::parse_str(edited["task"].as_str().unwrap()).unwrap(),
-        crate::automation::TaskKind::Group,
-        &group.to_string(),
-    )
-    .await;
-    assert!(matches!(
-        execute(
-            &m,
-            &Command::Save {
-                id: policy.clone(),
-                request: operation(revision, SavePlan { preview: stale })
-            }
-        )
-        .await,
-        Err(Error::Conflict)
-    ));
     running.stop().await;
     let denied = Uuid::new_v4();
     sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime");
@@ -1087,19 +752,19 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",
         ),
         (
-            "REVOKE INSERT ON mdm_commands.action_progress FROM mdm_flow_runtime",
-            "GRANT INSERT ON mdm_commands.action_progress TO mdm_flow_runtime",
+            "REVOKE INSERT ON mdm_policy.versions FROM mdm_flow_runtime",
+            "GRANT INSERT ON mdm_policy.versions TO mdm_flow_runtime",
         ),
         (
-            "GRANT UPDATE(scan_at) ON mdm_commands.action_progress TO mdm_flow_runtime",
-            "REVOKE UPDATE(scan_at) ON mdm_commands.action_progress FROM mdm_flow_runtime",
+            "GRANT UPDATE(number) ON mdm_policy.versions TO mdm_flow_runtime",
+            "REVOKE UPDATE(number) ON mdm_policy.versions FROM mdm_flow_runtime",
         ),
         (
             "REVOKE SELECT ON mdm_access.agent_bindings FROM mdm_flow_runtime",
             "GRANT SELECT ON mdm_access.agent_bindings TO mdm_flow_runtime",
         ),
         (
-            "CREATE ROLE flow_drift NOLOGIN; GRANT UPDATE(scan_at) ON mdm_commands.action_progress TO flow_drift; GRANT flow_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+            "CREATE ROLE flow_drift NOLOGIN; GRANT UPDATE(number) ON mdm_policy.versions TO flow_drift; GRANT flow_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
             "REVOKE flow_drift FROM mdm_flow_runtime; DROP OWNED BY flow_drift; DROP ROLE flow_drift",
         ),
         (
@@ -1130,6 +795,13 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         sql(change);
         let rejected = crate::flow::storage::admit(&service.runtime, tenant())
             .await
+            .is_err()
+            || rss_mdm_policy_postgres::PolicyStore::new(
+                service.runtime.clone(),
+                tenant(),
+                deadline(),
+            )
+            .await
             .is_err();
         sql(restore);
         assert!(rejected, "accepted privilege drift: {change}");
@@ -1150,6 +822,13 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "GRANT UPDATE({column}) ON {table} TO mdm_flow_runtime"
         ));
         let rejected = crate::flow::storage::admit(&service.runtime, tenant())
+            .await
+            .is_err()
+            || rss_mdm_policy_postgres::PolicyStore::new(
+                service.runtime.clone(),
+                tenant(),
+                deadline(),
+            )
             .await
             .is_err();
         sql(&format!(
@@ -1190,7 +869,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL; hack/management-t2.py"]
-async fn registration_replacement_invalidates_direct_and_group_previews() {
+async fn registration_replacement_invalidates_direct_and_group_admission() {
     let m = Arc::new(planning(tenant()).await);
     let running = RunningAutomation::start(m.clone()).await;
     let device = format!("device-{}", Uuid::new_v4());
@@ -1236,12 +915,11 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
     .await;
     let mut pending = Vec::new();
     for reference in [Reference::Device(device.clone()), Reference::Group(group)] {
-        let scope = Uuid::new_v4();
-        let policy = Uuid::new_v4().to_string();
-        execute(
+        let id = Uuid::new_v4();
+        let receipt = execute(
             &m,
             &Command::Scope {
-                id: scope,
+                id,
                 change: operation(
                     0,
                     ScopeChange::Put {
@@ -1256,38 +934,14 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
         )
         .await
         .unwrap();
-        let created = execute(
+        wait_task(
             &m,
-            &Command::Policy {
-                id: policy.clone(),
-                change: operation(0, PolicyChange::Create),
-            },
+            Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap(),
+            crate::automation::TaskKind::Scope,
+            &id.to_string(),
         )
-        .await
-        .unwrap();
-        let revision = created["storage_revision"].as_u64().unwrap();
-        let preview = Uuid::new_v4();
-        execute(
-            &m,
-            &Command::Preview {
-                id: policy.clone(),
-                request: Operation {
-                    operation_id: preview,
-                    expected_revision: revision,
-                    input: PreviewInput {
-                        scope,
-                        expected_revision: revision,
-                    },
-                },
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            wait_task(&m, preview, crate::automation::TaskKind::Policy, &policy).await["members"],
-            1
-        );
-        pending.push((policy, revision, preview));
+        .await;
+        pending.push(id);
     }
     running.stop().await;
     let grant = Uuid::new_v4();
@@ -1297,35 +951,12 @@ async fn registration_replacement_invalidates_direct_and_group_previews() {
     sql(&format!(
         "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{old}';INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{t}','{request}','{grant}','mdm.windows');INSERT INTO mdm_access.registrations VALUES('{t}','{replacement}','{device}','mdm',2,'{request}','active');"
     ));
-    for (id, revision, preview) in pending.clone() {
-        let result = execute(
-            &m,
-            &Command::Save {
-                id,
-                request: operation(revision, SavePlan { preview }),
-            },
-        )
-        .await;
-        assert!(
-            matches!(result, Err(Error::Conflict)),
-            "registration replacement must stale preview: {result:?}"
-        );
-    }
-    sql(&format!(
-        "UPDATE mdm_access.registrations SET state='revoked' WHERE id='{replacement}'"
-    ));
-    for (id, revision, preview) in pending {
-        let result = execute(
-            &m,
-            &Command::Save {
-                id,
-                request: operation(revision, SavePlan { preview }),
-            },
-        )
-        .await;
-        assert!(
-            matches!(result, Err(Error::Conflict)),
-            "lost registration must stale preview: {result:?}"
+    for id in pending {
+        assert_eq!(
+            sql(&format!(
+                "SELECT mdm_planning.scope_admission('{id}','{device}')->>'state'"
+            )),
+            "pending"
         );
     }
     m.runtime.close().await;
@@ -1606,170 +1237,6 @@ async fn asset_storage_failures_are_not_malformed() {
             json!({"kind":"unavailable","reason":expected})
         );
     }
-    m.runtime.close().await;
-}
-
-#[tokio::test]
-#[ignore = "real PostgreSQL; hack/management-t2.py"]
-async fn saving_new_scope_replaces_automatic_candidate_binding() {
-    let m = Arc::new(planning(tenant()).await);
-    let running = RunningAutomation::start(m.clone()).await;
-    let device = format!("binding-{}", Uuid::new_v4());
-    seed_device(&device);
-    let scopes = [Uuid::new_v4(), Uuid::new_v4()];
-    let definition = |excluded| ScopeDefinition {
-        targets: BTreeSet::from([Reference::Device(device.clone())]),
-        limitations: None,
-        exclusions: if excluded {
-            BTreeSet::from([Reference::Device(device.clone())])
-        } else {
-            BTreeSet::new()
-        },
-    };
-    for scope in scopes {
-        let accepted = execute(
-            &m,
-            &Command::Scope {
-                id: scope,
-                change: operation(
-                    0,
-                    ScopeChange::Put {
-                        definition: definition(false),
-                    },
-                ),
-            },
-        )
-        .await
-        .unwrap();
-        let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
-        wait_task(
-            &m,
-            task,
-            crate::automation::TaskKind::Scope,
-            &scope.to_string(),
-        )
-        .await;
-    }
-    let policy = Uuid::new_v4().to_string();
-    execute(
-        &m,
-        &Command::Policy {
-            id: policy.clone(),
-            change: operation(0, PolicyChange::Create),
-        },
-    )
-    .await
-    .unwrap();
-    let mut revision = 1;
-    let mut saved = Uuid::nil();
-    for scope in scopes {
-        let request = operation(
-            revision,
-            PreviewInput {
-                scope,
-                expected_revision: revision,
-            },
-        );
-        let preview = request.operation_id;
-        execute(
-            &m,
-            &Command::Preview {
-                id: policy.clone(),
-                request,
-            },
-        )
-        .await
-        .unwrap();
-        wait_task(&m, preview, crate::automation::TaskKind::Policy, &policy).await;
-        let receipt = execute(
-            &m,
-            &Command::Save {
-                id: policy.clone(),
-                request: operation(revision, SavePlan { preview }),
-            },
-        )
-        .await
-        .unwrap();
-        revision = receipt["receipt"]["storage_revision"].as_u64().unwrap();
-        saved = preview;
-    }
-    let head = || {
-        sql(&format!(
-            "SELECT desired::text FROM mdm_planning.candidate_heads WHERE tenant_id='{}' AND policy='{policy}'",
-            tenant()
-        ))
-    };
-    let before = head();
-    let receipt = execute(
-        &m,
-        &Command::Scope {
-            id: scopes[0],
-            change: operation(
-                1,
-                ScopeChange::Put {
-                    definition: definition(true),
-                },
-            ),
-        },
-    )
-    .await
-    .unwrap();
-    let task = Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap();
-    wait_task(
-        &m,
-        task,
-        crate::automation::TaskKind::Scope,
-        &scopes[0].to_string(),
-    )
-    .await;
-    assert_eq!(
-        head(),
-        before,
-        "the previous Scope binding generated a candidate"
-    );
-    let receipt = execute(
-        &m,
-        &Command::Scope {
-            id: scopes[1],
-            change: operation(
-                1,
-                ScopeChange::Put {
-                    definition: definition(true),
-                },
-            ),
-        },
-    )
-    .await
-    .unwrap();
-    let task = Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap();
-    wait_task(
-        &m,
-        task,
-        crate::automation::TaskKind::Scope,
-        &scopes[1].to_string(),
-    )
-    .await;
-    let candidate = Uuid::parse_str(&head()).unwrap();
-    assert_ne!(candidate.to_string(), before);
-    assert_eq!(
-        wait_task(&m, candidate, crate::automation::TaskKind::Policy, &policy).await["members"],
-        0
-    );
-    assert_eq!(
-        sql(&format!(
-            "SELECT candidate FROM mdm_policy.current_plans WHERE tenant_id='{}' AND policy='{policy}'",
-            tenant()
-        )),
-        saved.to_string()
-    );
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm_policy.facts WHERE tenant_id='{}' AND owner='{policy}'",
-            tenant()
-        )),
-        "0"
-    );
-    running.stop().await;
     m.runtime.close().await;
 }
 

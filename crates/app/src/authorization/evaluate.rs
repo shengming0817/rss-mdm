@@ -267,14 +267,20 @@ pub(crate) fn department_matches(
 }
 
 impl Snapshot {
-    pub(crate) fn require_devices(
+    pub(crate) fn require_all_devices(
         &self,
-        proof: &AuthorizedPrincipal,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
         permission: Permission,
-        devices: &[String],
-    ) -> Result<(), AuthorizationError> {
-        devices
+    ) -> Result<(), crate::Error> {
+        if self
+            .effective(proof)
+            .map_err(crate::Error::from)?
             .iter()
-            .try_for_each(|device| self.require(proof, permission, Some(device)))
+            .any(|g| g.grant.operation == permission && matches!(g.grant.scope, Scope::AllDevices))
+        {
+            proof.check_live()
+        } else {
+            Err(crate::Error::Forbidden)
+        }
     }
 }

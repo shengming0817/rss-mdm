@@ -187,34 +187,14 @@ impl Planning {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "family", rename_all = "snake_case", deny_unknown_fields)]
 enum ResultBinding {
-    Group {
-        group: Uuid,
-        kind: GroupPageKind,
-    },
-    Scope {
-        scope: Uuid,
-        kind: ScopePageKind,
-    },
-    Policy {
-        policy: String,
-        kind: PolicyPageKind,
-    },
+    Group { group: Uuid, kind: GroupPageKind },
+    Scope { scope: Uuid, kind: ScopePageKind },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum ScopePageKind {
     Members,
     Decisions,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum PolicyPageKind {
-    Targets,
-    Add,
-    Supersede,
-    Retain,
-    Cancel,
-    Predecessors,
 }
 #[cfg(test)]
 mod tests {
@@ -263,7 +243,5 @@ mod tests {
         assert!(decode(&key, &format!("{token}x"), "tenant-a", result, &binding).is_err());
     }
 }
-mod policy;
 mod scope;
-pub(super) use policy::PolicyPage;
 pub(super) use scope::ScopePage;

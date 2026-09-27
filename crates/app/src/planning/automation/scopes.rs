@@ -46,8 +46,8 @@ pub(crate) fn references(
     scope: Uuid,
     revision: u64,
     input: &ScopeInput,
-) -> Vec<rss_mdm_policy_postgres::AssignmentReference> {
-    let mut refs = vec![rss_mdm_policy_postgres::AssignmentReference {
+) -> Vec<crate::planning::sources::SourceReference> {
+    let mut refs = vec![crate::planning::sources::SourceReference {
         id: format!("scope-definition.{scope}"),
         revision,
     }];
@@ -59,13 +59,13 @@ pub(crate) fn references(
                     ("group-members", source.member_version),
                     ("group-authority", source.authority_version),
                 ] {
-                    refs.push(rss_mdm_policy_postgres::AssignmentReference {
+                    refs.push(crate::planning::sources::SourceReference {
                         id: format!("{prefix}.{id}"),
                         revision,
                     });
                 }
             }
-            Reference::Device(id) => refs.push(rss_mdm_policy_postgres::AssignmentReference {
+            Reference::Device(id) => refs.push(crate::planning::sources::SourceReference {
                 id: device_reference(id),
                 revision: source.authority_version,
             }),
@@ -143,13 +143,13 @@ impl Planning {
                     }
                     source.member_version = group.member_version as u64;
                     source.definition_version = checked(
-                        self.policies
+                        self.sources
                             .reference_in(tx, &format!("group-definition.{id}"))
                             .await?,
                     )?
                     .ok_or(Error::Conflict)?;
                     source.authority_version = checked(
-                        self.policies
+                        self.sources
                             .reference_in(tx, &format!("group-authority.{id}"))
                             .await?,
                     )?
@@ -164,7 +164,7 @@ impl Planning {
                     })).await?;
                     source.authority_version = version as u64;
                     checked(
-                        self.policies
+                        self.sources
                             .advance_reference_in(
                                 tx,
                                 &device_reference(&device),
@@ -226,46 +226,53 @@ impl Planning {
                     .sources
                     .get(index)
                     .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
-                let devices = match &source.reference {
+                let records = match &source.reference {
                     Reference::Device(device) => {
                         if after.is_none() {
-                            vec![device.clone()]
+                            vec![(device.clone(), false, true)]
                         } else {
                             vec![]
                         }
                     }
                     Reference::Group(_) => match source.member_set {
                         None => vec![],
-                        Some(run) => {
+                        Some(set) => {
                             let operation = checked_input(
-                                rss_mdm_group_postgres::OperationId::parse(&run.to_string()),
+                                rss_mdm_group_postgres::OperationId::parse(&set.to_string()),
                             )?;
                             let build = checked(self.groups.build_in(tx, operation).await?)?;
-                            let receipt = build
-                                .receipt
-                                .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
-                            if source.reference
-                                != Reference::Group(stored(Uuid::parse_str(
-                                    &receipt.group.id.to_string(),
-                                ))?)
-                                || receipt.group.member_version as u64 != source.member_version
-                            {
+                            if build.receipt.is_none() {
                                 return Err(Error::Unavailable(Failure::PlanningStorage).into());
                             }
                             checked(
                                 self.groups
-                                    .build_members_in(tx, operation, after, 1000)
+                                    .build_decisions_in(tx, operation, after, 1000)
                                     .await?,
                             )?
+                            .into_iter()
+                            .map(|d| {
+                                (
+                                    d.device,
+                                    d.decision == rss_mdm_group_postgres::DecisionValue::Unknown,
+                                    d.decision != rss_mdm_group_postgres::DecisionValue::NoMatch,
+                                )
+                            })
+                            .collect()
                         }
                     },
                 };
-                let more = devices.len() == 1000;
-                let last = devices.last().cloned();
+                // Evidence byte budgets may shorten a page; only an empty page seals a source.
+                let more = !records.is_empty();
+                let last = records.last().map(|r| r.0.clone());
+                let (devices, unknown): (Vec<_>, Vec<_>) = records
+                    .into_iter()
+                    .filter(|r| r.2)
+                    .map(|r| (r.0, r.1))
+                    .unzip();
                 let tenant = self.tenant.to_string();
                 tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query("INSERT INTO mdm_planning.scope_source_members SELECT $1::uuid,$2::uuid,$3,d FROM unnest($4::text[]) d")
-                        .bind(&tenant).bind(id.to_string()).bind(index as i32).bind(devices).execute(&mut *c).await?;
+                    sqlx::query("INSERT INTO mdm_planning.scope_source_members(tenant_id,run,source,device,unknown) SELECT $1::uuid,$2::uuid,$3,d,u FROM unnest($4::text[],$5::boolean[]) AS p(d,u)")
+                        .bind(&tenant).bind(id.to_string()).bind(index as i32).bind(devices).bind(unknown).execute(&mut *c).await?;
                     sqlx::query("UPDATE mdm_planning.scope_runs SET source_index=$3,source_cursor=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid")
                         .bind(tenant).bind(id.to_string()).bind(if more {index as i32}else{index as i32+1}).bind(if more {last}else{None}).execute(c).await?;Ok(())
                 })).await?;
@@ -337,15 +344,28 @@ impl Planning {
         let tenant = self.tenant.to_string();
         let selected = devices.clone();
         let rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT device,source FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=ANY($3) ORDER BY device,source")
+            sqlx::query("SELECT device,source,unknown FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=ANY($3) ORDER BY device,source")
                 .bind(tenant).bind(id.to_string()).bind(selected).fetch_all(c).await
         })).await?;
         let mut hits: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        let mut unknowns: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for row in rows {
+            if row.try_get::<bool, _>("unknown")? {
+                unknowns
+                    .entry(row.try_get("device")?)
+                    .or_default()
+                    .insert(row.try_get::<i32, _>("source")? as usize);
+                continue;
+            }
             hits.entry(row.try_get("device")?)
                 .or_default()
                 .insert(row.try_get::<i32, _>("source")? as usize);
         }
+        let tenant = self.tenant.to_string();
+        let selected = devices.clone();
+        let authority=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_as::<_,(String,i64)>("SELECT device,max(revision) FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3 GROUP BY device").bind(tenant).bind(selected).bind(watermark).fetch_all(c).await
+        })).await?.into_iter().collect::<BTreeMap<_,_>>();
         let at = checked_input(Timepoint::try_from(frozen.as_of))?;
         let live = self
             .asset_reader
@@ -361,9 +381,8 @@ impl Planning {
         let mut explanations = Vec::new();
         for device in &devices {
             let key = checked_input(s::DeviceId::new(self.tenant, device))?;
-            let source_hits = hits
-                .get(device)
-                .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
+            let empty_hits = BTreeSet::new();
+            let source_hits = hits.get(device).unwrap_or(&empty_hits);
             let resolve = |refs: &BTreeSet<Reference>| -> Result<Vec<s::SourceMembership>> {
                 frozen
                     .sources
@@ -389,7 +408,11 @@ impl Planning {
                         };
                         Ok(s::SourceMembership {
                             source: checked_input(s::SourceRef::new(identity, version, at))?,
-                            contains: s::Membership::Known(source_hits.contains(&index)),
+                            contains: if unknowns.get(device).is_some_and(|v| v.contains(&index)) {
+                                s::Membership::Unknown
+                            } else {
+                                s::Membership::Known(source_hits.contains(&index))
+                            },
                         })
                     })
                     .collect()
@@ -407,14 +430,14 @@ impl Planning {
             }))?
             .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
             matched.push(result.reasons.is_empty() && live.contains(device));
-            explanations.push(checked_input(serde_json::to_string(&serde_json::json!({"device":device,"identity":if live.contains(device){"active"}else{"inactive"},"reasons":result.reasons.iter().map(|r|match r {s::ExclusionReason::MissingLimitationMatch=>"missing_limitation_match",s::ExclusionReason::ExplicitExclusion=>"explicit_exclusion"}).collect::<Vec<_>>(),"sources":source_hits})))?);
+            explanations.push(checked_input(serde_json::to_string(&serde_json::json!({"device":device,"identityRevision":authority.get(device).copied().unwrap_or(0),"identity":if live.contains(device){"active"}else{"inactive"},"reasons":result.reasons.iter().map(|r|match r {s::ExclusionReason::MissingLimitationMatch=>"missing_limitation_match",s::ExclusionReason::ExplicitExclusion=>"explicit_exclusion",s::ExclusionReason::UnknownTarget=>"unknown_target",s::ExclusionReason::UnknownLimitation=>"unknown_limitation",s::ExclusionReason::UnknownExclusion=>"unknown_exclusion"}).collect::<Vec<_>>(),"sources":source_hits})))?);
         }
         let tenant = self.tenant.to_string();
         let count = devices.len() as i64;
         let members = matched.iter().filter(|v| **v).count() as i64;
         let last = devices.last().cloned();
         tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_planning.scope_results SELECT $1::uuid,$2::uuid,d,m,e::jsonb FROM unnest($3::text[],$4::boolean[],$5::text[]) AS p(d,m,e)")
+            sqlx::query("INSERT INTO mdm_planning.scope_results(tenant_id,run,device,matched,explanation) SELECT $1::uuid,$2::uuid,d,m,e::jsonb FROM unnest($3::text[],$4::boolean[],$5::text[]) AS p(d,m,e)")
                 .bind(&tenant).bind(id.to_string()).bind(devices).bind(matched).bind(explanations).execute(&mut *c).await?;
             sqlx::query("UPDATE mdm_planning.scope_runs SET object_count=object_count+$3,member_count=member_count+$4,evaluation_cursor=$5,phase=$6,identity_revision=greatest(identity_revision,$7),result_fingerprint=CASE WHEN $6='ready' THEN sha256(fingerprint||int8send(greatest(identity_revision,$7))) ELSE NULL END WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).bind(count).bind(members).bind(last).bind(if more {"evaluate"}else{"ready"}).bind(identity).execute(c).await?;Ok(())
@@ -435,32 +458,26 @@ impl Planning {
             return Err(Error::Conflict.into());
         }
         for reference in references(scope, revision, frozen) {
-            if checked(self.policies.reference_in(tx, &reference.id).await?)?
+            if checked(self.sources.reference_in(tx, &reference.id).await?)?
                 != Some(reference.revision)
             {
                 return Err(Error::Conflict.into());
             }
         }
         let tenant = self.tenant.to_string();
-        let expected:Vec<u8>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT result_fingerprint FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).fetch_one(c).await
-        })).await?;
-        let tenant = self.tenant.to_string();
-        let same:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.scopes s JOIN mdm_planning.scope_runs r ON (r.tenant_id,r.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND r.result_fingerprint=$3)")
-                .bind(tenant).bind(scope.to_string()).bind(expected).fetch_one(c).await
-        })).await?;
-        if same {
-            return self.scope_phase(tx, id, "published").await;
-        }
-        let tenant = self.tenant.to_string();
-        let version:i64=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("UPDATE mdm_planning.scopes SET resolution=$3::uuid,resolution_revision=resolution_revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid RETURNING resolution_revision")
-                .bind(tenant).bind(scope.to_string()).bind(id.to_string()).fetch_one(c).await
+        let version:i64=tx.with_connection(move|c|Box::pin(async move {
+            let (previous,old_version)=sqlx::query_as::<_,(Option<Uuid>,i64)>("SELECT resolution,resolution_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(&tenant).bind(scope.to_string()).fetch_one(&mut *c).await?;
+            let changed=sqlx::query_scalar::<_,bool>("WITH old AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2), new AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$3) SELECT EXISTS((SELECT * FROM old EXCEPT SELECT * FROM new) UNION ALL (SELECT * FROM new EXCEPT SELECT * FROM old))")
+                .bind(&tenant).bind(previous).bind(id).fetch_one(&mut *c).await? || previous.is_none();
+            let version=old_version.checked_add(i64::from(changed)).ok_or_else(||sqlx::Error::Protocol("scope revision overflow".into()))?;
+            sqlx::query("UPDATE mdm_planning.scope_results n SET entry_revision=coalesce((SELECT o.entry_revision FROM mdm_planning.scope_results o WHERE o.tenant_id=n.tenant_id AND o.run=$3 AND o.device=n.device AND o.matched),$4) WHERE n.tenant_id=$1::uuid AND n.run=$2 AND n.matched")
+                .bind(&tenant).bind(id).bind(previous).bind(version).execute(&mut *c).await?;
+            sqlx::query("UPDATE mdm_planning.scope_runs SET previous_resolution=$3,semantic_changed=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).bind(previous).bind(changed).execute(&mut *c).await?;
+            sqlx::query("UPDATE mdm_planning.scopes SET resolution=$3,resolution_revision=$4,calculation_revision=calculation_revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(scope).bind(id).bind(version).execute(c).await?;
+            Ok(version)
         })).await?;
         checked(
-            self.policies
+            self.sources
                 .advance_reference_in(tx, &format!("scope-resolution.{scope}"), version as u64)
                 .await?,
         )?;
@@ -475,53 +492,29 @@ impl Planning {
         after: Option<String>,
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
-        let active:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2::uuid AND resolution=$3::uuid)")
-                .bind(tenant).bind(scope.to_string()).bind(task.to_string()).fetch_one(c).await
+        let interested=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->'targets'->>'kind'='scope' AND definition->'targets'->>'id'=$2 AND definition->'behavior'->>'kind'='configuration')").bind(tenant).bind(scope.to_string()).fetch_one(c).await
         })).await?;
-        if !active {
+        if !interested {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
         }
         let tenant = self.tenant.to_string();
-        let rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT policy,revision FROM mdm_planning.policy_assignments WHERE tenant_id=$1::uuid AND scope=$2::uuid AND ($3::text IS NULL OR policy COLLATE \"C\">$3 COLLATE \"C\") ORDER BY policy COLLATE \"C\" LIMIT 65")
-                .bind(tenant).bind(scope.to_string()).bind(after).fetch_all(c).await
+        let mut devices=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,String>("WITH source AS (SELECT previous_resolution FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2 AND semantic_changed), old AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=(SELECT previous_resolution FROM source)), new AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND EXISTS(SELECT 1 FROM source)) SELECT device FROM (SELECT coalesce(n.device,o.device) COLLATE \"C\" AS device FROM new n FULL JOIN old o USING(device) WHERE (n.matched,n.reasons,n.identity) IS DISTINCT FROM (o.matched,o.reasons,o.identity) UNION SELECT c.device COLLATE \"C\" FROM mdm_planning.configuration_claims c JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(c.tenant_id,c.policy) JOIN mdm_planning.configuration_devices d ON(d.tenant_id,d.device)=(c.tenant_id,c.device) WHERE c.tenant_id=$1::uuid AND p.definition->'targets'->>'kind'='scope' AND p.definition->'targets'->>'id'=$4 AND d.diagnosis='waiting_scope') changes WHERE device>coalesce($3,'') COLLATE \"C\" ORDER BY device LIMIT 65")
+                .bind(tenant).bind(task).bind(after).bind(scope.to_string()).fetch_all(c).await
         })).await?;
-        for row in rows.iter().take(64) {
-            let policy: String = row.try_get("policy")?;
-            let state = checked(
-                self.policies
-                    .get_in(
-                        tx,
-                        &checked_input(rss_mdm_policy::PolicyId::new(self.tenant, &policy))?,
-                    )
-                    .await?,
-            )?
-            .ok_or(Error::Conflict)?;
-            crate::automation::jobs::enqueue_job_in(
-                tx,
-                Uuid::new_v4(),
-                &JobInput::Policy {
-                    policy,
-                    scope,
-                    resolution: task,
-                    assignment_revision: Some(row.try_get("revision")?),
-                    expected_revision: state.storage_revision(),
-                    as_of: self
-                        .clock
-                        .unix_seconds()
-                        .map_err(|_| Error::Unavailable(Failure::Clock))?,
-                },
-            )
-            .await?;
+        let more = devices.len() > 64;
+        devices.truncate(64);
+        for device in &devices {
+            crate::planning::policies::reconcile::wake_native_in(tx, device).await?;
         }
-        if rows.len() <= 64 {
+        if !more {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
         }
         let tenant = self.tenant.to_string();
-        let cursor: String = rows[63].try_get("policy")?;
-        tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("UPDATE mdm_automation.automation_jobs SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(task.to_string()).bind(cursor).execute(c).await?;Ok(())
+        let next = devices.last().cloned();
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("UPDATE mdm_automation.automation_jobs SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(task).bind(next).execute(c).await?;Ok(())
         })).await?;
         Ok(())
     }

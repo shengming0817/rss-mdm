@@ -203,18 +203,8 @@ pub(crate) fn from_state(
         devices: state.devices.clone(),
         collection: state.collection.clone(),
     });
-    let plans = Arc::new(crate::flow::actions::ActionWorkflow {
-        writer: rss_transactional_messaging_postgres::PgOutboxWriter::new(
-            state.flow.runtime.clone(),
-            crate::execution::messaging_domain(),
-        ),
-        runtime: state.flow.runtime.clone(),
-        tenant: state.execution.tenant,
-        audit: state.audit_store.clone(),
-        plans: crate::planning::actions::ActionPlans {
-            audit_store: state.audit_store.clone(),
-            content: state.execution.content.clone(),
-        },
+    let policies = Arc::new(crate::planning::policies::Policies {
+        planning: state.flow.planning.clone(),
         execution: state.execution.clone(),
     });
     let execution = Arc::new(crate::execution::http::HttpState {
@@ -317,6 +307,9 @@ pub(crate) fn from_state(
     let protected_v2 = Router::new()
         .merge(crate::execution::routes().with_state(execution.clone()))
         .merge(crate::planning::routes_v2().with_state(planning.clone()))
+        .merge(crate::planning::policies::http::routes().with_state(policies.clone()))
+        .merge(crate::planning::remote_operations::routes().with_state(policies))
+        .merge(crate::execution::actions::http::routes().with_state(execution.clone()))
         .merge(crate::assets::routes().with_state(assets))
         .merge(crate::compliance::http::routes().with_state(Arc::new(
             crate::compliance::Compliance::new(state.flow.planning.clone()),
@@ -329,11 +322,6 @@ pub(crate) fn from_state(
         .with_state(Arc::new(crate::resource_catalog::http::HttpState {
             catalog: state.flow.catalog.clone(),
         }))
-        .merge(crate::execution::actions::http::routes().with_state(execution.clone()))
-        .merge(
-            crate::flow::actions_http::routes()
-                .with_state(Arc::new(crate::flow::actions_http::HttpState { plans })),
-        )
         .merge(crate::software_catalog::routes().with_state(Arc::new(
             crate::software_catalog::HttpState {
                 runtime: state.flow.runtime.clone(),

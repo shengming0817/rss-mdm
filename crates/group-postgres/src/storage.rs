@@ -78,6 +78,7 @@ pub(crate) async fn group(
             name: r.try_get("name")?,
             description: r.try_get("description")?,
             revision: data(Revision::new(r.try_get("revision")?))?,
+            calculation_revision: r.try_get("calculation_revision")?,
             member_version: r.try_get("member_version")?,
             member_count: data(usize::try_from(r.try_get::<i64, _>("member_count")?))?,
             rule_version: r.try_get("rule_version")?,
@@ -148,12 +149,12 @@ pub(crate) async fn save_group(
     let tenant = tx.tenant_id().to_string();
     let n=tx.with_connection(move |c|Box::pin(async move {
         let query=if create {
-            "INSERT INTO mdm_group.groups(tenant_id,id,kind,name,description,revision,member_version,member_count,rule_version,deleted) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10)"
+            "INSERT INTO mdm_group.groups(tenant_id,id,kind,name,description,revision,member_version,member_count,rule_version,deleted,calculation_revision) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11)"
         }else {
-            "UPDATE mdm_group.groups SET name=$4,description=$5,revision=$6,member_version=$7,member_count=$8,rule_version=$9,deleted=$10 WHERE tenant_id=$1::uuid AND id=$2::uuid AND kind=$3"
+            "UPDATE mdm_group.groups SET name=$4,description=$5,revision=$6,member_version=$7,member_count=$8,rule_version=$9,deleted=$10,calculation_revision=$11 WHERE tenant_id=$1::uuid AND id=$2::uuid AND kind=$3"
         };
         sqlx::query(query).bind(tenant).bind(g.id.to_string()).bind(match g.kind {GroupKind::Static=>"static",GroupKind::Dynamic=>"dynamic"})
-        .bind(g.name).bind(g.description).bind(g.revision.get()).bind(g.member_version).bind(g.member_count as i64).bind(g.rule_version).bind(g.deleted).execute(c).await.map(|r|r.rows_affected())
+        .bind(g.name).bind(g.description).bind(g.revision.get()).bind(g.member_version).bind(g.member_count as i64).bind(g.rule_version).bind(g.deleted).bind(g.calculation_revision).execute(c).await.map(|r|r.rows_affected())
     })).await?;
     if n != 1 {
         return Err(StorageFault::RowCount.error());

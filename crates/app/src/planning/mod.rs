@@ -2,23 +2,23 @@
 use crate::assets;
 pub(crate) mod automation;
 
-pub(crate) mod actions;
-pub(crate) mod admission;
+pub(crate) mod assignment;
 pub(crate) mod configuration;
 mod groups;
 pub(crate) mod http;
 pub(crate) mod model;
 mod pages;
-mod plans;
+pub(crate) mod policies;
 pub(crate) mod references;
+pub(crate) mod remote_operations;
 
 mod scopes;
+pub(crate) mod sources;
 pub(crate) mod storage;
 
 mod wire;
 use crate::{Error, Failure};
 
-use admission::*;
 pub(crate) use http::routes_v2;
 pub use model::Permission;
 use model::*;
@@ -38,7 +38,8 @@ pub(crate) struct Planning {
     pub(crate) tenant: TenantId,
     pub(crate) clock: Arc<dyn crate::clock::Clock>,
     pub(crate) groups: rss_mdm_group_postgres::GroupStore,
-    policies: rss_mdm_policy_postgres::PolicyStore,
+    sources: sources::SourceHeads,
+    pub(crate) policy_store: rss_mdm_policy_postgres::PolicyStore,
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
 }
 use crate::http_operation::Operation;
@@ -55,7 +56,7 @@ impl Planning {
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
             .await
             .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
-        let policies =
+        let policy_store =
             rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, deadline())
                 .await
                 .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
@@ -68,7 +69,8 @@ impl Planning {
             tenant,
             clock,
             groups,
-            policies,
+            sources: sources::SourceHeads::new(tenant),
+            policy_store,
             catalog,
         })
     }
@@ -92,9 +94,6 @@ impl Planning {
                     let (s, command, audit, authorize) = *ctx;
                     let partitions = match command {
                         Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
-                        Command::Policy { id, .. } | Command::Save { id, .. } => {
-                            vec![s.policies.partition(id)?]
-                        }
                         _ => Vec::new(),
                     };
                     tx.prepare_outbox_partitions(&partitions).await?;
@@ -177,17 +176,6 @@ impl Planning {
             }
             Command::Scope { id, change } => self.scope_change(tx, *id, change, at).await,
             Command::ScopeRead { id } => self.scope_read(tx, *id).await,
-            Command::Policy { id, change } => self.policy_change(tx, id, change, at).await,
-            Command::PolicyRead { id } => self.policy_read(tx, id).await,
-            Command::Preview { id, request } => {
-                self.preview(tx, id, request.operation_id, &request.input, at)
-                    .await
-            }
-            Command::Save { id, request } => self.save_plan(tx, id, request, at).await,
-            Command::PlanRead { id } => {
-                self.task_read_in(tx, *id, None, crate::automation::TaskKind::Policy)
-                    .await
-            }
             Command::GroupPage {
                 group,
                 result,
@@ -204,15 +192,6 @@ impl Planning {
                 query,
             } => {
                 self.scope_page_in(tx, *scope, *result, *projection, query)
-                    .await
-            }
-            Command::PolicyPage {
-                policy,
-                result,
-                projection,
-                query,
-            } => {
-                self.policy_page_in(tx, policy, *result, *projection, query)
                     .await
             }
             Command::TaskRead { id, target, family } => {
@@ -243,24 +222,6 @@ enum Command {
     ScopeRead {
         id: Uuid,
     },
-    Policy {
-        id: String,
-        change: Operation<PolicyChange>,
-    },
-    PolicyRead {
-        id: String,
-    },
-    Preview {
-        id: String,
-        request: Operation<PreviewInput>,
-    },
-    Save {
-        id: String,
-        request: Operation<SavePlan>,
-    },
-    PlanRead {
-        id: Uuid,
-    },
     GroupPage {
         group: Uuid,
         result: Uuid,
@@ -271,12 +232,6 @@ enum Command {
         scope: Uuid,
         result: Uuid,
         projection: pages::ScopePageKind,
-        query: pages::PageQuery,
-    },
-    PolicyPage {
-        policy: String,
-        result: Uuid,
-        projection: pages::PolicyPageKind,
         query: pages::PageQuery,
     },
     TaskRead {

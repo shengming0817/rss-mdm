@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     authorization::context::AuthorizedPrincipal,
-    authorization::{Approval, Permission},
+    authorization::{ExecutionAuthority, Permission},
 };
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
@@ -110,6 +110,23 @@ impl ExecutionService {
             self.audit_store.append_in(tx, &fact, true).await?;
             return Ok(value);
         }
+        let approval =
+            ExecutionAuthority::from_proof(&auth, proof, device, input.task.permission())?;
+        let response = self
+            .queue_authorized_in(tx, device, input, approval, fingerprint, audit)
+            .await?;
+        proof.check_live()?;
+        Ok(response)
+    }
+    pub(super) async fn queue_authorized_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        input: &Create,
+        approval: ExecutionAuthority,
+        fingerprint: Vec<u8>,
+        audit: &RequestAudit,
+    ) -> Result<Value> {
         let now = storage::now(tx).await?;
         input.validate(now)?;
         let (registration, registration_generation) =
@@ -117,7 +134,6 @@ impl ExecutionService {
         storage::require_source(tx, registration, input.task.source()).await?;
         let (scope, coordinate) =
             storage::authority(self, tx, device, registration, registration_generation).await?;
-        let approval = Approval::from_proof(&auth, proof, device, input.task.permission())?;
         let spec = dc::CommandSpec::new(
             scope,
             checked_input(dc::CommandId::parse(&input.operation_id.to_string()))?,
@@ -132,9 +148,16 @@ impl ExecutionService {
         let name = device.to_owned();
         let id = input.operation_id.to_string();
         let request = checked_input(serde_json::to_string(input))?;
+        let (source, policy_version, remote_operation) = match &approval {
+            ExecutionAuthority::User { .. } => ("direct", None, None),
+            ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version), None),
+            ExecutionAuthority::RemoteOperation { operation, .. } => {
+                ("remote_operation", None, Some(*operation))
+            }
+        };
         let approval = checked_input(serde_json::to_string(&approval))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint,source_kind,policy_version,remote_operation) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(remote_operation).execute(c).await?;Ok(())})).await?;
         apple::own(tx, device, registration, input).await?;
         let response = created(
             tx,
@@ -144,7 +167,6 @@ impl ExecutionService {
             fingerprint,
         )
         .await?;
-        proof.check_live()?;
         Ok(response)
     }
     pub(super) async fn read(
@@ -194,8 +216,9 @@ impl ExecutionService {
             let now=storage::now(tx).await?;
             if command.status().is_terminal() || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let approval=if approve {
+                if !matches!(op.approval,ExecutionAuthority::User {..}) {return Err(Error::Conflict.into());}
                 if storage::current_registration(tx,device).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
-                Approval::from_proof(&auth,proof,device,op.request.task.permission())?
+                ExecutionAuthority::from_proof(&auth,proof,device,op.request.task.permission())?
             } else {
                 let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
                 if transition.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}

@@ -13,6 +13,8 @@ pub struct SourceMembership {
 pub enum Membership {
     /// Confirmed membership in a complete immutable source set.
     Known(bool),
+    /// The complete source evaluated this device but lacks decisive evidence.
+    Unknown,
     /// The source is not complete and cannot be used for publication.
     Incomplete,
     /// The source could not be resolved.
@@ -54,12 +56,13 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
             });
         }
         let contains = match membership.contains {
-            Membership::Known(value) => value,
+            Membership::Known(value) => Some(value),
+            Membership::Unknown => None,
             Membership::Incomplete => return Err(ScopeError::IncompleteSource(source.clone())),
             Membership::Failed => return Err(ScopeError::SourceFailed(source.clone())),
         };
         if let SourceId::Direct(id) = source.id()
-            && contains != (id == &input.device)
+            && contains != Some(id == &input.device)
         {
             return Err(ScopeError::InvalidDirectSource(source.clone()));
         }
@@ -81,16 +84,35 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
             .collect::<BTreeSet<_>>()
     };
     let targets = matching(&input.targets);
-    if targets.is_empty() {
+    let unknown =
+        |sources: &[SourceMembership]| sources.iter().any(|s| s.contains == Membership::Unknown);
+    if targets.is_empty() && !unknown(&input.targets) {
         return Ok(None);
     }
-    Ok(Some(explanation(
+    let mut result = explanation(
         input.device.clone(),
         targets,
         matching(limits),
         matching(&input.exclusions),
         input.limitations.is_some(),
-    )))
+    );
+    if result.targets.is_empty() {
+        result.reasons.push(ExclusionReason::UnknownTarget);
+    }
+    if result
+        .reasons
+        .contains(&ExclusionReason::MissingLimitationMatch)
+        && unknown(limits)
+    {
+        result
+            .reasons
+            .retain(|r| *r != ExclusionReason::MissingLimitationMatch);
+        result.reasons.push(ExclusionReason::UnknownLimitation);
+    }
+    if result.exclusions.is_empty() && unknown(&input.exclusions) {
+        result.reasons.push(ExclusionReason::UnknownExclusion);
+    }
+    Ok(Some(result))
 }
 
 pub(crate) fn explanation(

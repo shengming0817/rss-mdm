@@ -50,15 +50,10 @@ impl IntoResponse for AgentError {
             Self::Wire(code) => (status_for(code), code, None),
             Self::App(error) => {
                 let code = match error {
-                    Error::Malformed
-                    | Error::CertificateRequest
-                    | Error::Planning(crate::planning::error::PlanningError::TargetLimit) => {
+                    Error::Malformed | Error::CertificateRequest => {
                         wire::ErrorCode::MalformedRequest
                     }
-                    Error::Conflict
-                    | Error::Planning(crate::planning::error::PlanningError::Plan(_)) => {
-                        wire::ErrorCode::OperationConflict
-                    }
+                    Error::Conflict => wire::ErrorCode::OperationConflict,
                     Error::CommitUnknown | Error::RollbackFailed => {
                         wire::ErrorCode::OperationUnknown
                     }
@@ -72,9 +67,6 @@ impl IntoResponse for AgentError {
                     | Error::Publication(_)
                     | Error::Planning(crate::planning::error::PlanningError::Missing(_)) => {
                         wire::ErrorCode::ReportNotFound
-                    }
-                    Error::Planning(crate::planning::error::PlanningError::Action(_)) => {
-                        wire::ErrorCode::OperationConflict
                     }
                     Error::Configuration(_) | Error::Unavailable(_) | Error::Unsupported => {
                         wire::ErrorCode::ServiceUnavailable

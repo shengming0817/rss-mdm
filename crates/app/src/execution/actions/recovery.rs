@@ -1,72 +1,44 @@
 use super::{
-    production,
     state::{Cancellation, Execution},
     storage as db,
 };
 use crate::execution::{ExecutionService, Result, storage, stored};
-use crate::planning::action_schedule::Trigger;
 use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
-pub(in crate::execution) fn plan_id(entity: &str) -> Option<Uuid> {
+pub(in crate::execution) fn policy_id(entity: &str) -> Option<Uuid> {
     entity
-        .strip_prefix("action.")
+        .strip_prefix("policy.")
         .and_then(|v| Uuid::parse_str(v).ok())
 }
 pub(in crate::execution) async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
-    storage::lock(tx, "action-owner").await?;
-    let plan = db::load_plan(tx, id).await?;
-    let now = storage::now(tx).await?;
-    let scheduled = plan.definition.active
-        && plan.definition.approved
-        && now < plan.definition.frozen.input.schedule.until
-        && !matches!(
-            plan.definition.frozen.input.schedule.trigger,
-            Trigger::Manual
-        );
     let tenant = tx.tenant_id().to_string();
-    let pending=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND ((state->>'execution'='not_started' AND state->>'cancellation'<>'confirmed') OR state->>'execution'='running'))").bind(tenant).bind(id.to_string()).fetch_one(c).await})).await?;
-    Ok(scheduled || pending)
+    Ok(tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).fetch_one(c).await
+    })).await?)
 }
 pub(in crate::execution) async fn recover(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<()> {
-    storage::lock(tx, "action-owner").await?;
-    let plan = db::load_plan(tx, id).await?;
-    let now = storage::now(tx).await?;
-    production::tick(service, tx, &plan, now).await?;
+    crate::planning::policies::storage::lock(tx, id).await?;
     let tenant = tx.tenant_id().to_string();
-    let runs=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND plan=$2::uuid AND ((state->>'execution'='not_started' AND state->>'cancellation'<>'confirmed') OR state->>'execution'='running') AND id>coalesce((SELECT recovery_after FROM mdm_commands.action_progress WHERE tenant_id=$1::uuid AND id=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await})).await?;
-    let next = runs.last().cloned();
+    let runs=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(id.to_string()).execute(&mut *c).await?;
+        sqlx::query_scalar::<_,String>("SELECT r.id::text FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
+    })).await?;
+    let next = if runs.len() == 128 {
+        runs.last().cloned()
+    } else {
+        None
+    };
     for id in runs {
-        let mut run = db::load_run(tx, stored(Uuid::parse_str(&id))?).await?;
-        let previous = run.state.clone();
-        let stale = stale_registration(tx, &run.target).await?;
-        if stale
-            || !plan
-                .definition
-                .authorized_in(tx, &run.target.device, now)
-                .await?
-        {
-            run.state.cancel();
-        }
-        run.state.expire(
-            now,
-            plan.definition.frozen.definition.spec().timeout_seconds,
-        );
-        if run.state.execution == Execution::NotStarted
-            && run.state.cancellation == Cancellation::Requested
-        {
-            run.state.cancel();
-        }
-        db::save_run(tx, &run).await?;
-        audit_recovery(service, tx, &run, &previous).await?;
+        recover_one(service, tx, stored(Uuid::parse_str(&id))?).await?;
     }
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_progress SET recovery_after=$3::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).bind(next).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.policy_recovery SET recovery_after=$3::uuid WHERE tenant_id=$1::uuid AND policy=$2::uuid").bind(tenant).bind(id.to_string()).bind(next).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
 pub(super) async fn audit_recovery(
@@ -82,7 +54,7 @@ pub(super) async fn audit_recovery(
         );
         audit.identify_service("command-recovery");
         audit.operation(run.id, "command_reconcile");
-        audit.plan(run.plan);
+        run.source.audit(&audit);
         audit.target(&run.target.device);
         audit.registration(run.target.registration);
         let bytes = crate::execution::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
@@ -173,54 +145,42 @@ impl ExecutionService {
         );
         result
     }
-
-    /// Drive the production scheduling transaction at a fixed clock without a second worker.
-    pub(crate) async fn scan_action_fixture(
-        &self,
-        id: Uuid,
-        now: i64,
-    ) -> std::result::Result<(), crate::Error> {
-        let audit = rss_mdm_audit_integration::RequestAudit::new(
-            self.tenant.to_string(),
-            "management_write",
-        );
-        let result = crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
-            &audit,
-            (self, id, now),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, id, now) = *ctx;
-                    storage::lock(tx, "action-owner").await?;
-                    let plan = db::load_plan(tx, id).await?;
-                    production::tick(service, tx, &plan, now).await
-                })
-            },
-            crate::transaction::TransactionOwner::Execution,
-        )
-        .await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result
-    }
 }
 
 async fn stale_registration(
     tx: &mut PgTransaction<'_>,
     target: &super::model::Target,
 ) -> Result<bool> {
-    match db::registration(tx, &target.device).await {
-        Ok(current) => {
-            Ok(current.registration != target.registration
-                || current.generation != target.generation)
-        }
-        Err(crate::execution::Fault::Request(crate::Error::Conflict)) => Ok(true),
-        Err(error) => Err(error),
+    let tenant = tx.tenant_id().to_string();
+    let target = target.clone();
+    Ok(tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.device=$3 AND r.generation=$4 AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active'))").bind(tenant).bind(target.registration.to_string()).bind(target.device).bind(target.generation).fetch_one(c).await
+    })).await?)
+}
+
+pub(in crate::execution) async fn recover_one(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<()> {
+    let now = storage::now(tx).await?;
+    let mut run = db::load_run(tx, id).await?;
+    let plan = db::load_source(tx, run.source).await?;
+    let previous = run.state.clone();
+    let stale = stale_registration(tx, &run.target).await?;
+    if stale || plan.definition.withdrawn_in(tx, &run.target.device).await? {
+        run.state.cancel();
     }
+    run.state.expire(
+        now,
+        plan.definition.frozen.definition.spec().timeout_seconds,
+    );
+    if run.state.execution == Execution::NotStarted
+        && run.state.cancellation == Cancellation::Requested
+    {
+        run.state.cancel();
+    }
+    db::save_run(tx, &run).await?;
+    audit_recovery(service, tx, &run, &previous).await?;
+    Ok(())
 }

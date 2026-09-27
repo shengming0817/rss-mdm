@@ -19,8 +19,8 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/script-plans/{id}/runs", get(runs))
-        .route("/script-plans/{id}/runs/{task}", get(run))
+        .route("/policies/{id}/runs", get(runs))
+        .route("/policies/{id}/runs/{task}", get(run))
 }
 pub(crate) fn agent_routes() -> Router<Arc<HttpState>> {
     Router::new()

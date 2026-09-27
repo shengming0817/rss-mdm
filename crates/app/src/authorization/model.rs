@@ -18,7 +18,6 @@ pub enum Permission {
     StateVerify,
     FirewallWrite,
     ScriptExecute,
-    ScriptApprove,
     OperationRead,
     OperationCancel,
     AuthorizationRead,
@@ -34,9 +33,6 @@ pub enum Permission {
     ScopeWrite,
     PolicyRead,
     PolicyWrite,
-    PlanPreview,
-    PlanSave,
-    PlanExecute,
     ResourceRead,
     ResourceWrite,
     SoftwareRead,
@@ -64,7 +60,6 @@ impl Permission {
             | Self::StateVerify
             | Self::FirewallWrite
             | Self::ScriptExecute
-            | Self::ScriptApprove
             | Self::OperationRead
             | Self::OperationCancel => true,
             Self::AuthorizationRead
@@ -82,9 +77,6 @@ impl Permission {
             | Self::ScopeWrite
             | Self::PolicyRead
             | Self::PolicyWrite
-            | Self::PlanPreview
-            | Self::PlanSave
-            | Self::PlanExecute
             | Self::ResourceRead
             | Self::ResourceWrite
             | Self::SoftwareRead

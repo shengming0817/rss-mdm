@@ -70,6 +70,15 @@ impl Planning {
         watermark: i64,
         cursor: Option<String>,
     ) -> Result<()> {
+        if cursor.is_none() {
+            let tenant = self.tenant.to_string();
+            let devices=tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query_scalar::<_,String>("SELECT DISTINCT identity->>'device' FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND kind IN('device','registration','source','credential')").bind(tenant).bind(consumed).bind(watermark).fetch_all(c).await
+            })).await?;
+            for device in devices {
+                crate::planning::policies::reconcile::wake_native_in(tx, &device).await?;
+            }
+        }
         let tenant = self.tenant.to_string();
         let scopes:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query_scalar("WITH changed AS (SELECT DISTINCT identity->>'device' AS device FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND kind IN('device','registration','source','credential')) SELECT DISTINCT hit.scope::text FROM changed CROSS JOIN LATERAL (SELECT s.scope FROM mdm_planning.scope_sources s WHERE s.tenant_id=$1::uuid AND s.kind='device' AND s.target=changed.device AND ($4::uuid IS NULL OR s.scope>$4::uuid) ORDER BY s.scope LIMIT 33) hit ORDER BY hit.scope::text LIMIT 33")
@@ -181,12 +190,18 @@ impl Planning {
             return Ok(());
         }
         let id = stored(Uuid::parse_str(&group.to_string()))?;
+        checked(
+            self.sources
+                .require_reference_input_in(tx, &format!("group-members.{id}"), watermark as u64)
+                .await?,
+        )?;
         let tenant = self.tenant.to_string();
         let revision = current.revision.get();
-        let pending: bool = tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND kind='group' AND target=$2 AND NOT completed AND input->>'automatic'='true' AND (input->>'base_revision')::bigint=$3 AND (input->>'watermark')::bigint >= $4)")
-                    .bind(tenant).bind(id.to_string()).bind(revision).bind(watermark).fetch_one(c).await
-            })).await?;
+        let calculation = current.calculation_revision;
+        let rule = current.rule_version.clone();
+        let pending:bool=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) WHERE j.tenant_id=$1::uuid AND j.kind='group' AND b.group_id=$2::uuid AND NOT j.completed AND b.base_calculation=$3 AND b.rule_version IS NOT DISTINCT FROM $4)").bind(tenant).bind(id.to_string()).bind(calculation).bind(rule).fetch_one(c).await
+        })).await?;
         if pending {
             return Ok(());
         }

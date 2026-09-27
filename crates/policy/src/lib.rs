@@ -1,38 +1,24 @@
-#![deny(missing_docs)]
-//! Canonical tenant/time types belong to their RSS owners.
-//! ```compile_fail
-//! use rss_mdm_policy::TenantId;
-//! ```
-//! ```compile_fail
-//! use rss_mdm_policy::Timepoint;
-//! ```
-//! Policy lifecycle and deterministic intent planning; no storage or dispatch.
-//! Callers supply authenticated identities and complete snapshots. Persisting the
-//! returned preconditions and intents atomically belongs to the product adapter.
-//! Role identities reject same-tenant argument mixups at compile time:
-//! ```compile_fail
-//! use rss_mdm_policy::{DeviceId, Policy};
-//! fn wrong_role(device: DeviceId) { let _ = Policy::draft(device); }
-//! ```
-//! ```compile_fail
-//! use rss_mdm_policy::{Effect, ExecutionRecord, PayloadId, Progress, Version};
-//! fn wrong_role(version: Version, payload: PayloadId) {
-//!     let _ = ExecutionRecord::new(version, payload, Progress::Planned, Effect::Unverified);
-//! }
-//! ```
-//! Full-target inputs and synchronous full-plan materialization are unavailable.
-//! ```compile_fail
-//! use rss_mdm_policy::{reconcile, PlanInput, TargetSnapshot};
-//! ```
+//! Closed persistent Policy definitions and deterministic schedule decisions.
+//! Scope and Resource identities are opaque references. This core owns no target
+//! enumeration, authorization, execution fact, database, HTTP or device protocol.
 #![forbid(unsafe_code)]
-#![warn(clippy::cognitive_complexity)]
-mod fingerprint;
-pub use fingerprint::{ExecutionDigest, TargetDigest, stream_plan_id};
-mod identity;
-mod lifecycle;
-pub use identity::{DeviceId, PayloadId, PolicyId, RequestId, TargetSnapshotId};
+#![deny(missing_docs)]
+mod assignment;
 mod model;
-mod plan;
-pub use lifecycle::*;
+/// Calendar, window and late-checkin decisions over an explicit clock value.
+pub mod schedule;
+pub use assignment::*;
 pub use model::*;
-pub use plan::*;
+/// A malformed definition or a failed configuration CAS.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum Error {
+    /// A definition violates its closed shape or bounds.
+    #[error("invalid Policy input")]
+    Malformed,
+    /// Expected configuration revision no longer matches.
+    #[error("Policy revision conflict")]
+    Conflict,
+    /// Enable or disable refers to an absent policy.
+    #[error("Policy not found")]
+    NotFound,
+}

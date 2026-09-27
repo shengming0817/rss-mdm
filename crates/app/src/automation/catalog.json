@@ -74,6 +74,15 @@
     ],
     [
       "automation_jobs",
+      "replacement_task",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "automation_jobs",
       "authority_revision",
       "bigint",
       true,
@@ -144,7 +153,7 @@
       "automation_jobs",
       "automation_jobs_kind_check",
       "c",
-      "CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'scope'::text, 'policy'::text, 'asset_query'::text, 'compliance'::text])))",
+      "CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'scope'::text, 'policy_reconcile'::text, 'asset_query'::text, 'compliance'::text])))",
       true
     ],
     [

@@ -26,6 +26,8 @@ pub fn request(receipt: &Receipt, patch: Option<MemberPatch>) -> BuildRequest {
         id: op(),
         group: receipt.group.id,
         expected: receipt.group.revision,
+        base_calculation: receipt.group.calculation_revision,
+        changed_devices: None,
         rule_version: receipt.group.rule_version.clone(),
         patch,
         input_version: "fixture-frozen".into(),

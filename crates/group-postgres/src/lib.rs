@@ -36,3 +36,6 @@ pub const GENERATIONS_MIGRATION_SQL: &str =
 /// Reverse lookup of affected groups without host access to private membership tables.
 pub const REVERSE_INDEX_MIGRATION_SQL: &str =
     include_str!("../migrations/0004_member_reverse_index.sql");
+
+mod delta;
+mod history;

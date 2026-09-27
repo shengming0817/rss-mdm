@@ -9,10 +9,6 @@ use axum::{
 use serde_json::Value;
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route(
-            "/policies/{policy}/plans/{plan}/execute",
-            post(execute_plan),
-        )
         .route("/devices/{device}/operations", post(create))
         .route("/devices/{device}/operations/{id}", get(read))
         .route("/devices/{device}/operations/{id}/cancel", post(cancel))
@@ -87,23 +83,6 @@ async fn approve(
         .change(&auth.proof, &device, id, &change, true, &audit)
         .await
         .map(Json)
-}
-
-async fn execute_plan(
-    State(app): State<Arc<HttpState>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    Path((policy, plan)): Path<(String, Uuid)>,
-    body: std::result::Result<Json<super::plans::Execute>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<(StatusCode, Json<Value>), Error> {
-    let body = body.map_err(|_| Error::Malformed)?.0;
-    audit.operation(body.operation_id, "plan_execute");
-    audit.plan(plan);
-    audit.target(&policy);
-    app.execution
-        .execute_plan(&auth.proof, &policy, plan, &body, &audit)
-        .await
-        .map(|v| (StatusCode::ACCEPTED, Json(v)))
 }
 
 pub(crate) struct HttpState {

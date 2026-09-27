@@ -1,11 +1,11 @@
 //! Persistent MDM authorization. Identity facts supply subjects, never product permissions.
 pub(crate) mod admission;
-mod approval;
+mod authority;
 pub(crate) mod context;
 pub(crate) mod error;
 mod evaluate;
 pub(crate) mod identity_management;
-pub(crate) use approval::Approval;
+pub(crate) use authority::ExecutionAuthority;
 pub(crate) use store::{lock as lock_on, snapshot_on};
 pub(crate) mod http;
 mod initialize;
