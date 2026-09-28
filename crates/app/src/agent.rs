@@ -639,3 +639,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+pub(crate) mod t2;

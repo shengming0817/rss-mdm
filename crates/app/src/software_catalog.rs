@@ -339,3 +339,6 @@ async fn download(
     .await?;
     crate::content::http::response(content, &headers).await
 }
+
+#[cfg(all(test, feature = "integration"))]
+pub(crate) mod t2;

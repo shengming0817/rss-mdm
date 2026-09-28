@@ -22,11 +22,7 @@ mod inventory_runtime;
 mod operations;
 pub mod planning;
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the shared publication fixture exposes scenarios used by separate test modules"
-)]
-#[path = "../tests/publication_support/mod.rs"]
+#[path = "../../../tests/support/software/mod.rs"]
 mod publication_support;
 mod registration_lifecycle;
 pub mod resource_catalog;
@@ -46,15 +42,13 @@ mod clock;
 pub mod config;
 mod identity;
 mod identity_audit;
-#[cfg(test)]
-mod identity_fixture;
-#[cfg(test)]
-mod identity_t2;
 mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
 pub mod software_publication;
+#[cfg(test)]
+mod test_support;
 pub mod windows;
 use axum::{
     Json,

@@ -295,8 +295,8 @@ impl App {
     }
 }
 
-#[cfg(feature = "integration")]
-pub mod test_support;
+#[cfg(all(test, feature = "integration"))]
+mod t2;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]

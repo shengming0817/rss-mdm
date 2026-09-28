@@ -195,7 +195,4 @@ fn event(name: &str, kind: ConnectionFailure) -> serde_json::Value {
 #[path = "tls_tests.rs"]
 mod tests;
 
-#[cfg(test)]
-pub(crate) use tests::verify_tls_lifecycle;
-
 use rss_mdm_audit_integration::{FailureReason, RequestAudit};

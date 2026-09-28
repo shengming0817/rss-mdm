@@ -1,5 +1,6 @@
 //! Real durable lease → HTTP/2 send → persisted result, without command evidence.
 use super::*;
+use crate::apple::push;
 use sqlx::{Connection, PgConnection};
 async fn due(pg: &mut PgConnection) -> Result<()> {
     sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second'")
@@ -16,13 +17,14 @@ impl Fixture {
             .create_operation(json!({"kind":"profile_install","enabled":true}))
             .await?;
         let mut pg =
-            PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+            PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
             .bind(TENANT)
             .execute(&mut pg)
             .await?;
         let participant =
-            push::tests::Participant::start(vec![429, 503, 400, 200, 410], vec![42; 32]).await?;
+            push::test_support::Participant::start(vec![429, 503, 400, 200, 410], vec![42; 32])
+                .await?;
         for (status, failures, minimum) in [(429, 1, 25.0), (503, 2, 55.0), (400, 0, 25.0)] {
             due(&mut pg).await?;
             push::wake(&participant.push, &self.app.execution).await?;
@@ -55,9 +57,12 @@ impl Fixture {
                 .is_none()
         );
         // A genuinely reissued certificate reopens only the old certificate's pause.
-        let rotated =
-            push::tests::Participant::start_with_rotation(vec![400, 200], vec![42; 32], true)
-                .await?;
+        let rotated = push::test_support::Participant::start_with_rotation(
+            vec![400, 200],
+            vec![42; 32],
+            true,
+        )
+        .await?;
         ensure!(rotated.push.configuration != participant.push.configuration);
         push::wake(&rotated.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["outcome"] == "rejected");
@@ -89,16 +94,13 @@ impl Fixture {
         let denied = peer
             .send(
                 "/mdm",
-                protocol::dictionary([
-                    ("Status", "Idle".into()),
-                    ("UDID", "rss-make t2 SUITE=apple".into()),
-                ]),
+                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-t2-apple".into())]),
             )
             .await?;
         ensure!(denied.0 == StatusCode::UNAUTHORIZED);
         participant.close().await?;
         peer.token().await?;
-        let unavailable = push::tests::Participant::unavailable_push().await?;
+        let unavailable = push::test_support::Participant::unavailable_push().await?;
         push::wake(&unavailable, &self.app.execution).await?;
         let failed = state(&mut pg).await?;
         ensure!(
@@ -109,7 +111,7 @@ impl Fixture {
         );
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         due(&mut pg).await?;
-        let recovered = push::tests::Participant::start(vec![200], vec![42; 32]).await?;
+        let recovered = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
         push::wake(&recovered.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["failures"] == 0);
         recovered.close().await?;
@@ -119,4 +121,14 @@ impl Fixture {
         ensure!(cancelled.0 == StatusCode::OK);
         Ok(())
     }
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.push: native protocol and durable state"]
+async fn durable_push_leases_receipts_and_health() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    f.push_cycle(&peer).await?;
+    drop(device);
+    f.close().await
 }

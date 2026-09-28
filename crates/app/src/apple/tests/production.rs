@@ -1,23 +1,10 @@
 //! The production serve path owns listeners, automatic APNs work, health and shutdown.
 use super::*;
+use crate::apple::push;
 use sqlx::{Connection, Row};
 impl Fixture {
     pub async fn production(mut self) -> Result<()> {
-        // Finish a new real enrollment while the fixed CA's TLS webhook fixture is available.
-        let (enrollment, attempt, password) = self.enrollment().await?;
-        let device = scep::Device::new(enrollment, attempt, &password)?;
-        let request = device.request(
-            &self.root.join("apple-issuer.pem"),
-            &Uuid::new_v4().to_string(),
-            self.app.clock.unix_seconds()?,
-        )?;
-        let der = device
-            .enroll(
-                &self.client()?,
-                &self.app.apple()?.config.scep_url,
-                &request,
-            )
-            .await?;
+        let (device, der) = self.local_leaf().await?;
         let peer = lifecycle::Peer {
             client: reqwest::Client::builder()
                 .no_proxy()
@@ -36,7 +23,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                    ("UDID", "rss-t2-apple".into()),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -46,8 +33,8 @@ impl Fixture {
         let operation = self
             .create_operation(json!({"kind":"profile_install","enabled":true}))
             .await?;
-        let participant = push::tests::Participant::start(vec![200], vec![42; 32]).await?;
-        let mut config = crate::identity_fixture::config(TENANT)?;
+        let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
+        let mut config = crate::test_support::identity::config(TENANT)?;
         let port = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         config.listen = port.local_addr()?;
         drop(port);
@@ -111,14 +98,15 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                    ("UDID", "rss-t2-apple".into()),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
             .await?;
         ensure!(reply.0 == StatusCode::OK);
         let mut pg =
-            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
         let mut accepted = false;
         for _ in 0..100 {
             let row = sqlx::query(
@@ -187,4 +175,12 @@ impl Fixture {
         pg.close().await?;
         Ok(())
     }
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: production assembly, health and bounded shutdown"]
+async fn production_listeners_push_and_shutdown() -> Result<()> {
+    let f = Fixture::start().await?;
+    startup_diagnostics(&f.root)?;
+    f.production().await
 }

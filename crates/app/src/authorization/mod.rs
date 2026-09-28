@@ -24,3 +24,6 @@ mod tests;
 
 pub(crate) const AUTHORIZATION_MIGRATION_SQL: &str =
     include_str!("../../migrations/0010_authorization.sql");
+
+#[cfg(test)]
+pub(crate) mod t2;

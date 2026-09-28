@@ -866,9 +866,7 @@ mod tests {
         use tower::ServiceExt;
         const CHILD: &str = "MDM_AUDIT_LOG_TEST";
         if let Ok(mode) = std::env::var(CHILD) {
-            let (pool, audit_store) = crate::audit_integration_tests::request_store()
-                .await
-                .unwrap();
+            let (pool, audit_store) = crate::audit_test_support::request_store().await.unwrap();
             pool.close().await;
             let router = Router::new()
                 .route(
@@ -948,9 +946,7 @@ mod tests {
     #[ignore = "make t2: production envelope has an admitted Audit capability"]
     async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         use tower::ServiceExt;
-        let (pool, audit_store) = crate::audit_integration_tests::request_store()
-            .await
-            .unwrap();
+        let (pool, audit_store) = crate::audit_test_support::request_store().await.unwrap();
         for reason in [
             Failure::RequestDeadline,
             Failure::IdentityStorage,
@@ -1062,3 +1058,6 @@ mod tests {
         audit.finalize(None);
     }
 }
+
+#[cfg(test)]
+pub(crate) mod t2;

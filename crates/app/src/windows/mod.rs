@@ -7,8 +7,6 @@ pub(crate) mod management;
 mod protection;
 pub(crate) mod retention;
 #[cfg(test)]
-mod retention_tests;
-#[cfg(test)]
 mod tests;
 
 use crate::{
@@ -471,3 +469,9 @@ impl HttpState {
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+#[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
+mod t2;

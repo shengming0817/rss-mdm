@@ -240,9 +240,6 @@ enum Command {
     },
 }
 
-#[cfg(test)]
-mod tests;
-
 fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>) -> Result<T> {
     r.map_err(|e| match e {
         rss_mdm_group_postgres::Rejection::NotFound
@@ -267,3 +264,10 @@ mod receipts;
 pub(crate) mod action_contract;
 
 pub mod error;
+
+#[cfg(test)]
+pub(crate) mod t2;
+
+#[cfg(test)]
+#[path = "../test_support/planning.rs"]
+pub(crate) mod test_support;

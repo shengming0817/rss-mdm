@@ -5,10 +5,11 @@ impl Fixture {
     pub async fn renewal_cycle(
         &mut self,
         old: &lifecycle::Peer,
-        old_device: &scep::Device,
-    ) -> Result<(lifecycle::Peer, scep::Device)> {
+        old_device: &scep_client::Device,
+    ) -> Result<(lifecycle::Peer, scep_client::Device)> {
         let mut pg =
-            sqlx::PgConnection::connect_with(&crate::device::tests::options("postgres")?).await?;
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
         let row=sqlx::query("SELECT s.certificate,s.enrollment::text,s.registration::text,s.not_before,s.not_after,r.generation,c.id::text AS credential,p.epoch::text FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources p ON (p.tenant_id,p.registration)=(r.tenant_id,r.id) WHERE s.state='bound' AND c.state='active'").fetch_one(&mut pg).await?;
         let enrollment = Uuid::parse_str(&row.try_get::<String, _>("enrollment")?)?;
         let before: i64 = row.try_get("not_before")?;
@@ -91,7 +92,8 @@ impl Fixture {
             retry == command && request == body,
             "renewal NotNow changed its request"
         );
-        let reused = scep::Device::with_key(enrollment, attempt, secret, Some(&old_device.key))?;
+        let reused =
+            scep_client::Device::with_key(enrollment, attempt, secret, Some(&old_device.key))?;
         let request = reused.request(
             &self.root.join("apple-issuer.pem"),
             &Uuid::new_v4().to_string(),
@@ -108,7 +110,7 @@ impl Fixture {
                 .is_err(),
             "renewal reused active key"
         );
-        let device = scep::Device::new(enrollment, attempt, secret)?;
+        let device = scep_client::Device::new(enrollment, attempt, secret)?;
         let request = device.request(
             &self.root.join("apple-issuer.pem"),
             &Uuid::new_v4().to_string(),
@@ -173,7 +175,7 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                    ("UDID", "rss-t2-apple".into()),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -192,7 +194,7 @@ impl Fixture {
                 &old_principal,
                 &protocol::xml(protocol::dictionary([
                     ("Status", "Idle".into()),
-                    ("UDID", "rss-make t2 SUITE=apple".into()),
+                    ("UDID", "rss-t2-apple".into()),
                 ]))?,
                 &audit,
             )
@@ -207,10 +209,7 @@ impl Fixture {
         let refused = old
             .send(
                 "/mdm",
-                protocol::dictionary([
-                    ("Status", "Idle".into()),
-                    ("UDID", "rss-make t2 SUITE=apple".into()),
-                ]),
+                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-t2-apple".into())]),
             )
             .await?;
         ensure!(
@@ -244,4 +243,14 @@ impl Fixture {
         pg.close().await?;
         Ok((peer, device))
     }
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.renewal: native protocol and durable state"]
+async fn certificate_renewal_preserves_registration() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_scep_peer().await?;
+    f.renewal_cycle(&peer, &device).await?;
+    drop(device);
+    f.close().await
 }

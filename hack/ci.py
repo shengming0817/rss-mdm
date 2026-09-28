@@ -16,7 +16,7 @@ import tomllib
 from urllib.parse import urlsplit
 
 from build_run import lease_fds, require_lease
-from ci_registry import SUITES, all_tools
+from t2_registry import MODULES, all_tools
 from verification_result import result as stage_result, publish
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +46,6 @@ LOCAL_PACKAGES = {
     "rss-mdm-inventory": "crates/inventory",
     "rss-mdm-inventory-postgres": "crates/inventory-postgres",
     "rss-mdm-examples": "crates/examples",
-    "inventory-postgres-integration": "tests/inventory-postgres-integration",
 }
 
 IDENTITY_PACKAGES = {"rss-identity-core", "rss-identity-postgres", "rss-identity-http-axum", "rss-identity-oidc"}
@@ -243,35 +242,38 @@ CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
 def select_impact(head, base=None):
     base = base or os.environ.get("CI_BASE", "origin/develop")
-    selection = {"full": True, "packages": [], "reasons": [], "base": base, "head": head}
+    selection = {"cargoFull": True, "t2Full": True, "packages": [],
+                 "modules": sorted(MODULES), "toolTests": all_tools(),
+                 "reasons": [], "base": base, "head": head}
     try:
-        if os.environ.get("CI_FULL", "0") != "0":
-            selection["reasons"] = ["explicit-full"]
-        else:
-            merge = command(["/usr/bin/git", "merge-base", base, head])
-            require(merge.returncode == 0, "base-unavailable")
-            selection["mergeBase"] = merge.stdout.strip()
-            result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"]], separate_stderr=True)
-            require(result.returncode == 0, "selector-failed")
-            decision = json.loads(result.stdout)
-            require(type(decision["full"]) is bool and isinstance(decision["packages"], list)
-                    and set(decision["packages"]) <= set(LOCAL_PACKAGES)
-                    and isinstance(decision["reasons"], list), "invalid-selection")
-            require(isinstance(decision['t2Suites'],list) and set(decision['t2Suites'])<=set(SUITES), 'invalid suites')
-            require(isinstance(decision['toolTests'],list) and set(decision['toolTests'])<=set(all_tools()), 'invalid tool tests')
-            selection.update(decision)
-            if getattr(result, "stderr", "").strip():
-                selection["diagnostic"] = result.stderr.strip()
+        merge = command(["/usr/bin/git", "merge-base", base, head])
+        require(merge.returncode == 0, "base-unavailable")
+        selection["mergeBase"] = merge.stdout.strip()
+        result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"]], separate_stderr=True)
+        require(result.returncode == 0, "selector-failed")
+        decision = json.loads(result.stdout)
+        require(type(decision["cargoFull"]) is bool and type(decision["t2Full"]) is bool
+                and isinstance(decision["packages"], list)
+                and set(decision["packages"]) <= set(LOCAL_PACKAGES)
+                and isinstance(decision["reasons"], list), "invalid selection")
+        require(isinstance(decision["modules"], list) and set(decision["modules"]) <= set(MODULES), "invalid modules")
+        require(isinstance(decision["toolTests"], list) and set(decision["toolTests"]) <= set(all_tools()), "invalid tool tests")
+        require(not decision["t2Full"] or set(decision["modules"]) == set(MODULES), "incomplete full integration selection")
+        selection.update(decision)
+        if result.stderr.strip():
+            selection["diagnostic"] = result.stderr.strip()
     except Exception as error:
-        selection.update(full=True, packages=[], reasons=["selection-unavailable: " + str(error)])
-    if selection['full']:selection.update(t2Suites=sorted(SUITES),toolTests=all_tools())
+        selection.update(cargoFull=True, t2Full=True, packages=[], modules=sorted(MODULES),
+                         toolTests=all_tools(), reasons=["selection-unavailable: " + str(error)])
+    if os.environ.get("CI_FULL", "0") != "0":
+        selection.update(cargoFull=True, packages=[], reasons=[*selection["reasons"], "explicit-cargo-full"])
     return selection
 
 
 def selected_gate(name, selection):
     if name=="agent-wire-artifact" and "test_agent_wire_artifact" in selection["toolTests"]:return True
     if name == "script-tests":return bool(selection["toolTests"])
-    if selection["full"] or name == "fmt":
+    if selection["cargoFull"] or name == "fmt":
         return True
     packages = set(selection["packages"])
     if name == "advisories":
@@ -281,7 +283,7 @@ def selected_gate(name, selection):
 
 def gate_command(name, args, selection):
     if name == "script-tests":return [sys.executable,"-O","-m","unittest", *selection["toolTests"]]
-    if name in CARGO_GATES and not selection["full"]:
+    if name in CARGO_GATES and not selection["cargoFull"]:
         flags = [arg for package in selection["packages"] for arg in ("-p", package)]
         index = args.index("--workspace")
         return args[:index] + flags + args[index + 1:]
@@ -367,7 +369,7 @@ def execute_ci():
     started=time.monotonic()
     try:
         pin = workspace_pin(ROOT)
-        if selection["full"] or selection["packages"]:
+        if selection["cargoFull"] or selection["packages"]:
             dependency_graphs(pin)
         results["pin"] = stage_result("passed",started)
     except Exception as error:
@@ -391,10 +393,10 @@ def execute_ci():
             (OUT / f"{name}.log").write_text(str(error))
             results[name] = stage_result("failed",started,command=args)
         print(f"{name}: {results[name]}", flush=True)
-    integration = {name:stage_result('skipped',reason='not-run') for name in SUITES}
+    integration = {name:stage_result('skipped',reason='not-run') for name in MODULES}
     if os.environ.get('CI_T2') == 'all':
-        from t2 import run_suites
-        integration = run_suites(sorted(SUITES), OUT/'t2')
+        from t2 import run_modules
+        integration = run_modules(sorted(MODULES), OUT/'t2')
     started=time.monotonic()
     try:
         require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
@@ -403,7 +405,7 @@ def execute_ci():
         (OUT / "source-stability.log").write_text(str(error))
         results["source-stability"] = stage_result("failed",started)
     evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
-    evidence['recommendedT2'] = {'suites':selection['t2Suites'],'status':'not-run' if selection['t2Suites'] else 'not-selected'}
+    evidence['recommendedT2'] = {'modules':selection['modules'],'status':'not-run' if selection['modules'] else 'not-selected'}
     evidence['t2'] = integration
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)

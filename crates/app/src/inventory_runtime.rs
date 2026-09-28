@@ -592,3 +592,7 @@ impl InventoryRuntime {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "test_support/inventory_runtime.rs"]
+pub(crate) mod test_support;

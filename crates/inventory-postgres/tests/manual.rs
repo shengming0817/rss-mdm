@@ -6,7 +6,7 @@ use sqlx::{
     postgres::{PgConnectOptions, PgSslMode},
 };
 #[tokio::test]
-#[ignore = "make t2 SUITE=management: real TLS PostgreSQL"]
+#[ignore = "make t2 MODULE=inventory.manual: real TLS PostgreSQL"]
 async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn std::error::Error>>
 {
     let config: serde_json::Value =

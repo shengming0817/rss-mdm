@@ -113,11 +113,18 @@ async fn actual_rss_connection_failures_are_visible_without_payloads() {
     }
 }
 
-pub(crate) async fn verify_tls_lifecycle(
-    access: Arc<crate::Database>,
-    tls: Arc<rustls::ServerConfig>,
-    root: &std::path::Path,
-) -> anyhow::Result<()> {
+#[tokio::test]
+#[ignore = "MODULE=native.tls: real TLS connections, audit sink and bounded shutdown"]
+async fn listener_connections_and_bounded_shutdown() -> anyhow::Result<()> {
+    let root = std::path::PathBuf::from(std::env::var("MDM_WINDOWS_FIXTURES")?);
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
+    let endpoint: crate::native::TlsEndpoint =
+        serde_json::from_value(config["enrollment"].clone())?;
+    let tls = configuration(&endpoint, None)?;
+    let access = Arc::new(
+        crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?,
+    );
     use anyhow::ensure;
     use std::sync::atomic::{AtomicBool, Ordering};
     struct Dropped(Arc<AtomicBool>);

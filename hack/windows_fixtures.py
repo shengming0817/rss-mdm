@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 import secrets
-import subprocess
+from t2_processes import subprocess
 
 def generate(root, tls_certificate, tls_key):
     root = Path(root)

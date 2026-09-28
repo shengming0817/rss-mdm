@@ -584,3 +584,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+pub(crate) mod t2;

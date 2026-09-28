@@ -6,3 +6,5 @@
 - [安装与运维](deployment/README.md)
 - [历史与外部证据](reference/README.md)
 - [稳定规则](rules/README.md)
+
+- [测试模块](guides/test-modules.md)：T1/T2 归属、MODULE 执行、affected、并发与结果证据。

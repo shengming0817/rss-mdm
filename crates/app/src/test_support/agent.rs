@@ -1,0 +1,133 @@
+use super::*;
+pub(crate) struct Agent {
+    pub(crate) password: &'static str,
+    pub(crate) credential: &'static str,
+    pub(crate) request: Value,
+    pub(crate) registration: Value,
+}
+pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<Agent> {
+    let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let credential = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let (status, enrollment) = browser
+        .call(
+            router,
+            Method::POST,
+            "/api/v3/enrollments",
+            Some(json!({"deviceId":"device-1","password":password,"source":"agent.builtin"})),
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK && enrollment["source"] == "agent.builtin",
+        "Agent enrollment failed: {status} {enrollment}"
+    );
+    let operation = uuid::Uuid::new_v4();
+    let registration_request = json!({
+        "wireVersion":3,
+        "operationId":operation,
+        "enrollmentId":enrollment["enrollmentId"],
+        "password":password,
+        "credential":credential,
+        "platform":"macos",
+        "architecture":"aarch64",
+        "capabilities":["inventory.basic.v3"]
+    });
+    let (status, registration) = agent_call(
+        router,
+        Method::POST,
+        "/api/agent/v3/registrations",
+        None,
+        Some(registration_request.clone()),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::CREATED && registration["source"] == "agent.builtin",
+        "Agent registration failed: {status} {registration}"
+    );
+    Ok(Agent {
+        password,
+        credential,
+        request: registration_request,
+        registration,
+    })
+}
+
+/// Registration and report routes consume only authority, device and observation services.
+pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
+    let runtime = agent_runtime(&fixture.base).await?;
+    let devices = Arc::new(crate::device::DeviceService::new(
+        fixture.access.clone(),
+        TENANT.into(),
+        fixture.audit.clone(),
+    ));
+    let collection = Arc::new(crate::assets::collection::CollectionService::new(
+        devices.clone(),
+        fixture.access.clone(),
+        runtime,
+    ));
+    let agent = crate::agent::routes().with_state(Arc::new(crate::agent::HttpState {
+        audit_store: fixture.audit.clone(),
+        access: fixture.access.clone(),
+        identity: fixture.identity.clone(),
+        credentials: fixture.credentials.clone(),
+        devices,
+        collection,
+    }));
+    fixture.router_with_public(
+        fixture.authorization().merge(fixture.enrollment()),
+        Router::new().nest("/api/agent/v3", agent),
+    )
+}
+
+/// Prepare additional task-capable targets from one real HTTP registration.
+/// Only access prerequisites are cloned; remote targets, commands, receipts and
+/// audit remain exclusively the output of the production operation under test.
+pub(crate) fn bulk_task_agents(canonical: &str, count: usize) -> Result<Vec<String>> {
+    ensure!(count <= 1000);
+    // Keep the one live HTTP peer first in target order; the remaining peers
+    // exercise fanout checkpoints without making this a relay-throughput test.
+    let canonical_sql = canonical.replace('\'', "''");
+    pg(&format!(
+        r#"
+BEGIN;
+CREATE TEMP TABLE task_targets ON COMMIT DROP AS
+ SELECT 'restart-agent-' || lpad(n::text,3,'0') AS device, gen_random_uuid() AS grant_id,
+        gen_random_uuid() AS request, gen_random_uuid() AS registration
+ FROM generate_series(1,{count}) n;
+INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at)
+ SELECT '{TENANT}',grant_id,'bulk-fixture','{INSTANCE}',device,'enrollment','consumed',
+        clock_timestamp()+interval '200 seconds' FROM task_targets;
+INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source)
+ SELECT '{TENANT}',request,grant_id,'agent.builtin' FROM task_targets;
+INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{TENANT}',device FROM task_targets;
+INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state)
+ SELECT '{TENANT}',registration,device,'agent',1,request,'active' FROM task_targets;
+INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state)
+ SELECT '{TENANT}',gen_random_uuid(),registration,'agent',
+        md5(registration::text)||md5(registration::text),'active' FROM task_targets;
+INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled)
+ SELECT '{TENANT}',t.registration,s.source,gen_random_uuid(),s.coverage,true
+ FROM task_targets t CROSS JOIN mdm_access.report_sources s
+ JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
+ WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
+INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities,platform,architecture)
+ SELECT '{TENANT}',registration,3,'["inventory.basic.v3","task.execute.v3"]','macos','aarch64' FROM task_targets;
+DO $$ BEGIN
+ IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
+     JOIN mdm_access.agent_bindings b ON b.registration=r.id
+     JOIN mdm_access.credentials c ON c.registration=r.id
+     JOIN mdm_access.requests q ON q.id=r.request_id
+     JOIN mdm_access.devices d ON (d.tenant_id,d.id)=(r.tenant_id,r.device)
+     WHERE r.state='active' AND c.state='active'
+       AND b.capabilities='["inventory.basic.v3","task.execute.v3"]'
+       AND (SELECT count(*) FROM mdm_access.report_sources s WHERE s.registration=r.id AND s.enabled
+            AND s.source IN ('agent.builtin','agent.script','agent.osquery'))=3) <> {count}
+ THEN RAISE EXCEPTION 'incomplete task target fixture'; END IF;
+END $$;
+COMMIT;
+"#
+    ))?;
+    let mut devices = vec![canonical.to_owned()];
+    devices.extend((1..=count).map(|n| format!("restart-agent-{n:03}")));
+    Ok(devices)
+}

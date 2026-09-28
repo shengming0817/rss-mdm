@@ -14,7 +14,7 @@ use tower::ServiceExt;
 const TENANT: &str = "11111111-1111-4111-8111-111111111111";
 
 #[tokio::test]
-#[ignore = "make t2 SUITE=identity: installed same-database Identity/Audit worker"]
+#[ignore = "make t2 MODULE=identity.audit: installed same-database Identity/Audit worker"]
 async fn http_events_deliver_replay_and_fail_closed() -> Result<()> {
     for ledger in [false, true] {
         exercise(ledger).await?;
@@ -53,7 +53,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         } else {
             crate::migration::AuditMode::Plain
         },
-        instance_id: crate::identity_fixture::INSTANCE.into(),
+        instance_id: crate::test_support::identity::INSTANCE.into(),
         target: [1; 16],
         lineage: [2; 16],
         epoch: 1,
@@ -89,7 +89,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         .into();
     crate::maintenance::run(serde_json::from_value(serde_json::json!({
         "database":maintenance, "installation":installation, "tenant_id":TENANT,
-        "principal_id":crate::identity_fixture::ADMIN, "login":"admin", "password_file":root.join("account-password")
+        "principal_id":crate::test_support::identity::ADMIN, "login":"admin", "password_file":root.join("account-password")
     }))?, true).await?;
     let mut identity_resources = Vec::new();
     let identity = crate::identity::Identity::connect(
@@ -97,7 +97,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 TENANT,
-                crate::identity_fixture::INSTANCE,
+                crate::test_support::identity::INSTANCE,
                 config.identity_management.clone(),
             )?,
         ),
@@ -113,7 +113,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         .header("content-type", "application/json")
         .extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?))
         .body(Body::from(serde_json::to_vec(
-            &serde_json::json!({"login":"admin","password":crate::identity_fixture::PASSWORD}),
+            &serde_json::json!({"login":"admin","password":crate::test_support::identity::PASSWORD}),
         )?))?;
     let response = identity.routes().oneshot(request).await?;
     ensure!(

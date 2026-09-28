@@ -204,11 +204,11 @@ members = [
         if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
             raise AssertionError(f"selector stdout is not one JSON line: {raw!r}")
         decision = json.loads(raw)
-        if list(decision) != ["full", "packages", "reasons", "t2Suites", "toolTests"]:
+        if list(decision) != ["cargoFull", "packages", "t2Full", "modules", "toolTests", "reasons"]:
             raise AssertionError(f"unexpected schema/order: {decision!r}")
-        if type(decision["full"]) is not bool:
+        if type(decision["cargoFull"]) is not bool:
             raise AssertionError(f"full is not bool: {decision!r}")
-        for key in ("packages", "reasons", "t2Suites", "toolTests"):
+        for key in ("packages", "reasons", "modules", "toolTests"):
             values = decision[key]
             if not isinstance(values, list):
                 raise AssertionError(f"{key} is not a list: {decision!r}")
@@ -216,7 +216,7 @@ members = [
                 raise AssertionError(f"{key} contains invalid values: {decision!r}")
             if values != sorted(set(values)):
                 raise AssertionError(f"{key} is not sorted and unique: {decision!r}")
-        if decision["full"]:
+        if decision["cargoFull"]:
             if decision["packages"] or not decision["reasons"]:
                 raise AssertionError(f"invalid full decision: {decision!r}")
         return raw, decision
@@ -243,7 +243,7 @@ class CiImpactContract(unittest.TestCase):
         packages: list[str],
         reason: str,
     ) -> None:
-        self.assertEqual(decision["full"], full)
+        self.assertEqual(decision["cargoFull"], full)
         self.assertEqual(decision["packages"], packages)
         self.assertIn(reason, decision["reasons"])
 
@@ -267,7 +267,7 @@ class CiImpactContract(unittest.TestCase):
                     if mode == "staged":
                         self.repo.git("add", str(path))
                 _, decision = self.repo.select()
-                self.assertFalse(decision["full"])
+                self.assertFalse(decision["cargoFull"])
                 self.assertEqual(decision["packages"], ["leaf", "leaf-integration"])
 
     def test_no_changes_is_empty_and_stable(self) -> None:
@@ -275,6 +275,15 @@ class CiImpactContract(unittest.TestCase):
         second, _ = self.repo.select(head=self.repo.base)
         self.assertEqual(first, second)
         self.assert_decision(decision, full=False, packages=[], reason="no-changes")
+        self.assertFalse(decision['t2Full'])
+        self.assertEqual(decision['modules'], [])
+
+    def test_policy_configuration_does_not_require_services(self):
+        self.repo.change('deny.toml', '# policy-only change\n')
+        _, decision = self.repo.select()
+        self.assertTrue(decision['cargoFull'])
+        self.assertFalse(decision['t2Full'])
+        self.assertEqual(decision['modules'], [])
 
     def test_docs_only_skips_packages(self) -> None:
         head = self.repo.change("docs/guide.md", "updated\n")

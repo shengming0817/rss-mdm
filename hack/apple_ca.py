@@ -7,7 +7,7 @@ import re
 import secrets
 import socket
 import ssl
-import subprocess
+from t2_processes import subprocess
 import time
 import urllib.request
 from apple_tools import binary

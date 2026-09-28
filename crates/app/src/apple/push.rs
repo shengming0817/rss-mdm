@@ -339,3 +339,7 @@ pub(super) async fn wake(
 #[cfg(test)]
 #[path = "push_tests.rs"]
 pub(super) mod tests;
+
+#[cfg(test)]
+#[path = "test_support/apns.rs"]
+pub(in crate::apple) mod test_support;

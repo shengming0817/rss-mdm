@@ -75,3 +75,29 @@ pub(crate) fn decode_hex(lines: &str) -> anyhow::Result<Vec<Record>> {
         })
         .collect()
 }
+
+pub(crate) async fn request_store() -> anyhow::Result<(
+    sqlx::PgPool,
+    std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+)> {
+    use rss_audit_postgres::{Control, Integrity};
+    use rss_mdm_audit_integration::AuditStore;
+    use rss_request_context::Deadline;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+    use std::{str::FromStr, time::Duration};
+    let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+        .username("mdm_access")
+        .password("access-fixture")
+        .ssl_mode(PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let timer = crate::lifecycle::RuntimeTimer;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let deadline = Deadline::from_timeout(&timer, Duration::from_secs(2))?;
+    let control = Control::new(&timer, deadline, &cancel);
+    let store = AuditStore::new(pool.clone(), Integrity::Plain, &control).await?;
+    Ok((pool, std::sync::Arc::new(store)))
+}

@@ -3,25 +3,19 @@
     reason = "sequential real protocol and persistence assertions"
 )]
 //! Real Apple mTLS participant and fixed external SCEP provider; no principal or status stubs.
-mod boundaries;
 mod lifecycle;
 mod oracle;
 mod policy;
-#[path = "tests/production.rs"]
-mod production;
-#[path = "tests/push_cycle.rs"]
-mod push_cycle;
-#[path = "tests/renewal.rs"]
-mod renewal_cycle;
 mod scep;
+#[path = "test_support/scep.rs"]
+mod scep_client;
 use super::*;
 use crate::{
     api::Assembly,
     clock::Clock,
-    identity_t2::Browser,
     native::{self, tls},
+    test_support::Browser,
 };
-use anyhow::Context;
 use anyhow::{Result, ensure};
 use axum::{
     Router,
@@ -48,12 +42,11 @@ impl Fixture {
         let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let webhook = tokio::net::TcpListener::bind(format!(
             "127.0.0.1:{}",
-            std::env::var("MDM_APPLE_WEBHOOK_PORT")?
+            std::env::var("MDM_APPLE_WEBHOOK_PORT").unwrap_or_else(|_| "0".into())
         ))
         .await?;
-        let mut config = crate::identity_fixture::config(TENANT)?;
+        let mut config = crate::test_support::identity::config(TENANT)?;
         config.native_protocols.windows = None;
-        startup_diagnostics(&root)?;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
         apple.management.listen = manage.local_addr()?;
@@ -217,10 +210,10 @@ impl Fixture {
             launch.stage_deferred_task_with_token(runtime.registration().critical());
             launch.finish();
         }
-        crate::identity_fixture::set_grants(
+        crate::test_support::identity::set_grants(
             TENANT,
-            crate::identity_fixture::ADMIN,
-            crate::identity_fixture::device_grants(
+            crate::test_support::identity::ADMIN,
+            crate::test_support::identity::device_grants(
                 Some(DEVICE),
                 &[
                     "enrollment",
@@ -237,16 +230,9 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let mut browser = Browser::default();
-        let reply = browser
-            .call(
-                &router,
-                Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/login"),
-                Some(json!({"login":"admin","password":crate::identity_fixture::PASSWORD})),
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::OK, "Apple browser login {reply:?}");
+        let browser = crate::test_support::authority::Authority::open()
+            .await?
+            .browser("admin")?;
         Ok(Self {
             app,
             browser,
@@ -313,83 +299,6 @@ impl Fixture {
             .build()?)
     }
 }
-#[tokio::test]
-#[ignore = "Apple T2: real step-ca SCEP, PostgreSQL and native mTLS"]
-async fn native_enrollment_collection_and_profile_lifecycle() -> Result<()> {
-    let mut f = Fixture::start().await?;
-    let (enrollment, attempt, password) = f.enrollment().await?;
-    let device = scep::Device::new(enrollment, attempt, &password)?;
-    let apple = f.app.apple()?;
-    let request = device.request(
-        &f.root.join("apple-issuer.pem"),
-        &Uuid::new_v4().to_string(),
-        f.app.clock.unix_seconds()?,
-    )?;
-    f.lose_notify
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let der = device
-        .enroll(&f.client()?, &apple.config.scep_url, &request)
-        .await?;
-    f.lose_notify
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    boundaries::unbound_leaf_and_replay(&f, &device, &request, attempt).await?;
-    let checked = apple.authority.verify(
-        &[tokio_rustls::rustls::pki_types::CertificateDer::from(
-            der.clone(),
-        )],
-        f.app.clock.unix_seconds()?,
-    )?;
-    ensure!(checked.enrollment == enrollment && checked.attempt == attempt);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(40))
-        .identity(device.identity(&der)?)
-        .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
-            f.root.join("ca.crt"),
-        )?)?)
-        .build()?;
-    let body = protocol::xml(protocol::dictionary([
-        ("MessageType", "Authenticate".into()),
-        ("UDID", "rss-make t2 SUITE=apple".into()),
-        ("Topic", apple.config.apns_topic.clone().into()),
-    ]))?;
-    let oracle = oracle::Oracle::new(&der)?;
-    let response = client
-        .put(format!("{}/checkin", apple.config.management.origin))
-        .body(body.clone())
-        .send()
-        .await?;
-    ensure!(
-        response.status() == StatusCode::OK,
-        "native Authenticate {}",
-        response.status()
-    );
-    oracle.compare("/checkin", &body, &[]).await?;
-    let peer = lifecycle::Peer {
-        client,
-        oracle,
-        origin: apple.config.management.origin.clone(),
-        topic: apple.config.apns_topic.clone(),
-    };
-    f.before_token(&peer).await?;
-    peer.token().await?;
-    f.push_cycle(&peer).await?;
-    f.collection_cycle(&peer).await?;
-    f.profile_cycle(&peer).await?;
-    f.policy_cycle(&peer).await?;
-    let (renewed, renewed_device) = f
-        .renewal_cycle(&peer, &device)
-        .await
-        .context("Apple renewal cycle")?;
-    let replacement = f
-        .replace(&renewed, &renewed_device)
-        .await
-        .context("Apple replacement cycle")?;
-    f.native_boundaries(&replacement)
-        .await
-        .context("Apple boundaries")?;
-    f.production().await.context("Apple production startup")
-}
 
 #[allow(clippy::disallowed_methods, reason = "test composition root")]
 fn fixture_clock() -> Arc<dyn rss_observation::Clock> {
@@ -430,4 +339,173 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         ensure!(!apple.ready(expires as i64));
     }
     Ok(())
+}
+
+mod collection;
+mod fairness;
+#[path = "tests/production.rs"]
+mod host;
+mod identity;
+mod profile;
+#[path = "tests/push_cycle.rs"]
+mod push;
+#[path = "tests/renewal.rs"]
+mod renewal;
+
+impl Fixture {
+    async fn close(self) -> Result<()> {
+        ensure!(self.owner.shutdown().join().await?.is_clean());
+        Ok(())
+    }
+    async fn scep_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {
+        let (enrollment, attempt, password) = self.enrollment().await?;
+        let device = scep_client::Device::new(enrollment, attempt, &password)?;
+        let request = device.request(
+            &self.root.join("apple-issuer.pem"),
+            &Uuid::new_v4().to_string(),
+            self.app.clock.unix_seconds()?,
+        )?;
+        let der = device
+            .enroll(
+                &self.client()?,
+                &self.app.apple()?.config.scep_url,
+                &request,
+            )
+            .await?;
+        Ok((device, der))
+    }
+    async fn local_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let (enrollment, attempt, password) = self.enrollment().await?;
+        let device = scep_client::Device::new(enrollment, attempt, &password)?;
+        let apple = self.app.apple()?;
+        let timestamp = time::OffsetDateTime::from_unix_timestamp(self.app.clock.unix_seconds()?)?
+            .format(&time::format_description::well_known::Rfc3339)?;
+        let body = serde_json::to_vec(
+            &json!({"timestamp":timestamp,"provisionerName":apple.config.scep_provisioner,
+            "x509CertificateRequest":{"raw":STANDARD.encode(&device.csr)},"scepChallenge":password,"scepTransactionID":Uuid::new_v4().to_string()}),
+        )?;
+        let signature = ring::hmac::sign(&apple.challenge_key, &body)
+            .as_ref()
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect::<String>();
+        let response = self
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/native/apple/scep/challenge")
+                    .header("host", "mdm.example.test")
+                    .header("content-type", "application/json")
+                    .header("x-smallstep-webhook-id", &apple.config.challenge_webhook.id)
+                    .header("x-smallstep-signature", signature)
+                    .body(Body::from(body))?,
+            )
+            .await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "fixture challenge: {}",
+            response.status()
+        );
+        let extensions = device.root.path().join("leaf.ext");
+        std::fs::write(
+            &extensions,
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n",
+        )?;
+        let leaf = device.root.path().join("leaf.der");
+        let serial = Uuid::new_v4().as_u128().to_string();
+        scep_client::openssl(&[
+            "x509".as_ref(),
+            "-req".as_ref(),
+            "-inform".as_ref(),
+            "DER".as_ref(),
+            "-in".as_ref(),
+            device.root.path().join("device.csr").as_os_str(),
+            "-CA".as_ref(),
+            self.root.join("apple-issuer.pem").as_os_str(),
+            "-CAkey".as_ref(),
+            self.root.join("apple-issuer.key").as_os_str(),
+            "-set_serial".as_ref(),
+            serial.as_ref(),
+            "-days".as_ref(),
+            "1".as_ref(),
+            "-sha256".as_ref(),
+            "-extfile".as_ref(),
+            extensions.as_os_str(),
+            "-outform".as_ref(),
+            "DER".as_ref(),
+            "-out".as_ref(),
+            leaf.as_os_str(),
+        ])?;
+        let der = std::fs::read(leaf)?;
+        Ok((device, der))
+    }
+    async fn authenticate_peer(
+        &self,
+        device: &scep_client::Device,
+        der: &[u8],
+    ) -> Result<lifecycle::Peer> {
+        let apple = self.app.apple()?;
+        let peer = lifecycle::Peer {
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(40))
+                .identity(device.identity(der)?)
+                .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
+                    self.root.join("ca.crt"),
+                )?)?)
+                .build()?,
+            oracle: oracle::Oracle::new(der)?,
+            origin: apple.config.management.origin.clone(),
+            topic: apple.config.apns_topic.clone(),
+        };
+        let reply = peer
+            .send(
+                "/checkin",
+                protocol::dictionary([
+                    ("MessageType", "Authenticate".into()),
+                    ("UDID", "rss-t2-apple".into()),
+                    ("Topic", peer.topic.clone().into()),
+                ]),
+            )
+            .await?;
+        ensure!(
+            reply.0 == StatusCode::OK,
+            "fixture Authenticate: {}",
+            reply.0
+        );
+        Ok(peer)
+    }
+    async fn ready_local_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
+        let (device, der) = self.local_leaf().await?;
+        let peer = self.authenticate_peer(&device, &der).await?;
+        peer.token().await?;
+        Ok((peer, device))
+    }
+    async fn ready_scep_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
+        let (device, der) = self.scep_leaf().await?;
+        let peer = self.authenticate_peer(&device, &der).await?;
+        peer.token().await?;
+        Ok((peer, device))
+    }
+    async fn pending_collections(&mut self, count: usize) -> Result<()> {
+        for _ in 0..count {
+            let reply = self
+                .browser
+                .call(
+                    &self.router,
+                    Method::POST,
+                    &format!("/api/v1/devices/{DEVICE}/collection-runs"),
+                    Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
+                )
+                .await?;
+            ensure!(
+                reply.0 == StatusCode::ACCEPTED,
+                "fixture collection intake: {reply:?}"
+            );
+        }
+        Ok(())
+    }
 }

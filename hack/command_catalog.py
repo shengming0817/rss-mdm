@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-import subprocess
+from t2_processes import subprocess
 import tempfile
 from build_run import lease_fds
 
@@ -64,9 +64,19 @@ if __name__ == "__main__":
     args=parser.parse_args()
     from build_run import require_lease
     require_lease(ROOT)
-    from t2_environment import T2Context
-    from ci_registry import SUITES
-    from t2_suites.product import run_scenario
-    with T2Context() as context:
-        context.spec=SUITES['catalog']
-        run_scenario(context,lambda fixture:capture(fixture.name,'write',fixture.database))
+    from t2_registry import MODULES
+    from t2_execution import Builds, Processes
+    from t2_fixtures import RunFixtures
+    processes=Processes()
+    try:
+        with tempfile.TemporaryDirectory(prefix='mdm-catalog-') as temporary:
+            output=Path(temporary)
+            module=MODULES['catalog.contract']
+            builds=Builds(output,processes)
+            builds.prepare([module])
+            with RunFixtures(builds,output) as fixtures:
+                fixtures.prepare([module])
+                with fixtures.scenario(module,output/'scenario') as fixture:
+                    capture(fixture.owner.container(),'write',fixture.database)
+    finally:
+        processes.close()

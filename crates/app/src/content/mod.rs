@@ -304,3 +304,6 @@ fn verify_file(
     Ok(())
 }
 pub(crate) use upload::{Binding, Upload};
+
+#[cfg(all(test, feature = "integration"))]
+mod t2;

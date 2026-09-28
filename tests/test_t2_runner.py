@@ -1,145 +1,151 @@
-import importlib.util
-import unittest
+"""Selection, preparation, concurrency and evidence contracts of the public MODULE runner."""
+from contextlib import contextmanager, ExitStack, redirect_stdout, redirect_stderr
+from io import StringIO
 from pathlib import Path
 import sys
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'hack'))
-import ci_registry as registry
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 import t2
-class RegistryTests(unittest.TestCase):
-    def test_named_all_and_empty(self):
-        self.assertEqual(t2.select_suites('management',{}),['management'])
-        self.assertEqual(set(t2.select_suites('all',{})),set(registry.SUITES))
-        self.assertEqual(t2.select_suites('affected',{'full':False,'t2Suites':[]}),[])
-    def test_unknown_never_falls_back(self):
-        with self.assertRaisesRegex(ValueError,'available'): t2.select_suites('typo',{})
-    def test_unknown_input_is_conservative(self):
-        self.assertEqual(set(registry.select_paths(['unknown.file'])[0]),set(registry.SUITES))
-    def test_docs_do_not_select_services_or_tools(self):
-        self.assertEqual(registry.select_paths(['docs/guides/local-development.md'])[:2], ([],[]))
-    def test_migration_selects_all_and_sql_selects_owner(self):
-        self.assertEqual(set(registry.select_paths(['crates/app/src/migration.rs'])[0]),set(registry.SUITES))
-        self.assertIn('group',registry.select_paths(['crates/group-postgres/migrations/0001.sql'])[0])
-    def test_app_local_path_does_not_force_all(self):
-        suites,_,_=registry.select_paths(['crates/app/src/apple/certificate.rs'])
-        self.assertIn('apple',suites)
-        self.assertNotIn('software',suites)
-
-class ExecutionTests(unittest.TestCase):
-    def test_nonzero_suite_result_cannot_pass(self):
-        import tempfile
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp, patch.object(t2,'require_lease'), patch.object(t2,'T2Context'), patch.object(t2.shutil,'which',return_value='/tool'), patch.object(t2,'execute',return_value=1):
-            result=t2.run_suites(['sources'],Path(tmp))
-            self.assertEqual(result['sources']['status'],'failed')
-
-    def test_missing_dependency_fails_before_execution(self):
-        import tempfile
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp, patch.object(t2,'require_lease'), patch.object(t2,'T2Context'), patch.object(t2.shutil,'which',return_value=None), patch.object(t2,'execute') as execute:
-            result=t2.run_suites(['apple'],Path(tmp))
-            self.assertEqual(result['apple']['status'],'failed')
-            execute.assert_not_called()
-
-class ConsumerSelectionTests(unittest.TestCase):
-    def test_cross_crate_consumers_are_selected(self):
-        cases={'resource':{'software','tasks'},'resource-postgres':{'software','tasks'},'inventory':{'compliance'},
-               'inventory-postgres':{'compliance'},'group-postgres':{'tasks'},'policy':{'tasks'},'agent-wire':{'software','tasks'}}
-        for owner,required in cases.items():
-            with self.subTest(owner=owner):self.assertLessEqual(required,set(registry.select_paths(['crates/'+owner+'/src/lib.rs'])[0]))
-
-class Oracles(unittest.TestCase):
-    def test_every_registration_has_executor_and_completion_oracle(self):
-        for suite in registry.SUITES.values():
-            self.assertTrue(callable(suite.executor))
-            self.assertTrue(suite.expected or suite.success_marker)
-
-    def test_every_cargo_suite_rejects_wrong_names_zero_and_ignored(self):
-        for suite in registry.SUITES.values():
-            if not suite.expected:continue
-            output=''.join('test '+name+' ... ok\n' for name in suite.expected)
-            output+=f'test result: ok. {len(suite.expected)} passed; 0 failed; 0 ignored;\n'
-            suite.verify(output)
-            for bad in (output.replace(suite.expected[0],'unrelated'), output.replace('0 ignored','1 ignored'),'test result: ok. 0 passed; 0 failed; 0 ignored;\n'):
-                with self.subTest(suite=suite.name),self.assertRaises(RuntimeError):suite.verify(bad)
+import t2_fixtures
+from t2_registry import MODULES
+from t2_execution import Case
 
 
-class EvidenceTests(unittest.TestCase):
-    def test_empty_selection_removes_owned_old_logs_without_following_links(self):
-        import tempfile
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp, patch.object(t2,'require_lease'):
-            root=Path(tmp);outside=root/'retained';outside.write_text('retained')
-            out=root/'t2';out.mkdir();(out/'management.log').symlink_to(outside)
-            (out/'apple.log').write_text('old pass')
-            with patch.object(t2,'T2Context') as context:
-                result=t2.run_suites([],out)
-                context.assert_not_called()
-            self.assertEqual(outside.read_text(),'retained')
-            self.assertFalse((out/'management.log').exists())
-            self.assertFalse((out/'apple.log').exists())
-            self.assertTrue(all(item['status']=='skipped' and item['elapsedSeconds']==0 for item in result.values()))
+class Selection(unittest.TestCase):
+    def test_named_all_and_empty_are_distinct(self):
+        self.assertEqual(t2.select_modules('content.http', {}), ['content.http'])
+        self.assertEqual(t2.select_modules('all', {}), sorted(MODULES))
+        self.assertEqual(t2.select_modules('affected', {'t2Full': False, 'modules': []}), [])
+        self.assertEqual(t2.select_modules('affected', {'t2Full': True, 'modules': []}), sorted(MODULES))
 
-class InterleavedCargoOutput(unittest.TestCase):
-    def test_diagnostics_between_test_prefix_and_status_keep_exact_identity(self):
-        from verification_result import verify_tests
-        output='test expected ... {"event":"diagnostic"}\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n'
-        verify_tests(output,['expected'])
-        for bad in (output.replace('expected','unrelated'),output.replace('1 passed','0 passed'),output.replace('0 ignored','1 ignored')):
-            with self.assertRaises(RuntimeError):verify_tests(bad,['expected'])
+    def test_unknown_and_removed_selectors_never_fall_back(self):
+        with self.assertRaisesRegex(ValueError, 'available'):
+            t2.select_modules('management', {})
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            t2.main(['--suite', 'all'])
+        with patch.dict('os.environ', {'SUITE': 'all'}), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            t2.main(['--module', 'all'])
 
-class EarlyFailureEvidence(unittest.TestCase):
-    def test_preflight_error_replaces_old_success(self):
-        import json,tempfile
-        from unittest.mock import patch
+
+class Execution(unittest.TestCase):
+    @contextmanager
+    def harness(self, *, execute=None, discover=None):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch.object(t2, 'require_lease'))
+            stack.enter_context(patch.object(t2.shutil, 'which', return_value='/tool'))
+            stack.enter_context(redirect_stdout(StringIO()))
+            builds = stack.enter_context(patch.object(t2, 'Builds')).return_value
+            builds.elapsed = 0
+            builds.discover.side_effect = discover or (lambda module: [
+                Case(module.build, module.id, Path('/leased/binary'), module.id + '::case')])
+            builds.execute.side_effect = execute
+            fixtures_type = stack.enter_context(patch.object(t2_fixtures, 'RunFixtures'))
+            fixtures = fixtures_type.return_value.__enter__.return_value
+            fixtures.counts = {}
+            @contextmanager
+            def scenario(module, output):
+                yield SimpleNamespace(env={'MODULE_ID': module.id})
+            fixtures.scenario.side_effect = scenario
+            yield Path(directory), builds, fixtures_type, fixtures
+
+    def test_missing_dependencies_fail_before_build_and_service_start(self):
+        with self.harness() as (root, builds, fixture_type, _), patch.object(t2.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(RuntimeError, 'missing dependencies'):
+                t2.run_modules(['sources.winget'], root)
+            builds.prepare.assert_not_called()
+            fixture_type.assert_not_called()
+
+    def test_execution_failure_keeps_callsite_and_cleans_up(self):
+        def fail(*unused):
+            raise ValueError('fixture rejected')
+        with self.harness(execute=fail) as (root, _, fixture_type, _):
+            result = t2.run_modules(['sources.winget'], root)['sources.winget']
+            self.assertEqual(result['status'], 'failed')
+            case = next(iter(result['cases'].values()))
+            self.assertEqual(case['reason'], 'ValueError')
+            log = (root / case['log'] / 'failure.log').read_text()
+            self.assertIn('Traceback', log)
+            self.assertIn('fixture rejected', log)
+            fixture_type.return_value.__exit__.assert_called_once()
+
+    def test_empty_selection_keeps_old_evidence_and_starts_nothing(self):
+        with self.harness() as (root, builds, fixture_type, _):
+            old = root / 'previous.log'; old.write_text('old evidence')
+            link = root / 'linked.log'; link.symlink_to(old)
+            result = t2.run_modules([], root)
+            builds.prepare.assert_not_called()
+            fixture_type.assert_not_called()
+            self.assertEqual(old.read_text(), 'old evidence')
+            self.assertTrue(link.is_symlink())
+            self.assertTrue(all(value['status'] == 'skipped' for value in result.values()))
+
+    def test_list_and_unknown_case_do_not_prepare_services(self):
+        with self.harness() as (root, _, fixture_type, _):
+            t2.run_modules(['sources.winget'], root, listing=True)
+            fixture_type.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, 'unknown CASE'):
+                t2.run_modules(['sources.winget'], root, selected_case='invented')
+            fixture_type.assert_not_called()
+
+    def test_discovery_failure_and_duplicate_ownership_stop_before_services(self):
+        with self.harness(discover=Mock(side_effect=RuntimeError('empty discovery'))) as (root, _, fixture_type, _):
+            with self.assertRaisesRegex(RuntimeError, 'empty discovery'):
+                t2.run_modules(['agent.registration'], root)
+            fixture_type.assert_not_called()
+        case = Case(MODULES['agent.registration'].build, 'app', Path('/leased/app'), 'same')
+        with self.harness(discover=lambda _: [case]) as (root, _, fixture_type, _):
+            with self.assertRaisesRegex(RuntimeError, 'multiple modules'):
+                t2.run_modules(['agent.registration', 'agent.reports'], root)
+            fixture_type.assert_not_called()
+
+    def test_jobs_bound_module_concurrency_and_exclusive_phase_waits(self):
+        ordinary = ['agent.registration', 'agent.reports']
+        for jobs in (1, 2):
+            with self.subTest(jobs=jobs):
+                lock = threading.Lock()
+                barrier = threading.Barrier(2) if jobs == 2 else None
+                active, peak, completed = 0, 0, set()
+                def execute(case, env, output):
+                    nonlocal active, peak
+                    module = env['MODULE_ID']
+                    with lock:
+                        if module == 'identity.local':
+                            self.assertEqual(completed, set(ordinary))
+                            self.assertEqual(active, 0)
+                        active += 1
+                        peak = max(peak, active)
+                    if module in ordinary and barrier:
+                        barrier.wait(timeout=3)
+                    time.sleep(.01)
+                    with lock:
+                        active -= 1
+                        completed.add(module)
+                with self.harness(execute=execute) as (root, _, _, fixtures):
+                    results = t2.run_modules([*ordinary, 'identity.local'], root, jobs=jobs)
+                    self.assertTrue(all(results[name]['status'] == 'passed' for name in [*ordinary, 'identity.local']))
+                    self.assertEqual(peak, jobs)
+                    fixtures.reset.assert_called_once()
+
+
+class StableInput(unittest.TestCase):
+    def test_changed_source_cannot_publish_success(self):
         import ci
-        with tempfile.TemporaryDirectory() as tmp:
-            out=Path(tmp)/'artifacts/local-t2';out.mkdir(parents=True)
-            (out/'result.json').write_text('{"status":"passed"}')
-            with patch.object(t2,'ROOT',Path(tmp)),patch.object(t2,'require_lease'),patch.object(ci,'working_source_state',side_effect=RuntimeError('source changed')):
-                with self.assertRaises(RuntimeError):t2.main(['--suite','all'])
-            self.assertEqual(json.loads((out/'result.json').read_text())['status'],'failed')
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(t2, 'ROOT', root), patch.object(t2, 'require_lease'), \
+                 patch.object(ci, 'working_source_state', side_effect=['before', 'after']), \
+                 patch.object(t2, 'run_modules', return_value={'sources.winget': {'status':'passed'}}):
+                with self.assertRaisesRegex(RuntimeError, 'source changed'):
+                    t2.main(['--module', 'sources.winget'])
+            self.assertEqual(json.loads((root / 'artifacts/local-t2/result.json').read_text())['status'], 'failed')
 
 
-class SharedFixtureSelection(unittest.TestCase):
-    def test_backend_helper_selects_its_composed_consumers(self):
-        self.assertLessEqual({'backend','management','publication'},set(registry.select_paths(['hack/t2_suites/backend.py'])[0]))
-
-    def test_source_tls_helper_selects_all_actual_consumers(self):
-        self.assertLessEqual({'sources','publication','software','identity'},set(registry.select_paths(['hack/t2_suites/sources.py'])[0]))
-
-    def test_unknown_suite_helper_is_conservative(self):
-        self.assertEqual(set(registry.SUITES),set(registry.select_paths(['hack/t2_suites/new_shared_helper.py'])[0]))
-
-    def test_windows_changes_select_identity_enrollment(self):
-        self.assertIn('identity',registry.select_paths(['crates/windows-mdm/src/lib.rs'])[0])
-
-
-class ToolGateSelection(unittest.TestCase):
-    def test_wire_checker_change_runs_the_actual_compatibility_check(self):
-        import ci
-        _,tests,_=registry.select_paths(['hack/agent_wire_artifact.py'])
-        self.assertTrue(ci.selected_gate('agent-wire-artifact',{'full':False,'packages':[],'toolTests':tests,'t2Suites':[]}))
-
-class ReviewRegressions(unittest.TestCase):
-    def test_app_shared_consumers(self):
-        cases={'flow':{'tasks','windows','apple','commands','identity'},'execution':{'windows','apple','management','identity'},'inventory_runtime':{'tasks','windows','apple','identity'},'device':{'assets','compliance','tasks','management','identity'}}
-        for module,expected in cases.items():
-            with self.subTest(module=module):self.assertLessEqual(expected,set(registry.select_paths(['crates/app/src/'+module+'.rs'])[0]))
-
-    def test_failed_suite_keeps_callsite_and_log_pointer(self):
-        import tempfile
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp,patch.object(t2,'require_lease'),patch.object(t2,'T2Context'),patch.object(t2.shutil,'which',return_value='/tool'),patch.object(t2,'execute',side_effect=ValueError('fixture rejected')):
-            result=t2.run_suites(['catalog'],Path(tmp))['catalog']
-            self.assertEqual(result['reason'],'ValueError');self.assertEqual(result['log'],'catalog.log')
-            self.assertIn('Traceback',(Path(tmp)/'catalog.log').read_text())
-
-
-class CentralOracleTests(unittest.TestCase):
-    def test_executor_success_cannot_bypass_registry(self):
-        import tempfile
-        from unittest.mock import patch
-        for output in ('', 'test unrelated ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;'):
-            with self.subTest(output=output),tempfile.TemporaryDirectory() as tmp,patch.object(t2,'require_lease'),patch.object(t2,'T2Context'),patch.object(t2.shutil,'which',return_value='/tool'),patch.object(t2,'execute',side_effect=lambda *args:print(output)):
-                result=t2.run_suites(['windows'],Path(tmp))
-                self.assertEqual(result['windows']['status'],'failed')
+if __name__ == '__main__':
+    unittest.main()

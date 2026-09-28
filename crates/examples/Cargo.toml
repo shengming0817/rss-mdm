@@ -29,12 +29,8 @@ workspace = true
 
 [features]
 default = []
-integration = ["dep:rss-contract", "rss-observation-postgres/integration", "rss-projection-postgres/integration"]
+integration = ["rss-observation-postgres/integration", "rss-projection-postgres/integration"]
 
 [[bin]]
 name = "rss-mdm-fixture"
 path = "src/main.rs"
-
-[dependencies.rss-contract]
-workspace = true
-optional = true

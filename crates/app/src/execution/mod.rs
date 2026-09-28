@@ -76,9 +76,12 @@ impl ExecutionService {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests;
+#[cfg(all(test, feature = "integration"))]
+pub(crate) mod test_support;
 
 use rss_mdm_audit_integration::RequestAudit;
 
 pub mod error;
+
+#[cfg(all(test, feature = "integration"))]
+pub(crate) mod t2;

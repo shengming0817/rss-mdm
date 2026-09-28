@@ -326,3 +326,6 @@ use error::AssetError;
 pub(crate) const ASSETS_MIGRATION_SQL: &str = include_str!("../../migrations/0011_assets.sql");
 
 mod receipts;
+
+#[cfg(test)]
+pub(crate) mod t2;

@@ -27,16 +27,3 @@ def publish(path, payload):
     try:os.replace(temporary,path)
     finally:
         if os.path.exists(temporary):os.unlink(temporary)
-
-
-def verify_tests(output, expected):
-    from collections import Counter
-    import re
-    actual=Counter(re.findall(r'^test (\S+) \.\.\.',output,re.MULTILINE))
-    summaries=re.findall(r'^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;',output,re.MULTILINE)
-    rejected=re.search(r'^test \S+ \.\.\. (?:ignored|FAILED)\b',output,re.MULTILINE)
-    wanted=Counter(expected)
-    require(actual==wanted and bool(summaries) and not rejected and
-            sum(int(passed) for passed,_,_ in summaries)==sum(wanted.values()) and
-            all(int(passed)>0 and int(failed)==0 and int(ignored)==0 for passed,failed,ignored in summaries),
-            'T2 did not execute the exact required test identities and successful counts')

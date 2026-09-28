@@ -128,7 +128,7 @@ async fn dynamic_group(s: &GroupStore) -> (GroupId, Receipt, FixturePage) {
     (group, receipt, page)
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn reference_target_lock_serializes_deletion() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -234,7 +234,7 @@ impl AckProxy {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn lost_commit_ack_replays_durable_result_once() {
     let proxy = AckProxy::start().await;
     let runtime = connect_runtime_at(Some(proxy.port)).await;
@@ -324,7 +324,7 @@ async fn lost_commit_ack_replays_durable_result_once() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn admission_rejects_catalog_and_security_drift() {
     let runtime = connect_runtime().await;
     for mutation in [
@@ -366,7 +366,7 @@ async fn admission_rejects_catalog_and_security_drift() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn standalone_delete_requires_companion_transaction() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -423,7 +423,7 @@ async fn standalone_delete_requires_companion_transaction() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -471,7 +471,7 @@ async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -546,7 +546,7 @@ async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn atomic_event_failure_rls_and_large_member_ids() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
@@ -629,7 +629,7 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn admitted_input_and_command_commit_unknown_recover_by_original_identity() {
     use rss_transactional_messaging_postgres::PgTransactionFault;
     let runtime = connect_runtime().await;
@@ -680,7 +680,7 @@ async fn admitted_input_and_command_commit_unknown_recover_by_original_identity(
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn process_death_after_admission_recovers_without_caller_snapshot() {
     if let Ok(raw) = std::env::var("GROUP_BUILD_CHILD") {
         let request: BuildRequest = serde_json::from_str(&raw).unwrap();
@@ -749,7 +749,7 @@ async fn process_death_after_admission_recovers_without_caller_snapshot() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL; executed by make t2 SUITE=group"]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
     let runtime = connect_runtime().await;
     let other = connect_runtime().await;
