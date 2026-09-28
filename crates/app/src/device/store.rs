@@ -38,11 +38,37 @@ pub(crate) async fn task_capable(
     tenant: &str,
     registration: &str,
 ) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=2 AND capabilities='[\"inventory.basic.v2\",\"task.execute.v2\"]')")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=3 AND (capabilities::jsonb ? $3 OR capabilities::jsonb ? $4))")
         .bind(tenant)
         .bind(registration)
+        .bind(rss_mdm_agent_wire::Capability::TaskExecuteV3.as_str())
+        .bind(rss_mdm_agent_wire::Capability::SoftwareExecuteV3.as_str())
         .fetch_one(tx)
         .await
+}
+pub(crate) async fn software_capable(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=3 AND capabilities::jsonb ? $3)")
+        .bind(tenant).bind(registration).bind(rss_mdm_agent_wire::Capability::SoftwareExecuteV3.as_str()).fetch_one(tx).await
+}
+pub(crate) async fn script_capable(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=3 AND capabilities::jsonb ? $3)")
+        .bind(tenant).bind(registration).bind(rss_mdm_agent_wire::Capability::TaskExecuteV3.as_str()).fetch_one(tx).await
+}
+pub(crate) async fn agent_target(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: &str,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    sqlx::query_as("SELECT platform,architecture FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=3")
+        .bind(tenant).bind(registration).fetch_optional(tx).await
 }
 impl DeviceService {
     #[cfg(test)]
@@ -222,8 +248,8 @@ impl DeviceService {
         let row=sqlx::query("SELECT device,generation,channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active' FOR SHARE")
             .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
         if credential.channel == Channel::Agent {
-            let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=2 AND capabilities IN ('[\"inventory.basic.v2\"]','[\"inventory.basic.v2\",\"task.execute.v2\"]'))")
-                .bind(&tenant).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
+            let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid AND wire_version=3 AND capabilities::jsonb ? $3)")
+                .bind(&tenant).bind(registration.to_string()).bind(rss_mdm_agent_wire::Capability::InventoryBasicV3.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
             if !current {
                 return Err(Error::Unauthorized);
             }
@@ -435,8 +461,20 @@ pub(crate) async fn bind_agent_in(
     tenant: &str,
     registration: Uuid,
     capabilities: &str,
+    platform: rss_mdm_agent_wire::TaskPlatform,
+    architecture: rss_mdm_agent_wire::TaskArchitecture,
 ) -> Result<(), Error> {
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities) VALUES($1::uuid,$2::uuid,2,$3)").bind(tenant).bind(registration.to_string()).bind(capabilities).execute(&mut *tx).await.map_err(db)?;
+    let platform = match platform {
+        rss_mdm_agent_wire::TaskPlatform::Windows => "windows",
+        rss_mdm_agent_wire::TaskPlatform::Macos => "macos",
+    };
+    let architecture = match architecture {
+        rss_mdm_agent_wire::TaskArchitecture::X86_64 => "x86_64",
+        rss_mdm_agent_wire::TaskArchitecture::Aarch64 => "aarch64",
+    };
+    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,$3,$4,$5)")
+        .bind(tenant).bind(registration.to_string()).bind(capabilities).bind(platform).bind(architecture)
+        .execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 pub(crate) async fn replace_mdm_credential_in(

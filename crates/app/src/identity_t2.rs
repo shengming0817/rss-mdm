@@ -615,7 +615,7 @@ async fn wait_agent_status(
             let (status, body) = agent_call(
                 router,
                 Method::GET,
-                &format!("/api/agent/v2/reports/{report_id}"),
+                &format!("/api/agent/v3/reports/{report_id}"),
                 Some(credential),
                 None,
             )
@@ -682,17 +682,19 @@ async fn agent_matrix(
     );
     let operation = uuid::Uuid::new_v4();
     let registration_request = json!({
-        "wireVersion":2,
+        "wireVersion":3,
         "operationId":operation,
         "enrollmentId":enrollment["enrollmentId"],
         "password":password,
         "credential":credential,
-        "capabilities":["inventory.basic.v2"]
+        "platform":"macos",
+        "architecture":"aarch64",
+        "capabilities":["inventory.basic.v3"]
     });
     let (status, registration) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/registrations",
+        "/api/agent/v3/registrations",
         None,
         Some(registration_request.clone()),
     )
@@ -704,7 +706,7 @@ async fn agent_matrix(
     let (status, error) = agent_call(
         router,
         Method::GET,
-        "/api/agent/v2/reports/not-a-uuid",
+        "/api/agent/v3/reports/not-a-uuid",
         Some(credential),
         None,
     )
@@ -716,7 +718,7 @@ async fn agent_matrix(
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/reports",
+        "/api/agent/v3/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(17_000)})),
     )
@@ -728,7 +730,7 @@ async fn agent_matrix(
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/reports",
+        "/api/agent/v3/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(2 * 1024 * 1024 + 1)})),
     )
@@ -742,7 +744,7 @@ async fn agent_matrix(
     let response = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/registrations",
+        "/api/agent/v3/registrations",
         None,
         Some(unsupported_wire),
     )
@@ -753,7 +755,7 @@ async fn agent_matrix(
     let response = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/registrations",
+        "/api/agent/v3/registrations",
         None,
         Some(unsupported_capability),
     )
@@ -769,7 +771,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v2/registrations",
+            "/api/agent/v3/registrations",
             None,
             Some(registration_request)
         )
@@ -782,7 +784,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v2/reports/{missing}"),
+            &format!("/api/agent/v3/reports/{missing}"),
             Some(credential),
             None
         )
@@ -793,7 +795,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v2/reports/{missing}"),
+            &format!("/api/agent/v3/reports/{missing}"),
             Some(password),
             None
         )
@@ -802,7 +804,7 @@ async fn agent_matrix(
     );
     let report_id = uuid::Uuid::new_v4();
     let report = json!({
-        "wireVersion":2,
+        "wireVersion":3,
         "reportId":report_id,
         "sequence":0,
         "observedAt":1,
@@ -814,7 +816,7 @@ async fn agent_matrix(
     let (status, ack) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/reports",
+        "/api/agent/v3/reports",
         Some(credential),
         Some(report.clone()),
     )
@@ -827,7 +829,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v2/reports",
+            "/api/agent/v3/reports",
             Some(credential),
             Some(report.clone())
         )
@@ -836,7 +838,7 @@ async fn agent_matrix(
         "report replay changed acknowledgement"
     );
     let concurrent_id = uuid::Uuid::new_v4();
-    let concurrent = json!({"wireVersion":2,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+    let concurrent = json!({"wireVersion":3,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
     let mut same_id = tokio::task::JoinSet::new();
     for _ in 0..4 {
         let router = router.clone();
@@ -845,7 +847,7 @@ async fn agent_matrix(
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v2/reports",
+                "/api/agent/v3/reports",
                 Some(credential),
                 Some(body),
             )
@@ -875,7 +877,7 @@ async fn agent_matrix(
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v2/reports",
+            "/api/agent/v3/reports",
             Some(credential),
             Some(changed)
         )
@@ -886,7 +888,7 @@ async fn agent_matrix(
     let (status, current) = agent_call(
         router,
         Method::GET,
-        &format!("/api/agent/v2/reports/{report_id}"),
+        &format!("/api/agent/v3/reports/{report_id}"),
         Some(credential),
         None,
     )
@@ -912,14 +914,14 @@ async fn agent_matrix(
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
     for body in [
-        json!({"wireVersion":2,"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"known","value":"Unconfirmed"}}]}}),
-        json!({"wireVersion":2,"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
+        json!({"wireVersion":3,"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"known","value":"Unconfirmed"}}]}}),
+        json!({"wireVersion":3,"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
     ] {
         ensure!(
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v2/reports",
+                "/api/agent/v3/reports",
                 Some(credential),
                 Some(body)
             )
@@ -934,12 +936,12 @@ async fn agent_matrix(
     let mut capacity = tokio::task::JoinSet::new();
     for sequence in [3, 4] {
         let router = router.clone();
-        let body = json!({"wireVersion":2,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":3,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         capacity.spawn(async move {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v2/reports",
+                "/api/agent/v3/reports",
                 Some(credential),
                 Some(body),
             )
@@ -1005,12 +1007,12 @@ async fn agent_matrix(
         .await?;
     ensure!(status == StatusCode::OK);
     let next_operation = uuid::Uuid::new_v4();
-    let next_registration = json!({"wireVersion":2,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"capabilities":["inventory.basic.v2"]});
+    let next_registration = json!({"wireVersion":3,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3"]});
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     let rolled_back = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/registrations",
+        "/api/agent/v3/registrations",
         None,
         Some(next_registration.clone()),
     )
@@ -1024,7 +1026,7 @@ async fn agent_matrix(
     let unknown = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/registrations",
+        "/api/agent/v3/registrations",
         None,
         Some(next_registration.clone()),
     )
@@ -1035,7 +1037,7 @@ async fn agent_matrix(
     let recovered = agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/registrations",
+        "/api/agent/v3/registrations",
         None,
         Some(next_registration),
     )
@@ -1048,12 +1050,12 @@ async fn agent_matrix(
         recovered.1 == stored_receipt,
         "registration ACK-loss retry did not recover the committed receipt"
     );
-    ensure!(agent_call(router, Method::POST, "/api/agent/v2/reports", Some(credential), Some(json!({"wireVersion":2,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
+    ensure!(agent_call(router, Method::POST, "/api/agent/v3/reports", Some(credential), Some(json!({"wireVersion":3,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
     ensure!(
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v2/reports/{report_id}"),
+            &format!("/api/agent/v3/reports/{report_id}"),
             Some(credential),
             None
         )
@@ -1066,12 +1068,12 @@ async fn agent_matrix(
     ] {
         let expected = "operation_unknown";
         let fault_report = uuid::Uuid::new_v4();
-        let body = json!({"wireVersion":2,"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":3,"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         audit_store.inject_next_fault(fault);
         let failed = agent_call(
             router,
             Method::POST,
-            "/api/agent/v2/reports",
+            "/api/agent/v3/reports",
             Some(next_credential),
             Some(body.clone()),
         )
@@ -1084,7 +1086,7 @@ async fn agent_matrix(
         let retry = agent_call(
             router,
             Method::POST,
-            "/api/agent/v2/reports",
+            "/api/agent/v3/reports",
             Some(next_credential),
             Some(body.clone()),
         )
@@ -1094,7 +1096,7 @@ async fn agent_matrix(
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v2/reports",
+                "/api/agent/v3/reports",
                 Some(next_credential),
                 Some(body)
             )

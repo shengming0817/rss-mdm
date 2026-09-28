@@ -237,7 +237,7 @@ def dependency_graphs(pin):
         verify_metadata(json.loads(result.stdout), ROOT, mode, pin)
 
 
-GATE_PACKAGES = {'agent-wire-compat': {'rss-mdm-agent-wire'}}
+GATE_PACKAGES = {'agent-wire-artifact': {'rss-mdm-agent-wire'}}
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
 
@@ -269,7 +269,7 @@ def select_impact(head, base=None):
 
 
 def selected_gate(name, selection):
-    if name=="agent-wire-compat" and "test_agent_wire_compat" in selection["toolTests"]:return True
+    if name=="agent-wire-artifact" and "test_agent_wire_artifact" in selection["toolTests"]:return True
     if name == "script-tests":return bool(selection["toolTests"])
     if selection["full"] or name == "fmt":
         return True
@@ -332,7 +332,7 @@ def fast_gates():
         ("clippy",["cargo","clippy","--locked","--workspace","--all-targets","--all-features","--","-D","warnings"]),
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
-        ("agent-wire-compat",[sys.executable,"hack/agent_wire_compat.py"]),
+        ("agent-wire-artifact",[sys.executable,"hack/agent_wire_artifact.py"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
 

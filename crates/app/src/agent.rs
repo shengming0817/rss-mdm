@@ -292,8 +292,15 @@ async fn register_on(
     .await?;
     let capabilities = serde_json::to_string(input.capabilities())
         .map_err(|_| Error::Unavailable(Failure::Database))?;
-    crate::device::store::bind_agent_in(tx, proof.tenant_id(), receipt.registration, &capabilities)
-        .await?;
+    crate::device::store::bind_agent_in(
+        tx,
+        proof.tenant_id(),
+        receipt.registration,
+        &capabilities,
+        input.platform(),
+        input.architecture(),
+    )
+    .await?;
     crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth, true).await?;
     proof.enrollment(&auth.device)?;
     audit.registration(receipt.registration);
@@ -457,9 +464,9 @@ fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentErr
     let capabilities = value
         .get("capabilities")
         .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if capabilities != &serde_json::json!(["inventory.basic.v2"])
-        && capabilities != &serde_json::json!(["inventory.basic.v2", "task.execute.v2"])
-    {
+    let capabilities: Vec<wire::Capability> = serde_json::from_value(capabilities.clone())
+        .map_err(|_| AgentError::Wire(wire::ErrorCode::UnsupportedCapability))?;
+    if !wire::supported_capabilities(&capabilities) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedCapability));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
@@ -553,13 +560,22 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
 }
 fn registration_digest(input: &wire::RegistrationRequest) -> String {
     let mut hash = Sha256::new();
+    let capabilities = serde_json::to_string(input.capabilities()).expect("validated capabilities");
     for value in [
         "rss-mdm.agent.registration.v1",
         &input.operation_id().to_string(),
         &input.enrollment_id().to_string(),
         input.password().expose(),
         input.credential().expose(),
-        "inventory.basic.v2",
+        capabilities.as_str(),
+        match input.platform() {
+            wire::TaskPlatform::Windows => "windows",
+            wire::TaskPlatform::Macos => "macos",
+        },
+        match input.architecture() {
+            wire::TaskArchitecture::X86_64 => "x86_64",
+            wire::TaskArchitecture::Aarch64 => "aarch64",
+        },
     ] {
         hash.update(value.len().to_be_bytes());
         hash.update(value.as_bytes());

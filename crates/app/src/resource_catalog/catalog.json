@@ -37,16 +37,6 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "operations",
-      "operations_pkey",
-      "CREATE UNIQUE INDEX operations_pkey ON mdm_resource_catalog.operations USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
     [
       "operations",
@@ -67,6 +57,16 @@
       "operations_response_check",
       "c",
       "CHECK ((octet_length((response)::text) <= 8388608))",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_resource_catalog.operations USING btree (tenant_id, id)",
+      true,
+      true,
       true
     ]
   ]

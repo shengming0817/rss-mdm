@@ -20,7 +20,7 @@ Resource 持有不可变 software/script/configuration 版本，Policy 引用意
 
 读取源与版本准入需要 SoftwareRead。源注册体为 `definition: {id, revision, kind, location, publishers}`；kind 为 private/winget/brew，private 的 location 为 null，WinGet 为固定 HTTPS 源地址，Brew 为完整 owner/tap。注册返回 `snapshot`，原样进入 SoftwareSpec.source。源定义不可换写，批准或撤回只更新准入状态；变更来源内容须新 revision。批准/撤回必须提供非空 `evidence` 数组。
 
-先批准来源，创建完整 Resource 版本并上传全部产物，再批准该版本。版本批准核对所有变体、来源、产物、检测及有限依赖；Resource.Active 和外部 Published 均不能代替批准。内部批准不强制外部三环；分配和灰度归 #2470。撤回阻断新的安装准入，不隐式卸载；历史操作回执、旧 attempt 及未知事实继续保留。查询或重放旧批准回执不重新产生当前准入。
+先批准来源，创建完整 Resource 版本并上传全部产物，再批准该版本。版本批准核对所有变体、来源、产物、检测及有限依赖；Resource.Active 和外部 Published 均不能代替批准。内部批准不强制外部三环。分配、任务用途下载授权与设备群灰度使用 [企业任务](enterprise-tasks.md#软件分配与灰度) 中的 Policy/Agent 主链；目录不持有第二套安装状态机或下载 grant。撤回阻断新的安装准入，不隐式卸载；历史操作回执、旧 attempt 及未知事实继续保留。查询或重放旧批准回执不重新产生当前准入。
 
 ## 内容上传、续传与镜像
 

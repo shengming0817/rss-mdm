@@ -16,9 +16,9 @@ pub(super) async fn verify(router: &Router, pending: Value) -> Result<Value> {
         let response = agent_call(
             router,
             Method::POST,
-            "/api/agent/v2/tasks/claim",
+            "/api/agent/v3/tasks/claim",
             Some(CREDENTIAL),
-            Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()})),
+            Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
         )
         .await?;
         ensure!(response.0 == StatusCode::OK, "poll paging: {response:?}");

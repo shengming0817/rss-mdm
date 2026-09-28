@@ -30,6 +30,8 @@ WITH tables AS (
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_planning.remote_operations',true,false,false),('mdm_planning.remote_operation_targets',true,true,false),('mdm_commands.policy_recovery',true,true,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
  ('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_access.agent_bindings',true,false,false),
+ ('mdm_planning.scopes',true,false,false),('mdm_planning.scope_results',true,false,false),
+ ('mdm_software.sources',true,false,false),('mdm_software.approvals',true,false,false),('mdm_software.materials',true,false,false),
  ('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_access.requests',true,false,false),
 
 ('mdm_commands.capabilities',true,true,false),

@@ -109,24 +109,6 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "automation_jobs",
-      "automation_jobs_pending",
-      "CREATE INDEX automation_jobs_pending ON mdm_automation.automation_jobs USING btree (tenant_id, id) WHERE (NOT forwarded)",
-      true,
-      true,
-      true
-    ],
-    [
-      "automation_jobs",
-      "automation_jobs_pkey",
-      "CREATE UNIQUE INDEX automation_jobs_pkey ON mdm_automation.automation_jobs USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
     [
       "automation_jobs",
@@ -168,6 +150,24 @@
       "automation_jobs_target_check",
       "c",
       "CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "automation_jobs",
+      "automation_jobs_pending",
+      "CREATE INDEX automation_jobs_pending ON mdm_automation.automation_jobs USING btree (tenant_id, id) WHERE (NOT forwarded)",
+      true,
+      true,
+      true
+    ],
+    [
+      "automation_jobs",
+      "automation_jobs_pkey",
+      "CREATE UNIQUE INDEX automation_jobs_pkey ON mdm_automation.automation_jobs USING btree (tenant_id, id)",
+      true,
+      true,
       true
     ]
   ]

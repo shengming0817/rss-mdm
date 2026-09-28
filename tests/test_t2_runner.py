@@ -43,7 +43,7 @@ class ExecutionTests(unittest.TestCase):
 class ConsumerSelectionTests(unittest.TestCase):
     def test_cross_crate_consumers_are_selected(self):
         cases={'resource':{'software','tasks'},'resource-postgres':{'software','tasks'},'inventory':{'compliance'},
-               'inventory-postgres':{'compliance'},'group-postgres':{'tasks'},'policy':{'tasks'}}
+               'inventory-postgres':{'compliance'},'group-postgres':{'tasks'},'policy':{'tasks'},'agent-wire':{'software','tasks'}}
         for owner,required in cases.items():
             with self.subTest(owner=owner):self.assertLessEqual(required,set(registry.select_paths(['crates/'+owner+'/src/lib.rs'])[0]))
 
@@ -117,8 +117,8 @@ class SharedFixtureSelection(unittest.TestCase):
 class ToolGateSelection(unittest.TestCase):
     def test_wire_checker_change_runs_the_actual_compatibility_check(self):
         import ci
-        _,tests,_=registry.select_paths(['hack/agent_wire_compat.py'])
-        self.assertTrue(ci.selected_gate('agent-wire-compat',{'full':False,'packages':[],'toolTests':tests,'t2Suites':[]}))
+        _,tests,_=registry.select_paths(['hack/agent_wire_artifact.py'])
+        self.assertTrue(ci.selected_gate('agent-wire-artifact',{'full':False,'packages':[],'toolTests':tests,'t2Suites':[]}))
 
 class ReviewRegressions(unittest.TestCase):
     def test_app_shared_consumers(self):

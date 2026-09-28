@@ -56,7 +56,9 @@ pub(super) async fn accept_for_device(
     now: i64,
 ) -> Result<()> {
     use rss_mdm_policy::Frequency;
-    let definition = &policy.definition;
+    let db::ScheduledPolicy::Script(definition) = policy else {
+        return Ok(());
+    };
     let Some(entry) = definition.entry_in(tx, &target.device, now).await? else {
         return Ok(());
     };

@@ -208,7 +208,7 @@ impl Policies {
             let behavior=input.behavior(at)?;
             let frozen=s.freeze_in(tx,&input.resource,&behavior,verified).await?;
             let snapshot=s.planning.capture_remote_targets_in(tx,&input.targets).await?;
-            let tenant=tx.tenant_id().to_string();let id=input.operation_id;let resource=input.resource.id.clone();let version=input.resource.version.clone();let snapshot=checked_input(serde_json::to_value(snapshot))?;let content=checked_input(serde_json::to_value(frozen))?;let deadline=input.deadline;let author=checked_input(serde_json::to_value(proof.user()))?;
+            let tenant=tx.tenant_id().to_string();let id=input.operation_id;let resource=input.resource.id().to_owned();let version=input.resource.version().to_owned();let snapshot=checked_input(serde_json::to_value(snapshot))?;let content=checked_input(serde_json::to_value(frozen))?;let deadline=input.deadline;let author=checked_input(serde_json::to_value(proof.user()))?;
             tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query("INSERT INTO mdm_planning.remote_operations(tenant_id,id,resource,resource_version,frozen,snapshot,created_at,deadline,author) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(id).bind(resource).bind(version).bind(content).bind(snapshot).bind(at).bind(deadline).bind(author).execute(c).await?;Ok(())
             })).await?;

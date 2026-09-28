@@ -20,7 +20,20 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/policies/{id}/runs", get(runs))
+        .route("/policies/{id}/software/rollout", get(rollout))
         .route("/policies/{id}/runs/{task}", get(run))
+}
+async fn rollout(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, Error> {
+    audit.operation(id, "command_read");
+    app.execution
+        .software_rollout(&auth.proof, id, &audit)
+        .await
+        .map(Json)
 }
 pub(crate) fn agent_routes() -> Router<Arc<HttpState>> {
     Router::new()
@@ -129,6 +142,7 @@ async fn event(
 #[serde(deny_unknown_fields)]
 struct Download {
     attempt: Uuid,
+    artifact: Option<String>,
 }
 async fn download(
     State(app): State<Arc<HttpState>>,
@@ -142,7 +156,13 @@ async fn download(
         audit.operation(id, "command_read");
         let content = app
             .execution
-            .action_content(&principal, id, query.attempt, &audit)
+            .action_content(
+                &principal,
+                id,
+                query.attempt,
+                query.artifact.as_deref(),
+                &audit,
+            )
             .await
             .map_err(task_error)?;
         crate::content::http::response(content, &headers)

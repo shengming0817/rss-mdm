@@ -1,6 +1,7 @@
 //! Real TCP/PG/filesystem enterprise admission; no external publication or task signer required.
 use super::*;
 use uuid::Uuid;
+mod deployment;
 struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
 impl Drop for Server {
     fn drop(&mut self) {

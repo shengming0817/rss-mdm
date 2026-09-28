@@ -21,6 +21,7 @@ pub(crate) enum Execution {
     Running,
     Succeeded,
     Failed,
+    WaitingReboot,
     Unknown,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -125,7 +126,10 @@ impl RunState {
     pub fn result(&mut self, attempt: Uuid, success: bool) -> Result<(), Error> {
         // Late evidence from the same attempt can resolve Unknown, but cannot authorize rerun.
         if self.attempt() != Some(attempt)
-            || !matches!(self.execution, Execution::Running | Execution::Unknown)
+            || !matches!(
+                self.execution,
+                Execution::Running | Execution::Unknown | Execution::WaitingReboot
+            )
         {
             return Err(Error::Conflict);
         }
@@ -134,6 +138,31 @@ impl RunState {
         } else {
             Execution::Failed
         };
+        Ok(())
+    }
+    /// Preserve an uncertain software effect and block blind re-execution.
+    pub fn uncertain_result(&mut self, attempt: Uuid) -> Result<(), Error> {
+        if self.attempt() != Some(attempt)
+            || !matches!(
+                self.execution,
+                Execution::Running | Execution::Unknown | Execution::WaitingReboot
+            )
+        {
+            return Err(Error::Conflict);
+        }
+        self.execution = Execution::Unknown;
+        Ok(())
+    }
+    pub fn waiting_reboot(&mut self, attempt: Uuid) -> Result<(), Error> {
+        if self.attempt() != Some(attempt)
+            || !matches!(
+                self.execution,
+                Execution::Running | Execution::Unknown | Execution::WaitingReboot
+            )
+        {
+            return Err(Error::Conflict);
+        }
+        self.execution = Execution::WaitingReboot;
         Ok(())
     }
     pub fn cancel(&mut self) {
@@ -175,6 +204,11 @@ impl RunState {
             Delivery::Queued => None,
             Delivery::Claimed { attempt, .. } | Delivery::Received { attempt, .. } => Some(attempt),
         }
+    }
+    pub fn awaits_user(&self, now: i64) -> bool {
+        self.execution == Execution::NotStarted
+            && self.cancellation == Cancellation::None
+            && matches!(self.delivery,Delivery::Claimed {lease_until,..}|Delivery::Received {lease_until,..} if now<lease_until)
     }
     fn live_attempt(&self, attempt: Uuid, now: i64) -> Result<i64, Error> {
         match self.delivery {

@@ -1,10 +1,10 @@
 # 企业脚本、采集模板与任务
 
-Resource.Script 持有唯一的不可变执行定义。管理入口为 `/api/v3/resources/{id}`；原 `/api/v1/resources` 已删除。Agent 仅使用 `/api/agent/v2`。本页描述服务端协议；真实 Windows/macOS runner 分别由 #2475/#2476 验收，不能把模拟 Agent T2 当作设备执行证明。
+Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v3/resources/{id}`，Agent 使用 `/api/agent/v3` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
 
 ## 配置与内容
 
-内容与任务签名分别配置；软件目录只需要 `content`，脚本任务需要同时配置 `content` 和 `task_signing`。旧 `tasks` 配置已删除：
+内容与任务签名分别配置；仅维护软件目录需要 `content`，脚本和软件任务都需要 `content` 与 `task_signing`：
 
 ```json
 {
@@ -32,7 +32,7 @@ Resource.Script 持有唯一的不可变执行定义。管理入口为 `/api/v3/
 
 同一上传 ID 的元数据持久化已确认 offset；未确认文件尾部在续传时截断。过期会话在新上传或显式清理时回收。原子落盘后数据库事务失败可能留下未引用文件；`POST /api/v3/software/content/cleanup` 需要 ResourceWrite，每轮至多清理 128 个超过保留窗口且无有效引用、无活跃读写的对象。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。跨进程 blob 锁使用固定 256 个摘要分片，锁文件不随制品数量增长；不同摘要落入同一分片时，互斥写入可能返回冲突，清理会略过被占用的分片，稍后重试。不得手工删除 `.upload-*`、`.blob-lock-*` 或正在使用的内容文件。
 
-密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限、资源摘要、内容长度/hash、解释器、身份、参数和预算。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
+密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、批准身份、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
 Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_info_v1）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须全部显式绑定；不拼接 shell 命令。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 
@@ -58,7 +58,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 默认签入触发、每执行版本一次、没有结束时间。显式设备也通过 Scope 的直接设备来源表达。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
 
-管理需要 PolicyWrite，以及目标的 ScriptExecute；Scope 分配另需 ScopeRead 和全设备 ScriptExecute。发布受理后归组织持有，不再依赖发布者的登录会话、岗位或授权规则。没有 ScriptPlan 保存或强制第二人审批步骤。Agent 注册仍须声明 `task.execute.v2`，领取、下载和启动仍验证凭据、设备世代和当前分配。
+脚本分配需要 PolicyWrite、ResourceRead、ScopeRead 与设备范围 ScriptExecute；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件批准。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v3` 或 `software.execute.v3`；领取、下载和启动均重新核对凭据、注册世代和当前分配。
 
 `frequency` 为 `once_per_version`、`once_per_entry` 或 `every_trigger`。可选 `schedule` 包含 trigger、notBefore、until、jitterSeconds、window 和 misfire。trigger 支持 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration、check_in(minimumSeconds)。`until` 可省略。misfire 为 `{"kind":"coalesce_one"}`（默认）或 `{"kind":"skip","maxLatenessSeconds":30}`；窗口可跨午夜，星期按开始日计算，DST gap 跳过、fold 取较早时刻。
 
@@ -76,12 +76,12 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 ## Agent 状态与结果
 
-1. `POST /api/agent/v2/tasks/claim`：wireVersion=2、operationId，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
-2. 验签后按 task/attempt 下载 `/tasks/{taskId}/content?attempt={attemptId}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据及任务权限。下载后再次核对长度/hash。
+1. `POST /api/agent/v3/tasks/claim`：wireVersion=3、operationId，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
+2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、企业批准及任务权限。客户端最终核对长度/hash。
 3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion、operationId、attemptId、event。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
 4. 返回 result（exitCode、quality、output、diagnostics）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
 
-交付、执行和取消分别保存；运行退出成功也只记录执行证据，effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。持久结果包含 exitCode、quality、schemaValid、output、diagnostics 和 trusted；单 run 详情按 OperationRead 返回完整结果，列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
+交付、执行和取消分别保存；脚本运行退出成功只记录执行证据，脚本 effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。脚本持久结果包含 exitCode、quality、schemaValid、output、diagnostics 和 trusted；单 run 详情按 OperationRead 返回完整结果，列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
 
 采集模板是 collection purpose 加固定字段 JSON Pointer 映射，不另建模板版本体系。只允许 corporate_agent.version（字符串）、corporate_agent.healthy（布尔）、osquery.version（字符串），完整键名均以 `custom.` 开头。前两项来源 agent.script，第三项来源 agent.osquery。完整、exitCode=0、schema 与字段类型均有效且权限仍有效、未超过任务或运行超时且未取消时，通过 CollectionRun → Observation → Inventory 发布。部分、截断、失败和非法输出只增加质量证据，保留可信事实及 lastKnown 的原始来源时间。没有 TTL。
 
@@ -94,4 +94,12 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 `cancellationRequested` 与 `deadlineElapsed` 是意图/时间事实。仍有工作时，phase 为 preparing、dispatched、cancelling 或 expiring；全部工作收敛后为 completed，存在无法确认的执行则为 unknown。completed 表示处理收敛，不表示每个设备执行成功，更不证明脚本效果回滚；各设备结果仍独立展示。取消返回 cancellationRequested，不把写入取消意图称为设备取消完成。
 
-当前服务端 Scope 预览只证明分配资格，尚无受检 OS/CPU 架构事实，不能宣称设备平台适用。终端仍严格核验签名任务的平台/架构。服务端统一 applicability 与其事实/协议前置合同由 [PBI #2572](https://dev.azure.com/shengming0923/rss/_workitems/edit/2572) 跟踪；本次不扩展 Agent V2。
+服务端的软件变体选择使用当前 Agent 注册声明的平台和架构，终端必须再用本机真实 OS/架构核验签名任务。注册声明不等于受检硬件事实；统一 applicability 的受检事实仍由 [PBI #2572](https://dev.azure.com/shengming0923/rss/_workitems/edit/2572) 跟踪。
+
+## 软件分配与灰度
+
+同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`behavior.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。`admissionOperation` 必须是当前企业软件版本批准的 operation；撤销后重新批准，需要管理员以新 operation 更新 Policy，生成新的执行版本，旧版本不会自动复活。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 暂停新任务，`enable` 恢复；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
+
+Agent 只收到单次可执行任务，不消费 Policy、Scope、灰度、Catalog 身份或企业批准 operation。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。`startMode:user_initiated` 表示可选任务须经可信本地用户操作后才能请求 Start，`automatic` 表示可自动开始。Offer 仅用于准备和下载，过期后不能继续取内容；Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
+
+`GET /api/v2/policies/{id}/software/rollout` 返回每阶段当前总目标、已回报、等待用户、未知、等待重启、明确失败、核实成功和无可用软件能力设备数，以及暂停、时间与可选门槛。自选任务被领取且尚未启动、Offer 仍有效时，逐 Run 的 `userAction` 与灰度统计显示 `waiting_user`。阶段历史按稳定 Scope 身份归属，重排阶段不会复用其他 Scope 的结果。Policy 预览和设备页另外返回服务端计算的闭合 `taskAdmission` 原因，不把单纯 Scope 命中称为可执行。读取要求 PolicyRead 与全设备 OperationRead；这些是当前动态目标的统计，历史任务证据不被重算。真实设备身份、可信用户交互和软件执行适配由 #2564 消费本协议，平台 T3 由 #2480/#2481 验收。

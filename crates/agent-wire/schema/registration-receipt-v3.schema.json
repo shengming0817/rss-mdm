@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v2/registration-receipt.schema.json",
+  "$id": "https://rss.example/mdm/agent/v3/registration-receipt.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,7 +15,7 @@
   ],
   "properties": {
     "wireVersion": {
-      "const": 2
+      "const": 3
     },
     "operationId": {
       "$ref": "#/$defs/nonNilUuid"
@@ -43,11 +43,20 @@
     "capabilities": {
       "enum": [
         [
-          "inventory.basic.v2"
+          "inventory.basic.v3"
         ],
         [
-          "inventory.basic.v2",
-          "task.execute.v2"
+          "inventory.basic.v3",
+          "task.execute.v3"
+        ],
+        [
+          "inventory.basic.v3",
+          "software.execute.v3"
+        ],
+        [
+          "inventory.basic.v3",
+          "task.execute.v3",
+          "software.execute.v3"
         ]
       ]
     }

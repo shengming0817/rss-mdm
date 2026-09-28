@@ -3,6 +3,7 @@ use super::state::RunState;
 use crate::Error;
 use crate::execution::{Result, checked_input, storage, stored};
 use crate::planning::policies::admission::ExecutionPolicy;
+use crate::planning::policies::software::SoftwareExecutionPolicy;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use sqlx::Row;
@@ -93,25 +94,349 @@ pub(super) async fn receipt(
     id: Uuid,
     fingerprint: Vec<u8>,
     response: &Value,
+    audit_details: Option<Value>,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
     let response = response.clone();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_receipts(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3::uuid,$4,$5)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_receipts(tenant_id,actor,id,fingerprint,response,audit_details) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).bind(audit_details).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
+pub(super) async fn audit_details(
+    tx: &mut PgTransaction<'_>,
+    actor: &str,
+    id: Uuid,
+) -> Result<Option<Value>> {
+    let tenant = tx.tenant_id().to_string();
+    let actor = actor.to_owned();
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT audit_details FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3::uuid").bind(tenant).bind(actor).bind(id.to_string()).fetch_one(c).await})).await.map_err(Into::into)
+}
 
-pub(super) struct ScheduledPolicy {
-    pub definition: ExecutionPolicy,
+pub(super) enum ScheduledPolicy {
+    Script(ExecutionPolicy),
+    Software(SoftwareExecutionPolicy),
+}
+pub(super) struct TaskIssue {
+    pub run: Uuid,
+    pub attempt: Uuid,
+    pub permit: rss_mdm_agent_wire::TaskPermit,
+    pub expiry: i64,
+}
+impl ScheduledPolicy {
+    pub fn owner(&self) -> Uuid {
+        match self {
+            Self::Script(v) => v.owner,
+            Self::Software(v) => v.owner,
+        }
+    }
+    pub fn timeout_seconds(&self) -> u32 {
+        match self {
+            Self::Script(v) => v.frozen.definition.spec().timeout_seconds,
+            Self::Software(v) => v.frozen.run_lifetime_seconds,
+        }
+    }
+    pub async fn authorized_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        now: i64,
+    ) -> Result<bool> {
+        match self {
+            Self::Script(v) => v.authorized_in(tx, &target.device, now).await,
+            Self::Software(v) => {
+                let Some((platform, architecture)) =
+                    agent_profile_in(tx, target.registration).await?
+                else {
+                    return Ok(false);
+                };
+                v.authorized_in(service, tx, &target.device, platform, architecture, now)
+                    .await
+            }
+        }
+    }
+    pub async fn withdrawn_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        now: i64,
+    ) -> Result<bool> {
+        match self {
+            Self::Script(v) => v.withdrawn_in(tx, &target.device).await,
+            Self::Software(_) => Ok(!self.authorized_in(service, tx, target, now).await?),
+        }
+    }
+    pub async fn task(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        issue: TaskIssue,
+    ) -> Result<rss_mdm_agent_wire::TaskPayload> {
+        match self {
+            Self::Script(v) => Ok(v.frozen.task(
+                checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
+                target,
+                issue.run,
+                issue.attempt,
+                issue.permit,
+                issue.expiry,
+            )?),
+            Self::Software(v) => {
+                use rss_mdm_agent_wire as wire;
+                let (platform, architecture) = agent_profile_in(tx, target.registration)
+                    .await?
+                    .ok_or(Error::Forbidden)?;
+                let selected_steps = v
+                    .execution_steps_in(service, tx, platform, architecture)
+                    .await?;
+                let mut steps = Vec::new();
+                for (index, selected) in selected_steps.iter().enumerate() {
+                    let variant = selected
+                        .version()
+                        .resolve(
+                            selected.platform(),
+                            selected.architecture(),
+                            selected.variant(),
+                        )
+                        .map_err(|_| Error::Malformed)?;
+                    let rss_mdm_resource::Declaration::Software { definition } =
+                        variant.declaration()
+                    else {
+                        return Err(Error::Malformed.into());
+                    };
+                    let action = software_action(definition.spec());
+                    let artifacts = definition
+                        .spec()
+                        .artifacts
+                        .iter()
+                        .map(|(key, artifact)| wire::SoftwareTaskArtifact {
+                            key: format!("{index}/{key}"),
+                            length: artifact.length,
+                            sha256: artifact.sha256,
+                        })
+                        .collect();
+                    let export_identity = if matches!(
+                        definition.spec().format,
+                        rss_mdm_resource::SoftwareFormat::Winget
+                            | rss_mdm_resource::SoftwareFormat::Brew
+                    ) {
+                        let identity = checked_input(serde_json::to_vec(&(
+                            &definition.spec().source,
+                            &definition.spec().package,
+                            &definition.spec().version,
+                            selected.variant().as_str(),
+                        )))?;
+                        let digest = ring::digest::digest(&ring::digest::SHA256, &identity);
+                        Some(format!(
+                            "sha256.{}",
+                            digest
+                                .as_ref()
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        ))
+                    } else {
+                        None
+                    };
+                    steps.push(wire::SoftwareTaskStep {
+                        action,
+                        artifacts,
+                        export_identity,
+                    });
+                }
+                let plan_bytes = checked_input(serde_json::to_vec(&steps))?;
+                let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &plan_bytes)
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| Error::Malformed)?;
+                let spec = wire::SoftwareTaskSpec {
+                    wire_version: wire::WIRE_VERSION,
+                    tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
+                    device_id: target.device.clone(),
+                    platform: match platform {
+                        rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
+                        rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
+                    },
+                    architecture: match architecture {
+                        rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
+                        rss_mdm_policy::Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
+                    },
+                    registration_id: target.registration,
+                    generation: target.generation.try_into().map_err(|_| Error::Malformed)?,
+                    task_id: issue.run,
+                    attempt_id: issue.attempt,
+                    permit: issue.permit,
+                    expires_at: issue.expiry,
+                    steps,
+                    definition_digest: digest,
+                    intent: match v.intent() {
+                        rss_mdm_policy::SoftwareIntent::RequiredInstall
+                        | rss_mdm_policy::SoftwareIntent::AvailableInstall => {
+                            wire::SoftwareTaskIntent::Install
+                        }
+                        rss_mdm_policy::SoftwareIntent::ExplicitUninstall => {
+                            wire::SoftwareTaskIntent::Uninstall
+                        }
+                    },
+                    start_mode: if matches!(
+                        v.intent(),
+                        rss_mdm_policy::SoftwareIntent::AvailableInstall
+                    ) {
+                        wire::SoftwareStartMode::UserInitiated
+                    } else {
+                        wire::SoftwareStartMode::Automatic
+                    },
+                };
+                checked_input(spec.try_into())
+            }
+        }
+    }
+}
+pub(super) async fn agent_profile_in(
+    tx: &mut PgTransaction<'_>,
+    registration: Uuid,
+) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
+    let tenant = tx.tenant_id().to_string();
+    let profile = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                crate::device::store::agent_target(c, &tenant, &registration.to_string()).await
+            })
+        })
+        .await?;
+    profile
+        .map(|(platform, architecture)| {
+            let platform = match platform.as_str() {
+                "windows" => rss_mdm_policy::Platform::Windows,
+                "macos" => rss_mdm_policy::Platform::Macos,
+                _ => return Err(Error::Unavailable(crate::Failure::CommandInvariant).into()),
+            };
+            let architecture = match architecture.as_str() {
+                "x86_64" => rss_mdm_policy::Architecture::X86_64,
+                "aarch64" => rss_mdm_policy::Architecture::Aarch64,
+                _ => return Err(Error::Unavailable(crate::Failure::CommandInvariant).into()),
+            };
+            Ok((platform, architecture))
+        })
+        .transpose()
+}
+fn software_action(
+    spec: &rss_mdm_resource::SoftwareSpec,
+) -> rss_mdm_agent_wire::SoftwareTaskAction {
+    use rss_mdm_agent_wire as w;
+    use rss_mdm_resource as r;
+    fn command(input: &r::SoftwareCommand) -> w::SoftwareTaskCommand {
+        use r::SoftwareExecutor as E;
+        w::SoftwareTaskCommand {
+            executor: match input.executor {
+                E::Msi => w::SoftwareTaskExecutor::Msi,
+                E::PackageInstaller => w::SoftwareTaskExecutor::PackageInstaller,
+                E::PowerShell7 => w::SoftwareTaskExecutor::PowerShell7,
+                E::PosixSh => w::SoftwareTaskExecutor::PosixSh,
+                E::Bash => w::SoftwareTaskExecutor::Bash,
+                E::Winget => w::SoftwareTaskExecutor::Winget,
+                E::Brew => w::SoftwareTaskExecutor::Brew,
+            },
+            entry: input.entry.clone(),
+            run_as: match input.run_as {
+                r::RunAs::System => w::ExecutionIdentity::System,
+                r::RunAs::LoggedInUser => w::ExecutionIdentity::LoggedInUser,
+            },
+            arguments: input.arguments.clone(),
+            environment: input.environment.clone(),
+            timeout_seconds: input.timeout_seconds,
+            output_bytes: input.output_bytes,
+        }
+    }
+    let bundle = spec.bundle.as_ref().map(|b| w::SoftwareTaskBundle {
+        schema: b.schema,
+        platform: match b.platform {
+            r::Platform::Windows => w::TaskPlatform::Windows,
+            r::Platform::MacOS => w::TaskPlatform::Macos,
+        },
+        architecture: match b.architecture {
+            r::Architecture::X86_64 => w::TaskArchitecture::X86_64,
+            r::Architecture::Aarch64 => w::TaskArchitecture::Aarch64,
+        },
+        entries: b
+            .entries
+            .iter()
+            .map(|(name, entry)| {
+                (
+                    name.clone(),
+                    w::SoftwareTaskBundleEntry {
+                        length: entry.length,
+                        sha256: entry.sha256,
+                    },
+                )
+            })
+            .collect(),
+    });
+    w::SoftwareTaskAction {
+        package: spec.package.clone(),
+        version: spec.version.clone(),
+        format: match spec.format {
+            r::SoftwareFormat::Msi => w::SoftwareTaskFormat::Msi,
+            r::SoftwareFormat::Pkg => w::SoftwareTaskFormat::Pkg,
+            r::SoftwareFormat::Bundle => w::SoftwareTaskFormat::Bundle,
+            r::SoftwareFormat::Winget => w::SoftwareTaskFormat::Winget,
+            r::SoftwareFormat::Brew => w::SoftwareTaskFormat::Brew,
+        },
+        primary: spec.primary.clone(),
+        install: command(&spec.install),
+        uninstall: spec.uninstall.as_ref().map(command),
+        detect: match &spec.detect {
+            r::SoftwareDetection::MsiProduct {
+                product_code,
+                version,
+            } => w::SoftwareTaskDetection::MsiProduct {
+                product_code: product_code.clone(),
+                version: version.clone(),
+            },
+            r::SoftwareDetection::PkgReceipt { receipt, version } => {
+                w::SoftwareTaskDetection::PkgReceipt {
+                    receipt: receipt.clone(),
+                    version: version.clone(),
+                }
+            }
+            r::SoftwareDetection::Script { command: detector } => {
+                w::SoftwareTaskDetection::Script {
+                    command: command(detector),
+                }
+            }
+        },
+        reboot: match spec.reboot {
+            r::SoftwareReboot::Forbid => w::SoftwareTaskReboot::Forbid,
+            r::SoftwareReboot::Report => w::SoftwareTaskReboot::Report,
+        },
+        downgrade: match spec.downgrade {
+            r::SoftwareDowngrade::Deny => w::SoftwareTaskDowngrade::Deny,
+            r::SoftwareDowngrade::Allow => w::SoftwareTaskDowngrade::Allow,
+        },
+        ownership: match spec.ownership {
+            r::SoftwareOwnership::ManagedOnly => w::SoftwareTaskOwnership::ManagedOnly,
+            r::SoftwareOwnership::AllowUserExisting => w::SoftwareTaskOwnership::AllowUserExisting,
+        },
+        bundle,
+    }
 }
 pub(super) async fn load_policy_version(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<ScheduledPolicy> {
-    Ok(ScheduledPolicy {
-        definition: crate::planning::policies::admission::read_in(reader, tx, id).await?,
-    })
+    let (_, frozen) = crate::planning::policies::storage::version_in(reader, tx, id).await?;
+    match frozen {
+        crate::planning::policies::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(
+            crate::planning::policies::admission::read_in(reader, tx, id).await?,
+        )),
+        crate::planning::policies::Frozen::Software { .. } => Ok(ScheduledPolicy::Software(
+            crate::planning::policies::software::read_in(reader, tx, id).await?,
+        )),
+        _ => Err(Error::Unsupported.into()),
+    }
 }
 
 pub(super) async fn load_source(
@@ -121,8 +446,8 @@ pub(super) async fn load_source(
 ) -> Result<ScheduledPolicy> {
     match source {
         Source::Policy { version } => load_policy_version(reader, tx, version).await,
-        Source::RemoteOperation { operation } => Ok(ScheduledPolicy {
-            definition: crate::planning::policies::admission::remote_in(tx, operation).await?,
-        }),
+        Source::RemoteOperation { operation } => Ok(ScheduledPolicy::Script(
+            crate::planning::policies::admission::remote_in(tx, operation).await?,
+        )),
     }
 }

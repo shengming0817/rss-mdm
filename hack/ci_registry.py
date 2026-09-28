@@ -38,7 +38,7 @@ SUITES={
  'compliance':product_suite('compliance',product.compliance,('identity_t2::compliance::rules_facts_groups_history_and_authorization',)),
  'commands':product_suite('commands',product.commands,('windows::tests::native_command_operations_and_observation',),fixtures=('identity','windows'),isolation='server'),
  'tasks':product_suite('tasks',product.tasks,('identity_t2::tasks::enterprise_task_delivery_and_inventory',)),
- 'software':product_suite('software',product.software,('identity_t2::software::enterprise_catalog_content_and_atomic_admission',),fixtures=('identity','sources'),isolation='server'),
+ 'software':product_suite('software',product.software,('identity_t2::software::enterprise_catalog_content_and_atomic_admission','identity_t2::software::deployment::enterprise_assignment_authorization_rollout_and_results'),fixtures=('identity','sources'),isolation='server'),
  'apple':product_suite('apple',product.apple,('apple::certificate::tests::cms_is_attached_and_independently_verified','apple::push::tests::production_transport_receipts_are_not_command_evidence','apple::tests::native_enrollment_collection_and_profile_lifecycle'),fixtures=('identity','apple'),tools=('cargo','docker','openssl','go')),
  'identity':product_suite('identity',product.identity,('identity_audit::tests::http_events_deliver_replay_and_fail_closed','identity_t2::authorization::capability_routes_without_application_preserve_revocation_and_atomicity','identity_t2::authorization::persistent_rules_membership_cas_replay_and_restart','identity_t2::local_identity_mdm_authorization_and_revocation','identity_t2::sso::product_callback_link_step_up_and_provider_isolation'),fixtures=('identity','sources','windows'),isolation='server'),
  'catalog':product_suite('catalog',product.catalog,(),fixtures=(),success_marker='command catalog check: all contracts match isolated migrations'),
@@ -62,7 +62,7 @@ OWNERS={
  'software-service':('publication','software','catalog'), 'winget-source':('sources','publication'), 'brew-source':('sources','publication'),
  'compliance':('compliance',), 'compliance-postgres':('compliance',),
  'inventory':('foundation','assets','management','compliance'), 'inventory-postgres':('foundation','assets','management','compliance'),
- 'windows-mdm':('windows','commands','identity'), 'agent-wire':('commands','tasks'), 'scope':tuple(SUITES),
+ 'windows-mdm':('windows','commands','identity'), 'agent-wire':('commands','tasks','software'), 'scope':tuple(SUITES),
  'audit-integration':tuple(SUITES), 'examples':tuple(SUITES),
 }
 # These shared App services are composed by all product scenarios; propagate
@@ -85,7 +85,7 @@ TOOL_INPUTS={
  'hack/auth_t3.py':('test_auth_t3',),'hack/auth_t3_browser.mjs':('test_auth_t3',),
  'hack/release.py':('test_release',),'hack/candidate_runtime.py':('test_candidate_smoke',),
  'hack/candidate_smoke.py':('test_candidate_smoke',),
- 'hack/agent_wire_compat.py':('test_agent_wire_compat',),
+ 'hack/agent_wire_artifact.py':('test_agent_wire_artifact',),
 }
 
 def all_tools(): return sorted(p.stem for p in (ROOT/'tests').glob('test_*.py'))
@@ -122,7 +122,7 @@ def select_paths(paths):
             if crate in ('policy-postgres','resource-postgres','software-release-postgres','backend-postgres-support'):tests.add('test_backend_support')
             if crate=='software-service':tests.update(('test_software_ownership','test_flow_boundaries','test_audit_surface'))
             if crate=='windows-mdm':tests.add('test_ddf')
-            if crate=='agent-wire':tests.add('test_agent_wire_compat')
+            if crate=='agent-wire':tests.add('test_agent_wire_artifact')
             continue
         if path.startswith('tests/inventory-postgres-integration/'):
             suites.add('foundation');continue

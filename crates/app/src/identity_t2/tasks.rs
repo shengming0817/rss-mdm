@@ -56,15 +56,15 @@ async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v2/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(CREDENTIAL),Some(json!({"wireVersion":2,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v3/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(CREDENTIAL),Some(json!({"wireVersion":3,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
-        "/api/agent/v2/tasks/claim",
+        "/api/agent/v3/tasks/claim",
         Some(CREDENTIAL),
-        Some(json!({"wireVersion":2,"operationId":operation})),
+        Some(json!({"wireVersion":3,"operationId":operation})),
     )
     .await
 }
@@ -218,18 +218,18 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v2/registrations",None,Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":INVENTORY_CREDENTIAL,"capabilities":["inventory.basic.v2"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":INVENTORY_CREDENTIAL,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.basic.v2"]),
+            && registration.1["capabilities"] == json!(["inventory.basic.v3"]),
         "registration: {registration:?}"
     );
     let taskless = agent_call(
         &router,
         Method::POST,
-        "/api/agent/v2/tasks/claim",
+        "/api/agent/v3/tasks/claim",
         Some(INVENTORY_CREDENTIAL),
-        Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -245,10 +245,10 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v2/registrations",None,Some(json!({"wireVersion":2,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":CREDENTIAL,"capabilities":["inventory.basic.v2","task.execute.v2"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":CREDENTIAL,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","task.execute.v3"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.basic.v2", "task.execute.v2"]),
+            && registration.1["capabilities"] == json!(["inventory.basic.v3", "task.execute.v3"]),
         "task registration: {registration:?}"
     );
     // Legacy URL and major cannot enter task intake.
@@ -257,7 +257,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/api/agent/v1/tasks/claim")
+                .uri("/api/agent/v2/tasks/claim")
                 .header("host", "mdm.example.test")
                 .body(Body::empty())?,
         )
@@ -267,9 +267,9 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/v2/tasks/claim",
+            "/api/agent/v3/tasks/claim",
             Some(CREDENTIAL),
-            Some(json!({"wireVersion":1,"operationId":Uuid::new_v4()}))
+            Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
         )
         .await?
         .0 == StatusCode::BAD_REQUEST
@@ -411,8 +411,8 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
         architecture: rss_mdm_agent_wire::TaskArchitecture::Aarch64,
         registration_id: Uuid::parse_str(registration.1["registrationId"].as_str().unwrap())?,
         generation: registration.1["generation"].as_u64().unwrap(),
-        task_id: signed.payload.task_id,
-        attempt_id: signed.payload.attempt_id,
+        task_id: signed.payload.task_id(),
+        attempt_id: signed.payload.attempt_id(),
         permit: rss_mdm_agent_wire::TaskPermit::Offer,
         now,
     };
@@ -465,7 +465,7 @@ async fn enterprise_task_delivery_and_inventory() -> Result<()> {
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM rss_device_command.commands WHERE command_id='{}'",
-            signed.payload.task_id
+            signed.payload.task_id()
         ))?
         .trim()
             == "0"
@@ -626,7 +626,7 @@ async fn pagination(author: &mut Browser, router: &Router, resource: Uuid) -> Re
 
 async fn range_matrix(router: &Router, task: &Value, expected: &[u8]) -> Result<()> {
     let path = format!(
-        "/api/agent/v2/tasks/{}/content?attempt={}",
+        "/api/agent/v3/tasks/{}/content?attempt={}",
         task["payload"]["taskId"].as_str().unwrap(),
         task["payload"]["attemptId"].as_str().unwrap()
     );

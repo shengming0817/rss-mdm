@@ -43,6 +43,17 @@ pub(crate) async fn write_in(
             return Err(Error::NotFound.into());
         }
     }
+    if let Behavior::Software { rollout, .. } = &p.definition.behavior {
+        let tenant = tx.tenant_id().to_string();
+        let scopes: Vec<Uuid> = rollout.stages.iter().map(|s| s.scope).collect();
+        let count: i64 = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT count(*) FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=ANY($2::uuid[]) AND NOT deleted")
+                .bind(tenant).bind(scopes).fetch_one(c).await
+        })).await?;
+        if count != rollout.stages.len() as i64 {
+            return Err(Error::NotFound.into());
+        }
+    }
     let publication = rss_mdm_policy_postgres::Publication {
         policy: p.clone(),
         frozen: frozen

@@ -380,7 +380,7 @@ pub(crate) fn from_state(
         .merge(host_context)
         .merge(crate::apple::browser_routes().with_state(apple_state))
         .nest(
-            "/api/agent/v2",
+            "/api/agent/v3",
             crate::agent::routes()
                 .with_state(agent)
                 .merge(crate::execution::actions::http::agent_routes().with_state(execution)),
@@ -435,9 +435,9 @@ fn route_action(route: &str, native_identity: bool) -> &'static str {
         "/api/v3/enrollments/{id}/resume" => "enrollment_resume",
         "/api/v3/enrollments/{id}/cancel" => "enrollment_cancel",
         "/api/v3/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/agent/v2/registrations" => "agent_registration",
-        "/api/agent/v2/reports" => "agent_report",
-        "/api/agent/v2/reports/{id}" => "agent_report_read",
+        "/api/agent/v3/registrations" => "agent_registration",
+        "/api/agent/v3/reports" => "agent_report",
+        "/api/agent/v3/reports/{id}" => "agent_report_read",
         "/api/v2/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs" => "collection_start",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
@@ -470,7 +470,7 @@ pub(crate) async fn envelope(
         route.starts_with("/api/v2/tenants/") || route.starts_with("/api/v2/oidc/");
     let action = route_action(route, native_identity);
     let soap = route.starts_with("/EnrollmentServer/");
-    let agent_route = route.starts_with("/api/agent/v2/");
+    let agent_route = route.starts_with("/api/agent/v3/");
     let audit = RequestAudit::new(envelope.tenant.clone(), action);
     let request_id = audit.request_id();
     // Native authentication commits its own atomic security event. A second product
@@ -484,7 +484,7 @@ pub(crate) async fn envelope(
             Err(_) => {
                 audit.finalize(None);
                 return capacity_response(
-                    request.uri().path().starts_with("/api/agent/v2/"),
+                    request.uri().path().starts_with("/api/agent/v3/"),
                     request_id,
                 );
             }
@@ -648,7 +648,7 @@ async fn bounded_body(
         .map(|p| p.as_str())
     {
         Some("/api/v3/resources/{id}") => 8 * 1024 * 1024,
-        Some("/api/agent/v2/tasks/{id}/events") => rss_mdm_agent_wire::MAX_TASK_REQUEST_BYTES,
+        Some("/api/agent/v3/tasks/{id}/events") => rss_mdm_agent_wire::MAX_TASK_REQUEST_BYTES,
         _ if agent => rss_mdm_agent_wire::MAX_REQUEST_BYTES,
         _ => 2 * 1024 * 1024,
     };
@@ -845,7 +845,7 @@ mod tests {
                 "/api/v3/devices/{device}/registrations/{registration}/revoke",
                 "credential_revoke",
             ),
-            ("/api/agent/v2/registrations", "agent_registration"),
+            ("/api/agent/v3/registrations", "agent_registration"),
         ] {
             assert_eq!(route_action(route, false), action);
         }

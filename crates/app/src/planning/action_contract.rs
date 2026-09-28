@@ -6,6 +6,7 @@ pub(crate) use rss_mdm_policy::{Architecture, Platform};
 use rss_mdm_resource as r;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ExecutionInput {
@@ -32,4 +33,16 @@ impl FrozenAction {
         )
         .map_err(|_| Error::Malformed)
     }
+}
+/// Enterprise software input frozen at Policy publication, before per-device admission.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct FrozenSoftwareAction {
+    pub resource: String,
+    pub version: String,
+    pub variants: BTreeMap<rss_mdm_policy::SoftwareTarget, String>,
+    pub resource_digest: [u8; 32],
+    pub admission_operation: uuid::Uuid,
+    pub intent: rss_mdm_policy::SoftwareIntent,
+    pub schedule: Schedule,
+    pub run_lifetime_seconds: u32,
 }

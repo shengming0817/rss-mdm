@@ -25,14 +25,20 @@ pub(crate) async fn preview(
     run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,&audit,(&s,&a,&audit,&input),|ctx,tx|Box::pin(async move {
         let (s,a,audit,input)=*ctx;
         let version=s.resource_in(tx,&input.definition.resource).await?;
-        let selected=variant(&version,&input.definition.resource)?;
-        match (&input.definition.behavior,selected.declaration()) {
-            (Behavior::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
-            (Behavior::Configuration {exit},resource::Declaration::Configuration {remove,..})=>{
-                if matches!(exit,Exit::Remove) && remove.is_none(){return Err(Error::Unsupported.into());}
-            },
-            _=>return Err(Error::Malformed.into()),
-        }
+        let software=if matches!(input.definition.behavior, Behavior::Software { .. }) {
+            let Frozen::Software { action }=s.freeze_in(tx, &input.definition.resource, &input.definition.behavior, None).await? else {return Err(Error::Malformed.into());};
+            Some(software::SoftwareExecutionPolicy::draft(input.definition.clone(),*action))
+        } else {
+            let selected=variant(&version,&input.definition.resource)?;
+            match (&input.definition.behavior,selected.declaration()) {
+                (Behavior::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
+                (Behavior::Configuration {exit},resource::Declaration::Configuration {remove,..})=>{
+                    if matches!(exit,Exit::Remove) && remove.is_none(){return Err(Error::Unsupported.into());}
+                },
+                _=>return Err(Error::Malformed.into()),
+            }
+            None
+        };
         a.proof.require_all_devices(Permission::InventoryRead)?;
         let tenant=tx.tenant_id().to_string();let id=input.definition.scope;
         let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE").bind(tenant).bind(id).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?.ok_or(Error::Conflict)?;
@@ -43,7 +49,11 @@ pub(crate) async fn preview(
         for device in devices {
             let name=device.clone();let id=input.definition.scope;
             let eligibility=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT mdm_planning.scope_admission($1,$2)").bind(id).bind(name).fetch_one(c).await})).await?;
-            items.push(json!({"device":device,"eligibility":eligibility}));
+            let task_admission=if let Some(software)=&software {
+                let now=crate::execution::storage::now(tx).await?;
+                Some(software.management_state_in(&s.execution,tx,&device,now).await?)
+            }else{None};
+            items.push(json!({"device":device,"eligibility":eligibility,"taskAdmission":task_admission}));
         }
         s.planning.audit_store.append_request_in(tx,audit,200,"success").await?;
         Ok(Json(json!({"resource":input.definition.resource,"scopeResult":result,"items":items,"nextCursor":next})))
