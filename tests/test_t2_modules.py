@@ -25,6 +25,17 @@ class ModuleImpactTests(unittest.TestCase):
         for path in ('.github/workflows/new.yml', '.github/actions/new/action.yml', '.config/nextest.toml'):
             self.assertTrue(select_paths([path]).full)
 
+    def test_test_module_carriers_select_exact_children(self):
+        expected = {
+            'crates/app/src/agent/t2/mod.rs': {'agent.registration','agent.reports'},
+            'crates/app/src/api/t2/mod.rs': {'api.identity_context'},
+            'crates/app/src/execution/t2/mod.rs': {name for name in MODULES if name.startswith('execution.')},
+        }
+        for path, modules in expected.items():
+            selection=select_paths([path])
+            self.assertFalse(selection.full,path)
+            self.assertEqual(set(selection.modules),modules,path)
+
     def test_test_changes_do_not_select_production_consumers(self):
         self.assertEqual(self.selected('crates/resource-postgres/tests/behavior.rs'),
                          {'resource.persistence'})

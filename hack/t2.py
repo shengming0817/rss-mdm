@@ -5,6 +5,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -17,6 +18,50 @@ from build_run import require_lease
 from t2_registry import ROOT, MODULES
 from t2_execution import Builds, Processes, CASE_TIMEOUT
 from verification_result import result as stage_result, publish, require
+
+
+MAX_RETAINED_RUNS = 5
+RUN_ID = re.compile(r'[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}')
+
+
+def prune_runs(output, current=None):
+    """Bound only this entry point's proven records; never follow directory symlinks.
+
+    ref: https://nexte.st/docs/features/record-replay-rerun/managing-runs/
+    """
+    def read(path):
+        if path.is_symlink():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {}
+    def references(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'runId' and isinstance(item, str):
+                    yield item
+                else:
+                    yield from references(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from references(item)
+    owned = []
+    for directory in output.iterdir():
+        if directory.is_symlink() or not directory.is_dir() or not RUN_ID.fullmatch(directory.name):
+            continue
+        for record in ('run.json', 'result.json', 'discovery.json'):
+            value = read(directory / record)
+            if isinstance(value, dict) and value.get('runId') == directory.name:
+                owned.append(directory)
+                break
+    protected = {current} | set(references(read(output/'result.json'))) | set(references(read(output/'list.json')))
+    protected &= {directory.name for directory in owned}
+    require(len(protected) <= MAX_RETAINED_RUNS, 'result references exceed T2 retention limit')
+    recent = sorted((directory for directory in owned if directory.name not in protected),
+                    key=lambda directory: (directory.stat().st_mtime_ns, directory.name), reverse=True)
+    for directory in recent[MAX_RETAINED_RUNS-len(protected):]:
+        shutil.rmtree(directory)
 
 
 class RunFailure(RuntimeError):
@@ -41,13 +86,16 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
     require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    run_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
-    directory = output / run_id
-    directory.mkdir()
     results = {name: stage_result('skipped', reason='not-selected') for name in MODULES}
     if not names:
         require(not selected_case, 'CASE does not belong to any selected module')
+        prune_runs(output)
         return results
+    run_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
+    directory = output / run_id
+    directory.mkdir()
+    publish(directory / 'run.json', {'runId': run_id})
+    prune_runs(output, run_id)
     modules = [MODULES[name] for name in names]
     processes = Processes()
     previous = {}
@@ -98,6 +146,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
                     case_id = case.id if case else 'python/' + module.id
                     case_dir = module_dir / key
                     case_dir.mkdir()
+                    (case_dir / 'test.log').write_text('Case preparation started; execution output follows when ready.\n')
                     begin = time.monotonic()
                     try:
                         require(not processes.cancelled.is_set(), 'T2 cancelled')
@@ -118,7 +167,9 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
                     except BaseException as error:
                         (case_dir / 'failure.log').write_text(traceback.format_exc())
                         cases[case_id] = stage_result('failed', begin, reason=type(error).__name__,
-                            startedMonotonic=begin, endedMonotonic=time.monotonic(), log=str((case_dir / 'failure.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
+                            startedMonotonic=begin, endedMonotonic=time.monotonic(), log=str((case_dir / 'test.log').relative_to(output)),
+                            failureLog=str((case_dir / 'failure.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
+                        print(f'T2 failure output: {case_dir / "test.log"}; traceback: {case_dir / "failure.log"}', flush=True)
                     print(f'T2 {module.id}: {cases[case_id]["status"]} {case_id}', flush=True)
                 for case in discovered[module.id]:
                     scenario(case)

@@ -43,16 +43,33 @@ class ExecutionProof(unittest.TestCase):
             with self.subTest(owners=owners), self.assertRaisesRegex(RuntimeError, 'exactly one'):
                 validate_ownership(self.listing(), module.build, owners)
 
-    def test_support_children_are_discovered_only_by_their_fixture(self):
+    def test_unknown_support_tests_have_no_ownership_exemption(self):
         module = MODULES['resource.persistence']
         document = self.listing()
         document['rust-suites']['resource::behavior']['testcases'] = {
-            'test_support::child': {'ignored': True, 'filter-match': {'status': 'matches'}}}
-        validate_ownership(document, module.build, [])
-        with self.assertRaisesRegex(RuntimeError, 'empty'):
-            parse_listing(document, module)
-        self.assertEqual(parse_listing(document, module, include_support=True)[0].name,
-                         'test_support::child')
+            'test_support::unowned': {'ignored': True, 'filter-match': {'status': 'matches'}}}
+        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+            validate_ownership(document, module.build, [])
+        # A whole target owner still runs all of its tests, including this name.
+        self.assertEqual(parse_listing(document, module)[0].name, 'test_support::unowned')
+
+    def test_parent_owned_child_is_single_and_cannot_hide_more_tests(self):
+        module = Module('owner', MODULES['resource.persistence'].build, ('business::',),
+                        children=('test_support::declared::',))
+        document = self.listing()
+        tests = document['rust-suites']['resource::behavior']['testcases']
+        tests.clear()
+        tests['business::one'] = {'ignored':True,'filter-match':{'status':'matches'}}
+        tests['test_support::declared::discovered_name'] = {'ignored':True,'filter-match':{'status':'matches'}}
+        validate_ownership(document,module.build,[module])
+        self.assertEqual([case.name for case in parse_listing(document,module)],['business::one'])
+        tests['test_support::declared::another'] = {'ignored':True,'filter-match':{'status':'matches'}}
+        with self.assertRaisesRegex(RuntimeError,'one child'):
+            validate_ownership(document,module.build,[module])
+        del tests['test_support::declared::another']
+        del tests['test_support::declared::discovered_name']
+        with self.assertRaisesRegex(RuntimeError,'one child'):
+            validate_ownership(document,module.build,[module])
 
     def test_replaced_binary_cannot_run_against_old_discovery(self):
         with tempfile.TemporaryDirectory() as directory:

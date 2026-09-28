@@ -19,7 +19,7 @@ import uuid
 
 from candidate_fixture import installation as product_installation, INSTANCE, ADMIN, TENANTS
 from t2_environment import Environment, private, run
-from t2_registry import ROOT, APP, Module
+from t2_registry import ROOT, IDENTITY_SETUP
 from t2_processes import owned_by
 from verification_result import require
 
@@ -272,8 +272,7 @@ class RunFixtures:
                            tenant_id=tenant, principal_id=ADMIN, login='admin', password_file=str(password)))
             run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
                 cwd=ROOT, env=env, capture_output=True, timeout=30)
-        module = Module('identity-setup', APP, ('test_support::identity::',))
-        cases = self.builds.discover(module, include_support=True)
+        cases = self.builds.discover(IDENTITY_SETUP)
         require(len(cases) == 1, 'identity setup target is ambiguous')
         self.builds.execute(cases[0], env, output / 'identity-setup')
         with self.lock:

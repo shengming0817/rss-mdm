@@ -69,10 +69,48 @@ class Execution(unittest.TestCase):
             self.assertEqual(result['status'], 'failed')
             case = next(iter(result['cases'].values()))
             self.assertEqual(case['reason'], 'ValueError')
-            log = (root / case['log']).read_text()
+            log = (root / case['failureLog']).read_text()
             self.assertIn('Traceback', log)
             self.assertIn('fixture rejected', log)
             fixture_type.return_value.__exit__.assert_called_once()
+
+    def test_rust_and_python_failures_link_output_and_traceback(self):
+        def fail(*args):
+            (args[-1]/'test.log').write_text('actual failing process output')
+            raise RuntimeError('process exited nonzero')
+        for module in ('agent.registration','gateway.admission'):
+            with self.harness(execute=fail) as (root, builds, _, _):
+                builds.execute_python.side_effect=fail
+                value=t2.run_modules([module],root)[module]
+                case=next(iter(value['cases'].values()))
+                self.assertIn('actual failing process output',(root/case['log']).read_text())
+                self.assertIn('process exited nonzero',(root/case['failureLog']).read_text())
+
+    def test_empty_selection_creates_no_run_directory(self):
+        with self.harness() as (root, *_):
+            t2.run_modules([],root)
+            self.assertEqual(list(root.iterdir()),[])
+
+    def test_retention_bounds_owned_runs_and_preserves_current_formal_evidence(self):
+        import json
+        with self.harness() as (root, *_):
+            ids=[f'20260928T0100{n:02d}Z-12345678' for n in range(9)]
+            for run_id in ids:
+                directory=root/run_id;directory.mkdir()
+                (directory/'result.json').write_text(json.dumps({'runId':run_id}))
+            (root/'result.json').write_text(json.dumps({'modules':{'owner':{'runId':ids[0]}}}))
+            unknown=root/'20260928T010059Z-12345678';unknown.mkdir()
+            foreign=root/'foreign';foreign.mkdir();(foreign/'proof').write_text('untouched')
+            link=root/'20260928T010058Z-12345678';link.symlink_to(foreign,target_is_directory=True)
+            result=t2.run_modules(['gateway.admission'],root,listing=True)
+            known=[p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and
+                   ((p/'run.json').exists() or (p/'result.json').exists())]
+            self.assertLessEqual(len(known),5)
+            self.assertTrue((root/ids[0]).is_dir())
+            self.assertFalse((root/ids[1]).exists())
+            self.assertTrue(unknown.is_dir())
+            self.assertTrue(link.is_symlink())
+            self.assertEqual((foreign/'proof').read_text(),'untouched')
 
     def test_empty_selection_keeps_old_evidence_and_starts_nothing(self):
         with self.harness() as (root, builds, fixture_type, _):

@@ -18,7 +18,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from build_run import lease_fds, require_lease
-from t2_registry import ROOT, APP, MODULES, Build, Module
+from t2_registry import ROOT, APP, MODULES, IDENTITY_SETUP, Build, Module
 from verification_result import require
 
 
@@ -53,27 +53,29 @@ class Case:
         return hashlib.sha256(self.id.encode()).hexdigest()[:20]
 
 
-def support_case(name):
-    return 'test_support' in name.split('::')
-
-
 def validate_ownership(document, build, modules):
-    """Every ignored business test in a built target has exactly one owner."""
+    """Every ignored test is executed by exactly one public owner or declared caller."""
+    modules = [module for module in modules if module.build == build]
+    names = []
     for binary in document['rust-suites'].values():
         if binary['package-name'] != build.package or binary['kind'] != build.kind:
             continue
         if build.target and binary['binary-name'] != build.target:
             continue
         require(binary['status'] == 'listed', 'incomplete target discovery')
-        for name, test in binary['testcases'].items():
-            if not test['ignored']:
-                continue
-            owners = [module.id for module in modules
-                      if module.build == build and module.includes(name)]
-            if support_case(name):
-                continue
-            require(len(owners) == 1,
-                    f'ignored test needs exactly one module owner: {name}: {owners}')
+        names.extend(name for name, test in binary['testcases'].items() if test['ignored'])
+    for name in names:
+        owners = [module.id for module in modules if module.includes(name)]
+        owners += [module.id + ':child' for module in modules for prefix in module.children
+                   if name.startswith(prefix)]
+        require(len(owners) == 1, f'ignored test needs exactly one module owner: {name}: {owners}')
+    for module in modules:
+        for prefix in module.children:
+            require(sum(name.startswith(prefix) for name in names) == 1,
+                    'declared caller must discover exactly one child: ' + module.id + ': ' + prefix)
+        if module.expected_cases is not None:
+            require(sum(module.includes(name) for name in names) == module.expected_cases,
+                    'fixture target has missing or additional entries: ' + module.id)
 
 
 def file_stamp(path):
@@ -81,7 +83,7 @@ def file_stamp(path):
     return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
 
 
-def parse_listing(document, module, *, include_support=False):
+def parse_listing(document, module):
     require(isinstance(document, dict) and isinstance(document.get('rust-suites'), dict),
             'invalid nextest discovery document')
     cases = []
@@ -97,11 +99,11 @@ def parse_listing(document, module, *, include_support=False):
         for name, test in binary['testcases'].items():
             if test['filter-match']['status'] != 'matches' or not test['ignored']:
                 continue
-            if support_case(name) and not include_support:
-                continue
             if module.includes(name):
                 cases.append(Case(module.build, binary_id, binary['binary-path'], name))
     require(bool(cases), 'empty test discovery: ' + module.id)
+    if module.expected_cases is not None:
+        require(len(cases) == module.expected_cases, 'unexpected fixture entry count: ' + module.id)
     require(len({case.id for case in cases}) == len(cases), 'duplicate discovered test identity')
     return sorted(cases, key=lambda case: case.id)
 
@@ -316,7 +318,7 @@ class Builds:
             (directory / 'discovery.log').write_text(listing.stderr)
             require(listing.returncode == 0, 'Rust discovery failed')
             self.listings[build] = strict_json(listing.stdout)
-            validate_ownership(self.listings[build], build, MODULES.values())
+            validate_ownership(self.listings[build], build, [*MODULES.values(), IDENTITY_SETUP])
             self.verify_binary(build)
             (directory / 'tests.json').write_text(listing.stdout)
         binaries = set()
@@ -348,9 +350,9 @@ class Builds:
         executable, stamp = self.stamps[build]
         require(file_stamp(executable) == stamp, 'test executable changed after build/discovery')
 
-    def discover(self, module, *, include_support=False):
+    def discover(self, module):
         self.verify_binary(module.build)
-        return parse_listing(self.listings[module.build], module, include_support=include_support)
+        return parse_listing(self.listings[module.build], module)
 
     def execute(self, case, env, output):
         self.verify_binary(case.build)

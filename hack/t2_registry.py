@@ -42,6 +42,8 @@ class Module:
     support_inputs: tuple[str, ...] = ()
     exclusive: bool = False
     python: str | None = None
+    children: tuple[str, ...] = ()
+    expected_cases: int | None = None
 
     @property
     def postgres(self):
@@ -67,17 +69,20 @@ class Module:
                    for item in self.selectors)
 
 
+# One fixture-owned preparation target. Names are discovered, not copied here.
+IDENTITY_SETUP = Module('identity-setup', APP, ('test_support::identity::',), expected_cases=1)
+
 MODULES: dict[str, Module] = {}
 
 
 def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
-        sources=(), tests=(), support=(), exclusive=False, python=None):
+        sources=(), tests=(), support=(), exclusive=False, python=None, children=()):
     if name in MODULES:
         raise ValueError('duplicate module: ' + name)
     if build is not None and not selectors:
         raise ValueError('module must select a target or Rust namespace: ' + name)
     MODULES[name] = Module(name, build, tuple(selectors), profile, tuple(fixtures),
-                          tuple(sources), tuple(tests), tuple(support), exclusive, python)
+                          tuple(sources), tuple(tests), tuple(support), exclusive, python, tuple(children))
 
 
 APP_INPUTS = {
@@ -169,6 +174,7 @@ for part in ('receipts', 'integrity', 'recovery', 'budget'):
                  'crates/app/src/transaction.rs'),
         tests=(f'crates/app/src/audit_integration_tests/{part}.rs',),
         support=('crates/app/src/audit_test_support.rs', 'crates/app/src/audit_integration_tests.rs'))
+MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], children=('audit_integration_tests::test_support::',))
 app_family('identity', fixtures=(), exclusive=('local',))
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], fixtures=('identity', 'idp'))
 add('identity.audit', selectors=('identity_audit::tests::',), fixtures=('identity',),
@@ -186,7 +192,7 @@ for part in ('binding', 'revocation', 'recovery', 'admission'):
     MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/src/device/t2/mod.rs', 'crates/app/src/device/test_support.rs'))
 app_family('agent')
 for name in ('agent.registration', 'agent.reports'):
-    MODULES[name] = replace(MODULES[name], support_inputs=('crates/app/src/test_support/agent.rs',))
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/src/test_support/agent.rs'))
 for name, target in (('manual', 'manual'), ('reader', 'reader')):
     add('inventory.' + name,
         build=Build('rss-mdm-inventory-postgres', 'test', target), selectors=('',),
@@ -498,6 +504,15 @@ MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], support_inputs=MO
 def all_tools():
     return sorted(path.stem for path in (ROOT / 'tests').glob('test_*.py'))
 
+
+# These carrier files compose exactly these test children, not production consumers.
+for name, module in list(MODULES.items()):
+    carrier = ('crates/app/src/api/t2/mod.rs' if name == 'api.identity_context' else
+               'crates/app/src/execution/t2/mod.rs' if name.startswith('execution.') else None)
+    if carrier:
+        MODULES[name] = replace(module, support_inputs=(*module.support_inputs, carrier))
+MODULES['execution.commands.dispatch'] = replace(
+    MODULES['execution.commands.dispatch'], children=('execution::test_support::',))
 
 TOOL_INPUTS = {
     'hack/t2_modules/installation.py': ('test_t2_guards',),
