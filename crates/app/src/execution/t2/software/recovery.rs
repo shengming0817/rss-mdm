@@ -7,7 +7,7 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn known_failure_has_bounded_retries() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -92,7 +92,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn reboot_waits_for_detection() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -157,7 +157,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_effect_survives_registration_replacement() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -220,7 +220,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_result_replay_and_late_detection() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;

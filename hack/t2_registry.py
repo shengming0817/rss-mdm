@@ -162,7 +162,7 @@ def app_family(owner, *, namespace=None, identity=True,
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
     sources=('crates/app/src/migration.rs', 'crates/app/src/migration/*'),
     tests=('crates/app/src/migration/tests.rs',), exclusive=True,
-    python='installation')
+    python='installation', support=('hack/t2_modules/installation.py',))
 for part in ('receipts', 'integrity', 'recovery', 'budget'):
     add('audit.' + part, selectors=(f'audit_integration_tests::{part}::',),
         sources=('crates/audit-integration/src/*', 'crates/app/src/audit_budget.rs',
@@ -192,7 +192,7 @@ for name, target in (('manual', 'manual'), ('reader', 'reader')):
         build=Build('rss-mdm-inventory-postgres', 'test', target), selectors=('',),
         sources=('crates/inventory-postgres/src/*', 'crates/inventory-postgres/migrations/*'),
         tests=(f'crates/inventory-postgres/tests/{target}.rs',),
-        support=('crates/inventory-postgres/tests/support/*',))
+        support=('crates/inventory-postgres/tests/support/*',), exclusive=name == 'reader')
 for name in ('projection', 'recovery', 'process'):
     add('inventory.' + name,
         build=Build('rss-mdm-examples', features=('integration',)),
@@ -500,6 +500,8 @@ def all_tools():
 
 
 TOOL_INPUTS = {
+    'hack/t2_modules/installation.py': ('test_t2_guards',),
+    'hack/t2_python.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/rust_test_layout.py': ('test_audit_surface','test_foundation_boundaries','test_flow_boundaries'),
     'hack/t2_registry.py': ('test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
     'hack/t2.py': ('test_t2_modules', 'test_t2_runner', 'test_t2_guards'),
@@ -521,7 +523,7 @@ TOOL_INPUTS = {
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
-EXECUTION_INPUTS = {'hack/t2.py', 'hack/t2_registry.py', 'hack/t2_environment.py',
+EXECUTION_INPUTS = {'hack/t2_python.py', 'hack/t2.py', 'hack/t2_registry.py', 'hack/t2_environment.py',
                     'hack/t2_fixtures.py', 'hack/t2_execution.py', 'hack/t2_processes.py', 'hack/verification_result.py'}
 GLOBAL_INPUTS = {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'Makefile', 'hack/build_run.py'}
 POLICY_INPUTS = {'deny.toml', 'clippy.toml'}

@@ -241,3 +241,50 @@ class WorkingTreeStability(unittest.TestCase):
                     self.assertNotEqual(state, updated)
                     state = updated
                 self.assertEqual(state, ci.working_source_state())
+
+
+class T2Controls(unittest.TestCase):
+    def test_bad_modes_fail_before_any_gate(self):
+        from unittest.mock import patch
+        for mode in ('ALL', '', 'typo', 'affected'):
+            with patch.dict(ci.os.environ, {'CI_T2': mode}), patch.object(ci, 'fast_gates') as gates:
+                with self.assertRaisesRegex(RuntimeError, 'CI_T2'):
+                    ci.execute_ci()
+                gates.assert_not_called()
+
+    def test_ci_full_passes_jobs_and_reports_execution(self):
+        from unittest.mock import patch
+        from contextlib import ExitStack, redirect_stdout
+        from io import StringIO
+        import json
+        import subprocess
+        import t2
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            (root/'Cargo.toml').write_text('[workspace]')
+            (root/'Cargo.lock').write_text('lock')
+            for name, value in {'ROOT':root, 'OUT':root/'artifacts'}.items():
+                stack.enter_context(patch.object(ci,name,value))
+            for name in ('require_lease','clear_execution_evidence','dependency_graphs'):
+                stack.enter_context(patch.object(ci,name))
+            stack.enter_context(patch.object(ci,'fast_gates',return_value=[]))
+            stack.enter_context(patch.object(ci,'command',return_value=subprocess.CompletedProcess([],0,'head')))
+            stack.enter_context(patch.object(ci,'working_source_state',return_value='stable'))
+            stack.enter_context(patch.object(ci,'select_impact',return_value={'cargoFull':False,'packages':[], 'modules':['agent.registration']}))
+            stack.enter_context(patch.object(ci,'workspace_pin',return_value=('url','rev')))
+            stack.enter_context(patch.object(ci,'identity_pin',return_value=('url','rev')))
+            run = stack.enter_context(patch.object(t2,'run_modules',return_value={'agent.registration':{'status':'passed'}}))
+            stack.enter_context(patch.dict(ci.os.environ,{'CI_T2':'all','CI_PLAN':'0','JOBS':'1'}))
+            stack.enter_context(redirect_stdout(StringIO()))
+            self.assertEqual(ci.execute_ci(),0)
+            self.assertEqual(run.call_args.kwargs['jobs'],1)
+            evidence=json.loads((root/'artifacts/result.json').read_text())
+            self.assertEqual(evidence['recommendedT2']['status'],'executed')
+        self.assertIn('export CI_BASE JOBS', (ci.ROOT/'Makefile').read_text())
+
+    def test_bad_jobs_are_rejected(self):
+        from unittest.mock import patch
+        for jobs in ('0','-1','x','1.5'):
+            with patch.dict(ci.os.environ,{'CI_T2':'all','JOBS':jobs}):
+                with self.assertRaisesRegex(RuntimeError,'JOBS'):
+                    ci.t2_options()

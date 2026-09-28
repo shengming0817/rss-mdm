@@ -88,6 +88,14 @@ pub(crate) async fn upload_windows(
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Platform {
+    MacOs,
+    Windows,
+}
+
+/// A real authorized session, one Agent/Scope, and an approved dependency/root pair.
+/// Behavior assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
     _temp: tempfile::TempDir,
     pub(crate) base: Value,
@@ -95,17 +103,15 @@ pub(crate) struct Fixture {
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
     pub(crate) scope: Uuid,
-    pub(crate) windows_scope: Uuid,
-    pub(crate) empty_scope: Uuid,
     pub(crate) dependency_bytes: &'static [u8],
     pub(crate) bytes: &'static [u8],
     pub(crate) removal: &'static [u8],
     pub(crate) windows_bytes: &'static [u8],
-    pub(crate) windows_credential: String,
+    pub(crate) credential: String,
     pub(crate) first_operation: Value,
 }
 impl Fixture {
-    pub(crate) async fn new() -> Result<Self> {
+    pub(crate) async fn approved(platform: Platform) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir()?;
         let keyfile = temp.path().join("signing.pk8");
@@ -164,6 +170,15 @@ impl Fixture {
             });
         }
         crate::test_support::identity::set_grants(TENANT, &subject, grants).await?;
+        let (device, platform_name, architecture, credential) = match platform {
+            Platform::MacOs => (DEVICE, "macos", "aarch64", CREDENTIAL.to_owned()),
+            Platform::Windows => (
+                WINDOWS_DEVICE,
+                "windows",
+                "x86_64",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; 32]),
+            ),
+        };
         author.operation = Some(Uuid::new_v4());
         let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let enrollment = author
@@ -171,73 +186,18 @@ impl Fixture {
                 &router,
                 Method::POST,
                 "/api/v3/enrollments",
-                Some(json!({"deviceId":DEVICE,"password":password,"source":"agent.builtin"})),
+                Some(json!({"deviceId":device,"password":password,"source":"agent.builtin"})),
             )
             .await?;
         ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
         author.operation = None;
-        let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":CREDENTIAL,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","software.execute.v3"]}))).await?;
+        let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,
+            Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.basic.v3","software.execute.v3"]}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "registration: {registration:?}"
         );
-        let windows_password = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([6_u8; 32]);
-        let windows_credential =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; 32]);
-        author.operation = Some(Uuid::new_v4());
-        let windows_enrollment=author.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":WINDOWS_DEVICE,"password":windows_password,"source":"agent.builtin"}))).await?;
-        ensure!(
-            windows_enrollment.0.is_success(),
-            "windows enrollment: {windows_enrollment:?}"
-        );
-        author.operation = None;
-        let windows_registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":windows_enrollment.1["enrollmentId"],"password":windows_password,"credential":windows_credential,"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v3","software.execute.v3"]}))).await?;
-        ensure!(
-            windows_registration.0 == StatusCode::CREATED,
-            "windows registration: {windows_registration:?}"
-        );
-        let scope = Uuid::new_v4();
-        let automation = start_automation(&base).await?;
-        let created=write(&mut author,&router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE}],"limitations":null,"exclusions":[]}})).await?;
-        await_task(
-            &mut author,
-            &router,
-            &format!(
-                "/api/v2/scopes/{scope}/tasks/{}",
-                created["task"].as_str().unwrap()
-            ),
-        )
-        .await?;
-        let windows_scope = Uuid::new_v4();
-        let windows_scope_task=write(&mut author,&router,&format!("/api/v2/scopes/{windows_scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":WINDOWS_DEVICE}],"limitations":null,"exclusions":[]}})).await?;
-        await_task(
-            &mut author,
-            &router,
-            &format!(
-                "/api/v2/scopes/{windows_scope}/tasks/{}",
-                windows_scope_task["task"].as_str().unwrap()
-            ),
-        )
-        .await?;
-        let empty_scope = Uuid::new_v4();
-        let empty = write(
-            &mut author,
-            &router,
-            &format!("/api/v2/scopes/{empty_scope}"),
-            0,
-            json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}),
-        )
-        .await?;
-        await_task(
-            &mut author,
-            &router,
-            &format!(
-                "/api/v2/scopes/{empty_scope}/tasks/{}",
-                empty["task"].as_str().unwrap()
-            ),
-        )
-        .await?;
-        ensure!(automation.shutdown().join().await?.is_clean());
+        let scope = prepared_scope(&base, &mut author, &router, &[device]).await?;
         let source = Uuid::new_v4().to_string();
         let source_path = format!("/api/v3/software/sources/{source}/revisions/1");
         let registered=write(&mut author,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","kind":"private","location":null,"publishers":[]}})).await?;
@@ -265,14 +225,17 @@ impl Fixture {
         let windows_dependency_bytes = b"controlled windows dependency msi";
         let windows_dependency_digest: [u8; 32] = Sha256::digest(windows_dependency_bytes).into();
         let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
-        write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":dependency_definition}},{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":windows_dependency_definition}}]})).await?;
-        let request=Request::builder().method(Method::POST).uri(format!("{dependency_path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+        write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { dependency_definition } else { windows_dependency_definition }}}]})).await?;
+        if platform == Platform::MacOs {
+            let request=Request::builder().method(Method::POST).uri(format!("{dependency_path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
-        ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
-        upload_windows(&author, &router, &dependency_path, windows_dependency_bytes).await?;
+            ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+        } else {
+            upload_windows(&author, &router, &dependency_path, windows_dependency_bytes).await?;
+        }
         write(
             &mut author,
             &router,
@@ -316,20 +279,23 @@ impl Fixture {
         let windows_bytes = b"controlled windows root msi";
         let windows_digest: [u8; 32] = Sha256::digest(windows_bytes).into();
         let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
-        write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"software","definition":definition}},{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":windows_definition}}]})).await?;
-        let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+        write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { definition } else { windows_definition }}}]})).await?;
+        if platform == Platform::MacOs {
+            let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
-        ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
-        upload_windows(&author, &router, &path, windows_bytes).await?;
-        let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
+            ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+            let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(removal.to_vec()))?;
-        ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+            ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+        } else {
+            upload_windows(&author, &router, &path, windows_bytes).await?;
+        }
         write(
             &mut author,
             &router,
@@ -354,17 +320,48 @@ impl Fixture {
             author,
             resource,
             scope,
-            windows_scope,
-            empty_scope,
             dependency_bytes,
             bytes,
             removal,
             windows_bytes,
-            windows_credential,
+            credential,
             first_operation,
         })
     }
 }
+pub(crate) async fn prepared_scope(
+    base: &Value,
+    author: &mut Browser,
+    router: &Router,
+    devices: &[&str],
+) -> Result<Uuid> {
+    let scope = Uuid::new_v4();
+    let automation = start_automation(base).await?;
+    let targets = devices
+        .iter()
+        .map(|device| json!({"kind":"device","id":device}))
+        .collect::<Vec<_>>();
+    let created = write(
+        author,
+        router,
+        &format!("/api/v2/scopes/{scope}"),
+        0,
+        json!({"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}),
+    )
+    .await?;
+    await_task(
+        author,
+        router,
+        &format!(
+            "/api/v2/scopes/{scope}/tasks/{}",
+            created["task"].as_str().unwrap()
+        ),
+    )
+    .await?;
+    ensure!(automation.shutdown().join().await?.is_clean());
+    Ok(scope)
+}
+
 pub(crate) async fn worker(base: &Value) -> Result<rss_runtime::ShutdownStack> {
     let config: Config = serde_json::from_value(base.clone())?;
     let worker = crate::flow::execution::open(

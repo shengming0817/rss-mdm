@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -43,6 +44,7 @@ class RunFixtures:
         self.builds = builds
         self.output = output
         self.owner = Environment(group='t2')
+        self.gateway_owner = Environment(group='t2-gateway')
         self.started = False
         self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-certificates-')
         self.certificates = Environment(group='t2-certificates')
@@ -55,13 +57,31 @@ class RunFixtures:
     def __enter__(self):
         self.process_ownership = owned_by(self.builds.processes)
         self.process_ownership.__enter__()
+        try:
+            # The worktree lease makes these known projects exclusively ours.
+            # Recover all registered owners even when this run selects no PG/gateway.
+            self.cleanup_environments()
+        except BaseException:
+            self.cert_directory.cleanup()
+            self.process_ownership.__exit__(*sys.exc_info())
+            raise
         return self
+
+    def cleanup_environments(self):
+        errors = []
+        for environment in (self.owner, self.gateway_owner):
+            try:
+                if environment.root.exists():
+                    environment.reset()
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            raise RuntimeError('failed to clean owned T2 environments') from errors[0]
 
     def __exit__(self, *unused):
         try:
             with self.builds.processes.cleanup():
-                if self.started:
-                    self.owner.reset()
+                self.cleanup_environments()
         finally:
             try:
                 self.cert_directory.cleanup()
@@ -219,7 +239,7 @@ class RunFixtures:
 
     @contextmanager
     def gateway(self, config):
-        environment = Environment(group='t2-gateway')
+        environment = self.gateway_owner
         try:
             environment.prepare_inputs(certificates=False)
             private(environment.root / 'probe/nginx.conf', config)
@@ -320,4 +340,8 @@ class RunFixtures:
                                   binary=self.builds.executables.get('rss-mdm'), context=self)
         finally:
             with self.builds.processes.cleanup():
-                stack.close()
+                try:
+                    stack.close()
+                finally:
+                    if module.python == 'gateway' and self.gateway_owner.root.exists():
+                        self.gateway_owner.reset()

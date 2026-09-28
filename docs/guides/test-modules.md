@@ -13,7 +13,7 @@ make t2 MODULE=all
 make ci-full
 ```
 
-旧 `SUITE`、`SUITES`、`--suite` 和 `t2Suites` 已删除；不接受旧名称、别名或 fallback。`make ci` 始终只执行快速检查并推荐模块。`CI_FULL=1` 只扩大快速检查，显式 `MODULE=all` 或 CI 入口的 `CI_T2=all` 才选择全部 T2；`ci-full` 同时选择二者。
+旧 `SUITE`、`SUITES`、`--suite` 和 `t2Suites` 已删除；不接受旧名称、别名或 fallback。`make ci` 始终只执行快速检查并推荐模块。`CI_FULL=1` 只扩大快速检查，显式 `MODULE=all` 或 CI 入口的 `CI_T2=all` 才选择全部 T2；`ci-full` 同时选择二者。CI 入口仅接受 `CI_T2=none|all`，非法值立即失败。
 
 ## 代码职责与复用
 
@@ -55,8 +55,8 @@ Identity 用户组与设备 Group 各自归属。Assets 验证资产输入，Pla
 
 Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Cargo 闭包。输出字段为 `cargoFull`、`packages`、`toolTests`、`t2Full`、`modules`、`reasons`。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
 
-`JOBS` 默认 2，只控制模块并发；模块内测试顺序执行。共享一次构建和一个 PG 服务，按需创建禁止连接的迁移基线。每个独立场景最多占用一个可写克隆，完成即删除；破坏性场景在普通阶段结束后独占并重置同一服务。业务竞争仍在同库同对象内验证。共享的是环境与不可变素材，不是前一测试的结果。
+`JOBS` 默认 2，`make t2` 与 `make ci-full` 均接收同一参数，只控制模块并发；模块内测试顺序执行。共享一次构建和一个 PG 服务，按需创建禁止连接的迁移基线。每个独立场景最多占用一个可写克隆，完成即删除；破坏性场景在普通阶段结束后独占并重置同一服务。业务竞争仍在同库同对象内验证。共享的是环境与不可变素材，不是前一测试的结果。
 
-构建、发现和执行复用同一二进制与 Cargo 环境。每个发现的 ignored 业务测试必须有唯一模块归属；`test_support` 下的子进程入口由 fixture 管理。空发现、重复归属、错误 CASE、缺依赖、二进制或运行中源码变化都失败。nextest JUnit 必须证明实际运行了唯一精确测试、无忽略/重试/失败；进程及依赖清理由本轮拥有。
+构建、发现和执行复用同一二进制与 Cargo 环境。每个发现的 ignored 业务测试必须有唯一模块归属；`test_support` 下的子进程入口由 fixture 管理。空发现、重复归属、错误 CASE、缺依赖、二进制或运行中源码变化都失败。nextest JUnit 必须证明实际运行了唯一精确测试、无忽略/重试/失败；每个 Rust/Python 场景执行预算为 600 秒，Rust 的 nextest 与外层进程截止共同保证有界终止。Python 场景通过受控子进程执行并保留 test.log 完成标记；超时、取消及遗留 Compose 环境均由本轮统一清理。LIST 只要求构建/发现工具，不要求 Docker 等运行依赖。
 
 `artifacts/local-t2/<runId>/` 保存 discovery、逐模块/逐测试结果、准备/执行/清理耗时及资源计数。顶层 result 区分执行与 skipped；LIST 写单独结果，ci-plan 不覆盖正式证据。比较资源消耗应同时查看选择集合、PG/Identity/SCEP 等实际准备次数、并发时间区间和耗时；文件拆分不代表 Rust crate 编译量同比下降。

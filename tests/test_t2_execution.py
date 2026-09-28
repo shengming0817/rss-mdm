@@ -86,6 +86,51 @@ class ExecutionProof(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         verify_case(path, case, 0)
 
+    def test_rust_executor_enforces_and_records_a_bounded_case(self):
+        from unittest.mock import Mock, patch
+        import tomllib
+        import t2_execution
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            builds = Builds.__new__(Builds)
+            builds.verify_binary = Mock()
+            builds.reuse = Mock(return_value=[])
+            builds.processes = Mock()
+            builds.processes.run.return_value.returncode = 0
+            case = parse_listing(self.listing(), MODULES['resource.persistence'])[0]
+            with patch.object(t2_execution, 'verify_case'):
+                builds.execute(case, {}, output)
+            config = tomllib.loads((output/'nextest.toml').read_text())
+            self.assertEqual(config['profile']['default']['slow-timeout'],
+                             {'period':'600s','terminate-after':1})
+            self.assertEqual(builds.processes.run.call_args.kwargs['timeout'], 615)
+
+    def test_python_executor_logs_success_and_kills_hung_scenarios(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        import os
+        import t2_execution
+        with tempfile.TemporaryDirectory() as directory, patch('t2_execution.lease_fds', return_value=()):
+            root = Path(directory)
+            (root/'hack').mkdir()
+            script = root/'hack/t2_python.py'
+            builds = Builds.__new__(Builds)
+            builds.processes = Processes()
+            fixture = SimpleNamespace(root=root, database=None, migration_config=None,
+                                      binary=None, env=dict(os.environ))
+            script.write_text('print("PASS python/gateway.admission", flush=True)')
+            with patch.object(t2_execution, 'ROOT', root):
+                builds.execute_python(MODULES['gateway.admission'], fixture, root)
+            self.assertIn('PASS python/gateway.admission',(root/'test.log').read_text())
+            marker = root/'pid'
+            script.write_text('import os,time; from pathlib import Path; Path(' + repr(str(marker)) + ').write_text(str(os.getpid())); time.sleep(30)')
+            with patch.object(t2_execution, 'ROOT', root), patch.object(t2_execution, 'CASE_TIMEOUT', .3):
+                with self.assertRaisesRegex(RuntimeError,'deadline'):
+                    builds.execute_python(MODULES['gateway.admission'], fixture, root)
+            self.assertFalse(builds.processes.children)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(marker.read_text()), 0)
+
 
 class ProcessOwnership(unittest.TestCase):
     def test_fixture_stdin_protocol_and_persistent_children_share_cancellation(self):

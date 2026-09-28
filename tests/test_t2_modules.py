@@ -11,6 +11,20 @@ class ModuleImpactTests(unittest.TestCase):
     def selected(self, path):
         return set(select_paths([path]).modules)
 
+    def test_installation_python_selects_only_its_module_and_guards(self):
+        selection = select_paths(['hack/t2_modules/installation.py'])
+        self.assertFalse(selection.full)
+        self.assertEqual(selection.modules, ('installation.migration',))
+        self.assertIn('test_t2_guards', selection.tools)
+
+    def test_cluster_role_admission_test_is_exclusive(self):
+        self.assertTrue(MODULES['inventory.reader'].exclusive)
+        self.assertFalse(MODULES['inventory.manual'].exclusive)
+
+    def test_unknown_ci_or_nextest_inputs_cannot_silently_skip_integration(self):
+        for path in ('.github/workflows/new.yml', '.github/actions/new/action.yml', '.config/nextest.toml'):
+            self.assertTrue(select_paths([path]).full)
+
     def test_test_changes_do_not_select_production_consumers(self):
         self.assertEqual(self.selected('crates/resource-postgres/tests/behavior.rs'),
                          {'resource.persistence'})

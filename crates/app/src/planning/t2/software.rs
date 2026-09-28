@@ -4,13 +4,14 @@ use crate::test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let empty_scope =
+        prepared_scope(&fixture.base, &mut fixture.author, &fixture.router, &[]).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
     let scope = fixture.scope;
-    let empty_scope = fixture.empty_scope;
     let first_operation = fixture.first_operation;
     let future = Uuid::new_v4();
     let future_path = format!("/api/v2/policies/{future}");
@@ -141,7 +142,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn new_approval_changes_execution_version() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;

@@ -185,3 +185,50 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
     collection_matrix(&mut browser, router, &fixture.base).await?;
     fixture.close().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=assets.group_input: projected Agent script facts reach Query and Group"]
+async fn script_health_projection_is_queryable_group_input() -> Result<()> {
+    let fixture = Fixture::open().await?;
+    let mut browser = fixture.browser.clone();
+    // Producer execution/projection is covered by execution.agent.delivery.
+    // This consumer starts from a legal registered source and its projected fact.
+    let (registration, _) = seed_source("asset-a", "agent", "agent.builtin", "fixture")?;
+    let epoch = Uuid::new_v4();
+    let field = rss_mdm_inventory::FieldKey::CorporateAgentHealthy;
+    let scope = crate::device::scope_dataset(
+        rss_request_context::TenantId::parse(TENANT)?,
+        registration,
+        "agent.script",
+        epoch,
+        field.as_str(),
+    )?
+    .encode()?
+    .replace('\'', "''");
+    let coverage = serde_json::to_string(&rss_mdm_inventory::enterprise_coverage(field))?;
+    let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(true))?;
+    pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}','enterprise-task-v1',true);
+        INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch)
+        VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}');"))?;
+    let criteria = predicate("custom.corporate_agent.healthy", "boolean", json!(true));
+    let query = ok(
+        &mut browser,
+        &fixture.router,
+        Method::POST,
+        "/api/v2/device-queries",
+        Some(json!({"criteria":criteria})),
+    )
+    .await?;
+    ensure!(query["asset"]["summary"]["matched"] == 1);
+    ensure!(query["asset"]["items"][0]["device"] == "asset-a");
+    let group = format!("/api/v2/groups/{}", Uuid::new_v4());
+    ok(&mut browser, &fixture.router, Method::POST, &group,
+        Some(request(0,json!({"action":"create","name":"healthy-script","description":"projected Agent input","criteria":criteria})))).await?;
+    ensure!(
+        preview(&mut browser, &fixture.router, &group)
+            .await?
+            .members["page"]["items"]
+            == json!(["asset-a"])
+    );
+    fixture.close().await
+}

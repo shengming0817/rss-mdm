@@ -20,6 +20,23 @@ class PreparationTests(unittest.TestCase):
         fixture.certificates = Mock()
         return fixture
 
+    def test_stale_gateway_is_recovered_even_without_postgres(self):
+        fixture = self.fixture()
+        fixture.owner, fixture.gateway_owner = Mock(), Mock()
+        fixture.owner.root.exists.return_value = False
+        fixture.gateway_owner.root.exists.return_value = True
+        fixture.cleanup_environments()
+        fixture.owner.reset.assert_not_called()
+        fixture.gateway_owner.reset.assert_called_once()
+
+    def test_cleanup_attempts_all_owners_if_one_fails(self):
+        fixture = self.fixture()
+        fixture.owner, fixture.gateway_owner = Mock(), Mock()
+        fixture.owner.reset.side_effect = RuntimeError('broken postgres cleanup')
+        with self.assertRaisesRegex(RuntimeError, 'clean owned'):
+            fixture.cleanup_environments()
+        fixture.gateway_owner.reset.assert_called_once()
+
     def test_exclusive_only_does_not_start_an_unused_normal_service(self):
         fixture = self.fixture()
         fixture.prepare([MODULES['identity.local']])

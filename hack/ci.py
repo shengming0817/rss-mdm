@@ -338,7 +338,19 @@ def fast_gates():
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
 
+def t2_options():
+    mode = os.environ.get('CI_T2', 'none')
+    require(mode in {'none', 'all'}, 'CI_T2 must be none or all')
+    try:
+        jobs = int(os.environ.get('JOBS', '2'))
+    except ValueError as error:
+        raise RuntimeError('JOBS must be a positive integer') from error
+    require(jobs > 0, 'JOBS must be a positive integer')
+    return mode, jobs
+
+
 def execute_ci():
+    t2_mode, t2_jobs = t2_options()
     if os.environ.get("CI_PLAN", "0") != "1":
         require_lease(ROOT)
     OUT.mkdir(parents=True, exist_ok=True)
@@ -394,9 +406,9 @@ def execute_ci():
             results[name] = stage_result("failed",started,command=args)
         print(f"{name}: {results[name]}", flush=True)
     integration = {name:stage_result('skipped',reason='not-run') for name in MODULES}
-    if os.environ.get('CI_T2') == 'all':
+    if t2_mode == 'all':
         from t2 import run_modules
-        integration = run_modules(sorted(MODULES), OUT/'t2')
+        integration = run_modules(sorted(MODULES), OUT/'t2', jobs=t2_jobs)
     started=time.monotonic()
     try:
         require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
@@ -405,7 +417,7 @@ def execute_ci():
         (OUT / "source-stability.log").write_text(str(error))
         results["source-stability"] = stage_result("failed",started)
     evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
-    evidence['recommendedT2'] = {'modules':selection['modules'],'status':'not-run' if selection['modules'] else 'not-selected'}
+    evidence['recommendedT2'] = {'modules':selection['modules'],'status':('executed' if t2_mode == 'all' else 'not-run') if selection['modules'] else 'not-selected'}
     evidence['t2'] = integration
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
@@ -422,7 +434,11 @@ def main():
     started=time.monotonic()
     try:return execute_ci()
     except BaseException as error:
-        publish(OUT/'result.json',{'status':'failed','gates':{'execution':stage_result('failed',started,reason=type(error).__name__)}})
+        execution = stage_result('failed', started, reason=type(error).__name__)
+        if getattr(error, 'evidence', None):
+            execution.update(error.evidence)
+            execution['log'] = 't2/' + error.evidence['log']
+        publish(OUT/'result.json',{'status':'failed','gates':{'execution':execution}})
         raise
 
 if __name__ == "__main__": sys.exit(main())

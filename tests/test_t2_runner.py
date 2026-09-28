@@ -69,7 +69,7 @@ class Execution(unittest.TestCase):
             self.assertEqual(result['status'], 'failed')
             case = next(iter(result['cases'].values()))
             self.assertEqual(case['reason'], 'ValueError')
-            log = (root / case['log'] / 'failure.log').read_text()
+            log = (root / case['log']).read_text()
             self.assertIn('Traceback', log)
             self.assertIn('fixture rejected', log)
             fixture_type.return_value.__exit__.assert_called_once()
@@ -132,8 +132,46 @@ class Execution(unittest.TestCase):
                     self.assertEqual(peak, jobs)
                     fixtures.reset.assert_called_once()
 
+    def test_python_scenarios_use_the_owned_logged_executor(self):
+        with self.harness() as (root, builds, _, _):
+            result = t2.run_modules(['gateway.admission'], root)
+            builds.execute_python.assert_called_once()
+            case = result['gateway.admission']['cases']['python/gateway.admission']
+            self.assertTrue(case['log'].endswith('/test.log'))
+            self.assertEqual(case['timeoutSeconds'], 600)
+
+    def test_list_requires_discovery_tools_only_and_preserves_nonselection(self):
+        with self.harness() as (root, _, fixture_type, _), patch.object(t2.shutil, 'which',
+                side_effect=lambda tool: None if tool in {'docker', 'openssl', 'go'} else '/tool'):
+            result = t2.run_modules(['gateway.admission', 'agent.registration'], root, listing=True)
+            self.assertEqual(result['gateway.admission']['reason'], 'list-only')
+            self.assertEqual(result['content.http']['reason'], 'not-selected')
+            fixture_type.assert_not_called()
+
+    def test_preparation_failure_has_direct_run_evidence(self):
+        with self.harness(discover=Mock(side_effect=RuntimeError('bad discovery'))) as (root, *_):
+            with self.assertRaises(t2.RunFailure) as caught:
+                t2.run_modules(['agent.registration'], root)
+            evidence = caught.exception.evidence
+            self.assertTrue(evidence['runId'])
+            self.assertIn('bad discovery', (root / evidence['log']).read_text())
+
 
 class StableInput(unittest.TestCase):
+    def test_top_level_failure_preserves_run_id_and_log(self):
+        import ci
+        import json
+        failure = {'runId': 'unique-run', 'status':'failed', 'reason':'RuntimeError', 'log':'unique-run/failure.log'}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(t2, 'ROOT', root), patch.object(t2, 'require_lease'), \
+                 patch.object(ci, 'working_source_state', return_value='stable'), \
+                 patch.object(t2, 'run_modules', side_effect=t2.RunFailure('discovery', failure)):
+                with self.assertRaises(t2.RunFailure):
+                    t2.main(['--module', 'agent.registration'])
+            result = json.loads((root / 'artifacts/local-t2/result.json').read_text())
+            self.assertEqual(result['execution'], failure)
+
     def test_changed_source_cannot_publish_success(self):
         import ci
         import json

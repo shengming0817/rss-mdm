@@ -5,7 +5,7 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
 async fn required_available_and_uninstall_delivery() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -240,13 +240,13 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
 async fn windows_variant_delivery_and_detection() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::approved(Platform::Windows).await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
-    let windows_scope = fixture.windows_scope;
-    let windows_credential = fixture.windows_credential;
+    let windows_scope = fixture.scope;
+    let windows_credential = fixture.credential;
     let first_operation = fixture.first_operation;
     let windows_policy = Uuid::new_v4();
     write(&mut author,&router,&format!("/api/v2/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,

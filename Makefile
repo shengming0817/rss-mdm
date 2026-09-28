@@ -10,7 +10,7 @@ LIST ?= 0
 ACTION ?= status
 MODE ?= host
 DEV_ARGS ?=
-export CI_BASE
+export CI_BASE JOBS
 ci:
 	CI_PLAN=0 CI_T2=none python3 hack/build_run.py -- python3 hack/ci.py
 ci-full:

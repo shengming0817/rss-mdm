@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sys
 import subprocess
 import threading
 import time
@@ -19,6 +20,9 @@ import xml.etree.ElementTree as ET
 from build_run import lease_fds, require_lease
 from t2_registry import ROOT, APP, MODULES, Build, Module
 from verification_result import require
+
+
+CASE_TIMEOUT = 600
 
 
 def strict_json(value):
@@ -204,7 +208,7 @@ class Processes:
                 except subprocess.TimeoutExpired:
                     if self.cancelled.is_set() or (timeout and time.monotonic() - start > timeout):
                         self.stop(child)
-                        raise RuntimeError('T2 cancelled or command deadline exceeded')
+                        raise RuntimeError('T2 cancelled' if self.cancelled.is_set() else 'case execution deadline exceeded')
         finally:
             # A successful parent must not leave owned descendants running.
             self.stop(child)
@@ -357,11 +361,26 @@ class Builds:
         config = output / 'nextest.toml'
         config.write_text('[store]\ndir = ' + json.dumps(str(output / 'nextest')) +
                           '\n[profile.default]\nretries = 0\ntest-threads = 1\n' +
+                          f'slow-timeout = {{ period = "{CASE_TIMEOUT}s", terminate-after = 1 }}\n' +
                           '[profile.default.junit]\npath = ' + json.dumps(str(report)) + '\n')
         args = ['cargo', 'nextest', 'run', *self.reuse(case.build),
                 '--config-file', str(config), '--user-config-file', 'none',
                 '--no-capture', '--retries', '0', '--no-tests', 'fail', '--run-ignored', 'only',
                 '-E', f'binary_id(={case.binary})', '--', '--exact', case.name]
         with (output / 'test.log').open('w') as log:
-            result = self.processes.run(args, env=env, log=log)
+            result = self.processes.run(args, env=env, log=log, timeout=CASE_TIMEOUT + 15)
         verify_case(report, case, result.returncode)
+
+    def execute_python(self, module, fixture, output):
+        payload = output / 'fixture.json'
+        payload.write_text(json.dumps({
+            'root': str(fixture.root), 'database': fixture.database,
+            'migration_config': str(fixture.migration_config) if fixture.migration_config else None,
+            'binary': fixture.binary,
+        }))
+        payload.chmod(0o600)
+        with (output / 'test.log').open('w') as log:
+            result = self.processes.run(
+                [sys.executable, '-u', ROOT / 'hack/t2_python.py', module.id, payload],
+                env=fixture.env, log=log, timeout=CASE_TIMEOUT)
+        require(result.returncode == 0, 'Python scenario failed: ' + module.id)

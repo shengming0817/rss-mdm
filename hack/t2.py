@@ -3,7 +3,6 @@
 from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import importlib
 import json
 import os
 from pathlib import Path
@@ -16,8 +15,14 @@ import uuid
 
 from build_run import require_lease
 from t2_registry import ROOT, MODULES
-from t2_execution import Builds, Processes
+from t2_execution import Builds, Processes, CASE_TIMEOUT
 from verification_result import result as stage_result, publish, require
+
+
+class RunFailure(RuntimeError):
+    def __init__(self, message, evidence):
+        super().__init__(message)
+        self.evidence = evidence
 
 
 def select_modules(module, selection):
@@ -52,7 +57,8 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
         previous[sig] = signal.signal(sig, cancel)
     try:
         for module in modules:
-            missing = [tool for tool in module.tools if not shutil.which(tool)]
+            tools = (('python3', 'cargo', 'cargo-nextest') if module.build else ('python3',)) if listing else module.tools
+            missing = [tool for tool in tools if not shutil.which(tool)]
             require(not missing, 'missing dependencies for ' + module.id + ': ' + ', '.join(missing))
         builds = Builds(directory, processes)
         builds.prepare(modules)
@@ -77,7 +83,8 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
             discovered = {owner: [case for case in discovered[owner] if case.id == selected_case]}
         if listing:
             print(json.dumps(inventory, indent=2), flush=True)
-            return {name: stage_result('skipped', reason='list-only') for name in MODULES}
+            results.update({module.id: stage_result('skipped', reason='list-only') for module in modules})
+            return results
         from t2_fixtures import RunFixtures
         with RunFixtures(builds, directory) as fixtures:
             fixtures.prepare(modules)
@@ -100,20 +107,18 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
                             prepared = time.monotonic()
                             if case:
                                 builds.execute(case, fixture.env, case_dir)
-                            elif module.python == 'gateway':
-                                importlib.import_module('t2_modules.gateway').main(fixtures)
                             else:
-                                importlib.import_module('t2_modules.' + module.python).execute(fixture)
+                                builds.execute_python(module, fixture, case_dir)
                             executed = time.monotonic()
                         end = time.monotonic()
                         cases[case_id] = stage_result('passed', begin,
                             setupSeconds=round(prepared-begin, 3), testSeconds=round(executed-prepared, 3),
                             cleanupSeconds=round(end-executed, 3), startedMonotonic=begin, endedMonotonic=end,
-                            log=str(case_dir.relative_to(output)))
+                            log=str((case_dir / 'test.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
                     except BaseException as error:
                         (case_dir / 'failure.log').write_text(traceback.format_exc())
                         cases[case_id] = stage_result('failed', begin, reason=type(error).__name__,
-                            startedMonotonic=begin, endedMonotonic=time.monotonic(), log=str(case_dir.relative_to(output)))
+                            startedMonotonic=begin, endedMonotonic=time.monotonic(), log=str((case_dir / 'failure.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
                     print(f'T2 {module.id}: {cases[case_id]["status"]} {case_id}', flush=True)
                 for case in discovered[module.id]:
                     scenario(case)
@@ -139,9 +144,10 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
         return results
     except BaseException as error:
         (directory / 'failure.log').write_text(traceback.format_exc())
-        publish(directory / 'result.json', {'runId': run_id, 'status': 'failed',
-                'reason': type(error).__name__, 'log': str((directory / 'failure.log').relative_to(output))})
-        raise
+        failure = {'runId': run_id, 'status': 'failed', 'reason': type(error).__name__,
+                   'log': str((directory / 'failure.log').relative_to(output))}
+        publish(directory / 'result.json', failure)
+        raise RunFailure(str(error), failure) from error
     finally:
         processes.close()
         for sig, handler in previous.items():
@@ -190,7 +196,7 @@ def main(argv=None):
         return int(status == 'failed')
     except BaseException as error:
         publish(output / ('list.json' if args.list == '1' else 'result.json'),
-                {'status': 'failed', 'module': args.module, 'execution': stage_result('failed', started, reason=type(error).__name__)})
+                {'status': 'failed', 'module': args.module, 'execution': error.evidence if isinstance(error, RunFailure) else stage_result('failed', started, reason=type(error).__name__)})
         raise
 
 

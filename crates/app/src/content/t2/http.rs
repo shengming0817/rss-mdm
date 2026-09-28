@@ -229,3 +229,72 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
     ensure!(shared_budget, "shared content budget was not enforced");
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=content.http: corrupt uploads reject and distinct operations reuse content"]
+async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_content() -> Result<()> {
+    let fixture = Fixture::open(false).await?;
+    let mut user = fixture.user.clone();
+    let router = &fixture.router;
+    let resource = Uuid::new_v4();
+    let path = format!("/api/v3/resources/{resource}");
+    let bytes = b"validated";
+    write(
+        &mut user,
+        router,
+        &path,
+        0,
+        json!({"action":"create","kind":"software"}),
+    )
+    .await?;
+    let definition =
+        publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
+    write(&mut user,router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    write(
+        &mut user,
+        router,
+        &path,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    let cookie = user
+        .cookies
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    for (body, expected) in [
+        (b"bad value".as_slice(), StatusCode::BAD_REQUEST),
+        (b"x".as_slice(), StatusCode::BAD_REQUEST),
+        (bytes.as_slice(), StatusCode::CREATED),
+        (bytes.as_slice(), StatusCode::CREATED),
+    ] {
+        let operation = Uuid::new_v4();
+        let response = fixture.client.post(format!("{}{path}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}", fixture.origin))
+            .header("host","mdm.example.test").header("origin","https://mdm.example.test")
+            .header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
+            .header("cookie",&cookie).header("content-type","application/octet-stream")
+            .body(body.to_vec()).send().await?;
+        ensure!(
+            response.status() == expected,
+            "upload: {} {}",
+            response.status(),
+            response.text().await?
+        );
+        let count = pg(&format!(
+            "SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND operation='{operation}'"
+        ))?;
+        let expected_count = usize::from(expected == StatusCode::CREATED);
+        ensure!(count.trim() == expected_count.to_string());
+        ensure!(
+            audit_count(|record| record.source() == "mdm.business"
+                && record.operation() == Some(operation.to_string().as_str())
+                && record.status() == 201
+                && record.result() == "success")?
+                == expected_count
+        );
+    }
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND resource='{resource}'"))?.trim() == "2");
+    Ok(())
+}
