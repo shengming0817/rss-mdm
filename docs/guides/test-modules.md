@@ -45,7 +45,9 @@ make ci-full
 | `apple.{cms,apns,scep,collection,profile,policy,renewal,identity,push,fairness,host}` | 各协议与持久化接缝独立。CMS/APNs 无 PG/Identity；普通原生前置不启动外部 SCEP。 |
 | `catalog.contract`、`gateway.admission` | 正式迁移后的全部 SQL catalog 在一个环境核对；真实 nginx 来源/限流/安全头单独验证。 |
 
-App 的 `test_support` 仅在测试编译中可见，复用 Browser、真实身份与授权、合法设备与事实、已发布成员前置、只读审计查询和协议客户端。准备函数不运行另一模块的业务矩阵。软件 artifact peer、definition 和 Git 素材单源位于 `tests/support/software`；组件测试不依赖 App，不为测试扩大生产公开 API。
+App 的测试实现统一放在 `crates/app/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。单叶目录压平，`assets.http` 合并文件但保留独立测试函数。
+
+App 的 `tests/support` 仅在测试编译中可见，复用 Browser、真实身份与授权、合法设备与事实、已发布成员前置、只读审计查询和协议客户端。准备函数不运行另一模块的业务矩阵。Planning、InventoryRuntime 和 Assets 的专用准备代码归各自测试目录；仅实际跨 owner 消费的素材放公共 support。软件 artifact peer、definition 和 Git 素材单源位于 `tests/support/software`；组件测试不依赖 App，不为测试扩大生产公开 API。
 
 Identity 用户组与设备 Group 各自归属。Assets 验证资产输入，Planning 验证成员发布如何进入 Scope/Policy，Compliance 验证适用性/版本失效，frequency 验证入离组触发。不同消费接缝各自保留授权、事务和恢复断言。
 

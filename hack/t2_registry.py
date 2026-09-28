@@ -149,7 +149,7 @@ APP_INPUTS = {
 def app_family(owner, *, namespace=None, identity=True,
                fixtures=(), exclusive=(), profile='product'):
     namespace = namespace or owner.replace('.', '::') + '::t2'
-    test_root = namespace.replace('::', '/')
+    test_root = namespace.replace('::t2', '').replace('::', '/')
     children = [name.rsplit('.', 1)[1] for name in APP_INPUTS if name.rsplit('.', 1)[0] == owner]
     if not children:
         raise ValueError('missing App production inputs: ' + owner)
@@ -158,41 +158,41 @@ def app_family(owner, *, namespace=None, identity=True,
             selectors=(namespace + '::' + child + '::',), profile=profile,
             fixtures=(('identity',) if identity else ()) + tuple(fixtures),
             sources=tuple('crates/app/src/' + path for path in APP_INPUTS[owner + '.' + child]),
-            tests=(f'crates/app/src/{test_root}/{child}.rs',
-                   f'crates/app/src/{test_root}/{child}/*'),
-            support=(f'crates/app/src/{test_root}/mod.rs', f'crates/app/src/{test_root}.rs'),
+            tests=(f'crates/app/tests/{test_root}/{child}.rs',
+                   f'crates/app/tests/{test_root}/{child}/*'),
+            support=(f'crates/app/tests/{test_root}/mod.rs',),
             exclusive=child in exclusive)
 
 
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
-    sources=('crates/app/src/migration.rs', 'crates/app/src/migration/*'),
-    tests=('crates/app/src/migration/tests.rs',), exclusive=True,
+    sources=('crates/app/src/migration.rs',),
+    tests=('crates/app/tests/migration/mod.rs',), exclusive=True,
     python='installation', support=('hack/t2_modules/installation.py',))
 for part in ('receipts', 'integrity', 'recovery', 'budget'):
     add('audit.' + part, selectors=(f'audit_integration_tests::{part}::',),
         sources=('crates/audit-integration/src/*', 'crates/app/src/audit_budget.rs',
                  'crates/app/src/transaction.rs'),
-        tests=(f'crates/app/src/audit_integration_tests/{part}.rs',),
-        support=('crates/app/src/audit_test_support.rs', 'crates/app/src/audit_integration_tests.rs'))
+        tests=(f'crates/app/tests/audit/{part}.rs',),
+        support=('crates/app/tests/audit/mod.rs',))
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], children=('audit_integration_tests::test_support::',))
 app_family('identity', fixtures=(), exclusive=('local',))
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], fixtures=('identity', 'idp'))
 add('identity.audit', selectors=('identity_audit::tests::',), fixtures=('identity',),
-    sources=('crates/app/src/identity_audit.rs', 'crates/app/src/identity_audit/*'),
-    tests=('crates/app/src/identity_audit/tests.rs',), exclusive=True)
+    sources=('crates/app/src/identity_audit.rs',),
+    tests=('crates/app/tests/identity_audit/mod.rs',), exclusive=True)
 app_family('authorization',
            exclusive=('admission',))
 for name in ('rules', 'membership', 'capacity', 'initialization', 'admission'):
     key = 'authorization.' + name
-    MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/src/authorization/t2/mod.rs',))
+    MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/tests/authorization/mod.rs',))
 app_family('enrollment')
 app_family('device')
 for part in ('binding', 'revocation', 'recovery', 'admission'):
     key = 'device.' + part
-    MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/src/device/t2/mod.rs', 'crates/app/src/device/test_support.rs'))
+    MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/tests/device/mod.rs',))
 app_family('agent')
 for name in ('agent.registration', 'agent.reports'):
-    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/src/test_support/agent.rs'))
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/tests/support/agent.rs'))
 for name, target in (('manual', 'manual'), ('reader', 'reader')):
     add('inventory.' + name,
         build=Build('rss-mdm-inventory-postgres', 'test', target), selectors=('',),
@@ -207,8 +207,8 @@ for name in ('projection', 'recovery', 'process'):
         tests=(f'crates/examples/src/app/t2/{name}.rs',),
         support=('crates/examples/src/app/t2/mod.rs',), exclusive=name == 'recovery')
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
-    sources=('crates/app/src/inventory_runtime.rs', 'crates/app/src/inventory_runtime/*'),
-    tests=('crates/app/src/inventory_runtime/tests.rs',), support=('crates/app/src/device/test_support.rs',))
+    sources=('crates/app/src/inventory_runtime.rs',),
+    tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())
 add('examples.cli', build=Build('rss-mdm-examples', features=('integration',)),
     selectors=('app::t2::cli::',), fixtures=('examples',),
     sources=('crates/examples/src/*',),
@@ -218,7 +218,7 @@ add('api.diagnostics', selectors=('api::tests::',),
              'crates/app/src/error_projection.rs'))
 add('api.identity_context', selectors=('api::t2::identity_context::',), fixtures=('identity',),
     sources=('crates/app/src/api.rs',),
-    tests=('crates/app/src/api/t2/identity_context/*',))
+    tests=('crates/app/tests/api/identity_context.rs',))
 add('host.lifecycle', build=None, python='host', fixtures=('identity',),
     sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs'),
     support=('hack/t2_modules/host.py',))
@@ -234,14 +234,14 @@ app_family('planning',
 for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'planning.recovery',
              'planning.resource_archive', 'assets.http', 'audit.integrity'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-                            ('crates/app/src/test_support/planning.rs',))
+                            ('crates/app/tests/planning/support.rs',))
 for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'planning.recovery', 'planning.resource_archive'):
     MODULES[name] = replace(MODULES[name], fixtures=())
 MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('tls',))
 for name in ('planning.recovery', 'audit.integrity'):
     MODULES[name] = replace(MODULES[name], exclusive=True)
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'],
-    test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/src/audit_integration_tests/owner_admission.rs',))
+    test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs',))
 for name in ('policy', 'resource', 'software_release'):
     package = name.replace('_', '-')
     for suffix, target in (('persistence', 'behavior'), ('recovery', 'recovery')):
@@ -264,16 +264,16 @@ app_family('execution.commands',
            namespace='execution::t2::commands')
 for name in ('execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.firewall'):
     MODULES[name] = replace(MODULES[name], fixtures=MODULES[name].fixtures+('windows',),
-        support_inputs=MODULES[name].support_inputs+('crates/app/src/execution/test_support.rs','crates/app/src/execution/test_support/*','crates/app/src/windows/test_support.rs'))
+        support_inputs=MODULES[name].support_inputs+('crates/app/tests/execution/support/*', 'crates/app/tests/windows/support.rs',))
 MODULES['execution.commands.admission'] = replace(MODULES['execution.commands.admission'], exclusive=True)
 app_family('execution.software',
            namespace='execution::t2::software')
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-        ('crates/app/src/test_support/software_execution.rs',))
+        ('crates/app/tests/support/software_execution.rs',))
 for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.remote'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-        ('crates/app/src/test_support/agent_execution.rs',))
+        ('crates/app/tests/support/agent_execution.rs',))
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
     sources=('crates/software-service/src/catalog/*',),
     tests=('crates/software-service/tests/catalog_t2.rs', 'crates/software-service/tests/catalog/*'),
@@ -282,7 +282,7 @@ app_family('software', namespace='software_catalog::t2')
 app_family('content')
 for name in ('content.http', 'content.mirror', 'content.gc', 'software.http'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-        ('crates/app/src/test_support/software.rs', 'tests/support/software/*'))
+        ('tests/support/software/*',))
 MODULES['content.mirror'] = replace(MODULES['content.mirror'], fixtures=('identity', 'tls'))
 MODULES['content.gc'] = replace(MODULES['content.gc'], exclusive=True)
 for part in ('winget', 'brew', 'mapping', 'withdrawal', 'recovery', 'artifact'):
@@ -311,13 +311,13 @@ add('sources.brew_recovery', build=Build('rss-mdm-brew-source'),
     sources=('crates/brew-source/src/git.rs',))
 add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtures=('windows',),
     sources=('crates/app/src/native/*',),
-    tests=('crates/app/src/native/tls_tests.rs',))
+    tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
 for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.firewall'):
-    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/src/windows/test_support.rs',))
+    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/windows/support.rs',))
 for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.firewall'):
-    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/src/enrollment/test_support.rs',))
+    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/enrollment/support.rs',))
 for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'renewal', 'identity', 'push', 'fairness', 'host'):
     no_pg = part in ('cms', 'apns')
     fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
@@ -336,8 +336,8 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'renewal'
     }[part]
     add('apple.' + part, selectors=selectors, profile='none' if no_pg else 'product',
         fixtures=fixtures, sources=tuple('crates/app/src/apple/' + path for path in source),
-        tests=(('crates/app/src/apple/push_tests.rs',) if part == 'apns' else
-               () if part == 'cms' else (f'crates/app/src/apple/tests/{part}.rs',)))
+        tests=(('crates/app/tests/apple/apns.rs',) if part == 'apns' else
+               () if part == 'cms' else (f'crates/app/tests/apple/{part}.rs',)))
 add('catalog.contract', build=None, python='catalog',
     sources=('crates/app/src/*/catalog.sql', 'crates/app/src/*/catalog.json',
              'crates/software-service/src/*/catalog.sql', 'crates/software-service/src/*/catalog.json'),
@@ -418,7 +418,7 @@ consume(('crates/software-service/src/publication/*.sql', 'crates/software-servi
 
 # Shared production configuration has a broad, but real, consumer set. No-PG
 # protocol modules do not become consumers merely because they live in App.
-PRODUCT_INPUTS = ('crates/app/src/migration.rs', 'crates/app/src/migration/*',
+PRODUCT_INPUTS = ('crates/app/src/migration.rs',
                   'crates/app/schema/*', 'crates/app/migrations/*',
                   'crates/app/src/*/install.sql',
                   'crates/app/src/*/*/schema.sql')
@@ -431,41 +431,40 @@ for name, module in tuple(MODULES.items()):
     support = ('hack/t2_environment.py', 'hack/t2_fixtures.py')
     if 'tls' in module.fixtures:
         support += ('hack/source_fixtures.py',)
-    if 'identity' in module.fixtures:
-        support += ('crates/app/src/test_support/identity.rs',)
-    if module.build == APP:
-        support += ('crates/app/src/test_support/mod.rs', 'crates/app/src/test_support/authority.rs', 'crates/app/src/test_support/http.rs')
+    if 'identity' in module.fixtures or name == 'installation.migration':
+        support += ('crates/app/tests/support/identity.rs',)
+    if 'identity' in module.fixtures or name == 'installation.migration':
+        support += ('crates/app/tests/support/mod.rs', 'crates/app/tests/support/authority.rs', 'crates/app/tests/support/http.rs')
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + support)
 
 
-MODULES['apple.cms'] = replace(MODULES['apple.cms'], test_inputs=())
+MODULES['apple.cms'] = replace(MODULES['apple.cms'], test_inputs=('crates/app/tests/apple/cms.rs',))
+MODULES['api.diagnostics'] = replace(MODULES['api.diagnostics'], test_inputs=('crates/app/tests/api/diagnostics.rs',))
 for name in ('software.http','authorization.rules'):
     MODULES[name] = replace(MODULES[name], fixtures=MODULES[name].fixtures+('tls',))
-MODULES['planning.remote'] = replace(MODULES['planning.remote'], support_inputs=MODULES['planning.remote'].support_inputs+('crates/app/src/test_support/agent.rs',))
+MODULES['planning.remote'] = replace(MODULES['planning.remote'], support_inputs=MODULES['planning.remote'].support_inputs+('crates/app/tests/support/agent.rs',))
 for name in ('planning.http','planning.policy','software.http','authorization.rules'):
-    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/src/test_support/planning_http.rs',))
+    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/support/planning_http.rs',))
 for name in ('software.http','authorization.rules'):
-    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/src/test_support/publication_http.rs','tests/support/software/*'))
+    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/support/publication_http.rs','tests/support/software/*'))
 for name in ('inventory.runtime', 'agent.reports', 'assets.group_input', 'assets.sources',
              'compliance.evaluation', 'execution.agent.delivery'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-        ('crates/app/src/test_support/inventory_runtime.rs', 'crates/app/src/device/test_support.rs'))
+        ('crates/app/tests/inventory_runtime/support.rs',))
 for name in ('assets.sources', 'assets.group_input', 'compliance.evaluation', 'planning.http'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-        ('crates/app/src/test_support/inventory.rs',))
+        ('crates/app/tests/support/inventory.rs',))
 
-MODULES['inventory.runtime'] = replace(MODULES['inventory.runtime'],
-    support_inputs=MODULES['inventory.runtime'].support_inputs + ('crates/app/src/test_support/process.rs',))
 
 for name in [name for name in MODULES if name.startswith('apple.') and name not in ('apple.cms', 'apple.apns')]:
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-        ('crates/app/src/apple/tests.rs', 'crates/app/src/apple/test_support/scep.rs',
-         'crates/app/src/apple/tests/lifecycle.rs', 'crates/app/src/apple/tests/oracle.rs', 'hack/apple_oracle.py'))
+        ('crates/app/tests/apple/mod.rs', 'crates/app/tests/apple/support/scep.rs',
+         'crates/app/tests/apple/lifecycle.rs', 'crates/app/tests/apple/oracle.rs', 'hack/apple_oracle.py'))
 for name in ('apple.apns', 'apple.push', 'apple.host'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
-        ('crates/app/src/apple/test_support/apns.rs',))
+        ('crates/app/tests/apple/support/apns.rs',))
 for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
-    MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/src/apple/tests/{path}.rs',))
+    MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
 
 for name, module in tuple(MODULES.items()):
     support = tuple(path for path in module.support_inputs if path != 'tests/support/software/*')
@@ -486,7 +485,7 @@ for name, module in tuple(MODULES.items()):
     if 'idp' in module.fixtures:
         support += ('hack/enterprise_idp.py',)
     if name in ('apple.cms','apple.apns','native.tls'):
-        support = tuple(path for path in support if not path.startswith('crates/app/src/test_support/'))
+        support = tuple(path for path in support if not path.startswith('crates/app/tests/support/'))
     MODULES[name] = replace(module, support_inputs=support)
 for owner in ('policy','resource','software_release'):
     for part in ('persistence','recovery'):
@@ -499,7 +498,7 @@ for owner in ('policy','resource','software_release'):
         if part == 'recovery':
             support += (f'crates/{package}-postgres/tests/support/ack.rs',)
         MODULES[name] = replace(MODULES[name],support_inputs=support)
-MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], support_inputs=MODULES['audit.recovery'].support_inputs+('crates/app/src/audit_integration_tests/test_support.rs',))
+MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], support_inputs=MODULES['audit.recovery'].support_inputs+('crates/app/tests/audit/test_support.rs',))
 
 def all_tools():
     return sorted(path.stem for path in (ROOT / 'tests').glob('test_*.py'))
@@ -507,18 +506,57 @@ def all_tools():
 
 # These carrier files compose exactly these test children, not production consumers.
 for name, module in list(MODULES.items()):
-    carrier = ('crates/app/src/api/t2/mod.rs' if name == 'api.identity_context' else
-               'crates/app/src/execution/t2/mod.rs' if name.startswith('execution.') else None)
+    carrier = ('crates/app/tests/api/mod.rs' if name == 'api.identity_context' else
+               'crates/app/tests/execution/mod.rs' if name.startswith('execution.') else None)
     if carrier:
         MODULES[name] = replace(module, support_inputs=(*module.support_inputs, carrier))
 MODULES['execution.commands.dispatch'] = replace(
     MODULES['execution.commands.dispatch'], children=('execution::test_support::',))
 
+MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_inputs=MODULES['assets.group_input'].support_inputs+('crates/app/tests/assets/group_support.rs',))
+
+# Verified helper call sites. These edges select tests, never production consumers.
+APP_HELPER_CONSUMERS = {
+    'support/software.rs': (
+        'software.http','content.http','content.mirror','content.gc','planning.software',
+        'execution.software.offer','execution.software.content','execution.software.recovery'),
+    'support/process.rs': ('inventory.runtime','execution.commands.recovery'),
+    'execution/support.rs': (
+        'execution.commands.admission','execution.commands.dispatch','execution.commands.recovery',
+        'execution.commands.windows','execution.commands.firewall','windows.commands'),
+    'device/support.rs': (
+        'device.binding','device.revocation','device.recovery','device.admission',
+        'agent.reports','inventory.runtime','assets.group_input','assets.sources','compliance.evaluation',
+        'execution.agent.delivery','authorization.admission','enrollment.recovery','native.tls',
+        'planning.http','software.http','execution.software.offer','execution.software.content',
+        'execution.software.recovery','execution.commands.admission','execution.commands.dispatch',
+        'execution.commands.recovery','execution.commands.windows','execution.commands.firewall',
+        'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention',
+        'apple.collection','apple.profile','apple.policy','apple.renewal','apple.identity','apple.push',
+        'apple.fairness','apple.host','apple.scep'),
+    'support/audit.rs': (
+        'audit.receipts','audit.integrity','audit.recovery','audit.budget',
+        'api.diagnostics','device.recovery','device.revocation','execution.commands.admission',
+        'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
+        'apple.policy','apple.identity','planning.scope','planning.group_scope','planning.assets',
+        'planning.recovery','planning.resource_archive','planning.agent_policy','assets.http',
+        'enrollment.http','content.http','compliance.http','compliance.recovery','compliance.group_input',
+        'authorization.capacity','authorization.rules','execution.agent.history','execution.agent.content','software.http'),
+}
+APP_HELPER_CONSUMERS['execution/support/native.rs'] = APP_HELPER_CONSUMERS['execution/support.rs']
+for relative, consumers in APP_HELPER_CONSUMERS.items():
+    path = 'crates/app/tests/' + relative
+    for name, module in list(MODULES.items()):
+        inputs = tuple(value for value in module.support_inputs if value != path)
+        if name in consumers:
+            inputs += (path,)
+        MODULES[name] = replace(module, support_inputs=inputs)
+
 TOOL_INPUTS = {
     'hack/t2_modules/installation.py': ('test_t2_guards',),
     'hack/t2_python.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/rust_test_layout.py': ('test_audit_surface','test_foundation_boundaries','test_flow_boundaries'),
-    'hack/t2_registry.py': ('test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
+    'hack/t2_registry.py': ('test_app_test_layout', 'test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
     'hack/t2.py': ('test_t2_modules', 'test_t2_runner', 'test_t2_guards'),
     'hack/t2_execution.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner'),
@@ -551,9 +589,41 @@ def matches(path, patterns):
 T1_INPUTS = tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm')) + (
-    'crates/app/src/content/tests.rs', 'crates/app/src/authorization/tests.rs',
+    'crates/app/tests/agent/unit.rs',
+    'crates/app/tests/apple/profile_unit.rs',
+    'crates/app/tests/apple/protocol_unit.rs',
+    'crates/app/tests/apple/webhook_unit.rs',
+    'crates/app/tests/assets/query_sort_unit.rs',
+    'crates/app/tests/assets/unit.rs',
+    'crates/app/tests/audit_budget/unit.rs',
+    'crates/app/tests/authorization/unit.rs',
+    'crates/app/tests/collection/unit.rs',
+    'crates/app/tests/compliance/evaluation_unit.rs',
+    'crates/app/tests/config/unit.rs',
+    'crates/app/tests/content/unit.rs',
+    'crates/app/tests/device/coordinates_unit.rs',
+    'crates/app/tests/diagnostic/unit.rs',
+    'crates/app/tests/enrollment/credentials_unit.rs',
+    'crates/app/tests/enrollment/unit.rs',
+    'crates/app/tests/error_projection/unit.rs',
+    'crates/app/tests/execution/actions/state_unit.rs',
+    'crates/app/tests/execution/model_unit.rs',
+    'crates/app/tests/execution/recovery_unit.rs',
+    'crates/app/tests/flow/unit.rs',
+    'crates/app/tests/identity/unit.rs',
+    'crates/app/tests/lifecycle/unit.rs',
+    'crates/app/tests/native/admission_unit.rs',
+    'crates/app/tests/planning/pages_unit.rs',
+    'crates/app/tests/planning/wire_unit.rs',
+    'crates/app/tests/windows/unit.rs',
     'crates/brew-source/tests/templates.rs', 'crates/winget-source/tests/protocol.rs',
     'crates/winget-source/tests/publication_schema.rs', 'crates/winget-source/tests/version.rs',
+    'crates/app/tests/apple/health_unit.rs',
+    'crates/app/tests/execution/model_phase_unit.rs',
+    'crates/app/tests/execution/remote_phase_unit.rs',
+    'crates/app/tests/execution/actions/state_schedule_unit.rs',
+    'crates/app/tests/planning/automation/scopes_unit.rs',
+    'crates/app/tests/publication.rs',
 )
 
 

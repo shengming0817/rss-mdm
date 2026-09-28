@@ -6,6 +6,7 @@ pub(crate) mod coordinates;
 pub(crate) mod read;
 pub(crate) mod store;
 #[cfg(test)]
+#[path = "../tests/device/support.rs"]
 pub(crate) mod test_support;
 use crate::authorization::context::AuthorizedPrincipal;
 use crate::{Database, Error, Failure, device::coordinates::Coordinates};
@@ -318,4 +319,5 @@ pub(crate) const AUTHORITY_HISTORY_MIGRATION_SQL: &str =
 use rss_mdm_audit_integration::RequestAudit;
 
 #[cfg(test)]
+#[path = "../tests/device/mod.rs"]
 pub(crate) mod t2;

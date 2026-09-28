@@ -42,7 +42,7 @@ class FoundationBoundaries(unittest.TestCase):
             relative = path.relative_to(SOURCE)
             if is_test_path(relative):
                 continue
-            source = path.read_text().split('#[cfg(test)]\nmod tests')[0]
+            source = path.read_text()
             for table in re.findall(r'(?:INSERT INTO|UPDATE|DELETE FROM)\s+mdm_access\.(\w+)', source):
                 owner = owners.get(table)
                 if owner and relative.parts[0] not in (owner, owner + '.rs'):

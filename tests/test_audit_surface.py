@@ -124,6 +124,7 @@ DECLARATIONS = {
     ('enrollment_cancel', 'api.rs'),
     ('enrollment_create', 'api.rs'),
     ('enrollment_issue', 'api.rs'),
+    ('enrollment_issue', 'windows/mod.rs'),
     ('enrollment_read', 'api.rs'),
     ('enrollment_resume', 'api.rs'),
     ('inventory_read', 'api.rs'),
@@ -201,7 +202,7 @@ def declared_actions():
     for path in production_paths():
         if is_test_path(path):
             continue
-        source = path.read_text().split("#[cfg(test)]\nmod tests")[0]
+        source = path.read_text()
         for call, index in calls.items():
             for match in re.finditer(re.escape(call) + r"\s*\(", source):
                 args = arguments(source, match.end())
@@ -243,7 +244,7 @@ class PrincipalBindingBoundary(unittest.TestCase):
             relative = os.path.relpath(path, ROOT)
             if is_test_path(path):
                 continue
-            source = path.read_text().split('#[cfg(test)]\nmod tests')[0]
+            source = path.read_text()
             self.assertNotRegex(source, r'\.identify(?:_operator)?\(')
             if '.set_principal(' in source:
                 actual.add(relative)

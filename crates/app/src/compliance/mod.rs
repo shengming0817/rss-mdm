@@ -253,4 +253,5 @@ impl Compliance {
 }
 
 #[cfg(all(test, feature = "integration"))]
+#[path = "../../tests/compliance/mod.rs"]
 pub(crate) mod t2;

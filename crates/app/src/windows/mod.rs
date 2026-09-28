@@ -7,6 +7,7 @@ pub(crate) mod management;
 mod protection;
 pub(crate) mod retention;
 #[cfg(test)]
+#[path = "../../tests/windows/unit.rs"]
 mod tests;
 
 use crate::{
@@ -471,7 +472,9 @@ impl HttpState {
 use rss_mdm_audit_integration::RequestAudit;
 
 #[cfg(test)]
+#[path = "../../tests/windows/support.rs"]
 pub(crate) mod test_support;
 
 #[cfg(test)]
+#[path = "../../tests/windows/mod.rs"]
 mod t2;

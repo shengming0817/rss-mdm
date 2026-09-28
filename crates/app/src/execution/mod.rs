@@ -77,6 +77,7 @@ impl ExecutionService {
 }
 
 #[cfg(all(test, feature = "integration"))]
+#[path = "../../tests/execution/support.rs"]
 pub(crate) mod test_support;
 
 use rss_mdm_audit_integration::RequestAudit;
@@ -84,4 +85,5 @@ use rss_mdm_audit_integration::RequestAudit;
 pub mod error;
 
 #[cfg(all(test, feature = "integration"))]
+#[path = "../../tests/execution/mod.rs"]
 pub(crate) mod t2;

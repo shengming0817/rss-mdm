@@ -307,6 +307,7 @@ fn corrupt() -> Error {
 }
 
 #[cfg(test)]
+#[path = "../tests/collection/unit.rs"]
 mod tests;
 
 /// Server-authored quality evidence for one fixed enterprise field.

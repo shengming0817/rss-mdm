@@ -266,8 +266,9 @@ pub(crate) mod action_contract;
 pub mod error;
 
 #[cfg(test)]
+#[path = "../../tests/planning/mod.rs"]
 pub(crate) mod t2;
 
 #[cfg(test)]
-#[path = "../test_support/planning.rs"]
+#[path = "../../tests/planning/support.rs"]
 pub(crate) mod test_support;

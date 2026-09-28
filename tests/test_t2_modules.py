@@ -27,37 +27,64 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_test_module_carriers_select_exact_children(self):
         expected = {
-            'crates/app/src/agent/t2/mod.rs': {'agent.registration','agent.reports'},
-            'crates/app/src/api/t2/mod.rs': {'api.identity_context'},
-            'crates/app/src/execution/t2/mod.rs': {name for name in MODULES if name.startswith('execution.')},
+            'crates/app/tests/agent/mod.rs': {'agent.registration','agent.reports'},
+            'crates/app/tests/api/mod.rs': {'api.identity_context'},
+            'crates/app/tests/execution/mod.rs': {name for name in MODULES if name.startswith('execution.')},
         }
         for path, modules in expected.items():
             selection=select_paths([path])
             self.assertFalse(selection.full,path)
             self.assertEqual(set(selection.modules),modules,path)
 
+    def test_app_helpers_select_all_actual_consumers(self):
+        self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
+            'software.http','content.http','content.mirror','content.gc',
+            'planning.software','execution.software.offer','execution.software.content','execution.software.recovery'})
+        self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
+                         {'inventory.runtime','execution.commands.recovery'})
+        self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
+                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','firewall')} | {'windows.commands'})
+        self.assertEqual(self.selected('crates/app/tests/execution/support/native.rs'),
+                         self.selected('crates/app/tests/execution/support.rs'))
+        device = self.selected('crates/app/tests/device/support.rs')
+        required = {'authorization.admission','enrollment.recovery','native.tls','software.http',
+                    'planning.http','execution.software.offer','execution.software.content','execution.software.recovery'}
+        required |= {name for name in MODULES if name.startswith(('device.','windows.','execution.commands.'))}
+        required |= {'apple.'+part for part in ('collection','profile','policy','renewal','identity','push','fairness','host','scep')}
+        self.assertTrue(required <= device,required-device)
+        self.assertTrue(device.isdisjoint({'identity.sso','content.http','apple.cms','apple.apns','publication.artifact'}))
+        audit = self.selected('crates/app/tests/support/audit.rs')
+        required = {'api.diagnostics','device.recovery','device.revocation','execution.commands.admission',
+                    'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
+                    'apple.policy','apple.identity','planning.scope','planning.group_scope','planning.assets',
+                    'planning.recovery','planning.resource_archive','planning.agent_policy','assets.http',
+                    'enrollment.http','content.http','compliance.http','compliance.recovery','compliance.group_input',
+                    'authorization.capacity','authorization.rules','execution.agent.history','execution.agent.content','software.http'}
+        required |= {'audit.'+part for part in ('receipts','integrity','recovery','budget')}
+        self.assertEqual(audit,required)
+
     def test_test_changes_do_not_select_production_consumers(self):
         self.assertEqual(self.selected('crates/resource-postgres/tests/behavior.rs'),
                          {'resource.persistence'})
-        self.assertEqual(self.selected('crates/app/src/content/tests.rs'), set())
+        self.assertEqual(self.selected('crates/app/tests/content/unit.rs'), set())
         self.assertEqual(self.selected('crates/scope/tests/model.rs'), set())
-        self.assertEqual(self.selected('crates/app/src/apple/push_tests.rs'), {'apple.apns'})
+        self.assertEqual(self.selected('crates/app/tests/apple/apns.rs'), {'apple.apns'})
 
     def test_moved_tests_are_owned_without_business_propagation(self):
         for path, owner in (
-            ('crates/app/src/identity/t2/local/mod.rs', 'identity.local'),
-            ('crates/app/src/enrollment/t2/http/mod.rs', 'enrollment.http'),
-            ('crates/app/src/api/t2/identity_context/mod.rs', 'api.identity_context'),
-            ('crates/app/src/agent/t2/reports.rs', 'agent.reports'),
-            ('crates/app/src/execution/t2/agent/history.rs', 'execution.agent.history'),
+            ('crates/app/tests/identity/local.rs', 'identity.local'),
+            ('crates/app/tests/enrollment/http.rs', 'enrollment.http'),
+            ('crates/app/tests/api/identity_context.rs', 'api.identity_context'),
+            ('crates/app/tests/agent/reports.rs', 'agent.reports'),
+            ('crates/app/tests/execution/agent/history.rs', 'execution.agent.history'),
             ('crates/examples/src/app/t2/projection.rs', 'inventory.projection'),
-            ('crates/app/src/assets/t2/http/identity_read.rs', 'assets.http'),
+            ('crates/app/tests/assets/http.rs', 'assets.http'),
         ):
             with self.subTest(path=path):
                 self.assertEqual(self.selected(path), {owner})
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
-        self.assertEqual(self.selected('crates/app/src/test_support/agent.rs'),
+        self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
                          {'agent.registration', 'agent.reports', 'planning.remote'})
 
     def test_content_range_selects_real_download_consumers(self):
@@ -94,17 +121,17 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_multiple_inputs_union_without_broadening(self):
         selection = select_paths(['crates/resource-postgres/tests/behavior.rs',
-                                  'crates/app/src/apple/push_tests.rs',
+                                  'crates/app/tests/apple/apns.rs',
                                   'crates/resource-postgres/tests/behavior.rs'])
         self.assertEqual(selection.modules, ('apple.apns', 'resource.persistence'))
 
     def test_authorization_and_audit_module_inputs_stay_local(self):
-        self.assertEqual(self.selected('crates/app/src/authorization/t2/capacity.rs'),
+        self.assertEqual(self.selected('crates/app/tests/authorization/capacity.rs'),
                          {'authorization.capacity'})
-        self.assertEqual(self.selected('crates/app/src/authorization/t2/mod.rs'),
+        self.assertEqual(self.selected('crates/app/tests/authorization/mod.rs'),
                          {'authorization.' + part for part in
                           ('rules', 'membership', 'capacity', 'initialization', 'admission')})
-        self.assertEqual(self.selected('crates/app/src/audit_integration_tests/recovery.rs'),
+        self.assertEqual(self.selected('crates/app/tests/audit/recovery.rs'),
                          {'audit.recovery'})
         self.assertEqual(self.selected('crates/compliance-postgres/tests/t2.rs'),
                          {'compliance.storage'})
@@ -198,13 +225,13 @@ class ModuleImpactTests(unittest.TestCase):
         from unittest.mock import patch
         from t2_registry import APP, Module
         # Selection does not depend on whether a test file still exists on disk.
-        self.assertEqual(self.selected('crates/app/src/execution/t2/agent/history/deleted.rs'),
+        self.assertEqual(self.selected('crates/app/tests/execution/agent/history/deleted.rs'),
                          {'execution.agent.history'})
         module = Module('new.owner', APP, ('new::',),
-                        test_inputs=('crates/app/src/new/t2.rs',))
+                        test_inputs=('crates/app/tests/new/mod.rs',))
         with patch.dict(MODULES, {'new.owner': module}):
-            self.assertEqual(self.selected('crates/app/src/new/t2.rs'), {'new.owner'})
-        selected = set(select_paths(['crates/app/src/content/tests.rs',
+            self.assertEqual(self.selected('crates/app/tests/new/mod.rs'), {'new.owner'})
+        selected = set(select_paths(['crates/app/tests/content/unit.rs',
                                     'crates/app/src/content/range.rs',
                                     'crates/resource-postgres/tests/behavior.rs']).modules)
         self.assertEqual(selected, {'content.http','execution.agent.content',

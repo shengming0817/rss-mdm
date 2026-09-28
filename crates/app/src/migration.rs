@@ -602,4 +602,5 @@ async fn verify_installation(
 }
 
 #[cfg(test)]
+#[path = "../tests/migration/mod.rs"]
 mod tests;

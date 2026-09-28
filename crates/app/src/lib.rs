@@ -5,6 +5,7 @@ extern crate self as rss_mdm_app;
 mod action_admission;
 mod assets;
 #[cfg(test)]
+#[path = "../tests/audit/mod.rs"]
 mod audit_integration_tests;
 pub mod authorization;
 mod automation;
@@ -48,6 +49,7 @@ pub mod migration;
 mod native;
 pub mod software_publication;
 #[cfg(test)]
+#[path = "../tests/support/mod.rs"]
 mod test_support;
 pub mod windows;
 use axum::{
@@ -138,6 +140,7 @@ impl IntoResponse for Error {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/audit.rs"]
 mod audit_test_support;
 
 impl Error {
