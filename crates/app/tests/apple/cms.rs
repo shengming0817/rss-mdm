@@ -3,11 +3,7 @@ use rss_mdm_certificate::apple::ProfileSigner;
 #[ignore = "Apple T2: disposable real keys and independent OpenSSL CMS verifier"]
 fn cms_is_attached_and_independently_verified() -> anyhow::Result<()> {
     let root = std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
-    let now = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs(),
-    )?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let signer = ProfileSigner::from_bytes(
         &std::fs::read(root.join("apple-profile.pem"))?,
         &std::fs::read(root.join("apple-profile.pk8"))?,

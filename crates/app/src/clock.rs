@@ -34,12 +34,23 @@ impl rss_mdm_inventory_service::clock::Clock for SystemClock {
 pub(crate) struct FlowClock(pub(crate) std::sync::Arc<dyn Clock>);
 impl rss_mdm_flow_service::clock::Clock for FlowClock {
     fn unix_seconds(&self) -> Result<i64, rss_mdm_flow_service::Error> {
-        self.0.unix_seconds().map_err(Into::into)
+        self.0.unix_seconds().map_err(|_| {
+            rss_mdm_flow_service::Error::Unavailable(rss_mdm_flow_service::Failure::Clock)
+        })
     }
 }
 
 impl rss_mdm_flow_service::clock::Clock for SystemClock {
     fn unix_seconds(&self) -> Result<i64, rss_mdm_flow_service::Error> {
-        Clock::unix_seconds(self).map_err(Into::into)
+        Clock::unix_seconds(self).map_err(|_| {
+            rss_mdm_flow_service::Error::Unavailable(rss_mdm_flow_service::Failure::Clock)
+        })
+    }
+}
+
+pub(crate) struct ContentClock(pub std::sync::Arc<dyn Clock>);
+impl rss_mdm_content_service::service::Clock for ContentClock {
+    fn unix_seconds(&self) -> Option<i64> {
+        self.0.unix_seconds().ok()
     }
 }

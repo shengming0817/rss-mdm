@@ -254,3 +254,6 @@ impl Apple {
         ring::hmac::sign(&self.challenge_key, body)
     }
 }
+
+/// This capability's closed privileges in the shared access connection.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

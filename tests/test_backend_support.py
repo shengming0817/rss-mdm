@@ -13,13 +13,13 @@ def graph():
     names = ADAPTERS | {SUPPORT, 'rss-mdm-policy', 'rss-mdm-app', 'sqlx'}
     def edge(n):
         return {'pkg': n, 'dep_kinds': [{'kind': None, 'target': None}]}
-    nodes = [{'id': n, 'features': [], 'deps': [edge(SUPPORT)] if n in ADAPTERS else [edge('sqlx')] if n == SUPPORT else []} for n in names]
+    nodes = [{'id': n, 'features': [], 'deps': [edge(SUPPORT)] if n in ADAPTERS | {'rss-mdm-app'} else [edge('sqlx')] if n == SUPPORT else []} for n in names]
     return {'packages': [{'id': n, 'name': n} for n in names], 'resolve': {'nodes': nodes}}
 
 class BackendSupportBoundary(unittest.TestCase):
     def test_exact_consumers_and_no_product_dependencies(self):
         ci.verify_backend_support(graph())
-        for owner, target in [('rss-mdm-app', SUPPORT), ('rss-mdm-policy', SUPPORT), (SUPPORT, 'rss-mdm-policy')]:
+        for owner, target in [('rss-mdm-policy', SUPPORT), (SUPPORT, 'rss-mdm-policy')]:
             data = graph()
             next(n for n in data['resolve']['nodes'] if n['id'] == owner)['deps'].append({'pkg': target, 'dep_kinds': [{'kind': None, 'target': None}]})
             with self.subTest(owner=owner), self.assertRaises(RuntimeError):

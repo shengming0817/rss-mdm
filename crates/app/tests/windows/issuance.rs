@@ -1,4 +1,3 @@
-use crate::Failure;
 use crate::enrollment::test_support::{audit, create};
 use crate::windows::test_support::*;
 use crate::windows::*;
@@ -37,16 +36,16 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     certificate::Csr::verify(&absent.to_der()?)?;
     ensure!(
         certificate::WindowsEnrollmentAuthority::from_bytes(
-            &std::fs::read(&root()?.join("device-ca.pem"))?,
-            &std::fs::read(&root()?.join("device.pk8"))?,
+            &std::fs::read(root()?.join("device-ca.pem"))?,
+            &std::fs::read(root()?.join("device.pk8"))?,
             now()
         )
         .is_err()
     );
     ensure!(
         certificate::WindowsEnrollmentAuthority::from_bytes(
-            &std::fs::read(&root()?.join("device-ca.pem"))?,
-            &std::fs::read(&root()?.join("device-ca.pk8"))?,
+            &std::fs::read(root()?.join("device-ca.pem"))?,
+            &std::fs::read(root()?.join("device-ca.pk8"))?,
             now() + 181 * 86400
         )
         .is_err()
@@ -191,7 +190,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .verify(&[CertificateDer::from(unrelated.as_slice())], now())?;
     ensure!(matches!(
         complete(&audit_store, &w, &auth, &proof, &intent, &unrelated).await,
-        Err(Error::Conflict)
+        Err(Error::Windows(rss_mdm_windows_channel::Error::Conflict))
     ));
     ensure!(service.management_principal(&credential).await.is_err());
     // Failed final write leaves only the exact immutable intent.
@@ -232,7 +231,9 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     ensure!(matches!(
         complete(&audit_store, &w, &auth, &proof, &intent, &cert).await,
-        Err(Error::CommitUnknown)
+        Err(Error::Windows(
+            rss_mdm_windows_channel::Error::CommitUnknown
+        ))
     ));
     complete(
         restarted
@@ -312,7 +313,12 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         ensure!(if fault == 3 {
             result.is_err()
         } else {
-            matches!(result, Ok(Err(Error::CommitUnknown)))
+            matches!(
+                result,
+                Ok(Err(Error::Windows(
+                    rss_mdm_windows_channel::Error::CommitUnknown
+                )))
+            )
         });
         complete(&audit_store, &w, &a, &proof, &i, &c).await?;
         let count: i64 = sqlx::query_scalar(
@@ -509,7 +515,9 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ensure!(rejected);
     ensure!(matches!(
         failed,
-        Err(Error::Unavailable(Failure::AuditAdmission))
+        Err(Error::Windows(rss_mdm_windows_channel::Error::Service(
+            rss_mdm_flow_service::Error::Unavailable(rss_mdm_flow_service::Failure::AuditAdmission)
+        )))
     ));
     complete(&audit_store, &w, &a, &proof, &i, &c).await?;
     // Two accepted enrollments freeze the same base; only one final generation can win.

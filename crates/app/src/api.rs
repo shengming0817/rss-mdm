@@ -38,10 +38,14 @@ pub(crate) struct Assembly {
 #[cfg(test)]
 impl Assembly {
     pub(crate) fn apple(&self) -> Result<&Arc<crate::apple::Apple>, Error> {
-        self.apple.as_ref().ok_or(Error::Unsupported)
+        self.apple
+            .as_ref()
+            .ok_or(Error::Service(rss_mdm_flow_service::Error::Unsupported))
     }
     pub(crate) fn windows(&self) -> Result<&Arc<crate::windows::Windows>, Error> {
-        self.windows.as_ref().ok_or(Error::Unsupported)
+        self.windows
+            .as_ref()
+            .ok_or(Error::Service(rss_mdm_flow_service::Error::Unsupported))
     }
 }
 
@@ -77,7 +81,7 @@ pub(crate) async fn application_fixture(
         .open(
             audit_store.clone(),
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
-                .map_err(|_| Error::Malformed)?,
+                .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?,
             clock.clone(),
             |_| {},
         )
@@ -314,12 +318,19 @@ pub(crate) fn from_state(
                 ),
                 content: state.content_writer.clone(),
             }),
-            content: Arc::new(rss_mdm_flow_service::content::Access {
+            content: Arc::new(rss_mdm_content_service::service::Access {
+                catalog: Arc::new(rss_mdm_software_service::catalog::Catalog::new(
+                    state.flow.runtime.clone(),
+                    state.execution.tenant,
+                    Arc::new(rss_mdm_flow_service::software_publication::host::Audit(
+                        state.audit_store.clone(),
+                    )),
+                )),
                 runtime: state.flow.runtime.clone(),
                 audit_store: state.audit_store.clone(),
                 tenant: state.execution.tenant,
                 content: state.content_writer.clone(),
-                clock: Arc::new(crate::clock::FlowClock(state.clock.clone())),
+                clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
             }),
             enrollment: Arc::new(
                 rss_mdm_registration_service::enrollment::EnrollmentService::new(
@@ -367,6 +378,7 @@ pub(crate) fn from_state(
     let host_routes = Router::new()
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready).with_state(readiness))
+        .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(
             host,
             crate::http_host::guard,

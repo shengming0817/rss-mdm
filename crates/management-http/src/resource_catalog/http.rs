@@ -68,7 +68,10 @@ async fn write(
         &auth,
         &audit,
         id,
-        Some(body.map_err(|_| Error::Malformed)?.0),
+        Some(
+            body.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+                .0,
+        ),
     )
     .await
 }

@@ -1,11 +1,11 @@
-use crate::{
-    Error,
-    authorization::{Permission, context::AuthorizedPrincipal},
-    transaction::{self, TransactionOwner},
-};
+//! Authorized content upload, import, durable binding and reclamation.
+use crate::transaction::{self};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
+mod error;
+use crate::{Binding, Store, Upload};
+pub use error::Error;
 use futures::TryStreamExt;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_content_service::{Binding, Store, Upload};
 use rss_mdm_resource as r;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
@@ -17,7 +17,8 @@ pub struct Access {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub tenant: TenantId,
     pub content: Option<Arc<Store>>,
-    pub clock: Arc<dyn crate::clock::Clock>,
+    pub clock: Arc<dyn Clock>,
+    pub catalog: Arc<rss_mdm_software_service::catalog::Catalog>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,8 +48,8 @@ async fn resolve_in(
     id: &str,
     input: &Selection,
 ) -> transaction::Result<Binding> {
-    crate::action_admission::lock(tx, "action-owner").await?;
-    let snapshot = crate::action_admission::current(tx, proof).await?;
+    transaction::lock_resource(tx).await?;
+    let snapshot = transaction::authorize(tx, proof).await?;
     snapshot.require(proof, Permission::ResourceWrite, None)?;
     let (version, state) = rss_mdm_resource_postgres::lock_reference_in(
         tx,
@@ -142,20 +143,13 @@ pub async fn resolve(
     proof.require(Permission::ResourceWrite, None)?;
     audit.target(id);
     audit.set_action("management_write");
-    transaction::inspect(
-        &app.runtime,
-        app.tenant,
-        (proof, id, input),
-        |ctx, tx| {
-            Box::pin(async move {
-                let (proof, id, input) = *ctx;
-                resolve_in(tx, proof, id, input).await
-            })
-        },
-        TransactionOwner::ResourceCatalog,
-    )
+    transaction::inspect(&app.runtime, app.tenant, (proof, id, input), |ctx, tx| {
+        Box::pin(async move {
+            let (proof, id, input) = *ctx;
+            resolve_in(tx, proof, id, input).await
+        })
+    })
     .await
-    .map_err(Error::from)
 }
 pub fn store(app: &Access) -> Result<&Arc<Store>, Error> {
     app.content.as_ref().ok_or(Error::Unsupported)
@@ -173,7 +167,7 @@ pub async fn current(
         .status(
             &format!("{}:{}", proof.instance_id(), proof.principal_id()),
             upload,
-            app.clock.unix_seconds()?,
+            app.clock.unix_seconds().ok_or(Error::Clock)?,
         )
         .await?;
     if value.binding.resource != id
@@ -212,7 +206,7 @@ pub async fn record(
         |ctx, tx| {
             Box::pin(async move {
                 let (app, proof, audit, upload, verified, source_catalog) = *ctx;
-                tx.prepare_outbox_partitions(&[rss_mdm_content_service::event::partition(
+                tx.prepare_outbox_partitions(&[crate::event::partition(
                     app.tenant,
                     &upload.binding.resource,
                 )?])
@@ -237,12 +231,12 @@ pub async fn record(
                 {
                     return Err(Error::Conflict.into());
                 }
-                let fresh = rss_mdm_content_service::bindings::bind_in(tx, upload).await?;
+                let fresh = crate::bindings::bind_in(tx, upload).await?;
                 if fresh {
-                    rss_mdm_content_service::event::append(
+                    crate::event::append(
                         &rss_transactional_messaging_postgres::PgOutboxWriter::new(
                             app.runtime.clone(),
-                            rss_mdm_content_service::event::domain(),
+                            crate::event::domain(),
                         ),
                         tx,
                         upload,
@@ -263,21 +257,20 @@ pub async fn record(
                 Ok(())
             })
         },
-        TransactionOwner::ResourceCatalog,
     )
     .await
-    .map_err(Error::from)
 }
 pub async fn reclaim_in(
     tx: &mut PgTransaction<'_>,
-    candidate: rss_mdm_content_service::Garbage,
+    candidate: crate::Garbage,
     authorize: impl FnOnce() -> Result<(), Error> + Send,
-) -> transaction::Result<bool> {
+) -> Result<bool, Error> {
     let referenced = rss_mdm_resource_postgres::artifact_referenced_in(
         tx,
         r::Digest::from_bytes(candidate.digest),
     )
-    .await?;
+    .await
+    .map_err(transaction::storage_error)?;
     authorize()?;
     if !referenced {
         candidate.remove().map_err(Error::from)?;
@@ -293,7 +286,9 @@ pub async fn cleanup(
     proof.require(Permission::ResourceWrite, None)?;
     audit.require_request_settlement();
     audit.set_action("management_write");
-    let candidates = store(&app)?.garbage(app.clock.unix_seconds()?).await?;
+    let candidates = store(app)?
+        .garbage(app.clock.unix_seconds().ok_or(Error::Clock)?)
+        .await?;
     let mut removed = 0usize;
     for candidate in candidates {
         let deleted = transaction::inspect(
@@ -304,8 +299,8 @@ pub async fn cleanup(
                 Box::pin(async move {
                     let (proof, candidate) = ctx;
                     let proof = *proof;
-                    crate::action_admission::lock(tx, "action-owner").await?;
-                    crate::action_admission::current(tx, proof).await?.require(
+                    transaction::lock_resource(tx).await?;
+                    transaction::authorize(tx, proof).await?.require(
                         proof,
                         Permission::ResourceWrite,
                         None,
@@ -314,9 +309,9 @@ pub async fn cleanup(
                         proof.check_live().map_err(Error::from)
                     })
                     .await
+                    .map_err(Into::into)
                 })
             },
-            TransactionOwner::ResourceCatalog,
         )
         .await?;
         if deleted {
@@ -334,30 +329,18 @@ pub async fn mirror(
 ) -> Result<(), Error> {
     let operation = input.operation.ok_or(Error::Malformed)?;
     audit.operation(operation, "management_write");
-    let binding = resolve(app, proof, audit, &id, &input).await?;
+    let binding = resolve(app, proof, audit, id, input).await?;
     let source = binding.source.as_ref().ok_or(Error::Malformed)?;
-    let catalog = rss_mdm_software_service::catalog::Catalog::new(
-        app.runtime.clone(),
-        app.tenant,
-        Arc::new(crate::software_publication::host::Audit(
-            app.audit_store.clone(),
-        )),
-    );
-    transaction::inspect(
-        &app.runtime,
-        app.tenant,
-        (&catalog, source),
-        |ctx, tx| {
-            Box::pin(async move {
-                let (catalog, source) = *ctx;
-                catalog.source_admitted_in(tx, source).await?;
-                Ok(())
-            })
-        },
-        TransactionOwner::ResourceCatalog,
-    )
+    let catalog = app.catalog.as_ref();
+    transaction::inspect(&app.runtime, app.tenant, (catalog, source), |ctx, tx| {
+        Box::pin(async move {
+            let (catalog, source) = *ctx;
+            catalog.source_admitted_in(tx, source).await?;
+            Ok(())
+        })
+    })
     .await?;
-    let content = store(&app)?;
+    let content = store(app)?;
     let origins = content
         .config
         .imports
@@ -370,7 +353,7 @@ pub async fn mirror(
         std::time::Duration::from_secs(content.config.transfer_seconds.min(3600)),
     )
     .map_err(|_| Error::Malformed)?;
-    let now = app.clock.unix_seconds()?;
+    let now = app.clock.unix_seconds().ok_or(Error::Clock)?;
     let session = content.begin(operation, binding.clone(), now).await?;
     if !session.complete {
         if session.offset != 0 {
@@ -382,7 +365,7 @@ pub async fn mirror(
                 binding.length,
             )
             .await
-            .map_err(|_| Error::Unavailable(crate::Failure::ContentImport))?;
+            .map_err(|_| Error::Import)?;
         let stream = tokio_util::io::StreamReader::new(
             response.bytes_stream().map_err(std::io::Error::other),
         );
@@ -391,9 +374,13 @@ pub async fn mirror(
             .await?;
     }
     let result = content
-        .finish(&session.binding.actor, operation, app.clock.unix_seconds()?)
+        .finish(
+            &session.binding.actor,
+            operation,
+            app.clock.unix_seconds().ok_or(Error::Clock)?,
+        )
         .await?;
-    record(app, proof, audit, &result, Some(&catalog)).await?;
+    record(app, proof, audit, &result, Some(catalog)).await?;
     Ok(())
 }
 pub async fn receipt(
@@ -405,7 +392,7 @@ pub async fn receipt(
 ) -> Result<serde_json::Value, Error> {
     proof.require(Permission::ResourceRead, None)?;
     audit.set_action("management_read");
-    audit.target(&id);
+    audit.target(id);
     transaction::run(
         &app.audit_store,
         &app.runtime,
@@ -415,27 +402,23 @@ pub async fn receipt(
         |ctx, tx| {
             Box::pin(async move {
                 let (app, proof, audit, id, operation) = *ctx;
-                crate::action_admission::current(tx, proof).await?.require(
+                transaction::authorize(tx, proof).await?.require(
                     proof,
                     Permission::ResourceRead,
                     None,
                 )?;
                 let actor = format!("{}:{}", proof.instance_id(), proof.principal_id());
-                let value = rss_mdm_content_service::bindings::read_in(tx, &actor, id, operation)
+                let value = crate::bindings::read_in(tx, &actor, id, operation)
                     .await?
-                    .ok_or(Error::Resource(
-                        crate::resource_catalog::error::ResourceError::Missing,
-                    ))?;
+                    .ok_or(Error::Missing)?;
                 app.audit_store
                     .append_request_in(tx, audit, 200, "success")
                     .await?;
                 Ok(value)
             })
         },
-        TransactionOwner::ResourceCatalog,
     )
     .await
-    .map_err(Error::from)
 }
 
 /// Begin an authorized upload without holding a database transaction across I/O.
@@ -450,11 +433,15 @@ pub async fn begin_upload(
     audit.operation(upload, "management_write");
     let binding = resolve(app, proof, audit, id, input).await?;
     Ok(store(app)?
-        .begin(upload, binding, app.clock.unix_seconds()?)
+        .begin(
+            upload,
+            binding,
+            app.clock.unix_seconds().ok_or(Error::Clock)?,
+        )
         .await?)
 }
 pub enum Append {
-    Written(Upload),
+    Written(Box<Upload>),
     OffsetConflict(u64),
 }
 pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
@@ -475,12 +462,12 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
             &old.binding.actor,
             upload,
             offset,
-            app.clock.unix_seconds()?,
+            app.clock.unix_seconds().ok_or(Error::Clock)?,
             reader,
         )
         .await?;
     proof.check_live()?;
-    Ok(Append::Written(result))
+    Ok(Append::Written(Box::new(result)))
 }
 pub async fn complete_upload(
     app: &Access,
@@ -491,7 +478,11 @@ pub async fn complete_upload(
 ) -> Result<(), Error> {
     let old = current(app, proof, audit, id, upload).await?;
     let result = store(app)?
-        .finish(&old.binding.actor, upload, app.clock.unix_seconds()?)
+        .finish(
+            &old.binding.actor,
+            upload,
+            app.clock.unix_seconds().ok_or(Error::Clock)?,
+        )
         .await?;
     record(app, proof, audit, &result, None).await
 }
@@ -511,7 +502,7 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
                 &session.binding.actor,
                 operation,
                 0,
-                app.clock.unix_seconds()?,
+                app.clock.unix_seconds().ok_or(Error::Clock)?,
                 reader,
             )
             .await?;
@@ -520,7 +511,15 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
         }
     }
     let complete = store(app)?
-        .finish(&session.binding.actor, operation, app.clock.unix_seconds()?)
+        .finish(
+            &session.binding.actor,
+            operation,
+            app.clock.unix_seconds().ok_or(Error::Clock)?,
+        )
         .await?;
     record(app, proof, audit, &complete, None).await
+}
+
+pub trait Clock: Send + Sync {
+    fn unix_seconds(&self) -> Option<i64>;
 }

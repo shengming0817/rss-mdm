@@ -10,7 +10,9 @@ use axum::{
 };
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
-    value.map(|v| v.0).map_err(|_| Error::Malformed)
+    value
+        .map(|v| v.0)
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))
 }
 pub fn routes_v2() -> Router<Arc<HttpState>> {
     Router::new()
@@ -63,7 +65,8 @@ async fn run(
         | Command::GroupPreview { .. } => "management_read",
         _ => "management_write",
     });
-    let (operation, _) = storage::identity(&command, audit).map_err(|_| Error::Malformed)?;
+    let (operation, _) = storage::identity(&command, audit)
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     if let Some(id) = operation {
         audit.operation(id, audit.snapshot().action);
     }

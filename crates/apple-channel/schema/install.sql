@@ -23,7 +23,7 @@ CREATE TABLE mdm_apple.attempts (
     collection_sequence bigint,
     CONSTRAINT attempts_check CHECK ((((phase = 'collect'::text) AND (collection IS NOT NULL) AND (operation IS NULL) AND (certificate IS NULL)) OR ((phase = ANY (ARRAY['execute'::text, 'observe'::text])) AND (operation IS NOT NULL) AND (collection IS NULL) AND (certificate IS NULL)) OR ((phase = 'renew'::text) AND (certificate IS NOT NULL) AND (collection IS NULL) AND (operation IS NULL)))),
     CONSTRAINT attempts_check1 CHECK (((response IS NULL) = (response_digest IS NULL))),
-    CONSTRAINT attempts_collection_sequence_check CHECK ((((phase = 'collect'::text) = (collection_sequence IS NOT NULL)) AND ((collection_sequence IS NULL) OR (collection_sequence > 0)))),
+    CONSTRAINT attempts_collection_sequence_check CHECK ((((phase = 'collect'::text) = (collection_sequence IS NOT NULL)) AND ((collection_sequence IS NULL) OR (collection_sequence >= 0)))),
     CONSTRAINT attempts_generation_check CHECK ((generation > 0)),
     CONSTRAINT attempts_phase_check CHECK ((phase = ANY (ARRAY['collect'::text, 'execute'::text, 'observe'::text, 'renew'::text]))),
     CONSTRAINT attempts_request_check CHECK (((octet_length(request) >= 1) AND (octet_length(request) <= 1048576))),

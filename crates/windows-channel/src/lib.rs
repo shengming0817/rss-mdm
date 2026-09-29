@@ -6,7 +6,6 @@ pub mod management;
 mod operations;
 mod protection;
 pub mod retention;
-pub mod storage_admission;
 pub use database::Store;
 use rss_mdm_flow_service::execution;
 mod diagnostic;
@@ -167,10 +166,21 @@ fn response(request: Option<&soap::Message>, body: Body, now: i64) -> Result<Res
 }
 pub fn fault(request: Option<&soap::Message>, error: Error) -> Response {
     let kind = match error {
-        Error::Malformed => soap::FaultKind::MessageFormat,
-        Error::CertificateRequest => soap::FaultKind::CertificateRequest,
-        Error::Unauthorized => soap::FaultKind::Authentication,
-        Error::Forbidden | Error::Conflict => soap::FaultKind::Authorization,
+        Error::Malformed | Error::Service(rss_mdm_flow_service::Error::Malformed) => {
+            soap::FaultKind::MessageFormat
+        }
+        Error::CertificateRequest
+        | Error::Service(rss_mdm_flow_service::Error::CertificateRequest) => {
+            soap::FaultKind::CertificateRequest
+        }
+        Error::Unauthorized | Error::Service(rss_mdm_flow_service::Error::Unauthorized) => {
+            soap::FaultKind::Authentication
+        }
+        Error::Forbidden
+        | Error::Conflict
+        | Error::Service(
+            rss_mdm_flow_service::Error::Forbidden | rss_mdm_flow_service::Error::Conflict,
+        ) => soap::FaultKind::Authorization,
         _ => soap::FaultKind::EnrollmentServer,
     };
     let mut r = response(request, Body::Fault(kind), 0)
@@ -437,3 +447,6 @@ pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
 pub mod boundary;
+
+/// This capability's closed privileges in the shared access connection.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

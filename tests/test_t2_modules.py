@@ -11,6 +11,20 @@ class ModuleImpactTests(unittest.TestCase):
     def selected(self, path):
         return set(select_paths([path]).modules)
 
+    def test_channel_registrars_select_their_live_consumers(self):
+        app = self.selected('crates/app/src/api.rs')
+        self.assertTrue({'agent.registration', 'agent.reports', 'windows.management',
+                         'apple.identity', 'content.http', 'authorization.rules',
+                         'host.lifecycle', 'api.identity_context'} <= app)
+        self.assertTrue(app.isdisjoint({'apple.cms', 'apple.apns', 'sources.winget'}))
+        self.assertEqual(self.selected('crates/agent-channel/src/tasks.rs'), {
+            'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
+            'execution.agent.recovery', 'execution.software.offer',
+            'execution.software.content', 'execution.software.recovery'})
+        self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
+            'windows.enrollment', 'windows.issuance', 'windows.management',
+            'windows.commands', 'windows.retention', 'windows.limits'})
+
     def test_installation_python_selects_only_its_module_and_guards(self):
         selection = select_paths(['hack/t2_modules/installation.py'])
         self.assertFalse(selection.full)

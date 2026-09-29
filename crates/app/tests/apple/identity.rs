@@ -345,5 +345,30 @@ async fn token_is_required_before_management() -> Result<()> {
     let (device, der) = f.scep_leaf().await?;
     let peer = f.authenticate_peer(&device, &der).await?;
     f.before_token(&peer).await?;
+    peer.token().await?;
+    let reply = peer
+        .send(
+            "/mdm",
+            protocol::dictionary([
+                ("Status", "Idle".into()),
+                (
+                    "UDID",
+                    crate::test_support::case::name("rss-t2-apple").into(),
+                ),
+            ]),
+        )
+        .await?;
+    ensure!(reply.0 == StatusCode::OK);
+    ensure!(
+        crate::test_support::audit_count(|r| r.action() == "apple_management"
+            && r.status() == 200
+            && r.actor()
+                == r.payload["registration"]
+                    .as_str()
+                    .map(|id| format!("device:{id}"))
+                    .as_deref())?
+            >= 1,
+        "successful management audit must identify the verified device registration"
+    );
     f.close().await
 }

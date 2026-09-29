@@ -14,8 +14,8 @@ pub async fn read(
 ) -> std::result::Result<Value, Error> {
     audit.set_action("management_read");
     audit.target(&id.to_string());
-    run(&s.execution.audit_store,&s.execution.runtime,s.planning.tenant,&audit,(&s,&a,&audit,after),|ctx,tx|Box::pin(async move {
-        let (s,a,audit,after)=ctx;let remote=storage::read_in(tx,id).await?;storage::authorize(&a,&remote.snapshot,Permission::OperationRead)?;
+    run(&s.execution.audit_store,&s.execution.runtime,s.planning.tenant,audit,(&s,&a,audit,after),|ctx,tx|Box::pin(async move {
+        let (s,a,audit,after)=ctx;let remote=storage::read_in(tx,id).await?;storage::authorize(a,&remote.snapshot,Permission::OperationRead)?;
         let tenant=tx.tenant_id().to_string();let after=after.clone();
         let mut rows=tx.with_connection(move|c|Box::pin(async move {
             let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT t.device,t.status,t.delivery_id,t.diagnosis,r.state AS agent_state,d.status AS mdm_status,");
@@ -42,10 +42,10 @@ pub async fn cancel(
     }
     audit.operation(input.operation_id, "management_write");
     audit.target(&id.to_string());
-    run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,&audit,(&s,&a,&audit,&input),|ctx,tx|Box::pin(async move {
-        let (s,a,audit,input)=*ctx;let remote=storage::read_in(tx,id).await?;storage::authorize(&a,&remote.snapshot,Permission::OperationCancel)?;
-        let auth=crate::action_admission::current(tx,&a).await?;
-        match &remote.snapshot {Snapshot::Devices {devices}=>for device in devices {auth.require(&a,Permission::OperationCancel,Some(device))?;},Snapshot::Scope {..}=>auth.require_all_devices(&a,Permission::OperationCancel)?};
+    run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,audit,(&s,&a,audit,&input),|ctx,tx|Box::pin(async move {
+        let (s,a,audit,input)=*ctx;let remote=storage::read_in(tx,id).await?;storage::authorize(a,&remote.snapshot,Permission::OperationCancel)?;
+        let auth=crate::action_admission::current(tx,a).await?;
+        match &remote.snapshot {Snapshot::Devices {devices}=>for device in devices {auth.require(a,Permission::OperationCancel,Some(device))?;},Snapshot::Scope {..}=>auth.require_all_devices(a,Permission::OperationCancel)?};
         let hash=fingerprint(&(id,input,a.user()))?;
         if let Some(value)=super::super::receipts::replay(tx,audit,input.operation_id,&hash).await? {return Ok(value);}
         let tenant=tx.tenant_id().to_string();tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.remote_operations SET cancelled=true WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).execute(c).await?;Ok(())})).await?;

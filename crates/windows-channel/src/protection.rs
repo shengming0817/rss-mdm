@@ -39,7 +39,7 @@ impl Protection {
         let id = crate::enrollment::digest(&("mdm.protocol.key.v1", key));
         Ok(Self {
             key: aead::LessSafeKey::new(
-                aead::UnboundKey::new(&aead::AES_256_GCM, &key)
+                aead::UnboundKey::new(&aead::AES_256_GCM, key)
                     .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
             ),
             id,

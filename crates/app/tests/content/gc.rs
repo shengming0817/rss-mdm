@@ -165,8 +165,13 @@ async fn gc_reference_race(
                     ready.notify_one();
                     release.notified().await;
                     assert!(
-                        crate::content::http::reclaim_in(tx, candidate.take().unwrap(), || Ok(()))
-                            .await?
+                        rss_mdm_content_service::service::reclaim_in(
+                            tx,
+                            candidate.take().unwrap(),
+                            || Ok(())
+                        )
+                        .await
+                        .map_err(rss_mdm_flow_service::Error::from)?
                     );
                     Ok(())
                 })

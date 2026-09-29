@@ -154,7 +154,7 @@ async fn publication_http_authority_receipts_and_unknown_outcome() -> Result<()>
     let (status, candidate) =
         settled_write(&mut publisher, &router, &path, candidate_request.clone()).await?;
     ensure!(status.is_success(), "publication identity: {candidate}");
-    ensure!(pg(&format!("SELECT (SELECT count(*) FROM mdm_resource_catalog.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_planning.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_assets.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_publication.operations WHERE id='{shared_operation}')"))?.trim()=="4");
+    ensure!(pg(&format!("SELECT (SELECT count(*) FROM mdm_resource_catalog.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_assets.group_operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_assets.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_publication.operations WHERE id='{shared_operation}')"))?.trim()=="4");
     let event_count = audit_count(|r| {
         r.source() == "mdm.business"
             && matches!(r.action(), "management_write" | "software_preflight")

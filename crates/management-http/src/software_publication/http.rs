@@ -6,9 +6,8 @@ use axum::{
     routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
-pub use rss_mdm_flow_service::software_publication::{
-    model::{Change, Ring},
-    service::PublicationDirectory,
+pub(crate) use rss_mdm_flow_service::software_publication::{
+    model::Change, service::PublicationDirectory,
 };
 use std::sync::Arc;
 pub fn routes() -> Router<Arc<HttpState>> {

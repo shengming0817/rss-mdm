@@ -465,6 +465,6 @@ impl PublicationDirectory {
    let value=serde_json::json!({"as_of":s.clock.unix_seconds().map_err(|_|Error::Unavailable(Failure::Clock))?});
    super::receipts::receipt(tx,audit,request.operation_id,&hash,&value).await?;
    super::receipts::audit(tx,&super::host::Audit(s.audit_store.clone()),audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
-  }),crate::transaction::TransactionOwner::Publication).await.map_err(Error::from)
+  }),crate::transaction::TransactionOwner::Publication).await
     }
 }

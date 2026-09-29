@@ -12,7 +12,7 @@ pub async fn read(
         &service.planning.audit_store,
         &service.planning.runtime,
         service.planning.tenant,
-        &audit,
+        audit,
         (&service, &auth, &audit),
         |ctx, tx| {
             Box::pin(async move {
@@ -45,7 +45,7 @@ pub async fn list(
 ) -> std::result::Result<Value, Error> {
     audit.set_action("management_read");
     auth.manage(Permission::PolicyRead)?;
-    run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,&audit,(&service,&auth,&audit,after),|ctx,tx|Box::pin(async move {
+    run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,audit,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {
         let (s,a,audit,after)=*ctx;a.manage(Permission::PolicyRead)?;
         let tenant=tx.tenant_id().to_string();let after=after.map(|v|v.to_string());
         let mut ids=tx.with_connection(move|c|Box::pin(async move {
@@ -68,7 +68,7 @@ pub async fn devices(
     audit.target(&id.to_string());
     auth.manage(Permission::PolicyRead)?;
     auth.require_all_devices(Permission::InventoryRead)?;
-    run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,&audit,(&service,&auth,&audit,after),|ctx,tx|Box::pin(async move {
+    run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,audit,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {
         let (s,a,audit,after)=ctx;a.manage(Permission::PolicyRead)?;a.require_all_devices(Permission::InventoryRead)?;
         let p=storage::read_in(s.planning.policy_store.reader(),tx,id).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?;
         let software=if matches!(p.definition.behavior,Behavior::Software {..}) {Some(software::read_in(s.planning.policy_store.reader(),tx,p.version).await?)}else{None};

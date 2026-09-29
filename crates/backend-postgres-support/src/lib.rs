@@ -57,3 +57,6 @@ impl BackendStorage {
         Self { kind }
     }
 }
+
+/// Composition of capability-owned access-role contracts.
+pub mod access_admission;

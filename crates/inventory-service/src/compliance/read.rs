@@ -152,7 +152,7 @@ impl Compliance {
                 return Err(Error::Malformed.into());
             }
             let (payload, sig) = bytes.split_at(bytes.len() - 32);
-            ring::hmac::verify(&key, payload, sig).map_err(|_| Error::Malformed)?;
+            ring::hmac::verify(key, payload, sig).map_err(|_| Error::Malformed)?;
             let c: HistoryCursor = checked_input(serde_json::from_slice(payload))?;
             if c.tenant != self.tenant().to_string()
                 || c.device != device
@@ -221,7 +221,7 @@ impl Compliance {
                     after: stored(Uuid::parse_str(&next))?,
                 };
                 let mut bytes = json_bytes(&c)?;
-                let tag = ring::hmac::sign(&key, &bytes);
+                let tag = ring::hmac::sign(key, &bytes);
                 bytes.extend_from_slice(tag.as_ref());
                 Some(URL_SAFE_NO_PAD.encode(bytes))
             } else {

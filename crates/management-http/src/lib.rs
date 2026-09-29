@@ -17,7 +17,7 @@ mod response;
 pub mod software_catalog;
 pub mod software_publication;
 pub use error::Error;
-use rss_mdm_flow_service::{ConfigIssue, Failure, automation};
+use rss_mdm_flow_service::{Failure, automation};
 use rss_mdm_registration_service::device;
 
 mod router;

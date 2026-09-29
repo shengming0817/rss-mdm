@@ -14,10 +14,12 @@ use serde::Deserialize;
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 type ParamInput<T> = std::result::Result<Params<T>, axum::extract::rejection::QueryRejection>;
 fn body<T>(v: BodyInput<T>) -> std::result::Result<T, Error> {
-    v.map(|v| v.0).map_err(|_| Error::Malformed)
+    v.map(|v| v.0)
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))
 }
 fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
-    v.map(|v| v.0).map_err(|_| Error::Malformed)
+    v.map(|v| v.0)
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))
 }
 
 pub fn routes() -> Router<Arc<HttpState>> {
@@ -95,8 +97,11 @@ async fn run(
         .assets
         .execute(&command, audit, &|| authorize(auth, &command))
         .await?;
-    let envelope: AssetEnvelope =
-        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
+    let envelope: AssetEnvelope = serde_json::from_value(value).map_err(|_| {
+        Error(rss_mdm_flow_service::Error::Unavailable(
+            Failure::AssetsStorage,
+        ))
+    })?;
     let status = if matches!(&envelope.asset, Response::Accepted { .. }) {
         StatusCode::ACCEPTED
     } else {
@@ -149,7 +154,7 @@ async fn manual(
     payload: BodyInput<Operation<ManualChange>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let change = body(payload)?;
-    let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
+    let field = FieldKey::parse(&key).map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     run(
         &app,
         &auth,

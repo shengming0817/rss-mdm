@@ -10,14 +10,18 @@ fn audit_and_ledger_interruptions_share_the_host_deadline_projection() {
     ] {
         assert!(matches!(
             Error::from(rss_mdm_audit_integration::Error::Audit(cause)),
-            Error::Unavailable(crate::Failure::RequestDeadline)
+            Error::Service(rss_mdm_flow_service::Error::Unavailable(
+                rss_mdm_flow_service::Failure::RequestDeadline
+            ))
         ));
     }
     assert!(matches!(
         Error::from(rss_mdm_audit_integration::Error::Audit(
             rss_audit_postgres::Error::Ledger(rss_ledger_postgres::Error::StorageContract)
         )),
-        Error::Unavailable(crate::Failure::AuditIntegrity)
+        Error::Service(rss_mdm_flow_service::Error::Unavailable(
+            rss_mdm_flow_service::Failure::AuditIntegrity
+        ))
     ));
 }
 #[tokio::test]
@@ -47,8 +51,12 @@ async fn durable_corruption_is_distinct_from_interruption() {
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         );
         assert!(matches!(
-            response.extensions().get::<Error>(),
-            Some(Error::Unavailable(_))
+            response
+                .extensions()
+                .get::<rss_mdm_management_http::Error>(),
+            Some(rss_mdm_management_http::Error(
+                rss_mdm_flow_service::Error::Unavailable(_)
+            ))
         ));
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await

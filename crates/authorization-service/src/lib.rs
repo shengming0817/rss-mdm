@@ -1,5 +1,4 @@
 //! Product authorization owns grants, snapshots and durable user approval evidence.
-pub mod admission;
 mod authority;
 pub mod context;
 mod database;
@@ -29,3 +28,6 @@ pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
 pub mod initialization;
+
+/// This capability's closed privileges in the shared access connection.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

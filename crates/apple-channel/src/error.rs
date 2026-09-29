@@ -30,51 +30,7 @@ pub enum Error {
 }
 impl From<rss_mdm_flow_service::Error> for Error {
     fn from(e: rss_mdm_flow_service::Error) -> Self {
-        use rss_mdm_flow_service::Error as F;
-        match e {
-            F::Malformed => Self::Malformed,
-            F::CertificateRequest => Self::CertificateRequest,
-            F::Conflict => Self::Conflict,
-            F::CommitUnknown => Self::CommitUnknown,
-            F::RollbackFailed => Self::RollbackFailed,
-            F::Unauthorized => Self::Unauthorized,
-            F::Forbidden => Self::Forbidden,
-            F::NotFound => Self::NotFound,
-            F::Unsupported => Self::Unsupported,
-            F::Configuration(v) => Self::Service(F::Configuration(v)),
-            F::Unavailable(v) => match v {
-                rss_mdm_flow_service::Failure::AppleInvariant => {
-                    Self::Unavailable(Failure::AppleInvariant)
-                }
-                rss_mdm_flow_service::Failure::ApplePush => Self::Unavailable(Failure::ApplePush),
-                rss_mdm_flow_service::Failure::AppleStorage => {
-                    Self::Unavailable(Failure::AppleStorage)
-                }
-                rss_mdm_flow_service::Failure::Audit => Self::Unavailable(Failure::Audit),
-                rss_mdm_flow_service::Failure::AuditAdmission => {
-                    Self::Unavailable(Failure::AuditAdmission)
-                }
-                rss_mdm_flow_service::Failure::AuditContract => {
-                    Self::Unavailable(Failure::AuditContract)
-                }
-                rss_mdm_flow_service::Failure::AuditIntegrity => {
-                    Self::Unavailable(Failure::AuditIntegrity)
-                }
-                rss_mdm_flow_service::Failure::AuditIsolation => {
-                    Self::Unavailable(Failure::AuditIsolation)
-                }
-                rss_mdm_flow_service::Failure::Certificate => {
-                    Self::Unavailable(Failure::Certificate)
-                }
-                rss_mdm_flow_service::Failure::Database => Self::Unavailable(Failure::Database),
-                rss_mdm_flow_service::Failure::Protocol => Self::Unavailable(Failure::Protocol),
-                rss_mdm_flow_service::Failure::RequestDeadline => {
-                    Self::Unavailable(Failure::RequestDeadline)
-                }
-                v => Self::Service(F::Unavailable(v)),
-            },
-            e => Self::Service(e),
-        }
+        Self::Service(e)
     }
 }
 impl From<rss_mdm_registration_service::Error> for Error {
@@ -168,24 +124,47 @@ impl axum::response::IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
         use axum::{Json, http::StatusCode};
         let (status, code) = match &self {
-            Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
-            Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
-            Self::RollbackFailed => (
+            Self::Conflict | Self::Service(rss_mdm_flow_service::Error::Conflict) => {
+                (StatusCode::CONFLICT, "operation_conflict")
+            }
+            Self::CommitUnknown | Self::Service(rss_mdm_flow_service::Error::CommitUnknown) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown")
+            }
+            Self::RollbackFailed | Self::Service(rss_mdm_flow_service::Error::RollbackFailed) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "operation_rollback_unconfirmed",
             ),
-            Self::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
-            Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
-            Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
-            Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
-            Self::Unavailable(Failure::AuditIntegrity) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "audit_integrity_error")
+            Self::Malformed | Self::Service(rss_mdm_flow_service::Error::Malformed) => {
+                (StatusCode::BAD_REQUEST, "malformed_request")
             }
+            Self::CertificateRequest
+            | Self::Service(rss_mdm_flow_service::Error::CertificateRequest) => {
+                (StatusCode::BAD_REQUEST, "invalid_certificate_request")
+            }
+            Self::Unauthorized | Self::Service(rss_mdm_flow_service::Error::Unauthorized) => {
+                (StatusCode::UNAUTHORIZED, "invalid_identity")
+            }
+            Self::Forbidden | Self::Service(rss_mdm_flow_service::Error::Forbidden) => {
+                (StatusCode::FORBIDDEN, "permission_denied")
+            }
+            Self::NotFound | Self::Service(rss_mdm_flow_service::Error::NotFound) => {
+                (StatusCode::NOT_FOUND, "inventory_not_found")
+            }
+            Self::Unsupported | Self::Service(rss_mdm_flow_service::Error::Unsupported) => {
+                (StatusCode::NOT_IMPLEMENTED, "action_not_supported")
+            }
+            Self::Unavailable(Failure::AuditIntegrity)
+            | Self::Service(rss_mdm_flow_service::Error::Unavailable(
+                rss_mdm_flow_service::Failure::AuditIntegrity,
+            )) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_integrity_error"),
             Self::Unavailable(
                 Failure::AuditIsolation | Failure::AuditContract | Failure::AuditAdmission,
-            ) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_contract_error"),
+            )
+            | Self::Service(rss_mdm_flow_service::Error::Unavailable(
+                rss_mdm_flow_service::Failure::AuditIsolation
+                | rss_mdm_flow_service::Failure::AuditContract
+                | rss_mdm_flow_service::Failure::AuditAdmission,
+            )) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_contract_error"),
             Self::Service(rss_mdm_flow_service::Error::Planning(
                 planning::error::PlanningError::Missing(m),
             )) => (

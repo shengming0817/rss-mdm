@@ -29,7 +29,7 @@ async fn change(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = input.map_err(|_| Error::Malformed)?;
+    let Json(input) = input.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     audit.operation(input.operation_id, "management_write");
     audit.target(&id.to_string());
     service
@@ -71,7 +71,7 @@ async fn rerun(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = input.map_err(|_| Error::Malformed)?;
+    let Json(input) = input.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     audit.operation(input.operation_id, "management_write");
     audit.target(&id.to_string());
     service

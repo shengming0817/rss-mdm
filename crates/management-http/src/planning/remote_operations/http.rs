@@ -24,9 +24,9 @@ async fn create(
     Extension(audit): Extension<RequestAudit>,
     body: std::result::Result<Json<Input>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = body.map_err(|_| Error::Malformed)?;
+    let Json(input) = body.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     if input.operation_id.is_nil() {
-        return Err(Error::Malformed);
+        return Err(Error(rss_mdm_flow_service::Error::Malformed));
     }
     audit.operation(input.operation_id, "management_write");
     audit.target(&input.operation_id.to_string());
@@ -55,7 +55,7 @@ async fn cancel(
     Path(id): Path<Uuid>,
     body: std::result::Result<Json<Cancel>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = body.map_err(|_| Error::Malformed)?;
+    let Json(input) = body.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     super::read::cancel(&s, &a.proof, &audit, id, &input)
         .await
         .map(Json)

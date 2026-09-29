@@ -1,8 +1,8 @@
-pub use rss_mdm_inventory_service::assets::*;
+pub(crate) use rss_mdm_inventory_service::assets::*;
 pub mod http;
 pub use http::routes;
 pub mod collection {
-    pub use rss_mdm_inventory_service::collection_service::*;
+    pub(crate) use rss_mdm_inventory_service::collection_service::*;
 }
 use crate::{Error, Failure};
 use rss_mdm_audit_integration::RequestAudit;

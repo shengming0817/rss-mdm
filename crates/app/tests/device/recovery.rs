@@ -356,7 +356,7 @@ async fn commit_deadlines(
             matches!(result, Err(Error::RollbackFailed))
         });
         let stored: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
+            "SELECT count(*) FROM mdm_access.registration_operations WHERE operation_id=$1::uuid",
         )
         .bind(command.operation_id.to_string())
         .fetch_one(&mut *root)
@@ -376,7 +376,7 @@ async fn commit_deadlines(
             matches!(result, Err(Error::RollbackFailed))
         });
         let stored: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
+            "SELECT count(*) FROM mdm_access.registration_operations WHERE operation_id=$1::uuid",
         )
         .bind(key.to_string())
         .fetch_one(&mut *root)

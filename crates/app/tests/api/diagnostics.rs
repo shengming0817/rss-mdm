@@ -18,7 +18,8 @@ async fn audit_failure_logs_preserve_action_and_origin() {
                 "/api/v2/devices/{id}/inventory",
                 get(move || async move {
                     if mode == "transaction" {
-                        Error::Unavailable(Failure::Audit).into_response()
+                        Error(rss_mdm_flow_service::Error::Unavailable(Failure::Audit))
+                            .into_response()
                     } else {
                         Json(json!({"sensitive":"inventory-result"})).into_response()
                     }
@@ -95,7 +96,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
     for reason in [
         Failure::RequestDeadline,
         Failure::IdentityStorage,
-        Failure::InventoryPool,
+        Failure::AssetsStorage,
         Failure::InventoryQuery,
         Failure::ManualQuery,
         Failure::CollectionQuery,
@@ -108,7 +109,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         let router = Router::new()
             .route(
                 "/livez",
-                get(move || async move { Error::Unavailable(reason) }),
+                get(move || async move { Error(rss_mdm_flow_service::Error::Unavailable(reason)) }),
             )
             .layer(middleware::from_fn_with_state(
                 Envelope {
@@ -140,7 +141,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         );
         assert!(matches!(
             response.extensions().get::<Error>(),
-            Some(Error::Unavailable(_))
+            Some(Error(rss_mdm_flow_service::Error::Unavailable(_)))
         ));
         let bytes = axum::body::to_bytes(response.into_body(), 1024)
             .await

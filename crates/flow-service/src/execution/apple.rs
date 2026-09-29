@@ -166,6 +166,10 @@ async fn eligible(
         )
         && storage::approval_valid(tx, op, now).await?)
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "command receipt joins execution transaction, authenticated participant and correlated protocol evidence"
+)]
 async fn receive(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,

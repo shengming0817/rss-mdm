@@ -17,6 +17,11 @@ fn device_reference(id: &str) -> String {
 }
 
 pub struct Timer(tokio::time::Instant);
+impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Timer {
     #[allow(
         clippy::disallowed_methods,

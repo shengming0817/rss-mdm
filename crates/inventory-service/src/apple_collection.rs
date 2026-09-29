@@ -11,6 +11,10 @@ use uuid::Uuid;
 #[path = "apple_collection_receipts.rs"]
 mod receipts;
 pub trait Participant: Send + Sync {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "borrowed channel participant preserves separate tenant, device, run and deadline coordinates"
+    )]
     fn start<'a>(
         &'a self,
         c: &'a mut PgConnection,

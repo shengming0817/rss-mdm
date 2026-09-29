@@ -48,9 +48,9 @@ class FlowOwnership(unittest.TestCase):
 
     def test_each_receipt_owner_has_a_distinct_audit_identity(self):
         for owner in ("planning", "assets", "resource_catalog"):
-            self.assertIn('format!("' + owner + ':{}:{id}"', ((INVENTORY if owner == "assets" else FLOW) / owner / "receipts.rs").read_text())
+            self.assertRegex( ((INVENTORY if owner == "assets" else FLOW) / owner / "receipts.rs").read_text(), r'format!\(\s*"' + owner + r':\{\}:\{id\}"')
 
-        self.assertIn('format!("software_publication:{}:{id}"', (ROOT / "crates/flow-service/src/software_publication/receipts.rs").read_text())
+        self.assertRegex((ROOT / "crates/flow-service/src/software_publication/receipts.rs").read_text(), r'format!\(\s*"software_publication:\{\}:\{id\}"')
 
     def test_task_and_planning_pages_cannot_project_inventory_errors(self):
         for name in ("execution/actions/storage.rs", "execution/actions/history.rs", "planning/pages.rs", "planning/pages/scope.rs"):

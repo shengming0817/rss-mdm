@@ -6,7 +6,7 @@ use axum::{
     routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
-pub use rss_mdm_flow_service::software_catalog::Access as HttpState;
+pub(crate) use rss_mdm_flow_service::software_catalog::Access as HttpState;
 use rss_mdm_software_service::catalog::{Operation, SourceChange, VersionChange};
 use serde_json::Value;
 use std::sync::Arc;

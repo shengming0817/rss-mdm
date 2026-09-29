@@ -13,7 +13,8 @@ async fn history(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<Vec<Stri
     for table in [
         "mdm_access.grants",
         "mdm_access.requests",
-        "mdm_access.operations",
+        "mdm_access.registration_operations",
+        "mdm_windows.operations",
         "mdm_access.devices",
         "mdm_access.registrations",
         "mdm_access.credentials",

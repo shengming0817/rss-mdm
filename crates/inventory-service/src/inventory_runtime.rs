@@ -584,7 +584,7 @@ fn stream_correlation(scope: &Scope) -> String {
         .collect()
 }
 
-#[cfg(feature = "integration")]
+#[cfg(feature = "test-support")]
 impl InventoryRuntime {
     pub async fn fixture(
         options: PgConnectOptions,
@@ -633,7 +633,7 @@ impl InventoryRuntime {
 #[cfg(test)]
 #[path = "../tests/runtime.rs"]
 mod unit;
-#[cfg(feature = "integration")]
+#[cfg(feature = "test-support")]
 impl InventoryRuntime {
     pub async fn fixture_activate(
         &self,
@@ -650,6 +650,7 @@ impl InventoryRuntime {
             .await?;
         VerifiedBatch::verify(&authority, report.scope().clone(), report.batch().clone())
     }
+    #[cfg(feature = "integration")]
     pub async fn fixture_receive(
         &self,
         batch: &VerifiedBatch,

@@ -75,7 +75,10 @@ async fn list(
         &a,
         &audit,
         Command::List {
-            after: q.map_err(|_| Error::Malformed)?.0.after,
+            after: q
+                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+                .0
+                .after,
         },
     )
     .await
@@ -104,7 +107,9 @@ async fn put(
         &audit,
         Command::Put {
             id,
-            request: body.map_err(|_| Error::Malformed)?.0,
+            request: body
+                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+                .0,
         },
     )
     .await
@@ -125,7 +130,9 @@ async fn recompute(
         &audit,
         Command::Recompute {
             id,
-            request: body.map_err(|_| Error::Malformed)?.0,
+            request: body
+                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+                .0,
         },
     )
     .await
@@ -160,7 +167,9 @@ async fn history(
         Command::History {
             device,
             subject: format!("{}:{}", a.proof.instance_id(), a.proof.principal_id()),
-            page: q.map_err(|_| Error::Malformed)?.0,
+            page: q
+                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+                .0,
         },
     )
     .await

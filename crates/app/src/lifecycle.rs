@@ -117,7 +117,7 @@ pub async fn serve(
                             .map_err(|_| {
                                 ProcessError::at(
                                     "startup.notification_tenant",
-                                    crate::Error::Malformed,
+                                    crate::Error::Service(rss_mdm_flow_service::Error::Malformed),
                                 )
                             })?,
                         );
@@ -194,7 +194,11 @@ pub async fn serve(
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,
                                 )
-                                .map_err(|_| assembly_error(Error::Malformed))?,
+                                .map_err(|_| {
+                                    assembly_error(Error::Service(
+                                        rss_mdm_flow_service::Error::Malformed,
+                                    ))
+                                })?,
                                 Arc::new(crate::clock::SystemClock),
                                 |resource| {
                                     startup.stage_resource(DynManagedResource::new_box(resource))

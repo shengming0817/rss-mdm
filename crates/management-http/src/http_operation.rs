@@ -1,4 +1,4 @@
-pub use rss_mdm_flow_service::operation::Operation;
+pub(crate) use rss_mdm_flow_service::operation::Operation;
 
 /// Enrollment-only continuation of the authenticated browser session.
 #[derive(Clone)]

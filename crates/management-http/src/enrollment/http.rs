@@ -16,7 +16,9 @@ async fn create_enrollment(
     input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+        .0;
     match input.source {
         rss_mdm_inventory::ReportSource::MdmWindows => {
             app.windows()?;
@@ -38,7 +40,7 @@ async fn enrollment_status(
     Extension(audit): Extension<RequestAudit>,
     path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<crate::enrollment::read::Status>, Error> {
-    let Path(id) = path.map_err(|_| Error::Malformed)?;
+    let Path(id) = path.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     app.service
         .status(&auth.proof, id, &audit)
         .await
@@ -52,8 +54,8 @@ async fn registrations(
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     query: Result<Query<crate::enrollment::read::Page>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<crate::enrollment::read::Registrations>, Error> {
-    let Path(device) = path.map_err(|_| Error::Malformed)?;
-    let Query(page) = query.map_err(|_| Error::Malformed)?;
+    let Path(device) = path.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Query(page) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     audit.target(&device);
     app.service
         .registrations(&auth.proof, &device, page)
@@ -70,9 +72,11 @@ async fn resume_enrollment(
     path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let Path(id) = path.map_err(|_| Error::Malformed)?;
+    let Path(id) = path.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     let key = write_key(&headers, &audit, "enrollment_resume")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+        .0;
     app.service
         .resume(
             &auth.proof,
@@ -96,8 +100,8 @@ async fn cancel_enrollment(
     path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
-    let Path(id) = path.map_err(|_| Error::Malformed)?;
-    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
+    let Path(id) = path.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Json(EmptyRequest {}) = input.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     let key = write_key(&headers, &audit, "enrollment_cancel")?;
     app.service
         .cancel(&auth.proof, id, key, &audit)
@@ -113,8 +117,9 @@ async fn revoke_registration(
     path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
-    let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
-    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
+    let Path((device, registration)) =
+        path.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Json(EmptyRequest {}) = input.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
     let key = write_key(&headers, &audit, "credential_revoke")?;
     audit.target(&device);
     app.devices
@@ -131,10 +136,14 @@ pub struct HttpState {
 }
 impl HttpState {
     fn apple(&self) -> Result<(), Error> {
-        self.apple.then_some(()).ok_or(Error::Unsupported)
+        self.apple
+            .then_some(())
+            .ok_or(Error(rss_mdm_flow_service::Error::Unsupported))
     }
     fn windows(&self) -> Result<(), Error> {
-        self.windows.then_some(()).ok_or(Error::Unsupported)
+        self.windows
+            .then_some(())
+            .ok_or(Error(rss_mdm_flow_service::Error::Unsupported))
     }
 }
 

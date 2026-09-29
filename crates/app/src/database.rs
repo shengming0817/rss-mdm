@@ -94,7 +94,6 @@ impl Database {
         Ok(tx)
     }
     /// Pure work discovery uses the normal tenant boundary without Audit head ownership.
-
     #[cfg(test)]
     pub(crate) async fn configure_transaction(
         tx: &mut Transaction<'_, Postgres>,
@@ -122,57 +121,27 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    let valid: bool = sqlx::query_scalar(r#"
-SELECT current_user='mdm_access' AND session_user=current_user
- AND NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=current_user AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication))
- AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR roleid=(SELECT oid FROM pg_roles WHERE rolname=current_user))
- AND NOT has_database_privilege(current_user,current_database(),'CREATE')
- AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
- AND has_schema_privilege(current_user,'mdm_access','USAGE')
- AND (SELECT count(*)=23 AND bool_and(c.relname IN ('grants','requests','registration_operations','collections','operations','collection_operations','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','management_sessions','management_messages','collection_runs','authorization_rules','user_groups','authorization_initializations','asset_authority_history','collection_history','bindings','authorization_operations') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
- AND (CASE WHEN c.relname NOT IN ('asset_authority_history','collection_history') THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')=(c.relname NOT IN('asset_authority_history','collection_history'))
- AND NOT has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
- AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND c.relkind='r')
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname IN ('enabled','next_command','next_sequence') OR c.relname='requests' AND a.attname IN ('state','password_digest','password_version','credential_ref','expires_at') OR c.relname='management_sessions' AND a.attname IN ('state','last_message','correlation','nonce','client_authenticated','run_id') OR c.relname='collection_runs' AND a.attname IN ('attempts','result','reason','batch','digest','sealed_at','delivery_pending') OR c.relname='enrollment_certificates' AND a.attname='server_nonce' OR c.relname IN ('authorization_rules','user_groups') AND a.attname IN ('revision','document')) AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
- AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
- AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
- AND NOT EXISTS(SELECT 1 FROM pg_attribute col JOIN pg_class c ON c.oid=col.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(col.attacl) a WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND (a.is_grantable OR a.privilege_type='REFERENCES'))))
- AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory','mdm_apple','pg_catalog','information_schema') AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts')) AND c.relkind IN ('r','p','v','m','f') AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
- AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind='S' AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
- AND (SELECT count(*)=5 AND bool_and((n.nspname,p.proname) IN (('mdm_access','prune_agent_collections'),('rss_audit','reserve'),('rss_audit','append'),('rss_ledger','prepare_append'),('rss_ledger','insert_entry')) AND p.prosecdef AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) AND p.proconfig @> ARRAY[CASE n.nspname WHEN 'rss_audit' THEN 'search_path=pg_catalog, rss_audit' WHEN 'rss_ledger' THEN 'search_path=pg_catalog, rss_ledger' ELSE 'search_path=pg_catalog, pg_temp' END] AND has_function_privilege(current_user,p.oid,'EXECUTE')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
-"#).fetch_one(&mut *tx).await.map_err(db)?;
+    let contracts = [
+        rss_mdm_authorization_service::ACCESS_CONTRACT,
+        rss_mdm_registration_service::ACCESS_CONTRACT,
+        rss_mdm_inventory_service::ACCESS_CONTRACT,
+        rss_mdm_agent_channel::ACCESS_CONTRACT,
+        rss_mdm_windows_channel::ACCESS_CONTRACT,
+        rss_mdm_apple_channel::ACCESS_CONTRACT,
+        rss_mdm_audit_integration::ACCESS_CONTRACT,
+    ];
+    let valid = rss_mdm_backend_postgres_support::access_admission::verify(
+        &mut tx,
+        "mdm_access",
+        &contracts,
+    )
+    .await
+    .map_err(db)?;
     let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-    let authorization = crate::authorization::admission::verify(&mut tx)
-        .await
-        .map_err(db)?;
-    let enrollment = crate::enrollment::admission::verify(&mut tx)
-        .await
-        .map_err(db)?;
-    let device = crate::device::admission::verify(&mut tx)
-        .await
-        .map_err(db)?;
-    let collection = crate::collection::admission::verify(&mut tx)
-        .await
-        .map_err(db)?;
-    let windows = rss_mdm_windows_channel::storage_admission::verify(&mut tx)
-        .await
-        .map_err(db)?;
-    if !valid || !apple || !authorization || !enrollment || !device || !collection || !windows {
-        return Err(Error::Unavailable(Failure::AccessAdmission));
-    }
-    // Canonical catalog rendering must not depend on the role's default "$user" search path.
-    sqlx::query("SELECT set_config('search_path','pg_catalog',true)")
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
-    // Exact tenant policy; extra permissive policies cannot bypass isolation.
-    let policies: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)"#).fetch_one(&mut *tx).await.map_err(db)?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory')").fetch_one(&mut *tx).await.map_err(db)?;
-    let retention: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND (c.relname='management_sessions' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='expires_at<clock_timestamp' OR c.relname='management_messages' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp')"#).fetch_one(&mut *tx).await.map_err(db)?;
-    if policies != 23 || retention != 2 || total != 25 {
+    if !valid || !apple {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)
@@ -215,8 +184,8 @@ pub(crate) async fn admit_audit_runtime(
                     .expect("startup audit failure")
                     .unwrap_or(Error::Unavailable(Failure::Audit)))
             },
-            |_| Err(Error::RollbackFailed),
-            |_| Err(Error::CommitUnknown),
+            |_| Err(Error::Service(rss_mdm_flow_service::Error::RollbackFailed)),
+            |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
             |_| Err(Error::Unavailable(Failure::Audit)),
         )
 }

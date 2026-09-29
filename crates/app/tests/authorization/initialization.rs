@@ -94,7 +94,9 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":Uuid::new_v4()}});
     ensure!(matches!(
         crate::authorization::initialize(serde_json::from_value(init.clone())?).await,
-        Err(crate::Error::Forbidden)
+        Err(crate::Error::Service(
+            rss_mdm_flow_service::Error::Forbidden
+        ))
     ));
     init["user"]["principalId"] = subject.clone().into();
     init["user"]["instanceId"] = Uuid::new_v4().to_string().into();
@@ -104,7 +106,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     ));
     ensure!(
         pg(&format!(
-            "SELECT count(*) FROM mdm_access.operations WHERE operation_id='{wrong_key}'"
+            "SELECT count(*) FROM mdm_access.authorization_operations WHERE operation_id='{wrong_key}'"
         ))?
         .trim()
             == "0"
@@ -147,7 +149,12 @@ async fn bounded_initialization_recovery() -> Result<()> {
         )
         .await;
         audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Transaction));
-        ensure!(matches!(outcome, Err(crate::Error::CommitUnknown)));
+        ensure!(matches!(
+            outcome,
+            Err(crate::Error::Service(
+                rss_mdm_flow_service::Error::CommitUnknown
+            ))
+        ));
         let durable = pg(&format!(
             "SELECT count(*) FROM mdm_access.authorization_initializations WHERE tenant_id='{TENANT}' AND instance='{}'",
             user.instance_id,
@@ -180,7 +187,11 @@ async fn bounded_initialization_recovery() -> Result<()> {
     audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Transaction));
     ensure!(matches!(
         before,
-        Err(crate::Error::Unavailable(crate::Failure::RequestDeadline))
+        Err(crate::Error::Service(
+            rss_mdm_flow_service::Error::Unavailable(
+                rss_mdm_flow_service::Failure::RequestDeadline
+            )
+        ))
     ));
     Ok(())
 }

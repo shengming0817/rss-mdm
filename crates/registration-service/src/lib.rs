@@ -15,3 +15,6 @@ use rss_mdm_authorization_service as authorization;
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+
+/// This capability's closed privileges in the shared access connection.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

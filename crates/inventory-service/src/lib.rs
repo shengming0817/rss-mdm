@@ -35,3 +35,6 @@ pub async fn admit_storage_in(
     rss_mdm_inventory_postgres::verify_watermark_fence(c).await?;
     rss_mdm_compliance_postgres::admit(c, tenant).await
 }
+
+/// This capability's closed privileges in the shared access connection.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

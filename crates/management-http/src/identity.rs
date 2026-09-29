@@ -19,10 +19,14 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
 }
 fn failure(e: AuthorityError) -> Error {
     match e {
-        AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
-        AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
-        AuthorityError::RollbackFailed(_) => Error::RollbackFailed,
-        _ => Error::Unavailable(Failure::IdentityStorage),
+        AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => {
+            Error(rss_mdm_flow_service::Error::Unauthorized)
+        }
+        AuthorityError::CommitUnknown(_) => Error(rss_mdm_flow_service::Error::CommitUnknown),
+        AuthorityError::RollbackFailed(_) => Error(rss_mdm_flow_service::Error::RollbackFailed),
+        _ => Error(rss_mdm_flow_service::Error::Unavailable(
+            Failure::IdentityStorage,
+        )),
     }
 }
 impl Identity {

@@ -72,7 +72,7 @@ impl ProfileSigner {
             return Err(Error::Malformed);
         }
         use rustls::pki_types::pem::PemObject;
-        let certificates = CertificateDer::pem_slice_iter(&bytes)
+        let certificates = CertificateDer::pem_slice_iter(bytes)
             .map(|c| Certificate::from_der(&c.map_err(invalid)?).map_err(invalid))
             .collect::<Result<Vec<_>, _>>()?;
         let key = signature::RsaKeyPair::from_pkcs8(key).map_err(invalid)?;

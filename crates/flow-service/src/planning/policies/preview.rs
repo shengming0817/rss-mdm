@@ -18,7 +18,7 @@ pub async fn preview(
     proof.manage(Permission::PolicyRead)?;
     proof.manage(Permission::ResourceRead)?;
     authorize(proof, &input.definition)?;
-    run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,&audit,(s,proof,audit,input),|ctx,tx|Box::pin(async move {
+    run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,audit,(s,proof,audit,input),|ctx,tx|Box::pin(async move {
         let (s,proof,audit,input)=*ctx;
         let version=s.resource_in(tx,&input.definition.resource).await?;
         let software=if matches!(input.definition.behavior, Behavior::Software { .. }) {

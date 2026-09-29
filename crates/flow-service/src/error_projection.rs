@@ -90,10 +90,6 @@ impl From<&rss_mdm_audit_integration::Error> for Error {
     }
 }
 
-/// Independent request settlement cannot overwrite the protected operation's certainty.
-
-/// Diagnostic cause is independent of the protected operation's settlement state.
-
 impl From<rss_mdm_authorization_service::Error> for Error {
     fn from(error: rss_mdm_authorization_service::Error) -> Self {
         use rss_mdm_authorization_service::Error as Authorization;
@@ -264,6 +260,28 @@ impl From<rss_mdm_content_service::Error> for Error {
             Content::Metadata => Self::Unavailable(Failure::ContentMetadata),
             Content::Deadline => Self::Unavailable(Failure::ContentDeadline),
             Content::Cleanup => Self::Unavailable(Failure::ContentCleanup),
+        }
+    }
+}
+
+impl From<rss_mdm_content_service::service::Error> for Error {
+    fn from(e: rss_mdm_content_service::service::Error) -> Self {
+        use rss_mdm_content_service::service::Error as C;
+        match e {
+            C::Content(e) => e.into(),
+            C::Authorization(e) => e.into(),
+            C::Audit(e) => e.as_ref().into(),
+            C::Malformed => Self::Malformed,
+            C::Conflict => Self::Conflict,
+            C::Forbidden => Self::Forbidden,
+            C::Missing => Self::Resource(crate::resource_catalog::error::ResourceError::Missing),
+            C::Unsupported => Self::Unsupported,
+            C::Clock => Self::Unavailable(Failure::Clock),
+            C::Import => Self::Unavailable(Failure::ContentImport),
+            C::Storage => Self::Unavailable(Failure::ContentStorage),
+            C::Invariant => Self::Unavailable(Failure::ContentInvariant),
+            C::CommitUnknown => Self::CommitUnknown,
+            C::RollbackFailed => Self::RollbackFailed,
         }
     }
 }

@@ -50,7 +50,7 @@ pub async fn read_source(
         &app.audit,
         &app.runtime,
         app.tenant,
-        &audit,
+        audit,
         (&app, &auth, &id, &revision, &audit),
         |ctx, tx| {
             Box::pin(async move {
@@ -66,7 +66,6 @@ pub async fn read_source(
         TransactionOwner::SoftwareCatalog,
     )
     .await
-    .map_err(Error::from)
 }
 pub async fn write_source(
     app: &Access,
@@ -89,7 +88,7 @@ pub async fn write_source(
         &app.audit,
         &app.runtime,
         app.tenant,
-        &audit,
+        audit,
         (&app, &auth, &id, &revision, &op, &audit),
         |ctx, tx| {
             Box::pin(async move {
@@ -103,7 +102,6 @@ pub async fn write_source(
         TransactionOwner::SoftwareCatalog,
     )
     .await
-    .map_err(Error::from)
 }
 pub async fn read_version(
     app: &Access,
@@ -119,7 +117,7 @@ pub async fn read_version(
         &app.audit,
         &app.runtime,
         app.tenant,
-        &audit,
+        audit,
         (&app, &auth, &id, &version, &audit),
         |ctx, tx| {
             Box::pin(async move {
@@ -135,7 +133,6 @@ pub async fn read_version(
         TransactionOwner::SoftwareCatalog,
     )
     .await
-    .map_err(Error::from)
 }
 pub async fn write_version(
     app: &Access,
@@ -197,8 +194,8 @@ pub async fn write_version(
         &app.audit,
         &app.runtime,
         app.tenant,
-        &audit,
-        (&app, &auth, &id, &version, &op, &audit, verified.as_deref()),
+        audit,
+        (&app, &auth, &id, &version, &op, audit, verified.as_deref()),
         |ctx, tx| {
             Box::pin(async move {
                 let (app, proof, id, version, op, audit, verified) = *ctx;
@@ -214,7 +211,6 @@ pub async fn write_version(
         TransactionOwner::SoftwareCatalog,
     )
     .await
-    .map_err(Error::from)
 }
 pub async fn download(
     app: &Access,

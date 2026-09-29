@@ -115,8 +115,8 @@ impl Worker {
                     |_| Ok(()),
                     |_| Err(unavailable()),
                     |_| Err(unavailable()),
-                    |_| Err(Error::RollbackFailed),
-                    |_| Err(Error::CommitUnknown),
+                    |_| Err(Error::Service(rss_mdm_flow_service::Error::RollbackFailed)),
+                    |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
                     |_| Err(unavailable()),
                 )?;
         }

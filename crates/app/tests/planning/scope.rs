@@ -25,7 +25,9 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     ));
     assert!(matches!(
         execute(&m, &Command::ScopeRead { id }).await,
-        Err(Error::Unavailable(Failure::PlanningStorage))
+        Err(Error::Service(rss_mdm_flow_service::Error::Unavailable(
+            rss_mdm_flow_service::Failure::PlanningStorage
+        )))
     ));
     sql(&format!(
         "UPDATE mdm_planning.scope_versions SET definition='{{\"targets\":[],\"limitations\":null,\"exclusions\":[]}}' WHERE id='{id}'"
@@ -41,7 +43,9 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     assert!(
         matches!(
             execute(&m, &command).await,
-            Err(Error::Unavailable(Failure::PlanningStorage))
+            Err(Error::Service(rss_mdm_flow_service::Error::Unavailable(
+                rss_mdm_flow_service::Failure::PlanningStorage
+            )))
         ),
         "corrupt replay receipt must fail before success audit"
     );

@@ -1,0 +1,29 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "rss_audit.reserve",
+      "search_path": "search_path=pg_catalog, rss_audit"
+    },
+    {
+      "name": "rss_audit.append",
+      "search_path": "search_path=pg_catalog, rss_audit"
+    },
+    {
+      "name": "rss_ledger.prepare_append",
+      "search_path": "search_path=pg_catalog, rss_ledger"
+    },
+    {
+      "name": "rss_ledger.insert_entry",
+      "search_path": "search_path=pg_catalog, rss_ledger"
+    }
+  ],
+  "external_relations": [
+    "rss_audit.heads",
+    "rss_audit.records",
+    "rss_ledger.heads",
+    "rss_ledger.entries",
+    "mdm_audit.receipts"
+  ],
+  "verified_schemas": []
+}

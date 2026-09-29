@@ -295,6 +295,10 @@ pub async fn retire_state_in(
 }
 
 /// Borrow the Database transaction; the caller commits binding, certificate and audit together.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "borrowed registration transaction carries separate authorization, channel evidence, command, receipt identities and retirement participant"
+)]
 pub async fn bind_in(
     tx: &mut sqlx::PgConnection,
     admin: &AuthorizedPrincipal,

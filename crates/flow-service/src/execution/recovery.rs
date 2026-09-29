@@ -5,6 +5,11 @@ use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
 
 pub struct Timer(tokio::time::Instant);
+impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Timer {
     #[allow(clippy::disallowed_methods)]
     // Concrete monotonic injection boundary shared by all command controls.

@@ -29,7 +29,7 @@ async fn candidate_reference_blocks_archive_and_race_is_atomic() {
         .unwrap();
     assert!(matches!(
         execute(&planning, &archive(&referenced)).await,
-        Err(crate::Error::Conflict)
+        Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))
     ));
 
     let racing = seed(runtime.clone(), &server, server.winget_submission()).await;
@@ -39,7 +39,7 @@ async fn candidate_reference_blocks_archive_and_race_is_atomic() {
         execute(&planning, &archive)
     );
     match (created, archived) {
-        (Ok(_), Err(crate::Error::Conflict)) => assert!(
+        (Ok(_), Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))) => assert!(
             publication
                 .candidate(&racing.candidate, pg::cutoff())
                 .await

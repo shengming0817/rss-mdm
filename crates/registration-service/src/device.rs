@@ -1,7 +1,6 @@
 //! Product gateway seam. F04 owns cryptographic verification; I01 owns persistent binding.
 //! No network DTO can construct credential evidence or a device principal.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
-pub mod admission;
 pub mod coordinates;
 pub mod read;
 pub mod store;
@@ -21,10 +20,10 @@ use rss_mdm_inventory::{Channel, ReportSource};
 /// Evidence from a trusted channel verifier, not a credential ID submitted by a device.
 /// I01 has no production constructor. F04 must verify the actual channel credential first.
 /// ```compile_fail
-/// let proof: rss_mdm_app::device::VerifiedChannelCredential = serde_json::from_str("{}").unwrap();
+/// let proof: rss_mdm_registration_service::VerifiedChannelCredential = serde_json::from_str("{}").unwrap();
 /// ```
 /// ```compile_fail
-/// let proof = rss_mdm_app::device::VerifiedChannelCredential::new("fingerprint");
+/// let proof = rss_mdm_registration_service::VerifiedChannelCredential::new("fingerprint");
 /// ```
 pub struct VerifiedChannelCredential {
     tenant: TenantId,
@@ -56,7 +55,7 @@ impl ChannelMount {
 }
 /// Immutable request-scoped identity resolved from the authoritative registration mapping.
 /// ```compile_fail
-/// let proof: rss_mdm_app::device::DevicePrincipal = serde_json::from_str("{}").unwrap();
+/// let proof: rss_mdm_registration_service::DevicePrincipal = serde_json::from_str("{}").unwrap();
 /// ```
 #[derive(Clone)]
 pub struct DevicePrincipal {

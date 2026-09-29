@@ -16,13 +16,16 @@ pub(crate) struct Apple {
 impl Apple {
     pub(crate) fn load(config: config::Config, now: i64) -> Result<Self, Error> {
         let authority = certificate::AppleDeviceTrust::from_bytes(
-            &crate::config::read(&config.issuer_certificate_file, 32768, false)?,
+            &crate::config::read(&config.issuer_certificate_file, 32768, false)
+                .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?,
             now,
         )
         .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?;
         let signer = certificate::ProfileSigner::from_bytes(
-            &crate::config::read(&config.profile_certificate_file, 128 * 1024, false)?,
-            &crate::config::read(&config.profile_private_key_file, 32768, true)?,
+            &crate::config::read(&config.profile_certificate_file, 128 * 1024, false)
+                .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?,
+            &crate::config::read(&config.profile_private_key_file, 32768, true)
+                .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?,
             now,
         )
         .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?;

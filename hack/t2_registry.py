@@ -140,7 +140,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'authorization.capacity': ('crates/authorization-service/src/store.rs',
                             'crates/authorization-service/src/authority.rs'),
  'authorization.initialization': ('crates/authorization-service/src/initialization.rs',),
- 'authorization.admission': ('crates/authorization-service/src/admission.rs',),
+ 'authorization.admission': ('crates/authorization-service/src/access-contract.json',),
  'enrollment.http': ('crates/management-http/src/enrollment/http.rs',
                      'crates/registration-service/src/enrollment/read.rs'),
  'enrollment.recovery': ('crates/registration-service/src/enrollment/store.rs',),
@@ -149,7 +149,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'device.revocation': ('crates/registration-service/src/device.rs',
                        'crates/app/src/registration_lifecycle.rs'),
  'device.recovery': ('crates/registration-service/src/device/store.rs',),
- 'device.admission': ('crates/registration-service/src/device/admission.rs',),
+ 'device.admission': ('crates/registration-service/src/access-contract.json',),
  'agent.registration': ('crates/agent-channel/src/lib.rs',),
  'agent.reports': ('crates/agent-channel/src/lib.rs',),
  'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs'),
@@ -712,9 +712,20 @@ consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
 consume(('crates/inventory-service/src/collection*',), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
-consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/flow-service/src/content.rs'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/flow-service/src/storage*',), 'planning.recovery assets.http compliance.http planning.http software.http content.http')
 consume(('crates/apple-channel/src/boundary.rs',), 'apple.scep apple.collection apple.profile apple.renewal apple.identity apple.host')
+
+# App router assembly and channel registrars select every actual ingress consumer.
+consume(('crates/app/src/api.rs',), ' '.join(name for name, module in MODULES.items()
+        if module.build == APP and 'identity' in module.fixtures) + ' api.diagnostics host.lifecycle')
+consume(('crates/agent-channel/src/tasks.rs',),
+        'execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery')
+consume(('crates/windows-channel/src/lib.rs',),
+        'windows.enrollment windows.issuance windows.management windows.commands windows.retention windows.limits')
+
+consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-contract.json', 'crates/app/src/database.rs'),
+        ' '.join(name for name, module in MODULES.items() if module.build == APP and module.postgres))
 
 # Shared production configuration has a broad, but real, consumer set. No-PG
 # protocol modules do not become consumers merely because they live in App.

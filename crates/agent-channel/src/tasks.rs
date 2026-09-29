@@ -75,7 +75,7 @@ async fn claim(
             app.execution
                 .claim_action(&principal, &input, &audit)
                 .await
-                .map_err(|error| task_error(error.into()))?,
+                .map_err(task_error)?,
         ))
     })
     .await
@@ -95,7 +95,7 @@ async fn event(
             app.execution
                 .action_event(&principal, id, &input, &audit)
                 .await
-                .map_err(|error| task_error(error.into()))?,
+                .map_err(task_error)?,
         ))
     })
     .await
@@ -126,7 +126,7 @@ async fn download(
                 &audit,
             )
             .await
-            .map_err(|error| task_error(error.into()))?;
+            .map_err(task_error)?;
         crate::content::response(content, &headers)
             .await
             .map_err(task_error)

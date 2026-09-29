@@ -97,7 +97,7 @@ async fn initialize_owned(
         return Err(Error::Configuration(ConfigIssue::AccessDatabase));
     }
     if config.operation_id.is_nil() {
-        return Err(Error::Malformed);
+        return Err(Error::Service(rss_mdm_flow_service::Error::Malformed));
     }
     canonical_uuid(&config.user.instance_id)?;
     canonical_uuid(&config.user.tenant_id)?;

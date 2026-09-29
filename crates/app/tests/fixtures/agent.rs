@@ -4,6 +4,9 @@ pub(crate) use rss_mdm_agent_channel::*;
 pub(crate) mod t2;
 impl From<crate::Error> for AgentError {
     fn from(e: crate::Error) -> Self {
-        Self::from(rss_mdm_flow_service::Error::from(e))
+        match e {
+            crate::Error::Service(e) => Self::from(e),
+            _ => Self::Wire(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable),
+        }
     }
 }

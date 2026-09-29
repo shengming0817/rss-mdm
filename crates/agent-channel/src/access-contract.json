@@ -1,0 +1,21 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_agent",
+      "table": "bindings",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_agent",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

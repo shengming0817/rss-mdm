@@ -44,6 +44,21 @@ class CapabilityBoundaries(unittest.TestCase):
             with self.subTest(package=package):
                 self.assertFalse(dependencies(package) & forbidden)
 
+    def test_content_use_cases_have_one_owner(self):
+        self.assertFalse((ROOT / 'crates/flow-service/src/content.rs').exists())
+        self.assertNotIn('rss-mdm-flow-service', dependencies('content-service'))
+        self.assertTrue((ROOT / 'crates/content-service/src/service.rs').exists())
+
+    def test_ingress_does_not_publish_domain_facades(self):
+        import re
+        for path in (ROOT / 'crates/management-http/src').rglob('*.rs'):
+            self.assertIsNone(re.search(r'^\s*pub use rss_mdm_', path.read_text(), re.M), str(path))
+
+    def test_host_does_not_own_access_relation_contract(self):
+        source = (ROOT / 'crates/app/src/database.rs').read_text()
+        for table in ('authorization_rules', 'collection_runs', 'registrations', 'management_sessions'):
+            self.assertNotIn(table, source)
+
     def test_host_has_no_business_module_owners(self):
         forbidden = {'authorization', 'device', 'enrollment', 'assets', 'collection',
                      'execution', 'planning', 'resource_catalog', 'content',

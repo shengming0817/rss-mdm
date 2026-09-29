@@ -54,6 +54,32 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             && context.0 == StatusCode::OK
             && context.1["navigation"]["manageAccounts"] == true
     );
+    // The union rejects undeclared objects, grants and permissive tenant policies.
+    for (drift, restore) in [
+        (
+            "GRANT UPDATE (instance) ON mdm_access.authorization_rules TO mdm_access",
+            "REVOKE UPDATE (instance) ON mdm_access.authorization_rules FROM mdm_access",
+        ),
+        (
+            "CREATE TABLE mdm_agent.unexpected(tenant_id uuid)",
+            "DROP TABLE mdm_agent.unexpected",
+        ),
+        (
+            "CREATE POLICY bypass ON mdm_access.authorization_rules USING(true)",
+            "DROP POLICY bypass ON mdm_access.authorization_rules",
+        ),
+        (
+            "GRANT SELECT ON mdm_access.authorization_rules TO mdm_access WITH GRANT OPTION",
+            "REVOKE GRANT OPTION FOR SELECT ON mdm_access.authorization_rules FROM mdm_access",
+        ),
+    ] {
+        pg(drift)?;
+        let rejected = crate::Database::connect(config.access_database.options()?)
+            .await
+            .is_err();
+        pg(restore)?;
+        ensure!(rejected, "undeclared access privilege admitted");
+    }
     let identity = crate::test_support::identity::identity(case_tenant()).await?;
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity

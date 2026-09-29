@@ -1,10 +1,10 @@
 //! Capability preparation shared by planning, asset and audit storage tests.
 use crate::planning::{Command, automation};
 pub(crate) use crate::planning::{Planning, model::*};
-pub(crate) use crate::{Error, Failure, assets};
+pub(crate) use crate::{Error, assets};
 pub(crate) use rss_mdm_audit_integration::RequestAudit;
+pub(crate) use rss_mdm_flow_service::operation::Operation;
 pub(crate) use rss_mdm_flow_service::transaction::deadline;
-pub(crate) use rss_mdm_management_http::http_operation::Operation;
 pub(crate) use rss_request_context::{Deadline, TenantId};
 pub(crate) use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 pub(crate) use rss_transactional_messaging_postgres::{
@@ -193,7 +193,12 @@ pub(crate) async fn wait_task(
             .await;
             let value = match result {
                 Ok(value) => value,
-                Err(Error::Unavailable(Failure::PlanningStorage) | Error::CommitUnknown) => {
+                Err(
+                    Error::Service(rss_mdm_flow_service::Error::Unavailable(
+                        rss_mdm_flow_service::Failure::PlanningStorage,
+                    ))
+                    | Error::Service(rss_mdm_flow_service::Error::CommitUnknown),
+                ) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     continue;
                 }

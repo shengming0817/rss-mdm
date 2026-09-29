@@ -39,6 +39,7 @@ pub async fn checkin(
     }
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
+    audit.identify_device(principal.registration());
     audit.target(principal.device());
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
@@ -187,6 +188,7 @@ pub async fn manage(
     let credential = app.mount.credential(leaf.fingerprint());
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
+    audit.identify_device(principal.registration());
     audit.target(principal.device());
     audit.registration(principal.registration());
     if let Some(response) =

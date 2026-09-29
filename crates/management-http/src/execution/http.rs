@@ -21,9 +21,11 @@ async fn create(
     Path(device): Path<String>,
     input: std::result::Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+        .0;
     if matches!(input.task, Task::Firewall { .. }) {
-        return Err(Error::Malformed);
+        return Err(Error(rss_mdm_flow_service::Error::Malformed));
     }
     match input.task.source() {
         rss_mdm_inventory::ReportSource::MdmApple => {
@@ -32,7 +34,7 @@ async fn create(
         rss_mdm_inventory::ReportSource::MdmWindows => {
             app.windows()?;
         }
-        _ => return Err(Error::Unsupported),
+        _ => return Err(Error(rss_mdm_flow_service::Error::Unsupported)),
     }
     audit.operation(input.operation_id, "command_accept");
     audit.target(&device);
@@ -63,7 +65,9 @@ async fn cancel(
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let change = input.map_err(|_| Error::Malformed)?.0;
+    let change = input
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+        .0;
     audit.operation(change.request_id, "command_cancel");
     audit.target(&device);
     app.execution
@@ -79,7 +83,9 @@ async fn approve(
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let change = input.map_err(|_| Error::Malformed)?.0;
+    let change = input
+        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
+        .0;
     audit.operation(change.request_id, "command_approve");
     audit.target(&device);
     app.execution
@@ -96,11 +102,15 @@ pub struct HttpState {
 }
 impl HttpState {
     pub fn apple(&self) -> std::result::Result<(), crate::Error> {
-        self.apple.then_some(()).ok_or(crate::Error::Unsupported)
+        self.apple
+            .then_some(())
+            .ok_or(crate::Error(rss_mdm_flow_service::Error::Unsupported))
     }
 }
 impl HttpState {
     pub fn windows(&self) -> std::result::Result<(), crate::Error> {
-        self.windows.then_some(()).ok_or(crate::Error::Unsupported)
+        self.windows
+            .then_some(())
+            .ok_or(crate::Error(rss_mdm_flow_service::Error::Unsupported))
     }
 }

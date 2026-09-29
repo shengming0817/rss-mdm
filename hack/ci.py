@@ -169,7 +169,7 @@ def verify_backend_support(data):
     ident = ids[0]
     require(nodes[ident]['features'] == [], "backend support has no feature surface")
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == ident for d in n['deps'])}
-    require(parents == adapters, "only three backend adapters may directly consume support")
+    require(parents == adapters | {"rss-mdm-app"}, "only backend adapters and App admission may directly consume support")
     visited, pending = set(), [ident]
     while pending:
         key = pending.pop()

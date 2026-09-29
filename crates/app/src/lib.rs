@@ -21,6 +21,9 @@ use rss_mdm_inventory_service::collection;
 #[cfg(test)]
 #[path = "../tests/fixtures/collection.rs"]
 mod collection;
+#[cfg(test)]
+#[path = "../tests/fixtures/compliance.rs"]
+mod compliance;
 mod database;
 #[cfg(not(test))]
 use rss_mdm_registration_service::device;
@@ -100,34 +103,15 @@ pub use lifecycle::{serve, signal};
 pub enum Error {
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),
-    #[error("invalid request")]
-    Malformed,
-    #[error(transparent)]
-    Planning(#[from] planning::error::PlanningError),
-    #[error(transparent)]
-    Resource(#[from] resource_catalog::error::ResourceError),
-    #[error(transparent)]
-    Execution(#[from] execution::error::ExecutionError),
-    #[error(transparent)]
-    Publication(#[from] software_publication::error::PublicationError),
-    #[error("certificate request rejected")]
-    CertificateRequest,
-    #[error("operation identity or enrollment/registration state conflict")]
-    Conflict,
-    #[error("commit outcome unknown; retry the same operation")]
-    CommitUnknown,
-    #[error("rollback not acknowledged; original attempt remains unresolved")]
-    RollbackFailed,
-    #[error("identity rejected")]
-    Unauthorized,
-    #[error("permission denied")]
-    Forbidden,
-    #[error("dependency unavailable")]
+    #[error("host dependency unavailable")]
     Unavailable(Failure),
-    #[error("inventory not found")]
-    NotFound,
-    #[error("action not supported")]
-    Unsupported,
+    #[error(transparent)]
+    Apple(#[from] rss_mdm_apple_channel::Error),
+    #[error(transparent)]
+    Windows(#[from] rss_mdm_windows_channel::Error),
+    #[error(transparent)]
+    #[serde(untagged)]
+    Service(#[from] rss_mdm_flow_service::Error),
 }
 #[cfg(test)]
 #[path = "../tests/fixtures/error.rs"]
@@ -143,10 +127,12 @@ impl From<rss_mdm_certificate::Error> for Error {
     fn from(error: rss_mdm_certificate::Error) -> Self {
         use rss_mdm_certificate::Error as Certificate;
         match error {
-            Certificate::Malformed => Self::Malformed,
-            Certificate::CertificateRequest => Self::CertificateRequest,
-            Certificate::Unauthorized => Self::Unauthorized,
-            Certificate::Conflict => Self::Conflict,
+            Certificate::Malformed => Self::Service(rss_mdm_flow_service::Error::Malformed),
+            Certificate::CertificateRequest => {
+                Self::Service(rss_mdm_flow_service::Error::CertificateRequest)
+            }
+            Certificate::Unauthorized => Self::Service(rss_mdm_flow_service::Error::Unauthorized),
+            Certificate::Conflict => Self::Service(rss_mdm_flow_service::Error::Conflict),
             Certificate::Expired | Certificate::Signing => Self::Unavailable(Failure::Certificate),
         }
     }
@@ -154,9 +140,15 @@ impl From<rss_mdm_certificate::Error> for Error {
 impl From<rss_mdm_apple_mdm::Error> for Error {
     fn from(error: rss_mdm_apple_mdm::Error) -> Self {
         match error {
-            rss_mdm_apple_mdm::Error::Malformed => Self::Malformed,
-            rss_mdm_apple_mdm::Error::Unsupported => Self::Unsupported,
-            rss_mdm_apple_mdm::Error::Conflict => Self::Conflict,
+            rss_mdm_apple_mdm::Error::Malformed => {
+                Self::Service(rss_mdm_flow_service::Error::Malformed)
+            }
+            rss_mdm_apple_mdm::Error::Unsupported => {
+                Self::Service(rss_mdm_flow_service::Error::Unsupported)
+            }
+            rss_mdm_apple_mdm::Error::Conflict => {
+                Self::Service(rss_mdm_flow_service::Error::Conflict)
+            }
         }
     }
 }
@@ -166,8 +158,8 @@ impl From<rss_mdm_content_service::Error> for Error {
         use rss_mdm_content_service::Error as Content;
         match error {
             Content::Configuration => Self::Configuration(ConfigIssue::Content),
-            Content::Malformed => Self::Malformed,
-            Content::Conflict => Self::Conflict,
+            Content::Malformed => Self::Service(rss_mdm_flow_service::Error::Malformed),
+            Content::Conflict => Self::Service(rss_mdm_flow_service::Error::Conflict),
             Content::Storage => Self::Unavailable(Failure::ContentStorage),
             Content::Invariant => Self::Unavailable(Failure::ContentInvariant),
             Content::Metadata => Self::Unavailable(Failure::ContentMetadata),

@@ -34,9 +34,9 @@ pub(crate) fn configuration(
         let certs = crate::config::read(&endpoint.certificate_file, 128 * 1024, false)?;
         let certs = CertificateDer::pem_slice_iter(&certs)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| Error::Malformed)?;
+            .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?;
         if certs.is_empty() || certs.len() > 4 {
-            return Err(Error::Malformed);
+            return Err(Error::Service(rss_mdm_flow_service::Error::Malformed));
         }
         let key = crate::config::read(&endpoint.private_key_file, 32768, true)?;
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec()));
@@ -44,14 +44,14 @@ pub(crate) fn configuration(
             rustls::crypto::ring::default_provider(),
         ))
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
-        .map_err(|_| Error::Malformed)?;
+        .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?;
         let builder = match client {
             Some(verifier) => builder.with_client_cert_verifier(verifier),
             None => builder.with_no_client_auth(),
         };
         let mut config = builder
             .with_single_cert(certs, key)
-            .map_err(|_| Error::Malformed)?;
+            .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?;
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         // Full client-certificate authentication on every connection; per-request validity is rechecked too.
         config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});

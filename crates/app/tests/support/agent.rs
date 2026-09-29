@@ -95,10 +95,18 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
             tenant: case_tenant().into(),
         },
     );
-    fixture.router_with_public(
-        fixture.authorization().merge(fixture.enrollment()),
-        Router::new().nest("/api/agent/v3", agent),
-    )
+    let fallback = Router::new()
+        .fallback(|| async { StatusCode::NOT_FOUND })
+        .layer(axum::middleware::from_fn_with_state(
+            "mdm.example.test".to_owned(),
+            crate::http_host::guard,
+        ));
+    Ok(fixture
+        .router_with_public(
+            fixture.authorization().merge(fixture.enrollment()),
+            Router::new().nest("/api/agent/v3", agent),
+        )?
+        .merge(fallback))
 }
 
 /// Prepare additional task-capable targets from one real HTTP registration.

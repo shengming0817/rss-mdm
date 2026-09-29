@@ -10,7 +10,7 @@ use axum::{
 use futures::TryStreamExt;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_content_service::Upload;
-pub use rss_mdm_flow_service::content::Access as HttpState;
+pub(crate) use rss_mdm_content_service::service::Access as HttpState;
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -30,7 +30,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         .route("/resources/{id}/uploads/{upload}/complete", post(complete))
         .layer(DefaultBodyLimit::disable())
 }
-use rss_mdm_flow_service::content::{Selection, current};
+use rss_mdm_content_service::service::{Selection, current};
 async fn begin(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
@@ -38,7 +38,7 @@ async fn begin(
     Path((id, upload)): Path<(String, Uuid)>,
     Query(input): Query<Selection>,
 ) -> Result<Json<Upload>, Error> {
-    rss_mdm_flow_service::content::begin_upload(&app, &auth.proof, &audit, &id, upload, &input)
+    rss_mdm_content_service::service::begin_upload(&app, &auth.proof, &audit, &id, upload, &input)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -67,7 +67,7 @@ async fn append(
     use axum::response::IntoResponse;
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-    match rss_mdm_flow_service::content::append_upload(
+    match rss_mdm_content_service::service::append_upload(
         &app,
         &auth.proof,
         &audit,
@@ -78,8 +78,10 @@ async fn append(
     )
     .await?
     {
-        rss_mdm_flow_service::content::Append::Written(result) => Ok(Json(result).into_response()),
-        rss_mdm_flow_service::content::Append::OffsetConflict(offset) => Ok((
+        rss_mdm_content_service::service::Append::Written(result) => {
+            Ok(Json(result).into_response())
+        }
+        rss_mdm_content_service::service::Append::OffsetConflict(offset) => Ok((
             StatusCode::CONFLICT,
             Json(serde_json::json!({"code":"upload_offset_conflict","offset":offset})),
         )
@@ -92,7 +94,8 @@ async fn complete(
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
 ) -> Result<StatusCode, Error> {
-    rss_mdm_flow_service::content::complete_upload(&app, &auth.proof, &audit, &id, upload).await?;
+    rss_mdm_content_service::service::complete_upload(&app, &auth.proof, &audit, &id, upload)
+        .await?;
     Ok(StatusCode::CREATED)
 }
 async fn upload(
@@ -105,7 +108,8 @@ async fn upload(
 ) -> Result<StatusCode, Error> {
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-    rss_mdm_flow_service::content::upload(&app, &auth.proof, &audit, &id, &input, reader).await?;
+    rss_mdm_content_service::service::upload(&app, &auth.proof, &audit, &id, &input, reader)
+        .await?;
     Ok(StatusCode::CREATED)
 }
 /// Explicit bounded maintenance; every candidate is pinned against new upload/download readers.
@@ -114,12 +118,11 @@ async fn cleanup(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    rss_mdm_flow_service::content::cleanup(&app, &auth.proof, &audit)
+    rss_mdm_content_service::service::cleanup(&app, &auth.proof, &audit)
         .await
         .map(Json)
         .map_err(Into::into)
 }
-pub use rss_mdm_flow_service::content::reclaim_in;
 
 /// Mirror only the selected frozen artifact; source credentials never reach the artifact origin.
 async fn mirror(
@@ -129,7 +132,7 @@ async fn mirror(
     Path(id): Path<String>,
     Query(input): Query<Selection>,
 ) -> Result<StatusCode, Error> {
-    rss_mdm_flow_service::content::mirror(&app, &auth.proof, &audit, &id, &input)
+    rss_mdm_content_service::service::mirror(&app, &auth.proof, &audit, &id, &input)
         .await
         .map(|()| StatusCode::CREATED)
         .map_err(Into::into)
@@ -144,11 +147,14 @@ pub async fn response(
     let etag = content.etag();
     let length = content.artifact.length();
     if headers.get_all(header::RANGE).iter().count() > 1 {
-        return Err(Error::Malformed);
+        return Err(Error(rss_mdm_flow_service::Error::Malformed));
     }
     let requested = headers
         .get(header::RANGE)
-        .map(|h| h.to_str().map_err(|_| Error::Malformed))
+        .map(|h| {
+            h.to_str()
+                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))
+        })
         .transpose()?;
     let requested = if headers
         .get(header::IF_RANGE)
@@ -170,7 +176,7 @@ pub async fn response(
                 header::CONTENT_RANGE,
                 format!("bytes */{}", length)
                     .parse()
-                    .map_err(|_| Error::Malformed)?,
+                    .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
             );
             return Ok(response);
         }
@@ -189,15 +195,17 @@ pub async fn response(
         (end - start)
             .to_string()
             .parse()
-            .map_err(|_| Error::Malformed)?,
+            .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
     );
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         "application/octet-stream".parse().expect("constant"),
     );
-    response
-        .headers_mut()
-        .insert(header::ETAG, etag.parse().map_err(|_| Error::Malformed)?);
+    response.headers_mut().insert(
+        header::ETAG,
+        etag.parse()
+            .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
+    );
     response
         .headers_mut()
         .insert(header::ACCEPT_RANGES, "bytes".parse().expect("constant"));
@@ -210,7 +218,7 @@ pub async fn response(
             header::CONTENT_RANGE,
             format!("bytes {start}-{}/{}", end - 1, length)
                 .parse()
-                .map_err(|_| Error::Malformed)?,
+                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
         );
     }
     Ok(response)
@@ -222,7 +230,7 @@ async fn receipt(
     Extension(audit): Extension<RequestAudit>,
     Path((id, operation)): Path<(String, Uuid)>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    rss_mdm_flow_service::content::receipt(&app, &auth.proof, &audit, &id, operation)
+    rss_mdm_content_service::service::receipt(&app, &auth.proof, &audit, &id, operation)
         .await
         .map(Json)
         .map_err(Into::into)

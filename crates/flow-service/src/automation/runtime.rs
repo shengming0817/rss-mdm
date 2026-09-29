@@ -274,18 +274,19 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                                     ctx.0
                                                         .advance_group_job_in(tx, id, &job, cursor)
                                                         .await
-                                                        .map_err(Into::into)
                                                 }
-                                                JobInput::Scope { scope } => ctx
-                                                    .0
-                                                    .advance_scope_job_in(tx, id, scope, cursor)
-                                                    .await
-                                                    .map_err(Into::into),
-                                                JobInput::PolicyReconcile { policy } => ctx
-                                                    .0
-                                                    .advance_assignment_in(tx, id, policy, cursor)
-                                                    .await
-                                                    .map_err(Into::into),
+                                                JobInput::Scope { scope } => {
+                                                    ctx.0
+                                                        .advance_scope_job_in(tx, id, scope, cursor)
+                                                        .await
+                                                }
+                                                JobInput::PolicyReconcile { policy } => {
+                                                    ctx.0
+                                                        .advance_assignment_in(
+                                                            tx, id, policy, cursor,
+                                                        )
+                                                        .await
+                                                }
                                             }
                                         }
                                         .await;
