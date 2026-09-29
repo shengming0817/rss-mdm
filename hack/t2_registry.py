@@ -130,79 +130,124 @@ def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
                           scope=None if profile == 'none' else 'objects', python=python, children=tuple(children))
 
 
-APP_INPUTS = {
-    'identity.local': ('identity.rs',),
-    'identity.sso': ('identity.rs',),
-    'authorization.rules': ('authorization/store.rs', 'authorization/evaluate.rs', 'authorization/model.rs'),
-    'authorization.membership': ('authorization/store.rs', 'authorization/authority.rs'),
-    'authorization.capacity': ('authorization/store.rs', 'authorization/authority.rs'),
-    'authorization.initialization': ('authorization/initialize.rs',),
-    'authorization.admission': ('authorization/admission.rs',),
-    'enrollment.http': ('enrollment/http.rs', 'enrollment/read.rs'),
-    'enrollment.recovery': ('enrollment/store.rs',),
-    'device.binding': ('device.rs', 'device/store.rs'),
-    'device.revocation': ('device.rs', 'registration_lifecycle.rs'),
-    'device.recovery': ('device/store.rs',),
-    'device.admission': ('device/admission.rs',),
-    'agent.registration': ('agent.rs',),
-    'agent.reports': ('agent.rs',),
-    'assets.http': ('assets/http.rs', 'assets/store.rs'),
-    'assets.queries': ('assets/query*.rs', 'assets/filter.rs'),
-    'assets.sources': ('assets/store.rs', 'assets/quality.rs', 'assets/collection.rs'),
-    'assets.group_input': ('assets/planning.rs', 'assets/quality.rs'),
-    'planning.assets': ('planning/sources.rs', 'planning/automation/dispatch.rs', 'assets/planning.rs'),
-    'planning.scope': ('planning/scopes.rs', 'planning/pages/scope.rs', 'planning/automation/scopes.rs'),
-    'planning.group_scope': ('planning/groups.rs', 'planning/scopes.rs', 'planning/automation/groups.rs', 'planning/automation/scopes.rs'),
-    'planning.policy': ('planning/policies/*.rs',),
-    'planning.recovery': ('planning/storage.rs', 'planning/admission.sql', 'planning/automation/health.rs'),
-    'planning.http': ('planning/http.rs', 'planning/pages.rs', 'planning/policies/http.rs'),
-    'planning.agent_policy': ('planning/action_contract.rs', 'planning/policies/mod.rs', 'planning/policies/http.rs', 'planning/policies/preview.rs', 'planning/policies/rerun.rs', 'planning/policies/admission.rs', 'planning/policies/storage.rs'),
-    'planning.frequency': ('planning/policies/admission.rs', 'planning/policies/reconcile.rs'),
-    'planning.remote': ('planning/remote_operations/*.rs', 'execution/remote.rs'),
-    'planning.software': ('planning/policies/software.rs', 'planning/policies/mod.rs'),
-    'planning.resource_archive': ('resource_catalog/mod.rs', 'planning/references.rs'),
-    'compliance.http': ('compliance/http.rs', 'compliance/read.rs'),
-    'compliance.evaluation': ('compliance/evaluation.rs',),
-    'compliance.recovery': ('compliance/dispatch.rs', 'compliance/freshness.rs'),
-    'compliance.group_input': ('compliance/evaluation.rs', 'compliance/freshness.rs'),
-    'execution.agent.delivery': ('execution/actions/agent.rs', 'execution/actions/production.rs', 'execution/actions/collection.rs'),
-    'execution.agent.content': ('execution/actions/http.rs', 'content/http.rs'),
-    'execution.agent.history': ('execution/actions/history.rs',),
-    'execution.agent.poll': ('execution/actions/poll.rs',),
-    'execution.agent.recovery': ('execution/actions/recovery.rs',),
-    'execution.commands.admission': ('execution/http.rs', 'execution/storage.rs', 'execution/admission.sql'),
-    'execution.commands.dispatch': ('execution/recovery.rs',),
-    'execution.commands.recovery': ('execution/recovery.rs', 'execution/lifecycle.rs'),
-    'execution.commands.windows': ('execution/native.rs',),
-    'execution.commands.firewall': ('execution/configuration.rs', 'execution/native.rs'),
-    'execution.software.offer': ('execution/actions/software.rs', 'execution/actions/payload.rs'),
-    'execution.software.content': ('execution/actions/http.rs', 'content/http.rs'),
-    'execution.software.recovery': ('execution/actions/software.rs', 'execution/actions/recovery.rs'),
-    'software.http': ('software_catalog.rs',),
-    'content.http': ('content/http.rs', 'content/upload.rs'),
-    'content.mirror': ('content/http.rs', 'content/upload.rs'),
-    'content.gc': ('content/cleanup.rs', 'content/event.rs'),
-    'windows.issuance': ('windows/issuance.rs', 'windows/certificate.rs'),
-    'windows.enrollment': ('windows/mod.rs',),
-    'windows.management': ('windows/management.rs', 'windows/protection.rs'),
-    'windows.commands': ('windows/management.rs', 'execution/native.rs'),
-    'windows.retention': ('windows/retention.rs',),
-    'windows.limits': ('native/admission.rs',),
-}
+CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
+ 'identity.sso': ('crates/app/src/identity.rs',),
+ 'authorization.rules': ('crates/authorization-service/src/store.rs',
+                         'crates/authorization-service/src/evaluate.rs',
+                         'crates/authorization-service/src/model.rs'),
+ 'authorization.membership': ('crates/authorization-service/src/store.rs',
+                              'crates/authorization-service/src/authority.rs'),
+ 'authorization.capacity': ('crates/authorization-service/src/store.rs',
+                            'crates/authorization-service/src/authority.rs'),
+ 'authorization.initialization': ('crates/authorization-service/src/initialization.rs',),
+ 'authorization.admission': ('crates/authorization-service/src/admission.rs',),
+ 'enrollment.http': ('crates/management-http/src/enrollment/http.rs',
+                     'crates/registration-service/src/enrollment/read.rs'),
+ 'enrollment.recovery': ('crates/registration-service/src/enrollment/store.rs',),
+ 'device.binding': ('crates/registration-service/src/device.rs',
+                    'crates/registration-service/src/device/store.rs'),
+ 'device.revocation': ('crates/registration-service/src/device.rs',
+                       'crates/app/src/registration_lifecycle.rs'),
+ 'device.recovery': ('crates/registration-service/src/device/store.rs',),
+ 'device.admission': ('crates/registration-service/src/device/admission.rs',),
+ 'agent.registration': ('crates/agent-channel/src/lib.rs',),
+ 'agent.reports': ('crates/agent-channel/src/lib.rs',),
+ 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs'),
+ 'assets.queries': ('crates/inventory-service/src/assets/query*.rs',
+                    'crates/inventory-service/src/assets/filter.rs'),
+ 'assets.sources': ('crates/inventory-service/src/assets/store.rs',
+                    'crates/inventory-service/src/assets/quality.rs',
+                    'crates/inventory-service/src/collection/read.rs'),
+ 'assets.group_input': ('crates/inventory-service/src/assets/planning.rs',
+                        'crates/inventory-service/src/assets/quality.rs'),
+ 'planning.assets': ('crates/flow-service/src/planning/sources.rs',
+                     'crates/flow-service/src/planning/automation/dispatch.rs',
+                     'crates/inventory-service/src/assets/planning.rs'),
+ 'planning.scope': ('crates/flow-service/src/planning/scopes.rs',
+                    'crates/flow-service/src/planning/pages/scope.rs',
+                    'crates/flow-service/src/planning/automation/scopes.rs'),
+ 'planning.group_scope': ('crates/inventory-service/src/groups/mod.rs',
+                          'crates/flow-service/src/planning/scopes.rs',
+                          'crates/flow-service/src/planning/automation/groups.rs',
+                          'crates/flow-service/src/planning/automation/scopes.rs'),
+ 'planning.policy': ('crates/flow-service/src/planning/policies/*.rs',),
+ 'planning.recovery': ('crates/flow-service/src/planning/storage.rs',
+                       'crates/flow-service/src/planning/admission.sql',
+                       'crates/flow-service/src/planning/automation/health.rs'),
+ 'planning.http': ('crates/management-http/src/planning/http.rs',
+                   'crates/flow-service/src/planning/pages.rs',
+                   'crates/management-http/src/planning/policies/http.rs'),
+ 'planning.agent_policy': ('crates/flow-service/src/planning/action_contract.rs',
+                           'crates/flow-service/src/planning/policies/mod.rs',
+                           'crates/management-http/src/planning/policies/http.rs',
+                           'crates/management-http/src/planning/policies/preview.rs',
+                           'crates/flow-service/src/planning/policies/rerun.rs',
+                           'crates/flow-service/src/planning/policies/admission.rs',
+                           'crates/flow-service/src/planning/policies/storage.rs'),
+ 'planning.frequency': ('crates/flow-service/src/planning/policies/admission.rs',
+                        'crates/flow-service/src/planning/policies/reconcile.rs'),
+ 'planning.remote': ('crates/flow-service/src/planning/remote_operations/*.rs',
+                     'crates/flow-service/src/execution/remote.rs'),
+ 'planning.software': ('crates/flow-service/src/planning/policies/software.rs',
+                       'crates/flow-service/src/planning/policies/mod.rs'),
+ 'planning.resource_archive': ('crates/flow-service/src/resource_catalog/mod.rs',
+                               'crates/flow-service/src/planning/references.rs'),
+ 'compliance.http': ('crates/management-http/src/compliance/http.rs',
+                     'crates/inventory-service/src/compliance/read.rs'),
+ 'compliance.evaluation': ('crates/inventory-service/src/compliance/evaluation.rs',),
+ 'compliance.recovery': ('crates/inventory-service/src/compliance/dispatch.rs',
+                         'crates/inventory-service/src/compliance/freshness.rs'),
+ 'compliance.group_input': ('crates/inventory-service/src/compliance/evaluation.rs',
+                            'crates/inventory-service/src/compliance/freshness.rs'),
+ 'execution.agent.delivery': ('crates/flow-service/src/execution/actions/agent.rs',
+                              'crates/flow-service/src/execution/actions/production.rs',
+                              'crates/flow-service/src/execution/actions/collection.rs'),
+ 'execution.agent.content': ('crates/agent-channel/src/tasks.rs',
+                             'crates/management-http/src/content/http.rs'),
+ 'execution.agent.history': ('crates/flow-service/src/execution/actions/history.rs',),
+ 'execution.agent.poll': ('crates/flow-service/src/execution/actions/poll.rs',),
+ 'execution.agent.recovery': ('crates/flow-service/src/execution/actions/recovery.rs',),
+ 'execution.commands.admission': ('crates/management-http/src/execution/http.rs',
+                                  'crates/flow-service/src/execution/storage.rs',
+                                  'crates/flow-service/src/execution/admission.sql'),
+ 'execution.commands.dispatch': ('crates/flow-service/src/execution/recovery.rs',),
+ 'execution.commands.recovery': ('crates/flow-service/src/execution/recovery.rs',
+                                 'crates/flow-service/src/execution/lifecycle.rs'),
+ 'execution.commands.windows': ('crates/flow-service/src/execution/native.rs',),
+ 'execution.commands.firewall': ('crates/flow-service/src/execution/configuration.rs',
+                                 'crates/flow-service/src/execution/native.rs'),
+ 'execution.software.offer': ('crates/flow-service/src/execution/actions/software.rs',
+                              'crates/flow-service/src/execution/actions/payload.rs'),
+ 'execution.software.content': ('crates/agent-channel/src/tasks.rs',
+                                'crates/management-http/src/content/http.rs'),
+ 'execution.software.recovery': ('crates/flow-service/src/execution/actions/software.rs',
+                                 'crates/flow-service/src/execution/actions/recovery.rs'),
+ 'software.http': ('crates/management-http/src/software_catalog.rs',),
+ 'content.http': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
+ 'content.mirror': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
+ 'content.gc': ('crates/content-service/src/cleanup.rs', 'crates/content-service/src/event.rs'),
+ 'windows.issuance': ('crates/windows-channel/src/issuance.rs', 'crates/certificate/src/windows.rs'),
+ 'windows.enrollment': ('crates/windows-channel/src/lib.rs',),
+ 'windows.management': ('crates/windows-channel/src/management.rs',
+                        'crates/windows-channel/src/protection.rs'),
+ 'windows.commands': ('crates/windows-channel/src/management.rs',
+                      'crates/flow-service/src/execution/native.rs'),
+ 'windows.retention': ('crates/windows-channel/src/retention.rs',),
+ 'windows.limits': ('crates/app/src/native/admission.rs',)}
 
 
 def app_family(owner, *, namespace=None, identity=True,
                fixtures=(), profile='product'):
     namespace = namespace or owner.replace('.', '::') + '::t2'
     test_root = namespace.replace('::t2', '').replace('::', '/')
-    children = [name.rsplit('.', 1)[1] for name in APP_INPUTS if name.rsplit('.', 1)[0] == owner]
+    children = [name.rsplit('.', 1)[1] for name in CAPABILITY_INPUTS if name.rsplit('.', 1)[0] == owner]
     if not children:
         raise ValueError('missing App production inputs: ' + owner)
     for child in children:
         add(owner + '.' + child,
             selectors=(namespace + '::' + child + '::',), profile=profile,
             fixtures=(('identity',) if identity else ()) + tuple(fixtures),
-            sources=tuple('crates/app/src/' + path for path in APP_INPUTS[owner + '.' + child]),
+            sources=CAPABILITY_INPUTS[owner + '.' + child],
             tests=(f'crates/app/tests/{test_root}/{child}.rs',
                    f'crates/app/tests/{test_root}/{child}/*'),
             support=(f'crates/app/tests/{test_root}/mod.rs',))
@@ -214,8 +259,8 @@ add('installation.migration', selectors=('migration::tests::',), profile='empty'
     python='installation', support=('hack/t2_modules/installation.py',))
 for part in ('receipts', 'integrity', 'recovery', 'budget'):
     add('audit.' + part, selectors=(f'audit_integration_tests::{part}::',),
-        sources=('crates/audit-integration/src/*', 'crates/app/src/audit_budget.rs',
-                 'crates/app/src/transaction.rs'),
+        sources=('crates/audit-integration/src/*', 'crates/audit-integration/src/budget.rs',
+                 'crates/flow-service/src/transaction.rs'),
         tests=(f'crates/app/tests/audit/{part}.rs',),
         support=('crates/app/tests/audit/mod.rs',))
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], children=('audit_integration_tests::test_support::',))
@@ -253,7 +298,7 @@ add('worker.wake', selectors=('worker_wake::tests::',),
     sources=('crates/app/src/worker_wake.rs',),
     tests=('crates/app/tests/worker_wake/mod.rs',), support=())
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
-    sources=('crates/app/src/inventory_runtime.rs',),
+    sources=('crates/inventory-service/src/inventory_runtime.rs',),
     tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())
 add('examples.cli', build=Build('rss-mdm-examples', features=('integration',)),
     selectors=('app::t2::cli::',), fixtures=('examples',),
@@ -332,11 +377,11 @@ for part in ('winget', 'brew', 'mapping', 'withdrawal', 'recovery', 'artifact'):
         selectors=(part + '::',), profile='none' if part == 'artifact' else 'product',
         fixtures=('tls', 'git') if part == 'brew' else ('tls',),
         sources=tuple('crates/software-service/src/publication/' + path for path in {
-            'winget': ('artifact.rs','config.rs','driver.rs','service.rs','spec.rs','storage.rs','receipts.rs'),
-            'brew': ('artifact.rs','config.rs','driver.rs','service.rs','spec.rs','storage.rs','receipts.rs'),
-            'mapping': ('artifact.rs','config.rs','service.rs','spec.rs','storage.rs','receipts.rs','references.rs'),
-            'withdrawal': ('config.rs','driver.rs','service.rs','storage.rs','receipts.rs'),
-            'recovery': ('config.rs','driver.rs','service.rs','storage.rs','receipts.rs'),
+            'winget': ('artifact.rs','config.rs','driver.rs','service.rs','spec.rs','storage.rs','service.rs'),
+            'brew': ('artifact.rs','config.rs','driver.rs','service.rs','spec.rs','storage.rs','service.rs'),
+            'mapping': ('artifact.rs','config.rs','service.rs','spec.rs','storage.rs','service.rs','references.rs'),
+            'withdrawal': ('config.rs','driver.rs','service.rs','storage.rs','service.rs'),
+            'recovery': ('config.rs','driver.rs','service.rs','storage.rs','service.rs'),
             'artifact': ('artifact.rs',),
         }[part]),
         tests=(f'crates/software-service/tests/publication/{part}.rs',),
@@ -376,11 +421,11 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'renewal'
         'host': ('mod.rs','config.rs'),
     }[part]
     add('apple.' + part, selectors=selectors, profile='none' if no_pg else 'product',
-        fixtures=fixtures, sources=tuple('crates/app/src/apple/' + path for path in source),
+        fixtures=fixtures, sources=tuple(('crates/app/src/assembly/apple/' if path in ('mod.rs','config.rs') else 'crates/certificate/src/' if path=='certificate.rs' else 'crates/apple-mdm/src/' if path in ('protocol.rs','profile.rs') else 'crates/apple-channel/src/') + ('apple.rs' if path=='certificate.rs' else path) for path in source),
         tests=(('crates/app/tests/apple/apns.rs',) if part == 'apns' else
-               () if part == 'cms' else (f'crates/app/tests/apple/{part}.rs',)))
+               ('crates/app/tests/apple/cms.rs',) if part == 'cms' else (f'crates/app/tests/apple/{part}.rs',)))
 add('catalog.contract', build=None, python='catalog',
-    sources=('crates/app/src/*/catalog.sql', 'crates/app/src/*/catalog.json',
+    sources=('crates/*-service/src/*/catalog.sql', 'crates/*-service/src/*/catalog.json',
              'crates/software-service/src/*/catalog.sql', 'crates/software-service/src/*/catalog.json'),
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
 add('gateway.admission', build=None, python='gateway', profile='none', fixtures=('gateway',),
@@ -591,11 +636,11 @@ def consume(inputs, names):
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs + tuple(inputs))
 
 
-consume(('crates/app/src/content/range.rs',),
+consume(('crates/content-service/src/range.rs',),
         'content.http execution.agent.content execution.software.content')
-consume(('crates/app/src/content/upload.rs', 'crates/app/src/content/bundle.rs'),
+consume(('crates/content-service/src/upload.rs', 'crates/content-service/src/bundle.rs'),
         'content.http software.http')
-consume(('crates/app/src/content/cleanup.rs', 'crates/app/src/content/event.rs'),
+consume(('crates/content-service/src/cleanup.rs', 'crates/content-service/src/event.rs'),
         'content.gc planning.resource_archive')
 consume(('crates/brew-source/src/*',), 'publication.brew')
 consume(('crates/winget-source/src/*',), 'publication.winget publication.recovery content.mirror')
@@ -615,7 +660,7 @@ consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
 TASK_CONSUMERS = 'planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
-         'crates/agent-wire/schema/signed-task-v3.schema.json', 'crates/app/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/signed-task-v3.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
 consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v3.schema.json',
          'crates/agent-wire/schema/agent-v3.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports')
@@ -623,48 +668,63 @@ consume(('crates/agent-wire/schema/registration-*.json',), 'agent.registration')
 consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports')
 consume(('crates/windows-mdm/src/*',),
         'windows.enrollment windows.management windows.commands execution.commands.windows')
-consume(('crates/app/src/apple/push.rs',), 'apple.push apple.host')
-consume(('crates/app/src/apple/certificate.rs',), 'apple.scep apple.renewal apple.identity')
+consume(('crates/apple-channel/src/push.rs',), 'apple.push apple.host')
+consume(('crates/certificate/src/apple.rs',), 'apple.scep apple.renewal apple.identity')
 consume(('crates/software-service/src/lib.rs', 'crates/software-service/src/publication/mod.rs'),
         'software.catalog software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery publication.artifact')
 consume(('crates/software-service/src/catalog/*',),
         'software.http planning.software execution.software.offer execution.software.content execution.software.recovery')
 AUTH_CONSUMERS = 'authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.renewal'
-consume(('crates/app/src/authorization/*.rs',), AUTH_CONSUMERS)
+consume(('crates/authorization-service/src/*.rs',), AUTH_CONSUMERS)
 consume(('crates/app/src/identity.rs',), 'identity.local identity.sso identity.audit api.identity_context')
-consume(('crates/app/src/device/*', 'crates/app/src/device.rs', 'crates/app/src/registration_lifecycle.rs'),
+consume(('crates/registration-service/src/device/*', 'crates/registration-service/src/device.rs', 'crates/app/src/registration_lifecycle.rs'),
         'device.binding device.revocation device.recovery device.admission agent.registration agent.reports windows.issuance windows.management apple.identity inventory.runtime execution.agent.delivery')
-consume(('crates/app/src/enrollment.rs', 'crates/app/src/enrollment/*'),
+consume(('crates/registration-service/src/enrollment.rs', 'crates/registration-service/src/enrollment/*'),
         'enrollment.http enrollment.recovery agent.registration windows.enrollment apple.scep')
-consume(('crates/app/src/planning/remote_operations/*',), 'planning.remote')
-consume(('crates/app/src/planning/policies/software.rs',),
+consume(('crates/flow-service/src/planning/remote_operations/*',), 'planning.remote')
+consume(('crates/flow-service/src/planning/policies/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
-consume(('crates/app/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency')
-consume(('crates/app/src/planning/automation/groups.rs',), 'planning.group_scope assets.group_input compliance.group_input')
-consume(('crates/app/src/planning/automation/scopes.rs',), 'planning.scope planning.group_scope planning.frequency planning.remote planning.software')
-consume(('crates/app/src/execution/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
-consume(('crates/app/src/execution/actions/history.rs',), 'execution.agent.history')
-consume(('crates/app/src/execution/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
-consume(('crates/app/src/execution/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
-consume(('crates/app/src/execution/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
+consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency')
+consume(('crates/flow-service/src/planning/automation/groups.rs',), 'planning.group_scope assets.group_input compliance.group_input')
+consume(('crates/flow-service/src/planning/automation/scopes.rs',), 'planning.scope planning.group_scope planning.frequency planning.remote planning.software')
+consume(('crates/flow-service/src/execution/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
+consume(('crates/flow-service/src/execution/actions/history.rs',), 'execution.agent.history')
+consume(('crates/flow-service/src/execution/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
+consume(('crates/flow-service/src/execution/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
+consume(('crates/flow-service/src/execution/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
 AUDITED_MODULES = 'audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.firewall windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
-consume(('crates/app/src/transaction.rs',), ' '.join(name for name in AUDITED_MODULES.split() if MODULES[name].build == APP))
-consume(('crates/app/src/audit_budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
+consume(('crates/flow-service/src/transaction.rs',), ' '.join(name for name in AUDITED_MODULES.split() if MODULES[name].build == APP))
+consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
 consume(('crates/software-service/src/publication/references.rs',), 'planning.resource_archive')
 consume(('crates/software-service/src/publication/*.sql', 'crates/software-service/src/publication/*catalog.json'),
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery catalog.contract')
 
+consume(('crates/certificate/src/*',), 'windows.issuance windows.management apple.scep apple.identity apple.renewal apple.cms native.tls')
+consume(('crates/apple-mdm/src/*',), 'apple.scep apple.collection apple.profile apple.policy apple.renewal apple.identity')
+
+
+consume(('crates/management-http/src/boundary.rs', 'crates/management-http/src/api.rs', 'crates/management-http/src/router.rs', 'crates/management-http/src/identity.rs', 'crates/management-http/src/error*.rs'), AUTH_CONSUMERS + ' api.diagnostics')
+consume(('crates/authorization-service/src/initialization.rs', 'crates/app/src/authorization_bootstrap.rs'), 'authorization.initialization')
+consume(('crates/agent-channel/src/boundary.rs', 'crates/agent-channel/src/bindings.rs', 'crates/agent-channel/src/operations.rs'), 'agent.registration agent.reports execution.agent.delivery execution.agent.poll')
+consume(('crates/agent-channel/src/content.rs',), 'execution.agent.content execution.software.content')
+consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src/boundary.rs'), 'windows.management windows.retention windows.limits inventory.runtime')
+consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
+consume(('crates/inventory-service/src/collection*',), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
+consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
+consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/flow-service/src/content.rs'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/flow-service/src/storage*',), 'planning.recovery assets.http compliance.http planning.http software.http content.http')
+consume(('crates/apple-channel/src/boundary.rs',), 'apple.scep apple.collection apple.profile apple.renewal apple.identity apple.host')
+
 # Shared production configuration has a broad, but real, consumer set. No-PG
 # protocol modules do not become consumers merely because they live in App.
 PRODUCT_INPUTS = ('crates/app/src/migration.rs',
-                  'crates/app/schema/*', 'crates/app/migrations/*',
-                  'crates/app/src/*/install.sql',
-                  'crates/app/src/*/*/schema.sql')
+                  'crates/app/schema/*', 'crates/*-service/schema/*', 'crates/*-channel/schema/*')
 for name, module in tuple(MODULES.items()):
     if module.postgres:
         MODULES[name] = replace(module, production_inputs=module.production_inputs + PRODUCT_INPUTS)
     if module.build == APP:
+        MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/fixtures/error.rs'))
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs +
                                 ('crates/app/src/lib.rs', 'crates/app/src/config.rs'))
     support = ('hack/t2_environment.py', 'hack/t2_fixtures.py')
@@ -677,7 +737,6 @@ for name, module in tuple(MODULES.items()):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + support)
 
 
-MODULES['apple.cms'] = replace(MODULES['apple.cms'], test_inputs=('crates/app/tests/apple/cms.rs',))
 MODULES['api.diagnostics'] = replace(MODULES['api.diagnostics'], test_inputs=('crates/app/tests/api/diagnostics.rs',))
 for name in ('software.http','authorization.rules'):
     MODULES[name] = replace(MODULES[name], fixtures=MODULES[name].fixtures+('tls',))
@@ -738,6 +797,17 @@ for owner in ('policy','resource','software_release'):
             support += (f'crates/{package}-postgres/tests/support/ack.rs',)
         MODULES[name] = replace(MODULES[name],support_inputs=support)
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], support_inputs=MODULES['audit.recovery'].support_inputs+('crates/app/tests/audit/test_support.rs',))
+
+# App test-only namespace carriers preserve the existing Rust case identities.
+for family in ('agent','assets','authorization','collection','compliance','content','device','enrollment','execution','inventory_runtime','planning','resource_catalog','software_catalog'):
+    prefix={'inventory_runtime':'inventory.','software_catalog':'software.','resource_catalog':'planning.resource_archive','collection':'apple.collection'}.get(family,family+'.')
+    carrier=f'crates/app/tests/fixtures/{family}.rs'
+    if (ROOT/carrier).is_file():
+        for name, module in list(MODULES.items()):
+            if name.startswith(prefix):
+                MODULES[name]=replace(module,support_inputs=(*module.support_inputs,carrier))
+MODULES['apple.cms']=replace(MODULES['apple.cms'],support_inputs=(*MODULES['apple.cms'].support_inputs,'crates/app/tests/apple/certificate_support.rs'))
+MODULES['apple.apns']=replace(MODULES['apple.apns'],support_inputs=(*MODULES['apple.apns'].support_inputs,'crates/app/tests/apple/push_support.rs'))
 
 def all_tools():
     return sorted(path.stem for path in (ROOT / 'tests').glob('test_*.py'))
@@ -834,10 +904,8 @@ def matches(path, patterns):
 
 T1_INPUTS = tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
-    'compliance', 'agent-wire', 'windows-mdm')) + (
+    'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',
-    'crates/app/tests/apple/profile_unit.rs',
-    'crates/app/tests/apple/protocol_unit.rs',
     'crates/app/tests/apple/webhook_unit.rs',
     'crates/app/tests/assets/query_sort_unit.rs',
     'crates/app/tests/assets/unit.rs',
@@ -846,7 +914,6 @@ T1_INPUTS = tuple(f'crates/{name}/tests/*' for name in (
     'crates/app/tests/collection/unit.rs',
     'crates/app/tests/compliance/evaluation_unit.rs',
     'crates/app/tests/config/unit.rs',
-    'crates/app/tests/content/unit.rs',
     'crates/app/tests/device/coordinates_unit.rs',
     'crates/app/tests/diagnostic/unit.rs',
     'crates/app/tests/enrollment/credentials_unit.rs',

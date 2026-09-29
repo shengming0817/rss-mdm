@@ -1,0 +1,65 @@
+[package]
+name = "rss-mdm-flow-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+rss-mdm-inventory-postgres.workspace = true
+rss-mdm-inventory-service.workspace = true
+rss-mdm-registration-service.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-mdm-content-service.workspace = true
+rss-mdm-apple-mdm.workspace = true
+rss-mdm-software-service.workspace = true
+rss-mdm-inventory.workspace = true
+rss-mdm-group-postgres.workspace = true
+rss-mdm-policy.workspace = true
+rss-mdm-policy-postgres.workspace = true
+rss-mdm-scope.workspace = true
+rss-mdm-resource.workspace = true
+rss-mdm-resource-postgres.workspace = true
+rss-mdm-software-release.workspace = true
+rss-mdm-software-release-postgres.workspace = true
+rss-mdm-agent-wire.workspace = true
+rss-mdm-windows-mdm.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-audit-postgres.workspace = true
+rss-ledger-postgres.workspace = true
+rss-device-command.workspace = true
+rss-device-command-postgres.workspace = true
+rss-reconcile.workspace = true
+rss-reconcile-postgres.workspace = true
+rss-observation.workspace = true
+rss-projection.workspace = true
+rss-contract.workspace = true
+rss-runtime.workspace = true
+rss-request-context.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+rss-transactional-messaging-runtime.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+ring.workspace = true
+base64.workspace = true
+jiff.workspace = true
+plist.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+tokio-util.workspace = true
+tokio = {workspace=true,features=["rt","macros","time","sync"]}
+
+[dev-dependencies]
+jsonschema.workspace = true
+tempfile.workspace = true
+
+[features]
+integration = ["rss-transactional-messaging-postgres/integration"]
+
+[lints]
+workspace = true

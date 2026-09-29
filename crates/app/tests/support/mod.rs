@@ -339,8 +339,12 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
         )
         .await?;
-    let automation =
-        crate::automation::Automation::open(service, &config.flow.storage.database).await?;
+    let automation = crate::automation::Automation::connect(
+        service.planning.clone(),
+        service.assets.clone(),
+        config.flow.storage.database.options()?,
+    )
+    .await?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::automation::Resource(automation.clone()),
     ));
@@ -354,7 +358,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.registration().critical());
-    launch.stage_deferred_task_with_token(automation.registration(signals).critical());
+    launch.stage_deferred_task_with_token(automation.registration(signals.flow()).critical());
     launch.finish();
     Ok(Some(stack))
 }
@@ -491,9 +495,12 @@ pub(crate) async fn agent_runtime(
     let config: Config = serde_json::from_value(config.clone())?;
     Ok(crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access,
+        access.inventory(),
         rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
     )
     .await?)
 }

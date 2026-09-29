@@ -1,0 +1,122 @@
+use crate::{Error, database::db, device::DevicePrincipal};
+use rss_mdm_apple_mdm::protocol as wire;
+use rss_mdm_inventory_service::collection::{Attempts, store};
+use rss_mdm_registration_service::enrollment::store::uuid;
+use sqlx::{PgConnection, Row};
+use uuid::Uuid;
+pub async fn receive(
+    c: &mut PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    p: &DevicePrincipal,
+    id: Uuid,
+    status: wire::Status,
+    d: &plist::Dictionary,
+    bytes: &[u8],
+) -> Result<bool, Error> {
+    use crate::attempt::{self, Owner, Reception};
+    let tenant = p.tenant().to_string();
+    let attempt = match attempt::lock(c, p, id, Owner::Collection, bytes).await? {
+        None => return Ok(false),
+        Some(Reception::Replay) => return Ok(true),
+        Some(Reception::Ready(attempt)) => attempt,
+    };
+    if !rss_mdm_inventory_service::apple_collection::approved(c, &tenant, id).await? {
+        return Err(Error::Forbidden);
+    }
+    attempt.settle(c, status).await?;
+    if status != wire::Status::NotNow {
+        let mut run = store::load_on(c, &tenant, id).await?;
+        let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+        let values = if status == wire::Status::Acknowledged {
+            Some(
+                d.get("QueryResponses")
+                    .and_then(plist::Value::as_dictionary)
+                    .ok_or(Error::Malformed)?,
+            )
+        } else {
+            None
+        };
+        use rss_mdm_inventory_service::collection::NativeValue;
+        let values = ["Model", "OSVersion"].map(|key| match values {
+            None => NativeValue::Failed,
+            Some(d) => match d.get(key) {
+                Some(plist::Value::String(s)) => NativeValue::Value(s.clone()),
+                Some(_) => NativeValue::Invalid,
+                None => NativeValue::Missing,
+            },
+        });
+        run.attempts = Attempts::native(values, now);
+        facts.extend(store::seal(c, &mut run, "complete").await?);
+    }
+    Ok(true)
+}
+pub async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Vec<u8>, Error> {
+    let tenant = p.tenant().to_string();
+    let rows=sqlx::query("SELECT id::text,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND phase='collect' AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
+        .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
+    for row in rows {
+        let id = uuid(&row, "id")?;
+        if !rss_mdm_inventory_service::apple_collection::approved(c, &tenant, id).await? {
+            sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
+            crate::notify(c, "apple").await.map_err(db)?;
+            continue;
+        }
+        sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
+            .bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
+        crate::notify(c, "apple").await.map_err(db)?;
+        return row.try_get("request").map_err(db);
+    }
+    Ok(Vec::new())
+}
+
+pub struct Participant;
+impl rss_mdm_inventory_service::apple_collection::Participant for Participant {
+    fn start<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: &'a str,
+        id: Uuid,
+        registration: Uuid,
+        generation: i64,
+        sequence: i64,
+        deadline: String,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), rss_mdm_inventory_service::Error>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active' FOR SHARE)").bind(tenant).bind(registration).fetch_one(&mut *c).await.map_err(|_|rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::Database))?;
+            if !active {
+                return Err(rss_mdm_inventory_service::Error::Conflict);
+            }
+            let request = wire::command(
+                id,
+                wire::dictionary([
+                    ("RequestType", "DeviceInformation".into()),
+                    (
+                        "Queries",
+                        plist::Value::Array(vec!["Model".into(), "OSVersion".into()]),
+                    ),
+                ]),
+            )
+            .map_err(|_| {
+                rss_mdm_inventory_service::Error::Unavailable(
+                    rss_mdm_inventory_service::Failure::Protocol,
+                )
+            })?;
+            sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'collect',$5,'pending',$6,$7::text::timestamptz)").bind(tenant).bind(id).bind(registration).bind(generation).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(|_|rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::Database))?;
+            crate::notify(c, "apple").await.map_err(|_| {
+                rss_mdm_inventory_service::Error::Unavailable(
+                    rss_mdm_inventory_service::Failure::Database,
+                )
+            })?;
+            Ok(())
+        })
+    }
+}

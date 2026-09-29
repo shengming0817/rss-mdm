@@ -2534,6 +2534,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-agent-channel"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures",
+ "rss-audit-postgres",
+ "rss-contract",
+ "rss-mdm-agent-wire",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-content-service",
+ "rss-mdm-flow-service",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-service",
+ "rss-mdm-registration-service",
+ "rss-observation",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "rss-mdm-agent-wire"
 version = "3.0.0"
 dependencies = [
@@ -2578,22 +2607,33 @@ dependencies = [
  "rss-identity-postgres",
  "rss-ledger",
  "rss-ledger-postgres",
+ "rss-mdm-agent-channel",
  "rss-mdm-agent-wire",
+ "rss-mdm-apple-channel",
+ "rss-mdm-apple-mdm",
  "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
  "rss-mdm-brew-source",
+ "rss-mdm-certificate",
  "rss-mdm-compliance",
  "rss-mdm-compliance-postgres",
+ "rss-mdm-content-service",
+ "rss-mdm-flow-service",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
+ "rss-mdm-inventory-service",
+ "rss-mdm-management-http",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
  "rss-mdm-scope",
  "rss-mdm-software-release",
  "rss-mdm-software-release-postgres",
  "rss-mdm-software-service",
+ "rss-mdm-windows-channel",
  "rss-mdm-windows-mdm",
  "rss-mdm-winget-source",
  "rss-observation",
@@ -2629,6 +2669,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-apple-channel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "md-5 0.10.6",
+ "plist",
+ "reqwest",
+ "ring",
+ "rss-audit-postgres",
+ "rss-mdm-apple-mdm",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-certificate",
+ "rss-mdm-flow-service",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-service",
+ "rss-mdm-registration-service",
+ "rss-observation",
+ "rss-request-context",
+ "rss-runtime",
+ "rss-transactional-messaging",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "uuid",
+ "x509-cert",
+ "zeroize",
+]
+
+[[package]]
+name = "rss-mdm-apple-mdm"
+version = "0.1.0"
+dependencies = [
+ "plist",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "rss-mdm-audit-integration"
 version = "0.1.0"
 dependencies = [
@@ -2647,6 +2738,29 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-authorization-service"
+version = "0.1.0"
+dependencies = [
+ "rss-audit-postgres",
+ "rss-identity-core",
+ "rss-identity-postgres",
+ "rss-mdm-audit-integration",
+ "rss-observation",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
  "uuid",
 ]
 
@@ -2677,6 +2791,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-certificate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cms",
+ "ring",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio-rustls",
+ "uuid",
+ "x509-cert",
+]
+
+[[package]]
 name = "rss-mdm-compliance"
 version = "0.1.0"
 dependencies = [
@@ -2700,6 +2829,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-content-service"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "libc",
+ "rss-contract",
+ "rss-mdm-resource",
+ "rss-mdm-software-service",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "rss-mdm-examples"
 version = "0.1.0"
 dependencies = [
@@ -2716,6 +2870,60 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-flow-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "jiff",
+ "jsonschema",
+ "plist",
+ "ring",
+ "rss-audit-postgres",
+ "rss-contract",
+ "rss-device-command",
+ "rss-device-command-postgres",
+ "rss-ledger-postgres",
+ "rss-mdm-agent-wire",
+ "rss-mdm-apple-mdm",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-content-service",
+ "rss-mdm-group-postgres",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-postgres",
+ "rss-mdm-inventory-service",
+ "rss-mdm-policy",
+ "rss-mdm-policy-postgres",
+ "rss-mdm-registration-service",
+ "rss-mdm-resource",
+ "rss-mdm-resource-postgres",
+ "rss-mdm-scope",
+ "rss-mdm-software-release",
+ "rss-mdm-software-release-postgres",
+ "rss-mdm-software-service",
+ "rss-mdm-windows-mdm",
+ "rss-observation",
+ "rss-projection",
+ "rss-reconcile",
+ "rss-reconcile-postgres",
+ "rss-request-context",
+ "rss-runtime",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "rss-transactional-messaging-runtime",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "uuid",
@@ -2780,6 +2988,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-inventory-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ring",
+ "rss-audit-postgres",
+ "rss-contract",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-compliance",
+ "rss-mdm-compliance-postgres",
+ "rss-mdm-group-postgres",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-postgres",
+ "rss-mdm-registration-service",
+ "rss-observation",
+ "rss-observation-postgres",
+ "rss-projection",
+ "rss-projection-postgres",
+ "rss-reconcile",
+ "rss-reconcile-postgres",
+ "rss-request-context",
+ "rss-runtime",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-management-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures",
+ "rss-audit-postgres",
+ "rss-identity-core",
+ "rss-identity-http-axum",
+ "rss-identity-postgres",
+ "rss-ledger-postgres",
+ "rss-mdm-agent-wire",
+ "rss-mdm-apple-mdm",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-content-service",
+ "rss-mdm-flow-service",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-service",
+ "rss-mdm-registration-service",
+ "rss-mdm-resource",
+ "rss-mdm-software-service",
+ "rss-observation",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "rss-mdm-policy"
 version = "0.1.0"
 dependencies = [
@@ -2808,6 +3087,32 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "rss-mdm-registration-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "rand 0.8.8",
+ "rss-audit-postgres",
+ "rss-identity-core",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-inventory",
+ "rss-observation",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -2912,6 +3217,42 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "rss-mdm-windows-channel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "md-5 0.10.6",
+ "ring",
+ "rss-audit-postgres",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-certificate",
+ "rss-mdm-flow-service",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-service",
+ "rss-mdm-registration-service",
+ "rss-mdm-windows-mdm",
+ "rss-observation",
+ "rss-request-context",
+ "rss-runtime",
+ "rss-transactional-messaging",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "uuid",
+ "x509-cert",
+ "zeroize",
 ]
 
 [[package]]

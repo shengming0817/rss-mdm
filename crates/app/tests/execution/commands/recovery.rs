@@ -97,7 +97,7 @@ impl Client {
             rss_reconcile::Control::new(&wake_timer, Duration::from_secs(2), &cancel);
         rss_reconcile::DurableStore::wake(
             &restarted.reconcile,
-            &service::target(restarted.tenant, case_device()),
+            &rss_mdm_flow_service::execution::target(restarted.tenant, case_device()),
             &wake_control,
         )
         .await?;
@@ -130,7 +130,8 @@ impl Client {
         ensure!(pending == "pending");
         let worker_cancel = tokio_util::sync::CancellationToken::new();
         let signals = crate::worker_wake::Signals::default();
-        let mut worker = Box::pin(restarted.run_worker(&worker_cancel, &signals));
+        let flow_signals = signals.flow();
+        let mut worker = Box::pin(restarted.run_worker(&worker_cancel, &flow_signals));
         tokio::select! {
             outcome=&mut worker => anyhow::bail!("production worker exited before publication: {outcome:?}"),
             observed=tokio::time::timeout(Duration::from_secs(5),async {
@@ -150,7 +151,7 @@ impl Client {
                 == "timed_out"
         );
         use rss_runtime::ManagedResource;
-        lifecycle::Resource(restarted).shutdown().await?;
+        crate::execution::Resource(restarted).shutdown().await?;
         pg.close().await?;
         Ok(())
     }

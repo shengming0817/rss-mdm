@@ -16,7 +16,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
             Uuid::new_v4()
         )
         .await,
-        Err(crate::Error::Conflict)
+        Err(rss_mdm_authorization_service::Error::Conflict)
     ));
     // The initializer marker, grant, receipt and audit must all roll back together.
     let mut isolated = crate::test_support::identity::user(case_tenant(), case_admin());
@@ -34,7 +34,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     for table in [
         "authorization_initializations",
         "authorization_rules",
-        "operations",
+        "authorization_operations",
     ] {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{}'", isolated.instance_id, TENANT = case_tenant()))?.trim() == "0");
     }
@@ -46,7 +46,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
             init_key
         )
         .await,
-        Err(crate::Error::CommitUnknown)
+        Err(rss_mdm_authorization_service::Error::CommitUnknown)
     ));
     let initial = crate::authorization::store::initialize_authorization(
         &audit_store,
@@ -82,7 +82,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
             Uuid::new_v4()
         )
         .await,
-        Err(crate::Error::Conflict)
+        Err(rss_mdm_authorization_service::Error::Conflict)
     ));
     ensure!(pg(&format!("SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'", isolated.instance_id, initial.id, TENANT = case_tenant()))?.trim() == "t");
     reopened.close().await;
@@ -138,7 +138,7 @@ async fn bounded_initialization_recovery() -> Result<()> {
         let outcome = crate::authorization::bounded_initialization(
             &audit,
             deadline,
-            crate::authorization::store::initialize_authorization_audited(
+            crate::authorization::store::initialize_fixture_audited(
                 store,
                 user.clone(),
                 key,
@@ -171,9 +171,12 @@ async fn bounded_initialization_recovery() -> Result<()> {
         &crate::lifecycle::RuntimeTimer,
         std::time::Duration::from_millis(10),
     )?;
-    let before: Result<(), crate::Error> =
-        crate::authorization::bounded_initialization(&audit, deadline, std::future::pending())
-            .await;
+    let before: Result<(), crate::Error> = crate::authorization::bounded_initialization(
+        &audit,
+        deadline,
+        std::future::pending::<std::result::Result<(), crate::Error>>(),
+    )
+    .await;
     audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Transaction));
     ensure!(matches!(
         before,

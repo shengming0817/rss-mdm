@@ -16,7 +16,7 @@ async fn fixture() -> anyhow::Result<(
     let admin_a = admin(case_a(), "admin-a").await?;
     let access = Arc::new(Database::connect(options("mdm_access")?).await?);
     let service = DeviceService::new(
-        access.clone(),
+        access.registration(),
         case_a().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)

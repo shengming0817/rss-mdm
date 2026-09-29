@@ -1,29 +1,24 @@
-//! One protected path: current SDK proof -> MDM capability -> private data access.
-use crate::authorization::context::RequestAuth;
-use crate::{ConfigIssue, Database, Failure};
+//! Product route and service assembly.
+use crate::clock::Clock;
+use crate::{ConfigIssue, Database};
 use crate::{
-    Error, assets::collection::CollectionService,
-    authorization::identity_management::IdentityManagementPolicy, device::coordinates::Coordinates,
+    Error, authorization::identity_management::IdentityManagementPolicy,
     enrollment::credentials::Credentials, identity::Identity,
 };
-use crate::{authorization::context::AuthorizedPrincipal, clock::Clock};
 use axum::{
-    Extension, Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
-    middleware::{self, Next},
+    Json, Router,
+    extract::{DefaultBodyLimit, State},
+    middleware::{self},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
-use rss_identity_core::session::SessionSecret;
-use rss_mdm_audit_integration::{FailureReason, RequestAudit, WriteOutcome};
-use serde::Deserialize;
+use rss_mdm_inventory_service::collection_service::CollectionService;
 #[cfg(test)]
 use serde_json::Value;
 use serde_json::json;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 pub(crate) struct Assembly {
-    pub(crate) content_writer: Option<Arc<crate::content::Store>>,
+    pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) flow: Arc<crate::flow::Flow>,
@@ -68,10 +63,13 @@ pub(crate) async fn application_fixture(
 > {
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access.clone(),
+        access.inventory(),
         rss_request_context::TenantId::parse(&config.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?,
         monotonic.clone(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
     )
     .await?;
     let planning = config
@@ -146,7 +144,7 @@ pub(crate) fn from_compiled(
         identity,
     } = dependencies;
     let devices = Arc::new(crate::device::DeviceService::new(
-        access.clone(),
+        access.registration(),
         config.identity.tenant_id.clone(),
         audit_store.clone(),
     ));
@@ -180,7 +178,7 @@ pub(crate) fn from_compiled(
         identity_management,
         collection: Arc::new(CollectionService::new(
             devices.clone(),
-            access.clone(),
+            access.inventory(),
             runtime.clone(),
         )),
         readiness: runtime.readiness.clone(),
@@ -196,79 +194,61 @@ pub(crate) fn from_state(
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
     let agent = Arc::new(crate::agent::HttpState {
+        mount: crate::device::ChannelMount::new(
+            state.identity.tenant,
+            rss_mdm_inventory::ReportSource::AgentBuiltin,
+        ),
         audit_store: state.audit_store.clone(),
-        access: state.access.clone(),
-        identity: state.identity.clone(),
+        access: Arc::new(state.access.agent_store()),
+        identity: Arc::new(
+            rss_mdm_authorization_service::session::SessionAuthority::new(
+                state.identity.authority.clone(),
+                state.identity.tenant,
+            ),
+        ),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
         collection: state.collection.clone(),
     });
-    let policies = Arc::new(crate::planning::policies::Policies {
-        planning: state.flow.planning.clone(),
-        execution: state.execution.clone(),
-    });
-    let execution = Arc::new(crate::execution::http::HttpState {
-        execution: state.execution.clone(),
-        devices: state.devices.clone(),
-        apple: state.apple.is_some(),
-        windows: state.windows.is_some(),
-    });
-    let planning = Arc::new(crate::planning::http::HttpState {
-        planning: state.flow.planning.clone(),
-    });
-    let assets = Arc::new(crate::assets::http::HttpState {
-        assets: state.flow.assets.clone(),
-    });
-    let authorization = Arc::new(crate::authorization::http::HttpState {
+    let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
+        mount: crate::device::ChannelMount::new(
+            state.identity.tenant,
+            rss_mdm_inventory::ReportSource::MdmApple,
+        ),
         audit_store: state.audit_store.clone(),
-    });
-    let apple_state = Arc::new(crate::apple::HttpState {
-        audit_store: state.audit_store.clone(),
-        access: state.access.clone(),
-        apple: state.apple.clone(),
-        clock: state.clock.clone(),
+        access: state.access.apple_store(),
+        apple: state.apple.as_ref().map(|a| a.channel.clone()),
+        clock: Arc::new(crate::clock::FlowClock(state.clock.clone())),
         execution: state.execution.clone(),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
-        identity: state.identity.clone(),
+        identity: Arc::new(
+            rss_mdm_authorization_service::session::SessionAuthority::new(
+                state.identity.authority.clone(),
+                state.identity.tenant,
+            ),
+        ),
         requests: state.requests.clone(),
     });
-    let windows_state = Arc::new(crate::windows::HttpState {
+    let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
+        mount: crate::device::ChannelMount::new(
+            state.identity.tenant,
+            rss_mdm_inventory::ReportSource::MdmWindows,
+        ),
         audit_store: state.audit_store.clone(),
-        access: state.access.clone(),
-        clock: state.clock.clone(),
+        access: state.access.windows_store(),
+        clock: Arc::new(crate::clock::FlowClock(state.clock.clone())),
         execution: state.execution.clone(),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
-        identity: state.identity.clone(),
+        identity: Arc::new(
+            rss_mdm_authorization_service::session::SessionAuthority::new(
+                state.identity.authority.clone(),
+                state.identity.tenant,
+            ),
+        ),
         requests: state.requests.clone(),
-        windows: state.windows.clone(),
-    });
-    let collection = Arc::new(crate::collection::apple::HttpState {
-        audit_store: state.audit_store.clone(),
-        apple: state.apple.is_some(),
-        tenant: state.identity.tenant,
-    });
-    let authentication_state = Arc::new(crate::authorization::http::AuthenticationState {
-        identity: state.identity.clone(),
-        access: state.access.clone(),
-        requests: state.requests.clone(),
-    });
-    let identity_context_state = Arc::new(IdentityContextState {
-        identity_management: state.identity_management.clone(),
-    });
-    let enrollment = Arc::new(crate::enrollment::http::HttpState {
-        service: Arc::new(crate::enrollment::EnrollmentService::new(
-            state.access.clone(),
-            state.credentials.clone(),
-            state.audit_store.clone(),
-        )),
-        devices: state.devices.clone(),
-        apple: state.apple.is_some(),
-        windows: state.windows.is_some(),
-    });
-    let collection_read = Arc::new(CollectionState {
-        collection: state.collection.clone(),
+        windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
     let readiness = Arc::new(ReadinessState {
         readiness: state.readiness.clone(),
@@ -278,81 +258,94 @@ pub(crate) fn from_state(
         flow: state.flow.clone(),
     });
     let authentication = state.identity.routes();
-    let audit_tenant = state.identity.tenant.to_string();
-    let audit_store = state.audit_store.clone();
-    let requests = state.requests.clone();
-    let protected_v1 = Router::new()
-        .merge(
-            crate::software_publication::http::routes().with_state(Arc::new(
-                crate::software_publication::http::HttpState {
-                    publications: state.flow.publications.clone(),
-                    access: state.access.clone(),
-                },
-            )),
-        )
-        .merge(crate::authorization::routes().with_state(authorization))
-        .route(
-            "/devices/{id}/collection-runs",
-            post(crate::collection::apple::create).with_state(collection),
-        )
-        .route(
-            "/devices/{id}/collection-runs/{run}",
-            get(collection_run).with_state(collection_read),
-        )
-        .route("/devices/{id}/actions", post(action))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
-    let protected_v2 = Router::new()
-        .merge(crate::execution::routes().with_state(execution.clone()))
-        .merge(crate::planning::routes_v2().with_state(planning.clone()))
-        .merge(crate::planning::policies::http::routes().with_state(policies.clone()))
-        .merge(crate::planning::remote_operations::routes().with_state(policies))
-        .merge(crate::execution::actions::http::routes().with_state(execution.clone()))
-        .merge(crate::assets::routes().with_state(assets))
-        .merge(crate::compliance::http::routes().with_state(Arc::new(
-            crate::compliance::Compliance::new(state.flow.planning.clone()),
-        )))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
-    let protected_v3 = crate::resource_catalog::http::routes()
-        .with_state(Arc::new(crate::resource_catalog::http::HttpState {
+    let admission = Arc::new(tokio::sync::Semaphore::new(32));
+    let management_boundary = rss_mdm_management_http::boundary::Envelope {
+        admission: admission.clone(),
+        host: host.clone(),
+        clock: monotonic.clone(),
+        audit_store: state.audit_store.clone(),
+        requests: state.requests.clone(),
+        tenant: state.identity.tenant.to_string(),
+    };
+    let apple_boundary = rss_mdm_apple_channel::boundary::Envelope {
+        admission: admission.clone(),
+        host: host.clone(),
+        clock: monotonic.clone(),
+        audit_store: state.audit_store.clone(),
+        requests: state.requests.clone(),
+        tenant: state.identity.tenant.to_string(),
+    };
+    let agent_boundary = rss_mdm_agent_channel::boundary::Envelope {
+        admission,
+        host: host.clone(),
+        clock: monotonic.clone(),
+        audit_store: state.audit_store.clone(),
+        requests: state.requests.clone(),
+        tenant: state.identity.tenant.to_string(),
+    };
+    let authentication =
+        rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
+    let management = rss_mdm_management_http::router(
+        rss_mdm_management_http::Services {
+            identity: state.identity.browser(),
+            authorization: state.access.authorization_store(),
+            identity_management: state.identity_management.clone(),
+            requests: state.requests.clone(),
+            audit_store: state.audit_store.clone(),
+            planning: state.flow.planning.clone(),
+            execution: state.execution.clone(),
+            policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies {
+                planning: state.flow.planning.clone(),
+                execution: state.execution.clone(),
+            }),
+            assets: state.flow.assets.clone(),
             catalog: state.flow.catalog.clone(),
-        }))
-        .merge(crate::software_catalog::routes().with_state(Arc::new(
-            crate::software_catalog::HttpState {
+            publications: state.flow.publications.clone(),
+            software_catalog: Arc::new(rss_mdm_flow_service::software_catalog::Access {
                 runtime: state.flow.runtime.clone(),
                 audit: state.audit_store.clone(),
                 tenant: state.execution.tenant,
                 catalog: rss_mdm_software_service::catalog::Catalog::new(
                     state.flow.runtime.clone(),
                     state.execution.tenant,
-                    Arc::new(crate::software_publication::host::Audit(
+                    Arc::new(rss_mdm_flow_service::software_publication::host::Audit(
                         state.audit_store.clone(),
                     )),
                 ),
                 content: state.content_writer.clone(),
-            },
-        )))
-        .merge(crate::content::http::routes().with_state(Arc::new(
-            crate::content::http::HttpState {
+            }),
+            content: Arc::new(rss_mdm_flow_service::content::Access {
                 runtime: state.flow.runtime.clone(),
                 audit_store: state.audit_store.clone(),
                 tenant: state.execution.tenant,
                 content: state.content_writer.clone(),
-                clock: state.clock.clone(),
+                clock: Arc::new(crate::clock::FlowClock(state.clock.clone())),
+            }),
+            enrollment: Arc::new(
+                rss_mdm_registration_service::enrollment::EnrollmentService::new(
+                    state.access.registration(),
+                    state.credentials.clone(),
+                    state.audit_store.clone(),
+                ),
+            ),
+            devices: state.devices.clone(),
+            collection: state.collection.clone(),
+            collection_intake: rss_mdm_inventory_service::apple_collection::Service {
+                audit_store: state.audit_store.clone(),
+                tenant: state.identity.tenant,
+                participant: state.apple.as_ref().map(|_| {
+                    Arc::new(rss_mdm_apple_channel::collection::Participant)
+                        as Arc<dyn rss_mdm_inventory_service::apple_collection::Participant>
+                }),
             },
-        )))
-        .merge(crate::enrollment::http::routes().with_state(enrollment))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
+            windows: state.windows.is_some(),
+            apple: state.apple.is_some(),
+        },
+        management_boundary,
+    );
     let mut listeners = Vec::new();
-    if let Some((enrollment, planning)) = crate::windows::routers(windows_state, monotonic.clone())
+    if let Some((enrollment, planning)) =
+        crate::windows::routers(state.windows.as_deref(), windows_state, monotonic.clone())
     {
         listeners.push((
             crate::native::NativeListenerKind::WindowsEnrollment,
@@ -363,46 +356,47 @@ pub(crate) fn from_state(
             planning,
         ));
     }
-    if let Some(apple) = crate::apple::router(apple_state.clone(), monotonic.clone()) {
+    if let Some(apple) = crate::apple::router(
+        state.apple.as_deref(),
+        apple_state.clone(),
+        monotonic.clone(),
+    ) {
         listeners.push((crate::native::NativeListenerKind::AppleManagement, apple));
     }
-    let host_context = Router::new()
-        .route(
-            "/api/identity-host/v1/tenants/{tenant}/context",
-            get(identity_context).with_state(identity_context_state),
-        )
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::identity_only,
-        ));
     let apple = state.apple.clone();
-    let browser = Router::new()
-        .merge(host_context)
-        .merge(crate::apple::browser_routes().with_state(apple_state))
-        .nest(
-            "/api/agent/v3",
-            crate::agent::routes()
-                .with_state(agent)
-                .merge(crate::execution::actions::http::agent_routes().with_state(execution)),
-        )
-        .nest("/api/v1", protected_v1)
-        .nest("/api/v2", protected_v2)
-        .nest("/api/v3", protected_v3)
+    let host_routes = Router::new()
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route("/readyz", get(ready).with_state(readiness))
-        .merge(authentication)
-        .layer(DefaultBodyLimit::max(16384))
         .layer(middleware::from_fn_with_state(
-            Envelope {
-                admission: Arc::new(tokio::sync::Semaphore::new(32)),
-                host,
-                clock: monotonic,
-                audit_store,
-                requests,
-                tenant: audit_tenant,
-            },
-            envelope,
+            host,
+            crate::http_host::guard,
         ));
+    let browser = Router::new()
+        .merge(management)
+        .merge(rss_mdm_apple_channel::browser_routes(
+            apple_state,
+            apple_boundary,
+        ))
+        .nest(
+            "/api/agent/v3",
+            rss_mdm_agent_channel::router(agent, agent_boundary.clone()).merge(
+                rss_mdm_agent_channel::task_router(
+                    Arc::new(rss_mdm_agent_channel::TaskState {
+                        access: Arc::new(state.access.agent_store()),
+                        mount: crate::device::ChannelMount::new(
+                            state.identity.tenant,
+                            rss_mdm_inventory::ReportSource::AgentBuiltin,
+                        ),
+                        devices: state.devices.clone(),
+                        execution: state.execution.clone(),
+                    }),
+                    agent_boundary,
+                ),
+            ),
+        )
+        .merge(authentication)
+        .merge(host_routes)
+        .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
         apple,
         browser,
@@ -410,380 +404,14 @@ pub(crate) fn from_state(
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct Envelope {
-    pub(crate) admission: Arc<tokio::sync::Semaphore>,
-    pub(crate) host: String,
-    pub(crate) clock: Arc<dyn rss_observation::Clock>,
-    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) requests: Arc<tokio::sync::Semaphore>,
-    pub(crate) tenant: String,
-}
-fn route_action(route: &str, native_identity: bool) -> &'static str {
-    match route {
-        "/api/v1/authorization" => "authorization_effective_read",
-        "/api/v1/authorization/rules" => "authorization_rules_read",
-        "/api/v1/authorization/user-groups" => "authorization_groups_read",
-        "/api/v1/authorization/user-groups/{id}/members" => "authorization_members_read",
-        "/api/v1/authorization/departments" => "authorization_departments_read",
-        "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
-            "authorization_write"
-        }
-        "/api/v3/enrollments" => "enrollment_create",
-        "/api/v3/enrollments/{id}" => "enrollment_read",
-        "/api/v3/devices/{device}/registrations" => "registration_read",
-        "/api/v3/enrollments/{id}/resume" => "enrollment_resume",
-        "/api/v3/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v3/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/agent/v3/registrations" => "agent_registration",
-        "/api/agent/v3/reports" => "agent_report",
-        "/api/agent/v3/reports/{id}" => "agent_report_read",
-        "/api/v2/devices/{id}/inventory" => "inventory_read",
-        "/api/v1/devices/{id}/collection-runs" => "collection_start",
-        "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
-        "/api/v1/devices/{id}/actions" => "device_action",
-        _ if native_identity => "authentication",
-        "/EnrollmentServer/Discovery.svc" => "windows_discovery",
-        "/EnrollmentServer/Policy.svc" => "windows_policy",
-        "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
-        "/ManagementServer/MDM.svc" => "windows_management",
-        "/checkin" => "apple_checkin",
-        "/mdm" => "apple_management",
-        "/native/apple/scep/challenge" | "/native/apple/scep/notify" => "apple_scep",
-        p if p.starts_with("/api/v3/enrollments/") && p.ends_with("/profile") => "apple_profile",
-        _ => "protected_request",
-    }
-}
-pub(crate) async fn envelope(
-    State(envelope): State<Envelope>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let started = envelope.clock.now();
-    let host = &envelope.host;
-    let route = request
-        .extensions()
-        .get::<axum::extract::MatchedPath>()
-        .map(|p| p.as_str())
-        .unwrap_or("");
-    let native_identity =
-        route.starts_with("/api/v2/tenants/") || route.starts_with("/api/v2/oidc/");
-    let action = route_action(route, native_identity);
-    let soap = route.starts_with("/EnrollmentServer/");
-    let agent_route = route.starts_with("/api/agent/v3/");
-    let audit = RequestAudit::new(envelope.tenant.clone(), action);
-    let request_id = audit.request_id();
-    // Native authentication commits its own atomic security event. A second product
-    // audit must not replace that settled response (including rotated credentials).
-    let audited = !matches!(request.uri().path(), "/livez" | "/readyz") && !native_identity;
-    // Transport capacity is admitted before handlers and durable denial auditing.
-    // Keep this separate from the existing cryptographic/Agent permit to avoid nested acquisition.
-    let _audit_permit = if audited {
-        match envelope.admission.clone().try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(_) => {
-                audit.finalize(None);
-                return capacity_response(
-                    request.uri().path().starts_with("/api/agent/v3/"),
-                    request_id,
-                );
-            }
-        }
-    } else {
-        None
-    };
-    request.extensions_mut().insert(audit.clone());
-    let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
-        || request.uri().to_string().len() > 8192
-        || request
-            .headers()
-            .get(header::HOST)
-            .and_then(|v| v.to_str().ok())
-            != Some(host.as_str())
-    {
-        Error::Malformed.into_response()
-    } else {
-        bounded_body(request, next, agent_route, envelope.requests.clone()).await
-    };
-    let snapshot = audit.snapshot();
-    if matches!(
-        response.extensions().get::<Error>(),
-        Some(Error::Unavailable(Failure::RequestDeadline))
-    ) {
-        response = crate::error_projection::audit_deadline(snapshot.write_outcome).into_response();
-    }
-    let mut audit_failure = match response.extensions().get::<Error>() {
-        Some(
-            error @ Error::Unavailable(
-                Failure::AuditIntegrity
-                | Failure::AuditIsolation
-                | Failure::AuditContract
-                | Failure::AuditAdmission,
-            ),
-        ) => Some(crate::error_projection::audit_failure_reason(error)),
-        Some(Error::Unavailable(Failure::Audit)) => Some(FailureReason::Transaction),
-        _ => None,
-    };
-    if audited
-        && (snapshot.settle_request
-            || snapshot.write_outcome != WriteOutcome::Committed
-            || matches!(
-                snapshot.management_result,
-                Some(rss_mdm_audit_integration::ManagementResult::Replayed)
-            ))
-    {
-        let status = response.status().as_u16();
-        let result = audit_result(&response, &snapshot);
-        let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
-        let control = budget.control();
-        if let Err(error) = envelope
-            .audit_store
-            .settle_request(&audit, status, result, &control)
-            .await
-        {
-            let error = Error::from(error);
-            audit_failure = Some(crate::error_projection::audit_failure_reason(&error));
-            response = crate::error_projection::audit_settlement(
-                response.extensions().get::<Error>(),
-                snapshot.write_outcome,
-                error,
-            )
-            .into_response();
-        }
-    }
-
-    if soap
-        && !response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .is_some_and(|v| v.as_bytes().starts_with(b"application/soap+xml"))
-        && let Some(error) = response.extensions().get::<Error>().cloned()
-    {
-        response = crate::windows::fault(None, error);
-    }
-    if let Some(key) = snapshot.operation_id {
-        response.headers_mut().insert(
-            "idempotency-key",
-            HeaderValue::from_str(&key.to_string()).expect("UUID"),
-        );
-    }
-    audit.finalize(audit_failure);
-    eprintln!(
-        "{}",
-        json!({"event":"mdm_request","request_id":request_id,"operation_id":snapshot.operation_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
-    );
-    secure_response(response, request_id)
-}
-fn capacity_response(agent: bool, request_id: uuid::Uuid) -> Response {
-    let mut response = if agent {
-        crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable)
-    } else {
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({"code":"request_limited"})),
-        )
-            .into_response()
-    };
-    response
-        .headers_mut()
-        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-    secure_response(response, request_id)
-}
-
-pub(crate) fn secure_response(mut response: Response, request_id: uuid::Uuid) -> Response {
-    response.headers_mut().insert(
-        "x-request-id",
-        HeaderValue::from_str(&request_id.to_string()).expect("UUID header"),
-    );
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response.headers_mut().insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    response.headers_mut().insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    response
-}
-async fn bounded_body(
-    request: Request,
-    next: Next,
-    agent: bool,
-    requests: Arc<tokio::sync::Semaphore>,
-) -> Response {
-    // Bound ingress before starting any transaction. Component operations then settle
-    // within their own budgets; product operations are bounded after authentication.
-    let _agent_permit = if agent {
-        match requests.try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(_) => {
-                return crate::agent::ingress_error(
-                    rss_mdm_agent_wire::ErrorCode::ServiceUnavailable,
-                );
-            }
-        }
-    } else {
-        None
-    };
-    let streaming = match request
-        .extensions()
-        .get::<axum::extract::MatchedPath>()
-        .map(|p| p.as_str())
-    {
-        Some("/api/v3/resources/{id}/content") => request.method() == axum::http::Method::POST,
-        Some("/api/v3/resources/{id}/uploads/{upload}") => {
-            request.method() == axum::http::Method::PATCH
-        }
-        _ => false,
-    };
-    if streaming {
-        return next.run(request).await;
-    }
-    let limit = match request
-        .extensions()
-        .get::<axum::extract::MatchedPath>()
-        .map(|p| p.as_str())
-    {
-        Some("/api/v3/resources/{id}") => 8 * 1024 * 1024,
-        Some("/api/agent/v3/tasks/{id}/events") => rss_mdm_agent_wire::MAX_TASK_REQUEST_BYTES,
-        _ if agent => rss_mdm_agent_wire::MAX_REQUEST_BYTES,
-        _ => 2 * 1024 * 1024,
-    };
-    let (parts, body) = request.into_parts();
-    match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
-        Ok(Ok(bytes)) => {
-            next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
-                .await
-        }
-        Ok(Err(_)) if agent => {
-            crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::MalformedRequest)
-        }
-        Ok(Err(_)) => axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-        Err(_) if agent => {
-            crate::agent::ingress_error(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable)
-        }
-        Err(_) => Error::Unavailable(Failure::RequestDeadline).into_response(),
-    }
-}
-
-fn audit_result(
-    response: &Response,
-    snapshot: &rss_mdm_audit_integration::Snapshot,
-) -> &'static str {
-    let status = response.status().as_u16();
-    if matches!(
-        response.extensions().get::<Error>(),
-        Some(Error::CommitUnknown | Error::RollbackFailed)
-    ) || snapshot.write_outcome == WriteOutcome::Unknown && status >= 500
-    {
-        "unknown"
-    } else if status == 401
-        || status == 403
-        || matches!(
-            response.extensions().get::<Error>(),
-            Some(Error::Unauthorized | Error::Forbidden)
-        )
-    {
-        "denied"
-    } else if status >= 400 {
-        "failed"
-    } else if let Some(result) = snapshot.management_result {
-        result.audit_tag()
-    } else {
-        "success"
-    }
-}
-pub(crate) async fn authenticate(
-    identity: &Identity,
-    access: &Database,
-    secret: SessionSecret,
-) -> Result<AuthorizedPrincipal, Error> {
-    AuthorizedPrincipal::from_identity(identity.authenticate(secret).await?)
-        .load_authorization(access)
-        .await
-}
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct IdentityHostContext {
-    tenant_id: String,
-    principal_id: String,
-    session_id: String,
-    navigation: crate::authorization::identity_management::IdentityNavigation,
-}
-async fn identity_context(
-    State(app): State<Arc<IdentityContextState>>,
-    Extension(auth): Extension<RequestAuth>,
-    Path(tenant): Path<String>,
-) -> Result<Json<IdentityHostContext>, Error> {
-    let proof = &auth.proof;
-    if tenant != proof.tenant_id() {
-        return Err(Error::Unauthorized);
-    }
-    Ok(Json(IdentityHostContext {
-        tenant_id: proof.tenant_id().to_owned(),
-        principal_id: proof.principal_id().to_owned(),
-        session_id: proof.session_id(),
-        navigation: app.identity_management.identity_navigation(proof)?,
-    }))
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Action {
-    action: String,
-}
-async fn action(
-    Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<String>,
-    Extension(audit): Extension<RequestAudit>,
-    input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
-) -> Result<Response, Error> {
-    if rss_observation::Id::new(&id).is_ok() {
-        audit.target(&id);
-    }
-    audit.set_action("device_action");
-    let _grant = auth.proof.dangerous(&id)?;
-    if input.map_err(|_| Error::Malformed)?.0.action != "wipe" {
-        return Err(Error::Malformed);
-    }
-    Err(Error::Unsupported)
-}
-
-fn operation_key(headers: &HeaderMap) -> Result<uuid::Uuid, Error> {
-    if headers.get_all("idempotency-key").iter().count() != 1 {
-        return Err(Error::Malformed);
-    }
-    let id = uuid::Uuid::parse_str(
-        headers
-            .get("idempotency-key")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(Error::Malformed)?,
-    )
-    .map_err(|_| Error::Malformed)?;
-    if id.is_nil() {
-        return Err(Error::Malformed);
-    }
-    Ok(id)
-}
-pub(crate) fn write_key(
-    headers: &HeaderMap,
-    audit: &RequestAudit,
-    action: &'static str,
-) -> Result<uuid::Uuid, Error> {
-    let key = operation_key(headers)?;
-    audit.operation(key, action);
-    Ok(key)
-}
-
 async fn ready(State(app): State<Arc<ReadinessState>>) -> Response {
     if app.readiness.ready()
         && app.identity_audit.ready()
-        && app
-            .apple
-            .as_ref()
-            .is_none_or(|apple| app.clock.unix_seconds().is_ok_and(|now| apple.ready(now)))
+        && app.apple.as_ref().is_none_or(|apple| {
+            app.clock
+                .unix_seconds()
+                .is_ok_and(|now| apple.channel.ready(now))
+        })
         && app
             .flow
             .planning
@@ -801,29 +429,6 @@ async fn ready(State(app): State<Arc<ReadinessState>>) -> Response {
             .into_response()
     }
 }
-async fn collection_run(
-    State(app): State<Arc<CollectionState>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
-    query: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<crate::assets::collection::CollectionResponse>, Error> {
-    let Path((device, run)) = path.map_err(|_| Error::Malformed)?;
-    let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
-    audit.target(&device);
-    audit.set_action("collection_read");
-    let grant = auth.proof.inventory(&device, coordinates)?;
-    Ok(Json(app.collection.run(grant, run).await?))
-}
-
-struct IdentityContextState {
-    identity_management: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
-}
-
-struct CollectionState {
-    collection: Arc<crate::assets::collection::CollectionService>,
-}
-
 struct ReadinessState {
     identity_audit: Arc<crate::identity_audit::Readiness>,
     readiness: Arc<crate::inventory_runtime::Readiness>,

@@ -185,7 +185,7 @@ pub(crate) async fn admit(
 ) -> Response {
     let Some(_slots) = gate.owner.request(gate.peer) else {
         gate.owner.refused(1);
-        return crate::api::secure_response(
+        return crate::http_host::secure_response(
             (
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({"code":"request_limited"})),

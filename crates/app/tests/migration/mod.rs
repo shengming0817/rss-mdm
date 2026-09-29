@@ -83,9 +83,9 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             .execute(&mut owner)
             .await?;
     }
-    // An otherwise complete pre-assets ledger must not regain prefix-upgrade support.
+    // An otherwise complete ledger missing inventory owner units must not regain prefix-upgrade support.
     owner
-        .execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v2','assets-v1')")
+        .execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v2','inventory-service-schema-v1')")
         .await?;
     ensure!(migrate_on(&mut owner, &installation).await.is_err());
     ensure!(
@@ -101,7 +101,7 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             == "preserve"
     );
     for (name, digest, complete) in &before {
-        if name == "inventory-v2" || name == "assets-v1" {
+        if name == "inventory-v2" || name == "inventory-service-schema-v1" {
             sqlx::query("INSERT INTO public.mdm_migrations VALUES($1,$2,$3)")
                 .bind(name)
                 .bind(digest)

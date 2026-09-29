@@ -13,15 +13,14 @@ pub(crate) fn case_b() -> &'static str {
     crate::test_support::case::peer()
 }
 pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelCredential {
-    VerifiedChannelCredential {
-        tenant: TenantId::parse(tenant).unwrap(),
-        channel,
-        source: match channel {
+    ChannelMount::new(
+        TenantId::parse(tenant).unwrap(),
+        match channel {
             Channel::Agent => ReportSource::AgentBuiltin,
             Channel::Mdm => ReportSource::MdmWindows,
         },
-        locator: crate::test_support::secret(&format!("channel-proof-{key}")),
-    }
+    )
+    .credential(crate::test_support::secret(&format!("channel-proof-{key}")))
 }
 pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<AuthorizedPrincipal> {
     let identity = crate::test_support::identity::identity(tenant).await?;
@@ -45,7 +44,7 @@ pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Authorize
         .await?;
     let access = Database::connect(options("mdm_access")?).await?;
     let proof = AuthorizedPrincipal::new(proof)?
-        .load_authorization(&access)
+        .load_authorization(access.authorization())
         .await?;
     access.close().await;
     Ok(proof)
@@ -107,9 +106,11 @@ pub(crate) async fn bind(
 ) -> anyhow::Result<(BindRegistration, RegistrationReceipt)> {
     let command = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&service.access, admin, device, proof.channel).await?,
+        request_id: service
+            .fixture_request(admin, device, proof.channel())
+            .await?,
         expected_generation: generation,
-        source: match proof.channel {
+        source: match proof.channel() {
             Channel::Mdm => ReportSource::MdmWindows,
             Channel::Agent => ReportSource::AgentBuiltin,
         },

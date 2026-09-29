@@ -15,7 +15,7 @@ impl Fixture {
         let before: i64 = row.try_get("not_before")?;
         let after: i64 = row.try_get("not_after")?;
         let now = self.app.clock.unix_seconds()?;
-        let old_leaf = self.app.apple()?.authority.verify(
+        let old_leaf = self.app.apple()?.channel.trust_fixture().verify(
             &[tokio_rustls::rustls::pki_types::CertificateDer::from(
                 row.try_get::<Vec<u8>, _>("certificate")?,
             )],
@@ -24,19 +24,22 @@ impl Fixture {
         let old_principal = self
             .app
             .devices
-            .management_principal(&crate::device::VerifiedChannelCredential::apple(
-                self.app.identity.tenant,
-                &old_leaf,
-            ))
+            .management_principal(
+                &crate::device::ChannelMount::new(
+                    self.app.identity.tenant,
+                    rss_mdm_inventory::ReportSource::MdmApple,
+                )
+                .credential(old_leaf.fingerprint()),
+            )
             .await?;
-        ensure!(!super::super::renewal::due(before, after, now));
-        ensure!(!super::super::renewal::due(before, after, after));
+        ensure!(!rss_mdm_apple_channel::renewal::due(before, after, now));
+        ensure!(!rss_mdm_apple_channel::renewal::due(before, after, after));
         // Move only the scheduling clock into the renewal window. Certificates and TLS remain real.
         let due = after - ((after - before) / 3).min(7 * 86400) + 1;
         for _ in 0..2 {
-            super::super::renewal::maintain(
-                self.app.apple()?,
-                &self.app.access,
+            rss_mdm_apple_channel::renewal::maintain(
+                &self.app.apple()?.channel,
+                &self.app.access.apple_store(),
                 &self.app.audit_store,
                 case_tenant(),
                 due,
@@ -47,9 +50,9 @@ impl Fixture {
         ensure!(count == 1, "renewal scheduling duplicated an issuance");
         let expired: String = sqlx::query_scalar("SELECT id::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
         sqlx::query("UPDATE mdm_apple.scep_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(&expired).execute(&mut pg).await?;
-        super::super::renewal::maintain(
-            self.app.apple()?,
-            &self.app.access,
+        rss_mdm_apple_channel::renewal::maintain(
+            &self.app.apple()?.channel,
+            &self.app.access.apple_store(),
             &self.app.audit_store,
             case_tenant(),
             due,
@@ -194,7 +197,7 @@ impl Fixture {
             .app
             .execution
             .apple_management(
-                self.app.apple()?,
+                self.app.apple()?.channel.clone(),
                 &old_principal,
                 &protocol::xml(protocol::dictionary([
                     ("Status", "Idle".into()),
@@ -208,7 +211,7 @@ impl Fixture {
             .await;
         audit.finalize(None);
         ensure!(
-            matches!(stale, Err(crate::Error::Unauthorized)),
+            matches!(stale, Err(rss_mdm_flow_service::Error::Unauthorized)),
             "pre-authenticated old principal survived credential switch"
         );
         peer.token().await?;
@@ -237,7 +240,7 @@ impl Fixture {
                 && replacement.try_get::<String, _>("credential")?
                     != row.try_get::<String, _>("credential")?
         );
-        let checked = self.app.apple()?.authority.verify(
+        let checked = self.app.apple()?.channel.trust_fixture().verify(
             &[tokio_rustls::rustls::pki_types::CertificateDer::from(
                 der.clone(),
             )],
@@ -246,10 +249,11 @@ impl Fixture {
         ensure!(
             self.app
                 .apple()?
-                .authority
+                .channel
+                .trust_fixture()
                 .verify(
                     &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
-                    checked.not_after + 1
+                    checked.not_after() + 1
                 )
                 .is_err()
         );

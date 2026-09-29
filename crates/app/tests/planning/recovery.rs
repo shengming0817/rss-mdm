@@ -19,8 +19,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE UPDATE(number) ON mdm_policy.versions FROM mdm_flow_runtime",
         ),
         (
-            "REVOKE SELECT ON mdm_access.agent_bindings FROM mdm_flow_runtime",
-            "GRANT SELECT ON mdm_access.agent_bindings TO mdm_flow_runtime",
+            "REVOKE SELECT ON mdm_agent.bindings FROM mdm_flow_runtime",
+            "GRANT SELECT ON mdm_agent.bindings TO mdm_flow_runtime",
         ),
         (
             "CREATE ROLE flow_drift NOLOGIN; GRANT UPDATE(number) ON mdm_policy.versions TO flow_drift; GRANT flow_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
@@ -52,7 +52,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         ),
     ] {
         sql(change);
-        let rejected = crate::flow::storage::admit(&service.runtime, tenant())
+        let rejected = rss_mdm_flow_service::storage::admit(&service.runtime, tenant())
             .await
             .is_err()
             || rss_mdm_policy_postgres::PolicyStore::new(
@@ -80,7 +80,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         sql(&format!(
             "GRANT UPDATE({column}) ON {table} TO mdm_flow_runtime"
         ));
-        let rejected = crate::flow::storage::admit(&service.runtime, tenant())
+        let rejected = rss_mdm_flow_service::storage::admit(&service.runtime, tenant())
             .await
             .is_err()
             || rss_mdm_policy_postgres::PolicyStore::new(
@@ -95,7 +95,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         ));
         assert!(rejected);
     }
-    crate::flow::storage::admit(&service.runtime, tenant())
+    rss_mdm_flow_service::storage::admit(&service.runtime, tenant())
         .await
         .unwrap();
     let denied = service
@@ -173,7 +173,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             if rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < expires {
                 Ok(())
             } else {
-                Err(Error::Forbidden)
+                Err(rss_mdm_flow_service::Error::Forbidden)
             }
         };
         let release = async {
@@ -186,7 +186,10 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
         };
         let (result, ()) = tokio::join!(m.execute(&command, &audit, &authorize), release);
         audit.finalize(None);
-        assert!(matches!(result, Err(Error::Forbidden)));
+        assert!(matches!(
+            result,
+            Err(rss_mdm_flow_service::Error::Forbidden)
+        ));
         let read = execute(&m, &Command::GroupRead { id }).await;
         assert_eq!(
             read.is_ok(),

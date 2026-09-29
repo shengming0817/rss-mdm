@@ -45,7 +45,7 @@ pub(crate) async fn open(
             .content
             .as_ref()
             .map(|c| {
-                crate::content::Store::open(
+                rss_mdm_content_service::Store::open(
                     c,
                     &tenant.to_string(),
                     Arc::new(crate::lifecycle::RuntimeTimer),
@@ -117,6 +117,8 @@ pub(crate) async fn open(
             }
         };
         Ok(Arc::new(ExecutionService {
+            agent_store: Arc::new(rss_mdm_agent_channel::Bindings),
+            apple_store: Arc::new(rss_mdm_apple_channel::flow_store::Store),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             audit_store,
             runtime: runtime.clone(),
@@ -129,7 +131,7 @@ pub(crate) async fn open(
             signer: config
                 .task_signing
                 .as_ref()
-                .map(crate::task_signing::Signer::open)
+                .map(crate::task_signing::open)
                 .transpose()?
                 .map(Arc::new),
         }))

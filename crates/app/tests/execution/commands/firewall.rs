@@ -98,7 +98,7 @@ impl Client {
             crate::automation::Resource(automation.clone()),
         ));
         let mut launch = startup.commit();
-        launch.stage_deferred_task_with_token(automation.registration(signals.clone()).critical());
+        launch.stage_deferred_task_with_token(automation.registration(signals.flow()).critical());
         launch.finish();
         let cap = native::begin(peer, url, initial, ack, 950, None).await?;
         let message = native::report(&cap.first, &cap.gets, "10.0.19045.0", 200);
@@ -600,7 +600,7 @@ impl Client {
             self.app
                 .execution
                 .clone()
-                .registration(signals.clone())
+                .registration(signals.flow())
                 .critical(),
         );
         launch.finish();

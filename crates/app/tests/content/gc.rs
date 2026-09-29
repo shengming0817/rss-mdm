@@ -3,13 +3,13 @@ use crate::test_support::*;
 async fn cleanup_preserves_resource_references(
     user: &mut Browser,
     router: &Router,
-    store: &Arc<crate::content::Store>,
+    store: &Arc<rss_mdm_content_service::Store>,
     directory: &std::path::Path,
     retained: &rss_mdm_resource::Artifact,
 ) -> Result<()> {
     let data = case::name("orphaned upload without resource reference").as_bytes();
     let upload = Uuid::new_v4();
-    let binding = crate::content::Binding {
+    let binding = rss_mdm_content_service::Binding {
         resource: "orphan".into(),
         version: "1".into(),
         variant: "default".into(),
@@ -25,10 +25,10 @@ async fn cleanup_preserves_resource_references(
     };
     let artifact = binding.artifact()?;
     store.begin(upload, binding, 1).await?;
-    store.append(upload, 0, 1, data).await?;
-    store.finish(upload, 1).await?;
+    store.append("fixture", upload, 0, 1, data).await?;
+    store.finish("fixture", upload, 1).await?;
     let tenant_dir = directory.join(case_tenant());
-    let metadata_path = tenant_dir.join(format!(".upload-{upload}.json"));
+    let metadata_path = super::upload_metadata(&tenant_dir, upload)?;
     let mut metadata: Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
     metadata["expires"] = json!(0);
     std::fs::write(metadata_path, serde_json::to_vec(&metadata)?)?;
@@ -65,13 +65,18 @@ async fn cleanup_preserves_resource_references(
 }
 async fn gc_reference_race(
     runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    content: &Arc<crate::content::Store>,
+    content: &Arc<rss_mdm_content_service::Store>,
 ) -> Result<()> {
     use rss_mdm_resource as r;
     use rss_mdm_resource_postgres as rp;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let resources = Arc::new(
-        rp::ResourceStore::new(runtime.clone(), tenant, crate::transaction::deadline()).await?,
+        rp::ResourceStore::new(
+            runtime.clone(),
+            tenant,
+            rss_mdm_flow_service::transaction::deadline(),
+        )
+        .await?,
     );
     let resource = r::Id::new(Uuid::new_v4().to_string())?;
     let data = case::name("gc-concurrent-reference").as_bytes();
@@ -90,7 +95,7 @@ async fn gc_reference_race(
     resources
         .execute(
             &request(0, rp::Command::Create(r::Kind::Configuration)),
-            crate::transaction::deadline(),
+            rss_mdm_flow_service::transaction::deadline(),
         )
         .await?;
     let version = r::Version::new(
@@ -116,7 +121,7 @@ async fn gc_reference_race(
     content
         .begin(
             id,
-            crate::content::Binding {
+            rss_mdm_content_service::Binding {
                 resource: resource.as_str().into(),
                 version: "v1".into(),
                 variant: "default".into(),
@@ -133,8 +138,8 @@ async fn gc_reference_race(
             1,
         )
         .await?;
-    content.append(id, 0, 1, data).await?;
-    content.finish(id, 1).await?;
+    content.append("fixture", id, 0, 1, data).await?;
+    content.finish("fixture", id, 1).await?;
     let candidate = content
         .garbage(i64::MAX / 2)
         .await?
@@ -147,7 +152,7 @@ async fn gc_reference_race(
     let ready = checked.clone();
     let release = resume.clone();
     let gc = tokio::spawn(async move {
-        crate::transaction::inspect(
+        rss_mdm_flow_service::transaction::inspect(
             &gc_runtime,
             tenant,
             (Some(candidate), ready, release),
@@ -166,14 +171,14 @@ async fn gc_reference_race(
                     Ok(())
                 })
             },
-            crate::transaction::TransactionOwner::ResourceCatalog,
+            rss_mdm_flow_service::transaction::TransactionOwner::ResourceCatalog,
         )
         .await
     });
     tokio::time::timeout(Duration::from_secs(5), checked.notified()).await?;
     let mut writer = tokio::spawn(async move {
         resources
-            .execute(&insert, crate::transaction::deadline())
+            .execute(&insert, rss_mdm_flow_service::transaction::deadline())
             .await
     });
     let early = tokio::time::timeout(Duration::from_millis(750), &mut writer).await;
@@ -226,11 +231,11 @@ async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     pg(
         "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
     )?;
-    let rejected = crate::flow::storage::admit(&fixture.runtime, tenant).await;
+    let rejected = rss_mdm_flow_service::storage::admit(&fixture.runtime, tenant).await;
     pg(
         "REVOKE mdm_content_drift FROM mdm_flow_runtime; DROP OWNED BY mdm_content_drift; DROP ROLE mdm_content_drift",
     )?;
     ensure!(rejected.is_err());
-    crate::flow::storage::admit(&fixture.runtime, tenant).await?;
+    rss_mdm_flow_service::storage::admit(&fixture.runtime, tenant).await?;
     Ok(())
 }

@@ -112,7 +112,9 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     // Only the deadline query uses ceil(numeric); other empty work succeeds.
     pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
         .await?;
-    let failed_deadline = crate::windows::retention::sweep(store, &audit_store, tenant).await;
+    let failed_deadline =
+        rss_mdm_windows_channel::retention::sweep(&store.windows_store(), &audit_store, tenant)
+            .await;
     pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
         .await?;
     ensure!(
@@ -120,7 +122,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         "deadline query failure became healthy idle"
     );
     ensure!(
-        crate::windows::retention::sweep(store, &audit_store, tenant)
+        rss_mdm_windows_channel::retention::sweep(&store.windows_store(), &audit_store, tenant)
             .await?
             .0
             == 0
@@ -134,7 +136,11 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     ensure!(
         tokio::time::timeout(
             Duration::from_millis(500),
-            crate::windows::retention::prune_management(store, &audit_store, tenant)
+            rss_mdm_windows_channel::retention::prune_management(
+                &store.windows_store(),
+                &audit_store,
+                tenant
+            )
         )
         .await??
             == 0,
@@ -143,8 +149,8 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     held_head.rollback().await?;
     seed(&mut pg, tenant, registration, 1256).await?;
     ensure!(
-        crate::windows::retention::prune_management(
-            store,
+        rss_mdm_windows_channel::retention::prune_management(
+            &store.windows_store(),
             &audit_store,
             crate::test_support::case::peer()
         )
@@ -156,23 +162,32 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     // A failure after deleting child rows rolls back both tables.
     pg.execute("CREATE FUNCTION mdm_access.reject_session_gc() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_session_gc BEFORE DELETE ON mdm_access.management_sessions FOR EACH ROW EXECUTE FUNCTION mdm_access.reject_session_gc()").await?;
     ensure!(
-        crate::windows::retention::prune_management(store, &audit_store, tenant)
-            .await
-            .is_err()
+        rss_mdm_windows_channel::retention::prune_management(
+            &store.windows_store(),
+            &audit_store,
+            tenant
+        )
+        .await
+        .is_err()
     );
     ensure!(messages(&mut pg, tenant).await? == 257);
     ensure!(queries(&mut pg, tenant).await? == 257);
     pg.execute("DROP TRIGGER reject_session_gc ON mdm_access.management_sessions; DROP FUNCTION mdm_access.reject_session_gc()").await?;
+    let channel_store = store.windows_store();
     let (a, b) = tokio::join!(
-        crate::windows::retention::prune_management(store, &audit_store, tenant),
-        crate::windows::retention::prune_management(store, &audit_store, tenant)
+        rss_mdm_windows_channel::retention::prune_management(&channel_store, &audit_store, tenant),
+        rss_mdm_windows_channel::retention::prune_management(&channel_store, &audit_store, tenant)
     );
     let (a, b) = (a?, b?);
     ensure!(a <= 32 && b <= 32 && a + b == 64);
     let mut pruned = a + b;
     loop {
-        let count =
-            crate::windows::retention::prune_management(store, &audit_store, tenant).await?;
+        let count = rss_mdm_windows_channel::retention::prune_management(
+            &store.windows_store(),
+            &audit_store,
+            tenant,
+        )
+        .await?;
         ensure!(count <= 32);
         pruned += count;
         if count == 0 {
@@ -181,7 +196,13 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     }
     ensure!(pruned == 257);
     ensure!(
-        crate::windows::retention::prune_management(store, &audit_store, tenant).await? == 0
+        rss_mdm_windows_channel::retention::prune_management(
+            &store.windows_store(),
+            &audit_store,
+            tenant
+        )
+        .await?
+            == 0
             && messages(&mut pg, tenant).await? == 0
     );
     ensure!(
@@ -209,13 +230,15 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     let startup = owner.startup()?;
     let mut launch = startup.commit();
     launch.stage_task_with_token(
-        crate::windows::retention::registration(
-            restarted.clone(),
+        rss_mdm_windows_channel::retention::registration(
+            restarted.windows_store(),
             restarted
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
             tenant.to_owned(),
-            host.notifications.signals.clone(),
+            host.notifications
+                .signals
+                .handle(crate::worker_wake::Work::Windows),
         )
         .critical(),
     );

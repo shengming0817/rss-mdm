@@ -16,14 +16,14 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
             .context("access store admission")?,
     );
     let service = DeviceService::new(
-        access.clone(),
+        access.registration(),
         case_a().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let service_b = DeviceService::new(
-        access.clone(),
+        access.registration(),
         case_b().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
@@ -52,7 +52,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
         0,
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,'[\"inventory.basic.v3\"]','macos','aarch64')")
+    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,'[\"inventory.basic.v3\"]','macos','aarch64')")
         .bind(case_a())
         .bind(other_channel.registration.to_string())
         .execute(&mut root)
@@ -202,7 +202,7 @@ async fn credential_race(
     for device in [&a.device, &b.device] {
         commands.push(BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&service.access, admin, device, Channel::Mdm).await?,
+            request_id: service.fixture_request(admin, device, Channel::Mdm).await?,
             expected_generation: 1,
             source: ReportSource::MdmWindows,
         });
@@ -262,7 +262,9 @@ async fn credential_race(
         .await?;
     let retry = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&service.access, admin, &loser.device, loser.channel).await?,
+        request_id: service
+            .fixture_request(admin, &loser.device, loser.channel)
+            .await?,
         expected_generation: 1,
         source: ReportSource::MdmWindows,
     };

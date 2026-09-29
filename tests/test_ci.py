@@ -65,6 +65,8 @@ class DependencyPolicy(unittest.TestCase):
         next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')['deps'] = [{'pkg':name} for name in ci.IDENTITY_PACKAGES | {'rss-mdm-audit-integration'}]
         data['resolve']['nodes'][-2:-2] = [{'id':p['id'],'features':[],'deps':([{'pkg':'rsa'}] if p['id']=='openidconnect' else [{'pkg':'openidconnect'}] if p['id']=='rss-identity-oidc' else [])} for p in extra]
         next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-software-service')['deps'] = [{'pkg':'rss-mdm-audit-integration'}]
+        for owner in ['rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
+            next(n for n in data['resolve']['nodes'] if n['id']==owner)['deps'].append({'pkg':'rss-mdm-audit-integration'})
         for kind in ('policy', 'resource', 'software-release'):
             next(n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres')['deps'].append({'pkg':'rss-mdm-backend-postgres-support'})
         ci.verify_metadata(data,root,"normal",pin)

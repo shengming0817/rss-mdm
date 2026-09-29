@@ -16,36 +16,6 @@ fn case_b() -> &'static str {
     crate::test_support::case::peer()
 }
 
-#[test]
-fn journal_permission_is_independent_and_readiness_requires_a_running_worker() {
-    let tenant = TenantId::parse(&Uuid::new_v4().to_string()).unwrap();
-    let token = CancellationToken::new();
-    let authority = JournalAuthority {
-        tenant,
-        token: &token,
-    };
-    ensure_authority(&authority, tenant, &token);
-    let readiness = Readiness::default();
-    readiness.initialized.store(true, Ordering::Release);
-    assert!(!readiness.ready());
-}
-fn ensure_authority(authority: &JournalAuthority<'_>, tenant: TenantId, token: &CancellationToken) {
-    assert!(JournalReadGrant::verify(authority, tenant).is_ok());
-    assert!(
-        JournalReadGrant::verify(
-            authority,
-            TenantId::parse(&Uuid::new_v4().to_string()).unwrap()
-        )
-        .is_err()
-    );
-    let scope =
-        crate::device::scope(tenant, Uuid::new_v4(), "mdm.windows", Uuid::new_v4()).unwrap();
-    assert!(LifecycleGrant::verify(authority, scope.clone()).is_err());
-    assert!(ReadGrant::verify(authority, scope).is_err());
-    token.cancel();
-    assert!(JournalReadGrant::verify(authority, tenant).is_err());
-}
-
 #[tokio::test]
 #[ignore = "make t2: real PostgreSQL intake, RSS settlement, projection and restart"]
 #[allow(
@@ -90,7 +60,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     let access = Arc::new(Database::connect(options("mdm_access")?).await?);
     let service = Arc::new(DeviceService::new(
-        access.clone(),
+        access.registration(),
         case_a().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
@@ -118,9 +88,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         "mdm.windows",
         corrupt_epoch,
     )?;
-    let read = crate::collection::store::collection(&access, &corrupt_scope, Some(first.id)).await;
+    let read =
+        crate::collection::store::collection(&access.inventory(), &corrupt_scope, Some(first.id))
+            .await;
     let pending = crate::collection::store::Delivery::new(
-        access.clone(),
+        access.inventory(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
@@ -141,7 +113,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let runtime = open(access.clone()).await?;
     ensure!(runtime.inspect(&first).await?.receipt.is_none());
     let reports = crate::collection::store::Delivery::new(
-        access.clone(),
+        access.inventory(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
@@ -172,34 +144,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     tx.rollback().await?;
     #[cfg(feature = "integration")]
     {
-        let authority = ReportAuthority(durable);
-        runtime
-            .observation
-            .activate(
-                &LifecycleGrant::verify(&authority, durable.scope().clone())?,
-                None,
-                &rss_observation::Policy::new(86400, 3600, 3600)?,
-                runtime.clock.deadline(),
-            )
-            .await?;
-        let verified =
-            VerifiedBatch::verify(&authority, durable.scope().clone(), durable.batch().clone())?;
+        let verified = runtime.fixture_activate(durable).await?;
         for fault in [
             rss_observation_postgres::Fault::BeforeCommit,
             rss_observation_postgres::Fault::CommitPending,
         ] {
-            runtime.observation.inject_next_fault(fault);
-            ensure!(
-                runtime
-                    .observation
-                    .receive(&verified, runtime.clock.deadline())
-                    .await
-                    .is_err()
-            );
+            ensure!(runtime.fixture_receive(&verified, fault).await.is_err());
             ensure!(runtime.inspect(&first).await?.receipt.is_none());
             ensure!(
                 crate::collection::store::Delivery::new(
-                    access.clone(),
+                    access.inventory(),
                     access
                         .audit_store(&crate::config::AuditConfig::Plain)
                         .await?
@@ -210,25 +164,24 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
                 .any(|r| r.batch().id() == durable.batch().id())
             );
         }
-        runtime
-            .observation
-            .inject_next_fault(rss_observation_postgres::Fault::CommitAckAndReadLost);
         let outcome = runtime
-            .observation
-            .receive(&verified, runtime.clock.deadline())
+            .fixture_receive(
+                &verified,
+                rss_observation_postgres::Fault::CommitAckAndReadLost,
+            )
             .await
             .unwrap_err();
         ensure!(outcome.kind() == rss_observation::ErrorKind::CommitUnknown);
         ensure!(runtime.inspect(&first).await?.receipt.is_some());
     }
-    runtime.deliver(durable, runtime.clock.deadline()).await?;
+    runtime.fixture_deliver(durable).await?;
     let received = runtime.inspect(&first).await?;
     ensure!(
         received.receipt.is_some()
             && received.projection == crate::inventory_runtime::ProjectionStatus::Pending
     );
     ensure!(
-        crate::collection::store::collection(&access, &first.scope, Some(first.id))
+        crate::collection::store::collection(&access.inventory(), &first.scope, Some(first.id))
             .await?
             .unwrap()
             .batch()
@@ -238,7 +191,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     ensure!(
         crate::collection::store::collection(
-            &access,
+            &access.inventory(),
             &crate::device::scope(
                 TenantId::parse(case_b())?,
                 registration.registration,
@@ -374,11 +327,8 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     root.execute("CREATE FUNCTION mdm.reject_inventory_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; REVOKE ALL ON FUNCTION mdm.reject_inventory_test() FROM PUBLIC; CREATE TRIGGER reject_inventory_test AFTER INSERT OR UPDATE ON mdm.inventory FOR EACH ROW EXECUTE FUNCTION mdm.reject_inventory_test()").await?;
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
-    let stopped = tokio::time::timeout(
-        Duration::from_secs(8),
-        runtime.readiness.task.get().unwrap().wait_stopped(),
-    )
-    .await?;
+    let stopped =
+        tokio::time::timeout(Duration::from_secs(8), runtime.fixture_wait_stopped()).await?;
     ensure!(matches!(stopped, rss_runtime::TaskExit::Failed(_)) && !runtime.readiness.ready());
     ensure!(
         !owner
@@ -439,7 +389,7 @@ async fn empty_discovery_has_no_audit_head() -> Result<()> {
         .audit_store(&crate::config::AuditConfig::Plain)
         .await?;
     let tenant = Uuid::new_v4().to_string();
-    let delivery = crate::collection::store::Delivery::new(database.clone(), audit);
+    let delivery = crate::collection::store::Delivery::new(database.inventory(), audit);
     ensure!(delivery.pending_reports(&tenant).await?.is_empty());
     let mut tx = database.begin(&tenant).await?;
     let count: i64 =

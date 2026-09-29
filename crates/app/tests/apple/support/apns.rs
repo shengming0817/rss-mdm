@@ -2,6 +2,7 @@
 use super::*;
 use anyhow::{Result, ensure};
 use axum::{body::Bytes, http::Response};
+use std::time::Duration;
 use std::{path::PathBuf, sync::Arc};
 use tokio_rustls::{
     TlsAcceptor,
@@ -10,6 +11,7 @@ use tokio_rustls::{
         pki_types::{CertificateDer, pem::PemObject},
     },
 };
+use uuid::Uuid;
 pub(in crate::apple) struct Participant {
     pub(in crate::apple) push: Push,
     server: tokio::task::JoinHandle<Result<()>>,
@@ -17,7 +19,7 @@ pub(in crate::apple) struct Participant {
 }
 impl Participant {
     pub(in crate::apple) fn origin(&self) -> String {
-        self.push.origin.clone()
+        self.push.origin().to_owned()
     }
     pub(in crate::apple) async fn start(statuses: Vec<u16>, token: Vec<u8>) -> Result<Self> {
         Self::start_with_rotation(statuses, token, false).await
@@ -159,12 +161,11 @@ impl Participant {
             }
             Ok::<(), anyhow::Error>(())
         });
-        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        let _now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let client = reqwest::Client::builder().no_proxy().add_root_certificate(
             reqwest::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?,
         );
-        let mut push = Push::with_client(&config, now, client)?;
-        push.origin = endpoint.origin;
+        let push = fixture_push(&config, client, endpoint.origin)?;
         Ok(Self { push, server, stop })
     }
     pub(in crate::apple) async fn close(self) -> Result<()> {
@@ -175,12 +176,31 @@ impl Participant {
     }
     pub(in crate::apple) async fn unavailable_push() -> Result<Push> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
-        let config = serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
-        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-        let mut push = Push::with_client(&config, now, reqwest::Client::builder().no_proxy())?;
+        let config: crate::apple::config::Config =
+            serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+        let _now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        push.origin = format!("https://localhost:{}", listener.local_addr()?.port());
+        let push = fixture_push(
+            &config,
+            reqwest::Client::builder().no_proxy(),
+            format!("https://localhost:{}", listener.local_addr()?.port()),
+        )?;
         drop(listener);
         Ok(push)
     }
+}
+
+fn fixture_push(
+    config: &crate::apple::config::Config,
+    client: reqwest::ClientBuilder,
+    origin: String,
+) -> Result<Push> {
+    Ok(Push::fixture(
+        config.apns_topic.clone(),
+        &std::fs::read(&config.apns_certificate_file)?,
+        &std::fs::read(&config.apns_private_key_file)?,
+        Arc::new(crate::clock::SystemClock),
+        client,
+        origin,
+    )?)
 }

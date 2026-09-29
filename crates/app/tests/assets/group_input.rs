@@ -15,7 +15,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     ))?;
     let access = database(base).await?;
     let service = crate::device::DeviceService::new(
-        access.clone(),
+        access.registration(),
         case_tenant().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
@@ -26,9 +26,12 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     let config: Config = serde_json::from_value(base.clone())?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access.clone(),
+        access.inventory(),
         rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
     )
     .await?;
     let owner = start(runtime.clone()).await?;

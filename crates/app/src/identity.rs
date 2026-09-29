@@ -7,16 +7,16 @@ use crate::{
 use axum::{
     Router,
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use rss_identity_core::{
-    InstanceId,
-    account::PasswordKdf,
-    session::{SessionPolicy, SessionSecret},
-};
-use rss_identity_postgres::{AuthenticatedSession, Authority, AuthorityConfig, AuthorityError};
+#[cfg(test)]
+use rss_identity_core::session::SessionSecret;
+use rss_identity_core::{InstanceId, account::PasswordKdf, session::SessionPolicy};
+use rss_identity_postgres::{Authority, AuthorityConfig, AuthorityError};
+#[cfg(test)]
+use rss_mdm_authorization_service::context::Principal;
 use rss_request_context::TenantId;
 use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
@@ -39,43 +39,6 @@ pub(crate) fn failure(error: AuthorityError) -> Error {
         _ => Error::Unavailable(Failure::IdentityStorage),
     }
 }
-/// A single private projection, created only from a request's authoritative component result.
-pub(crate) struct Principal {
-    session: AuthenticatedSession,
-    instance: String,
-    tenant: String,
-    principal: String,
-}
-impl Principal {
-    pub(super) fn new(session: AuthenticatedSession) -> Result<Self, Error> {
-        session.assurance().map_err(failure)?;
-        Ok(Self {
-            instance: session.instance().to_string(),
-            tenant: session.account().tenant.to_string(),
-            principal: session.account().principal.as_uuid().to_string(),
-            session,
-        })
-    }
-    pub(crate) fn session(&self) -> &AuthenticatedSession {
-        &self.session
-    }
-
-    pub(crate) fn check_live(&self) -> Result<(), Error> {
-        self.session.assurance().map(|_| ()).map_err(failure)
-    }
-    pub(crate) fn instance_id(&self) -> &str {
-        &self.instance
-    }
-    pub(crate) fn tenant_id(&self) -> &str {
-        &self.tenant
-    }
-    pub(crate) fn session_id(&self) -> String {
-        self.session.view().id.to_string()
-    }
-    pub(crate) fn principal_id(&self) -> &str {
-        &self.principal
-    }
-}
 pub(crate) struct Identity {
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
@@ -84,6 +47,13 @@ pub(crate) struct Identity {
     http: rss_identity_http_axum::HttpConfig,
 }
 impl Identity {
+    pub(crate) fn browser(&self) -> Arc<rss_mdm_management_http::identity::Identity> {
+        Arc::new(rss_mdm_management_http::identity::Identity {
+            authority: self.authority.clone(),
+            http: self.http.clone(),
+            tenant: self.tenant,
+        })
+    }
     pub(crate) async fn connect(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
@@ -177,42 +147,16 @@ impl Identity {
     pub(crate) fn routes(&self) -> Router {
         self.routes.clone()
     }
-    pub(crate) async fn authenticate_request(
-        &self,
-        headers: &HeaderMap,
-        activity: rss_identity_http_axum::SessionActivity,
-    ) -> Result<(Principal, SessionSecret), Response> {
-        let (session, credential) = rss_identity_http_axum::authenticate_request(
-            &self.authority,
-            &self.http,
-            self.tenant,
-            headers,
-            activity,
-            deadline(),
-        )
-        .await
-        .map_err(|mut response| {
-            // Keep the component response and settlement class; product audit reads Error.
-            if let Some(rss_identity_http_axum::HttpFailure::Authority(error)) = response
-                .extensions()
-                .get::<rss_identity_http_axum::HttpFailure>()
-                .copied()
-            {
-                response.extensions_mut().insert(failure(error));
-            }
-            response
-        })?;
-        let proof = Principal::new(session).map_err(IntoResponse::into_response)?;
-        Ok((proof, credential))
-    }
+
     /// Device enrollment continuations revalidate the credential without renewing idle expiry.
+    #[cfg(test)]
     pub(crate) async fn authenticate(&self, secret: SessionSecret) -> Result<Principal, Error> {
         let session = self
             .authority
             .inspect_session(self.tenant, secret, deadline())
             .await
             .map_err(failure)?;
-        Principal::new(session)
+        Principal::new(session).map_err(Error::from)
     }
 }
 pub(crate) fn authority_config(

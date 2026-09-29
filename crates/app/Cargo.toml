@@ -6,6 +6,17 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-management-http.workspace=true
+rss-mdm-apple-channel.workspace=true
+rss-mdm-windows-channel.workspace=true
+rss-mdm-agent-channel.workspace = true
+rss-mdm-flow-service.workspace = true
+rss-mdm-inventory-service.workspace = true
+rss-mdm-registration-service.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-mdm-content-service.workspace = true
+rss-mdm-certificate.workspace = true
+rss-mdm-apple-mdm.workspace = true
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 rss-mdm-software-service.workspace = true
 rss-mdm-compliance.workspace = true
@@ -81,6 +92,12 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+rss-mdm-apple-channel={workspace=true,features=["integration"]}
+rss-mdm-windows-channel={workspace=true,features=["integration"]}
+rss-mdm-flow-service = {workspace=true,features=["integration"]}
+rss-mdm-inventory-service = { workspace = true, features = ["integration"] }
+rss-mdm-registration-service = { workspace = true, features = ["integration"] }
+rss-mdm-authorization-service = { workspace = true, features = ["integration"] }
 rss-mdm-audit-integration = { workspace = true, features = ["integration"] }
 h2.workspace = true
 jsonschema.workspace = true

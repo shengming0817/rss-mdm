@@ -9,9 +9,16 @@ use crate::{
 };
 use crate::{authorization::context::AuthorizedPrincipal, clock::Clock};
 use anyhow::ensure;
+use axum::Router;
+use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
+use rss_mdm_windows_mdm::{
+    CodecLimits, Secret,
+    soap::{self, Body, Operation},
+};
 use std::{path::PathBuf, time::Duration};
+use uuid::Uuid;
 use x509_cert::der::Decode;
 pub(crate) fn case_tenant() -> &'static str {
     crate::test_support::case::tenant()
@@ -35,11 +42,24 @@ pub(super) async fn complete(
     cert: &[u8],
 ) -> Result<(), Error> {
     let a = audit(proof, auth.operation, &auth.device, "enrollment_issue");
-    let result =
-        crate::windows::issuance::complete_issuance(store, w, auth, proof, intent, cert, &a, now())
-            .await;
+    let result = rss_mdm_windows_channel::issuance::complete_issuance(
+        store,
+        &w.channel,
+        auth,
+        proof,
+        intent,
+        cert,
+        &a,
+        now(),
+        &crate::device::ChannelMount::new(
+            rss_request_context::TenantId::parse(proof.tenant_id()).unwrap(),
+            rss_mdm_inventory::ReportSource::MdmWindows,
+        ),
+        &crate::registration_lifecycle::Bridge,
+    )
+    .await;
     a.finalize(None);
-    result
+    result.map_err(Into::into)
 }
 #[allow(clippy::disallowed_methods, reason = "test composition root")]
 pub(super) fn monotonic() -> Arc<dyn rss_observation::Clock> {
@@ -139,7 +159,7 @@ impl Host {
         )?)?;
         let store = Arc::new(Database::connect(options("mdm_access")?).await?);
         let devices = Arc::new(crate::device::DeviceService::new(
-            store.clone(),
+            store.registration(),
             case_tenant().into(),
             store
                 .audit_store(&crate::config::AuditConfig::Plain)
@@ -147,9 +167,12 @@ impl Host {
         ));
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
             options("mdm_runtime")?,
-            store.clone(),
+            store.inventory(),
             rss_request_context::TenantId::parse(case_tenant())?,
             monotonic(),
+            store
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
         )
         .await?;
         let management = config
@@ -186,7 +209,7 @@ impl Host {
             identity_management,
             collection: Arc::new(CollectionService::new(
                 devices.clone(),
-                store.clone(),
+                store.inventory(),
                 runtime.clone(),
             )),
             readiness: runtime.readiness.clone(),
@@ -243,7 +266,10 @@ impl Host {
             "/accepted-peer",
             axum::routing::get(
                 |axum::Extension(info): axum::Extension<
-                    rss_axum::AcceptedConnectionInfo<(tls::Peer, admission::RequestGate)>,
+                    rss_axum::AcceptedConnectionInfo<(
+                        Option<rss_mdm_certificate::HandshakePeer>,
+                        admission::RequestGate,
+                    )>,
                 >| async move { info.socket_peer().ip().to_string() },
             ),
         );
@@ -287,7 +313,7 @@ impl Host {
             launch.stage_deferred_task_with_token(
                 self.runtime
                     .clone()
-                    .registration(signals.clone())
+                    .registration(signals.handle(crate::worker_wake::Work::Inventory))
                     .critical(),
             );
         }
@@ -371,16 +397,16 @@ impl Host {
         };
         ensure!(String::from_utf8_lossy(&result.provisioning.0).contains("AAUTHLEVEL"));
         let auth = crate::enrollment::store::enrollment_authorization(
-            store,
+            &store.registration(),
             case_tenant(),
             receipt.enrollment_id,
             &password,
         )
         .await?;
         let csr = std::fs::read(root.join("device.csr"))?;
-        let intent = crate::windows::issuance::issuance_intent(
-            store,
-            app.windows()?,
+        let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+            &store.windows_store(),
+            &app.windows()?.channel,
             &auth,
             &proof,
             (
@@ -390,7 +416,15 @@ impl Host {
             now(),
         )
         .await?;
-        let cert = app.windows()?.ca.sign(&intent.tbs)?;
+        let cert = app
+            .windows()?
+            .channel
+            .ca
+            .sign(&app.windows()?.channel.ca.restore_intent(
+                &intent.tbs,
+                &certificate::Csr::verify(&intent.csr)?,
+                intent.registration,
+            )?)?;
         let cert_pem = x509_cert::Certificate::from_der(&cert)?.to_pem(LineEnding::LF)?;
         let identity = reqwest::Identity::from_pem(
             &[
@@ -405,17 +439,17 @@ impl Host {
             .identity(identity)
             .timeout(Duration::from_secs(12))
             .build()?;
-        let url = app.windows()?.management_url();
+        let url = app.windows()?.channel.management_url();
         let mut message = syncml::decode(
             include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
             &CodecLimits::default(),
         )?;
         message.header.target = url.clone();
         message.header.source = crate::test_support::case::name("tls-device").into();
-        let secrets = app
-            .windows()?
-            .protection
-            .open(case_tenant(), auth.id, &intent.sealed)?;
+        let secrets =
+            app.windows()?
+                .channel
+                .open_secrets_fixture(case_tenant(), auth.id, &intent.sealed)?;
         message.header.credential = Some(syncml::Credential {
             meta: syncml::Meta {
                 format: Some("b64".into()),
@@ -482,7 +516,7 @@ pub(crate) struct Peer {
     pub(super) proof: AuthorizedPrincipal,
     pub(super) receipt: crate::enrollment::Receipt,
     pub(super) intent: issuance::Intent,
-    pub(super) secrets: protection::Secrets,
+    pub(super) secrets: rss_mdm_windows_channel::test_support::Secrets,
     pub(super) issue: soap::Message,
     pub(super) path: String,
     pub(super) wire: Vec<u8>,

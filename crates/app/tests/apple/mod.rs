@@ -22,6 +22,7 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode},
 };
+use rss_mdm_apple_mdm::protocol;
 use serde_json::json;
 use std::{path::PathBuf, time::Duration};
 use tower::ServiceExt;
@@ -64,7 +65,7 @@ impl Fixture {
         let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
         let devices = Arc::new(
             crate::device::DeviceService::new(
-                access.clone(),
+                access.registration(),
                 case_tenant().into(),
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
@@ -76,9 +77,12 @@ impl Fixture {
 
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
             config.runtime_database.options()?,
-            access.clone(),
+            access.inventory(),
             rss_request_context::TenantId::parse(case_tenant())?,
             monotonic.clone(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
         )
         .await?;
         let management = config
@@ -122,7 +126,7 @@ impl Fixture {
             identity_management: compiled.identity_management,
             collection: Arc::new(crate::assets::collection::CollectionService::new(
                 devices.clone(),
-                access.clone(),
+                access.inventory(),
                 runtime.clone(),
             )),
             readiness: runtime.readiness.clone(),
@@ -222,8 +226,12 @@ impl Fixture {
                 .critical(),
             );
             launch
-                .stage_deferred_task_with_token(execution.registration(signals.clone()).critical());
-            launch.stage_deferred_task_with_token(runtime.registration(signals.clone()).critical());
+                .stage_deferred_task_with_token(execution.registration(signals.flow()).critical());
+            launch.stage_deferred_task_with_token(
+                runtime
+                    .registration(signals.handle(crate::worker_wake::Work::Inventory))
+                    .critical(),
+            );
             launch.finish();
         }
         crate::test_support::identity::set_grants(
@@ -347,13 +355,17 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         serde_json::from_value(original)?,
         crate::clock::SystemClock.unix_seconds()?,
     )?;
-    ensure!(apple.ready(crate::clock::SystemClock.unix_seconds()?));
+    ensure!(
+        apple
+            .channel
+            .ready(crate::clock::SystemClock.unix_seconds()?)
+    );
     for expires in [
-        apple.authority.expires(),
-        apple.signer.expires(),
-        apple.push.expires,
+        apple.channel.trust_fixture().expires(),
+        apple.channel.signer_expiration_fixture(),
+        apple.channel.push_fixture().expires,
     ] {
-        ensure!(!apple.ready(expires as i64));
+        ensure!(!apple.channel.ready(expires as i64));
     }
     Ok(())
 }
@@ -402,7 +414,9 @@ impl Fixture {
             &json!({"timestamp":timestamp,"provisionerName":apple.config.scep_provisioner,
             "x509CertificateRequest":{"raw":STANDARD.encode(&device.csr)},"scepChallenge":password,"scepTransactionID":Uuid::new_v4().to_string()}),
         )?;
-        let signature = ring::hmac::sign(&apple.challenge_key, &body)
+        let signature = apple
+            .channel
+            .challenge_signature_fixture(&body)
             .as_ref()
             .iter()
             .map(|v| format!("{v:02x}"))

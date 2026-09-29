@@ -1,5 +1,4 @@
 use super::*;
-use rss_mdm_audit_integration::WriteOutcome::*;
 #[test]
 fn audit_and_ledger_interruptions_share_the_host_deadline_projection() {
     use rss_transactional_messaging::transaction::LocalTxDeadlineStage as Stage;
@@ -22,7 +21,7 @@ fn audit_and_ledger_interruptions_share_the_host_deadline_projection() {
     ));
 }
 #[tokio::test]
-async fn durable_corruption_is_distinct_from_interruption_and_preserves_settlement() {
+async fn durable_corruption_is_distinct_from_interruption() {
     use axum::response::IntoResponse;
     for (cause, reason) in [
         (
@@ -39,15 +38,10 @@ async fn durable_corruption_is_distinct_from_interruption_and_preserves_settleme
         ),
     ] {
         let projected = Error::from(cause);
-        assert_eq!(
-            serde_json::to_value(audit_failure_reason(&projected)).unwrap(),
-            reason
-        );
-        let settled = audit_settlement(None, RolledBack, projected);
         let diagnostic =
-            crate::diagnostic::ProcessError::at("startup.audit", settled.clone()).to_string();
+            crate::diagnostic::ProcessError::at("startup.audit", projected.clone()).to_string();
         assert!(diagnostic.contains("Audit"));
-        let response = settled.into_response();
+        let response = projected.into_response();
         assert_eq!(
             response.status(),
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
@@ -61,62 +55,5 @@ async fn durable_corruption_is_distinct_from_interruption_and_preserves_settleme
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["code"], reason);
-    }
-    let unknown = audit_settlement(
-        Some(&Error::CommitUnknown),
-        RolledBack,
-        Error::Unavailable(crate::Failure::AuditIntegrity),
-    );
-    assert!(matches!(unknown, Error::CommitUnknown));
-}
-#[test]
-fn request_settlement_preserves_business_certainty() {
-    for state in [
-        CommitNotStarted,
-        RolledBack,
-        Unknown,
-        Committed,
-        RollbackFailed,
-    ] {
-        assert!(matches!(
-            audit_settlement(
-                Some(&Error::CommitUnknown),
-                state,
-                Error::Unavailable(crate::Failure::Audit)
-            ),
-            Error::CommitUnknown
-        ));
-        assert!(matches!(
-            audit_settlement(
-                Some(&Error::RollbackFailed),
-                state,
-                Error::Unavailable(crate::Failure::Audit)
-            ),
-            Error::RollbackFailed
-        ));
-    }
-    for state in [Unknown, Committed] {
-        assert!(matches!(
-            audit_settlement(None, state, Error::Unavailable(crate::Failure::Audit)),
-            Error::CommitUnknown
-        ));
-    }
-    assert!(matches!(
-        audit_settlement(
-            None,
-            RollbackFailed,
-            Error::Unavailable(crate::Failure::Audit)
-        ),
-        Error::RollbackFailed
-    ));
-    for state in [CommitNotStarted, RolledBack] {
-        assert!(matches!(
-            audit_settlement(
-                Some(&Error::Forbidden),
-                state,
-                Error::Unavailable(crate::Failure::Audit)
-            ),
-            Error::Unavailable(crate::Failure::Audit)
-        ));
     }
 }

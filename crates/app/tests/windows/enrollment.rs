@@ -1,9 +1,14 @@
 use crate::windows::test_support::*;
-use crate::windows::*;
 use crate::{api::Assembly, device::test_support::options};
 use anyhow::ensure;
+use axum::http::StatusCode;
+use rss_mdm_windows_mdm::{
+    CodecLimits, Secret,
+    soap::{self, Body, Operation},
+};
 use sqlx::{Connection, PgConnection};
 use std::time::Duration;
+use uuid::Uuid;
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.enrollment"]
 async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {

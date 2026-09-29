@@ -1,0 +1,34 @@
+[package]
+name = "rss-mdm-content-service"
+autotests = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sqlx = { workspace = true, features = ["uuid", "json"] }
+rss-contract.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+rss-mdm-resource.workspace = true
+rss-mdm-software-service.workspace = true
+rss-request-context.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+futures.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt", "time"] }
+tokio-util = { workspace = true, features = ["io"] }
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true

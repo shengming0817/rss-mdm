@@ -3,14 +3,50 @@
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 use crate::{Error, Failure};
 use sqlx::{
-    PgPool, Postgres, Transaction,
+    PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
+#[cfg(test)]
+use sqlx::{Postgres, Transaction};
 use std::time::Duration;
 pub(crate) struct Database {
+    inventory: std::sync::Arc<rss_mdm_inventory_service::Store>,
+    registration: std::sync::Arc<rss_mdm_registration_service::Store>,
+    authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
     pool: PgPool,
 }
 impl Database {
+    pub(crate) fn authorization_store(
+        &self,
+    ) -> std::sync::Arc<rss_mdm_authorization_service::Store> {
+        self.authorization.clone()
+    }
+    pub(crate) fn apple_store(&self) -> std::sync::Arc<rss_mdm_apple_channel::Store> {
+        std::sync::Arc::new(rss_mdm_apple_channel::Store::from_pool(
+            self.pool.clone(),
+            self.registration.clone(),
+            self.authorization.clone(),
+        ))
+    }
+    pub(crate) fn windows_store(&self) -> std::sync::Arc<rss_mdm_windows_channel::Store> {
+        std::sync::Arc::new(rss_mdm_windows_channel::Store::from_pool(
+            self.pool.clone(),
+            self.registration.clone(),
+            self.authorization.clone(),
+        ))
+    }
+    pub(crate) fn inventory(&self) -> std::sync::Arc<rss_mdm_inventory_service::Store> {
+        self.inventory.clone()
+    }
+    pub(crate) fn registration(&self) -> std::sync::Arc<rss_mdm_registration_service::Store> {
+        self.registration.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn authorization(&self) -> &rss_mdm_authorization_service::Store {
+        &self.authorization
+    }
+
     pub async fn connect(options: PgConnectOptions) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -22,14 +58,26 @@ impl Database {
             pool.close().await;
             return Err(e);
         }
-        Ok(Self { pool })
+        Ok(Self {
+            inventory: std::sync::Arc::new(rss_mdm_inventory_service::Store::from_pool(
+                pool.clone(),
+            )),
+            registration: std::sync::Arc::new(rss_mdm_registration_service::Store::from_pool(
+                pool.clone(),
+                std::sync::Arc::new(crate::registration_lifecycle::Bridge),
+            )),
+            authorization: std::sync::Arc::new(rss_mdm_authorization_service::Store::from_pool(
+                pool.clone(),
+            )),
+            pool,
+        })
     }
     /// Host assembly shares this pool with Audit; Database remains its shutdown owner.
     pub(crate) async fn audit_store(
         &self,
         config: &crate::config::AuditConfig,
     ) -> Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>, Error> {
-        let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
         let control = budget.control();
         rss_mdm_audit_integration::AuditStore::new(self.pool.clone(), config.integrity()?, &control)
             .await
@@ -39,27 +87,15 @@ impl Database {
     pub async fn close(&self) {
         self.pool.close().await;
     }
+    #[cfg(test)]
     pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         Self::configure_transaction(&mut tx, tenant).await?;
         Ok(tx)
     }
     /// Pure work discovery uses the normal tenant boundary without Audit head ownership.
-    pub(crate) async fn begin_read(
-        &self,
-        tenant: &str,
-    ) -> Result<Transaction<'_, Postgres>, Error> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        sqlx::query("SET TRANSACTION READ ONLY")
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        Self::configure_transaction(&mut tx, tenant).await?;
-        Ok(tx)
-    }
-    pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
-        self.pool.acquire().await.map_err(db)
-    }
+
+    #[cfg(test)]
     pub(crate) async fn configure_transaction(
         tx: &mut Transaction<'_, Postgres>,
         tenant: &str,
@@ -93,19 +129,19 @@ SELECT current_user='mdm_access' AND session_user=current_user
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND has_schema_privilege(current_user,'mdm_access','USAGE')
- AND (SELECT count(*)=18 AND bool_and(c.relname IN ('grants','requests','operations','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','management_sessions','management_messages','collection_runs','authorization_rules','user_groups','authorization_initializations','asset_authority_history','collection_history','agent_bindings') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+ AND (SELECT count(*)=23 AND bool_and(c.relname IN ('grants','requests','registration_operations','collections','operations','collection_operations','devices','registrations','credentials','report_sources','enrollment_intents','enrollment_certificates','management_sessions','management_messages','collection_runs','authorization_rules','user_groups','authorization_initializations','asset_authority_history','collection_history','bindings','authorization_operations') AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
  AND (CASE WHEN c.relname NOT IN ('asset_authority_history','collection_history') THEN has_table_privilege(current_user,c.oid,'SELECT') ELSE NOT has_table_privilege(current_user,c.oid,'SELECT') AND NOT has_any_column_privilege(current_user,c.oid,'SELECT') END) AND has_table_privilege(current_user,c.oid,'INSERT')=(c.relname NOT IN('asset_authority_history','collection_history'))
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
- AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND c.relkind='r')
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname IN ('enabled','next_command','next_sequence') OR c.relname='requests' AND a.attname IN ('state','password_digest','password_version','credential_ref','expires_at') OR c.relname='management_sessions' AND a.attname IN ('state','last_message','correlation','nonce','client_authenticated','run_id') OR c.relname='collection_runs' AND a.attname IN ('attempts','result','reason','batch','digest','sealed_at','delivery_pending') OR c.relname='enrollment_certificates' AND a.attname='server_nonce' OR c.relname IN ('authorization_rules','user_groups') AND a.attname IN ('revision','document')) AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
- AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
- AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
- AND NOT EXISTS(SELECT 1 FROM pg_attribute col JOIN pg_class c ON c.oid=col.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(col.attacl) a WHERE n.nspname='mdm_access' AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND (a.is_grantable OR a.privilege_type='REFERENCES'))))
- AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('mdm_access','mdm_apple','pg_catalog','information_schema') AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts')) AND c.relkind IN ('r','p','v','m','f') AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
+ AND has_table_privilege(current_user,c.oid,'DELETE')=(c.relname IN ('management_sessions','management_messages'))) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND c.relkind='r')
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND a.attnum>0 AND NOT a.attisdropped AND NOT(c.relname IN ('registrations','credentials') AND a.attname='state' OR c.relname='report_sources' AND a.attname IN ('enabled','next_command','next_sequence') OR c.relname='requests' AND a.attname IN ('state','password_digest','password_version','credential_ref','expires_at') OR c.relname='management_sessions' AND a.attname IN ('state','last_message','correlation','nonce','client_authenticated','run_id') OR c.relname='collection_runs' AND a.attname IN ('attempts','result','reason','batch','digest','sealed_at','delivery_pending') OR c.relname='enrollment_certificates' AND a.attname='server_nonce' OR c.relname IN ('authorization_rules','user_groups') AND a.attname IN ('revision','document')) AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
+ AND NOT EXISTS(SELECT 1 FROM pg_namespace n, LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute col JOIN pg_class c ON c.oid=col.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace, LATERAL aclexplode(col.attacl) a WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND (a.is_grantable OR a.privilege_type='REFERENCES'))))
+ AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory','mdm_apple','pg_catalog','information_schema') AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts')) AND c.relkind IN ('r','p','v','m','f') AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind='S' AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
  AND (SELECT count(*)=5 AND bool_and((n.nspname,p.proname) IN (('mdm_access','prune_agent_collections'),('rss_audit','reserve'),('rss_audit','append'),('rss_ledger','prepare_append'),('rss_ledger','insert_entry')) AND p.prosecdef AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) AND p.proconfig @> ARRAY[CASE n.nspname WHEN 'rss_audit' THEN 'search_path=pg_catalog, rss_audit' WHEN 'rss_ledger' THEN 'search_path=pg_catalog, rss_ledger' ELSE 'search_path=pg_catalog, pg_temp' END] AND has_function_privilege(current_user,p.oid,'EXECUTE')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
 "#).fetch_one(&mut *tx).await.map_err(db)?;
-    let apple: bool = sqlx::query_scalar(include_str!("apple/access-admission.sql"))
+    let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
@@ -121,7 +157,7 @@ SELECT current_user='mdm_access' AND session_user=current_user
     let collection = crate::collection::admission::verify(&mut tx)
         .await
         .map_err(db)?;
-    let windows = crate::windows::storage_admission::verify(&mut tx)
+    let windows = rss_mdm_windows_channel::storage_admission::verify(&mut tx)
         .await
         .map_err(db)?;
     if !valid || !apple || !authorization || !enrollment || !device || !collection || !windows {
@@ -133,10 +169,10 @@ SELECT current_user='mdm_access' AND session_user=current_user
         .await
         .map_err(db)?;
     // Exact tenant policy; extra permissive policies cannot bypass isolation.
-    let policies: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)"#).fetch_one(&mut *tx).await.map_err(db)?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access'").fetch_one(&mut *tx).await.map_err(db)?;
-    let retention: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_access' AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND (c.relname='management_sessions' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='expires_at<clock_timestamp' OR c.relname='management_messages' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp')"#).fetch_one(&mut *tx).await.map_err(db)?;
-    if policies != 18 || retention != 2 || total != 20 {
+    let policies: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)"#).fetch_one(&mut *tx).await.map_err(db)?;
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory')").fetch_one(&mut *tx).await.map_err(db)?;
+    let retention: i64 = sqlx::query_scalar(r#"SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('mdm_access','mdm_agent','mdm_windows','mdm_inventory') AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND (c.relname='management_sessions' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='expires_at<clock_timestamp' OR c.relname='management_messages' AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))='existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp')"#).fetch_one(&mut *tx).await.map_err(db)?;
+    if policies != 23 || retention != 2 || total != 25 {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)
@@ -183,4 +219,14 @@ pub(crate) async fn admit_audit_runtime(
             |_| Err(Error::CommitUnknown),
             |_| Err(Error::Unavailable(Failure::Audit)),
         )
+}
+
+impl Database {
+    pub(crate) fn agent_store(&self) -> rss_mdm_agent_channel::Store {
+        rss_mdm_agent_channel::Store::from_pool(
+            self.pool.clone(),
+            self.registration.clone(),
+            self.authorization.clone(),
+        )
+    }
 }

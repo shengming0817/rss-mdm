@@ -25,15 +25,7 @@ use tokio_rustls::{
     server::TlsStream,
 };
 
-#[derive(Clone)]
-pub(crate) struct Peer {
-    chain: Arc<Vec<CertificateDer<'static>>>,
-}
-impl Peer {
-    pub(crate) fn chain(&self) -> &[CertificateDer<'static>] {
-        &self.chain
-    }
-}
+use rss_mdm_certificate::HandshakePeer;
 pub(crate) fn configuration(
     endpoint: &TlsEndpoint,
     client: Option<Arc<dyn ClientCertVerifier>>,
@@ -92,12 +84,14 @@ pub(crate) fn registration(
 
 // Only this product adapter projects RSS-bound preparation metadata into handler inputs.
 async fn evidence(
-    Extension(info): Extension<AcceptedConnectionInfo<(Peer, RequestGate)>>,
+    Extension(info): Extension<AcceptedConnectionInfo<(Option<HandshakePeer>, RequestGate)>>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let (peer, gate) = info.metadata();
-    request.extensions_mut().insert(peer.clone());
+    if let Some(peer) = peer {
+        request.extensions_mut().insert(peer.clone());
+    }
     request.extensions_mut().insert(gate.clone());
     next.run(request).await
 }
@@ -111,7 +105,7 @@ struct TlsTransport {
 }
 impl ConnectionTransport for TlsTransport {
     type Io = TlsStream<TcpStream>;
-    type Metadata = (Peer, RequestGate);
+    type Metadata = (Option<HandshakePeer>, RequestGate);
     type Guard = ConnectionPermit;
     type Error = ConnectionFailure;
 
@@ -141,7 +135,8 @@ impl ConnectionTransport for TlsTransport {
                 // Emit before the bounded audit so cancellation cannot hide the diagnosed failure.
                 eprintln!("{}", event(self.kind.name(), kind));
                 let audit = RequestAudit::new(self.tenant.clone(), self.kind.audit_action());
-                let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+                let budget =
+                    rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
                 let control = budget.control();
                 let failed = self
                     .audit_store
@@ -152,16 +147,7 @@ impl ConnectionTransport for TlsTransport {
                 return Err(kind);
             }
         };
-        let peer = Peer {
-            chain: Arc::new(
-                stream
-                    .get_ref()
-                    .1
-                    .peer_certificates()
-                    .unwrap_or_default()
-                    .to_vec(),
-            ),
-        };
+        let peer = HandshakePeer::from_completed_tls(stream.get_ref().1).ok();
         // The move-only permit goes to RSS; cloned request metadata never owns its lifetime.
         let gate = permit.gate();
         Ok(EstablishedTransport::new(stream, (peer, gate), permit))

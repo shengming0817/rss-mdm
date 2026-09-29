@@ -21,7 +21,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     ))?;
     let access = database(base).await?;
     let service = crate::device::DeviceService::new(
-        access.clone(),
+        access.registration(),
         case_tenant().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
@@ -30,12 +30,11 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     let proof =
         crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 121);
     let config: Config = serde_json::from_value(base.clone())?;
-    let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
-        config.runtime_database.options()?,
-        access.clone(),
-        rss_request_context::TenantId::parse(case_tenant())?,
-        monotonic(),
-    )
+    let runtime = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?,
+access.inventory(),
+rss_request_context::TenantId::parse(case_tenant())?,
+monotonic(),
+access.audit_store(&crate::config::AuditConfig::Plain).await?)
     .await?;
     let owner = start(runtime.clone()).await?;
     let id = Uuid::new_v4();

@@ -2,9 +2,12 @@ use crate::device::test_support::options;
 use crate::windows::test_support::*;
 use crate::windows::*;
 use anyhow::ensure;
+use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
+use rss_mdm_windows_mdm::{CodecLimits, Secret};
 use std::time::Duration;
+use uuid::Uuid;
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
 async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
@@ -46,7 +49,11 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
     let response = syncml::decode(&first, &CodecLimits::default())?;
     ensure!(
         response.header.credential.as_ref().unwrap().data.0
-            == protection::digest("RSS-MDM", &secrets.server_password, &secrets.server_nonce)
+            == rss_mdm_windows_channel::test_support::digest(
+                "RSS-MDM",
+                &secrets.server_password,
+                &secrets.server_nonce
+            )
     );
     ensure!(post(wire.clone()).send().await?.bytes().await? == first);
     let mut wrong = message.clone();
@@ -113,7 +120,11 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
             .unwrap()
             .data
             .0
-            == protection::digest("RSS-MDM", &secrets.server_password, &secrets.server_nonce)
+            == rss_mdm_windows_channel::test_support::digest(
+                "RSS-MDM",
+                &secrets.server_password,
+                &secrets.server_nonce
+            )
     );
     ensure!(post(followup.clone()).send().await?.bytes().await? == finished);
     let get_request = syncml::decode(&finished, &CodecLimits::default())?;
@@ -190,7 +201,7 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
             },
         )
         .await?;
-    let pending = crate::collection::store::collection(store, &scope, None)
+    let pending = crate::collection::store::collection(&store.inventory(), &scope, None)
         .await?
         .unwrap();
     ensure!(pending.result == crate::collection::RunResult::Pending && pending.batch().is_none());
@@ -229,14 +240,14 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
             .iter()
             .any(|c| matches!(c, Command::Status(s) if s.command == CommandName::Results))
     );
-    let sealed = crate::collection::store::collection(store, &scope, None)
+    let sealed = crate::collection::store::collection(&store.inventory(), &scope, None)
         .await?
         .unwrap();
     ensure!(sealed.id == pending.id && sealed.result == crate::collection::RunResult::Snapshot);
     let bytes = sealed.batch().unwrap().encode().to_vec();
     ensure!(post(final_fragment).send().await?.status() == StatusCode::OK);
     ensure!(
-        crate::collection::store::collection(store, &scope, None)
+        crate::collection::store::collection(&store.inventory(), &scope, None)
             .await?
             .unwrap()
             .batch()
@@ -281,7 +292,11 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
     let next_response = syncml::decode(&next_response.bytes().await?, &CodecLimits::default())?;
     ensure!(
         next_response.header.credential.unwrap().data.0
-            == protection::digest("RSS-MDM", &secrets.server_password, &next_nonce)
+            == rss_mdm_windows_channel::test_support::digest(
+                "RSS-MDM",
+                &secrets.server_password,
+                &next_nonce
+            )
     );
     // A newer session supersedes the prior unfinished session. Its stored response remains replayable,
     // but a delayed 212 from that older session cannot overwrite the latest next nonce.
@@ -343,7 +358,11 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
     let current = syncml::decode(&current.bytes().await?, &CodecLimits::default())?;
     ensure!(
         current.header.credential.unwrap().data.0
-            == protection::digest("RSS-MDM", &secrets.server_password, &[9u8; 32])
+            == rss_mdm_windows_channel::test_support::digest(
+                "RSS-MDM",
+                &secrets.server_password,
+                &[9u8; 32]
+            )
     );
 
     // Existing TLS keepalive connections do not cache the active mapping.

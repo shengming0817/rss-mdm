@@ -1,0 +1,32 @@
+[package]
+name = "rss-mdm-authorization-service"
+autotests = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rss-identity-core.workspace = true
+rss-identity-postgres.workspace = true
+rss-observation.workspace = true
+rss-request-context.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-audit-postgres.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+url.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[features]
+default = []
+integration = []
+
+[lints]
+workspace = true

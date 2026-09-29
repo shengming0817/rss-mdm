@@ -1,5 +1,4 @@
 use crate::planning::test_support::*;
-use crate::planning::*;
 
 #[tokio::test]
 #[ignore = "MODULE=planning.assets: real capability storage and transactions"]
@@ -130,7 +129,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
             instance: "history".into(),
             principal: "operator".into(),
         },
-        change: operation(revision, input),
+        change: inventory_operation(revision, input),
     };
     execute_asset(
         &service,

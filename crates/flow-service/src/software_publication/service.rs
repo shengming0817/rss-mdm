@@ -1,0 +1,470 @@
+use super::{
+    model::{Change, Ring},
+    wire,
+};
+use crate::{
+    Error, Failure,
+    authorization::{Permission, context::AuthorizedPrincipal},
+    operation::Operation,
+    transaction::*,
+};
+use rss_contract::Timepoint;
+use rss_mdm_audit_integration::{ManagementResult as Effect, RequestAudit};
+use rss_mdm_software_release as rel;
+use rss_mdm_software_service::publication as service;
+use rss_request_context::{Deadline, TenantId};
+use rss_transactional_messaging_postgres::PgRuntime;
+use serde_json::{Value, json};
+use std::{sync::Arc, time::Duration};
+fn actor(
+    tenant: TenantId,
+    instance: &str,
+    subject: &str,
+) -> std::result::Result<rel::ActorId, Error> {
+    rel::ActorId::new(tenant, json!([instance, subject]).to_string()).map_err(|_| Error::Malformed)
+}
+fn failure(e: service::Error) -> Error {
+    match e {
+        service::Error::Diagnostic { category, .. } => failure(*category),
+        service::Error::Input
+        | service::Error::Content
+        | service::Error::ArtifactAddress
+        | service::Error::ArtifactBudget
+        | service::Error::ArtifactDigest => Error::Malformed,
+        service::Error::CandidateNotFound => Error::Publication(
+            crate::software_publication::error::PublicationError::MissingCandidate,
+        ),
+        service::Error::Identity => Error::Forbidden,
+        service::Error::Conflict | service::Error::Blocked => Error::Conflict,
+        service::Error::CommitUnknown(_) => Error::CommitUnknown,
+        service::Error::RollbackFailed(_) => Error::RollbackFailed,
+        _ => Error::Unavailable(Failure::Runtime),
+    }
+}
+pub async fn read(
+    directory: &PublicationDirectory,
+    _authorization: &crate::authorization::Store,
+    proof: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    source: String,
+    id: String,
+) -> std::result::Result<wire::Candidate, Error> {
+    audit.set_action("management_read");
+    audit.target(&id);
+    proof.manage(Permission::ReleaseRead)?;
+    let service = directory.services.get(&source).ok_or(Error::Publication(
+        crate::software_publication::error::PublicationError::MissingSource,
+    ))?;
+    let id = rel::CandidateId::new(directory.tenant, id).map_err(|_| Error::Malformed)?;
+    let candidate = service
+        .candidate(&id, cutoff())
+        .await
+        .map_err(failure)?
+        .ok_or(Error::Publication(
+            crate::software_publication::error::PublicationError::MissingCandidate,
+        ))?;
+    let mut view = summary(&candidate);
+    view.submission = Some(
+        service
+            .submission(&id, cutoff())
+            .await
+            .map_err(failure)?
+            .into(),
+    );
+    Ok(view)
+}
+pub async fn write(
+    directory: &PublicationDirectory,
+    authorization: &crate::authorization::Store,
+    proof: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    source: String,
+    id: String,
+    request: Operation<Change>,
+) -> std::result::Result<wire::Candidate, Error> {
+    let permission = match request.input {
+        Change::Candidate { .. } => Permission::ReleaseWrite,
+        Change::Validate { .. } => Permission::ReleaseValidate,
+        Change::Approve { .. } => Permission::ReleaseApprove,
+        Change::Authorize { .. } | Change::Publish { .. } => Permission::ReleasePublish,
+        Change::Recover { .. } | Change::Retry { .. } => Permission::ReleaseRecover,
+        Change::Withdraw { .. } => Permission::ReleaseWithdraw,
+    };
+    audit.set_action("management_write");
+    audit.target(&id);
+    audit.operation(request.operation_id, "management_write");
+    proof.manage(permission)?;
+    let service = directory.services.get(&source).ok_or(Error::Publication(
+        crate::software_publication::error::PublicationError::MissingSource,
+    ))?;
+    let tenant = directory.tenant;
+    let candidate_id = rel::CandidateId::new(tenant, &id).map_err(|_| Error::Malformed)?;
+    let operator = actor(tenant, proof.instance_id(), proof.principal_id())?;
+    if let Change::Approve {
+        publisher_subject, ..
+    } = &request.input
+    {
+        proof
+            .authorization()?
+            .publisher(&crate::authorization::User {
+                instance_id: proof.instance_id().into(),
+                tenant_id: proof.tenant_id().into(),
+                principal_id: publisher_subject.clone(),
+            })?;
+    }
+    audit.set_action("management_write");
+    audit.target(&id);
+    audit.operation(request.operation_id, "management_write");
+    let intent_audit = audit.transaction_copy();
+    intent_audit.set_action("software_preflight");
+    intent_audit.software(rss_mdm_audit_integration::SoftwareFact {
+        operation: request.operation_id.to_string(),
+        publication: None,
+        attempt: None,
+        ring: None,
+        binding: Some(source.clone()),
+        stage: "management_admission",
+        outcome: "accepted",
+    });
+    let intent = directory
+        .authorize_intent(&source, &id, &request, &intent_audit, &|| {
+            proof.manage(permission).map_err(Error::from)
+        })
+        .await;
+    intent_audit.finalize(intent.as_ref().err().and_then(|e| {
+        matches!(e, Error::Unavailable(Failure::Audit))
+            .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
+    }));
+    let intent = intent?;
+    let at = Timepoint::try_from(intent["as_of"].as_i64().ok_or(Error::Conflict)?)
+        .map_err(|_| Error::Conflict)?;
+    let operation = rel::RequestId::new(tenant, request.operation_id.to_string())
+        .map_err(|_| Error::Malformed)?;
+    let call = service::ServiceRequest {
+        actor: operator.clone(),
+        id: operation.clone(),
+        expected_revision: request.expected_revision,
+        as_of: at,
+    };
+    let current = crate::authorization::store::authorization_snapshot(authorization, proof).await?;
+    current.require(proof, permission, None)?;
+    if let Change::Approve {
+        publisher_subject, ..
+    } = &request.input
+    {
+        current.publisher(&crate::authorization::User {
+            instance_id: proof.instance_id().into(),
+            tenant_id: proof.tenant_id().into(),
+            principal_id: publisher_subject.clone(),
+        })?;
+    }
+    audit.require_request_settlement();
+    audit.mark_commit_started();
+    let outcome = perform(
+        service,
+        &candidate_id,
+        &request.input,
+        &call,
+        proof.instance_id(),
+    )
+    .await;
+    // The service persists actual domain outcomes. The envelope separately audits
+    // this HTTP result, including its request ID, after external effect uncertainty.
+    match outcome {
+        Ok(effect) => {
+            audit.management_result(effect);
+            if matches!(effect, Effect::Unknown) {
+                return Err(Error::CommitUnknown);
+            }
+            audit.mark_committed();
+            let candidate = service
+                .candidate(&candidate_id, cutoff())
+                .await
+                .map_err(failure)?
+                .ok_or(Error::Publication(
+                    crate::software_publication::error::PublicationError::MissingCandidate,
+                ))?;
+            Ok(summary(&candidate))
+        }
+        Err(e) => {
+            if matches!(e, Error::RollbackFailed) {
+                audit.mark_rollback_failed();
+            }
+            Err(e)
+        }
+    }
+}
+async fn perform(
+    service: &service::PublicationService,
+    id: &rel::CandidateId,
+    change: &Change,
+    request: &service::ServiceRequest,
+    instance: &str,
+) -> std::result::Result<Effect, Error> {
+    let cutoff = cutoff();
+    match change {
+        Change::Candidate {
+            resource,
+            version,
+            expected_resource_revision,
+            submission,
+        } => {
+            if request.expected_revision != 0 {
+                return Err(Error::Conflict);
+            }
+            let (_, replayed) = service
+                .create_candidate(
+                    &service::CandidateInput {
+                        actor: request.actor.clone(),
+                        candidate: id.clone(),
+                        request: request.id.clone(),
+                        resource: rss_mdm_resource::Id::new(resource)
+                            .map_err(|_| Error::Malformed)?,
+                        version: rss_mdm_resource::Id::new(version)
+                            .map_err(|_| Error::Malformed)?,
+                        expected_resource_revision: *expected_resource_revision,
+                        submission: submission.clone().into(),
+                        as_of: request.as_of,
+                    },
+                    cutoff,
+                )
+                .await
+                .map_err(failure)?;
+            Ok(effect(replayed))
+        }
+        Change::Validate { ring } => {
+            let result = service
+                .validate(id, ring.core(), request, cutoff)
+                .await
+                .map_err(failure)?;
+            Ok(transition_effect(result))
+        }
+        Change::Approve {
+            ring,
+            publisher_subject,
+        } => {
+            let result = service
+                .approve(
+                    id,
+                    ring.core(),
+                    &actor(id.tenant(), instance, publisher_subject)?,
+                    request,
+                    cutoff,
+                )
+                .await
+                .map_err(failure)?;
+            Ok(transition_effect(result))
+        }
+        Change::Authorize { ring } => {
+            let result = service
+                .authorize(id, ring.core(), request, cutoff)
+                .await
+                .map_err(failure)?;
+            Ok(transition_effect(result))
+        }
+        Change::Retry { ring, attempt } => {
+            let result = service
+                .retry(id, ring.core(), *attempt, request, cutoff)
+                .await
+                .map_err(failure)?;
+            Ok(transition_effect(result))
+        }
+        Change::Withdraw { ring } => withdraw(service, id, *ring, request, cutoff).await,
+        Change::Publish {
+            ring,
+            publication,
+            attempt,
+        }
+        | Change::Recover {
+            ring,
+            publication,
+            attempt,
+        } => {
+            let c = service
+                .candidate(id, cutoff)
+                .await
+                .map_err(failure)?
+                .ok_or(Error::Publication(
+                    crate::software_publication::error::PublicationError::MissingCandidate,
+                ))?;
+            let snap = c.snapshot();
+            let rel::RingState::Publication(p) = snap.ring_state(ring.core()) else {
+                return Err(Error::Conflict);
+            };
+            if p.id().digest().bytes() != *publication || p.attempt != *attempt {
+                return Err(Error::Conflict);
+            }
+            let completed = matches!(
+                p.outcome,
+                rel::PublicationOutcome::Reported(
+                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_)
+                )
+            );
+            let result = if matches!(change, Change::Publish { .. }) {
+                service
+                    .publish(p.id(), p.attempt, request.as_of, cutoff)
+                    .await
+                    .map_err(failure)?
+            } else {
+                service
+                    .reconcile(p.id(), p.attempt, request.as_of, cutoff)
+                    .await
+                    .map_err(failure)?
+            };
+            Ok(match result {
+                rel::PublicationOutcome::Reported(
+                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_),
+                ) if completed => Effect::Replayed,
+                rel::PublicationOutcome::Reported(
+                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_),
+                ) => Effect::Performed,
+                _ => Effect::Unknown,
+            })
+        }
+    }
+}
+fn cutoff() -> Deadline {
+    Deadline::from_timeout(
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
+        Duration::from_secs(6),
+    )
+    .expect("constant budget")
+}
+fn summary(c: &rel::Candidate) -> wire::Candidate {
+    let snapshot = c.snapshot();
+    let rings = rel::Ring::ALL
+        .iter()
+        .map(|ring| {
+            let (state, publication) = match snapshot.ring_state(*ring) {
+                rel::RingState::Publication(p) => (
+                    "publication",
+                    Some(wire::Publication {
+                        id: p.id().digest().bytes(),
+                        attempt: p.attempt,
+                        outcome: match p.outcome {
+                            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(
+                                _,
+                            )) => "published",
+                            rel::PublicationOutcome::Reported(
+                                rel::PublicationResult::NotApplied(_),
+                            ) => "not_applied",
+                            _ => "unknown",
+                        }
+                        .into(),
+                    }),
+                ),
+                rel::RingState::Approved(_) => ("approved", None),
+                rel::RingState::Validated(_) => ("validated", None),
+                _ => ("candidate", None),
+            };
+            let approval = match snapshot.ring_state(*ring) {
+                rel::RingState::Approved(a) => Some(a),
+                rel::RingState::Publication(p) => Some(&p.approval),
+                _ => None,
+            };
+            wire::CandidateRing {
+                ring: ring_name(*ring).into(),
+                state: state.into(),
+                publication,
+                approval: approval.map(|a| wire::Approval {
+                    approver: a.approver.value().into(),
+                    publisher: a.publisher.value().into(),
+                    at: a.at.unix_seconds(),
+                    digest: a.digest().bytes(),
+                }),
+            }
+        })
+        .collect();
+    wire::Candidate {
+        id: snapshot.id.value().into(),
+        revision: snapshot.revision,
+        content_digest: snapshot.content.digest().bytes(),
+        disposition: disposition(snapshot.disposition).into(),
+        manifest_digest: snapshot.content.manifest().bytes(),
+        source_snapshot: snapshot.content.source_snapshot().bytes(),
+        rings,
+        submission: None,
+    }
+}
+
+fn disposition(d: rel::Disposition) -> &'static str {
+    match d {
+        rel::Disposition::Active => "active",
+        rel::Disposition::Quarantined => "quarantined",
+        rel::Disposition::Deprecated => "deprecated",
+    }
+}
+fn ring_name(r: rel::Ring) -> &'static str {
+    match r {
+        rel::Ring::Test => "test",
+        rel::Ring::Pilot => "pilot",
+        rel::Ring::Production => "production",
+    }
+}
+
+fn effect(replayed: bool) -> Effect {
+    if replayed {
+        Effect::Replayed
+    } else {
+        Effect::Performed
+    }
+}
+fn transition_effect(result: rel::Transition) -> Effect {
+    effect(matches!(result, rel::Transition::Replayed(_)))
+}
+
+async fn withdraw(
+    service: &service::PublicationService,
+    id: &rel::CandidateId,
+    ring: Ring,
+    request: &service::ServiceRequest,
+    cutoff: Deadline,
+) -> std::result::Result<Effect, Error> {
+    service
+        .candidate(id, cutoff)
+        .await
+        .map_err(failure)?
+        .ok_or(Error::Publication(
+            crate::software_publication::error::PublicationError::MissingCandidate,
+        ))?;
+    let result = service
+        .withdraw(id, ring.core(), request, cutoff)
+        .await
+        .map_err(failure)?;
+    Ok(match result.outcome {
+        service::Withdrawal::Complete | service::Withdrawal::NotPublished => {
+            effect(result.replayed)
+        }
+        _ => Effect::Unknown,
+    })
+}
+
+pub struct PublicationDirectory {
+    pub services: std::collections::BTreeMap<String, service::PublicationService>,
+    pub tenant: TenantId,
+    pub runtime: Arc<PgRuntime>,
+    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub clock: Arc<dyn crate::clock::Clock>,
+}
+impl PublicationDirectory {
+    async fn authorize_intent(
+        &self,
+        source: &str,
+        id: &str,
+        request: &Operation<Change>,
+        audit: &RequestAudit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+    ) -> std::result::Result<Value, Error> {
+        authorize()?;
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,&(self,source,id,request,audit,authorize),|ctx,tx|Box::pin(async move{
+   let (s,source,id,request,audit,authorize)=*ctx;crate::transaction::lock(tx).await?;authorize()?;
+   if request.operation_id.is_nil(){return Err(Error::Malformed.into());}
+   use sha2::Digest;
+   let hash=sha2::Sha256::digest(checked_input(serde_json::to_vec(&("publication",audit.tenant(),audit.snapshot().actor,audit.snapshot().instance,source,id,request)))?).to_vec();
+   if let Some(old)=super::receipts::replay(tx,audit,request.operation_id,&hash).await?{super::receipts::audit(tx,&super::host::Audit(s.audit_store.clone()),audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
+   let value=serde_json::json!({"as_of":s.clock.unix_seconds().map_err(|_|Error::Unavailable(Failure::Clock))?});
+   super::receipts::receipt(tx,audit,request.operation_id,&hash,&value).await?;
+   super::receipts::audit(tx,&super::host::Audit(s.audit_store.clone()),audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
+  }),crate::transaction::TransactionOwner::Publication).await.map_err(Error::from)
+    }
+}

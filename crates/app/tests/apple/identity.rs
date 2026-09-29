@@ -229,7 +229,7 @@ impl Fixture {
         let old = self
             .app
             .execution
-            .apple_wake(&self.app.apple()?.push.configuration)
+            .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing wake"))?;
         peer.token_value(44).await?;

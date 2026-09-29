@@ -10,13 +10,13 @@ Resource 持有不可变内容。Policy 持有组织持续分配，Execution 与
 
 ## 持有与事务
 
-`resource_catalog` 持有资源与引用，`policy` / `policy-postgres` 持有 Policy 合同和配置存储，`planning` 组合 Scope、资源与计算发布，`execution` 持有命令、Run、Attempt 及恢复游标。公开变更在当前授权、内容校验、CAS、回执和审计的同一事务受理。执行角色通过受租户限制的 Policy 读锁与 Scope 准入函数读取有效分配，没有修改 Policy 定义的权限。
+Flow 中的 `resource_catalog` 持有资源与引用，`policy` / `policy-postgres` 持有 Policy 合同和配置存储，`planning` 组合 Scope、资源与计算发布，`execution` 持有命令、Run、Attempt 及恢复游标。公开变更在当前授权、内容校验、CAS、回执和审计的同一事务受理。执行角色通过受租户限制的 Policy 读锁与 Scope 准入函数读取有效分配，没有修改 Policy 定义的权限。
 
 Scope 是目标计算的唯一 owner。成员三值结果、来源水位和定义版本共同决定准入；Unknown 排除依据不能放行。来源暂时计算中会阻止新执行，不能据此移除已有配置。已受理执行绑定注册世代，注册替换阻止旧任务继续启动。
 
 配置持续分配和单次命令期限独立。临时缺少注册或能力时保留分配及诊断，相关事实到达后自动核对。脚本成功只表示退出结果；MDM 收到回执也不等于效果已经核实。采集输出仍通过 CollectionRun → Observation → Inventory，非法、部分、截断和迟到结果保留最后可信值。
 
-内容、签名、事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
+Content 持有内容流及其锁、permit 与截止时间，Flow 持有任务签名和命令提交；Agent 通道持有 HTTP 报文转换。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
 
 ## 来源
 

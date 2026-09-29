@@ -4,3 +4,25 @@
 - [资产变化与持久计划](asset-automation.md)
 - [企业任务](enterprise-tasks.md)
 - [Apple 原生管理](apple-management.md)
+
+## 应用边界
+
+| Cargo owner | 职责 |
+|---|---|
+| `authorization-service` | 当前管理主体、授权规则、授权证明及初始化 |
+| `registration-service` | 注册世代、来源授权、凭据和设备生命周期 |
+| `inventory-service` | 采集质量与持久接收、资产、分组及合规 |
+| `flow-service` | 资源、Scope、Policy、任务与命令编排、持久恢复 |
+| `content-service` | 流式内容、上传、不可变文件与回收 |
+| `management-http` | 浏览器管理 HTTP、会话与错误投影 |
+| `agent-channel` | Agent 注册、报告、任务和内容协议 |
+| `windows-channel` / `apple-channel` | 各平台注册、管理协议及持久协议关联状态 |
+| `certificate` | 有界证书解析、密钥、签名与 TLS 对端证明 |
+| `apple-mdm` / `windows-mdm` | 平台报文和 Profile 编解码 |
+| `app` | 配置与文件加载、实例构造、跨能力接缝、路由合并、TLS 监听、readiness、生命周期与安装顺序 |
+
+应用服务不依赖 Axum 或入口通道。各入口返回完成状态绑定的路由，并负责自己的请求预算、审计结算和协议错误；App 不维护业务路由前缀判断。证书能力不读取宿主配置文件，也不持有注册数据库或外部 CA 生命周期。
+
+跨能力写入借用调用方的 PostgreSQL connection / transaction。发起业务的 owner 负责提交、回执与审计，参与方只修改自己持有的状态；注册及通道绑定、退休及采集终止仍在同一事务中完成。命令提交归 Flow，Windows / Apple 协议状态由通道参与写入。后台继续消费既有 RSS 持久恢复机制。
+
+安装单元由各能力导出，App 只决定顺序。产品 schema 是当前完整定义；仅接受空库或完全一致的安装记录，不保留历史升级链、旧模块转发或双写路径。现有 App 集成测试继续验证实际装配，测试载体不构成生产 facade。

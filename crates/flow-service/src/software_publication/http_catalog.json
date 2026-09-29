@@ -1,0 +1,89 @@
+{
+  "columns": [
+    [
+      "operations",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "fingerprint",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "response",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "actor",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ]
+  ],
+  "constraints": [
+    [
+      "operations",
+      "operations_actor_check",
+      "c",
+      "CHECK ((length(actor) > 0))",
+      true
+    ],
+    [
+      "operations",
+      "operations_fingerprint_check",
+      "c",
+      "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, actor, id)",
+      true
+    ],
+    [
+      "operations",
+      "operations_response_check",
+      "c",
+      "CHECK ((octet_length((response)::text) <= 8388608))",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_publication.operations USING btree (tenant_id, actor, id)",
+      true,
+      true,
+      true
+    ]
+  ]
+}

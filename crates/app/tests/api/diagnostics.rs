@@ -1,29 +1,10 @@
-#[test]
-fn registration_routes_keep_audit_identity_before_handler_rejections() {
-    for (route, action) in [
-        (
-            "/api/v3/devices/{device}/registrations",
-            "registration_read",
-        ),
-        (
-            "/api/v3/devices/{device}/registrations/{registration}/revoke",
-            "credential_revoke",
-        ),
-        ("/api/agent/v3/registrations", "agent_registration"),
-    ] {
-        assert_eq!(route_action(route, false), action);
-    }
-}
-
 use super::*;
-#[test]
-fn collection_creation_has_a_business_action_before_authorization() {
-    assert_eq!(
-        route_action("/api/v1/devices/{id}/collection-runs", false),
-        "collection_start"
-    );
-}
-
+use axum::http::{Request, StatusCode, header};
+use rss_mdm_flow_service::Failure;
+use rss_mdm_management_http::{
+    Error,
+    boundary::{Envelope, admit as envelope},
+};
 #[tokio::test]
 #[ignore = "make t2: close an admitted Audit pool before protected response settlement"]
 async fn audit_failure_logs_preserve_action_and_origin() {
@@ -207,17 +188,4 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(response.headers()[header::RETRY_AFTER], "1");
     assert!(!entered.load(std::sync::atomic::Ordering::SeqCst));
-}
-#[test]
-fn operation_coordinate_does_not_claim_request_replay() {
-    let audit = RequestAudit::new(
-        "11111111-1111-4111-8111-111111111111".into(),
-        "command_read",
-    );
-    audit.operation(uuid::Uuid::new_v4(), "command_read");
-    let response = StatusCode::OK.into_response();
-    assert_eq!(audit_result(&response, &audit.snapshot()), "success");
-    audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-    assert_eq!(audit_result(&response, &audit.snapshot()), "replay");
-    audit.finalize(None);
 }

@@ -73,5 +73,5 @@ async fn execute(
     audit.set_principal("operator", "mdm");
     let result = service.catalog.execute(command, &audit, &|| Ok(())).await;
     audit.finalize(None);
-    result
+    result.map_err(Into::into)
 }
