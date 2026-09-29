@@ -271,7 +271,9 @@ impl Host {
                 .critical(),
             );
         }
-        launch.stage_deferred_task_with_token(self.runtime.clone().registration().critical());
+        if crate::test_support::case::owns_worker() {
+            launch.stage_deferred_task_with_token(self.runtime.clone().registration().critical());
+        }
         launch.finish();
         self.running = Some(owner);
         Ok(())

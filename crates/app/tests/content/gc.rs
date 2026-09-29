@@ -25,7 +25,7 @@ async fn cleanup_preserves_resource_references(
     };
     let artifact = binding.artifact()?;
     store.begin(upload, binding, 1).await?;
-    store.append(upload, 0, 1, &data[..]).await?;
+    store.append(upload, 0, 1, data).await?;
     store.finish(upload, 1).await?;
     let tenant_dir = directory.join(case_tenant());
     let metadata_path = tenant_dir.join(format!(".upload-{upload}.json"));
@@ -133,7 +133,7 @@ async fn gc_reference_race(
             1,
         )
         .await?;
-    content.append(id, 0, 1, &data[..]).await?;
+    content.append(id, 0, 1, data).await?;
     content.finish(id, 1).await?;
     let candidate = content
         .garbage(i64::MAX / 2)

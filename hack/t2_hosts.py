@@ -34,7 +34,7 @@ class Host:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             while True:
                 self.processes.check()
-                require(self.child.poll() is None, 'public T2 host exited during startup; see host.log')
+                require(self.child.poll() is None, f'public T2 host exited during startup; see {self.log_path}')
                 try:
                     request = urllib.request.Request('http://' + self.address + '/readyz',
                                                      headers={'Host': urlsplit(config['product_origin']).netloc})
@@ -43,7 +43,7 @@ class Host:
                             break
                 except OSError:
                     pass
-                require(time.monotonic() < end, 'public T2 host readiness deadline; see host.log')
+                require(time.monotonic() < end, f'public T2 host readiness deadline; see {self.log_path}')
                 self.stopping.wait(.1)
             self.thread = threading.Thread(target=self.monitor, name='t2-host', daemon=True)
             self.thread.start()
@@ -60,7 +60,7 @@ class Host:
 
     def check(self):
         require(not self.failed.is_set() and self.child.poll() is None,
-                'public T2 host died; this run cannot reuse its environment')
+                f'public T2 host died; this run cannot reuse its environment; see {self.log_path}')
 
     def close(self):
         self.stopping.set()

@@ -66,10 +66,30 @@ pub fn id(label: &str) -> u128 {
     namespace ^ u128::from(hash.finish())
 }
 
-pub fn shared_worker() -> bool {
-    context()["fixtures"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|v| v == "shared_worker")
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WorkerOwner {
+    Run,
+    Case,
+    None,
+}
+
+pub fn worker_owner() -> WorkerOwner {
+    let fixtures = context()["fixtures"].as_array().expect("case fixtures");
+    match (
+        fixtures.iter().any(|v| v == "shared_worker"),
+        fixtures.iter().any(|v| v == "local_worker"),
+    ) {
+        (true, false) => WorkerOwner::Run,
+        (false, true) => WorkerOwner::Case,
+        (false, false) => WorkerOwner::None,
+        (true, true) => panic!("case has conflicting worker owners"),
+    }
+}
+
+pub fn owns_worker() -> bool {
+    match worker_owner() {
+        WorkerOwner::Run => false,
+        WorkerOwner::Case => true,
+        WorkerOwner::None => panic!("worker ownership is missing from case policy"),
+    }
 }

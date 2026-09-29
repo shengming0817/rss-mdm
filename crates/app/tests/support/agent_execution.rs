@@ -262,17 +262,9 @@ pub(crate) async fn publish(author: &mut Browser, router: &Router, resource: Uui
     Ok(id)
 }
 pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if crate::test_support::case::shared_worker() {
+    if !crate::test_support::case::owns_worker() {
         return Ok(None);
     }
-    ensure!(
-        crate::test_support::case::context()["fixtures"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "local_worker"),
-        "worker ownership is missing from case policy"
-    );
     let config: Config = serde_json::from_value(base.clone())?;
     let service = crate::flow::execution::open(
         &config,

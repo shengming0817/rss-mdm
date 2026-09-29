@@ -65,7 +65,7 @@ if __name__ == "__main__":
     from build_run import require_lease
     require_lease(ROOT)
     from t2_registry import MODULES
-    from t2_execution import Builds, Processes
+    from t2_execution import Builds, Processes, Invocation
     from t2_fixtures import RunFixtures
     processes=Processes()
     try:
@@ -74,9 +74,10 @@ if __name__ == "__main__":
             module=MODULES['catalog.contract']
             builds=Builds(output,processes)
             builds.prepare([module])
-            with RunFixtures(builds,output) as fixtures:
-                fixtures.prepare([module])
-                with fixtures.scenario(module,output/'scenario') as fixture:
+            with RunFixtures(builds,output,1) as fixtures:
+                job=Invocation(module,None)
+                fixtures.prepare([job])
+                with fixtures.scenario(job,output/'scenario',dict(environment=fixtures.evidence(job))) as fixture:
                     capture(fixture.owner.container(),'write',fixture.database)
     finally:
         processes.close()

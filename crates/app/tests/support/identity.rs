@@ -134,7 +134,7 @@ async fn seed_accounts() -> Result<()> {
             }
             for (kind, field) in [("admin", "adminLogin"), ("other", "otherLogin")] {
                 let name = context[field].as_str().unwrap();
-                let started = std::time::Instant::now();
+                let started = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
                 let actor = identity
                     .authority
                     .authenticate_session(
@@ -166,23 +166,31 @@ async fn seed_accounts() -> Result<()> {
                     )?
                     .load_authorization(&access)
                     .await?;
-                    let mut grants =
-                        device_grants(None, &["inventory_read", "enrollment", "credentials"])?;
-                    grants.push(crate::authorization::Grant {
-                        operation: crate::authorization::Permission::AuthorizationWrite,
-                        scope: crate::authorization::Scope::Tenant,
-                    });
-                    grant(&audit, &principal, tenant, &subject, grants).await?;
+                    let foundational = principal.authorization()?.rules.iter()
+                        .filter_map(|record| record.value.as_ref())
+                        .find(|rule| matches!(&rule.subject,
+                            crate::authorization::Subject::User { user } if user.principal_id == BOOTSTRAP))
+                        .expect("bootstrap authorization was initialized")
+                        .grants.clone();
+                    grant(&audit, &principal, tenant, &subject, foundational).await?;
+                    grant(
+                        &audit,
+                        &principal,
+                        tenant,
+                        &subject,
+                        device_grants(None, &["inventory_read", "enrollment", "credentials"])?,
+                    )
+                    .await?;
                 }
-                costs.push(json!({"phase":"identity-accounts","count":1,"tenant":tenant,"invocationId":context["invocationId"],"seconds":started.elapsed().as_secs_f64()}));
-                let started = std::time::Instant::now();
+                costs.push(json!({"phase":"identity-accounts","count":1,"tenant":tenant,"invocationId":context["invocationId"],"seconds":rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer).saturating_duration_since(started).as_secs_f64()}));
+                let started = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
                 save(
                     path.parent().unwrap(),
                     tenant,
                     kind,
                     &login_named(&identity, name).await?,
                 )?;
-                costs.push(json!({"phase":"identity-sessions","count":1,"tenant":tenant,"invocationId":context["invocationId"],"seconds":started.elapsed().as_secs_f64()}));
+                costs.push(json!({"phase":"identity-sessions","count":1,"tenant":tenant,"invocationId":context["invocationId"],"seconds":rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer).saturating_duration_since(started).as_secs_f64()}));
                 if kind == "admin" {
                     if context["tenant"] == tenant {
                         context["admin"] = subject.clone().into();
@@ -285,7 +293,7 @@ async fn grant(
             principal.bind_audit(&audit)?;
             crate::authorization::store::change_rule(
                 audit_store,
-                &principal,
+                principal,
                 record.id,
                 Change {
                     operation_id: uuid::Uuid::new_v4(),
@@ -304,7 +312,7 @@ async fn grant(
         principal.bind_audit(&audit)?;
         crate::authorization::store::change_rule(
             audit_store,
-            &principal,
+            principal,
             uuid::Uuid::new_v4(),
             Change {
                 operation_id: uuid::Uuid::new_v4(),

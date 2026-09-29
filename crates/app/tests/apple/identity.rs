@@ -199,8 +199,8 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let revision: i64 =
-            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.devices WHERE state='active'")
-                .fetch_one(&mut token_observer)
+            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'")
+                .bind(case_tenant()).bind(case_device()).fetch_one(&mut token_observer)
                 .await?;
         let facts_before = crate::audit_test_support::read(&mut token_observer)
             .await?
@@ -210,9 +210,9 @@ impl Fixture {
         peer.token_value(43).await?;
         ensure!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT token_revision FROM mdm_apple.devices WHERE state='active'"
+                "SELECT token_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'"
             )
-            .fetch_one(&mut token_observer)
+            .bind(case_tenant()).bind(case_device()).fetch_one(&mut token_observer)
             .await?
                 == revision
         );
@@ -260,7 +260,7 @@ impl Fixture {
         let mut pending_reader =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let pending: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_access.collection_runs WHERE sealed_at IS NULL AND registration IN (SELECT registration FROM mdm_apple.devices WHERE state='active')").fetch_all(&mut pending_reader).await?;
+        let pending: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND registration IN (SELECT d.registration FROM mdm_apple.devices d JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(d.tenant_id,d.registration) WHERE d.tenant_id=$1::uuid AND r.device=$2 AND d.state='active')").bind(case_tenant()).bind(case_device()).fetch_all(&mut pending_reader).await?;
         ensure!(
             pending.len() >= 65,
             "retirement must exercise the real accumulated collection backlog"

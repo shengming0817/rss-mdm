@@ -430,7 +430,7 @@ MODULES['examples.cli'] = replace(MODULES['examples.cli'], db_mode='reuse', scop
 MODULES['api.identity_context'] = replace(MODULES['api.identity_context'], db_mode='reuse', scope='tenant')
 MODULES['host.lifecycle'] = replace(MODULES['host.lifecycle'], db_mode='fresh', scope='objects')
 MODULES['assets.http'] = replace(MODULES['assets.http'], db_mode='fresh', scope='objects', policies=(
-    CasePolicy('assets::t2::http::storage::asset_capability_owns_execution_and_receipt_recovery', 'reuse', 'tenant'),
+    CasePolicy('assets::t2::http::storage::asset_capability_owns_execution_and_receipt_recovery', 'reuse', 'pair'),
     CasePolicy('assets::t2::http::storage::asset_commit_unknown_recovers_original_receipts', 'reuse', 'objects'),
 ))
 MODULES['assets.queries'] = replace(MODULES['assets.queries'], db_mode='reuse', scope='tenant')
@@ -496,11 +496,13 @@ MODULES['execution.agent.delivery'] = replace(MODULES['execution.agent.delivery'
 ))
 MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'], db_mode='reuse', scope='tenant')
 MODULES['execution.agent.poll'] = replace(MODULES['execution.agent.poll'], db_mode='reuse', scope='tenant')
-MODULES['execution.commands.admission'] = replace(MODULES['execution.commands.admission'], db_mode='reuse', scope='objects', policies=(
+MODULES['execution.commands.admission'] = replace(MODULES['execution.commands.admission'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('execution::t2::commands::admission::minimum_role_scope_and_storage_admission', 'instance', 'objects'),
 ))
 MODULES['execution.commands.dispatch'] = replace(MODULES['execution.commands.dispatch'], db_mode='reuse', scope='tenant')
 MODULES['execution.commands.recovery'] = replace(MODULES['execution.commands.recovery'], db_mode='fresh', scope='objects')
+MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], scope='tenant')
+MODULES['windows.management'] = replace(MODULES['windows.management'], scope='tenant')
 MODULES['execution.commands.firewall'] = replace(MODULES['execution.commands.firewall'], db_mode='reuse', scope='tenant')
 MODULES['software.catalog'] = replace(MODULES['software.catalog'], db_mode='instance', scope='objects', policies=(
     CasePolicy('transactions::dependency_admission_uses_exact_current_approval', 'reuse', 'objects'),
@@ -538,7 +540,9 @@ for name in ('assets.queries', 'assets.sources', 'assets.group_input', 'planning
              'planning.software', 'compliance.evaluation', 'compliance.recovery',
              'execution.agent.delivery', 'execution.agent.content', 'execution.agent.history',
              'execution.agent.poll', 'execution.agent.recovery', 'execution.software.offer',
-             'execution.software.content', 'execution.software.recovery'):
+             'execution.software.content', 'execution.software.recovery',
+             'windows.enrollment', 'windows.management',
+             'windows.commands', 'windows.limits'):
     MODULES[name] = replace(MODULES[name], fixtures=(*MODULES[name].fixtures, 'shared_worker'))
 for name in ('compliance.http', 'compliance.group_input'):
     MODULES[name] = replace(MODULES[name], fixtures=(*MODULES[name].fixtures, 'local_worker'))
@@ -566,7 +570,7 @@ MODULES['content.http'] = replace(MODULES['content.http'], policies=(
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::offer_start_result_replay_and_inventory_projection', 'local_worker')
 for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.scope',
              'planning.group_scope', 'planning.recovery', 'execution.commands.dispatch',
-             'execution.commands.recovery', 'execution.commands.firewall', 'windows.retention',
+             'execution.commands.recovery', 'execution.commands.firewall', 'execution.commands.windows', 'windows.retention',
              'apple.push', 'apple.fairness', 'apple.renewal', 'apple.host'):
     value = MODULES[name]
     # Local consumer controls are meaningful only in their own observation tenant.

@@ -354,7 +354,7 @@ async fn group_scope_replay_and_audit_atomicity() {
         )),
         "0"
     );
-    let foreign = planning(TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap()).await;
+    let foreign = planning(TenantId::parse(crate::test_support::case::peer()).unwrap()).await;
     assert!(
         execute(&foreign, &Command::ScopeRead { id: scope_id })
             .await

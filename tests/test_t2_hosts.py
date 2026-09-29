@@ -14,6 +14,7 @@ class HostTests(unittest.TestCase):
         host.processes = Mock()
         host.child = Mock()
         host.log = Mock()
+        host.log_path = Path('/owned/host.log')
         host.stopping = threading.Event()
         host.failed = threading.Event()
         host.thread = None

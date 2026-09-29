@@ -465,7 +465,10 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     ));
     service.forward_asset_changes().await.unwrap();
     assert_eq!(
-        sql("SELECT count(*) FROM mdm.asset_changes WHERE NOT forwarded"),
+        sql(&format!(
+            "SELECT count(*) FROM mdm.asset_changes WHERE tenant_id='{}' AND NOT forwarded",
+            tenant()
+        )),
         "0"
     );
     let timer = automation::Timer::new();
@@ -496,7 +499,10 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         .await
         .unwrap();
     assert_eq!(
-        sql("SELECT failure FROM mdm_planning.asset_dispatch"),
+        sql(&format!(
+            "SELECT failure FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'",
+            tenant()
+        )),
         "automation_suspended"
     );
     assert!(!service.ingress_ready().await);
@@ -556,9 +562,10 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         .await
         .unwrap();
     assert_eq!(
-        sql(
-            "SELECT consumed=(SELECT max(revision) FROM mdm.asset_changes) FROM mdm_planning.asset_dispatch"
-        ),
+        sql(&format!(
+            "SELECT consumed=(SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{tenant}') FROM mdm_planning.asset_dispatch WHERE tenant_id='{tenant}'",
+            tenant = tenant()
+        )),
         "t"
     );
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))

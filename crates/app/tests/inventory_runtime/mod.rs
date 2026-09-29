@@ -18,7 +18,7 @@ fn case_b() -> &'static str {
 
 #[test]
 fn journal_permission_is_independent_and_readiness_requires_a_running_worker() {
-    let tenant = TenantId::parse(case_a()).unwrap();
+    let tenant = TenantId::parse(&Uuid::new_v4().to_string()).unwrap();
     let token = CancellationToken::new();
     let authority = JournalAuthority {
         tenant,
@@ -31,7 +31,13 @@ fn journal_permission_is_independent_and_readiness_requires_a_running_worker() {
 }
 fn ensure_authority(authority: &JournalAuthority<'_>, tenant: TenantId, token: &CancellationToken) {
     assert!(JournalReadGrant::verify(authority, tenant).is_ok());
-    assert!(JournalReadGrant::verify(authority, TenantId::parse(case_b()).unwrap()).is_err());
+    assert!(
+        JournalReadGrant::verify(
+            authority,
+            TenantId::parse(&Uuid::new_v4().to_string()).unwrap()
+        )
+        .is_err()
+    );
     let scope =
         crate::device::scope(tenant, Uuid::new_v4(), "mdm.windows", Uuid::new_v4()).unwrap();
     assert!(LifecycleGrant::verify(authority, scope.clone()).is_err());

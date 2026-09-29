@@ -8,8 +8,7 @@
 )]
 //! Shared setup only. Assertions remain with each capability's tests.
 pub(crate) mod authority;
-#[path = "../../../../tests/support/context.rs"]
-pub(crate) mod case;
+pub(crate) use crate::publication_support::pg::case;
 pub(crate) mod identity;
 pub(crate) use crate::config::Config;
 pub(crate) use crate::publication_support;
@@ -320,17 +319,9 @@ pub(crate) fn monotonic() -> Arc<dyn rss_observation::Clock> {
 }
 
 pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if crate::test_support::case::shared_worker() {
+    if !crate::test_support::case::owns_worker() {
         return Ok(None);
     }
-    ensure!(
-        crate::test_support::case::context()["fixtures"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "local_worker"),
-        "worker ownership is missing from case policy"
-    );
     let config: Config = serde_json::from_value(value.clone())?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,

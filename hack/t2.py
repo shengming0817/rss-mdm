@@ -104,7 +104,9 @@ def dispatch(invocations, execute, processes, jobs):
                 running[executor.submit(copy_context().run, execute, job)] = job
             if not running:
                 for job in pending:
-                    yield job, stage_result('failed', reason='cancelled-before-start', policy=job.policy)
+                    yield job, stage_result('failed', reason='cancelled-before-start', policy=job.policy,
+                                            caseId=job.id, invocationId=job.key, startedMonotonic=None,
+                                            endedMonotonic=time.monotonic())
                 break
             done, _ = wait(running, return_when=FIRST_COMPLETED)
             for future in done:
@@ -115,32 +117,33 @@ def dispatch(invocations, execute, processes, jobs):
 def execute_case(job, builds, fixtures, case_dir, output):
     (case_dir / 'test.log').write_text('Case preparation started; execution output follows when ready.\n')
     begin = time.monotonic()
-    evidence = {}
+    receipt = dict(environment=fixtures.evidence(job))
     common = dict(caseId=job.id, invocationId=job.key, policy=job.policy,
                   startedMonotonic=begin, timeoutSeconds=CASE_TIMEOUT,
                   log=str((case_dir / 'test.log').relative_to(output)),
                   fixtureLog=str((case_dir / 'fixture.log').relative_to(output)))
     try:
         require(not builds.processes.cancelled.is_set(), 'T2 cancelled')
-        with fixtures.scenario(job, case_dir) as fixture:
-            evidence = fixture.evidence
-            prepared = time.monotonic()
+        with fixtures.scenario(job, case_dir, receipt) as fixture:
             with diagnostic_phase('execution'):
                 if job.case:
                     builds.execute(job.case, fixture.env, case_dir)
                 else:
                     builds.execute_python(job.module, fixture, case_dir)
-            executed = time.monotonic()
-        end = time.monotonic()
-        result = stage_result('passed', begin, **common, environment=evidence,
-                              setupSeconds=round(prepared-begin, 3), testSeconds=round(executed-prepared, 3),
-                              cleanupSeconds=round(end-executed, 3), endedMonotonic=end)
+        result = stage_result('passed', begin, **common)
     except BaseException as error:
         (case_dir / 'failure.log').write_text('Fixture diagnostics: fixture.log\n' + traceback.format_exc())
-        result = stage_result('failed', begin, **common, environment=evidence,
-                              reason=type(error).__name__, endedMonotonic=time.monotonic(),
+        result = stage_result('failed', begin, **common,
+                              reason=type(error).__name__,
                               failureLog=str((case_dir / 'failure.log').relative_to(output)))
         print(f'T2 failure output: {case_dir / "test.log"}; traceback: {case_dir / "failure.log"}', flush=True)
+    end = time.monotonic()
+    cleaned = receipt.get('cleaned', end)
+    cleanup = receipt.get('cleanupStarted', cleaned)
+    prepared = receipt.get('prepared', cleanup)
+    result.update(environment=receipt['environment'], endedMonotonic=end,
+                  setupSeconds=round(prepared-begin, 3), testSeconds=round(cleanup-prepared, 3),
+                  cleanupSeconds=round(cleaned-cleanup, 3))
     print(f'T2 {job.module.id}: {result["status"]} {job.id}', flush=True)
     return result
 
@@ -212,9 +215,10 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, case_
             return results
         from t2_fixtures import RunFixtures
         from t2_database import measure
-        with diagnostics(directory / 'fixture.log'), RunFixtures(builds, directory) as fixtures:
-            try:
-                with measure(fixtures.events, 'run-prepare'):
+        fixtures = RunFixtures(builds, directory, jobs)
+        try:
+            with diagnostics(directory / 'fixture.log'), fixtures:
+                with measure(fixtures.costs, 'run-prepare'):
                     fixtures.prepare(invocations)
                 completed = {}
                 started = time.monotonic()
@@ -224,14 +228,15 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, case_
                     with diagnostics(case_dir / 'fixture.log'):
                         return execute_case(job, builds, fixtures, case_dir, output)
                 for job, outcome in dispatch(invocations, execute, processes, jobs):
+                    outcome.setdefault('environment', fixtures.evidence(job))
                     completed.setdefault(job.module.id, {})[job.key] = outcome
                 for name, cases in completed.items():
                     outcome = stage_result('failed' if any(r['status'] == 'failed' for r in cases.values()) else 'passed',
                                            started, cases=cases, runId=run_id)
                     publish(directory / name / 'result.json', outcome)
                     results[name] = outcome
-            finally:
-                publish(directory / 'resources.json', dict(counts=dict(fixtures.counts), operations=fixtures.events))
+        finally:
+            publish(directory / 'resources.json', fixtures.costs.snapshot())
         require(not processes.cancelled.is_set(), 'T2 cancelled')
         publish(directory / 'result.json', {'runId': run_id, 'modules': results})
         return results

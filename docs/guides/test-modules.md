@@ -74,6 +74,8 @@ Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Car
 
 复用资格必须包含同库 A→B→A、换序、同租户不同对象实际重叠及异租户同步写入；关键同对象竞争使用同步点。故障不得靠隐式换库重试隐藏。
 
+T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个连接，另为普通公共宿主预留 128；故障 PG 因串行使用，容量为 128。此容量覆盖组件 fixture 中的多个产品连接池，记录于 `postgres-start.maxConnections`；不是另一个并发开关，也不按该数量建库。
+
 构建、发现和执行复用同一二进制与 Cargo 环境。每个发现的 ignored 业务测试必须有唯一模块归属；辅助子进程入口必须在同一模块描述中声明调用 owner，每个声明恰好发现一个入口；身份准备使用唯一 fixture target。未知 ignored helper 不再按命名空间豁免，函数名仍全部来自发现。空发现、重复归属、错误 CASE、缺依赖、二进制或运行中源码变化都失败。nextest JUnit 必须证明实际运行了唯一精确测试、无忽略/重试/失败；每个 Rust/Python 场景执行预算为 600 秒，Rust 的 nextest 与外层进程截止共同保证有界终止。Python 场景通过受控子进程执行并保留 test.log 完成标记；超时、取消及遗留 Compose 环境均由本轮统一清理。LIST 只要求构建/发现工具，不要求 Docker 等运行依赖。
 
 `artifacts/local-t2/<runId>/` 保存 discovery、逐模块/逐调用结果，以及准备/执行/清理耗时。case 结果包含实际 database、tenant、PG、host、调用 ID 与单调时钟区间；`resources.json` 的 `counts` 和 `operations` 分别记录服务、克隆、身份账户/会话、宿主与故障恢复的数量和耗时。共享准备单独记录，不把它重复计入每条 case。顶层 result 区分执行与 skipped；正式执行开始前撤销旧 result，LIST 开始前只撤销旧 list，避免硬中断后误读上轮成功；另一模式证据保留，ci-plan 不覆盖正式证据。比较资源消耗应同时查看选择集合、PG/Identity/SCEP 等实际准备次数、并发时间区间和耗时；文件拆分不代表 Rust crate 编译量同比下降。

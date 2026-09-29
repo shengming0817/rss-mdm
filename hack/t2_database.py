@@ -3,6 +3,7 @@
 ref: PostgreSQL src/backend/commands/dbcommands.c@7885b94dd81b98bbab9ed878680d156df7bf857f
 """
 from contextlib import contextmanager
+from collections import Counter
 import json
 from pathlib import Path
 import tempfile
@@ -22,6 +23,26 @@ def literal(value):
     return "'" + value.replace("'", "''") + "'"
 
 
+class Costs:
+    """One synchronized receipt owner for normal and fault pools."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.counts = Counter()
+        self.events = []
+
+    def increment(self, key, value=1):
+        with self.lock:
+            self.counts[key] += value
+
+    def append(self, event):
+        with self.lock:
+            self.events.append(event)
+
+    def snapshot(self):
+        with self.lock:
+            return dict(counts=dict(self.counts), operations=list(self.events))
+
+
 @contextmanager
 def measure(events, phase, **coordinates):
     begin = time.monotonic()
@@ -36,11 +57,12 @@ def measure(events, phase, **coordinates):
 
 
 class DatabasePool:
-    def __init__(self, builds, group, counts, events=None):
+    def __init__(self, builds, group, costs, connections):
         self.builds = builds
         self.owner = Environment(group=group)
-        self.counts = counts
-        self.events = events if events is not None else []
+        self.costs = costs
+        self.connections = connections
+        self.owner.extra = {'MDM_PG_MAX_CONNECTIONS': str(connections)}
         self.lock = threading.RLock()
         self.ready = False
         self.generation = 0
@@ -52,20 +74,22 @@ class DatabasePool:
     def postgres(self):
         with self.lock:
             if self.dirty:
-                with measure(self.events, 'fault-reset', pg=self.owner.project):
+                with measure(self.costs, 'fault-reset', pg=self.owner.project, pgGeneration=self.generation):
                     self.owner.reset()
                 self.ready = False
                 self.templates.clear()
                 self.shared.clear()
                 self.dirty = False
-                self.counts['faultReplacements'] += 1
+                self.costs.increment('faultReplacements')
             if not self.ready:
-                with measure(self.events, 'postgres-start', pg=self.owner.project):
+                with measure(self.costs, 'postgres-start', pg=self.owner.project, pgGeneration=self.generation + 1, maxConnections=self.connections):
                     self.owner.up()
                     self.owner.roles()
+                    require(self.owner.sql('SHOW max_connections') == str(self.connections),
+                            'PG connection capacity differs from the run budget')
                 self.ready = True
                 self.generation += 1
-                self.counts['postgresStarts'] += 1
+                self.costs.increment('postgresStarts')
             return self.owner
 
     def role_state(self):
@@ -85,7 +109,7 @@ class DatabasePool:
             with self.lock:
                 if profile not in self.shared:
                     self.shared[profile] = self.clone(profile, 't2_shared_')
-                    self.counts['sharedDatabases'] += 1
+                    self.costs.increment('sharedDatabases')
                 name = self.shared[profile]
             yield name
             return
@@ -95,7 +119,7 @@ class DatabasePool:
                 yield name
             if before is not None:
                 require(self.role_state() == before, 'fault case did not restore shared PG roles/settings')
-                self.counts['faultRestorations'] += 1
+                self.costs.increment('faultRestorations')
         except BaseException:
             if mode == 'instance':
                 self.dirty = True
@@ -104,11 +128,11 @@ class DatabasePool:
     def clone(self, profile, prefix):
         template, properties, coordinates = self.template(profile)
         name = prefix + uuid.uuid4().hex
-        with measure(self.events, 'clone', database=name, profile=profile, pg=self.owner.project):
+        with measure(self.costs, 'clone', database=name, profile=profile, pg=self.owner.project, pgGeneration=self.generation):
             self.owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner TEMPLATE {identifier(template)}')
             self.restore_properties(name, properties)
             require(self.coordinates(name, profile) == coordinates, 'cloned installation coordinates differ')
-        self.counts['clonedDatabases'] += 1
+        self.costs.increment('clonedDatabases')
         return name
 
     def database_config(self, root, database, role='mdm_owner', password='owner-fixture'):
@@ -165,7 +189,7 @@ class DatabasePool:
         with self.lock:
             if profile in self.templates:
                 return self.templates[profile]
-            with measure(self.events, 'baseline', profile=profile, pg=self.owner.project):
+            with measure(self.costs, 'baseline', profile=profile, pg=self.owner.project, pgGeneration=self.generation):
                 owner = self.postgres()
                 name = 't2_template_' + uuid.uuid4().hex
                 owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner')
@@ -197,7 +221,7 @@ class DatabasePool:
                 require(owner.sql(f'SELECT count(*) FROM pg_prepared_xacts WHERE database={literal(name)}') == '0',
                         'migration baseline has prepared transactions')
                 self.templates[profile] = (name, properties, coordinates)
-                self.counts['baseline:' + profile] += 1
+                self.costs.increment('baseline:' + profile)
                 return self.templates[profile]
 
     @contextmanager
@@ -205,13 +229,13 @@ class DatabasePool:
         self.postgres()
         if profile == 'empty':
             with self.owner.database() as name:
-                self.counts['emptyDatabases'] += 1
+                self.costs.increment('emptyDatabases')
                 yield name
             return
         name = self.clone(profile, 't2_case_')
         try:
             yield name
         finally:
-            with measure(self.events, 'database-drop', database=name, pg=self.owner.project):
+            with measure(self.costs, 'database-drop', database=name, pg=self.owner.project, pgGeneration=self.generation):
                 self.owner.sql(f'DROP DATABASE {identifier(name)} WITH (FORCE)')
 

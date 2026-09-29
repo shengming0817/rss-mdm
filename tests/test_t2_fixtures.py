@@ -1,5 +1,4 @@
 """Database and observation lifetimes are independent from case scheduling."""
-from collections import Counter
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -8,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
-from t2_database import DatabasePool, measure
+from t2_database import Costs, DatabasePool, measure
 from t2_execution import Case, Invocation
 from t2_fixtures import RunFixtures
 from t2_registry import MODULES
@@ -16,7 +15,7 @@ from t2_registry import MODULES
 
 class PoolTests(unittest.TestCase):
     def pool(self):
-        pool = DatabasePool(Mock(), 't2', Counter())
+        pool = DatabasePool(Mock(), 't2', Costs(), 384)
         pool.postgres = Mock()
         pool.owner = Mock()
         pool.clone = Mock(side_effect=lambda profile, prefix: prefix + profile)
@@ -30,7 +29,7 @@ class PoolTests(unittest.TestCase):
             with pool.database('backend', 'reuse') as third:
                 self.assertNotEqual(first, third)
         self.assertEqual(pool.clone.call_count, 2)
-        self.assertEqual(pool.counts['sharedDatabases'], 2)
+        self.assertEqual(pool.costs.snapshot()['counts']['sharedDatabases'], 2)
         pool.owner.sql.assert_not_called()
 
     def test_fresh_drops_its_database_even_on_failure(self):
@@ -47,7 +46,7 @@ class PoolTests(unittest.TestCase):
         with pool.database('product', 'instance'):
             pass
         self.assertFalse(pool.dirty)
-        self.assertEqual(pool.counts['faultRestorations'], 1)
+        self.assertEqual(pool.costs.snapshot()['counts']['faultRestorations'], 1)
         pool.owner.reset.assert_not_called()
 
     def test_failed_fault_or_role_drift_is_quarantined(self):
@@ -62,25 +61,39 @@ class PoolTests(unittest.TestCase):
             pool.owner.reset.assert_not_called()
 
     def test_quarantined_fault_is_replaced_for_next_case_only(self):
-        pool = DatabasePool(Mock(), 't2-fault', Counter())
+        pool = DatabasePool(Mock(), 't2-fault', Costs(), 128)
         pool.owner = Mock()
+        pool.owner.sql.return_value = '128'
         pool.dirty = True
         pool.templates = {'product': 'stale'}
         pool.postgres()
         self.assertEqual(pool.templates, {})
         pool.owner.reset.assert_called_once()
         pool.owner.up.assert_called_once()
-        self.assertEqual(pool.counts['faultReplacements'], 1)
+        self.assertEqual(pool.costs.snapshot()['counts']['faultReplacements'], 1)
         self.assertEqual(pool.generation, 1)
 
 
 class PreparationTests(unittest.TestCase):
     def fixture(self, output):
-        fixture = RunFixtures(Mock(), output)
+        fixture = RunFixtures(Mock(), output, 2)
         fixture.normal = Mock()
+        fixture.normal.owner.project = 'normal'
         fixture.fault = Mock()
+        fixture.fault.owner.project = 'fault'
         fixture.gateway_owner = Mock()
+        fixture.gateway_owner.project = 'gateway'
         return fixture
+
+    def test_jobs_budget_sets_connection_capacity_without_allocating_more_databases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = RunFixtures(Mock(), Path(tmp), 4)
+            try:
+                self.assertEqual(fixture.normal.owner.extra['MDM_PG_MAX_CONNECTIONS'], '640')
+                self.assertEqual(fixture.fault.owner.extra['MDM_PG_MAX_CONNECTIONS'], '128')
+                self.assertEqual(fixture.normal.shared, {})
+            finally:
+                fixture.cert_directory.cleanup()
 
     def test_cleanup_attempts_every_owner_after_a_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,6 +133,20 @@ class PreparationTests(unittest.TestCase):
 
 
 class CostTests(unittest.TestCase):
+    def test_cost_updates_have_one_owner_across_pools(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from t2_database import Costs
+        costs = Costs()
+        def record(_):
+            for _ in range(1000):
+                costs.increment('clones')
+                costs.append({'phase': 'clone'})
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(record, range(8)))
+        value = costs.snapshot()
+        self.assertEqual(value['counts']['clones'], 8000)
+        self.assertEqual(len(value['operations']), 8000)
+
     def test_failed_preparation_keeps_its_cost_and_coordinates(self):
         events = []
         with self.assertRaisesRegex(RuntimeError, 'original'):

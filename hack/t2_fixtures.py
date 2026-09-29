@@ -3,7 +3,6 @@
 ref: PostgreSQL src/backend/commands/dbcommands.c@7885b94dd81b98bbab9ed878680d156df7bf857f
 """
 from __future__ import annotations
-from collections import Counter
 from contextlib import contextmanager, ExitStack
 import json
 import os
@@ -11,11 +10,12 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 
 from candidate_fixture import INSTANCE, ADMIN
 from t2_context import contexts, installation
-from t2_database import DatabasePool, measure
+from t2_database import Costs, DatabasePool, measure
 from t2_hosts import Host
 from t2_environment import Environment, private, run
 from t2_registry import ROOT, IDENTITY_SETUP
@@ -24,13 +24,12 @@ from verification_result import require
 
 
 class RunFixtures:
-    def __init__(self, builds, output):
+    def __init__(self, builds, output, jobs):
         self.builds = builds
         self.output = output
-        self.counts = Counter()
-        self.events = []
-        self.normal = DatabasePool(builds, 't2', self.counts, self.events)
-        self.fault = DatabasePool(builds, 't2-fault', self.counts, self.events)
+        self.costs = Costs()
+        self.normal = DatabasePool(builds, 't2', self.costs, 128 * (jobs + 1))
+        self.fault = DatabasePool(builds, 't2-fault', self.costs, 128)
         self.gateway_owner = Environment(group='t2-gateway')
         self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-run-')
         self.root = Path(self.cert_directory.name)
@@ -47,25 +46,27 @@ class RunFixtures:
         try:
             # The worktree lease makes these known projects exclusively ours.
             # Recover all registered owners even when this run selects no PG/gateway.
-            self.cleanup_environments()
+            self.cleanup_environments('prepare-recovery')
         except BaseException:
             self.cert_directory.cleanup()
             self.process_ownership.__exit__(*sys.exc_info())
             raise
         return self
 
-    def cleanup_environments(self):
+    def cleanup_environments(self, phase='run-cleanup'):
         errors = []
         for host in self.hosts.values():
             try:
-                host.close()
+                with measure(self.costs, phase, host=host.address, hostLog=str(host.log_path)):
+                    host.close()
             except Exception as error:
                 errors.append(error)
         self.hosts.clear()
         for environment in (self.normal.owner, self.fault.owner, self.gateway_owner):
             try:
                 if environment.root.exists():
-                    environment.reset()
+                    with measure(self.costs, phase, pg=environment.project):
+                        environment.reset()
             except Exception as error:
                 errors.append(error)
         if errors:
@@ -136,20 +137,20 @@ class RunFixtures:
         for tenant in tenants:
             path = private(root / 'initialize.json', dict(database=maintenance, installation=pool.installation,
                            tenant_id=tenant, principal_id=ADMIN, login='bootstrap', password_file=str(password)))
-            with measure(self.events, 'identity-initialize', database=database, tenant=tenant):
+            with measure(self.costs, 'identity-initialize', database=database, tenant=tenant):
                 run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
                     cwd=ROOT, env=env, capture_output=True, timeout=30)
-            self.counts['identityInitializations'] += 1
+            self.costs.increment('identityInitializations', 1)
         manifest = dict(tenants=tenants, cases=[str(self.root / j.key / 'case.json') for j in jobs])
         env['MDM_IDENTITY_SETUP'] = str(private(root / 'identity-setup.json', manifest))
         cases = self.builds.discover(IDENTITY_SETUP)
         require(len(cases) == 1, 'identity setup target is ambiguous')
-        with measure(self.events, 'identity-setup', database=database):
+        with measure(self.costs, 'identity-setup', database=database):
             self.builds.execute(cases[0], env, output)
         for event in json.loads((root / 'identity-costs.json').read_text()):
-            self.events.append(dict(event, database=database))
-            self.counts[event['phase']] += event['count']
-        self.counts['identitySetups'] += 1
+            self.costs.append(dict(event, database=database))
+            self.costs.increment(event['phase'], event['count'])
+        self.costs.increment('identitySetups', 1)
         # The helper creates real case accounts and writes their public coordinates.
         for job in jobs:
             case_root = self.root / job.key
@@ -168,9 +169,9 @@ class RunFixtures:
         key = (database, self.case_contexts[job.key]['tenant'])
         with self.lock:
             if key not in self.hosts:
-                with measure(self.events, 'host-start', database=database, tenant=key[1]):
+                with measure(self.costs, 'host-start', database=database, tenant=key[1]):
                     self.hosts[key] = Host(self.builds, config, self.output / 'hosts' / database / key[1])
-                self.counts['hostStarts'] += 1
+                self.costs.increment('hostStarts', 1)
             host = self.hosts[key]
         host.check()
         try:
@@ -181,7 +182,8 @@ class RunFixtures:
             # has no remaining clients after this case; retire it within JOBS.
             if job.module.db_mode != 'reuse' or job.module.scope != 'objects':
                 with self.lock:
-                    self.hosts.pop(key).close()
+                    with measure(self.costs, 'host-stop', database=database, tenant=key[1], host=host.address):
+                        self.hosts.pop(key).close()
 
     def source_tls(self, root):
         with self.lock:
@@ -207,8 +209,15 @@ class RunFixtures:
         finally:
             environment.reset()
 
+    def evidence(self, job):
+        context = self.case_contexts[job.key]
+        pool = self.fault if job.module.db_mode == 'instance' else self.normal
+        return dict(database=None, tenant=context['tenant'], peer=context['peer'],
+                    pg=pool.owner.project if job.module.postgres else None,
+                    pgGeneration=None, host=None, hostLog=None)
+
     @contextmanager
-    def scenario(self, job, output):
+    def scenario(self, job, output, receipt):
         module = job.module
         pool = self.fault if module.db_mode == 'instance' else self.normal
         owner = pool.owner
@@ -220,6 +229,7 @@ class RunFixtures:
             database = None
             if module.postgres:
                 database = stack.enter_context(pool.database(module.profile, module.db_mode))
+                receipt['environment'].update(database=database, pgGeneration=pool.generation)
             if module.postgres or set(module.fixtures) & {'tls', 'windows', 'apple', 'apns'}:
                 certificates = owner if module.postgres else self.certificates
                 with self.lock:
@@ -260,7 +270,10 @@ class RunFixtures:
                     env['MDM_TEST_CONFIG'] = str(private(root / 'runtime.json', value))
             host = None
             if 'shared_worker' in module.fixtures:
+                receipt['environment']['hostLog'] = str((self.output / 'hosts' / database /
+                    self.case_contexts[job.key]['tenant'] / 'host.log').relative_to(self.output))
                 host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
+                receipt['environment']['host'] = host.address
             if 'examples' in module.fixtures:
                 env['MDM_FIXTURE_BIN'] = self.builds.executables['rss-mdm-fixture']
             if 'scep' in module.fixtures:
@@ -274,20 +287,19 @@ class RunFixtures:
                 env.update(stack.enter_context(fixture(root, owner)))
             with self.lock:
                 for dependency in module.fixtures:
-                    self.counts['fixture:' + dependency] += 1
+                    self.costs.increment('fixture:' + dependency, 1)
+            receipt['prepared'] = time.monotonic()
             yield SimpleNamespace(root=root, env=env, database=database,
                                   migration_config=migration_config, owner=owner,
-                                  evidence=dict(database=database, tenant=self.case_contexts[job.key]['tenant'],
-                                                peer=self.case_contexts[job.key]['peer'],
-                                                pg=owner.project if database else None,
-                                                pgGeneration=pool.generation if database else None,
-                                                host=host.address if host else None,
-                                                hostLog=str(host.log_path.relative_to(self.output)) if host else None),
                                   binary=self.builds.executables.get('rss-mdm'), context=self)
         finally:
-            with diagnostic_phase('cleanup'), self.builds.processes.cleanup():
-                try:
-                    stack.close()
-                finally:
-                    if module.python == 'gateway' and self.gateway_owner.root.exists():
-                        self.gateway_owner.reset()
+            receipt['cleanupStarted'] = time.monotonic()
+            try:
+                with diagnostic_phase('cleanup'), self.builds.processes.cleanup():
+                    try:
+                        stack.close()
+                    finally:
+                        if module.python == 'gateway' and self.gateway_owner.root.exists():
+                            self.gateway_owner.reset()
+            finally:
+                receipt['cleaned'] = time.monotonic()

@@ -64,7 +64,7 @@ impl CommitGate {
     pub async fn start(id: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let name = format!(
-            "{}_{}",
+            "t2_{}_{}",
             case::name("gate").replace('-', "_"),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
