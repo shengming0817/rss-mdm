@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
-from t2_processes import subprocess
+from t2_processes import private_value, subprocess
 import time
 import uuid
 from build_run import lease_fds, require_lease
@@ -27,6 +27,7 @@ def run(args, **kwargs):
     return subprocess.run([str(arg) for arg in args], pass_fds=lease_fds(), check=True, text=True, **kwargs)
 
 def private(path, content):
+    private_value(content)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as stream:
@@ -64,16 +65,18 @@ class Environment:
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'], **getattr(self,'extra',{})}
 
     def compose(self, *args, **kwargs):
+        private_values=[]
+        for path in self.root.rglob('*'):
+            if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
+                value = path.read_text()
+                private_values.append(value)
+                private_value(value)
         try:
             return run(['docker','compose','-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
                        env=self.variables(), capture_output=True, **kwargs).stdout.strip()
         except subprocess.CalledProcessError as error:
             from candidate_runtime import safe_evidence
             diagnostic=error.stderr or 'no Compose diagnostic'
-            private_values=[]
-            for path in self.root.rglob('*'):
-                if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
-                    private_values.append(path.read_text())
             try:diagnostic=safe_evidence(diagnostic,private_values)
             except RuntimeError:diagnostic='diagnostic-withheld'
             print(f'Compose failed ({error.returncode}): {diagnostic}',file=sys.stderr,flush=True)

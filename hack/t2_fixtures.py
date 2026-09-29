@@ -20,7 +20,7 @@ import uuid
 from candidate_fixture import installation as product_installation, INSTANCE, ADMIN, TENANTS
 from t2_environment import Environment, private, run
 from t2_registry import ROOT, IDENTITY_SETUP
-from t2_processes import owned_by
+from t2_processes import diagnostic_phase, owned_by
 from verification_result import require
 
 
@@ -80,7 +80,7 @@ class RunFixtures:
 
     def __exit__(self, *unused):
         try:
-            with self.builds.processes.cleanup():
+            with diagnostic_phase('cleanup'), self.builds.processes.cleanup():
                 self.cleanup_environments()
         finally:
             try:
@@ -338,7 +338,7 @@ class RunFixtures:
                                   migration_config=migration_config, owner=self.owner,
                                   binary=self.builds.executables.get('rss-mdm'), context=self)
         finally:
-            with self.builds.processes.cleanup():
+            with diagnostic_phase('cleanup'), self.builds.processes.cleanup():
                 try:
                     stack.close()
                 finally:

@@ -3,6 +3,7 @@ from contextlib import contextmanager, ExitStack, redirect_stdout, redirect_stde
 from io import StringIO
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import threading
 import time
@@ -31,6 +32,12 @@ class Selection(unittest.TestCase):
             t2.main(['--suite', 'all'])
         with patch.dict('os.environ', {'SUITE': 'all'}), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             t2.main(['--module', 'all'])
+
+    def test_unknown_module_lists_both_public_selection_modes(self):
+        message = StringIO()
+        with redirect_stderr(message), self.assertRaises(SystemExit):
+            t2.main(['--module', 'unknown'])
+        self.assertIn('available: affected, all, ', message.getvalue())
 
 
 class Execution(unittest.TestCase):
@@ -90,6 +97,117 @@ class Execution(unittest.TestCase):
         with self.harness() as (root, *_):
             t2.run_modules([],root)
             self.assertEqual(list(root.iterdir()),[])
+
+    def test_real_fixture_failure_keeps_safe_output_for_setup_and_cleanup(self):
+        from t2_environment import private, run
+        from t2_processes import diagnostic_phase
+        for phase in ('setup', 'cleanup'):
+            with self.subTest(phase=phase), self.harness() as (root, _, _, fixtures):
+                secret = 'fixture-credential-value'
+                @contextmanager
+                def scenario(module, output):
+                    private(output / 'account-password', secret)
+                    if phase == 'cleanup':
+                        yield SimpleNamespace(env={})
+                    with diagnostic_phase(phase):
+                        run([sys.executable, '-c',
+                             'import sys; print("fixture stdout"); '
+                             'print("fixture stderr", file=sys.stderr); raise SystemExit(2)'],
+                            capture_output=True, timeout=3)
+                    yield SimpleNamespace(env={})
+                fixtures.scenario.side_effect = scenario
+                value = t2.run_modules(['sources.winget'], root)['sources.winget']
+                self.assertEqual(value['status'], 'failed')
+                case = next(iter(value['cases'].values()))
+                diagnostic = (root / case['fixtureLog']).read_text()
+                self.assertIn('fixture stdout', diagnostic)
+                self.assertIn('fixture stderr', diagnostic)
+                self.assertIn('[' + phase + ']', diagnostic)
+                self.assertIn('fixture.log', (root / case['failureLog']).read_text())
+
+    def test_shared_preparation_failure_links_run_diagnostics(self):
+        from t2_environment import run
+        def prepare(modules):
+            run([sys.executable, '-c', 'import sys; print("shared preparation rejected", file=sys.stderr); raise SystemExit(2)'],
+                capture_output=True, timeout=3)
+        with self.harness() as (root, _, _, fixtures):
+            fixtures.prepare.side_effect = prepare
+            with self.assertRaises(t2.RunFailure) as caught:
+                t2.run_modules(['sources.winget'], root)
+            self.assertIn('shared preparation rejected', (root / caught.exception.evidence['fixtureLog']).read_text())
+
+    def test_parallel_fixture_diagnostics_do_not_mix_cases(self):
+        from t2_environment import run
+        barrier = threading.Barrier(2)
+        @contextmanager
+        def scenario(module, output):
+            barrier.wait(timeout=3)
+            run([sys.executable, '-c', 'import sys; print(sys.argv[1]); raise SystemExit(2)', module.id],
+                capture_output=True, timeout=3)
+            yield SimpleNamespace(env={})
+        with self.harness() as (root, _, _, fixtures):
+            fixtures.scenario.side_effect = scenario
+            names = ['agent.registration', 'agent.reports']
+            results = t2.run_modules(names, root, jobs=2)
+            for name in names:
+                case = next(iter(results[name]['cases'].values()))
+                diagnostic = (root / case['fixtureLog']).read_text()
+                self.assertIn(name, diagnostic)
+                self.assertNotIn(next(other for other in names if other != name), diagnostic)
+
+    def test_fixture_secrets_never_enter_diagnostic_or_traceback(self):
+        from t2_environment import private, run
+        with self.harness() as (root, _, _, fixtures):
+            secret = 'fixture-credential-value'
+            @contextmanager
+            def scenario(module, output):
+                private(output / 'account-password', secret)
+                run([sys.executable, '-c',
+                     'import sys; print(' + repr(secret) + ', file=sys.stderr); raise SystemExit(2)'],
+                    capture_output=True, timeout=3)
+                yield SimpleNamespace(env={})
+            fixtures.scenario.side_effect = scenario
+            value = t2.run_modules(['sources.winget'], root)['sources.winget']
+            case = next(iter(value['cases'].values()))
+            for key in ('log', 'fixtureLog', 'failureLog'):
+                self.assertNotIn(secret, (root / case[key]).read_text())
+            self.assertIn('diagnostic-withheld', (root / case['fixtureLog']).read_text())
+
+    def test_owned_fixture_process_preserves_diagnostics_and_reaps_child(self):
+        from t2_processes import diagnostics, owned_by, subprocess as fixture_process
+        from t2_execution import Processes
+        with tempfile.TemporaryDirectory() as directory, patch('t2_execution.lease_fds', return_value=()):
+            log = Path(directory) / 'fixture.log'
+            processes = Processes()
+            try:
+                with owned_by(processes), diagnostics(log), self.assertRaises(subprocess.CalledProcessError):
+                    fixture_process.run([sys.executable, '-c',
+                        'import sys; print("owned setup failure", file=sys.stderr); raise SystemExit(2)'],
+                        capture_output=True, text=True, check=True, timeout=3)
+                self.assertIn('owned setup failure', log.read_text())
+                self.assertFalse(processes.children)
+            finally:
+                processes.close()
+
+    def test_reused_compose_secrets_are_protected_before_command_logging(self):
+        from t2_environment import Environment
+        from t2_processes import diagnostics, subprocess as fixture_process
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = Environment(root)
+            environment.root.mkdir(parents=True)
+            secret = 'previous-run-password'
+            (environment.root / 'database-password').write_text(secret)
+            log = root / 'fixture.log'
+            def fail(*args, **kwargs):
+                return fixture_process.run([sys.executable, '-c',
+                    'import sys; print(' + repr(secret) + ', file=sys.stderr); raise SystemExit(2)'],
+                    capture_output=True, text=True, check=True, timeout=3)
+            with diagnostics(log), patch('t2_environment.run', side_effect=fail), \
+                 redirect_stderr(StringIO()), self.assertRaises(subprocess.CalledProcessError):
+                environment.compose('ps')
+            self.assertNotIn(secret, log.read_text())
+            self.assertIn('diagnostic-withheld', log.read_text())
 
     def test_retention_bounds_owned_runs_and_preserves_current_formal_evidence(self):
         import json
@@ -196,6 +314,30 @@ class Execution(unittest.TestCase):
 
 
 class StableInput(unittest.TestCase):
+    def test_hard_interruption_invalidates_only_current_mode_evidence(self):
+        import json
+        for listing in (False, True):
+            with self.subTest(listing=listing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / 'artifacts/local-t2'
+                output.mkdir(parents=True)
+                for name in ('result.json', 'list.json'):
+                    (output / name).write_text(json.dumps({'status': 'passed', 'old': True}))
+                code = '''
+import os, sys
+from pathlib import Path
+from unittest.mock import patch
+import ci, t2
+with patch.object(t2, 'ROOT', Path(sys.argv[1])), patch.object(t2, 'require_lease'), patch.object(ci, 'working_source_state', side_effect=lambda: os._exit(73)):
+    t2.main(['--module', 'agent.registration', '--list', sys.argv[2]])
+'''
+                result = subprocess.run([sys.executable, '-c', code, str(root), str(int(listing))],
+                                        cwd=Path(t2.__file__).parent, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 73, result.stderr)
+                current, other = ('list.json', 'result.json') if listing else ('result.json', 'list.json')
+                self.assertFalse((output / current).exists())
+                self.assertTrue(json.loads((output / other).read_text())['old'])
+
     def test_top_level_failure_preserves_run_id_and_log(self):
         import ci
         import json

@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import uuid
 from build_run import require_lease
 from t2_registry import ROOT, MODULES
 from t2_execution import Builds, Processes, CASE_TIMEOUT
+from t2_processes import diagnostic_phase, diagnostics
 from verification_result import result as stage_result, publish, require
 
 
@@ -70,13 +72,17 @@ class RunFailure(RuntimeError):
         self.evidence = evidence
 
 
+def module_choices():
+    return ('affected', 'all', *sorted(MODULES))
+
+
 def select_modules(module, selection):
     if module == 'all':
         return sorted(MODULES)
     if module == 'affected':
         return sorted(MODULES) if selection['t2Full'] else sorted(selection['modules'])
     if module not in MODULES:
-        raise ValueError('unknown MODULE; available: ' + ', '.join(['affected', 'all', *sorted(MODULES)]))
+        raise ValueError('unknown MODULE; available: ' + ', '.join(module_choices()))
     return [module]
 
 
@@ -134,7 +140,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
             results.update({module.id: stage_result('skipped', reason='list-only') for module in modules})
             return results
         from t2_fixtures import RunFixtures
-        with RunFixtures(builds, directory) as fixtures:
+        with diagnostics(directory / 'fixture.log'), RunFixtures(builds, directory) as fixtures:
             fixtures.prepare(modules)
             def execute(module):
                 started = time.monotonic()
@@ -146,6 +152,10 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
                     case_id = case.id if case else 'python/' + module.id
                     case_dir = module_dir / key
                     case_dir.mkdir()
+                    with diagnostics(case_dir / 'fixture.log'):
+                        execute_case(case, case_id, case_dir)
+
+                def execute_case(case, case_id, case_dir):
                     (case_dir / 'test.log').write_text('Case preparation started; execution output follows when ready.\n')
                     begin = time.monotonic()
                     try:
@@ -154,20 +164,23 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
                             fixtures.reset()
                         with fixtures.scenario(module, case_dir) as fixture:
                             prepared = time.monotonic()
-                            if case:
-                                builds.execute(case, fixture.env, case_dir)
-                            else:
-                                builds.execute_python(module, fixture, case_dir)
+                            with diagnostic_phase('execution'):
+                                if case:
+                                    builds.execute(case, fixture.env, case_dir)
+                                else:
+                                    builds.execute_python(module, fixture, case_dir)
                             executed = time.monotonic()
                         end = time.monotonic()
                         cases[case_id] = stage_result('passed', begin,
                             setupSeconds=round(prepared-begin, 3), testSeconds=round(executed-prepared, 3),
                             cleanupSeconds=round(end-executed, 3), startedMonotonic=begin, endedMonotonic=end,
-                            log=str((case_dir / 'test.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
+                            log=str((case_dir / 'test.log').relative_to(output)),
+                            fixtureLog=str((case_dir / 'fixture.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
                     except BaseException as error:
-                        (case_dir / 'failure.log').write_text(traceback.format_exc())
+                        (case_dir / 'failure.log').write_text('Fixture diagnostics: fixture.log\n' + traceback.format_exc())
                         cases[case_id] = stage_result('failed', begin, reason=type(error).__name__,
                             startedMonotonic=begin, endedMonotonic=time.monotonic(), log=str((case_dir / 'test.log').relative_to(output)),
+                            fixtureLog=str((case_dir / 'fixture.log').relative_to(output)),
                             failureLog=str((case_dir / 'failure.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
                         print(f'T2 failure output: {case_dir / "test.log"}; traceback: {case_dir / "failure.log"}', flush=True)
                     print(f'T2 {module.id}: {cases[case_id]["status"]} {case_id}', flush=True)
@@ -182,7 +195,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
                 return outcome
             normal = [module for module in modules if not module.exclusive]
             with ThreadPoolExecutor(max_workers=jobs) as executor:
-                futures = {executor.submit(execute, module): module.id for module in normal}
+                futures = {executor.submit(copy_context().run, execute, module): module.id for module in normal}
                 for future in as_completed(futures):
                     results[futures[future]] = future.result()
             # The normal phase is fully drained before a global PG fault can run.
@@ -197,6 +210,8 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
         (directory / 'failure.log').write_text(traceback.format_exc())
         failure = {'runId': run_id, 'status': 'failed', 'reason': type(error).__name__,
                    'log': str((directory / 'failure.log').relative_to(output))}
+        if (directory / 'fixture.log').exists():
+            failure['fixtureLog'] = str((directory / 'fixture.log').relative_to(output))
         publish(directory / 'result.json', failure)
         raise RunFailure(str(error), failure) from error
     finally:
@@ -218,8 +233,8 @@ def main(argv=None):
     args = parser.parse_args(arguments)
     if 'SUITE' in os.environ:
         parser.error('SUITE was removed; use MODULE')
-    if args.module not in ('affected', 'all', *MODULES):
-        parser.error('unknown MODULE; available: ' + ', '.join(sorted(MODULES)))
+    if args.module not in module_choices():
+        parser.error('unknown MODULE; available: ' + ', '.join(module_choices()))
     if args.jobs < 1:
         parser.error('JOBS must be positive')
     require_lease(ROOT)
@@ -227,6 +242,8 @@ def main(argv=None):
     output = ROOT / 'artifacts/local-t2'
     require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
     output.mkdir(parents=True, exist_ok=True)
+    result_path = output / ('list.json' if args.list == '1' else 'result.json')
+    result_path.unlink(missing_ok=True)
     started = time.monotonic()
     try:
         source = ci.working_source_state()
@@ -243,10 +260,10 @@ def main(argv=None):
         evidence = {'module': args.module, 'selection': selection, 'status': status, 'modules': results}
         if not names:
             evidence['reason'] = 'no-modules-selected'
-        publish(output / ('list.json' if args.list == '1' else 'result.json'), evidence)
+        publish(result_path, evidence)
         return int(status == 'failed')
     except BaseException as error:
-        publish(output / ('list.json' if args.list == '1' else 'result.json'),
+        publish(result_path,
                 {'status': 'failed', 'module': args.module, 'execution': error.evidence if isinstance(error, RunFailure) else stage_result('failed', started, reason=type(error).__name__)})
         raise
 
