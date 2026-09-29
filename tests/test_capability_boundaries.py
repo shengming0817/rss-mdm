@@ -51,8 +51,11 @@ class CapabilityBoundaries(unittest.TestCase):
 
     def test_ingress_does_not_publish_domain_facades(self):
         import re
-        for path in (ROOT / 'crates/management-http/src').rglob('*.rs'):
-            self.assertIsNone(re.search(r'^\s*pub use rss_mdm_', path.read_text(), re.M), str(path))
+        for ingress in INGRESS:
+            for path in (ROOT / 'crates' / ingress / 'src').rglob('*.rs'):
+                self.assertIsNone(re.search(r'^\s*pub use rss_mdm_', path.read_text(), re.M), str(path))
+        agent = (ROOT / 'crates/agent-channel/src/lib.rs').read_text()
+        self.assertNotRegex(agent, r'pub (?:enum AgentError|(?:async )?fn (?:bounded|agent_credential))')
 
     def test_host_does_not_own_access_relation_contract(self):
         source = (ROOT / 'crates/app/src/database.rs').read_text()

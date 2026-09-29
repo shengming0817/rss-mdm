@@ -682,3 +682,65 @@ fn sign_fixture(tbs: &x509_cert::TbsCertificate) -> anyhow::Result<Vec<u8>> {
     }
     .to_der()?)
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.issuance: real CA, TLS and private file loading"]
+async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
+    let scratch = tempfile::tempdir()?;
+    for (field, issue, private) in [
+        (
+            "ca_certificate_file",
+            crate::ConfigIssue::EnrollmentCa,
+            false,
+        ),
+        (
+            "ca_private_key_file",
+            crate::ConfigIssue::EnrollmentCa,
+            true,
+        ),
+        ("protocol_key_file", crate::ConfigIssue::ProtocolKey, true),
+    ] {
+        for fault in ["absent", "invalid", "unsafe", "oversized"] {
+            if !private && fault == "unsafe" {
+                continue;
+            }
+            let path = scratch.path().join(format!("sensitive-{field}-{fault}"));
+            if fault != "absent" {
+                let bytes = if fault == "unsafe" {
+                    std::fs::read(original[field].as_str().unwrap())?
+                } else if fault == "oversized" {
+                    vec![
+                        9;
+                        if field == "protocol_key_file" {
+                            33
+                        } else {
+                            32769
+                        }
+                    ]
+                } else {
+                    vec![9; 31]
+                };
+                std::fs::write(&path, bytes)?;
+                std::fs::set_permissions(
+                    &path,
+                    std::fs::Permissions::from_mode(if fault == "unsafe" { 0o644 } else { 0o600 }),
+                )?;
+            }
+            let mut input = original.clone();
+            input[field] = serde_json::json!(path);
+            let error = match Windows::load(serde_json::from_value(input)?, now()) {
+                Ok(_) => anyhow::bail!("accepted {field} {fault}"),
+                Err(error) => error,
+            };
+            ensure!(
+                matches!(&error, crate::Error::Configuration(actual) if std::mem::discriminant(actual) == std::mem::discriminant(&issue)),
+                "{field} {fault}: {error:?}"
+            );
+            ensure!(!format!("{error:?} {error}").contains("sensitive-"));
+        }
+    }
+    Ok(())
+}

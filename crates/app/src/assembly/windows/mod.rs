@@ -51,20 +51,26 @@ pub(crate) struct Windows {
 impl Windows {
     pub(crate) fn load(config: WindowsConfig, now: i64) -> Result<Self, Error> {
         let ca = certificate::WindowsEnrollmentAuthority::from_bytes(
-            &crate::config::read(&config.ca_certificate_file, 32768, false)?,
-            &crate::config::read(&config.ca_private_key_file, 32768, true)?,
+            &crate::config::read(&config.ca_certificate_file, 32768, false)
+                .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?,
+            &crate::config::read(&config.ca_private_key_file, 32768, true)
+                .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?,
             now,
         )
         .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
         let enrollment_tls = tls::configuration(&config.enrollment, None)?;
         let management_tls = tls::configuration(&config.management, Some(ca.verifier()))?;
-        let channel = Arc::new(rss_mdm_windows_channel::Windows::new(
-            config.enrollment.origin.clone(),
-            config.management.origin.clone(),
-            config.provider_id.clone(),
-            ca,
-            &crate::config::read(&config.protocol_key_file, 32, true)?,
-        )?);
+        let channel = Arc::new(
+            rss_mdm_windows_channel::Windows::new(
+                config.enrollment.origin.clone(),
+                config.management.origin.clone(),
+                config.provider_id.clone(),
+                ca,
+                &crate::config::read(&config.protocol_key_file, 32, true)
+                    .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
+            )
+            .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
+        );
         Ok(Self {
             config,
             channel,

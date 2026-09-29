@@ -25,6 +25,13 @@ class ModuleImpactTests(unittest.TestCase):
             'windows.enrollment', 'windows.issuance', 'windows.management',
             'windows.commands', 'windows.retention', 'windows.limits'})
 
+    def test_device_audit_boundaries_select_fault_projection_tests(self):
+        for path in ('crates/audit-integration/src/completion.rs',
+                     'crates/agent-channel/src/boundary.rs',
+                     'crates/windows-channel/src/boundary.rs',
+                     'crates/apple-channel/src/boundary.rs'):
+            self.assertIn('api.diagnostics', self.selected(path), path)
+
     def test_installation_python_selects_only_its_module_and_guards(self):
         selection = select_paths(['hack/t2_modules/installation.py'])
         self.assertFalse(selection.full)

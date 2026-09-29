@@ -1,6 +1,6 @@
 //! Agent V3 ingress; request fields carry no tenant or registration authority.
 use rss_mdm_authorization_service as authorization;
-pub use rss_mdm_flow_service::{Error, Failure};
+use rss_mdm_flow_service::{Error, Failure};
 use rss_mdm_inventory_service::collection;
 use rss_mdm_registration_service::{device, enrollment};
 mod bindings;
@@ -51,7 +51,7 @@ fn routes() -> Router<Arc<HttpState>> {
 }
 
 #[derive(Clone)]
-pub enum AgentError {
+pub(crate) enum AgentError {
     Wire(wire::ErrorCode),
     Service(Error),
 }
@@ -116,7 +116,7 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
     }
 }
 
-pub async fn bounded<T>(
+pub(crate) async fn bounded<T>(
     work: impl Future<Output = Result<T, AgentError>>,
 ) -> Result<T, AgentError> {
     bounded_for(Duration::from_secs(8), work).await
@@ -517,7 +517,7 @@ fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
 }
-pub fn agent_credential(
+pub(crate) fn agent_credential(
     mount: &crate::device::ChannelMount,
     headers: &HeaderMap,
 ) -> Result<VerifiedChannelCredential, AgentError> {

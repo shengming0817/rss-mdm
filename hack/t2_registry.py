@@ -706,6 +706,9 @@ consume(('crates/apple-mdm/src/*',), 'apple.scep apple.collection apple.profile 
 
 consume(('crates/management-http/src/boundary.rs', 'crates/management-http/src/api.rs', 'crates/management-http/src/router.rs', 'crates/management-http/src/identity.rs', 'crates/management-http/src/error*.rs'), AUTH_CONSUMERS + ' api.diagnostics')
 consume(('crates/authorization-service/src/initialization.rs', 'crates/app/src/authorization_bootstrap.rs'), 'authorization.initialization')
+consume(('crates/audit-integration/src/completion.rs',
+         'crates/agent-channel/src/boundary.rs', 'crates/windows-channel/src/boundary.rs',
+         'crates/apple-channel/src/boundary.rs'), 'api.diagnostics')
 consume(('crates/agent-channel/src/boundary.rs', 'crates/agent-channel/src/bindings.rs', 'crates/agent-channel/src/operations.rs'), 'agent.registration agent.reports execution.agent.delivery execution.agent.poll')
 consume(('crates/agent-channel/src/content.rs',), 'execution.agent.content execution.software.content')
 consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src/boundary.rs'), 'windows.management windows.retention windows.limits inventory.runtime')
