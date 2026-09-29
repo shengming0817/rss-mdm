@@ -14,7 +14,7 @@ async fn outbox_gateway_ack_and_process_recovery() -> anyhow::Result<()> {
 }
 impl Client {
     async fn dispatch_receipts(&mut self) -> anyhow::Result<()> {
-        let audit = RequestAudit::new(TENANT.into(), "management_read");
+        let audit = RequestAudit::new(case_tenant().into(), "management_read");
         #[cfg(feature = "integration")]
         self.retry_gateway().await?;
         #[cfg(feature = "integration")]
@@ -179,7 +179,7 @@ impl Client {
         tokio::time::timeout(Duration::from_secs(5),async {
             loop {
                 ensure!(child.0.try_wait()?.is_none(),"relay child exited before durable acceptance");
-                let accepted:bool=sqlx::query_scalar("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(TENANT).bind(self.operation.to_string()).fetch_one(&mut pg).await?;
+                let accepted:bool=sqlx::query_scalar("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(self.operation.to_string()).fetch_one(&mut pg).await?;
                 if accepted {return Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
@@ -191,7 +191,7 @@ impl Client {
         tokio::time::timeout(Duration::from_secs(15),async {
             loop {
                 self.app.execution.relay_once().await?;
-                let published:bool=sqlx::query_scalar("SELECT status='published' FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2").bind(TENANT).bind(format!("dispatch.{}",self.operation)).fetch_one(&mut pg).await?;
+                let published:bool=sqlx::query_scalar("SELECT status='published' FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2").bind(case_tenant()).bind(format!("dispatch.{}",self.operation)).fetch_one(&mut pg).await?;
                 if published {return Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }

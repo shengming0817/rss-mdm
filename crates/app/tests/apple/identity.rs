@@ -6,7 +6,10 @@ impl Fixture {
     pub async fn before_token(&mut self, peer: &Peer) -> Result<()> {
         for path in [
             format!("/api/v3/enrollments/{}/profile", Uuid::new_v4()),
-            format!("/api/v1/devices/{DEVICE}/collection-runs"),
+            format!(
+                "/api/v1/devices/{DEVICE}/collection-runs",
+                DEVICE = case_device()
+            ),
         ] {
             for body in [
                 json!(null),
@@ -27,7 +30,13 @@ impl Fixture {
         let reply = peer
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-t2-apple".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
+                ]),
             )
             .await?;
         ensure!(
@@ -39,7 +48,10 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "UserAuthenticate".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                 ]),
             )
             .await?;
@@ -49,7 +61,10 @@ impl Fixture {
             .call(
                 &self.router,
                 Method::POST,
-                &format!("/api/v1/devices/{DEVICE}/collection-runs"),
+                &format!(
+                    "/api/v1/devices/{DEVICE}/collection-runs",
+                    DEVICE = case_device()
+                ),
                 Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
             )
             .await?;
@@ -117,7 +132,10 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -131,7 +149,13 @@ impl Fixture {
         let stale = old
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-t2-apple".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
+                ]),
             )
             .await?;
         ensure!(
@@ -141,7 +165,7 @@ impl Fixture {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let rows:Vec<(i64,String)>=sqlx::query_as("SELECT generation,state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 ORDER BY generation").bind(TENANT).bind(DEVICE).fetch_all(&mut pg).await?;
+        let rows:Vec<(i64,String)>=sqlx::query_as("SELECT generation,state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 ORDER BY generation").bind(case_tenant()).bind(case_device()).fetch_all(&mut pg).await?;
         ensure!(
             rows == vec![(1, "superseded".into()), (2, "active".into())],
             "registration generations {rows:?}"
@@ -175,8 +199,8 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let revision: i64 =
-            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.devices WHERE state='active'")
-                .fetch_one(&mut token_observer)
+            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'")
+                .bind(case_tenant()).bind(case_device()).fetch_one(&mut token_observer)
                 .await?;
         let facts_before = crate::audit_test_support::read(&mut token_observer)
             .await?
@@ -186,9 +210,9 @@ impl Fixture {
         peer.token_value(43).await?;
         ensure!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT token_revision FROM mdm_apple.devices WHERE state='active'"
+                "SELECT token_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'"
             )
-            .fetch_one(&mut token_observer)
+            .bind(case_tenant()).bind(case_device()).fetch_one(&mut token_observer)
             .await?
                 == revision
         );
@@ -224,7 +248,10 @@ impl Fixture {
             .call(
                 &self.router,
                 Method::POST,
-                &format!("/api/v1/devices/{DEVICE}/collection-runs"),
+                &format!(
+                    "/api/v1/devices/{DEVICE}/collection-runs",
+                    DEVICE = case_device()
+                ),
                 Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
             )
             .await?;
@@ -233,7 +260,7 @@ impl Fixture {
         let mut pending_reader =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let pending: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_access.collection_runs WHERE sealed_at IS NULL AND registration IN (SELECT registration FROM mdm_apple.devices WHERE state='active')").fetch_all(&mut pending_reader).await?;
+        let pending: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND registration IN (SELECT d.registration FROM mdm_apple.devices d JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(d.tenant_id,d.registration) WHERE d.tenant_id=$1::uuid AND r.device=$2 AND d.state='active')").bind(case_tenant()).bind(case_device()).fetch_all(&mut pending_reader).await?;
         ensure!(
             pending.len() >= 65,
             "retirement must exercise the real accumulated collection backlog"
@@ -243,7 +270,10 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "CheckOut".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                 ]),
             )
             .await?;
@@ -265,7 +295,13 @@ impl Fixture {
         let stale = peer
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-t2-apple".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
+                ]),
             )
             .await?;
         ensure!(stale.0 == StatusCode::UNAUTHORIZED);
@@ -282,7 +318,7 @@ impl Fixture {
             && r.operation() == Some(run.to_string().as_str())
             && r.actor() == Some("service:collection-finalizer")));
         let active: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM mdm_apple.devices WHERE state='active'")
+            sqlx::query_scalar("SELECT count(*) FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'").bind(case_tenant()).bind(case_device())
                 .fetch_one(&mut pg)
                 .await?;
         ensure!(active == 0);

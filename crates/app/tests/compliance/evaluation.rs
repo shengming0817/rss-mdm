@@ -7,27 +7,33 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     use crate::inventory_runtime::test_support::{report, start, wait_ready_projection};
     let device = "collected-compliance";
     pg(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}')"
+        "INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}')",
+        TENANT = case_tenant()
     ))?;
     let (registration, _) =
         crate::test_support::inventory::seed_source(device, "mdm", "mdm.windows", "seed")?;
+    let locator = crate::test_support::secret("channel-proof-121")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     pg(&format!(
-        "UPDATE mdm_access.credentials SET locator=repeat('79',32) WHERE registration='{registration}'"
+        "UPDATE mdm_access.credentials SET locator='{locator}' WHERE registration='{registration}'"
     ))?;
     let access = database(base).await?;
     let service = crate::device::DeviceService::new(
         access.clone(),
-        TENANT.into(),
+        case_tenant().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     );
-    let proof = crate::device::test_support::proof(TENANT, rss_mdm_inventory::Channel::Mdm, 121);
+    let proof =
+        crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 121);
     let config: Config = serde_json::from_value(base.clone())?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access.clone(),
-        rss_request_context::TenantId::parse(TENANT)?,
+        rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
     )
     .await?;
@@ -91,7 +97,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     }
     def["enabled"] = json!(false);
     ok(b, router, Method::PUT, &path, Some(request(1, def))).await?;
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -110,7 +116,8 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     for source in ["agent.script", "agent.osquery"] {
         let epoch = Uuid::new_v4();
         pg(&format!(
-            "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{agent}','{source}','{epoch}','enterprise-task-v1',true)"
+            "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{agent}','{source}','{epoch}','enterprise-task-v1',true)",
+            TENANT = case_tenant()
         ))?;
     }
     let (_, path, _) = fixture.rule().await?;
@@ -137,7 +144,7 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     )
     .await?;
     collected_facts(&mut browser, router, base).await?;
-    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(automation).await?;
     fixture.close().await;
     Ok(())
 }

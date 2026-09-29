@@ -239,7 +239,7 @@ async fn publication_http_authority_receipts_and_unknown_outcome() -> Result<()>
     let mut holder =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let authorization_key = format!("{TENANT}:{INSTANCE}");
+    let authorization_key = format!("{TENANT}:{INSTANCE}", TENANT = case_tenant());
     sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2363))")
         .bind(&authorization_key)
         .execute(&mut holder)

@@ -114,7 +114,10 @@ impl Client {
         let mut body = request.clone();
         body["operationId"] = concurrent.to_string().into();
         let (mut one, mut two) = (self.browser.clone(), self.browser.clone());
-        let path = format!("/api/v2/devices/{DEVICE}/operations");
+        let path = format!(
+            "/api/v2/devices/{DEVICE}/operations",
+            DEVICE = case_device()
+        );
         let (a, b) = tokio::join!(
             one.call(&self.router, Method::POST, &path, Some(body.clone())),
             two.call(&self.router, Method::POST, &path, Some(body))

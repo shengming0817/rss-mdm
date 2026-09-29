@@ -354,7 +354,7 @@ async fn group_scope_replay_and_audit_atomicity() {
         )),
         "0"
     );
-    let foreign = planning(TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap()).await;
+    let foreign = planning(TenantId::parse(crate::test_support::case::peer()).unwrap()).await;
     assert!(
         execute(&foreign, &Command::ScopeRead { id: scope_id })
             .await
@@ -640,7 +640,10 @@ async fn ingress_batches_reuse_published_group_coverage() {
         .await
         .unwrap();
     assert_eq!(
-        sql("SELECT count(*) FROM mdm_automation.automation_jobs"),
+        sql(&format!(
+            "SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}'",
+            tenant()
+        )),
         "1"
     );
     let claim = claims
@@ -658,11 +661,17 @@ async fn ingress_batches_reuse_published_group_coverage() {
         let diff = worker.observe(&claim, &control).await.unwrap();
         worker.apply(&claim, diff, &control).await.unwrap();
         assert_eq!(
-            sql("SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch"),
+            sql(&format!(
+                "SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'",
+                tenant()
+            )),
             format!("{consumed},{watermark},{phase}")
         );
         assert_eq!(
-            sql("SELECT count(*) FROM mdm_automation.automation_jobs"),
+            sql(&format!(
+                "SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}'",
+                tenant()
+            )),
             "1",
             "covered batches recreated the million-device calculation"
         );

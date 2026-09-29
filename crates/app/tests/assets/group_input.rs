@@ -6,23 +6,28 @@ use super::*;
 async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value) -> Result<()> {
     use crate::inventory_runtime::test_support::{report, start, wait_ready_projection};
     let (registration, _) = seed_source("tie-a", "mdm", "mdm.windows", "seed")?;
+    let locator = crate::test_support::secret("channel-proof-121")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     pg(&format!(
-        "UPDATE mdm_access.credentials SET locator=repeat('79',32) WHERE registration='{registration}'"
+        "UPDATE mdm_access.credentials SET locator='{locator}' WHERE registration='{registration}'"
     ))?;
     let access = database(base).await?;
     let service = crate::device::DeviceService::new(
         access.clone(),
-        TENANT.into(),
+        case_tenant().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     );
-    let proof = crate::device::test_support::proof(TENANT, rss_mdm_inventory::Channel::Mdm, 121);
+    let proof =
+        crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 121);
     let config: Config = serde_json::from_value(base.clone())?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access.clone(),
-        rss_request_context::TenantId::parse(TENANT)?,
+        rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
     )
     .await?;
@@ -134,7 +139,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             .any(|d| d["explanations"][0]["outcome"] == "unsupported")
     );
     ensure!(ok(browser, router, Method::GET, &group, None).await?["group"]["memberCount"] == 0);
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
     access.close().await;
     Ok(())
@@ -180,7 +185,8 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
             && preview.decisions["page"]["items"][1]["explanations"][0]["outcome"] == "conflict"
     );
     pg(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-a')"
+        "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-a')",
+        TENANT = case_tenant()
     ))?;
     collection_matrix(&mut browser, router, &fixture.base).await?;
     fixture.close().await
@@ -197,7 +203,7 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
     let epoch = Uuid::new_v4();
     let field = rss_mdm_inventory::FieldKey::CorporateAgentHealthy;
     let scope = crate::device::scope_dataset(
-        rss_request_context::TenantId::parse(TENANT)?,
+        rss_request_context::TenantId::parse(case_tenant())?,
         registration,
         "agent.script",
         epoch,
@@ -209,7 +215,7 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(true))?;
     pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}','enterprise-task-v1',true);
         INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch)
-        VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}');"))?;
+        VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}');", TENANT = case_tenant()))?;
     let criteria = predicate("custom.corporate_agent.healthy", "boolean", json!(true));
     let query = ok(
         &mut browser,

@@ -46,7 +46,7 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let config = crate::test_support::identity::config(TENANT)?;
+        let config = crate::test_support::identity::config(case_tenant())?;
         let restarted = Box::pin(crate::flow::execution::open(
             &config,
             crate::test_support::identity::audit_store(&config).await?,

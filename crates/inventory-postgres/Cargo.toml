@@ -23,4 +23,5 @@ anyhow.workspace = true
 workspace = true
 
 [dev-dependencies]
+uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

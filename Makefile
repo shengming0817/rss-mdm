@@ -7,6 +7,7 @@ MODULE ?= affected
 JOBS ?= 2
 CASE ?=
 LIST ?= 0
+REUSE_PLAN ?=
 ACTION ?= status
 MODE ?= host
 DEV_ARGS ?=
@@ -24,7 +25,7 @@ check:
 test:
 	python3 hack/build_run.py -- cargo test --locked --workspace --lib --bins --tests
 t2:
-	python3 hack/build_run.py -- python3 hack/t2.py --module "$(MODULE)" --base "$(CI_BASE)" --jobs "$(JOBS)" --case "$(CASE)" --list "$(LIST)"
+	python3 hack/build_run.py -- python3 hack/t2.py --module "$(MODULE)" --base "$(CI_BASE)" --jobs "$(JOBS)" --case "$(CASE)" --list "$(LIST)" $(if $(REUSE_PLAN),--reuse-plan "$(REUSE_PLAN)")
 dev:
 	python3 hack/build_run.py -- python3 hack/t2_environment.py "$(ACTION)" --mode "$(MODE)" $(DEV_ARGS)
 t3-auth:

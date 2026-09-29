@@ -20,7 +20,7 @@ async fn put(
         .await
 }
 fn user(subject: &str) -> Value {
-    json!({"kind":"user","user":{"instanceId":INSTANCE,"tenantId":TENANT,"principalId":subject}})
+    json!({"kind":"user","user":{"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":subject}})
 }
 fn grant(operation: &str, scope: Value) -> Value {
     json!({"operation":operation,"scope":scope})
@@ -51,22 +51,31 @@ async fn fixture() -> Result<Fixture> {
         .await?,
     );
     let router = app(&base, reader.clone()).await?;
-    let fixture = authority::Authority::open().await?;
-    let mut admin = fixture.browser("admin")?;
+    let mut admin = Browser::default();
+    identity::age_prepared_admin_session()?;
+    ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
     let mut member = Browser::default();
     ensure!(
         admin
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/accounts"),
-                Some(json!({"login":"authorization-member","password":PASSWORD}))
+                &format!("/api/v2/tenants/{TENANT}/accounts", TENANT = case_tenant()),
+                Some(json!({"login":crate::test_support::case::name("authorization-member"),"password":PASSWORD}))
             )
             .await?
             .0
             == StatusCode::CREATED
     );
-    ensure!(member.login(&router, "authorization-member").await? == StatusCode::OK);
+    ensure!(
+        member
+            .login(
+                &router,
+                crate::test_support::case::name("authorization-member")
+            )
+            .await?
+            == StatusCode::OK
+    );
     let subject = browser_subject(&member, &router).await?;
     let store = database(&base).await?;
     let audit_store = store

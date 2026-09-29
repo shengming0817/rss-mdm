@@ -1,3 +1,5 @@
+#[path = "../../../../../tests/support/context.rs"]
+mod case;
 use crate::{app::App, fixture::FixtureAuthority, storage};
 use anyhow::{Result, ensure};
 use rss_mdm_inventory as model;
@@ -12,7 +14,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 fn scope(tenant: u8, device: &str) -> Scope {
-    serde_json::from_value(serde_json::json!({"tenant":format!("00000000-0000-0000-0000-{tenant:012}"),"object":device,"registration":"reg-1","source":"agent.builtin","dataset":"inventory","epoch":"epoch-1"})).unwrap()
+    serde_json::from_value(serde_json::json!({"tenant":if tenant == 1 { case::tenant() } else { case::peer() },"object":case::name(device),"registration":"reg-1","source":"agent.builtin","dataset":"inventory","epoch":"epoch-1"})).unwrap()
 }
 #[allow(
     clippy::disallowed_methods,

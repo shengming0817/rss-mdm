@@ -10,7 +10,9 @@ use rss_mdm_windows_mdm::{
     syncml::{self, Command, CommandName, Header, Message, Status},
 };
 use uuid::Uuid;
-const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+fn case_a() -> &'static str {
+    crate::test_support::case::tenant()
+}
 #[allow(
     clippy::disallowed_methods,
     reason = "T2 composition owns the monotonic clock"
@@ -193,7 +195,12 @@ async fn report_on(
     Ok((scope, id))
 }
 
-pub(crate) async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime::ShutdownStack> {
+pub(crate) async fn start(
+    runtime: Arc<InventoryRuntime>,
+) -> Result<Option<rss_runtime::ShutdownStack>> {
+    if !crate::test_support::case::owns_worker() {
+        return Ok(None);
+    }
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -201,13 +208,13 @@ pub(crate) async fn start(runtime: Arc<InventoryRuntime>) -> Result<rss_runtime:
     let mut launch = owner.startup()?.commit();
     launch.stage_deferred_task_with_token(runtime.registration().critical());
     launch.finish();
-    Ok(owner)
+    Ok(Some(owner))
 }
 
 pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if runtime.readiness.ready()
+            if (!crate::test_support::case::owns_worker() || runtime.readiness.ready())
                 && runtime.inspect(run).await?.projection
                     == crate::inventory_runtime::ProjectionStatus::Projected
             {
@@ -225,7 +232,7 @@ pub(super) async fn open(access: Arc<Database>) -> Result<Arc<InventoryRuntime>>
     Ok(InventoryRuntime::fixture(
         options("mdm_runtime")?,
         access,
-        TenantId::parse(A)?,
+        TenantId::parse(case_a())?,
         clock(),
     )
     .await?)

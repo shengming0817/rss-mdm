@@ -1,3 +1,5 @@
+#[path = "../../../../tests/support/context.rs"]
+pub mod case;
 use rss_contract::Timepoint;
 use rss_mdm_group_postgres::*;
 use rss_request_context::{Clock, Deadline, ExecutionTimer, TenantId};
@@ -26,10 +28,10 @@ pub fn deadline() -> OperationDeadline {
     )
 }
 pub fn tenant() -> TenantId {
-    TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
+    TenantId::parse(case::tenant()).unwrap()
 }
 pub fn foreign() -> TenantId {
-    TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap()
+    TenantId::parse(case::peer()).unwrap()
 }
 pub fn at() -> Timepoint {
     Timepoint::try_from(10).unwrap()

@@ -234,7 +234,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         json!({"action":"disable"}),
     )
     .await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -307,6 +307,6 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
         windows_rollout.1["stages"][0]["verifiedSuccess"] == 1,
         "windows verification: {windows_rollout:?}"
     );
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

@@ -9,14 +9,17 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let mut grants = fixture.grants.clone();
     grants.extend(crate::test_support::identity::device_grants(
         None,
         &["operation_read"],
     )?);
-    crate::test_support::identity::set_grants(TENANT, &fixture.author_id, grants).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
     let stack = worker(&fixture.base).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
@@ -125,14 +128,17 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         let version=pg(&format!("SELECT policy_version FROM mdm_commands.action_runs WHERE id='{task}'"))?;
         let found=records.iter().find(|r|r.payload["plan"]==version.trim() && r.target()==task && r.action()=="command_accept").expect("task/policy-version audit coordinates");
         let registration=found.payload["registration"].as_str().expect("task registration");uuid::Uuid::parse_str(registration)?;
-        ensure!(pg(&format!("SELECT device FROM mdm_access.registrations WHERE tenant_id='{TENANT}' AND id='{registration}'"))?.trim()==DEVICE_ID);
+        ensure!(pg(&format!("SELECT device FROM mdm_access.registrations WHERE tenant_id='{TENANT}' AND id='{registration}'", TENANT = case_tenant()))?.trim()==case_device_id());
         Ok(())
     }
     .await;
-    let cleanup =
-        pg("DELETE FROM mdm_commands.action_runs WHERE occurrence LIKE 'history-fixture:%'");
+    let cleanup = pg(&format!(
+        "DELETE FROM mdm_commands.action_runs WHERE tenant_id='{}' AND device='{}' AND occurrence LIKE 'history-fixture:%'",
+        case_tenant(),
+        case_device_id()
+    ));
     result?;
     cleanup?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

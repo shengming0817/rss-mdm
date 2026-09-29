@@ -15,7 +15,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     set_device_grants(
         browser,
         router,
-        "device-1",
+        crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )
     .await?;
@@ -148,9 +148,10 @@ async fn durable_reports_and_projection() -> Result<()> {
             concurrent_ack = Some(result.1);
         }
     }
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'"))?.trim() == "1", "concurrent replay duplicated durable intake");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'", TENANT = case_tenant()))?.trim() == "1", "concurrent replay duplicated durable intake");
     pg(&format!(
-        "UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'"
+        "UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'",
+        TENANT = case_tenant()
     ))?;
     let mut changed = report;
     changed["sequence"] = json!(1);
@@ -180,17 +181,18 @@ async fn durable_reports_and_projection() -> Result<()> {
             && current["projection"] == "pending",
         "unexpected pre-worker status: {status} {current}"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND delivery_pending"))?.trim() == "1");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND delivery_pending", TENANT = case_tenant()))?.trim() == "1");
     let runtime = agent_runtime(config).await?;
     let owner = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     wait_agent_status(router, credential, report_id, "snapshot", "applied").await?;
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND NOT delivery_pending"))?.trim() == "1");
-    ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value,''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'"))?.trim() == "device.model=Agent Model,device.os.version=1.0");
-    ensure!(owner.shutdown().join().await?.is_clean());
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND NOT delivery_pending", TENANT = case_tenant()))?.trim() == "1");
+    ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value,''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'", TENANT = case_tenant()))?.trim() == "device.model=Agent Model,device.os.version=1.0");
+    crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
     pg(&format!(
-        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,g,NULL,NULL,NULL,NULL,started_at-g,attempts,result,reason,batch,digest,sealed_at-g,false FROM mdm_access.collection_runs CROSS JOIN generate_series(1,230) g WHERE tenant_id='{TENANT}' AND id='{report_id}'"
+        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,g,NULL,NULL,NULL,NULL,started_at-g,attempts,result,reason,batch,digest,sealed_at-g,false FROM mdm_access.collection_runs CROSS JOIN generate_series(1,230) g WHERE tenant_id='{TENANT}' AND id='{report_id}'",
+        TENANT = case_tenant()
     ))?;
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
@@ -210,9 +212,10 @@ async fn durable_reports_and_projection() -> Result<()> {
             .0 == StatusCode::ACCEPTED
         );
     }
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND NOT delivery_pending", registration["registrationId"].as_str().unwrap()))?.trim().parse::<i64>()? <= 224, "delivered Agent retention was not enforced");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND NOT delivery_pending", registration["registrationId"].as_str().unwrap(), TENANT = case_tenant()))?.trim().parse::<i64>()? <= 224, "delivered Agent retention was not enforced");
     pg(&format!(
-        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,1000+g,NULL,NULL,NULL,NULL,started_at,attempts,result,reason,batch,digest,sealed_at,true FROM mdm_access.collection_runs CROSS JOIN generate_series(1,29) g WHERE tenant_id='{TENANT}' AND id='{partial_id}'"
+        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,1000+g,NULL,NULL,NULL,NULL,started_at,attempts,result,reason,batch,digest,sealed_at,true FROM mdm_access.collection_runs CROSS JOIN generate_series(1,29) g WHERE tenant_id='{TENANT}' AND id='{partial_id}'",
+        TENANT = case_tenant()
     ))?;
     let mut capacity = tokio::task::JoinSet::new();
     for sequence in [3, 4] {
@@ -251,7 +254,8 @@ async fn durable_reports_and_projection() -> Result<()> {
     );
     pg(&format!(
         "DELETE FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND sequence>=1000",
-        registration["registrationId"].as_str().unwrap()
+        registration["registrationId"].as_str().unwrap(),
+        TENANT = case_tenant()
     ))?;
     let runtime = agent_runtime(config).await?;
     let owner = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
@@ -271,8 +275,8 @@ async fn durable_reports_and_projection() -> Result<()> {
         "notApplicable",
     )
     .await?;
-    ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id IN ('{partial_id}','{failed_id}')"))?.trim() == "0");
-    ensure!(owner.shutdown().join().await?.is_clean());
+    ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id IN ('{partial_id}','{failed_id}')", TENANT = case_tenant()))?.trim() == "0");
+    crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
     for (number, fault, committed) in [
         (1, rss_audit_postgres::PgFault::BeforeCommitPending, false),
@@ -292,7 +296,8 @@ async fn durable_reports_and_projection() -> Result<()> {
         .await?;
         ensure!(failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == expected);
         let persisted = pg(&format!(
-            "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'"
+            "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'",
+            TENANT = case_tenant()
         ))?;
         ensure!(persisted.trim() == if committed { "1" } else { "0" });
         let retry = agent_call(
@@ -315,7 +320,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             .await?
                 == retry
         );
-        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'"))?.trim() == "1", "report recovery duplicated durable intake");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'", TENANT = case_tenant()))?.trim() == "1", "report recovery duplicated durable intake");
     }
     Ok(())
 }

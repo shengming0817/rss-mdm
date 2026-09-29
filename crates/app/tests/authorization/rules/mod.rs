@@ -159,7 +159,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let identity = crate::test_support::identity::identity(TENANT).await?;
+    let identity = crate::test_support::identity::identity(case_tenant()).await?;
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -186,7 +186,8 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let audit = rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "authorization_write");
+    let audit =
+        rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "authorization_write");
     let foreign_audit = rss_mdm_audit_integration::RequestAudit::new(
         Uuid::new_v4().to_string(),
         "authorization_write",
@@ -245,8 +246,8 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     use crate::authorization::http::{AuthenticationState, HttpState};
     use crate::enrollment::{EnrollmentService, credentials::Credentials};
     use axum::middleware;
-    let config = crate::test_support::identity::config(TENANT)?;
-    let identity = Arc::new(crate::test_support::identity::identity(TENANT).await?);
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let identity = Arc::new(crate::test_support::identity::identity(case_tenant()).await?);
     let access =
         Arc::new(crate::database::Database::connect(config.access_database.options()?).await?);
     let monotonic: Arc<dyn rss_observation::Clock> = Arc::new(crate::Monotonic(|| {
@@ -266,7 +267,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         )),
         devices: Arc::new(crate::device::DeviceService::new(
             access.clone(),
-            TENANT.into(),
+            case_tenant().into(),
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
@@ -298,7 +299,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
                 clock: monotonic,
                 audit_store: access.audit_store(&config.audit).await?,
                 requests,
-                tenant: TENANT.into(),
+                tenant: case_tenant().into(),
             },
             crate::api::envelope,
         ));
@@ -333,7 +334,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/accounts"),
+                &format!("/api/v2/tenants/{TENANT}/accounts", TENANT = case_tenant()),
                 Some(json!({"login":"foundation-member","password":PASSWORD}))
             )
             .await?
@@ -344,7 +345,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     ensure!(member.login(&router, "foundation-member").await? == StatusCode::OK);
     let subject = browser_subject(&member, &router).await?;
     crate::test_support::identity::set_grants(
-        TENANT,
+        case_tenant(),
         &subject,
         crate::test_support::identity::device_grants(
             Some("foundation-device"),
@@ -399,7 +400,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     ensure!(rejected.0 == StatusCode::INTERNAL_SERVER_ERROR);
     ensure!(rejected.1["code"] == "audit_contract_error");
     ensure!(member.call(&router, Method::GET, &path, None).await?.1["status"] == "pending");
-    crate::test_support::identity::set_grants(TENANT, &subject, vec![]).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &subject, vec![]).await?;
     ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
     ensure!(
         member
@@ -421,7 +422,7 @@ async fn enrollment_grant_does_not_authorize_wipe() -> Result<()> {
     set_device_grants(
         &mut browser,
         &router,
-        "device-1",
+        crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )
     .await?;
@@ -430,7 +431,7 @@ async fn enrollment_grant_does_not_authorize_wipe() -> Result<()> {
             .call(
                 &router,
                 Method::POST,
-                &format!("{DEVICE}/actions"),
+                &format!("{DEVICE}/actions", DEVICE = case_device()),
                 Some(json!({"action":"wipe"}))
             )
             .await?

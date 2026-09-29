@@ -6,8 +6,12 @@ use super::*;
 use crate::enrollment::Password;
 use anyhow::Context;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
-pub(crate) const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-pub(crate) const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+pub(crate) fn case_a() -> &'static str {
+    crate::test_support::case::tenant()
+}
+pub(crate) fn case_b() -> &'static str {
+    crate::test_support::case::peer()
+}
 pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelCredential {
     VerifiedChannelCredential {
         tenant: TenantId::parse(tenant).unwrap(),
@@ -16,14 +20,15 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
             Channel::Agent => ReportSource::AgentBuiltin,
             Channel::Mdm => ReportSource::MdmWindows,
         },
-        locator: [key; 32],
+        locator: crate::test_support::secret(&format!("channel-proof-{key}")),
     }
 }
 pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<AuthorizedPrincipal> {
     let identity = crate::test_support::identity::identity(tenant).await?;
     let login = match (tenant, token) {
-        (A, "admin-a") | (B, "admin-b") => "admin",
-        (A, "other-a") => "other",
+        (tenant, "admin-a") if tenant == case_a() => "admin",
+        (tenant, "admin-b") if tenant == case_b() => "admin",
+        (tenant, "other-a") if tenant == case_a() => "other",
         _ => anyhow::bail!("credential tenant mismatch"),
     };
     let secret = crate::test_support::identity::credential(&identity, login)?;

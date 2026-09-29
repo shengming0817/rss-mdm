@@ -63,7 +63,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     host.listen().await?;
     let peer = host.peer().await?;
     let store = &host.store;
-    let tenant = TENANT;
+    let tenant = case_tenant();
     let registration = peer.intent.registration;
     let response = peer
         .mutual
@@ -130,7 +130,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         crate::windows::retention::prune_management(
             store,
             &audit_store,
-            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            crate::test_support::case::peer()
         )
         .await?
             == 0

@@ -16,7 +16,7 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-            .bind(TENANT)
+            .bind(case_tenant())
             .execute(&mut pg)
             .await?;
         sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(execute.to_string()).execute(&mut pg).await?;
@@ -37,7 +37,7 @@ impl Fixture {
         let profiles = plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
             (
                 "PayloadIdentifier",
-                profile::identifier(TENANT, DEVICE).into(),
+                profile::identifier(case_tenant(), case_device()).into(),
             ),
             ("PayloadUUID", installed.to_string().into()),
             ("PayloadVersion", 1.into()),
@@ -72,7 +72,8 @@ impl Fixture {
             .await?;
         let (execute, payload) = peer.next("RemoveProfile").await?;
         ensure!(
-            payload["Identifier"].as_string() == Some(profile::identifier(TENANT, DEVICE).as_str())
+            payload["Identifier"].as_string()
+                == Some(profile::identifier(case_tenant(), case_device()).as_str())
         );
         let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
         let (observe, _) = command(&bytes, "ProfileList")?;
@@ -96,7 +97,10 @@ impl Fixture {
                 "/mdm",
                 protocol::dictionary([
                     ("Status", "Acknowledged".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                     ("CommandUUID", Uuid::new_v4().to_string().into()),
                 ]),
             )
@@ -107,7 +111,7 @@ impl Fixture {
         let wrong = plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
             (
                 "PayloadIdentifier",
-                profile::identifier(TENANT, DEVICE).into(),
+                profile::identifier(case_tenant(), case_device()).into(),
             ),
             ("PayloadUUID", Uuid::new_v4().to_string().into()),
         ]))]);
@@ -118,7 +122,10 @@ impl Fixture {
             state["commandStatus"] == "received" && state["observation"]["result"] == "mismatched",
             "mismatch became Applied {state}"
         );
-        let path = format!("/api/v2/devices/{DEVICE}/operations");
+        let path = format!(
+            "/api/v2/devices/{DEVICE}/operations",
+            DEVICE = case_device()
+        );
         let overlap=self.browser.call(&self.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"task":{"kind":"profile_install","enabled":false},"deadline":self.app.clock.unix_seconds()?+300}))).await?;
         ensure!(
             overlap.0 == StatusCode::CONFLICT,

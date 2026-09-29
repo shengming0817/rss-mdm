@@ -5,8 +5,9 @@ async fn cleanup_preserves_resource_references(
     router: &Router,
     store: &Arc<crate::content::Store>,
     directory: &std::path::Path,
+    retained: &rss_mdm_resource::Artifact,
 ) -> Result<()> {
-    let data = b"orphaned upload without resource reference";
+    let data = case::name("orphaned upload without resource reference").as_bytes();
     let upload = Uuid::new_v4();
     let binding = crate::content::Binding {
         resource: "orphan".into(),
@@ -24,22 +25,24 @@ async fn cleanup_preserves_resource_references(
     };
     let artifact = binding.artifact()?;
     store.begin(upload, binding, 1).await?;
-    store.append(upload, 0, 1, &data[..]).await?;
+    store.append(upload, 0, 1, data).await?;
     store.finish(upload, 1).await?;
-    let tenant_dir = directory.join(TENANT);
-    for entry in std::fs::read_dir(&tenant_dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(".upload-") && name.ends_with(".json") {
-            let mut metadata: Value = serde_json::from_slice(&std::fs::read(entry.path())?)?;
-            metadata["expires"] = json!(0);
-            std::fs::write(entry.path(), serde_json::to_vec(&metadata)?)?;
-        } else if name.len() == 64 {
-            std::fs::File::options()
-                .write(true)
-                .open(entry.path())?
-                .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
-        }
+    let tenant_dir = directory.join(case_tenant());
+    let metadata_path = tenant_dir.join(format!(".upload-{upload}.json"));
+    let mut metadata: Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+    metadata["expires"] = json!(0);
+    std::fs::write(metadata_path, serde_json::to_vec(&metadata)?)?;
+    for owned in [&artifact, retained] {
+        let digest = owned
+            .digest()
+            .bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        std::fs::File::options()
+            .write(true)
+            .open(tenant_dir.join(digest))?
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
     }
     let cleanup = user
         .call(
@@ -50,13 +53,14 @@ async fn cleanup_preserves_resource_references(
         )
         .await?;
     ensure!(
-        cleanup.0 == StatusCode::OK && cleanup.1["removed"] == 1,
+        cleanup.0 == StatusCode::OK,
         "cleanup retained references: {cleanup:?}"
     );
     ensure!(
         store.verify(&artifact).await.is_err(),
         "unreferenced object survived cleanup"
     );
+    store.verify(retained).await?;
     Ok(())
 }
 async fn gc_reference_race(
@@ -65,12 +69,12 @@ async fn gc_reference_race(
 ) -> Result<()> {
     use rss_mdm_resource as r;
     use rss_mdm_resource_postgres as rp;
-    let tenant = rss_request_context::TenantId::parse(TENANT)?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let resources = Arc::new(
         rp::ResourceStore::new(runtime.clone(), tenant, crate::transaction::deadline()).await?,
     );
     let resource = r::Id::new(Uuid::new_v4().to_string())?;
-    let data = b"gc-concurrent-reference";
+    let data = case::name("gc-concurrent-reference").as_bytes();
     let artifact = r::Artifact::new(
         r::Id::new("gc-bytes")?,
         data.len() as u64,
@@ -129,7 +133,7 @@ async fn gc_reference_race(
             1,
         )
         .await?;
-    content.append(id, 0, 1, &data[..]).await?;
+    content.append(id, 0, 1, data).await?;
     content.finish(id, 1).await?;
     let candidate = content
         .garbage(i64::MAX / 2)
@@ -195,14 +199,17 @@ async fn gc_reference_race(
 #[ignore = "MODULE=content.gc: reference locking and real file reclamation"]
 async fn reference_and_gc_are_serialized() -> Result<()> {
     let fixture = Fixture::open(false).await?;
-    let retained = fixture.seed_content(b"retained resource").await?;
+    let retained = fixture
+        .seed_content(case::name("retained resource").as_bytes())
+        .await?;
     let store = fixture.execution.content.as_ref().unwrap();
     gc_reference_race(&fixture.runtime, store).await?;
     cleanup_preserves_resource_references(
         &mut fixture.user.clone(),
         &fixture.router,
         store,
-        fixture.directory.path(),
+        fixture.directory.as_path(),
+        &retained,
     )
     .await?;
     ensure!(
@@ -215,7 +222,7 @@ async fn reference_and_gc_are_serialized() -> Result<()> {
 #[ignore = "MODULE=content.gc: executable inherited privilege is rejected"]
 async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     let fixture = Fixture::open(false).await?;
-    let tenant = rss_request_context::TenantId::parse(TENANT)?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     pg(
         "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
     )?;

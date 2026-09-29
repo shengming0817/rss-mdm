@@ -1,5 +1,20 @@
 use super::*;
 #[tokio::test]
+async fn receipt_reports_the_still_owned_listener() -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let mut output = Vec::new();
+    listener_receipt(&listener, &mut output)?;
+    let receipt: serde_json::Value = serde_json::from_slice(&output)?;
+    assert_eq!(receipt["event"], "listener-bound");
+    assert_eq!(receipt["address"], listener.local_addr()?.to_string());
+    assert!(
+        tokio::net::TcpListener::bind(listener.local_addr()?)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+#[tokio::test]
 async fn critical_listener_exit_retains_name_and_cleanup_outcome() {
     for name in ["mdm-enrollment-tls", "mdm-management-tls"] {
         let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(

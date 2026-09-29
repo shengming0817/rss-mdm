@@ -106,7 +106,8 @@ async fn scope_changes_preserve_execution_version() {
     assert_eq!(second.policy.number, 1);
     assert_eq!(
         sql(&format!(
-            "SELECT count(*) FROM mdm_policy.versions WHERE policy='{id}'"
+            "SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{}' AND policy='{id}'",
+            tenant()
         )),
         "1"
     );
@@ -159,7 +160,8 @@ async fn companion_failure_rolls_back_publication() {
     assert!(store.get(id, deadline()).await.unwrap().is_none());
     assert_eq!(
         sql(&format!(
-            "SELECT count(*) FROM mdm_policy.versions WHERE policy='{id}'"
+            "SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{}' AND policy='{id}'",
+            tenant()
         )),
         "0"
     );

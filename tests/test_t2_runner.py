@@ -1,5 +1,6 @@
 """Selection, preparation, concurrency and evidence contracts of the public MODULE runner."""
 from contextlib import contextmanager, ExitStack, redirect_stdout, redirect_stderr
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 import sys
@@ -14,8 +15,9 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 import t2
 import t2_fixtures
+from t2_database import Costs
 from t2_registry import MODULES
-from t2_execution import Case
+from t2_execution import Case, Processes
 
 
 class Selection(unittest.TestCase):
@@ -45,19 +47,23 @@ class Execution(unittest.TestCase):
     def harness(self, *, execute=None, discover=None):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             stack.enter_context(patch.object(t2, 'require_lease'))
+            stack.enter_context(patch.dict(MODULES, {name: replace(value, policies=()) for name, value in MODULES.items()}))
             stack.enter_context(patch.object(t2.shutil, 'which', return_value='/tool'))
             stack.enter_context(redirect_stdout(StringIO()))
             builds = stack.enter_context(patch.object(t2, 'Builds')).return_value
             builds.elapsed = 0
+            builds.processes = Processes()
             builds.discover.side_effect = discover or (lambda module: [
                 Case(module.build, module.id, Path('/leased/binary'), module.id + '::case')])
             builds.execute.side_effect = execute
             fixtures_type = stack.enter_context(patch.object(t2_fixtures, 'RunFixtures'))
-            fixtures = fixtures_type.return_value.__enter__.return_value
-            fixtures.counts = {}
+            fixtures = fixtures_type.return_value
+            fixtures.__enter__.return_value = fixtures
+            fixtures.costs = Costs()
+            fixtures.evidence.return_value = {}
             @contextmanager
-            def scenario(module, output):
-                yield SimpleNamespace(env={'MODULE_ID': module.id})
+            def scenario(job, output, receipt):
+                yield SimpleNamespace(env={'MODULE_ID': job.module.id}, evidence={})
             fixtures.scenario.side_effect = scenario
             yield Path(directory), builds, fixtures_type, fixtures
 
@@ -105,16 +111,16 @@ class Execution(unittest.TestCase):
             with self.subTest(phase=phase), self.harness() as (root, _, _, fixtures):
                 secret = 'fixture-credential-value'
                 @contextmanager
-                def scenario(module, output):
+                def scenario(module, output, receipt):
                     private(output / 'account-password', secret)
                     if phase == 'cleanup':
-                        yield SimpleNamespace(env={})
+                        yield SimpleNamespace(env={}, evidence={})
                     with diagnostic_phase(phase):
                         run([sys.executable, '-c',
                              'import sys; print("fixture stdout"); '
                              'print("fixture stderr", file=sys.stderr); raise SystemExit(2)'],
                             capture_output=True, timeout=3)
-                    yield SimpleNamespace(env={})
+                    yield SimpleNamespace(env={}, evidence={})
                 fixtures.scenario.side_effect = scenario
                 value = t2.run_modules(['sources.winget'], root)['sources.winget']
                 self.assertEqual(value['status'], 'failed')
@@ -124,6 +130,26 @@ class Execution(unittest.TestCase):
                 self.assertIn('fixture stderr', diagnostic)
                 self.assertIn('[' + phase + ']', diagnostic)
                 self.assertIn('fixture.log', (root / case['failureLog']).read_text())
+
+    def test_failed_setup_keeps_allocated_coordinates_and_stage_times(self):
+        with self.harness() as (root, _, _, fixtures):
+            @contextmanager
+            def scenario(job, output, receipt):
+                receipt['environment'].update(database='owned', pgGeneration=2, hostLog='hosts/owned/host.log')
+                try:
+                    raise RuntimeError('host startup failed')
+                    yield
+                finally:
+                    receipt['cleanupStarted'] = time.monotonic()
+                    receipt['cleaned'] = time.monotonic()
+            fixtures.scenario.side_effect = scenario
+            result = t2.run_modules(['agent.registration'], root)['agent.registration']
+            value = next(iter(result['cases'].values()))
+            self.assertEqual(value['environment']['database'], 'owned')
+            self.assertEqual(value['environment']['pgGeneration'], 2)
+            self.assertEqual(value['testSeconds'], 0)
+            self.assertGreaterEqual(value['setupSeconds'], 0)
+            self.assertGreaterEqual(value['cleanupSeconds'], 0)
 
     def test_shared_preparation_failure_links_run_diagnostics(self):
         from t2_environment import run
@@ -140,11 +166,11 @@ class Execution(unittest.TestCase):
         from t2_environment import run
         barrier = threading.Barrier(2)
         @contextmanager
-        def scenario(module, output):
+        def scenario(module, output, receipt):
             barrier.wait(timeout=3)
-            run([sys.executable, '-c', 'import sys; print(sys.argv[1]); raise SystemExit(2)', module.id],
+            run([sys.executable, '-c', 'import sys; print(sys.argv[1]); raise SystemExit(2)', module.module.id],
                 capture_output=True, timeout=3)
-            yield SimpleNamespace(env={})
+            yield SimpleNamespace(env={}, evidence={})
         with self.harness() as (root, _, _, fixtures):
             fixtures.scenario.side_effect = scenario
             names = ['agent.registration', 'agent.reports']
@@ -160,12 +186,12 @@ class Execution(unittest.TestCase):
         with self.harness() as (root, _, _, fixtures):
             secret = 'fixture-credential-value'
             @contextmanager
-            def scenario(module, output):
+            def scenario(module, output, receipt):
                 private(output / 'account-password', secret)
                 run([sys.executable, '-c',
                      'import sys; print(' + repr(secret) + ', file=sys.stderr); raise SystemExit(2)'],
                     capture_output=True, timeout=3)
-                yield SimpleNamespace(env={})
+                yield SimpleNamespace(env={}, evidence={})
             fixtures.scenario.side_effect = scenario
             value = t2.run_modules(['sources.winget'], root)['sources.winget']
             case = next(iter(value['cases'].values()))
@@ -260,7 +286,7 @@ class Execution(unittest.TestCase):
                 t2.run_modules(['agent.registration', 'agent.reports'], root)
             fixture_type.assert_not_called()
 
-    def test_jobs_bound_module_concurrency_and_exclusive_phase_waits(self):
+    def test_jobs_bound_cases_and_fault_instance_overlaps_normal(self):
         ordinary = ['agent.registration', 'agent.reports']
         for jobs in (1, 2):
             with self.subTest(jobs=jobs):
@@ -271,28 +297,79 @@ class Execution(unittest.TestCase):
                     nonlocal active, peak
                     module = env['MODULE_ID']
                     with lock:
-                        if module == 'identity.local':
-                            self.assertEqual(completed, set(ordinary))
-                            self.assertEqual(active, 0)
                         active += 1
                         peak = max(peak, active)
-                    if module in ordinary and barrier:
+                    if module in ('agent.registration', 'identity.local') and barrier:
                         barrier.wait(timeout=3)
                     time.sleep(.01)
                     with lock:
                         active -= 1
                         completed.add(module)
                 with self.harness(execute=execute) as (root, _, _, fixtures):
-                    results = t2.run_modules([*ordinary, 'identity.local'], root, jobs=jobs)
+                    results = t2.run_modules(['agent.registration', 'identity.local', 'agent.reports'], root, jobs=jobs)
                     self.assertTrue(all(results[name]['status'] == 'passed' for name in [*ordinary, 'identity.local']))
                     self.assertEqual(peak, jobs)
-                    fixtures.reset.assert_called_once()
+                    fixtures.reset.assert_not_called()
+
+    def test_two_faults_serialize_while_ordinary_case_can_overlap(self):
+        active_faults = 0
+        lock = threading.Lock()
+        first = threading.Event()
+        ordinary = threading.Event()
+        def execute(case, env, output):
+            nonlocal active_faults
+            if env['MODULE_ID'] == 'agent.registration':
+                self.assertTrue(first.wait(3))
+                ordinary.set()
+            else:
+                with lock:
+                    active_faults += 1
+                    self.assertEqual(active_faults, 1)
+                first.set()
+                self.assertTrue(ordinary.wait(3))
+                with lock:
+                    active_faults -= 1
+        with self.harness(execute=execute) as (root, *_):
+            names = ['identity.local', 'authorization.admission', 'agent.registration']
+            result = t2.run_modules(names, root, jobs=2)
+            self.assertTrue(all(result[name]['status'] == 'passed' for name in names))
+
+    def test_signal_cancellation_preserves_pending_ids_and_cleanup_cost(self):
+        import json
+        import signal
+        from t2_database import Costs
+        def execute(*unused):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        with self.harness(execute=execute) as (root, builds, fixture_type, fixtures):
+            fixtures.costs = Costs()
+            fixture_type.return_value.__exit__.side_effect = lambda *args: fixtures.costs.append({'phase': 'run-cleanup'})
+            with self.assertRaisesRegex(t2.RunFailure, 'cancelled'):
+                t2.run_modules(['agent.registration', 'agent.reports'], root, jobs=1)
+            builds.execute.assert_called_once()
+            directory = next(root.iterdir())
+            pending = next(iter(json.loads((directory / 'agent.reports/result.json').read_text())['cases'].values()))
+            self.assertEqual(pending['reason'], 'cancelled-before-start')
+            self.assertTrue(pending['caseId'])
+            self.assertTrue(pending['invocationId'])
+            costs = json.loads((directory / 'resources.json').read_text())
+            self.assertEqual(costs['operations'][-1]['phase'], 'run-cleanup')
+
+    def test_cases_from_one_module_overlap(self):
+        barrier = threading.Barrier(2)
+        def discover(module):
+            return [Case(module.build, module.id, Path('/leased/binary'), f'{module.id}::{n}')
+                    for n in range(2)]
+        def execute(*unused):
+            barrier.wait(timeout=3)
+        with self.harness(execute=execute, discover=discover) as (root, *_):
+            result = t2.run_modules(['agent.registration'], root, jobs=2)
+            self.assertEqual(result['agent.registration']['status'], 'passed')
 
     def test_python_scenarios_use_the_owned_logged_executor(self):
         with self.harness() as (root, builds, _, _):
             result = t2.run_modules(['gateway.admission'], root)
             builds.execute_python.assert_called_once()
-            case = result['gateway.admission']['cases']['python/gateway.admission']
+            case = next(iter(result['gateway.admission']['cases'].values()))
             self.assertTrue(case['log'].endswith('/test.log'))
             self.assertEqual(case['timeoutSeconds'], 600)
 

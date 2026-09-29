@@ -1,4 +1,6 @@
 //! Manual inventory transaction behavior. The host supplies the tenant transaction.
+#[path = "../../../tests/support/context.rs"]
+mod case;
 use rss_mdm_inventory::{Evidence, FieldKey, KnownValue, Scalar, Source, SourceFact, State};
 use rss_mdm_inventory_postgres as pg;
 use sqlx::{
@@ -20,8 +22,8 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
     let mut c = sqlx::PgConnection::connect_with(&options).await?;
-    let tenant = rss_request_context::TenantId::parse("11111111-1111-1111-1111-111111111111")?;
-    let foreign = rss_request_context::TenantId::parse("22222222-2222-2222-2222-222222222222")?;
+    let tenant = rss_request_context::TenantId::parse(case::tenant())?;
+    let foreign = rss_request_context::TenantId::parse(case::peer())?;
     let evidence = Evidence {
         source: Source::Manual,
         registration: None,

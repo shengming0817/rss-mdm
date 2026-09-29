@@ -30,8 +30,8 @@ async fn policy(
 ) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let operation = Uuid::new_v4();
-    let body = json!({"operationId":operation,"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,TASK_SCOPE)}});
-    let before = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
+    let body = json!({"operationId":operation,"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}});
+    let before = run_count(id)?;
     runtime.inject_next_transaction_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
     );
@@ -49,7 +49,7 @@ async fn policy(
     ensure!(result == post(author, router, &path, body).await?);
     ensure!(business_event(operation)? == event);
     ensure!(
-        pg("SELECT count(*) FROM mdm_commands.action_runs")? == before,
+        run_count(id)? == before,
         "publication must not fan out runs"
     );
     Ok(id)
@@ -61,7 +61,10 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     fixture.register().await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let router = fixture.router;
     let plan_runtime = fixture.plan_runtime;
@@ -73,28 +76,30 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         .filter(|g| g.operation != crate::authorization::Permission::ResourceRead)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(TENANT, &author_id, without_resource).await?;
-    let denied=author.call(&router,Method::POST,&format!("/api/v2/policies/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,TASK_SCOPE)}}))).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &author_id, without_resource).await?;
+    let denied=author.call(&router,Method::POST,&format!("/api/v2/policies/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,case_task_scope())}}))).await?;
     ensure!(
         denied.0 == StatusCode::FORBIDDEN,
         "publishing without ResourceRead: {denied:?}"
     );
-    crate::test_support::identity::set_grants(TENANT, &author_id, grants.clone()).await?;
-    let preview_before = pg(
-        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies),(SELECT count(*) FROM mdm_policy.versions),(SELECT count(*) FROM mdm_commands.action_runs),(SELECT count(*) FROM mdm_automation.automation_jobs))",
-    )?;
+    crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone()).await?;
+    let preview_before = pg(&format!(
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
+        tenant = case_tenant()
+    ))?;
     let preview = post(
         &mut author,
         &router,
         "/api/v2/policies/previews",
-        json!({"definition":policy_definition(id,TASK_SCOPE)}),
+        json!({"definition":policy_definition(id,case_task_scope())}),
     )
     .await?;
     ensure!(preview["items"][0]["eligibility"]["state"] == "eligible");
     ensure!(
-        pg(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies),(SELECT count(*) FROM mdm_policy.versions),(SELECT count(*) FROM mdm_commands.action_runs),(SELECT count(*) FROM mdm_automation.automation_jobs))"
-        )? == preview_before,
+        pg(&format!(
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
+            tenant = case_tenant()
+        ))? == preview_before,
         "draft preview published work"
     );
     let _policy_id = policy(&mut author, &router, id, &plan_runtime).await?;
@@ -119,7 +124,10 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     fixture.register().await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
@@ -128,12 +136,12 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     let policy_id = publish(&mut author, &router, id).await?;
     let task = claim(&router).await?;
     complete(&router, &task).await?;
-    let completed = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
+    let completed = run_count(policy_id)?;
     for _ in 0..3 {
         ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
     }
     ensure!(
-        pg("SELECT count(*) FROM mdm_commands.action_runs")? == completed,
+        run_count(policy_id)? == completed,
         "once-per-version repeated"
     );
     let rerun = Uuid::new_v4();
@@ -142,7 +150,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     let receipt = post(&mut author, &router, &path, body.clone()).await?;
     ensure!(post(&mut author, &router, &path, body).await? == receipt);
     ensure!(
-        pg("SELECT count(*) FROM mdm_commands.action_runs")? == completed,
+        run_count(policy_id)? == completed,
         "rerun eagerly expanded devices"
     );
     let (a, b) = tokio::join!(
@@ -170,7 +178,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     task_event(&router, &again, json!({"kind":"received"})).await?;
     task_event(&router, &again, json!({"kind":"start"})).await?;
     task_event(&router,&again,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -180,21 +188,40 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
-    fixture.scope(EMPTY_SCOPE, json!([])).await?;
+    fixture.scope(case_empty_scope(), json!([])).await?;
     let stack = worker(&fixture.base).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
-    let before = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
+    let before = pg(&format!(
+        "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND device='{}'",
+        case_tenant(),
+        case_device_id()
+    ))?;
+    let ordered_namespace = case::id("policy-scan") & !0xffff;
     for n in 1..=70 {
-        let id = Uuid::from_u128(n);
-        post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,EMPTY_SCOPE)}})).await?;
+        let id = Uuid::from_u128(ordered_namespace | n);
+        post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
     }
-    let id = Uuid::from_u128(u128::MAX);
-    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,TASK_SCOPE)}})).await?;
-    ensure!(pg("SELECT count(*) FROM mdm_commands.action_runs")? == before);
-    pg("UPDATE mdm_commands.action_polls SET policy_after=NULL")?;
+    let id = Uuid::from_u128(ordered_namespace | 0xffff);
+    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND device='{}'",
+            case_tenant(),
+            case_device_id()
+        ))? == before
+    );
+    pg(&format!(
+        "UPDATE mdm_commands.action_polls SET policy_after=NULL WHERE tenant_id='{}' AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}')",
+        case_tenant(),
+        case_tenant(),
+        case_device_id()
+    ))?;
     let task = claim(router)
         .await
         .map_err(|e| anyhow::anyhow!("policy pagination: {e}"))?;
@@ -203,7 +230,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     task_event(router, &task, json!({"kind":"received"})).await?;
     task_event(router, &task, json!({"kind":"start"})).await?;
     task_event(router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -211,12 +238,12 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
 async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
-    fixture.scope(EMPTY_SCOPE, json!([])).await?;
+    fixture.scope(case_empty_scope(), json!([])).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
     // Both authenticated requests contend on the same active resource version.
     let policy = Uuid::new_v4();
-    let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,EMPTY_SCOPE)}});
+    let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,case_empty_scope())}});
     let policy_path = format!("/api/v2/policies/{policy}");
     let archive = json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"archive","version":"v1"}});
     let path = format!("/api/v3/resources/{id}");

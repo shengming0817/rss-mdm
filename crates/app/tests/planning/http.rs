@@ -10,9 +10,16 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let fixture = authority::Authority::open().await?;
     let reader = authority::reader(&fixture.base).await?;
     pg(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1')"
+        "INSERT INTO mdm_access.devices VALUES('{TENANT}','{DEVICE_ONE}')",
+        TENANT = case_tenant(),
+        DEVICE_ONE = case::name("device-1")
     ))?;
-    inventory::seed_source("device-1", "mdm", "mdm.windows", "Model-A")?;
+    inventory::seed_source(
+        crate::test_support::case::name("device-1"),
+        "mdm",
+        "mdm.windows",
+        "Model-A",
+    )?;
     let base = &fixture.base;
     let session = &fixture.browser("other")?;
     let automation = start_automation(base).await?;
@@ -96,7 +103,8 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         .call(&router, Method::GET, &result_path, None)
         .await?;
     ensure!(
-        status == StatusCode::OK && preview["page"]["items"] == json!(["device-1"]),
+        status == StatusCode::OK
+            && preview["page"]["items"] == json!([crate::test_support::case::name("device-1")]),
         "trusted inventory mapping: {preview}"
     );
     pg("UPDATE mdm.inventory SET value='Model-B' WHERE field='device.model'")?;
@@ -167,8 +175,14 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let target_group = uuid::Uuid::new_v4();
     let limit_group = uuid::Uuid::new_v4();
     for (id, members) in [
-        (target_group, json!(["device-1", second, third])),
-        (limit_group, json!(["device-1", second])),
+        (
+            target_group,
+            json!([crate::test_support::case::name("device-1"), second, third]),
+        ),
+        (
+            limit_group,
+            json!([crate::test_support::case::name("device-1"), second]),
+        ),
     ] {
         let path = format!("/api/v2/groups/{id}");
         call(
@@ -254,7 +268,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(TENANT, &member, grants).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &member, grants).await?;
     call(
         &mut browser,
         &router,
@@ -327,7 +341,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error"
     );
     ensure!(pg("SELECT count(*) FROM mdm_group.groups WHERE name='must-rollback'")?.trim() == "0");
-    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(automation).await?;
     reader.close().await;
     Ok(())
 }
@@ -336,7 +350,8 @@ fn seed_management_device(device: &str) -> Result<()> {
     let request = uuid::Uuid::new_v4();
     let registration = uuid::Uuid::new_v4();
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','mdm.windows');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}',gen_random_uuid(),'{registration}','mdm',md5('{registration}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','77777777-7777-4777-8777-777777777777','device-basics/2/model-os/typed-v2',true);"
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','mdm.windows');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}',gen_random_uuid(),'{registration}','mdm',md5('{registration}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','77777777-7777-4777-8777-777777777777','device-basics/2/model-os/typed-v2',true);",
+        TENANT = case_tenant()
     ))?;
     Ok(())
 }
@@ -420,12 +435,14 @@ async fn derived_result_authorization(
             .collect::<Result<Vec<_>>>()?;
         if limited {
             grants.extend(crate::test_support::identity::device_grants(
-                Some("device-1"),
+                Some(crate::test_support::case::name("device-1")),
                 &["inventory_read"],
             )?);
         }
         Box::pin(crate::test_support::identity::set_grants(
-            TENANT, member, grants,
+            case_tenant(),
+            member,
+            grants,
         ))
         .await?;
         let before = pg(

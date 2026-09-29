@@ -2719,6 +2719,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -2776,6 +2777,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2800,6 +2802,7 @@ dependencies = [
  "rss-request-context",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
@@ -2836,6 +2839,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2873,6 +2877,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

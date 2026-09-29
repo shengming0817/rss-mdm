@@ -22,6 +22,7 @@ rss-projection.workspace = true
 rss-projection-postgres.workspace = true
 
 [dev-dependencies]
+uuid.workspace = true
 rss-contract.workspace = true
 
 [lints]

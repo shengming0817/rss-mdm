@@ -8,7 +8,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
     set_device_grants(
         browser,
         router,
-        "device-1",
+        crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )
     .await?;
@@ -22,7 +22,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
                 &enrollment_router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
+                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
             )
             .await?
             .0
@@ -35,7 +35,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
             router,
             Method::POST,
             issue,
-            Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"})),
+            Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"})),
         )
         .await?;
     ensure!(
@@ -48,7 +48,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
+                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
             )
             .await?
             .1
@@ -90,7 +90,13 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))).await?.0 == StatusCode::FORBIDDEN);
-    set_device_grants(browser, router, "device-1", &["inventory_read"]).await?;
+    set_device_grants(
+        browser,
+        router,
+        crate::test_support::case::name("device-1"),
+        &["inventory_read"],
+    )
+    .await?;
     let restarted_fixture = authority::Authority::open().await?;
     let restarted = restarted_fixture.router(restarted_fixture.enrollment())?;
     let mut denied = browser.clone();
@@ -111,7 +117,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
     set_device_grants(
         browser,
         router,
-        "device-1",
+        crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )
     .await?;
@@ -147,7 +153,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":"device-1","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
+                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
             )
             .await?
             .0

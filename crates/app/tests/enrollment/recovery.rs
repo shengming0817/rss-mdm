@@ -1,4 +1,4 @@
-use crate::device::test_support::{A as TENANT, admin, options};
+use crate::device::test_support::{admin, case_a as case_tenant, options};
 use crate::enrollment::test_support::create;
 use crate::{Database, enrollment::Password};
 use anyhow::ensure;
@@ -6,8 +6,8 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore = "make t2 MODULE=enrollment.recovery"]
 async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()> {
-    let proof = admin(TENANT, "admin-a").await?;
-    let other = admin(TENANT, "other-a").await?;
+    let proof = admin(case_tenant(), "admin-a").await?;
+    let other = admin(case_tenant(), "other-a").await?;
     let store = Database::connect(options("mdm_access")?).await?;
     let password = Password::new(crate::enrollment::random())?;
     let key = Uuid::new_v4();
@@ -45,7 +45,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
     ensure!(
         crate::enrollment::store::enrollment_authorization(
             &store,
-            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            crate::test_support::case::peer(),
             receipt.enrollment_id,
             &password
         )
@@ -55,7 +55,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
     ensure!(
         crate::enrollment::store::enrollment_authorization(
             &store,
-            TENANT,
+            case_tenant(),
             receipt.enrollment_id,
             &Password::new(crate::enrollment::random())?
         )
@@ -64,7 +64,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
     );
     let _auth = crate::enrollment::store::enrollment_authorization(
         &store,
-        TENANT,
+        case_tenant(),
         receipt.enrollment_id,
         &password,
     )

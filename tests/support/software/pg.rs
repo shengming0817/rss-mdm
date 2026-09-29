@@ -1,3 +1,5 @@
+#[path = "../context.rs"]
+pub mod case;
 use rss_contract::Timepoint;
 use rss_request_context::{Clock, Deadline, ExecutionTimer, TenantId};
 use rss_transactional_messaging::{
@@ -7,10 +9,10 @@ use rss_transactional_messaging::{
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 use std::{sync::Arc, time::Duration};
 pub fn tenant() -> TenantId {
-    TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
+    TenantId::parse(case::tenant()).unwrap()
 }
 pub fn foreign() -> TenantId {
-    TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap()
+    TenantId::parse(case::peer()).unwrap()
 }
 pub fn at(n: i64) -> Timepoint {
     Timepoint::try_from(n).unwrap()
@@ -146,7 +148,7 @@ pub fn cutoff() -> Deadline {
 }
 
 pub fn audit_records() -> Vec<rss_audit_core::DecodedAuditV1> {
-    sql("SELECT encode(canonical,'hex') FROM rss_audit.records ORDER BY tenant_id,position")
+    sql(&format!("SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}' ORDER BY position", tenant()))
         .lines()
         .filter(|line| !line.is_empty())
         .map(|line| {

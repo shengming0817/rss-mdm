@@ -108,7 +108,7 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
     version: i64,
 ) -> Result<()> {
     let principal = browser_subject(alice, router).await?;
-    let user = json!({"instanceId":INSTANCE,"tenantId":TENANT,"principalId":principal});
+    let user = json!({"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":principal});
     let source = json!({"providerId":provider,"issuer":std::env::var("MDM_TEST_SSO_ISSUER")?,"configurationVersion":version});
     let local_group = Uuid::new_v4();
     let group_path = format!("/api/v1/authorization/user-groups/{local_group}");
@@ -266,9 +266,9 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
             && allows(&expired, "device_wipe")
     );
     // A proof's own deadline removes every capability, including direct-user and local-group grants.
-    let identity = crate::test_support::identity::identity(TENANT).await?;
+    let identity = crate::test_support::identity::identity(case_tenant()).await?;
     let access = crate::Database::connect(
-        crate::test_support::identity::config(TENANT)?
+        crate::test_support::identity::config(case_tenant())?
             .access_database
             .options()?,
     )

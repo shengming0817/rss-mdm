@@ -10,7 +10,7 @@ impl Fixture {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let row=sqlx::query("SELECT s.certificate,s.enrollment::text,s.registration::text,s.not_before,s.not_after,r.generation,c.id::text AS credential,p.epoch::text FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources p ON (p.tenant_id,p.registration)=(r.tenant_id,r.id) WHERE s.state='bound' AND c.state='active'").fetch_one(&mut pg).await?;
+        let row=sqlx::query("SELECT s.certificate,s.enrollment::text,s.registration::text,s.not_before,s.not_after,r.generation,c.id::text AS credential,p.epoch::text FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources p ON (p.tenant_id,p.registration)=(r.tenant_id,r.id) WHERE s.tenant_id=$1::uuid AND r.device=$2 AND s.state='bound' AND c.state='active'").bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
         let enrollment = Uuid::parse_str(&row.try_get::<String, _>("enrollment")?)?;
         let before: i64 = row.try_get("not_before")?;
         let after: i64 = row.try_get("not_after")?;
@@ -38,20 +38,20 @@ impl Fixture {
                 self.app.apple()?,
                 &self.app.access,
                 &self.app.audit_store,
-                TENANT,
+                case_tenant(),
                 due,
             )
             .await?;
         }
-        let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE renewal_of IS NOT NULL AND state='prepared'").fetch_one(&mut pg).await?;
+        let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
         ensure!(count == 1, "renewal scheduling duplicated an issuance");
-        let expired: String = sqlx::query_scalar("SELECT id::text FROM mdm_apple.scep_attempts WHERE renewal_of IS NOT NULL AND state='prepared'").fetch_one(&mut pg).await?;
+        let expired: String = sqlx::query_scalar("SELECT id::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
         sqlx::query("UPDATE mdm_apple.scep_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(&expired).execute(&mut pg).await?;
         super::super::renewal::maintain(
             self.app.apple()?,
             &self.app.access,
             &self.app.audit_store,
-            TENANT,
+            case_tenant(),
             due,
         )
         .await?;
@@ -175,7 +175,10 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -185,7 +188,8 @@ impl Fixture {
             "renewal activation {}",
             accepted.0
         );
-        let audit = rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "apple_management");
+        let audit =
+            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "apple_management");
         let stale = self
             .app
             .execution
@@ -194,7 +198,10 @@ impl Fixture {
                 &old_principal,
                 &protocol::xml(protocol::dictionary([
                     ("Status", "Idle".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                 ]))?,
                 &audit,
             )
@@ -209,7 +216,13 @@ impl Fixture {
         let refused = old
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-t2-apple".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
+                ]),
             )
             .await?;
         ensure!(

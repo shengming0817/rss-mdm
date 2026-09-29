@@ -9,7 +9,10 @@ pub(crate) async fn host_context_matrix(
     browser: &Browser,
     subject: &str,
 ) -> Result<()> {
-    let path = format!("/api/identity-host/v1/tenants/{TENANT}/context");
+    let path = format!(
+        "/api/identity-host/v1/tenants/{TENANT}/context",
+        TENANT = case_tenant()
+    );
     for permissions in [
         json!([]),
         json!(["accounts"]),
@@ -20,7 +23,7 @@ pub(crate) async fn host_context_matrix(
         config["identity_management"] = if permissions.as_array().unwrap().is_empty() {
             json!([])
         } else {
-            json!([{"tenant_id":TENANT,"instance_id":INSTANCE,"principal_id":subject,"permissions":permissions}])
+            json!([{"tenant_id":case_tenant(),"instance_id":INSTANCE,"principal_id":subject,"permissions":permissions}])
         };
         let router = app(&config, reader.clone()).await?;
         ensure!(
@@ -35,7 +38,7 @@ pub(crate) async fn host_context_matrix(
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v2/tenants/{TENANT}/session"),
+                &format!("/api/v2/tenants/{TENANT}/session", TENANT = case_tenant()),
                 None,
             )
             .await?
@@ -44,7 +47,7 @@ pub(crate) async fn host_context_matrix(
         ensure!(status == StatusCode::OK);
         ensure!(
             context
-                == json!({"tenantId":TENANT,"principalId":subject,"sessionId":before["session"]["id"],"navigation":{
+                == json!({"tenantId":case_tenant(),"principalId":subject,"sessionId":before["session"]["id"],"navigation":{
             "manageAccounts":permissions.as_array().unwrap().contains(&json!("accounts")),
             "manageProviders":permissions.as_array().unwrap().contains(&json!("providers"))}})
         );
@@ -52,13 +55,13 @@ pub(crate) async fn host_context_matrix(
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v2/tenants/{TENANT}/session"),
+                &format!("/api/v2/tenants/{TENANT}/session", TENANT = case_tenant()),
                 None,
             )
             .await?
             .1;
         ensure!(before["session"]["idleExpiresAt"] == after["session"]["idleExpiresAt"]);
-        let wrong = path.replace(TENANT, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let wrong = path.replace(case_tenant(), crate::test_support::case::peer());
         ensure!(
             member.call(&router, Method::GET, &wrong, None).await?.0 == StatusCode::UNAUTHORIZED
         );

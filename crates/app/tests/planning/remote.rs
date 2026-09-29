@@ -16,10 +16,10 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         None,
         &["enrollment", "operation_read", "operation_cancel"],
     )?);
-    crate::test_support::identity::set_grants(TENANT, &member, grants.clone()).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &member, grants.clone()).await?;
     let automation = start_automation(base).await?;
     let scope = Uuid::new_v4();
-    let created=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE_ID}],"limitations":null,"exclusions":[]}}})).await?;
+    let created=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device_id()}],"limitations":null,"exclusions":[]}}})).await?;
     await_task(
         author,
         router,
@@ -31,8 +31,11 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
     .await?;
     let id = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let input = json!({"operationId":id,"resource":policy_definition(resource,EMPTY_SCOPE)["resource"],"targets":{"kind":"scope","id":scope},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
-    let before = pg("SELECT count(*) FROM mdm_policy.policies")?;
+    let input = json!({"operationId":id,"resource":policy_definition(resource,case_empty_scope())["resource"],"targets":{"kind":"scope","id":scope},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
+    let before = pg(&format!(
+        "SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
     let accepted = post(author, router, "/api/v2/remote-operations", input.clone()).await?;
     ensure!(accepted == post(author, router, "/api/v2/remote-operations", input).await?);
     let changed=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}})).await?;
@@ -112,7 +115,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         .filter(|g| g.operation != crate::authorization::Permission::OperationRead)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(TENANT, &member, without_read).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &member, without_read).await?;
     let denied = author
         .call(
             router,
@@ -125,14 +128,19 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         denied.0 == StatusCode::FORBIDDEN,
         "remote detail bypassed OperationRead: {denied:?}"
     );
-    crate::test_support::identity::set_grants(TENANT, &member, grants).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &member, grants).await?;
     ensure!(
         summary.1["phase"] == "completed",
         "successful remote work still appears unfinished"
     );
-    ensure!(owner.shutdown().join().await?.is_clean());
-    ensure!(pg("SELECT count(*) FROM mdm_policy.policies")? == before);
-    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{}'",
+            case_tenant()
+        ))? == before
+    );
+    crate::test_support::stop_worker(automation).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -152,15 +160,18 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
         None,
         &["enrollment", "operation_read", "operation_cancel"],
     )?);
-    crate::test_support::identity::set_grants(TENANT, &member, grants.clone()).await?;
-    let before = pg("SELECT count(*) FROM mdm_policy.policies")?;
-    let mut devices = crate::test_support::agent::bulk_task_agents(DEVICE_ID, 129)?;
+    crate::test_support::identity::set_grants(case_tenant(), &member, grants.clone()).await?;
+    let before = pg(&format!(
+        "SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
+    let mut devices = crate::test_support::agent::bulk_task_agents(case_device_id(), 129)?;
     devices.extend((0..171).map(|n| format!("unregistered-{n:04}")));
     let bulk = Uuid::new_v4();
-    post(author,router,"/api/v2/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,EMPTY_SCOPE)["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+    post(author,router,"/api/v2/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,case_empty_scope())["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
     let mut owner = worker(base).await?;
     checkpoint(bulk, false).await?;
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_planning.remote_operation_targets WHERE operation='{bulk}'"
@@ -171,7 +182,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
     );
     owner = worker(base).await?;
     checkpoint(bulk, true).await?;
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     ensure!(
         pg(&format!(
             "SELECT run_after IS NOT NULL FROM mdm_planning.remote_operations WHERE id='{bulk}'"
@@ -202,7 +213,12 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
             == "301"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_planning.remote_operation_targets WHERE operation='{bulk}' AND status='blocked'"))?.trim()=="171");
-    ensure!(pg("SELECT count(*) FROM mdm_policy.policies")? == before);
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{}'",
+            case_tenant()
+        ))? == before
+    );
     ensure!(pg(&format!("SELECT count(DISTINCT delivery_id) FROM mdm_planning.remote_operation_targets WHERE operation='{bulk}' AND status='accepted'"))?.trim()=="130");
     ensure!(
         pg(&format!(
@@ -211,7 +227,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
         .trim()
             == "130"
     );
-    let task = claim(router).await.map_err(|error| anyhow::anyhow!("bulk claim: {error}; {}",pg(&format!("SELECT jsonb_build_object('runs',(SELECT jsonb_agg(jsonb_build_object('id',id,'state',state,'gateway',gateway_accepted,'available',available_at,'deadline',deadline,'registration',registration)) FROM mdm_commands.action_runs WHERE remote_operation='{bulk}' AND device='{DEVICE_ID}'),'target',(SELECT to_jsonb(t) FROM mdm_planning.remote_operation_targets t WHERE operation='{bulk}' AND device='{DEVICE_ID}'))")).unwrap_or_default()))?;
+    let task = claim(router).await.map_err(|error| anyhow::anyhow!("bulk claim: {error}; {}",pg(&format!("SELECT jsonb_build_object('runs',(SELECT jsonb_agg(jsonb_build_object('id',id,'state',state,'gateway',gateway_accepted,'available',available_at,'deadline',deadline,'registration',registration)) FROM mdm_commands.action_runs WHERE remote_operation='{bulk}' AND device='{DEVICE_ID}'),'target',(SELECT to_jsonb(t) FROM mdm_planning.remote_operation_targets t WHERE operation='{bulk}' AND device='{DEVICE_ID}'))", DEVICE_ID = case_device_id())).unwrap_or_default()))?;
     let task_id = task["payload"]["taskId"].as_str().unwrap();
     ensure!(
         pg(&format!(
@@ -220,7 +236,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
         .trim()
             == bulk.to_string()
     );
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     let cancelled = post(
         author,
         router,
@@ -251,7 +267,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
     owner = worker(base).await?;
     await_cancelled(author, router, bulk).await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE remote_operation='{bulk}' AND state->>'cancellation'='confirmed'"))?.trim()=="130");
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     Ok(())
 }
 async fn checkpoint(operation: Uuid, recovery: bool) -> Result<()> {

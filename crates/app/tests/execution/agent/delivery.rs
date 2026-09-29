@@ -13,11 +13,11 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         &mut author,
         &router,
         "/api/v3/enrollments",
-        json!({"deviceId":DEVICE_ID,"password":password,"source":"agent.builtin"}),
+        json!({"deviceId":case_device_id(),"password":password,"source":"agent.builtin"}),
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":INVENTORY_CREDENTIAL,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
             && registration.1["capabilities"] == json!(["inventory.basic.v3"]),
@@ -27,7 +27,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         &router,
         Method::POST,
         "/api/agent/v3/tasks/claim",
-        Some(INVENTORY_CREDENTIAL),
+        Some(case_inventory_credential()),
         Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
     )
     .await?;
@@ -40,11 +40,11 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         &mut author,
         &router,
         "/api/v3/enrollments",
-        json!({"deviceId":DEVICE_ID,"password":password,"source":"agent.builtin"}),
+        json!({"deviceId":case_device_id(),"password":password,"source":"agent.builtin"}),
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":CREDENTIAL,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","task.execute.v3"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","task.execute.v3"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
             && registration.1["capabilities"] == json!(["inventory.basic.v3", "task.execute.v3"]),
@@ -67,7 +67,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
             &router,
             Method::POST,
             "/api/agent/v3/tasks/claim",
-            Some(CREDENTIAL),
+            Some(case_credential()),
             Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
         )
         .await?
@@ -82,7 +82,10 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     let registration = fixture.register().await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let stack = worker(&fixture.base).await?;
     let base = fixture.base;
@@ -100,9 +103,11 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }}).await??;
     if !first.1["task"].is_null() {
-        pg(
-            "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{delivery,leaseUntil}','0')",
-        )?;
+        pg(&format!(
+            "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE tenant_id='{}' AND id='{}'",
+            case_tenant(),
+            first.1["task"]["payload"]["taskId"].as_str().unwrap()
+        ))?;
     }
     let claim_operation = Uuid::new_v4();
     execution.inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
@@ -119,10 +124,10 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     let task = claim_response.1["task"].clone();
     let signed: rss_mdm_agent_wire::SignedTask = serde_json::from_value(task.clone())?;
     let context = rss_mdm_agent_wire::TaskVerification {
-        key_id: "fixture",
+        key_id: "t2",
         public_key: key.public_key().as_ref(),
-        tenant_id: Uuid::parse_str(TENANT)?,
-        device_id: DEVICE_ID,
+        tenant_id: Uuid::parse_str(case_tenant())?,
+        device_id: case_device_id(),
         platform: rss_mdm_agent_wire::TaskPlatform::Macos,
         architecture: rss_mdm_agent_wire::TaskArchitecture::Aarch64,
         registration_id: Uuid::parse_str(registration["registrationId"].as_str().unwrap())?,
@@ -176,7 +181,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         .trim()
             == "1"
     );
-    ensure!(pg("SELECT count(*) FROM mdm_access.collection_runs WHERE source='agent.script' AND delivery_pending")?.trim()=="2");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND registration='{}' AND source='agent.script' AND delivery_pending", case_tenant(), registration["registrationId"].as_str().unwrap()))?.trim()=="2");
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM rss_device_command.commands WHERE command_id='{}'",
@@ -190,7 +195,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if pg(
-                "SELECT count(*) FROM mdm.inventory WHERE source='agent.script' AND state='known'",
+                &format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.script' AND state='known'", case_tenant(), registration["registrationId"].as_str().unwrap()),
             )?
             .trim()
                 == "2"
@@ -205,7 +210,10 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v2/devices/{DEVICE_ID}/inventory"),
+            &format!(
+                "/api/v2/devices/{DEVICE_ID}/inventory",
+                DEVICE_ID = case_device_id()
+            ),
             None,
         )
         .await?;
@@ -214,8 +222,8 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
             == true,
         "detail: {detail}"
     );
-    ensure!(inventory.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(inventory).await?;
     runtime.close_fixture().await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

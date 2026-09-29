@@ -13,17 +13,20 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     } = fixture().await?;
     let rule_id = Uuid::new_v4();
     pg(&format!(
-        "INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES('{TENANT}','{INSTANCE}','{rule_id}',1,NULL)"
+        "INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES('{TENANT}','{INSTANCE}','{rule_id}',1,NULL)",
+        TENANT = case_tenant()
     ))?;
     // Corrupt stored policy is an unavailable authorization authority, never an ignored rule.
     pg(&format!(
-        "UPDATE mdm_access.authorization_rules SET document='{{\"broken\":true}}' WHERE tenant_id='{TENANT}' AND id='{rule_id}'"
+        "UPDATE mdm_access.authorization_rules SET document='{{\"broken\":true}}' WHERE tenant_id='{TENANT}' AND id='{rule_id}'",
+        TENANT = case_tenant()
     ))?;
     let corrupt = member
         .call(&router, Method::GET, "/api/v1/authorization", None)
         .await?;
     pg(&format!(
-        "UPDATE mdm_access.authorization_rules SET document=NULL WHERE tenant_id='{TENANT}' AND id='{rule_id}'"
+        "UPDATE mdm_access.authorization_rules SET document=NULL WHERE tenant_id='{TENANT}' AND id='{rule_id}'",
+        TENANT = case_tenant()
     ))?;
     ensure!(corrupt.0 == StatusCode::SERVICE_UNAVAILABLE && corrupt.1.get("grants").is_none());
     // Runtime admission and data access both fail closed on PG permission drift.
@@ -35,7 +38,10 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/identity-host/v1/tenants/{TENANT}/context"),
+            &format!(
+                "/api/identity-host/v1/tenants/{TENANT}/context",
+                TENANT = case_tenant()
+            ),
             None,
         )
         .await?;
@@ -48,7 +54,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             && context.0 == StatusCode::OK
             && context.1["navigation"]["manageAccounts"] == true
     );
-    let identity = crate::test_support::identity::identity(TENANT).await?;
+    let identity = crate::test_support::identity::identity(case_tenant()).await?;
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority

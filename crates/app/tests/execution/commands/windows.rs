@@ -495,12 +495,12 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND session_id='900'").bind(TENANT).execute(&mut pg).await?;
+        sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND session_id='900' AND registration=(SELECT registration FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid)").bind(case_tenant()).bind(self.operation.to_string()).execute(&mut pg).await?;
         ensure!(
             crate::windows::retention::prune_management(
                 &self.app.access,
                 &self.app.audit_store,
-                TENANT
+                case_tenant()
             )
             .await?
                 >= 1

@@ -4,14 +4,17 @@ use lifecycle::Peer;
 use sqlx::Connection;
 impl Fixture {
     pub(super) async fn queue_fairness(&mut self, peer: &Peer) -> Result<()> {
-        let path = format!("/api/v1/devices/{DEVICE}/collection-runs");
+        let path = format!(
+            "/api/v1/devices/{DEVICE}/collection-runs",
+            DEVICE = case_device()
+        );
         self.pending_collections(65).await?;
         // Replacing the admission rule invalidates all previously frozen approvals.
         crate::test_support::identity::set_grants(
-            TENANT,
-            crate::test_support::identity::ADMIN,
+            case_tenant(),
+            crate::test_support::case::admin(),
             crate::test_support::identity::device_grants(
-                Some(DEVICE),
+                Some(case_device()),
                 &[
                     "enrollment",
                     "credentials",
@@ -39,10 +42,11 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-            .bind(TENANT)
+            .bind(case_tenant())
             .execute(&mut pg)
             .await?;
-        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second'")
+        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
+        .bind(case_tenant()).bind(case_device())
             .execute(&mut pg)
             .await?;
         ensure!(
@@ -52,7 +56,8 @@ impl Fixture {
                 .await?
                 .is_none()
         );
-        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second'")
+        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
+        .bind(case_tenant()).bind(case_device())
             .execute(&mut pg)
             .await?;
         let wake = self
@@ -66,7 +71,7 @@ impl Fixture {
             .apple_pushed(&wake, Some(200), push::Outcome::Accepted)
             .await?;
         // Make old entries due again to independently exercise the native 32-item scan.
-        sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE collection IS NOT NULL AND state='pending'").execute(&mut pg).await?;
+        sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND collection IS NOT NULL AND state='pending'").bind(case_tenant()).execute(&mut pg).await?;
         pg.close().await?;
         let (id, _) = peer.next("DeviceInformation").await?;
         ensure!(

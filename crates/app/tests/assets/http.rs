@@ -6,13 +6,19 @@ mod identity_read {
         let fixture = authority::Authority::open().await?;
         let (authorized, _) = app_with_access(&fixture.base, fixture.access.clone()).await?;
         let mut browser = fixture.browser("other")?;
-        let query = "/api/v2/devices/device-1/inventory";
+        let query = &format!("/api/v2/devices/{}/inventory", case::name("device-1"));
         ensure!(
             browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::FORBIDDEN
         );
-        set_device_grants(&mut browser, &authorized, "device-1", &["inventory_read"]).await?;
+        set_device_grants(
+            &mut browser,
+            &authorized,
+            crate::test_support::case::name("device-1"),
+            &["inventory_read"],
+        )
+        .await?;
         let scope = serde_json::to_string(
-            &json!({"tenant":TENANT,"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
+            &json!({"tenant":case_tenant(),"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
         )?;
         // Use the public Scope encoder, not JSON map key order, for the persisted identity.
         let scope: rss_observation::Scope = serde_json::from_str(&scope)?;
@@ -24,14 +30,16 @@ mod identity_read {
         // Read-path fixture only. Device registration/credential proof is exercised by device PG T2.
         pg(&format!(
             r#"
-            INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
+            INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','{INSTANCE}','{DEVICE_ONE}','enrollment','consumed',clock_timestamp()+interval '200 seconds');
             INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm.windows');
-            INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1') ON CONFLICT DO NOTHING;
-            INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
+            INSERT INTO mdm_access.devices VALUES('{TENANT}','{DEVICE_ONE}') ON CONFLICT DO NOTHING;
+            INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','{DEVICE_ONE}','mdm',1,'99999999-9999-4999-8999-999999999994','active');
             INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
             INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);
             INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','{journal}','{generation}','{encoded}','{coverage}','device.model','Model-A','fixture',1,2,'known','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992');
-        "#
+        "#,
+            TENANT = case_tenant(),
+            DEVICE_ONE = case::name("device-1")
         ))?;
 
         let (status, assets) = browser.call(&authorized, Method::GET, query, None).await?;
@@ -40,7 +48,11 @@ mod identity_read {
                 && assets["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
                     == "Model-A"
         );
-        ensure!(assets["tenantId"] == TENANT && assets["asset"]["device"]["device"] == "device-1");
+        ensure!(
+            assets["tenantId"] == case_tenant()
+                && assets["asset"]["device"]["device"]
+                    == crate::test_support::case::name("device-1")
+        );
         let outside = "/api/v2/devices/outside/inventory";
         ensure!(
             browser
@@ -183,7 +195,7 @@ mod storage {
         for (tenant, ledger) in [
             (tenant(), false),
             (
-                TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap(),
+                TenantId::parse(crate::test_support::case::peer()).unwrap(),
                 true,
             ),
         ] {
@@ -524,7 +536,7 @@ mod manual {
             "DROP TRIGGER reject_asset_write ON mdm.manual_assignments; DROP FUNCTION public.reject_asset_write();",
         )?;
         ensure!(rejected.0 == StatusCode::SERVICE_UNAVAILABLE);
-        ensure!(pg(&format!("SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{TENANT}' AND device='asset-a' AND field='custom.office_floor'"))?.trim()=="4");
+        ensure!(pg(&format!("SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{TENANT}' AND device='asset-a' AND field='custom.office_floor'", TENANT = case_tenant()))?.trim()=="4");
         fixture.close().await
     }
 }

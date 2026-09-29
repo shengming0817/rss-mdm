@@ -251,6 +251,12 @@ pub async fn serve(
                                 })?;
                             native_listeners.push((kind, listener, router));
                         }
+                        listener_receipt(&listener, &mut std::io::stdout().lock()).map_err(
+                            |e| ProcessError::Io {
+                                stage: "startup.listener_receipt",
+                                kind: e.kind(),
+                            },
+                        )?;
                         Ok::<_, ProcessError>((
                             listener,
                             app,
@@ -385,6 +391,19 @@ fn finish(
             kind: "scope terminated",
         }),
     }
+}
+// Report the address of the listener we still own, including OS-assigned ports.
+// ref: tokio net/tcp/listener.rs (bind port 0 + local_addr).
+fn listener_receipt(
+    listener: &tokio::net::TcpListener,
+    output: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    writeln!(
+        output,
+        "{}",
+        serde_json::json!({"event":"listener-bound", "address":listener.local_addr()?.to_string()})
+    )?;
+    output.flush()
 }
 pub async fn signal() -> Result<(), std::io::Error> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

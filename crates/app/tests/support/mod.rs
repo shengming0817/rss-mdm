@@ -8,6 +8,7 @@
 )]
 //! Shared setup only. Assertions remain with each capability's tests.
 pub(crate) mod authority;
+pub(crate) use crate::publication_support::pg::case;
 pub(crate) mod identity;
 pub(crate) use crate::config::Config;
 pub(crate) use crate::publication_support;
@@ -29,10 +30,16 @@ pub(crate) use std::{
     time::Duration,
 };
 pub(crate) use tower::ServiceExt;
-pub(crate) const TENANT: &str = "11111111-1111-4111-8111-111111111111";
-pub(crate) const DEVICE: &str = "/api/v1/devices/device-1";
+pub(crate) fn case_tenant() -> &'static str {
+    crate::test_support::case::tenant()
+}
+pub(crate) fn case_device() -> &'static str {
+    static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VALUE.get_or_init(|| format!("/api/v1/devices/{}", case::name("device-1")))
+}
 
-pub(crate) use identity::{ADMIN, INSTANCE, PASSWORD};
+pub(crate) use case::admin as case_admin;
+pub(crate) use identity::{INSTANCE, PASSWORD};
 #[derive(Default, Clone)]
 pub(crate) struct Browser {
     pub(crate) network: Option<(Client, String)>,
@@ -173,8 +180,23 @@ impl Browser {
         Ok((status, value))
     }
     pub(crate) async fn login(&mut self, app: &Router, login: &str) -> Result<StatusCode> {
-        self.login_password(app, login, crate::test_support::identity::PASSWORD)
-            .await
+        if matches!(login, "admin" | "other") {
+            let identity = identity::identity(case_tenant()).await?;
+            let secret = identity::credential(&identity, login)?;
+            self.cookies
+                .insert("__Host-identity-session".into(), secret.expose().into());
+            self.csrf = Some(secret.csrf());
+            return Ok(self
+                .call(
+                    app,
+                    Method::GET,
+                    &format!("/api/v2/tenants/{}/session", case_tenant()),
+                    None,
+                )
+                .await?
+                .0);
+        }
+        self.login_password(app, login, identity::PASSWORD).await
     }
     pub(crate) async fn login_password(
         &mut self,
@@ -186,8 +208,8 @@ impl Browser {
             .call(
                 app,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/login"),
-                Some(json!({"login":login,"password":password})),
+                &format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()),
+                Some(json!({"login":case::login(login),"password":password})),
             )
             .await?
             .0)
@@ -214,12 +236,13 @@ pub(crate) fn command(args: &[&str], input: Option<&str>) -> Result<String> {
 }
 
 pub(crate) fn pg(sql: &str) -> Result<String> {
-    pg_tenant(TENANT, sql)
+    pg_tenant(case_tenant(), sql)
 }
 
 pub(crate) fn audit_records() -> Result<Vec<crate::audit_test_support::Record>> {
     crate::audit_test_support::decode_hex(&pg(&format!(
-        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY position"
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY position",
+        TENANT = case_tenant()
     ))?)
 }
 
@@ -295,7 +318,10 @@ pub(crate) fn monotonic() -> Arc<dyn rss_observation::Clock> {
     }))
 }
 
-pub(crate) async fn start_automation(value: &Value) -> Result<rss_runtime::ShutdownStack> {
+pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
+    if !crate::test_support::case::owns_worker() {
+        return Ok(None);
+    }
     let config: Config = serde_json::from_value(value.clone())?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
@@ -308,7 +334,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<rss_runtime::Shutd
         .flow
         .open(
             audit_store,
-            rss_request_context::TenantId::parse(TENANT)?,
+            rss_request_context::TenantId::parse(case_tenant())?,
             Arc::new(crate::clock::SystemClock),
             |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
         )
@@ -321,7 +347,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<rss_runtime::Shutd
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(automation.registration().critical());
     launch.finish();
-    Ok(stack)
+    Ok(Some(stack))
 }
 
 pub(crate) async fn await_task(
@@ -356,7 +382,8 @@ pub(crate) async fn await_task(
         Ok(result) => result,
         Err(_) => {
             let progress = pg(&format!(
-                "SELECT coalesce(jsonb_agg(p),'[]') FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase AS group_phase,r.object_count,s.phase AS scope_phase FROM mdm_automation.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) LEFT JOIN mdm_planning.scope_runs s ON (s.tenant_id,s.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p"
+                "SELECT coalesce(jsonb_agg(p),'[]') FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase AS group_phase,r.object_count,s.phase AS scope_phase FROM mdm_automation.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) LEFT JOIN mdm_planning.scope_runs s ON (s.tenant_id,s.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p",
+                TENANT = case_tenant()
             ))?;
             anyhow::bail!("task {path} exceeded fixture deadline; last {last}; pending {progress}")
         }
@@ -456,7 +483,7 @@ pub(crate) async fn agent_runtime(
     Ok(crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access,
-        rss_request_context::TenantId::parse(TENANT)?,
+        rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
     )
     .await?)
@@ -479,7 +506,7 @@ pub(crate) async fn set_device_grants(
 ) -> Result<()> {
     let subject = browser_subject(browser, router).await?;
     crate::test_support::identity::set_grants(
-        TENANT,
+        case_tenant(),
         &subject,
         crate::test_support::identity::device_grants(Some(device), operations)?,
     )
@@ -502,7 +529,7 @@ pub(crate) async fn set_management_grants(subject: &str, permissions: Value) -> 
         None,
         &["inventory_read"],
     )?);
-    crate::test_support::identity::set_grants(TENANT, subject, grants).await
+    crate::test_support::identity::set_grants(case_tenant(), subject, grants).await
 }
 
 pub(crate) mod http;
@@ -521,3 +548,20 @@ pub(crate) mod agent_execution;
 
 pub(crate) mod planning_http;
 pub(crate) mod publication_http;
+
+pub(crate) fn credential(label: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret(label))
+}
+
+pub(crate) async fn stop_worker(owner: Option<rss_runtime::ShutdownStack>) -> Result<()> {
+    if let Some(owner) = owner {
+        ensure!(owner.shutdown().join().await?.is_clean());
+    }
+    Ok(())
+}
+
+pub(crate) fn secret(label: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(case::name(label).as_bytes()).into()
+}

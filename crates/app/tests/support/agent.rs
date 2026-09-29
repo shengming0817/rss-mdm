@@ -7,14 +7,17 @@ pub(crate) struct Agent {
 }
 pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<Agent> {
     let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    let credential = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+    static CREDENTIAL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let credential = CREDENTIAL
+        .get_or_init(|| super::credential("registration"))
+        .as_str();
     browser.operation = Some(uuid::Uuid::new_v4());
     let (status, enrollment) = browser
         .call(
             router,
             Method::POST,
             "/api/v3/enrollments",
-            Some(json!({"deviceId":"device-1","password":password,"source":"agent.builtin"})),
+            Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":password,"source":"agent.builtin"})),
         )
         .await?;
     ensure!(
@@ -57,7 +60,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
     let runtime = agent_runtime(&fixture.base).await?;
     let devices = Arc::new(crate::device::DeviceService::new(
         fixture.access.clone(),
-        TENANT.into(),
+        case_tenant().into(),
         fixture.audit.clone(),
     ));
     let collection = Arc::new(crate::assets::collection::CollectionService::new(
@@ -125,7 +128,8 @@ DO $$ BEGIN
  THEN RAISE EXCEPTION 'incomplete task target fixture'; END IF;
 END $$;
 COMMIT;
-"#
+"#,
+        TENANT = case_tenant()
     ))?;
     let mut devices = vec![canonical.to_owned()];
     devices.extend((1..=count).map(|n| format!("restart-agent-{n:03}")));

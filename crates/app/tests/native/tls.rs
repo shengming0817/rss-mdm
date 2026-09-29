@@ -190,7 +190,7 @@ async fn listener_connections_and_bounded_shutdown() -> anyhow::Result<()> {
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            "11111111-1111-4111-8111-111111111111".into(),
+            crate::test_support::case::tenant().into(),
             crate::native::NativeListenerKind::WindowsEnrollment,
         ));
         let stream = TcpStream::connect(address).await?;

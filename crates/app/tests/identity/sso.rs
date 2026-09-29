@@ -98,7 +98,10 @@ async fn roundtrip(
         .call(
             router,
             Method::POST,
-            &format!("/api/v2/tenants/{TENANT}/oidc/{provider}/{kind}"),
+            &format!(
+                "/api/v2/tenants/{TENANT}/oidc/{provider}/{kind}",
+                TENANT = case_tenant()
+            ),
             Some(input),
         )
         .await?;
@@ -149,7 +152,7 @@ async fn roundtrip(
         .call(
             router,
             Method::GET,
-            &format!("/api/v2/tenants/{TENANT}/session"),
+            &format!("/api/v2/tenants/{TENANT}/session", TENANT = case_tenant()),
             None,
         )
         .await?;
@@ -172,11 +175,11 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     base["identity"]["oidc"] = json!({"group_facts_max_age_seconds":8,"state_key_file":directory.path().join("state"),
         "active_credential_key":"current","credential_keys":{"current":directory.path().join("credential")},
         "return_targets":{"home":"https://mdm.example.test/done"},
-        "private_providers":[], "assurance_profiles":[{"tenant_id":TENANT,"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
+        "private_providers":[], "assurance_profiles":[{"tenant_id":case_tenant(),"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
     let config: Config = serde_json::from_value(base.clone())?;
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(
-            TENANT,
+            case_tenant(),
             INSTANCE,
             config.identity_management.clone(),
         )?,
@@ -207,8 +210,9 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         "127.0.0.1".parse()?,
     )));
     let mut admin = Browser::default();
-    ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
-    let tenant = format!("/api/v2/tenants/{TENANT}");
+    identity::age_prepared_admin_session()?;
+    ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
+    let tenant = format!("/api/v2/tenants/{TENANT}", TENANT = case_tenant());
     let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"email":"email","groups":"groups","departmentSnapshot":{"claim":"organization_snapshot","maxAgeSeconds":20}},"jit":true});
     let (status,created)=admin.call(&router,Method::POST,&format!("{tenant}/providers"),Some(json!({"settings":settings,"clientSecret":"fixture-secret","caPem":std::fs::read_to_string(std::env::var("MDM_TEST_SSO_CA")?)?}))).await?;
     ensure!(

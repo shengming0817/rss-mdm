@@ -111,16 +111,25 @@ async fn permissions_and_lifecycle() -> Result<()> {
             .is_err()
     );
     let mut tx = pool.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id','00000000-0000-0000-0000-000000000001',true)")
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case::tenant())
         .execute(&mut *tx)
         .await?;
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm.inventory")
+        .fetch_one(&mut *tx)
+        .await?;
     assert!(
-        sqlx::query(
-            "UPDATE mdm.inventory SET tenant_id='00000000-0000-0000-0000-000000000002'::uuid"
-        )
+        visible > 0,
+        "RLS rejection must update existing own-tenant rows"
+    );
+    let rejected = sqlx::query("UPDATE mdm.inventory SET tenant_id=$1::uuid")
+        .bind(case::peer())
         .execute(&mut *tx)
         .await
-        .is_err()
+        .unwrap_err();
+    assert_eq!(
+        rejected.as_database_error().unwrap().code().as_deref(),
+        Some("42501")
     );
     tx.rollback().await?;
     storage::close_pool(&pool).await?;
