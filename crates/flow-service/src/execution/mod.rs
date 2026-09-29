@@ -5,9 +5,11 @@
 //! command producers already have explicit phase identities and retain that choice here.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 pub mod actions;
+mod agent_install;
 mod apple;
 mod apple_push;
 mod configuration;
+mod managed_registration;
 pub use configuration::Diagnosis as ConfigurationDiagnosis;
 mod lifecycle;
 pub mod model;
@@ -39,6 +41,8 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub struct ExecutionService {
+    pub agent_installation: crate::planning::policies::agent_install::Config,
+    pub enrollment_entries: crate::planning::policies::enrollment::Entries,
     pub agent_store: Arc<dyn channels::Agent>,
     pub apple_store: Arc<dyn channels::AppleStore>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,

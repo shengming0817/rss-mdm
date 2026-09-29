@@ -141,6 +141,7 @@ CREATE TABLE mdm_access.report_sources (
 ALTER TABLE ONLY mdm_access.report_sources FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.requests (
+    authority_kind text NOT NULL DEFAULT 'password' CHECK(authority_kind IN('password','managed_installation')),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     grant_id uuid NOT NULL,
@@ -152,13 +153,15 @@ CREATE TABLE mdm_access.requests (
     expires_at timestamp with time zone,
     issuance_operation uuid,
     source text NOT NULL,
-    CONSTRAINT enrollment_shape CHECK (((state = 'cancelled'::text) OR ((expected_generation IS NOT NULL) AND (password_digest IS NOT NULL) AND (password_version > 0) AND (credential_ref IS NOT NULL) AND (expires_at IS NOT NULL) AND (issuance_operation IS NOT NULL)))),
+    CONSTRAINT enrollment_shape CHECK ((state = 'cancelled') OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND ((authority_kind='password' AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL) OR (authority_kind='managed_installation' AND source='agent.builtin' AND expected_generation=0 AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL)))),
     CONSTRAINT requests_expected_generation_check CHECK ((expected_generation >= 0)),
     CONSTRAINT requests_password_digest_check CHECK ((password_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT requests_password_version_check CHECK ((password_version >= 0)),
     CONSTRAINT requests_source_check CHECK ((source = ANY (ARRAY['agent.builtin'::text, 'mdm.windows'::text, 'mdm.apple'::text]))),
     CONSTRAINT requests_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'bound'::text, 'cancelled'::text])))
 );
+
+CREATE UNIQUE INDEX managed_installation_enrollment ON mdm_access.requests(tenant_id,issuance_operation) WHERE authority_kind='managed_installation';
 
 ALTER TABLE ONLY mdm_access.requests FORCE ROW LEVEL SECURITY;
 

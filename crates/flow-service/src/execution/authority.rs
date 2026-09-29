@@ -7,6 +7,13 @@ use sqlx::PgConnection;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
+    AgentInstall {
+        tenant: String,
+        policy: uuid::Uuid,
+        version: uuid::Uuid,
+        device: String,
+        operation: uuid::Uuid,
+    },
     User {
         evidence: UserGrant,
     },
@@ -24,6 +31,23 @@ pub enum ExecutionAuthority {
     },
 }
 impl ExecutionAuthority {
+    pub async fn dispatch_ready(&self, c: &mut PgConnection) -> Result<bool, Error> {
+        match self {
+            Self::AgentInstall {
+                tenant,
+                version,
+                device,
+                operation,
+                ..
+            } => {
+                crate::planning::policies::agent_install::dispatch_ready_on(
+                    c, tenant, *version, device, *operation,
+                )
+                .await
+            }
+            _ => Ok(true),
+        }
+    }
     pub fn from_proof(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
@@ -41,6 +65,21 @@ impl ExecutionAuthority {
         now: i64,
     ) -> Result<bool, Error> {
         match self {
+            Self::AgentInstall {
+                tenant,
+                policy,
+                version,
+                device,
+                operation,
+            } => {
+                if permission != Permission::SoftwareDeploy {
+                    return Ok(false);
+                }
+                crate::planning::policies::agent_install::authorized_on(
+                    conn, tenant, *policy, *version, device, *operation, now,
+                )
+                .await
+            }
             Self::User { evidence } => evidence
                 .valid(conn, permission, now)
                 .await
@@ -82,7 +121,7 @@ impl ExecutionAuthority {
                 if !supported {
                     return Ok(false);
                 }
-                sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'behavior'->>'kind'='configuration' AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded'))")
+                sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind'='configuration' AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded'))")
                     .bind(tenant).bind(device).fetch_one(conn).await.map_err(db)
             }
         }

@@ -3,3 +3,5 @@ mod dispatch;
 mod firewall;
 mod recovery;
 mod windows;
+
+mod onboarding;

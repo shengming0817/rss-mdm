@@ -28,6 +28,7 @@ ALTER TABLE ONLY mdm_apple.scep_attempts
 
 GRANT USAGE ON SCHEMA mdm_apple TO mdm_access;
 GRANT USAGE ON SCHEMA mdm_apple TO mdm_command_runtime;
+GRANT USAGE ON SCHEMA mdm_apple TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT SELECT,INSERT ON TABLE mdm_apple.attempts TO mdm_command_runtime;
@@ -49,6 +50,7 @@ GRANT UPDATE(next_attempt) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_apple.devices TO mdm_access;
 GRANT SELECT ON TABLE mdm_apple.devices TO mdm_command_runtime;
+GRANT SELECT(tenant_id,registration,state,access_rights) ON TABLE mdm_apple.devices TO mdm_flow_runtime;
 
 GRANT UPDATE(state) ON TABLE mdm_apple.devices TO mdm_access;
 GRANT UPDATE(state) ON TABLE mdm_apple.devices TO mdm_command_runtime;

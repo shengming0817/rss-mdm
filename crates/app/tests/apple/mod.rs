@@ -4,6 +4,7 @@
 )]
 //! Real Apple mTLS participant and fixed external SCEP provider; no principal or status stubs.
 mod lifecycle;
+mod onboarding;
 mod oracle;
 mod policy;
 mod scep;
@@ -44,6 +45,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn start() -> Result<Self> {
+        Self::with_agent(None).await
+    }
+    async fn with_agent(agent: Option<serde_json::Value>) -> Result<Self> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let webhook = tokio::net::TcpListener::bind(format!(
@@ -53,6 +57,9 @@ impl Fixture {
         .await?;
         let mut config = crate::test_support::identity::config(case_tenant())?;
         config.native_protocols.windows = None;
+        if let Some(agent) = agent {
+            config.agent_installation = serde_json::from_value(agent)?;
+        }
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
         apple.management.listen = manage.local_addr()?;
@@ -111,7 +118,7 @@ impl Fixture {
         .await?;
         let config = compiled.config;
         let app = Arc::new(Assembly {
-            content_writer: None,
+            content_writer: execution.content.clone(),
             audit_store: access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
@@ -135,6 +142,10 @@ impl Fixture {
             apple: Some(Arc::new(Apple::load(
                 config.native_protocols.apple.unwrap(),
                 crate::clock::SystemClock.unix_seconds()?,
+                execution
+                    .agent_installation
+                    .identity(rss_mdm_policy::Platform::Macos)
+                    .cloned(),
             )?)),
             access: access.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -343,7 +354,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         let mut input = original.clone();
         *input.pointer_mut(pointer).unwrap() = json!("private-material-path-must-not-be-logged");
         let config = serde_json::from_value(input)?;
-        match Apple::load(config, crate::clock::SystemClock.unix_seconds()?) {
+        match Apple::load(config, crate::clock::SystemClock.unix_seconds()?, None) {
             Err(crate::Error::Configuration(issue)) => ensure!(
                 format!("{issue:?}") == category,
                 "wrong startup category for {pointer}"
@@ -354,6 +365,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
     let apple = Apple::load(
         serde_json::from_value(original)?,
         crate::clock::SystemClock.unix_seconds()?,
+        None,
     )?;
     ensure!(
         apple

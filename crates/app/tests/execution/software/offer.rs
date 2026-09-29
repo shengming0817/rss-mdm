@@ -96,8 +96,8 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     owner.close().await?;
     let repeated = agent(
         &router,
-        "/api/agent/v3/tasks/claim",
-        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+        "/api/agent/v4/tasks/claim",
+        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -250,8 +250,8 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
     let first_operation = fixture.first_operation;
     let windows_policy = Uuid::new_v4();
     write(&mut author,&router,&format!("/api/v2/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
-        "definition":{"resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"scope":windows_scope,
-        "behavior":{"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
+        "definition":{"scope":windows_scope,
+        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
     let windows_page = author
         .call(

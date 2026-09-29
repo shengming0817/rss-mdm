@@ -128,15 +128,23 @@ pub trait AppleAttempt: Send {
     fn phase(&self) -> &str;
     fn settle<'a>(self: Box<Self>, c: &'a mut PgConnection, status: Status) -> Pending<'a, ()>;
 }
-#[derive(Clone, Copy)]
-pub enum ProfileTask {
-    Install { enabled: bool },
+#[derive(Clone)]
+pub enum NativeTask {
+    Install {
+        enabled: bool,
+    },
+    AgentInstall {
+        bundle: String,
+        version: String,
+        url: String,
+        sha256: [u8; 32],
+    },
     Remove,
 }
 pub struct AppleCommand {
     pub operation: Uuid,
     pub deadline: i64,
-    pub task: ProfileTask,
+    pub task: NativeTask,
 }
 pub trait Apple: Send + Sync {
     fn current<'a>(
@@ -171,7 +179,7 @@ pub trait Apple: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
-    ) -> Pending<'a, Vec<u8>>;
+    ) -> Pending<'a, Reply>;
 }
 
 #[derive(Clone)]
@@ -220,21 +228,40 @@ pub struct AgentBinding {
 impl AgentBinding {
     pub fn inventory(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::InventoryBasicV3)
+            .contains(&rss_mdm_agent_wire::Capability::InventoryBasicV4)
     }
     pub fn script(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::TaskExecuteV3)
+            .contains(&rss_mdm_agent_wire::Capability::TaskExecuteV4)
     }
     pub fn software(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::SoftwareExecuteV3)
+            .contains(&rss_mdm_agent_wire::Capability::SoftwareExecuteV4)
+    }
+    pub fn enrollment(&self) -> bool {
+        self.capabilities
+            .contains(&rss_mdm_agent_wire::Capability::MdmEnrollmentV4)
     }
     pub fn task(&self) -> bool {
-        self.script() || self.software()
+        self.script() || self.software() || self.enrollment()
     }
 }
 pub trait Agent: Send + Sync {
+    fn managed_replay<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
+        audit: &'a RequestAudit,
+    ) -> Pending<'a, Option<rss_mdm_agent_wire::RegistrationReceipt>>;
+    fn managed_register<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        authority: rss_mdm_registration_service::enrollment::managed::Authority,
+        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
+        audit: &'a RequestAudit,
+    ) -> Pending<'a, rss_mdm_agent_wire::RegistrationReceipt>;
+
     fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -314,4 +341,20 @@ pub async fn agent_targets_in(
                 })
         })
         .collect())
+}
+
+impl Rejection {
+    /// The native registration endpoint speaks the same closed Agent V4 errors.
+    pub fn agent_error(self) -> (u16, rss_mdm_agent_wire::ErrorBody) {
+        use rss_mdm_agent_wire::ErrorCode as C;
+        let (status, code) = match self {
+            Self::Malformed => (400, C::MalformedRequest),
+            Self::Unauthorized => (401, C::InvalidIdentity),
+            Self::Forbidden => (403, C::PermissionDenied),
+            Self::Conflict => (409, C::OperationConflict),
+            Self::CommitUnknown | Self::RollbackFailed => (503, C::OperationUnknown),
+            _ => (503, C::ServiceUnavailable),
+        };
+        (status, rss_mdm_agent_wire::ErrorBody { code })
+    }
 }

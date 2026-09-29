@@ -31,7 +31,7 @@ pub(super) fn now() -> i64 {
 }
 pub(super) fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
-    Ok(Windows::load(config, now())?)
+    Ok(Windows::load(config, now(), None)?)
 }
 pub(super) async fn complete(
     store: &rss_mdm_audit_integration::AuditStore,
@@ -112,6 +112,9 @@ pub(crate) struct Host {
 impl Host {
     /// Prepare in-process product routes; listeners and workers start only in listen().
     pub(crate) async fn open() -> anyhow::Result<Self> {
+        Self::with_agent(None).await
+    }
+    pub(crate) async fn with_agent(agent: Option<serde_json::Value>) -> anyhow::Result<Self> {
         let root = root()?;
         let enroll = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -140,6 +143,12 @@ impl Host {
         value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_flow_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
         value["execution"]["database"] = value["flow"]["storage"]["database"].clone();
         value["execution"]["database"]["user"] = "mdm_command_runtime".into();
+        if let Some(agent) = agent {
+            value["agent_installation"] = agent;
+            let original: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+            value["content"] = original["content"].clone();
+        }
         let config: crate::config::Config = serde_json::from_value(value)?;
         let clock = Arc::new(crate::clock::SystemClock);
         let identity_management = Arc::new(
@@ -196,7 +205,7 @@ impl Host {
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
         let app = Arc::new(Assembly {
-            content_writer: None,
+            content_writer: execution.content.clone(),
             audit_store: store
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
@@ -222,6 +231,10 @@ impl Host {
                     .windows
                     .expect("Windows test configuration"),
                 now(),
+                config
+                    .agent_installation
+                    .identity(rss_mdm_policy::Platform::Windows)
+                    .cloned(),
             )?)),
         });
         let ingress_clock = IngressClock::new();

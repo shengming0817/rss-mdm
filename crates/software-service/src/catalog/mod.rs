@@ -473,3 +473,63 @@ pub async fn reference_count_in(
     let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
     u64::try_from(count).map_err(|_| Error::Integrity)
 }
+
+/// Recheck native execution's exact release and source approval on its existing transaction.
+/// No caller session is retained, and the connection cannot commit through this function.
+pub async fn admitted_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    resource: &str,
+    version: &str,
+    digest: [u8; 32],
+    operation: uuid::Uuid,
+    sources: &[r::SoftwareSource],
+) -> Result<bool> {
+    use sqlx::Row;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("mdm-software:{tenant}"))
+        .execute(&mut *c)
+        .await?;
+    if !rss_mdm_resource_postgres::active_version_on(
+        c,
+        tenant,
+        &r::Id::new(resource).map_err(|_| Error::Input)?,
+        &r::Id::new(version).map_err(|_| Error::Input)?,
+        digest,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+    let raw:Option<String>=sqlx::query_scalar("SELECT admission::text FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant.to_string()).bind(resource).bind(version).fetch_optional(&mut *c).await?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let approval: Admission = serde_json::from_str(&raw).map_err(|_| Error::Integrity)?;
+    if !matches!(approval.state, AdmissionState::Approved)
+        || approval.operation != operation
+        || approval.digest != digest
+    {
+        return Ok(false);
+    }
+    for expected in sources {
+        let row=sqlx::query("SELECT definition::text,admission::text FROM mdm_software.sources WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3").bind(tenant.to_string()).bind(&expected.id).bind(&expected.revision).fetch_optional(&mut *c).await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let source: SourceDefinition =
+            serde_json::from_str(row.try_get("definition")?).map_err(|_| Error::Integrity)?;
+        let raw: Option<String> = row.try_get("admission")?;
+        let Some(raw) = raw else {
+            return Ok(false);
+        };
+        let approval: Admission = serde_json::from_str(&raw).map_err(|_| Error::Integrity)?;
+        if source.snapshot()?.sha256 != expected.sha256
+            || !matches!(approval.state, AdmissionState::Approved)
+            || approval.digest != expected.sha256
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}

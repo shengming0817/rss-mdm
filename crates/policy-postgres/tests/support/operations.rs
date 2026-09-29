@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 pub fn definition() -> Definition {
-    serde_json::from_value(json!({"resource":{"id":"resource","version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"scope":"11111111-1111-1111-1111-111111111111","behavior":{"kind":"configuration","exit":"retain"}})).unwrap()
+    serde_json::from_value(json!({"scope":"11111111-1111-1111-1111-111111111111","action": {"resource": {"id":"resource","version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}})).unwrap()
 }
 pub fn publication(id: Uuid, old: Option<&Policy>, change: Change) -> Publication {
     let changed = Policy::apply(

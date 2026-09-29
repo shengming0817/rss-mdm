@@ -113,10 +113,12 @@ pub enum Exit {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-/// Execution and configuration have disjoint authoring contracts.
-pub enum Behavior {
+/// Each action owns its inputs; registration never requires a fictitious resource.
+pub enum Action {
     /// A side-effecting or collection action admitted on Agent check-in.
     Execution {
+        /// Exact immutable script resource.
+        resource: ResourceBinding,
         /// Literal parameters validated against the selected script.
         parameters: Value,
         #[serde(default = "default_schedule")]
@@ -130,12 +132,16 @@ pub enum Behavior {
     },
     /// A persistent native configuration without a script schedule.
     Configuration {
+        /// Exact immutable native configuration resource.
+        resource: ResourceBinding,
         #[serde(default)]
         /// What to do when this configuration no longer has an owner.
         exit: Exit,
     },
     /// Enterprise software installed or removed through the Agent.
     Software {
+        /// Approved logical software release and exact platform variants.
+        resource: ResourceBinding,
         /// Required, self-service, or explicit removal semantics.
         intent: SoftwareIntent,
         /// Exact enterprise approval to freeze into this execution version.
@@ -147,6 +153,28 @@ pub enum Behavior {
         run_lifetime_seconds: u32,
         /// Administrator-authored rollout stages.
         rollout: SoftwareRollout,
+    },
+    /// Install only the product's approved Agent through the source MDM channel.
+    EnsureAgentInstalled {
+        /// Exact approved Agent release; product identity is checked at publication.
+        resource: ResourceBinding,
+        /// Exact approval operation, rechecked before any side effect.
+        admission_operation: Uuid,
+        /// Source-channel scheduling and cooldown.
+        #[serde(default = "default_schedule")]
+        schedule: Schedule,
+        /// Bounded lifetime of this installation and its registration handoff.
+        run_lifetime_seconds: u32,
+    },
+    /// Ask an independently registered Agent to open the standard MDM enrollment flow.
+    RequestMdmEnrollment {
+        /// Target organization; the product verifies its enrollment authority.
+        organization: Uuid,
+        /// Source-channel scheduling and cooldown.
+        #[serde(default = "default_schedule")]
+        schedule: Schedule,
+        /// Bounded lifetime; opening the UI does not complete enrollment.
+        run_lifetime_seconds: u32,
     },
 }
 /// Desired software assignment behavior.
@@ -207,12 +235,10 @@ fn default_schedule() -> Schedule {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Complete authored Policy definition, without execution progress.
 pub struct Definition {
-    /// Immutable resource selection.
-    pub resource: ResourceBinding,
     /// Opaque Scope identity; Scope alone owns membership and entry coordinates.
     pub scope: Uuid,
     /// Closed action or configuration semantics.
-    pub behavior: Behavior,
+    pub action: Action,
 }
 impl Definition {
     /// Validate closed shape, bounded identities, calendar conditions and run lifetime.
@@ -224,11 +250,10 @@ impl Definition {
         {
             return Err(Error::Malformed);
         }
-        self.resource.validate()?;
         if self.scope.is_nil() {
             return Err(Error::Malformed);
         }
-        self.behavior.validate()?;
+        self.action.validate()?;
         Ok(())
     }
 }
@@ -299,11 +324,42 @@ impl ResourceBinding {
         Ok(())
     }
 }
-impl Behavior {
+impl Action {
+    /// Closed action identity persisted alongside its optional resource coordinates.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Execution { .. } => "execution",
+            Self::Configuration { .. } => "configuration",
+            Self::Software { .. } => "software",
+            Self::EnsureAgentInstalled { .. } => "ensure_agent_installed",
+            Self::RequestMdmEnrollment { .. } => "request_mdm_enrollment",
+        }
+    }
+
+    /// Resource reference only for actions that actually consume a resource.
+    pub fn resource(&self) -> Option<&ResourceBinding> {
+        match self {
+            Self::Execution { resource, .. }
+            | Self::Configuration { resource, .. }
+            | Self::Software { resource, .. }
+            | Self::EnsureAgentInstalled { resource, .. } => Some(resource),
+            Self::RequestMdmEnrollment { .. } => None,
+        }
+    }
     /// Validate calendar and lifetime semantics without owning any targets.
     pub fn validate(&self) -> Result<(), Error> {
+        if let Some(resource) = self.resource() {
+            resource.validate()?;
+            let software = matches!(
+                self,
+                Self::Software { .. } | Self::EnsureAgentInstalled { .. }
+            );
+            if software != resource.software().is_some() {
+                return Err(Error::Malformed);
+            }
+        }
         match self {
-            Behavior::Execution {
+            Action::Execution {
                 schedule,
                 run_lifetime_seconds,
                 ..
@@ -313,7 +369,7 @@ impl Behavior {
                     return Err(Error::Malformed);
                 }
             }
-            Behavior::Software {
+            Action::Software {
                 admission_operation,
                 schedule,
                 run_lifetime_seconds,
@@ -345,7 +401,28 @@ impl Behavior {
                     previous = Some(stage.opens_at);
                 }
             }
-            Behavior::Configuration { .. } => {}
+            Action::Configuration { .. } => {}
+            Action::EnsureAgentInstalled {
+                admission_operation,
+                schedule,
+                run_lifetime_seconds,
+                ..
+            } => {
+                schedule.validate()?;
+                if admission_operation.is_nil() || !(60..=604800).contains(run_lifetime_seconds) {
+                    return Err(Error::Malformed);
+                }
+            }
+            Action::RequestMdmEnrollment {
+                organization,
+                schedule,
+                run_lifetime_seconds,
+            } => {
+                schedule.validate()?;
+                if organization.is_nil() || !(60..=604800).contains(run_lifetime_seconds) {
+                    return Err(Error::Malformed);
+                }
+            }
         }
         Ok(())
     }
@@ -356,7 +433,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     fn configuration() -> serde_json::Value {
-        json!({"resource":{"id":"firewall","version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"scope":"11111111-1111-1111-1111-111111111111","behavior":{"kind":"configuration","exit":"retain"}})
+        json!({"scope":"11111111-1111-1111-1111-111111111111","action": {"resource": {"id":"firewall","version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}})
     }
     #[test]
     fn configuration_cannot_accept_execution_fields() {
@@ -365,7 +442,7 @@ mod tests {
         d.validate().unwrap();
         for field in ["schedule", "frequency", "parameters", "runLifetimeSeconds"] {
             let mut invalid = v.clone();
-            invalid["behavior"][field] = json!(null);
+            invalid["action"][field] = json!(null);
             assert!(
                 serde_json::from_value::<Definition>(invalid).is_err(),
                 "{field}"
@@ -375,14 +452,14 @@ mod tests {
     #[test]
     fn execution_defaults_to_checkin_once_per_version_without_an_end() {
         let mut v = configuration();
-        v["behavior"] = json!({"kind":"execution","parameters":{},"runLifetimeSeconds":300});
+        v["action"] = json!({"resource":v["action"]["resource"],"kind":"execution","parameters":{},"runLifetimeSeconds":300});
         let d: Definition = serde_json::from_value(v).unwrap();
         d.validate().unwrap();
-        let Behavior::Execution {
+        let Action::Execution {
             schedule,
             frequency,
             ..
-        } = d.behavior
+        } = d.action
         else {
             panic!()
         };
@@ -399,7 +476,8 @@ mod tests {
     #[test]
     fn software_policy_selects_exact_variants_for_one_logical_application() {
         let value = json!({
-            "resource": {
+            "scope": "11111111-1111-1111-1111-111111111111",
+            "action": {"resource": {
                 "kind": "software",
                 "id": "acme.editor",
                 "version": "v2",
@@ -408,8 +486,6 @@ mod tests {
                     "macos_aarch64": "pkg-arm64"
                 }
             },
-            "scope": "11111111-1111-1111-1111-111111111111",
-            "behavior": {
                 "kind": "software",
                 "intent": "required_install",
                 "runLifetimeSeconds": 3600,
@@ -421,19 +497,25 @@ mod tests {
         policy.validate().unwrap();
         assert_eq!(
             policy
-                .resource
+                .action
+                .resource()
+                .unwrap()
                 .variant_for(Platform::Windows, Architecture::X86_64),
             Some("msi-x64")
         );
         assert_eq!(
             policy
-                .resource
+                .action
+                .resource()
+                .unwrap()
                 .variant_for(Platform::Macos, Architecture::Aarch64),
             Some("pkg-arm64")
         );
         assert_eq!(
             policy
-                .resource
+                .action
+                .resource()
+                .unwrap()
                 .variant_for(Platform::Windows, Architecture::Aarch64),
             None
         );

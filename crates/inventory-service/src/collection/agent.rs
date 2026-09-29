@@ -19,7 +19,25 @@ pub async fn accept_in(
     let live_scope =
         crate::device::store::revalidate_source(tx, principal, InventorySource::AgentBuiltin)
             .await?;
-    if &live_scope != scope {
+    let expected =
+        if scope.dataset().as_str() == rss_mdm_inventory::FieldKey::MdmEnrollment.as_str() {
+            crate::device::scope_dataset(
+                principal.tenant(),
+                principal.registration(),
+                InventorySource::AgentBuiltin.as_str(),
+                uuid::Uuid::parse_str(live_scope.epoch().as_str()).map_err(|_| Error::Malformed)?,
+                rss_mdm_inventory::FieldKey::MdmEnrollment.as_str(),
+            )?
+        } else {
+            live_scope
+        };
+    rss_mdm_inventory::validate(batch).map_err(|_| Error::Malformed)?;
+    if batch.coverage()
+        != &rss_mdm_inventory::scope_coverage(scope).map_err(|_| Error::Malformed)?
+    {
+        return Err(Error::Malformed);
+    }
+    if &expected != scope {
         return Err(Error::Unauthorized);
     }
     // V1 report ids are tenant-global. This lock covers the absent-row case across registrations;
@@ -61,12 +79,25 @@ pub async fn accept_in(
         rss_observation::Body::Failed { .. } => "failed",
         _ => return Err(Error::Malformed),
     };
-    let attempts = crate::collection::Attempts::reported(batch.body(), received_at)?;
+    let attempts = if scope.dataset().as_str() == rss_mdm_inventory::DATASET {
+        serde_json::to_string(&crate::collection::Attempts::reported(
+            batch.body(),
+            received_at,
+        )?)
+    } else {
+        serde_json::to_string(&crate::collection::ChannelAttempt {
+            field: rss_mdm_inventory::FieldKey::MdmEnrollment,
+            quality: crate::collection::Quality::Success,
+            received_at,
+            evidence: None,
+        })
+    }
+    .map_err(|_| Error::Malformed)?;
     sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,$9,$11,$10,'complete',$7,$8,$9,true)")
         .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(batch.id().as_str().to_string())
         .bind(i64::try_from(batch.sequence()).map_err(|_| Error::Malformed)?).bind(scope.encode().map_err(|_| Error::Malformed)?)
         .bind(batch.encode()).bind(&digest).bind(received_at).bind(result)
-        .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
+        .bind(attempts).execute(&mut *tx).await.map_err(db)?;
     crate::wake::notify(tx).await.map_err(db)?;
     Ok((received_at, true))
 }

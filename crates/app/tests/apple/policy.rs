@@ -105,7 +105,7 @@ impl Fixture {
         .await?;
         let scope = Uuid::new_v4();
         self.policy_post(&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
-        let definition = json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"firewall-profile"},"scope":scope,"behavior":{"kind":"configuration","exit":"remove"}});
+        let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"firewall-profile"},"kind":"configuration","exit":"remove"}});
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
         self.policy_post(

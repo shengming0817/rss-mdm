@@ -2,8 +2,10 @@
 //! Strict Agent protocol values for RSS MDM.
 //!
 //! This package owns JSON values only. Device authority, persistence and HTTP authentication
-//! remain product responsibilities. V3 binds script and software tasks to one strict major.
+//! remain product responsibilities. V4 binds script and software tasks to one strict major.
 
+mod onboarding;
+pub use onboarding::*;
 mod tasks;
 pub use tasks::*;
 
@@ -13,19 +15,19 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Exact supported wire major.
-pub const WIRE_VERSION: u8 = 3;
+pub const WIRE_VERSION: u8 = 4;
 /// Maximum complete JSON request accepted by the product adapter.
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
-/// Canonical manifest for every public Agent V3 JSON shape.
-pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v3.schema-manifest.json");
+/// Canonical manifest for every public Agent V4 JSON shape.
+pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v4.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5";
+    "0055de0870f0cd936e96ef3d46e5028b006f7ef84ad07830e21e529c1b5e8fba";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireError {
-    /// A value is malformed or outside the V3 profile.
+    /// A value is malformed or outside the V4 profile.
     InvalidValue,
 }
 impl std::fmt::Display for WireError {
@@ -95,42 +97,38 @@ impl<'de> Deserialize<'de> for Secret {
     }
 }
 
-/// Closed V3 capability set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Closed V4 capability set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Capability {
     /// Full/partial/failed reports for the two basic inventory fields.
-    #[serde(rename = "inventory.basic.v3")]
-    InventoryBasicV3,
+    #[serde(rename = "inventory.basic.v4")]
+    InventoryBasicV4,
     /// Receive and execute signed task offers.
-    #[serde(rename = "task.execute.v3")]
-    TaskExecuteV3,
+    #[serde(rename = "task.execute.v4")]
+    TaskExecuteV4,
     /// Execute approved enterprise software tasks.
-    #[serde(rename = "software.execute.v3")]
-    SoftwareExecuteV3,
+    #[serde(rename = "software.execute.v4")]
+    SoftwareExecuteV4,
+    /// Open the standard MDM enrollment entry with OS/user approval.
+    #[serde(rename = "mdm.enrollment.v4")]
+    MdmEnrollmentV4,
 }
 impl Capability {
     /// Canonical persisted and queryable capability identity.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::InventoryBasicV3 => "inventory.basic.v3",
-            Self::TaskExecuteV3 => "task.execute.v3",
-            Self::SoftwareExecuteV3 => "software.execute.v3",
+            Self::InventoryBasicV4 => "inventory.basic.v4",
+            Self::TaskExecuteV4 => "task.execute.v4",
+            Self::SoftwareExecuteV4 => "software.execute.v4",
+            Self::MdmEnrollmentV4 => "mdm.enrollment.v4",
         }
     }
 }
-/// The only supported ordered capability sets for Agent V3.
+/// The only supported ordered capability sets for Agent V4.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
-    matches!(
-        value,
-        [Capability::InventoryBasicV3]
-            | [Capability::InventoryBasicV3, Capability::TaskExecuteV3]
-            | [Capability::InventoryBasicV3, Capability::SoftwareExecuteV3]
-            | [
-                Capability::InventoryBasicV3,
-                Capability::TaskExecuteV3,
-                Capability::SoftwareExecuteV3
-            ]
-    )
+    value.first() == Some(&Capability::InventoryBasicV4)
+        && value.len() <= 4
+        && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 /// Agent registration request. Tenant, device and generation are never device claims.
@@ -181,7 +179,7 @@ impl<'de> Deserialize<'de> for RegistrationRequest {
     }
 }
 impl RegistrationRequest {
-    /// Construct one supported V3 registration capability profile.
+    /// Construct one supported V4 registration capability profile.
     pub fn new(
         operation_id: Uuid,
         enrollment_id: Uuid,
@@ -357,13 +355,18 @@ pub enum FailureCode {
     CollectionFailed,
 }
 
-/// Closed V3 report body.
+/// Closed V4 report body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportBody {
     /// Complete coverage. Omitted fields are absent from this source.
     Snapshot(Vec<FieldValue>),
     /// Incomplete evidence retained without projection.
     Partial(Vec<FieldValue>),
+    /// Independent snapshot of local MDM enrollment.
+    MdmEnrollment {
+        /// Positive local evidence; uncertainty is explicit.
+        state: MdmEnrollmentState,
+    },
     /// Whole-collection failure retained without projection.
     Failed {
         /// Safe failure category.
@@ -376,6 +379,7 @@ enum RawReportBody {
     Snapshot { values: Vec<FieldValue> },
     Partial { values: Vec<FieldValue> },
     Failed { code: FailureCode },
+    MdmEnrollment { state: MdmEnrollmentState },
 }
 impl From<&ReportBody> for RawReportBody {
     fn from(value: &ReportBody) -> Self {
@@ -387,6 +391,7 @@ impl From<&ReportBody> for RawReportBody {
                 values: values.clone(),
             },
             ReportBody::Failed { code } => Self::Failed { code: *code },
+            ReportBody::MdmEnrollment { state } => Self::MdmEnrollment { state: *state },
         }
     }
 }
@@ -396,6 +401,7 @@ impl From<RawReportBody> for ReportBody {
             RawReportBody::Snapshot { values } => Self::Snapshot(values),
             RawReportBody::Partial { values } => Self::Partial(values),
             RawReportBody::Failed { code } => Self::Failed { code },
+            RawReportBody::MdmEnrollment { state } => Self::MdmEnrollment { state },
         }
     }
 }
@@ -410,7 +416,7 @@ impl<'de> Deserialize<'de> for ReportBody {
     }
 }
 
-/// Strict V3 inventory report.
+/// Strict V4 inventory report.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
@@ -441,7 +447,7 @@ impl<'de> Deserialize<'de> for ReportRequest {
     }
 }
 impl ReportRequest {
-    /// Construct and canonicalize one strict V3 report.
+    /// Construct and canonicalize one strict V4 report.
     pub fn new(
         report_id: Uuid,
         sequence: u64,
@@ -453,7 +459,7 @@ impl ReportRequest {
         }
         let values = match &mut body {
             ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
-            ReportBody::Failed { .. } => {
+            ReportBody::Failed { .. } | ReportBody::MdmEnrollment { .. } => {
                 return Ok(Self {
                     wire_version: WIRE_VERSION,
                     report_id,
@@ -508,7 +514,7 @@ impl ReportRequest {
     pub fn values(&self) -> &[FieldValue] {
         match &self.body {
             ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
-            ReportBody::Failed { .. } => &[],
+            ReportBody::Failed { .. } | ReportBody::MdmEnrollment { .. } => &[],
         }
     }
     /// Canonical semantic JSON used for durable duplicate detection.

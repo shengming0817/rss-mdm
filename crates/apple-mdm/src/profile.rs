@@ -39,6 +39,7 @@ pub fn firewall(identifier: &str, uuid: Uuid, enabled: bool) -> Result<Vec<u8>, 
     xml(profile)
 }
 pub struct EnrollmentProfile<'a> {
+    pub agent_installation: bool,
     pub scep_url: &'a str,
     pub scep_provisioner: &'a str,
     pub apns_topic: &'a str,
@@ -92,7 +93,15 @@ pub fn enrollment(
             "CheckInURL",
             format!("{}/checkin", config.management_origin).into(),
         ),
-        ("AccessRights", 19_i64.into()),
+        (
+            "AccessRights",
+            (if config.agent_installation {
+                19_i64 | 256 | 4096
+            } else {
+                19_i64
+            })
+            .into(),
+        ),
         ("CheckOutWhenRemoved", true.into()),
         ("SignMessage", false.into()),
         ("UseDevelopmentAPNS", false.into()),

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/mdm/agent/v4/managed-registration-request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "wireVersion",
+    "operationId",
+    "installationOperation",
+    "credential",
+    "capabilities",
+    "platform",
+    "architecture"
+  ],
+  "properties": {
+    "wireVersion": {
+      "const": 4
+    },
+    "operationId": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "credential": {
+      "$ref": "#/$defs/secret"
+    },
+    "capabilities": {
+      "enum": [
+        [
+          "inventory.basic.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "task.execute.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "software.execute.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "task.execute.v4",
+          "software.execute.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "mdm.enrollment.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "task.execute.v4",
+          "mdm.enrollment.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "software.execute.v4",
+          "mdm.enrollment.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "task.execute.v4",
+          "software.execute.v4",
+          "mdm.enrollment.v4"
+        ]
+      ]
+    },
+    "platform": {
+      "enum": [
+        "windows",
+        "macos"
+      ]
+    },
+    "architecture": {
+      "enum": [
+        "x86_64",
+        "aarch64"
+      ]
+    },
+    "installationOperation": {
+      "$ref": "#/$defs/nonNilUuid"
+    }
+  },
+  "$defs": {
+    "nonNilUuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "secret": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    }
+  }
+}

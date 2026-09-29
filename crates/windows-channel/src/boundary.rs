@@ -75,13 +75,18 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .map(|p| p.as_str())
         .unwrap_or("");
     let soap = route.starts_with("/EnrollmentServer/");
+    let agent = route == "/api/agent/v4/managed-registrations";
     let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             audit.finalize(None);
-            return limited(id);
+            return if agent {
+                secure(agent_response(limited(id)), id)
+            } else {
+                limited(id)
+            };
         }
     };
     request.extensions_mut().insert(audit.clone());
@@ -97,6 +102,9 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     } else {
         body(request, next, envelope.requests).await
     };
+    if agent {
+        response = agent_response(response);
+    }
     let failure = classify(response.extensions().get::<Error>());
     if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
         &envelope.audit_store,
@@ -120,6 +128,9 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         && let Some(error) = response.extensions().get::<Error>().cloned()
     {
         response = crate::fault(None, error);
+    }
+    if agent {
+        response = agent_response(response);
     }
     let snapshot = audit.snapshot();
     if let Some(key) = snapshot.operation_id {
@@ -181,10 +192,46 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
+        "/api/agent/v4/managed-registrations" => "agent_registration",
         "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
         "/ManagementServer/MDM.svc" => "windows_management",
         _ => "protected_request",
     }
+}
+
+fn agent_response(response: Response) -> Response {
+    if response.status().is_success() {
+        return response;
+    }
+    use rss_mdm_flow_service::execution::channels::Rejection as R;
+    let rejection = response
+        .extensions()
+        .get::<Error>()
+        .cloned()
+        .map(R::from)
+        .unwrap_or_else(|| {
+            if response.status().is_client_error()
+                && response.status() != StatusCode::TOO_MANY_REQUESTS
+            {
+                R::Malformed
+            } else {
+                R::Storage
+            }
+        });
+    let (status, body) = rejection.agent_error();
+    let (parts, _) = response.into_parts();
+    let mut projected = (
+        StatusCode::from_u16(status).expect("closed status"),
+        Json(body),
+    )
+        .into_response();
+    projected.extensions_mut().extend(parts.extensions);
+    if let Some(retry) = parts.headers.get(header::RETRY_AFTER) {
+        projected
+            .headers_mut()
+            .insert(header::RETRY_AFTER, retry.clone());
+    }
+    projected
 }

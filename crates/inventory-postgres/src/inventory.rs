@@ -75,6 +75,7 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         if record.scope().dataset().as_str() != model::DATASET
             && !model::FieldKey::ENTERPRISE
                 .iter()
+                .chain(model::FieldKey::CHANNEL.iter())
                 .any(|f| f.as_str() == record.scope().dataset().as_str())
         {
             return Ok(PgEffectOutcome::Filtered);

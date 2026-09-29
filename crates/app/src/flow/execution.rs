@@ -116,7 +116,11 @@ pub(crate) async fn open(
                 return Err(bad());
             }
         };
+        config.agent_installation.validate()?;
+        config.enrollment_entries.validate()?;
         Ok(Arc::new(ExecutionService {
+            agent_installation: config.agent_installation.clone(),
+            enrollment_entries: config.enrollment_entries.clone(),
             agent_store: Arc::new(rss_mdm_agent_channel::Bindings),
             apple_store: Arc::new(rss_mdm_apple_channel::flow_store::Store),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),

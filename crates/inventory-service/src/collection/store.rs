@@ -92,7 +92,7 @@ impl Run {
         self.batch.as_ref()
     }
 }
-fn fingerprint(batch: &Batch, scope: &Scope) -> Result<String, Error> {
+pub(super) fn fingerprint(batch: &Batch, scope: &Scope) -> Result<String, Error> {
     Ok(batch
         .fingerprint(scope)
         .map_err(|_| corrupt())?
@@ -210,7 +210,12 @@ pub async fn terminate(
     let rows = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL ORDER BY sequence FOR UPDATE"))
         .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(db)?;
     for row in rows {
-        facts.extend(seal(tx, &mut Run::from_row(row)?, reason).await?);
+        if restored_scope(&row)?.dataset().as_str() == rss_mdm_inventory::DATASET {
+            facts.extend(seal(tx, &mut Run::from_row(row)?, reason).await?);
+        } else {
+            let id = Uuid::parse_str(row.try_get("id").map_err(db)?).map_err(|_| corrupt())?;
+            facts.extend(super::channel::abandon_in(tx, tenant, id, reason).await?);
+        }
     }
     Ok(())
 }
@@ -250,7 +255,7 @@ pub async fn collection(
     id: Option<Uuid>,
 ) -> Result<Option<Run>, Error> {
     let mut tx = database.begin(&scope.tenant().to_string()).await?;
-    let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1"))
+    let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND scope::jsonb->>'dataset'='inventory' AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1"))
             .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.map(|v| v.to_string()))
             .fetch_optional(&mut *tx).await.map_err(db)?;
     let run = row.map(Run::from_row).transpose()?;
@@ -399,10 +404,22 @@ pub async fn expire_apple(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
 ) -> Result<usize, Error> {
-    let ids=sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline<=clock_timestamp() ORDER BY apple_deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
+    let ids=sqlx::query_as::<_,(String,String)>("SELECT id::text,scope::jsonb->>'dataset' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline<=clock_timestamp() ORDER BY apple_deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
         .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
     let count = ids.len();
-    for id in ids {
+    for (id, dataset) in ids {
+        if dataset == rss_mdm_inventory::FieldKey::AgentInstallation.as_str() {
+            facts.extend(
+                super::channel::abandon_in(
+                    c,
+                    tenant,
+                    Uuid::parse_str(&id).map_err(|_| super::corrupt())?,
+                    "timeout",
+                )
+                .await?,
+            );
+            continue;
+        }
         let mut run = load_on(
             c,
             tenant,

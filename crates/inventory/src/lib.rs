@@ -10,6 +10,8 @@ use rss_observation::{Batch, Coverage, Error, ErrorKind, Id};
 /// Observation dataset name selected by the Inventory projection.
 pub const DATASET: &str = "inventory";
 
+mod channels;
+pub use channels::{AgentInstallation, MdmEnrollment};
 mod assets;
 mod collected;
 pub use collected::CollectedValue;
@@ -80,6 +82,11 @@ pub fn coverage() -> Coverage {
 pub fn validate(batch: &Batch) -> std::result::Result<(), Error> {
     let fields = if batch.coverage() == &coverage() {
         FieldKey::OBSERVED.to_vec()
+    } else if let Some(field) = FieldKey::CHANNEL
+        .into_iter()
+        .find(|field| batch.coverage() == &channel_coverage(*field))
+    {
+        vec![field]
     } else {
         vec![
             FieldKey::ENTERPRISE
@@ -113,6 +120,17 @@ pub fn enterprise_coverage(field: FieldKey) -> Coverage {
         id("typed-v1"),
     )
 }
+/// A channel fact has its own coverage and stream ordering, independent of basic inventory.
+pub fn channel_coverage(field: FieldKey) -> Coverage {
+    assert!(field.is_channel(), "channel field required");
+    let id = |s| Id::new(s).expect("static valid identity");
+    Coverage::new(
+        id("channel-state"),
+        id("1"),
+        id(field.as_str()),
+        id("typed-v1"),
+    )
+}
 /// Validate the exact source/dataset pair and return its sole coverage.
 pub fn scope_coverage(scope: &rss_observation::Scope) -> Result<Coverage> {
     if scope.dataset().as_str() == DATASET {
@@ -121,15 +139,22 @@ pub fn scope_coverage(scope: &rss_observation::Scope) -> Result<Coverage> {
     }
     let field = FieldKey::parse(scope.dataset().as_str())?;
     let source = Source::parse(scope.source().as_str())?;
-    if !field.is_enterprise() || !field.definition().sources.contains(&source) {
+    if (!field.is_enterprise() && !field.is_channel())
+        || !field.definition().sources.contains(&source)
+    {
         return Err(Invalid::SourceNotAllowed);
     }
-    Ok(enterprise_coverage(field))
+    Ok(if field.is_channel() {
+        channel_coverage(field)
+    } else {
+        enterprise_coverage(field)
+    })
 }
 /// The finite datasets owned by a trusted producer.
 pub fn datasets(source: Source) -> &'static [&'static str] {
     match source {
-        Source::AgentBuiltin | Source::MdmWindows | Source::MdmApple => &[DATASET],
+        Source::AgentBuiltin => &[DATASET, "channel.mdm.enrollment"],
+        Source::MdmWindows | Source::MdmApple => &[DATASET, "channel.agent.installation"],
         Source::AgentScript => &[
             "custom.corporate_agent.version",
             "custom.corporate_agent.healthy",

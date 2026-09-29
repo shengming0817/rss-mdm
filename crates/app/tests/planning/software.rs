@@ -16,7 +16,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let future = Uuid::new_v4();
     let future_path = format!("/api/v2/policies/{future}");
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"resource":{"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"scope":scope,"behavior":{"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":empty_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
+    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":empty_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
     let future_policy = write(
         &mut author,
         &router,
@@ -45,8 +45,8 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     );
     let waiting = agent(
         &router,
-        "/api/agent/v3/tasks/claim",
-        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+        "/api/agent/v4/tasks/claim",
+        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -83,8 +83,8 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     .await?;
     let gated = agent(
         &router,
-        "/api/agent/v3/tasks/claim",
-        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+        "/api/agent/v4/tasks/claim",
+        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -119,8 +119,8 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     );
     ensure!(event(&router,&resumed_task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
     let reordered=write(&mut author,&router,&future_path,5,json!({"action":"put","enabled":true,
-        "definition":{"resource":{"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"scope":scope,
-        "behavior":{"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
+        "definition":{"scope":scope,
+        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":scope,"opensAt":0},{"scope":empty_scope,"opensAt":1}]}}}})).await?;
     ensure!(reordered["versionId"] == frozen_version);
     let reordered_status = author

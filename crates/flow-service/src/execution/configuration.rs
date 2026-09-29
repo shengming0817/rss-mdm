@@ -1,7 +1,7 @@
 //! Native configuration is desired state. Work is created only for changed device inputs.
 use super::*;
 use crate::planning::policies::{self, Frozen, Policy};
-use rss_mdm_policy::{Behavior, Exit};
+use rss_mdm_policy::{Action, Exit};
 use sqlx::Row;
 
 /// Closed durable reasons used by the native reconciler and Scope wakeup query.
@@ -43,7 +43,15 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let tenant = tx.tenant_id().to_string();
+        let instance = self.instance.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move { Ok(crate::authorization::lock_on(c, &tenant, &instance).await) })
+        })
+        .await??;
+        crate::transaction::lock(tx).await?;
         storage::lock(tx, device).await?;
+        self.reconcile_agent_install_in(tx, device, audit).await?;
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let state=tx.with_connection(move|c|Box::pin(async move {
@@ -483,7 +491,7 @@ async fn desired_in(
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let ids=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar::<_,Uuid>("SELECT p.id FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.id>$3 AND p.definition->'behavior'->>'kind'='configuration' AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded') ORDER BY p.id LIMIT 64")
+                sqlx::query_scalar::<_,Uuid>("SELECT p.id FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.id>$3 AND p.definition->'action'->>'kind'='configuration' AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded') ORDER BY p.id LIMIT 64")
                     .bind(tenant).bind(name).bind(after).fetch_all(c).await
             })).await?;
         if ids.is_empty() {
@@ -515,7 +523,7 @@ async fn uncertain_prior_in(
 ) -> Result<bool> {
     for (p, _) in prior {
         if p.enabled
-            && matches!(p.definition.behavior, Behavior::Configuration { .. })
+            && matches!(p.definition.action, Action::Configuration { .. })
             && !desired.iter().any(|(d, _)| d.id == p.id)
             && !policies::storage::withdrawn_in(tx, p, device).await?
         {

@@ -731,7 +731,7 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
             }
             let mut input = original.clone();
             input[field] = serde_json::json!(path);
-            let error = match Windows::load(serde_json::from_value(input)?, now()) {
+            let error = match Windows::load(serde_json::from_value(input)?, now(), None) {
                 Ok(_) => anyhow::bail!("accepted {field} {fault}"),
                 Err(error) => error,
             };

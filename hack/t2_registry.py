@@ -160,6 +160,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                     'crates/inventory-service/src/collection/read.rs'),
  'assets.group_input': ('crates/inventory-service/src/assets/planning.rs',
                         'crates/inventory-service/src/assets/quality.rs'),
+ 'planning.onboarding': ('crates/flow-service/src/planning/policies/enrollment.rs', 'crates/flow-service/src/planning/policies/onboarding.rs', 'crates/inventory-service/src/collection/channel.rs', 'crates/flow-service/src/execution/actions/*', 'crates/inventory-service/src/assets/channel.rs', 'crates/agent-channel/src/lib.rs'),
  'planning.assets': ('crates/flow-service/src/planning/sources.rs',
                      'crates/flow-service/src/planning/automation/dispatch.rs',
                      'crates/inventory-service/src/assets/planning.rs'),
@@ -214,6 +215,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'execution.commands.recovery': ('crates/flow-service/src/execution/recovery.rs',
                                  'crates/flow-service/src/execution/lifecycle.rs'),
  'execution.commands.windows': ('crates/flow-service/src/execution/native.rs',),
+ 'execution.commands.onboarding': ('crates/flow-service/src/planning/policies/agent_install.rs','crates/windows-mdm/src/agent_install.rs','crates/flow-service/src/execution/agent_install.rs','crates/flow-service/src/execution/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/agent-channel/src/managed.rs','crates/registration-service/src/enrollment/managed.rs'),
  'execution.commands.firewall': ('crates/flow-service/src/execution/configuration.rs',
                                  'crates/flow-service/src/execution/native.rs'),
  'execution.software.offer': ('crates/flow-service/src/execution/actions/software.rs',
@@ -350,7 +352,7 @@ app_family('execution.agent',
            namespace='execution::t2::agent')
 app_family('execution.commands',
            namespace='execution::t2::commands')
-for name in ('execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.firewall'):
+for name in ('execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.firewall','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], fixtures=MODULES[name].fixtures+('windows',),
         support_inputs=MODULES[name].support_inputs+('crates/app/tests/execution/support/*', 'crates/app/tests/windows/support.rs',))
 app_family('execution.software',
@@ -358,7 +360,7 @@ app_family('execution.software',
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/software_execution.rs',))
-for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.remote'):
+for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.remote', 'planning.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/agent_execution.rs',))
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
@@ -400,11 +402,11 @@ add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtur
     tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
-for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.firewall'):
+for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.firewall','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/windows/support.rs',))
-for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.firewall'):
+for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.firewall','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/enrollment/support.rs',))
-for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'renewal', 'identity', 'push', 'fairness', 'host'):
+for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host'):
     no_pg = part in ('cms', 'apns')
     fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
     if part in ('scep', 'renewal', 'identity'):
@@ -416,6 +418,7 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'renewal'
         'cms': ('certificate.rs',), 'apns': ('push.rs',),
         'scep': ('enrollment.rs','webhook.rs'), 'collection': ('checkin.rs','protocol.rs'),
         'profile': ('profile.rs',), 'policy': ('profile.rs','attempt.rs'),
+        'onboarding': ('agent_collection.rs','flow_store.rs','checkin.rs'),
         'renewal': ('renewal.rs',), 'identity': ('checkin.rs','enrollment.rs'),
         'push': ('push.rs',), 'fairness': ('attempt.rs','protocol.rs'),
         'host': ('mod.rs','config.rs'),
@@ -497,6 +500,7 @@ MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'], db_mo
     CasePolicy('planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', 'reuse', 'objects'),
     CasePolicy('planning::t2::group_scope::group_scope_replay_and_audit_atomicity', 'fresh', 'objects'),
 ))
+MODULES['planning.onboarding'] = replace(MODULES['planning.onboarding'], db_mode='reuse', scope='tenant')
 MODULES['planning.policy'] = replace(MODULES['planning.policy'], db_mode='reuse', scope='tenant')
 MODULES['planning.recovery'] = replace(MODULES['planning.recovery'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('planning::t2::recovery::corrupt_background_query_is_not_client_input', 'fresh', 'objects'),
@@ -552,6 +556,7 @@ MODULES['execution.commands.recovery'] = replace(MODULES['execution.commands.rec
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], scope='tenant')
 MODULES['windows.management'] = replace(MODULES['windows.management'], scope='tenant')
 MODULES['execution.commands.firewall'] = replace(MODULES['execution.commands.firewall'], db_mode='reuse', scope='tenant')
+MODULES['execution.commands.onboarding'] = replace(MODULES['execution.commands.onboarding'], db_mode='reuse', scope='tenant',support_inputs=(*MODULES['execution.commands.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs','crates/app/tests/execution/commands/firewall.rs'))
 MODULES['software.catalog'] = replace(MODULES['software.catalog'], db_mode='instance', scope='objects', policies=(
     CasePolicy('transactions::dependency_admission_uses_exact_current_approval', 'reuse', 'objects'),
     CasePolicy('transactions::source_receipts_follow_the_borrowed_transaction', 'reuse', 'tenant'),
@@ -574,6 +579,7 @@ MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', 
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'objects'),
 ))
+MODULES['apple.onboarding'] = replace(MODULES['apple.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.onboarding'].fixtures,'local_worker'), support_inputs=(*MODULES['apple.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs'))
 MODULES['apple.renewal'] = replace(MODULES['apple.renewal'], db_mode='reuse', scope='tenant')
 MODULES['apple.identity'] = replace(MODULES['apple.identity'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('apple::tests::identity::token_is_required_before_management', 'reuse', 'objects'),
@@ -587,7 +593,7 @@ MODULES['apple.host'] = replace(MODULES['apple.host'], db_mode='fresh', scope='o
 # These cases need the production consumers; precise stop/restart tests own theirs.
 for name in ('assets.queries', 'assets.sources', 'assets.group_input', 'planning.http',
              'planning.policy', 'planning.agent_policy', 'planning.frequency', 'planning.remote',
-             'planning.software', 'compliance.evaluation', 'compliance.recovery',
+             'planning.software', 'planning.onboarding', 'compliance.evaluation', 'compliance.recovery',
              'execution.agent.delivery', 'execution.agent.content', 'execution.agent.history',
              'execution.agent.poll', 'execution.agent.recovery', 'execution.software.offer',
              'execution.software.content', 'execution.software.recovery',
@@ -620,7 +626,7 @@ MODULES['content.http'] = replace(MODULES['content.http'], policies=(
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::offer_start_result_replay_and_inventory_projection', 'local_worker')
 for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.scope',
              'planning.group_scope', 'planning.recovery', 'execution.commands.dispatch',
-             'execution.commands.recovery', 'execution.commands.firewall', 'execution.commands.windows', 'windows.retention',
+             'execution.commands.recovery', 'execution.commands.firewall', 'execution.commands.windows', 'execution.commands.onboarding', 'windows.retention',
              'apple.push', 'apple.fairness', 'apple.renewal', 'apple.host'):
     value = MODULES[name]
     # Local consumer controls are meaningful only in their own observation tenant.
@@ -660,10 +666,10 @@ consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
 TASK_CONSUMERS = 'planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
-         'crates/agent-wire/schema/signed-task-v3.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/signed-task-v4.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
-consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v3.schema.json',
-         'crates/agent-wire/schema/agent-v3.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports')
+consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v4.schema.json',
+         'crates/agent-wire/schema/agent-v4.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports')
 consume(('crates/agent-wire/schema/registration-*.json',), 'agent.registration')
 consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports')
 consume(('crates/windows-mdm/src/*',),
@@ -674,7 +680,7 @@ consume(('crates/software-service/src/lib.rs', 'crates/software-service/src/publ
         'software.catalog software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery publication.artifact')
 consume(('crates/software-service/src/catalog/*',),
         'software.http planning.software execution.software.offer execution.software.content execution.software.recovery')
-AUTH_CONSUMERS = 'authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.renewal'
+AUTH_CONSUMERS = 'authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
 consume(('crates/authorization-service/src/*.rs',), AUTH_CONSUMERS)
 consume(('crates/app/src/identity.rs',), 'identity.local identity.sso identity.audit api.identity_context')
 consume(('crates/registration-service/src/device/*', 'crates/registration-service/src/device.rs', 'crates/app/src/registration_lifecycle.rs'),
@@ -692,7 +698,7 @@ consume(('crates/flow-service/src/execution/actions/history.rs',), 'execution.ag
 consume(('crates/flow-service/src/execution/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/flow-service/src/execution/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
 consume(('crates/flow-service/src/execution/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
-AUDITED_MODULES = 'audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.firewall windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
+AUDITED_MODULES = 'audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.firewall execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
 consume(('crates/flow-service/src/transaction.rs',), ' '.join(name for name in AUDITED_MODULES.split() if MODULES[name].build == APP))
 consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
@@ -701,7 +707,7 @@ consume(('crates/software-service/src/publication/*.sql', 'crates/software-servi
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery catalog.contract')
 
 consume(('crates/certificate/src/*',), 'windows.issuance windows.management apple.scep apple.identity apple.renewal apple.cms native.tls')
-consume(('crates/apple-mdm/src/*',), 'apple.scep apple.collection apple.profile apple.policy apple.renewal apple.identity')
+consume(('crates/apple-mdm/src/*',), 'apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity')
 
 
 consume(('crates/management-http/src/boundary.rs', 'crates/management-http/src/api.rs', 'crates/management-http/src/router.rs', 'crates/management-http/src/identity.rs', 'crates/management-http/src/error*.rs'), AUTH_CONSUMERS + ' api.diagnostics')
@@ -855,7 +861,7 @@ APP_HELPER_CONSUMERS = {
         'execution.software.recovery','execution.commands.admission','execution.commands.dispatch',
         'execution.commands.recovery','execution.commands.windows','execution.commands.firewall',
         'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention',
-        'apple.collection','apple.profile','apple.policy','apple.renewal','apple.identity','apple.push',
+        'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
         'apple.fairness','apple.host','apple.scep'),
     'support/audit.rs': (
         'audit.receipts','audit.integrity','audit.recovery','audit.budget',

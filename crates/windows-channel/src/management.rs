@@ -155,6 +155,11 @@ pub async fn management_on(
         &previous,
     )
     .await?;
+    let filtered = if authenticated_session {
+        crate::agent_collection::receive(tx, principal, &filtered, &previous, &mut facts).await?
+    } else {
+        filtered
+    };
     let (run_id, complete) = collect(
         tx,
         (&mut facts, audit),
@@ -165,6 +170,17 @@ pub async fn management_on(
         authenticated_session,
     )
     .await?;
+    let channel_pending = if authenticated_session {
+        crate::agent_collection::send(
+            tx,
+            principal,
+            &mut response,
+            windows.agent_identity.as_ref(),
+        )
+        .await?
+    } else {
+        false
+    };
     let pending =
         crate::execution::native::send_on(tx, principal, &mut response, authenticated_session)
             .await?;
@@ -172,7 +188,7 @@ pub async fn management_on(
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
     let correlation =
         std::str::from_utf8(&response).map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let state = session_state(complete && !pending, run_id);
+    let state = session_state(complete && !pending && !channel_pending, run_id);
     if stored.is_none() {
         sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
                 .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
@@ -606,4 +622,62 @@ impl crate::execution::channels::Windows for super::Windows {
 async fn notify(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows')").execute(c).await?;
     Ok(())
+}
+
+/// The native listener supplies the TLS peer; JSON has no source identity overrides.
+pub async fn register_agent(
+    State(app): State<Arc<HttpState>>,
+    Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
+    Extension(audit): Extension<RequestAudit>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Result<Response, Error> {
+    if bytes.len() > 16384
+        || headers.keys().any(|k| {
+            k.as_str() == "forwarded"
+                || k.as_str().starts_with("x-forwarded-")
+                || k.as_str().starts_with("x-ssl-")
+                || matches!(k.as_str(), "x-client-cert" | "x-device-id" | "x-tenant-id")
+        })
+    {
+        return Err(Error::Malformed);
+    }
+    if headers.get_all("content-type").iter().count() != 1
+        || headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .map(str::trim)
+            != Some("application/json")
+    {
+        return Err(Error::Malformed);
+    }
+    let checked = app
+        .windows()?
+        .ca
+        .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    let principal = app
+        .devices
+        .management_principal(&app.mount.credential(checked.fingerprint()))
+        .await?;
+    let input: rss_mdm_agent_wire::ManagedRegistrationRequest =
+        serde_json::from_slice(&bytes).map_err(|_| Error::Malformed)?;
+    let (receipt, replay) = app
+        .execution
+        .managed_registration(
+            &principal,
+            rss_mdm_inventory::ReportSource::MdmWindows,
+            &input,
+            &audit,
+        )
+        .await?;
+    Ok((
+        if replay {
+            axum::http::StatusCode::OK
+        } else {
+            axum::http::StatusCode::CREATED
+        },
+        axum::Json(receipt),
+    )
+        .into_response())
 }

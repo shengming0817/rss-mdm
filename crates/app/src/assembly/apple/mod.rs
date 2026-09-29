@@ -14,7 +14,11 @@ pub(crate) struct Apple {
     pub(crate) tls: Arc<tokio_rustls::rustls::ServerConfig>,
 }
 impl Apple {
-    pub(crate) fn load(config: config::Config, now: i64) -> Result<Self, Error> {
+    pub(crate) fn load(
+        config: config::Config,
+        now: i64,
+        agent_identity: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
+    ) -> Result<Self, Error> {
         let authority = certificate::AppleDeviceTrust::from_bytes(
             &crate::config::read(&config.issuer_certificate_file, 32768, false)
                 .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?,
@@ -57,6 +61,7 @@ impl Apple {
             push,
             challenge_key,
             notify_key,
+            agent_identity,
         ));
         Ok(Self {
             config,

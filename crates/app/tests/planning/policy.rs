@@ -64,7 +64,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     .await?;
     let id = Uuid::new_v4();
     let path = format!("/api/v2/policies/{id}");
-    call(&mut browser,&router,&path,0,json!({"action":"put","enabled":true,"definition":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"scope":scope,"behavior":{"kind":"configuration","exit":"retain"}}})).await?;
+    call(&mut browser,&router,&path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"kind":"configuration","exit":"retain"}}})).await?;
     let policy = path.as_str();
     let revision = 1;
     let browser = &mut browser;

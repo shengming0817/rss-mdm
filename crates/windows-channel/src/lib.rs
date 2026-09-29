@@ -14,6 +14,7 @@ mod error;
 pub use error::Error;
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_registration_service::{device, enrollment};
+mod agent_collection;
 mod collection;
 use axum::{
     Extension, Router,
@@ -33,6 +34,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Windows {
+    pub agent_identity: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
     pub enrollment_origin: String,
     pub management_origin: String,
     pub provider_id: String,
@@ -58,6 +60,7 @@ impl Windows {
             &protection.id,
         ));
         Ok(Self {
+            agent_identity: None,
             enrollment_origin,
             management_origin,
             provider_id,
@@ -79,7 +82,12 @@ pub fn routers(
         .route("/EnrollmentServer/Discovery.svc", post(discover))
         .route("/EnrollmentServer/Policy.svc", post(policy))
         .route("/EnrollmentServer/Enrollment.svc", post(issue));
-    let management = Router::new().route("/ManagementServer/MDM.svc", post(management::manage));
+    let management = Router::new()
+        .route("/ManagementServer/MDM.svc", post(management::manage))
+        .route(
+            "/api/agent/v4/managed-registrations",
+            post(management::register_agent),
+        );
     (
         boundary::wrap(
             enrollment

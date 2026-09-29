@@ -49,7 +49,11 @@ pub(crate) struct Windows {
     pub(crate) management_tls: Arc<tokio_rustls::rustls::ServerConfig>,
 }
 impl Windows {
-    pub(crate) fn load(config: WindowsConfig, now: i64) -> Result<Self, Error> {
+    pub(crate) fn load(
+        config: WindowsConfig,
+        now: i64,
+        agent: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
+    ) -> Result<Self, Error> {
         let ca = certificate::WindowsEnrollmentAuthority::from_bytes(
             &crate::config::read(&config.ca_certificate_file, 32768, false)
                 .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?,
@@ -60,17 +64,17 @@ impl Windows {
         .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
         let enrollment_tls = tls::configuration(&config.enrollment, None)?;
         let management_tls = tls::configuration(&config.management, Some(ca.verifier()))?;
-        let channel = Arc::new(
-            rss_mdm_windows_channel::Windows::new(
-                config.enrollment.origin.clone(),
-                config.management.origin.clone(),
-                config.provider_id.clone(),
-                ca,
-                &crate::config::read(&config.protocol_key_file, 32, true)
-                    .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
-            )
-            .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
-        );
+        let mut channel = rss_mdm_windows_channel::Windows::new(
+            config.enrollment.origin.clone(),
+            config.management.origin.clone(),
+            config.provider_id.clone(),
+            ca,
+            &crate::config::read(&config.protocol_key_file, 32, true)
+                .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
+        )
+        .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
+        channel.agent_identity = agent;
+        let channel = Arc::new(channel);
         Ok(Self {
             config,
             channel,

@@ -49,7 +49,11 @@ pub(crate) async fn save(
     let facts = audit.snapshot();
     if audit.tenant() != proof.tenant
         || facts.actor.as_deref() != Some(proof.subject)
-        || facts.instance.as_deref() != Some(proof.instance)
+        || if proof.instance == "native-mdm" {
+            facts.actor_kind != "device" || facts.instance.is_some()
+        } else {
+            facts.instance.as_deref() != Some(proof.instance)
+        }
         || facts.operation_id != Some(*key)
     {
         return Err(Error::Forbidden);
@@ -103,6 +107,14 @@ pub(crate) struct Operation<'a> {
 }
 
 impl<'a> Actor<'a> {
+    pub(crate) fn from_device(tenant: &'a str, subject: &'a str) -> Self {
+        Self {
+            tenant,
+            subject,
+            instance: "native-mdm",
+        }
+    }
+
     pub(crate) fn from_authorized(
         proof: &'a crate::authorization::context::AuthorizedPrincipal,
     ) -> Self {

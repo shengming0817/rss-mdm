@@ -9,6 +9,12 @@ pub enum FieldKey {
     /// Device model reported by a trusted collector.
     #[serde(rename = "device.model")]
     Model,
+    /// Product Agent presence observed by the native MDM channel.
+    #[serde(rename = "channel.agent.installation")]
+    AgentInstallation,
+    /// Local MDM enrollment observed by the Agent.
+    #[serde(rename = "channel.mdm.enrollment")]
+    MdmEnrollment,
     /// OS version reported by a trusted collector.
     #[serde(rename = "device.os.version")]
     OsVersion,
@@ -95,9 +101,11 @@ pub struct FieldDefinition {
 }
 impl FieldKey {
     /// Complete fixed catalog.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Model,
         Self::OsVersion,
+        Self::AgentInstallation,
+        Self::MdmEnrollment,
         Self::CorporateAgentVersion,
         Self::CorporateAgentHealthy,
         Self::OsqueryVersion,
@@ -110,6 +118,8 @@ impl FieldKey {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Model => "device.model",
+            Self::AgentInstallation => "channel.agent.installation",
+            Self::MdmEnrollment => "channel.mdm.enrollment",
             Self::OsVersion => "device.os.version",
             Self::CorporateAgentVersion => "custom.corporate_agent.version",
             Self::CorporateAgentHealthy => "custom.corporate_agent.healthy",
@@ -147,6 +157,12 @@ impl FieldKey {
             Self::CorporateAgentVersion | Self::CorporateAgentHealthy | Self::OsqueryVersion
         )
     }
+    /// Channel presence fields have independent snapshots, so routine basic reports cannot erase them.
+    pub const CHANNEL: [Self; 2] = [Self::AgentInstallation, Self::MdmEnrollment];
+    /// Whether this field carries closed channel-state evidence.
+    pub const fn is_channel(self) -> bool {
+        matches!(self, Self::AgentInstallation | Self::MdmEnrollment)
+    }
     /// Stable persisted collection slots. Reordering requires a new collection encoding.
     pub const OBSERVED: [Self; 2] = [Self::Model, Self::OsVersion];
     /// Number of persisted collection slots, independent of display catalog order.
@@ -160,6 +176,8 @@ impl FieldKey {
         use Operator::*;
         let kind = match self {
             Self::Model
+            | Self::AgentInstallation
+            | Self::MdmEnrollment
             | Self::OsVersion
             | Self::AssetTag
             | Self::CorporateAgentVersion
@@ -171,7 +189,8 @@ impl FieldKey {
         let manual = self.is_manual();
         let mut operations = vec![Eq, Ne, In, NotIn];
         match kind {
-            Kind::String => operations.extend([Contains, NotContains]),
+            Kind::String if !self.is_channel() => operations.extend([Contains, NotContains]),
+            Kind::String => {}
             Kind::Integer | Kind::Time => operations.extend([Lt, Le, Gt, Ge]),
             Kind::Boolean => {}
         }
@@ -185,6 +204,10 @@ impl FieldKey {
             manual,
             sources: if manual {
                 &[crate::Source::Manual]
+            } else if self == Self::AgentInstallation {
+                &[crate::Source::MdmWindows, crate::Source::MdmApple]
+            } else if self == Self::MdmEnrollment {
+                &[crate::Source::AgentBuiltin]
             } else if self == Self::OsqueryVersion {
                 &[crate::Source::AgentOsquery]
             } else if self.is_enterprise() {
@@ -205,6 +228,17 @@ impl FieldKey {
             return Err(crate::Invalid::TypeMismatch);
         }
         value.validate()?;
+        if let Scalar::String(value) = value {
+            match self {
+                Self::AgentInstallation => {
+                    crate::AgentInstallation::parse(value)?;
+                }
+                Self::MdmEnrollment => {
+                    crate::MdmEnrollment::parse(value)?;
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
     /// Validation used by the existing UTF-8 Observation coverage.

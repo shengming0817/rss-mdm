@@ -151,9 +151,9 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/agent/v3/registrations" | "/registrations" => "agent_registration",
-        "/api/agent/v3/reports" | "/reports" => "agent_report",
-        "/api/agent/v3/reports/{id}" | "/reports/{id}" => "agent_report_read",
+        "/api/agent/v4/registrations" | "/registrations" => "agent_registration",
+        "/api/agent/v4/reports" | "/reports" => "agent_report",
+        "/api/agent/v4/reports/{id}" | "/reports/{id}" => "agent_report_read",
         _ => "protected_request",
     }
 }
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn registration_rejections_keep_the_agent_action() {
         assert_eq!(
-            route_action("/api/agent/v3/registrations"),
+            route_action("/api/agent/v4/registrations"),
             "agent_registration"
         );
     }

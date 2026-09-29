@@ -4,6 +4,33 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub struct Bindings;
 impl channels::Agent for Bindings {
+    fn managed_replay<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a crate::device::DevicePrincipal,
+        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
+    ) -> Pending<'a, Option<rss_mdm_agent_wire::RegistrationReceipt>> {
+        Box::pin(async move {
+            crate::managed::replay(c, p, input, audit)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn managed_register<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        authority: rss_mdm_registration_service::enrollment::managed::Authority,
+        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
+    ) -> Pending<'a, rss_mdm_agent_wire::RegistrationReceipt> {
+        Box::pin(async move {
+            crate::managed::register(c, authority, input, audit)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
     fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -11,7 +38,7 @@ impl channels::Agent for Bindings {
         registrations: Vec<Uuid>,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, AgentBinding>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=3").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=4").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
             rows.into_iter()
                 .map(|r| {
                     let value = |key: &str| {
@@ -63,7 +90,7 @@ pub(crate) async fn bind_agent_in(
         rss_mdm_agent_wire::TaskArchitecture::X86_64 => "x86_64",
         rss_mdm_agent_wire::TaskArchitecture::Aarch64 => "aarch64",
     };
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,$3,$4,$5)")
+    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,4,$3,$4,$5)")
         .bind(tenant).bind(registration.to_string()).bind(capabilities).bind(platform).bind(architecture)
         .execute(&mut *tx).await.map_err(db)?;
     Ok(())

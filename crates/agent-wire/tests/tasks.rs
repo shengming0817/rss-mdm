@@ -3,7 +3,7 @@ use serde_json::json;
 use uuid::Uuid;
 #[test]
 fn task_events_are_closed_bounded_and_cannot_claim_identity() {
-    let value = json!({"wireVersion":3,"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
+    let value = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
     let request: TaskEventRequest = serde_json::from_value(value.clone()).unwrap();
     assert!(matches!(request.event(), TaskEvent::Received));
     for mutate in [
@@ -38,7 +38,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
     let id = Uuid::new_v4();
     let spec = TaskSpec {
-        wire_version: 3,
+        wire_version: 4,
         tenant_id: id,
         device_id: "device".into(),
         platform: TaskPlatform::Macos,
@@ -179,7 +179,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             .try_into()
             .unwrap();
     let spec = SoftwareTaskSpec {
-        wire_version: 3,
+        wire_version: 4,
         tenant_id: id,
         device_id: "device".into(),
         platform: TaskPlatform::Windows,
@@ -197,7 +197,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     };
     let payload: TaskPayload = spec.clone().try_into().unwrap();
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v3.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-payload-v4.schema.json")).unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&serde_json::to_value(&payload).unwrap()));
     for change in [
@@ -301,12 +301,12 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     use rss_mdm_agent_wire::{MAX_TASK_CANCELLATIONS, TaskClaimResponse, TaskEventAck};
     let samples = [
         (
-            include_str!("../schema/task-claim-response-v3.schema.json"),
-            json!({"wireVersion":3,"task":null,"cancellations":[]}),
+            include_str!("../schema/task-claim-response-v4.schema.json"),
+            json!({"wireVersion":4,"task":null,"cancellations":[]}),
         ),
         (
-            include_str!("../schema/task-event-ack-v3.schema.json"),
-            json!({"wireVersion":3,"accepted":true,"permit":null,"cancelRequested":false}),
+            include_str!("../schema/task-event-ack-v4.schema.json"),
+            json!({"wireVersion":4,"accepted":true,"permit":null,"cancelRequested":false}),
         ),
     ];
     for (index, (schema, value)) in samples.into_iter().enumerate() {
@@ -337,17 +337,17 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     }
     let cancellation = json!({"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4()});
     let boundary = json!({
-        "wireVersion":3,
+        "wireVersion":4,
         "task":null,
         "cancellations":vec![cancellation.clone(); MAX_TASK_CANCELLATIONS]
     });
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-claim-response-v3.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-claim-response-v4.schema.json")).unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&boundary));
     assert!(serde_json::from_value::<TaskClaimResponse>(boundary).is_ok());
     let overflow = json!({
-        "wireVersion":3,
+        "wireVersion":4,
         "task":null,
         "cancellations":vec![cancellation; MAX_TASK_CANCELLATIONS + 1]
     });
@@ -375,7 +375,7 @@ fn task_response_producers_can_only_construct_valid_shapes() {
         .expect("boundary response");
     assert!(response.task().is_none());
     assert_eq!(response.cancellations().len(), MAX_TASK_CANCELLATIONS);
-    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 3);
+    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 4);
     assert_eq!(
         TaskClaimResponse::new(
             None,
@@ -421,7 +421,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
     assert_eq!(encoded["event"]["kind"], "result");
     assert_eq!(encoded["event"]["diagnostics"]["durationMs"], 42);
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-event-request-v3.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-event-request-v4.schema.json")).unwrap();
     assert!(
         jsonschema::draft202012::new(&schema)
             .unwrap()

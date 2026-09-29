@@ -40,7 +40,7 @@ pub struct Credential {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 /// Supported metainformation; values are validated by message encode/decode.
 pub struct Meta {
-    /// Optional `chr`, `int`, `bool` or `b64` token; payload values are not coerced.
+    /// Optional `chr`, `int`, `bool`, `b64` or `xml` token; payload values are not coerced.
     pub format: Option<String>,
     /// Optional `text/plain`, or supported auth type in credential context.
     pub media_type: Option<String>,
@@ -62,6 +62,13 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Supported bounded command profile; IDs must be positive and unique per message.
 pub enum Command {
+    /// Fixed Agent installer Add/Exec, never a generic command payload.
+    AgentInstall {
+        /// Positive response-owned command ID.
+        id: u32,
+        /// Validated product installation payload.
+        command: crate::agent_install::AgentCommand,
+    },
     /// Product-selected server write; distinct from device initialization.
     Replace {
         /// Positive ID allocated by the response owner.
@@ -146,6 +153,10 @@ pub struct Item {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// Closed protocol command names used in status/result references.
 pub enum CommandName {
+    /// Product node creation.
+    Add,
+    /// Fixed Agent installation execution.
+    Exec,
     /// Header acknowledgement, paired with command reference zero.
     SyncHdr,
     /// Get request.
@@ -163,6 +174,8 @@ impl CommandName {
     /// Return the exact case-sensitive protocol command name.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Add => "Add",
+            Self::Exec => "Exec",
             Self::SyncHdr => "SyncHdr",
             Self::Get => "Get",
             Self::Status => "Status",
@@ -173,6 +186,8 @@ impl CommandName {
     }
     fn parse(s: &str) -> Result<Self> {
         match s {
+            "Add" => Ok(Self::Add),
+            "Exec" => Ok(Self::Exec),
             "SyncHdr" => Ok(Self::SyncHdr),
             "Get" => Ok(Self::Get),
             "Status" => Ok(Self::Status),
@@ -235,7 +250,8 @@ impl Command {
     /// Return the command ID; message validation checks positivity and uniqueness.
     pub fn id(&self) -> u32 {
         match self {
-            Self::Replace { id, .. }
+            Self::AgentInstall { id, .. }
+            | Self::Replace { id, .. }
             | Self::Get { id, .. }
             | Self::Alert { id, .. }
             | Self::DevInfo { id, .. } => *id,
@@ -494,6 +510,18 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
             };
             p.end(NS, "Alert")?;
             Command::Alert { id, alert }
+        } else if p.is(NS, "Add")? || p.is(NS, "Exec")? {
+            let name = if p.is(NS, "Add")? { "Add" } else { "Exec" };
+            p.command()?;
+            p.open(NS, name)?;
+            let id = num(&mut p, "CmdID", false)?;
+            let meta = meta(&mut p)?;
+            let items = items(&mut p)?;
+            p.end(NS, name)?;
+            Command::AgentInstall {
+                id,
+                command: crate::agent_install::AgentCommand::from_wire(name, meta, &items)?,
+            }
         } else if p.is(NS, "Replace")? {
             p.command()?;
             p.open(NS, "Replace")?;
@@ -539,7 +567,7 @@ fn validate_meta(m: Option<&Meta>, l: &CodecLimits, credential: bool) -> Result<
     if let Some(m) = m {
         if let Some(f) = &m.format {
             text(f, l.identifier_bytes, false)?;
-            if !matches!(f.as_str(), "chr" | "int" | "bool" | "b64") {
+            if !matches!(f.as_str(), "chr" | "int" | "bool" | "b64" | "xml") {
                 return Err(E::Unsupported);
             }
         }
@@ -705,6 +733,18 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
             return Err(E::Duplicate);
         }
         match c {
+            Command::AgentInstall { command, .. } => {
+                let item = command.item()?;
+                text(
+                    item.target.as_deref().ok_or(E::Structure)?,
+                    l.uri_bytes,
+                    false,
+                )?;
+                if let Some(data) = item.data {
+                    text(&data.0, l.field_bytes, false)?;
+                }
+                count = count.checked_add(1).ok_or(E::LimitExceeded)?;
+            }
             Command::Replace { configuration, .. } => {
                 for item in configuration.items() {
                     text(
@@ -892,6 +932,7 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
     for c in &m.commands {
         w.command()?;
         let name = match c {
+            Command::AgentInstall { command, .. } => command.name(),
             Command::Get { .. } => "Get",
             Command::Status(_) => "Status",
             Command::Results(_) => "Results",
@@ -905,6 +946,7 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
                 write_meta(&mut w, meta.as_ref(), l)?;
                 write_items(&mut w, items, l)?;
             }
+            Command::AgentInstall { command, .. } => write_items(&mut w, &[command.item()?], l)?,
             Command::Replace { configuration, .. } => {
                 write_items(&mut w, &configuration.items(), l)?
             }

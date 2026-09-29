@@ -1,0 +1,24 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_planning.scope_admission",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.installation_status",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "mdm_commands.operations",
+    "mdm_commands.attempts",
+    "mdm_policy.policies",
+    "mdm_policy.versions",
+    "mdm_resource.aggregates",
+    "mdm_resource.immutable",
+    "mdm_software.sources",
+    "mdm_software.approvals"
+  ],
+  "verified_schemas": []
+}

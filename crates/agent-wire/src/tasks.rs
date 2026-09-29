@@ -15,7 +15,7 @@ pub const MAX_TASK_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 /// Seven-day upper bound for software execution evidence.
 pub const MAX_TASK_DURATION_MS: u64 = 604_800_000;
 
-fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+pub(crate) fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     let value = u8::deserialize(d)?;
     if value != WIRE_VERSION {
         return Err(serde::de::Error::custom("unsupported wire version"));
@@ -183,6 +183,11 @@ pub enum TaskEvent {
     Result(TaskResult),
     /// Independent software detection evidence after local software-plan execution.
     SoftwareResult(SoftwareTaskResult),
+    /// Only the enrollment UI outcome; active MDM registration is server-owned.
+    EnrollmentResult {
+        /// Closed platform outcome.
+        outcome: crate::EnrollmentEntryOutcome,
+    },
 }
 /// Device-side software detection, distinct from installer process completion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -687,7 +692,7 @@ impl TaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-script-task-v3-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-script-task-v4-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
@@ -1069,7 +1074,7 @@ impl SoftwareTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-software-task-v3-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-software-task-v4-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
@@ -1081,6 +1086,8 @@ impl SoftwareTaskSpec {
 enum RawTaskPayload {
     Script(TaskSpec),
     Software(SoftwareTaskSpec),
+    /// Standard MDM enrollment entry.
+    Enrollment(crate::EnrollmentTaskSpec),
 }
 /// Validated immutable script or software task payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1090,6 +1097,8 @@ pub enum TaskPayload {
     Script(TaskSpec),
     /// Approved software task.
     Software(SoftwareTaskSpec),
+    /// Standard MDM enrollment entry.
+    Enrollment(crate::EnrollmentTaskSpec),
 }
 impl TryFrom<RawTaskPayload> for TaskPayload {
     type Error = WireError;
@@ -1098,6 +1107,10 @@ impl TryFrom<RawTaskPayload> for TaskPayload {
             RawTaskPayload::Script(v) => {
                 v.signing_bytes("validation")?;
                 Ok(Self::Script(v))
+            }
+            RawTaskPayload::Enrollment(v) => {
+                v.signing_bytes("validation")?;
+                Ok(Self::Enrollment(v))
             }
             RawTaskPayload::Software(v) => {
                 v.signing_bytes("validation")?;
@@ -1111,6 +1124,7 @@ impl From<TaskPayload> for RawTaskPayload {
         match value {
             TaskPayload::Script(v) => Self::Script(v),
             TaskPayload::Software(v) => Self::Software(v),
+            TaskPayload::Enrollment(v) => Self::Enrollment(v),
         }
     }
 }
@@ -1128,12 +1142,20 @@ impl TryFrom<SoftwareTaskSpec> for TaskPayload {
         Ok(Self::Software(value))
     }
 }
+impl TryFrom<crate::EnrollmentTaskSpec> for TaskPayload {
+    type Error = WireError;
+    fn try_from(value: crate::EnrollmentTaskSpec) -> Result<Self, Self::Error> {
+        value.signing_bytes("validation")?;
+        Ok(Self::Enrollment(value))
+    }
+}
 impl TaskPayload {
     /// Exact task identity.
     pub fn task_id(&self) -> Uuid {
         match self {
             Self::Script(v) => v.task_id,
             Self::Software(v) => v.task_id,
+            Self::Enrollment(v) => v.task_id,
         }
     }
     /// Exact attempt identity.
@@ -1141,6 +1163,7 @@ impl TaskPayload {
         match self {
             Self::Script(v) => v.attempt_id,
             Self::Software(v) => v.attempt_id,
+            Self::Enrollment(v) => v.attempt_id,
         }
     }
     /// Signed expiry.
@@ -1148,6 +1171,7 @@ impl TaskPayload {
         match self {
             Self::Script(v) => v.expires_at,
             Self::Software(v) => v.expires_at,
+            Self::Enrollment(v) => v.expires_at,
         }
     }
     /// Selected permission.
@@ -1155,6 +1179,7 @@ impl TaskPayload {
         match self {
             Self::Script(v) => v.permit,
             Self::Software(v) => v.permit,
+            Self::Enrollment(v) => v.permit,
         }
     }
     /// Exact operating system.
@@ -1162,6 +1187,7 @@ impl TaskPayload {
         match self {
             Self::Script(v) => v.platform,
             Self::Software(v) => v.platform,
+            Self::Enrollment(v) => v.platform,
         }
     }
     /// Exact architecture.
@@ -1169,6 +1195,7 @@ impl TaskPayload {
         match self {
             Self::Script(v) => v.architecture,
             Self::Software(v) => v.architecture,
+            Self::Enrollment(v) => v.architecture,
         }
     }
     /// Sign validated bytes for this task family.
@@ -1176,6 +1203,7 @@ impl TaskPayload {
         match self {
             Self::Script(v) => v.signing_bytes(key_id),
             Self::Software(v) => v.signing_bytes(key_id),
+            Self::Enrollment(v) => v.signing_bytes(key_id),
         }
     }
 }
@@ -1250,6 +1278,12 @@ impl SignedTask {
         let p = &self.payload;
         let (tenant, device, registration, generation) = match p {
             TaskPayload::Script(v) => (
+                v.tenant_id,
+                v.device_id.as_str(),
+                v.registration_id,
+                v.generation,
+            ),
+            TaskPayload::Enrollment(v) => (
                 v.tenant_id,
                 v.device_id.as_str(),
                 v.registration_id,

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v3/registration-request.schema.json",
+  "$id": "https://rss.example/mdm/agent/v4/registration-request.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,7 +15,7 @@
   ],
   "properties": {
     "wireVersion": {
-      "const": 3
+      "const": 4
     },
     "operationId": {
       "$ref": "#/$defs/nonNilUuid"
@@ -32,20 +32,40 @@
     "capabilities": {
       "enum": [
         [
-          "inventory.basic.v3"
+          "inventory.basic.v4"
         ],
         [
-          "inventory.basic.v3",
-          "task.execute.v3"
+          "inventory.basic.v4",
+          "task.execute.v4"
         ],
         [
-          "inventory.basic.v3",
-          "software.execute.v3"
+          "inventory.basic.v4",
+          "software.execute.v4"
         ],
         [
-          "inventory.basic.v3",
-          "task.execute.v3",
-          "software.execute.v3"
+          "inventory.basic.v4",
+          "task.execute.v4",
+          "software.execute.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "mdm.enrollment.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "task.execute.v4",
+          "mdm.enrollment.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "software.execute.v4",
+          "mdm.enrollment.v4"
+        ],
+        [
+          "inventory.basic.v4",
+          "task.execute.v4",
+          "software.execute.v4",
+          "mdm.enrollment.v4"
         ]
       ]
     },

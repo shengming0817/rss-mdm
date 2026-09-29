@@ -20,6 +20,21 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
                 received_at: a.received_at,
             })
             .collect()
+    } else if FieldKey::CHANNEL
+        .iter()
+        .any(|field| field.as_str() == coordinate.dataset().as_str())
+    {
+        let attempt: crate::collection::ChannelAttempt =
+            stored(serde_json::from_str(row.try_get("attempts")?))?;
+        if attempt.field.as_str() != coordinate.dataset().as_str() {
+            return Err(Error::Malformed.into());
+        }
+        vec![QualityField {
+            field: attempt.field,
+            quality: attempt.quality,
+            status: None,
+            received_at: Some(attempt.received_at),
+        }]
     } else {
         let attempt: crate::collection::EnterpriseAttempt =
             stored(serde_json::from_str(row.try_get("attempts")?))?;

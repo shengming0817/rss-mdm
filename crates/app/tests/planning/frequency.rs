@@ -12,9 +12,9 @@ async fn publish(
 ) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let mut definition = policy_definition(resource, scope);
-    definition["behavior"]["frequency"] = json!(frequency);
+    definition["action"]["frequency"] = json!(frequency);
     if let Some(schedule) = schedule {
-        definition["behavior"]["schedule"] = schedule;
+        definition["action"]["schedule"] = schedule;
     }
     post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
     Ok(id)

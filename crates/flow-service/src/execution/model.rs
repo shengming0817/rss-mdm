@@ -36,6 +36,9 @@ impl Field {
     deny_unknown_fields
 )]
 pub enum Task {
+    AgentInstall {
+        package: Box<crate::planning::policies::agent_install::Package>,
+    },
     ProfileInstall {
         enabled: bool,
     },
@@ -55,6 +58,10 @@ pub enum Task {
 impl Task {
     pub fn source(&self) -> rss_mdm_inventory::ReportSource {
         match self {
+            Self::AgentInstall { package } => match package.identity.platform() {
+                rss_mdm_policy::Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
+                rss_mdm_policy::Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
+            },
             Self::ProfileInstall { .. } | Self::ProfileRemove { .. } => {
                 rss_mdm_inventory::ReportSource::MdmApple
             }
@@ -64,6 +71,7 @@ impl Task {
 
     pub fn permission(&self) -> crate::authorization::Permission {
         match self {
+            Self::AgentInstall { .. } => crate::authorization::Permission::SoftwareDeploy,
             Self::StateVerify { .. } => crate::authorization::Permission::StateVerify,
             Self::ProfileInstall { .. } | Self::ProfileRemove { .. } | Self::Firewall { .. } => {
                 crate::authorization::Permission::FirewallWrite
@@ -72,6 +80,16 @@ impl Task {
     }
     pub fn digest(&self) -> Result<StateDigest, Error> {
         match self {
+            Self::AgentInstall { package } => {
+                package.identity.validate()?;
+                Ok(StateDigest::from_bytes(
+                    Sha256::digest(
+                        serde_json::to_vec(&("mdm.agent-install/v1", package))
+                            .map_err(|_| Error::Malformed)?,
+                    )
+                    .into(),
+                ))
+            }
             Self::ProfileInstall { .. } | Self::ProfileRemove { .. } => Err(Error::Malformed),
             Self::StateVerify {
                 field,
@@ -164,18 +182,21 @@ mod tests;
 /// Native exchange phases; database values are decoded fail-closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptPhase {
+    Prepare,
     Execute,
     Observe,
 }
 impl AttemptPhase {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Prepare => "prepare",
             Self::Execute => "execute",
             Self::Observe => "observe",
         }
     }
     pub fn parse(value: &str) -> Result<Self, Error> {
         match value {
+            "prepare" => Ok(Self::Prepare),
             "execute" => Ok(Self::Execute),
             "observe" => Ok(Self::Observe),
             _ => Err(Error::Unavailable(crate::Failure::CommandInvariant)),

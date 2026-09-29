@@ -587,7 +587,7 @@ impl Client {
         ensure!(automation_owner.shutdown().join().await?.is_clean());
         Ok(())
     }
-    fn command_worker(
+    pub(super) fn command_worker(
         &self,
         signals: Arc<crate::worker_wake::Signals>,
     ) -> anyhow::Result<rss_runtime::ShutdownStack> {
@@ -763,7 +763,7 @@ fn assert_work(message: &s::Message, expected: &[(&str, &str)]) -> anyhow::Resul
 }
 
 fn configuration_definition(resource: &str, version: &str, scope: Uuid) -> Value {
-    json!({"action":"put","enabled":true,"definition":{"resource":{"id":resource,"version":version,"platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"scope":scope,"behavior":{"kind":"configuration","exit":"retain"}}})
+    json!({"action":"put","enabled":true,"definition":{"scope":scope,"action": {"resource": {"id":resource,"version":version,"platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"kind":"configuration","exit":"retain"}}})
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.firewall"]

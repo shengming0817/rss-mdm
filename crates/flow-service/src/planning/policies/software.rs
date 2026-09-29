@@ -38,6 +38,12 @@ pub enum TaskAdmissionState {
     UnsupportedCapability,
     MissingVariant,
     ApprovalWithdrawn,
+    PermissionWithdrawn,
+    ChannelUnknown,
+    AlreadySatisfied,
+    OrganizationConflict,
+    MissingNativeRights,
+    MissingArchitecture,
     Eligible,
 }
 #[derive(serde::Serialize)]
@@ -47,7 +53,7 @@ pub struct TaskAdmission {
     stage: Option<usize>,
 }
 impl TaskAdmission {
-    fn new(state: TaskAdmissionState, stage: Option<usize>) -> Self {
+    pub(super) fn new(state: TaskAdmissionState, stage: Option<usize>) -> Self {
         Self { state, stage }
     }
     pub fn is_eligible(&self) -> bool {
@@ -94,8 +100,8 @@ impl SoftwareExecutionPolicy {
         self.frozen.intent
     }
     fn rollout(&self) -> Result<&SoftwareRollout> {
-        match &self.policy.definition.behavior {
-            Behavior::Software { rollout, .. } => Ok(rollout),
+        match &self.policy.definition.action {
+            Action::Software { rollout, .. } => Ok(rollout),
             _ => Err(Error::Malformed.into()),
         }
     }

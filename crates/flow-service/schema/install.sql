@@ -69,6 +69,17 @@ BEGIN
 END;
 $$;
 
+-- A narrow product read boundary preserves device-command's single runtime role.
+CREATE FUNCTION mdm_commands.installation_status(p_operation uuid) RETURNS text
+ LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
+ AS $$
+ SELECT d.status FROM mdm_commands.operations o
+ JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
+ WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+ AND o.id=p_operation AND o.request->'task'->>'kind'='agent_install';
+$$;
+REVOKE ALL ON FUNCTION mdm_commands.installation_status(uuid) FROM PUBLIC;
+
 CREATE TABLE mdm_automation.automation_jobs (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
@@ -189,7 +200,7 @@ CREATE TABLE mdm_commands.attempts (
     receipt_accepted boolean,
     request bytea NOT NULL,
     CONSTRAINT attempts_ordinal_check CHECK ((ordinal > 0)),
-    CONSTRAINT attempts_phase_check CHECK ((phase = ANY (ARRAY['execute'::text, 'observe'::text]))),
+    CONSTRAINT attempts_phase_check CHECK ((phase = ANY (ARRAY['prepare'::text, 'execute'::text, 'observe'::text]))),
     CONSTRAINT attempts_status_check CHECK (((status IS NULL) OR ((status >= 100) AND (status <= 599)))),
     CONSTRAINT attempts_value_check CHECK (((value IS NULL) OR (octet_length(value) <= 4096)))
 );
@@ -261,7 +272,7 @@ CREATE TABLE mdm_commands.operations (
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
     WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = 'user'::text)
-    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) = 'policy'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))
+    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) IN ('policy'::text,'agent_install'::text)) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))
     WHEN 'remote_operation'::text THEN (((approval ->> 'kind'::text) = 'remote_operation'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'operation'::text) = (remote_operation)::text))
     ELSE NULL::boolean
 END, false)),

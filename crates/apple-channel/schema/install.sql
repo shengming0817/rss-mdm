@@ -5,6 +5,7 @@ SET LOCAL check_function_bodies = false;
 CREATE SCHEMA mdm_apple;
 
 CREATE TABLE mdm_apple.attempts (
+    ordinal integer NOT NULL DEFAULT 0 CHECK(ordinal>=0 AND ordinal<=32),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     registration uuid NOT NULL,
@@ -21,11 +22,11 @@ CREATE TABLE mdm_apple.attempts (
     next_attempt timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     deadline timestamp with time zone NOT NULL,
     collection_sequence bigint,
-    CONSTRAINT attempts_check CHECK ((((phase = 'collect'::text) AND (collection IS NOT NULL) AND (operation IS NULL) AND (certificate IS NULL)) OR ((phase = ANY (ARRAY['execute'::text, 'observe'::text])) AND (operation IS NOT NULL) AND (collection IS NULL) AND (certificate IS NULL)) OR ((phase = 'renew'::text) AND (certificate IS NOT NULL) AND (collection IS NULL) AND (operation IS NULL)))),
+    CONSTRAINT attempts_check CHECK ((((phase = ANY(ARRAY['collect'::text,'collect_agent_platform'::text,'collect_agent'::text])) AND (collection IS NOT NULL) AND (operation IS NULL) AND (certificate IS NULL)) OR ((phase = ANY (ARRAY['execute'::text, 'observe'::text])) AND (operation IS NOT NULL) AND (collection IS NULL) AND (certificate IS NULL)) OR ((phase = 'renew'::text) AND (certificate IS NOT NULL) AND (collection IS NULL) AND (operation IS NULL)))),
     CONSTRAINT attempts_check1 CHECK (((response IS NULL) = (response_digest IS NULL))),
-    CONSTRAINT attempts_collection_sequence_check CHECK ((((phase = 'collect'::text) = (collection_sequence IS NOT NULL)) AND ((collection_sequence IS NULL) OR (collection_sequence >= 0)))),
+    CONSTRAINT attempts_collection_sequence_check CHECK ((((phase = ANY(ARRAY['collect'::text,'collect_agent_platform'::text,'collect_agent'::text])) = (collection_sequence IS NOT NULL)) AND ((collection_sequence IS NULL) OR (collection_sequence >= 0)))),
     CONSTRAINT attempts_generation_check CHECK ((generation > 0)),
-    CONSTRAINT attempts_phase_check CHECK ((phase = ANY (ARRAY['collect'::text, 'execute'::text, 'observe'::text, 'renew'::text]))),
+    CONSTRAINT attempts_phase_check CHECK ((phase = ANY (ARRAY['collect'::text, 'collect_agent_platform'::text, 'collect_agent'::text, 'execute'::text, 'observe'::text, 'renew'::text]))),
     CONSTRAINT attempts_request_check CHECK (((octet_length(request) >= 1) AND (octet_length(request) <= 1048576))),
     CONSTRAINT attempts_response_check CHECK ((octet_length(response) <= 1048576)),
     CONSTRAINT attempts_response_digest_check CHECK ((octet_length(response_digest) = 32)),
@@ -35,6 +36,7 @@ CREATE TABLE mdm_apple.attempts (
 ALTER TABLE ONLY mdm_apple.attempts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_apple.devices (
+    access_rights integer NOT NULL CHECK(access_rights IN(19,4371)),
     tenant_id uuid NOT NULL,
     registration uuid NOT NULL,
     udid text NOT NULL,
@@ -65,6 +67,7 @@ CREATE TABLE mdm_apple.devices (
 ALTER TABLE ONLY mdm_apple.devices FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_apple.scep_attempts (
+    access_rights integer NOT NULL CHECK(access_rights IN(19,4371)),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     enrollment uuid NOT NULL,
@@ -112,10 +115,10 @@ ALTER TABLE ONLY mdm_apple.attempts
     ADD CONSTRAINT attempts_tenant_id_certificate_key UNIQUE (tenant_id, certificate);
 
 ALTER TABLE ONLY mdm_apple.attempts
-    ADD CONSTRAINT attempts_tenant_id_collection_key UNIQUE (tenant_id, collection);
+    ADD CONSTRAINT attempts_tenant_id_collection_key UNIQUE (tenant_id, collection, phase);
 
 ALTER TABLE ONLY mdm_apple.attempts
-    ADD CONSTRAINT attempts_tenant_id_operation_phase_key UNIQUE (tenant_id, operation, phase);
+    ADD CONSTRAINT attempts_tenant_id_operation_phase_key UNIQUE (tenant_id, operation, phase, ordinal);
 
 ALTER TABLE ONLY mdm_apple.devices
     ADD CONSTRAINT devices_pkey PRIMARY KEY (tenant_id, registration);

@@ -48,7 +48,9 @@
       "schema": "mdm_windows",
       "table": "collections",
       "read_write": true,
-      "updates": [],
+      "updates": [
+        "channel_state"
+      ],
       "delete_policy": null
     }
   ],

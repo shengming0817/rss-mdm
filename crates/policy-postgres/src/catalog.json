@@ -200,7 +200,7 @@
     ],
     [
       "versions",
-      "resource",
+      "action_kind",
       "text",
       true,
       null,
@@ -209,9 +209,18 @@
     ],
     [
       "versions",
+      "resource",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "versions",
       "resource_version",
       "text",
-      true,
+      false,
       null,
       "",
       ""
@@ -233,64 +242,6 @@
       null,
       "",
       ""
-    ]
-  ],
-  "indexes": [
-    [
-      "policies",
-      "policies_pkey",
-      "CREATE UNIQUE INDEX policies_pkey ON mdm_policy.policies USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "policies",
-      "policy_scope",
-      "CREATE INDEX policy_scope ON mdm_policy.policies USING btree (tenant_id, (((definition ->> 'scope'::text))::uuid), id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "requests",
-      "requests_pkey",
-      "CREATE UNIQUE INDEX requests_pkey ON mdm_policy.requests USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "triggers",
-      "policy_triggers_due",
-      "CREATE INDEX policy_triggers_due ON mdm_policy.triggers USING btree (tenant_id, version, deadline, created_at, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "triggers",
-      "triggers_pkey",
-      "CREATE UNIQUE INDEX triggers_pkey ON mdm_policy.triggers USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "versions",
-      "versions_pkey",
-      "CREATE UNIQUE INDEX versions_pkey ON mdm_policy.versions USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "versions",
-      "versions_tenant_id_policy_number_key",
-      "CREATE UNIQUE INDEX versions_tenant_id_policy_number_key ON mdm_policy.versions USING btree (tenant_id, policy, number)",
-      true,
-      true,
-      true
     ]
   ],
   "constraints": [
@@ -380,6 +331,27 @@
     ],
     [
       "versions",
+      "versions_action_kind_check",
+      "c",
+      "CHECK ((action_kind = ANY (ARRAY['execution'::text, 'configuration'::text, 'software'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text])))",
+      true
+    ],
+    [
+      "versions",
+      "versions_check",
+      "c",
+      "CHECK (((resource IS NULL) = (resource_version IS NULL)))",
+      true
+    ],
+    [
+      "versions",
+      "versions_check1",
+      "c",
+      "CHECK (((action_kind = 'request_mdm_enrollment'::text) = (resource IS NULL)))",
+      true
+    ],
+    [
+      "versions",
       "versions_fingerprint_check",
       "c",
       "CHECK ((octet_length(fingerprint) = 32))",
@@ -418,6 +390,64 @@
       "versions_tenant_id_policy_number_key",
       "u",
       "UNIQUE (tenant_id, policy, number)",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "policies",
+      "policies_pkey",
+      "CREATE UNIQUE INDEX policies_pkey ON mdm_policy.policies USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "policies",
+      "policy_scope",
+      "CREATE INDEX policy_scope ON mdm_policy.policies USING btree (tenant_id, (((definition ->> 'scope'::text))::uuid), id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "requests",
+      "requests_pkey",
+      "CREATE UNIQUE INDEX requests_pkey ON mdm_policy.requests USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "triggers",
+      "policy_triggers_due",
+      "CREATE INDEX policy_triggers_due ON mdm_policy.triggers USING btree (tenant_id, version, deadline, created_at, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "triggers",
+      "triggers_pkey",
+      "CREATE UNIQUE INDEX triggers_pkey ON mdm_policy.triggers USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "versions",
+      "versions_pkey",
+      "CREATE UNIQUE INDEX versions_pkey ON mdm_policy.versions USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "versions",
+      "versions_tenant_id_policy_number_key",
+      "CREATE UNIQUE INDEX versions_tenant_id_policy_number_key ON mdm_policy.versions USING btree (tenant_id, policy, number)",
+      true,
+      true,
       true
     ]
   ]

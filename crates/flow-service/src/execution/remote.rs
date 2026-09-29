@@ -181,7 +181,9 @@ impl ExecutionService {
         }
         let delivery = Uuid::new_v4();
         match &operation.frozen {
-            Frozen::Software { .. } => Err(Error::Unsupported.into()),
+            Frozen::Software { .. }
+            | Frozen::AgentInstall { .. }
+            | Frozen::MdmEnrollment { .. } => Err(Error::Unsupported.into()),
             Frozen::Execution { .. } => {
                 self.accept_remote_execution(tx, operation, device, delivery, now)
                     .await

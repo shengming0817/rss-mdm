@@ -2564,7 +2564,7 @@ dependencies = [
 
 [[package]]
 name = "rss-mdm-agent-wire"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "base64 0.22.1",
  "jsonschema",
@@ -2572,6 +2572,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "url",
  "uuid",
  "zeroize",
 ]
@@ -2681,6 +2682,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rss-audit-postgres",
+ "rss-mdm-agent-wire",
  "rss-mdm-apple-mdm",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
@@ -2717,6 +2719,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.20",
+ "url",
  "uuid",
 ]
 
@@ -3233,6 +3236,7 @@ dependencies = [
  "md-5 0.10.6",
  "ring",
  "rss-audit-postgres",
+ "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
@@ -3266,6 +3270,8 @@ dependencies = [
  "base64 0.22.1",
  "quick-xml",
  "time",
+ "url",
+ "uuid",
 ]
 
 [[package]]

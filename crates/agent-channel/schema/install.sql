@@ -11,7 +11,7 @@ CREATE TABLE mdm_agent.bindings (
     capabilities text NOT NULL,
     platform text NOT NULL,
     architecture text NOT NULL,
-    CONSTRAINT agent_binding_profile CHECK (((wire_version = 3) AND (capabilities = ANY (ARRAY['["inventory.basic.v3"]'::text, '["inventory.basic.v3","task.execute.v3"]'::text, '["inventory.basic.v3","software.execute.v3"]'::text, '["inventory.basic.v3","task.execute.v3","software.execute.v3"]'::text])))),
+    CONSTRAINT agent_binding_profile CHECK (((wire_version = 4) AND (capabilities = ANY (ARRAY['["inventory.basic.v4"]'::text, '["inventory.basic.v4","task.execute.v4"]'::text, '["inventory.basic.v4","software.execute.v4"]'::text, '["inventory.basic.v4","task.execute.v4","software.execute.v4"]'::text, '["inventory.basic.v4","mdm.enrollment.v4"]'::text, '["inventory.basic.v4","task.execute.v4","mdm.enrollment.v4"]'::text, '["inventory.basic.v4","software.execute.v4","mdm.enrollment.v4"]'::text, '["inventory.basic.v4","task.execute.v4","software.execute.v4","mdm.enrollment.v4"]'::text])))),
     CONSTRAINT agent_bindings_architecture_check CHECK ((architecture = ANY (ARRAY['x86_64'::text, 'aarch64'::text]))),
     CONSTRAINT agent_bindings_platform_check CHECK ((platform = ANY (ARRAY['windows'::text, 'macos'::text])))
 );

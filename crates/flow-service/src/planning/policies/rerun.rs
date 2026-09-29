@@ -25,7 +25,7 @@ impl Policies {
             if let Some(value)=checked(s.planning.policy_store.replay_in(tx,op.operation_id,&hash).await?)? {return Ok(value);}
             let now=crate::action_admission::now(tx).await?;
             if !policy.enabled || policy.revision as u64!=op.expected_revision {return Err(Error::Conflict.into());}
-            if !matches!(policy.definition.behavior,Behavior::Execution {..}) || op.operation_id.is_nil() || op.input.deadline<=now || op.input.deadline>now.saturating_add(604800) {return Err(Error::Malformed.into());}
+            if !matches!(policy.definition.action,Action::Execution {..}|Action::RequestMdmEnrollment{..}|Action::EnsureAgentInstalled{..}) || op.operation_id.is_nil() || op.input.deadline<=now || op.input.deadline>now.saturating_add(604800) {return Err(Error::Malformed.into());}
             checked(s.planning.policy_store.trigger_in(tx,op.operation_id,policy.version,now,op.input.deadline).await?)?;
             let value=json!({"operationId":op.operation_id,"policyId":id,"versionId":policy.version,"deadline":op.input.deadline});
             checked(s.planning.policy_store.receipt_in(tx,op.operation_id,&hash,&value).await?)?;

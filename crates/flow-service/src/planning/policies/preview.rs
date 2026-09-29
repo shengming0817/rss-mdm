@@ -16,25 +16,33 @@ pub async fn preview(
     audit.set_action("management_read");
     input.definition.validate()?;
     proof.manage(Permission::PolicyRead)?;
-    proof.manage(Permission::ResourceRead)?;
+    if input.definition.action.resource().is_some() {
+        proof.manage(Permission::ResourceRead)?;
+    }
     authorize(proof, &input.definition)?;
     run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,audit,(s,proof,audit,input),|ctx,tx|Box::pin(async move {
         let (s,proof,audit,input)=*ctx;
-        let version=s.resource_in(tx,&input.definition.resource).await?;
-        let software=if matches!(input.definition.behavior, Behavior::Software { .. }) {
-            let Frozen::Software { action }=s.freeze_in(tx, &input.definition.resource, &input.definition.behavior, None).await? else {return Err(Error::Malformed.into());};
+        let authorization=crate::action_admission::current(tx,proof).await?;
+        authorize_snapshot(&authorization,proof,&input.definition)?;
+        let enrollment=if matches!(input.definition.action,Action::RequestMdmEnrollment{..}) {Some(Frozen::MdmEnrollment{action:Box::new(enrollment::freeze(proof,&authorization,&input.definition.action,&s.execution.enrollment_entries)?)})}else{None};
+        let agent=if matches!(input.definition.action,Action::EnsureAgentInstalled{..}){Some(s.freeze_agent_in(tx,proof,&authorization,&input.definition.action).await?)}else{None};
+        let binding=input.definition.action.resource();
+        let version=if let Some(binding)=binding {Some(s.resource_in(tx,binding).await?)}else{None};
+        let software=if matches!(input.definition.action, Action::Software { .. }) {
+            let Frozen::Software { action }=s.freeze_in(tx, &input.definition.action, None).await? else {return Err(Error::Malformed.into());};
             Some(software::SoftwareExecutionPolicy::draft(input.definition.clone(),*action))
-        } else {
-            let selected=variant(&version,&input.definition.resource)?;
-            match (&input.definition.behavior,selected.declaration()) {
-                (Behavior::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
-                (Behavior::Configuration {exit},resource::Declaration::Configuration {remove,..})=>{
+        } else if agent.is_some() {None} else if let Some(version)=version {
+            let selected=variant(&version,binding.ok_or(Error::Malformed)?)?;
+            match (&input.definition.action,selected.declaration()) {
+                (Action::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
+                (Action::Configuration {exit,..},resource::Declaration::Configuration {remove,..})=>{
                     if matches!(exit,Exit::Remove) && remove.is_none(){return Err(Error::Unsupported.into());}
                 },
                 _=>return Err(Error::Malformed.into()),
             }
             None
-        };
+        } else {None};
+        let onboarding=agent.map(|action|Frozen::AgentInstall{action:Box::new(action)}).or(enrollment);
         proof.require_all_devices(Permission::InventoryRead)?;
         let tenant=tx.tenant_id().to_string();let id=input.definition.scope;
         let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE").bind(tenant).bind(id).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?.ok_or(Error::Conflict)?;
@@ -48,10 +56,10 @@ pub async fn preview(
             let task_admission=if let Some(software)=&software {
                 let now=crate::execution::storage::now(tx).await?;
                 Some(software.management_state_in(&s.execution,tx,&device,now).await?)
-            }else{None};
+            }else if let Some(frozen)=&onboarding{Some(onboarding::state_in(&s.execution,tx,&device,frozen).await?)}else{None};
             items.push(json!({"device":device,"eligibility":eligibility,"taskAdmission":task_admission}));
         }
         s.planning.audit_store.append_request_in(tx,audit,200,"success").await?;
-        Ok(json!({"resource":input.definition.resource,"scopeResult":result,"items":items,"nextCursor":next}))
+        Ok(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":next}))
     }),TransactionOwner::Planning).await
 }
