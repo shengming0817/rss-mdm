@@ -208,8 +208,10 @@ pub(crate) async fn start(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    let notifications =
-        crate::worker_wake::Listener::new(crate::device::test_support::options("mdm_access")?);
+    let notifications = crate::worker_wake::Listener::new(
+        crate::device::test_support::options("mdm_access")?,
+        rss_request_context::TenantId::parse(case_a())?,
+    );
     let signals = notifications.signals.clone();
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(

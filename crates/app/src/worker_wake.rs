@@ -11,7 +11,6 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const RECOVERY: Duration = Duration::from_secs(5);
-const CHANNEL: &str = "mdm_work";
 
 #[derive(Clone, Copy)]
 pub(crate) enum Work {
@@ -65,8 +64,7 @@ impl Signals {
 
 /// Called inside the transaction that persists work; PostgreSQL sends only at COMMIT.
 pub(crate) async fn notify(connection: &mut PgConnection, work: Work) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT pg_notify($1,$2)")
-        .bind(CHANNEL)
+    sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),$1)")
         .bind(work.payload())
         .execute(connection)
         .await?;
@@ -90,26 +88,39 @@ pub(crate) async fn wait(notify: &Notify, stop: &CancellationToken, nearest: Opt
 #[derive(Clone)]
 pub(crate) struct Listener {
     pool: PgPool,
+    channel: String,
     pub(crate) signals: Arc<Signals>,
 }
 impl Listener {
-    pub(crate) fn new(options: PgConnectOptions) -> Self {
+    pub(crate) fn new(options: PgConnectOptions, tenant: rss_request_context::TenantId) -> Self {
         Self {
             pool: PgPoolOptions::new()
                 .max_connections(1)
                 .acquire_timeout(RECOVERY)
                 .connect_lazy_with(options),
+            channel: format!("mdm_work_{}", tenant.to_string().replace('-', "")),
             signals: Arc::default(),
         }
     }
     pub(crate) fn registration(self) -> ManagedTaskRegistration {
+        self.registration_with_events(|connected| {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"mdm_notification_connection","connected":connected})
+            );
+        })
+    }
+    fn registration_with_events(
+        self,
+        mut event: impl FnMut(bool) + Send + 'static,
+    ) -> ManagedTaskRegistration {
         let (task, _) = ManagedTask::prepare("mdm-work-notifications", RECOVERY);
         task.into_registration(move |stop| async move {
             let mut failed = false;
             loop {
                 let connect = async {
                     let mut listener = PgListener::connect_with(&self.pool).await?;
-                    listener.listen(CHANNEL).await?;
+                    listener.listen(&self.channel).await?;
                     Ok::<_, sqlx::Error>(listener)
                 };
                 let mut listener = tokio::select! { biased;
@@ -117,7 +128,7 @@ impl Listener {
                     result = tokio::time::timeout(RECOVERY, connect) => match result {
                         Ok(Ok(listener)) => listener,
                         _ => {
-                            if !failed { eprintln!("{}", serde_json::json!({"event":"mdm_notification_connection","connected":false})); }
+                            if !failed { event(false); }
                             failed = true;
                             tokio::select! { () = stop.cancelled() => return Ok(()), () = tokio::time::sleep(RECOVERY) => {} }
                             continue;
@@ -126,16 +137,20 @@ impl Listener {
                 };
                 // LISTEN has committed. Always scan afterwards, including after a disconnect.
                 self.signals.scan_all();
-                if failed { eprintln!("{}", serde_json::json!({"event":"mdm_notification_connection","connected":true})); failed = false; }
+                if failed { event(true); failed = false; }
                 loop {
                     tokio::select! { biased;
                         () = stop.cancelled() => return Ok(()),
                         result = listener.try_recv() => match result {
                             Ok(Some(notification)) => self.signals.received(notification.payload()),
                             // SQLx eagerly reconnects and re-LISTENs before returning None.
-                            Ok(None) => self.signals.scan_all(),
+                            Ok(None) => {
+                                event(false);
+                                event(true);
+                                self.signals.scan_all();
+                            },
                             Err(_) => {
-                                if !failed { eprintln!("{}", serde_json::json!({"event":"mdm_notification_connection","connected":false})); }
+                                if !failed { event(false); }
                                 failed = true;
                                 break;
                             },

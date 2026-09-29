@@ -284,21 +284,15 @@ pub(crate) fn registration(
         let mut health = Health::default();
         loop {
             if let Ok(now) = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock) { apple.report_certificate_health(now, &mut certificate_levels); }
-            let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=async {
-                let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-                let progress = super::renewal::maintain(&apple, &access, &audit_store, &tenant, now).await?;
-                let wake = wake(&apple.push,&execution).await?;
-                Ok::<_, Error>((progress, wake))
-            }=>result };
-            let health_result = result.as_ref().map(|(_, wake)| *wake).map_err(|_| Error::Unavailable(Failure::AppleStorage));
+            let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=cycle(&apple, &execution, &access, &audit_store, &tenant)=>result };
+            let health_result = result.as_ref().map(|(_, wake, _)| *wake).map_err(|_| Error::Unavailable(Failure::AppleStorage));
             let (ready, delay) = health.observe(&health_result);
             let changed = apple.push_ready.swap(ready, std::sync::atomic::Ordering::Relaxed) != ready;
             if result.is_err() || changed { eprintln!("{}",serde_json::json!({"event":"apple_push_health","ready":ready,"consecutive_internal_failures":health.failures,"configuration_failure":health.configuration})); }
             match result {
-                Ok((progress, wake)) if progress > 0 || !matches!(wake, WakeHealth::Idle) => continue,
-                Ok(_) => {
-                    let nearest = super::renewal::next_maintenance(&access, &tenant).await;
-                    crate::worker_wake::wait(signals.get(crate::worker_wake::Work::Apple), &token, nearest.ok().flatten()).await;
+                Ok((progress, wake, _)) if progress > 0 || !matches!(wake, WakeHealth::Idle) => continue,
+                Ok((_, _, nearest)) => {
+                    crate::worker_wake::wait(signals.get(crate::worker_wake::Work::Apple), &token, nearest).await;
                 }
                 Err(_) => { tokio::select! { biased; ()=token.cancelled()=>return Ok(()), ()=tokio::time::sleep(delay)=>{} } }
             }
@@ -353,3 +347,21 @@ pub(super) mod tests;
 #[cfg(test)]
 #[path = "../../tests/apple/support/apns.rs"]
 pub(in crate::apple) mod test_support;
+
+pub(super) async fn cycle(
+    apple: &super::Apple,
+    execution: &crate::execution::ExecutionService,
+    access: &crate::Database,
+    audit_store: &rss_mdm_audit_integration::AuditStore,
+    tenant: &str,
+) -> Result<(usize, WakeHealth, Option<Duration>), Error> {
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let progress = super::renewal::maintain(apple, access, audit_store, tenant, now).await?;
+    let wake = wake(&apple.push, execution).await?;
+    let nearest = if progress == 0 && matches!(wake, WakeHealth::Idle) {
+        super::renewal::next_maintenance(access, tenant).await?
+    } else {
+        None
+    };
+    Ok((progress, wake, nearest))
+}

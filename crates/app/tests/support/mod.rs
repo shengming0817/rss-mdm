@@ -344,7 +344,10 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::automation::Resource(automation.clone()),
     ));
-    let notifications = crate::worker_wake::Listener::new(config.access_database.options()?);
+    let notifications = crate::worker_wake::Listener::new(
+        config.access_database.options()?,
+        rss_request_context::TenantId::parse(case_tenant())?,
+    );
     let signals = notifications.signals.clone();
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         notifications.clone(),

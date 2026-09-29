@@ -139,3 +139,39 @@ async fn durable_push_leases_receipts_and_health() -> Result<()> {
     drop(device);
     f.close().await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=apple.push: isolated deadline query permission fault"]
+async fn deadline_query_failure_is_not_healthy_idle() -> Result<()> {
+    use sqlx::Executor;
+    let fixture = Fixture::start().await?;
+    let mut pg =
+        PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
+        .await?;
+    let result = push::cycle(
+        fixture.app.apple()?,
+        &fixture.app.execution,
+        &fixture.app.access,
+        &fixture.app.audit_store,
+        case_tenant(),
+    )
+    .await;
+    pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
+        .await?;
+    let restored = push::cycle(
+        fixture.app.apple()?,
+        &fixture.app.execution,
+        &fixture.app.access,
+        &fixture.app.audit_store,
+        case_tenant(),
+    )
+    .await;
+    fixture.close().await?;
+    ensure!(
+        result.is_err(),
+        "deadline query failure became healthy idle"
+    );
+    ensure!(matches!(restored, Ok((0, push::WakeHealth::Idle, None))));
+    Ok(())
+}

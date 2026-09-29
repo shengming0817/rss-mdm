@@ -12,7 +12,7 @@ BEGIN
  ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm.asset_clock.revision+1
  RETURNING revision INTO v;
  INSERT INTO mdm.asset_changes(tenant_id,revision,kind,identity,fields) VALUES(t,v,k,i,f);
- PERFORM pg_catalog.pg_notify('mdm_work','automation_input');
+ PERFORM pg_catalog.pg_notify('mdm_work_' || replace(t::text,'-',''),'automation_input');
  RETURN v;
 END $$;
 COMMIT;

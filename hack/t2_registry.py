@@ -533,7 +533,9 @@ MODULES['apple.renewal'] = replace(MODULES['apple.renewal'], db_mode='reuse', sc
 MODULES['apple.identity'] = replace(MODULES['apple.identity'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('apple::tests::identity::token_is_required_before_management', 'reuse', 'objects'),
 ))
-MODULES['apple.push'] = replace(MODULES['apple.push'], db_mode='reuse', scope='tenant')
+MODULES['apple.push'] = replace(MODULES['apple.push'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('apple::tests::push::deadline_query_failure_is_not_healthy_idle', 'fresh', 'objects'),
+))
 MODULES['apple.fairness'] = replace(MODULES['apple.fairness'], db_mode='reuse', scope='tenant')
 MODULES['apple.host'] = replace(MODULES['apple.host'], db_mode='fresh', scope='objects')
 

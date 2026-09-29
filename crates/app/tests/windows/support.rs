@@ -218,9 +218,10 @@ impl Host {
         Ok(Self {
             root,
             app,
-            notifications: crate::worker_wake::Listener::new(crate::device::test_support::options(
-                "mdm_access",
-            )?),
+            notifications: crate::worker_wake::Listener::new(
+                crate::device::test_support::options("mdm_access")?,
+                rss_request_context::TenantId::parse(case_tenant())?,
+            ),
             browser,
             store,
             runtime,

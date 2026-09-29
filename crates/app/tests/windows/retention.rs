@@ -1,6 +1,6 @@
 //! Real PG failure/role/concurrency tests, called by the native Windows T2 scenario.
 use crate::windows::test_support::*;
-use crate::{Database, Error, device::test_support::options};
+use crate::{Database, device::test_support::options};
 use anyhow::ensure;
 use axum::http::StatusCode;
 use rss_mdm_windows_mdm::{CodecLimits, syncml};
@@ -109,6 +109,22 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     let audit_store = store
         .audit_store(&crate::config::AuditConfig::Plain)
         .await?;
+    // Only the deadline query uses ceil(numeric); other empty work succeeds.
+    pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
+        .await?;
+    let failed_deadline = crate::windows::retention::sweep(store, &audit_store, tenant).await;
+    pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
+        .await?;
+    ensure!(
+        failed_deadline.is_err(),
+        "deadline query failure became healthy idle"
+    );
+    ensure!(
+        crate::windows::retention::sweep(store, &audit_store, tenant)
+            .await?
+            .0
+            == 0
+    );
     let mut held_head = pg.begin().await?;
     let _: i32 =
         sqlx::query_scalar("SELECT 1 FROM rss_audit.heads WHERE tenant_id=$1::uuid FOR UPDATE")
@@ -183,42 +199,45 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     ensure!(Database::connect(options("mdm_access")?).await.is_err());
     pg.execute("ALTER POLICY expired_only ON mdm_access.management_sessions USING(expires_at<clock_timestamp())").await?;
     let restarted = Arc::new(Database::connect(options("mdm_access")?).await?);
-    seed(&mut pg, tenant, registration, 1000).await?;
-    // The production ManagedTask performs cleanup and drains within its lifecycle owner.
-    let mut scope = rss_runtime::LifecycleScope::<(), Error, std::io::Error>::try_new(
+    // Start with future work: startup cannot prune it, and the five-second fallback
+    // is too late for this assertion. The production task must use nearest expiry.
+    schedule(&mut pg, tenant, registration, "1000", 1000, false).await?;
+    let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(3))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    let owner = restarted.clone();
-    let scope_tenant = tenant.to_owned();
-    let outcome = scope
-        .drive(
-            |startup| {
-                Box::pin(async move {
-                    let mut launch = startup.commit();
-                    launch.stage_task_with_token(
-                        crate::windows::retention::registration(
-                            owner.clone(),
-                            owner
-                                .audit_store(&crate::config::AuditConfig::Plain)
-                                .await
-                                .unwrap(),
-                            scope_tenant,
-                            Arc::default(),
-                        )
-                        .critical(),
-                    );
-                    launch.finish();
-                    std::future::pending().await
-                })
-            },
-            async {
-                tokio::time::sleep(Duration::from_millis(1200)).await;
-                Ok(())
-            },
+    let startup = owner.startup()?;
+    let mut launch = startup.commit();
+    launch.stage_task_with_token(
+        crate::windows::retention::registration(
+            restarted.clone(),
+            restarted
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
+            tenant.to_owned(),
+            host.notifications.signals.clone(),
         )
-        .await?;
-    ensure!(outcome.shutdown().as_ref().is_ok_and(|r| r.is_clean()));
+        .critical(),
+    );
+    launch.finish();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    ensure!(
+        scheduled_count(&mut pg, tenant, "1000").await? == 1,
+        "future session was pruned early"
+    );
+    await_pruned(&mut pg, tenant, "1000", Duration::from_secs(3)).await?;
+    // A later deadline is already idle; a new earlier committed deadline must
+    // interrupt it through the real LISTEN connection, then sleep until due.
+    schedule(&mut pg, tenant, registration, "1001", 20000, true).await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    schedule(&mut pg, tenant, registration, "1002", 700, true).await?;
+    await_pruned(&mut pg, tenant, "1002", Duration::from_secs(3)).await?;
+    ensure!(scheduled_count(&mut pg, tenant, "1001").await? == 1);
+    // A committed expiry without any hint still recovers from durable state.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    schedule(&mut pg, tenant, registration, "1003", 200, false).await?;
+    await_pruned(&mut pg, tenant, "1003", Duration::from_secs(7)).await?;
+    ensure!(owner.shutdown().join().await?.is_clean());
     ensure!(messages(&mut pg, tenant).await? == 0);
     ensure!(queries(&mut pg, tenant).await? == 0);
     ensure!(
@@ -228,5 +247,49 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     restarted.close().await;
     pg.close().await?;
     host.close().await?;
+    Ok(())
+}
+
+async fn schedule(
+    pg: &mut PgConnection,
+    tenant: &str,
+    registration: Uuid,
+    session: &str,
+    millis: i64,
+    hint: bool,
+) -> anyhow::Result<()> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO mdm_access.management_sessions SELECT s.tenant_id,s.registration,$3,s.generation,s.credential,'complete',1,s.client_authenticated,s.correlation,s.nonce,clock_timestamp()+$4*interval '1 millisecond',NULL::uuid FROM (SELECT * FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int<1000 ORDER BY session_id LIMIT 1) s")
+        .bind(tenant).bind(registration.to_string()).bind(session).bind(millis).execute(&mut *tx).await?;
+    if hint {
+        crate::worker_wake::notify(&mut tx, crate::worker_wake::Work::Windows).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+async fn scheduled_count(
+    pg: &mut PgConnection,
+    tenant: &str,
+    session: &str,
+) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND session_id=$2").bind(tenant).bind(session).fetch_one(pg).await?)
+}
+async fn await_pruned(
+    pg: &mut PgConnection,
+    tenant: &str,
+    session: &str,
+    limit: Duration,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(limit, async {
+        while scheduled_count(pg, tenant, session).await? != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
     Ok(())
 }

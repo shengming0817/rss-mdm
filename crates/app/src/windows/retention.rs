@@ -101,16 +101,15 @@ pub(crate) fn registration(
         let mut failures = 0u64;
         loop {
             if token.is_cancelled() { return Ok(()); }
-            let result = prune_management(&database, &audit_store, &tenant).await;
+            let result = sweep(&database, &audit_store, &tenant).await;
             match result {
-                Ok(count) => {
+                Ok((count, nearest)) => {
                     failures = 0;
                     if count > 0 {
                         eprintln!("{}", serde_json::json!({"event":"mdm_management_retention","sessions":count}));
                         continue;
                     }
-                    let nearest = next_expiry(&database, &tenant).await;
-                    crate::worker_wake::wait(notify, &token, nearest.ok().flatten()).await;
+                    crate::worker_wake::wait(notify, &token, nearest).await;
                 }
                 Err(_) => {
                     failures = failures.saturating_add(1);
@@ -128,4 +127,18 @@ async fn next_expiry(database: &crate::Database, tenant: &str) -> Result<Option<
         .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
     tx.rollback().await.map_err(db)?;
     Ok(millis.map(|ms| Duration::from_millis(ms.max(1) as u64)))
+}
+
+pub(super) async fn sweep(
+    database: &crate::Database,
+    store: &rss_mdm_audit_integration::AuditStore,
+    tenant: &str,
+) -> Result<(u64, Option<Duration>), Error> {
+    let count = prune_management(database, store, tenant).await?;
+    let nearest = if count == 0 {
+        next_expiry(database, tenant).await?
+    } else {
+        None
+    };
+    Ok((count, nearest))
 }

@@ -390,6 +390,7 @@ impl RunningAutomation {
         .unwrap();
         let notifications = crate::worker_wake::Listener::new(
             crate::device::test_support::options("mdm_access").unwrap(),
+            service.tenant,
         );
         let signals = notifications.signals.clone();
         let mut startup = stack.startup().unwrap();

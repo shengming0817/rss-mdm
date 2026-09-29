@@ -185,8 +185,10 @@ impl Fixture {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
-        let notifications =
-            crate::worker_wake::Listener::new(crate::device::test_support::options("mdm_access")?);
+        let notifications = crate::worker_wake::Listener::new(
+            crate::device::test_support::options("mdm_access")?,
+            rss_request_context::TenantId::parse(case_tenant())?,
+        );
         let signals = notifications.signals.clone();
         {
             let mut startup = owner.startup()?;

@@ -19,6 +19,7 @@ async fn durable_asset_group_scope_pipeline() {
             .clone()
             .username("mdm_access")
             .password("access-fixture"),
+        service.tenant,
     );
     let automation =
         crate::automation::Automation::connect(service.clone(), assets(&service).await, options)

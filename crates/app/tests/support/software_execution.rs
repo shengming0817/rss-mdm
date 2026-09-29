@@ -390,7 +390,10 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::execution::Resource(worker.clone()),
     ));
-    let notifications = crate::worker_wake::Listener::new(config.access_database.options()?);
+    let notifications = crate::worker_wake::Listener::new(
+        config.access_database.options()?,
+        rss_request_context::TenantId::parse(&config.identity.tenant_id)?,
+    );
     let signals = notifications.signals.clone();
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         notifications.clone(),

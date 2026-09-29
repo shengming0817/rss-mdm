@@ -111,6 +111,15 @@ pub async fn serve(
                                 .access_database
                                 .options()
                                 .map_err(|e| ProcessError::at("startup.notifications", e))?,
+                            rss_request_context::TenantId::parse(
+                                &compiled.config.identity.tenant_id,
+                            )
+                            .map_err(|_| {
+                                ProcessError::at(
+                                    "startup.notification_tenant",
+                                    crate::Error::Malformed,
+                                )
+                            })?,
                         );
                         startup.stage_resource(DynManagedResource::new_box(notifications.clone()));
                         use crate::inventory_runtime::{
