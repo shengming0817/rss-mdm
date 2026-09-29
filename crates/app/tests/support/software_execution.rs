@@ -378,7 +378,7 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
         crate::execution::Resource(worker.clone()),
     ));
     let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(worker.registration().critical());
+    launch.stage_deferred_task_with_token(worker.registration(Arc::default()).critical());
     launch.finish();
     Ok(Some(stack))
 }

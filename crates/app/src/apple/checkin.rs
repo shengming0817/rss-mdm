@@ -43,12 +43,12 @@ pub(super) async fn checkin(
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
     let budget = app.devices.retirement_budget();
-    let operation_control = budget.operation_control();
+    let control = budget.control();
     let attempt = app
         .audit_store
-        .execute_with_operation(
+        .write(
             principal.tenant(),
-            &operation_control,
+            &control,
             (
                 &app.audit_store,
                 CheckinInputs {
@@ -125,6 +125,9 @@ async fn checkin_on(
             let Some(revision) = revision else {
                 return Ok(Some("replay"));
             };
+            crate::worker_wake::notify(tx, crate::worker_wake::Work::Apple)
+                .await
+                .map_err(db)?;
             (
                 format!("apple-token:{registration}:{revision}"),
                 serde_json::json!({"tokenRevision":revision}),

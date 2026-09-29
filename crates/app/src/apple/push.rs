@@ -276,6 +276,7 @@ pub(crate) fn registration(
     access: std::sync::Arc<crate::Database>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
+    signals: std::sync::Arc<crate::worker_wake::Signals>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("apple-apns", Duration::from_secs(8));
     task.into_registration(move |token| async move {
@@ -285,13 +286,22 @@ pub(crate) fn registration(
             if let Ok(now) = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock) { apple.report_certificate_health(now, &mut certificate_levels); }
             let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=async {
                 let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-                super::renewal::maintain(&apple, &access, &audit_store, &tenant, now).await?;
-                wake(&apple.push,&execution).await
+                let progress = super::renewal::maintain(&apple, &access, &audit_store, &tenant, now).await?;
+                let wake = wake(&apple.push,&execution).await?;
+                Ok::<_, Error>((progress, wake))
             }=>result };
-            let (ready, delay) = health.observe(&result);
+            let health_result = result.as_ref().map(|(_, wake)| *wake).map_err(|_| Error::Unavailable(Failure::AppleStorage));
+            let (ready, delay) = health.observe(&health_result);
             let changed = apple.push_ready.swap(ready, std::sync::atomic::Ordering::Relaxed) != ready;
             if result.is_err() || changed { eprintln!("{}",serde_json::json!({"event":"apple_push_health","ready":ready,"consecutive_internal_failures":health.failures,"configuration_failure":health.configuration})); }
-            tokio::select! { biased; ()=token.cancelled()=>return Ok(()), ()=tokio::time::sleep(delay)=>{} }
+            match result {
+                Ok((progress, wake)) if progress > 0 || !matches!(wake, WakeHealth::Idle) => continue,
+                Ok(_) => {
+                    let nearest = super::renewal::next_maintenance(&access, &tenant).await;
+                    crate::worker_wake::wait(signals.get(crate::worker_wake::Work::Apple), &token, nearest.ok().flatten()).await;
+                }
+                Err(_) => { tokio::select! { biased; ()=token.cancelled()=>return Ok(()), ()=tokio::time::sleep(delay)=>{} } }
+            }
         }
     })
 }

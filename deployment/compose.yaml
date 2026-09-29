@@ -15,9 +15,11 @@ services:
     command: [sh, -ec, 'cp /inputs/server.key /tmp/server.key; cp /inputs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c max_connections=${MDM_PG_MAX_CONNECTIONS:-100} -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key']
     healthcheck:
       test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres]
-      interval: 1s
+      start_period: 60s
+      start_interval: 1s
+      interval: 10s
       timeout: 3s
-      retries: 60
+      retries: 6
   gateway-probe:
     profiles: [probe]
     image: ${MDM_NGINX_IMAGE:?}

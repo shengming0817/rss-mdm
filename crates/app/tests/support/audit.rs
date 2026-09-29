@@ -97,7 +97,10 @@ pub(crate) async fn request_store() -> anyhow::Result<(
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let deadline = Deadline::from_timeout(&timer, Duration::from_secs(2))?;
-    let control = Control::new(&timer, deadline, &cancel);
+    let control = {
+        let cutoff = deadline;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let store = AuditStore::new(pool.clone(), Integrity::Plain, &control).await?;
     Ok((pool, std::sync::Arc::new(store)))
 }

@@ -88,11 +88,8 @@ pub async fn audit_store_for(role: &str) -> Arc<rss_mdm_audit_integration::Audit
         .await
         .unwrap();
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_audit_postgres::Control::new(
-        &Timer,
-        Deadline::from_timeout(&Timer, Duration::from_secs(20)).unwrap(),
-        &cancel,
-    );
+    let cutoff = Deadline::from_timeout(&Timer, Duration::from_secs(20)).unwrap();
+    let control = rss_audit_postgres::Control::new(&Timer, cutoff, cutoff, &cancel);
     Arc::new(
         rss_mdm_audit_integration::AuditStore::new(
             pool,

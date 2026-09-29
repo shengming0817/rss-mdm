@@ -189,6 +189,9 @@ pub(crate) async fn management_on(
     if stored.is_none() {
         sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
                 .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
+        crate::worker_wake::notify(tx, crate::worker_wake::Work::Windows)
+            .await
+            .map_err(db)?;
     } else {
         sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,correlation=$7,nonce=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
                 .bind(&tenant).bind(&registration).bind(&session).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;

@@ -68,7 +68,8 @@ async fn durable_asset_group_scope_pipeline() {
     )
     .unwrap();
     let mut launch = stack.startup().unwrap().commit();
-    launch.stage_deferred_task_with_token(automation.clone().registration().critical());
+    launch
+        .stage_deferred_task_with_token(automation.clone().registration(Arc::default()).critical());
     launch.finish();
     let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
     assert_eq!(

@@ -77,6 +77,7 @@ pub(crate) async fn accept_in(
         attempt_id: attempt,
     };
     sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,delivery_pending) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$8,$9,$10,'complete',$11,$12,true)")
-                .bind(tenant.to_string()).bind(id.to_string()).bind(registration.to_string()).bind(source.as_str()).bind(epoch).bind(scope.encode().map_err(|_|sqlx::Error::Protocol("invalid scope".into()))?).bind(sequence).bind(now).bind(serde_json::to_string(&quality).expect("closed quality")).bind(if trusted {"snapshot"} else {"failed"}).bind(batch.encode()).bind(digest).execute(c).await?;
+                .bind(tenant.to_string()).bind(id.to_string()).bind(registration.to_string()).bind(source.as_str()).bind(epoch).bind(scope.encode().map_err(|_|sqlx::Error::Protocol("invalid scope".into()))?).bind(sequence).bind(now).bind(serde_json::to_string(&quality).expect("closed quality")).bind(if trusted {"snapshot"} else {"failed"}).bind(batch.encode()).bind(digest).execute(&mut *c).await?;
+    crate::worker_wake::notify(c, crate::worker_wake::Work::Inventory).await?;
     Ok(())
 }

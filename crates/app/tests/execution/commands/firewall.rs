@@ -97,7 +97,7 @@ impl Client {
             crate::automation::Resource(automation.clone()),
         ));
         let mut launch = startup.commit();
-        launch.stage_deferred_task_with_token(automation.registration().critical());
+        launch.stage_deferred_task_with_token(automation.registration(Arc::default()).critical());
         launch.finish();
         let cap = native::begin(peer, url, initial, ack, 950, None).await?;
         let message = native::report(&cap.first, &cap.gets, "10.0.19045.0", 200);
@@ -585,7 +585,13 @@ impl Client {
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
         let mut launch = owner.startup()?.commit();
-        launch.stage_deferred_task_with_token(self.app.execution.clone().registration().critical());
+        launch.stage_deferred_task_with_token(
+            self.app
+                .execution
+                .clone()
+                .registration(Arc::default())
+                .critical(),
+        );
         launch.finish();
         Ok(owner)
     }

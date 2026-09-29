@@ -12,7 +12,7 @@ pub(crate) async fn prune_management(
 ) -> Result<u64, Error> {
     // This is only a non-locking hint. Any candidate is re-read under Audit then
     // business locks below; a concurrent new expiry is picked up on the next tick.
-    let mut hint = database.begin(tenant).await?;
+    let mut hint = database.begin_read(tenant).await?;
     let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at<clock_timestamp())")
         .bind(tenant).fetch_one(&mut *hint).await.map_err(db)?;
     hint.rollback().await.map_err(db)?;
@@ -22,11 +22,11 @@ pub(crate) async fn prune_management(
     let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
     audit.identify_service("service:management-retention");
     let budget = crate::audit_budget::AuditBudget::retirement(None);
-    let operation_control = budget.operation_control();
+    let control = budget.control();
     let attempt = store
-        .execute_with_operation(
+        .write(
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            &operation_control,
+            &control,
             (store, tenant, &audit),
             |(store, tenant, audit), tx| {
                 Box::pin(async move {
@@ -93,22 +93,39 @@ pub(crate) fn registration(
     database: Arc<crate::Database>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
+    signals: std::sync::Arc<crate::worker_wake::Signals>,
 ) -> ManagedTaskRegistration {
-    let (task, _) = ManagedTask::prepare("mdm-management-retention", Duration::from_secs(3));
+    let (task, _) = ManagedTask::prepare("mdm-management-retention", Duration::from_secs(10));
     task.into_registration(move |token| async move {
-        let mut tick=tokio::time::interval(Duration::from_secs(1));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut failures=0u64;
+        let notify = signals.get(crate::worker_wake::Work::Windows);
+        let mut failures = 0u64;
         loop {
-            tokio::select! { biased; ()=token.cancelled()=>return Ok(()), _=tick.tick()=>{} }
-            let result=tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=tokio::time::timeout(Duration::from_secs(7),prune_management(&database, &audit_store, &tenant))=>result };
+            if token.is_cancelled() { return Ok(()); }
+            let result = prune_management(&database, &audit_store, &tenant).await;
             match result {
-                Ok(Ok(count)) => { failures=0; if count>0 { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention","sessions":count})); } }
-                failed => {
-                    failures=failures.saturating_add(1);
-                    if failures.is_power_of_two() { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention_failure","kind":if failed.is_err() { "deadline" } else { "access_store" },"count":failures})); }
+                Ok(count) => {
+                    failures = 0;
+                    if count > 0 {
+                        eprintln!("{}", serde_json::json!({"event":"mdm_management_retention","sessions":count}));
+                        continue;
+                    }
+                    let nearest = next_expiry(&database, &tenant).await;
+                    crate::worker_wake::wait(notify, &token, nearest.ok().flatten()).await;
+                }
+                Err(_) => {
+                    failures = failures.saturating_add(1);
+                    if failures.is_power_of_two() { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention_failure","kind":"access_store","count":failures})); }
+                    tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
                 }
             }
         }
     })
+}
+
+async fn next_expiry(database: &crate::Database, tenant: &str) -> Result<Option<Duration>, Error> {
+    let mut tx = database.begin_read(tenant).await?;
+    let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(expires_at)-clock_timestamp())*1000)::bigint FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at>clock_timestamp()")
+        .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
+    tx.rollback().await.map_err(db)?;
+    Ok(millis.map(|ms| Duration::from_millis(ms.max(1) as u64)))
 }

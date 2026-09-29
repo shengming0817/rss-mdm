@@ -171,7 +171,7 @@ async fn register_inner(
     let control = budget.control();
     let attempt = app
         .audit_store
-        .execute(
+        .write(
             TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
             &control,
             (
@@ -357,7 +357,7 @@ async fn report_inner(
     let fingerprint = batch.fingerprint(&scope).map_err(|_| Error::Malformed)?;
     let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
     let control = budget.control();
-    let attempt = app.audit_store.execute(principal.tenant(), &control,
+    let attempt = app.audit_store.write(principal.tenant(), &control,
         (&app.audit_store, &principal, &scope, &input, &batch, audit, &fingerprint),
         |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),

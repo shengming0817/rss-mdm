@@ -185,7 +185,16 @@ impl Fixture {
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
         {
-            let mut launch = owner.startup()?.commit();
+            let notifications = crate::worker_wake::Listener::new(
+                crate::device::test_support::options("mdm_access")?,
+            );
+            let signals = notifications.signals.clone();
+            let mut startup = owner.startup()?;
+            startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+                notifications.clone(),
+            ));
+            let mut launch = startup.commit();
+            launch.stage_task_with_token(notifications.registration().critical());
             launch.stage_task_with_token(
                 tls::registration(
                     manage,
@@ -210,8 +219,9 @@ impl Fixture {
                 )
                 .critical(),
             );
-            launch.stage_deferred_task_with_token(execution.registration().critical());
-            launch.stage_deferred_task_with_token(runtime.registration().critical());
+            launch
+                .stage_deferred_task_with_token(execution.registration(signals.clone()).critical());
+            launch.stage_deferred_task_with_token(runtime.registration(signals.clone()).critical());
             launch.finish();
         }
         crate::test_support::identity::set_grants(

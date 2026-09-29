@@ -230,7 +230,10 @@ pub(crate) async fn audit_store_with_integrity(
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let deadline = Deadline::from_timeout(&timer, Duration::from_secs(2)).unwrap();
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let control = {
+        let cutoff = deadline;
+        rss_audit_postgres::Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     Arc::new(
         rss_mdm_audit_integration::AuditStore::new(pool, integrity, &control)
             .await
@@ -385,8 +388,19 @@ impl RunningAutomation {
             Arc::new(crate::lifecycle::RuntimeTimer),
         )
         .unwrap();
-        let mut launch = stack.startup().unwrap().commit();
-        launch.stage_deferred_task_with_token(automation.clone().registration().critical());
+        let notifications = crate::worker_wake::Listener::new(
+            crate::device::test_support::options("mdm_access").unwrap(),
+        );
+        let signals = notifications.signals.clone();
+        let mut startup = stack.startup().unwrap();
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            notifications.clone(),
+        ));
+        let mut launch = startup.commit();
+        launch.stage_task_with_token(notifications.registration().critical());
+        launch.stage_deferred_task_with_token(
+            automation.clone().registration(signals.clone()).critical(),
+        );
         launch.finish();
         Self { stack, automation }
     }

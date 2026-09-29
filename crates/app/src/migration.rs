@@ -293,6 +293,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "software-deployment-v1",
             include_str!("../migrations/0021_software_deployment.sql"),
         ),
+        (
+            "asset-worker-notify-v1",
+            include_str!("../migrations/0022_asset_worker_notify.sql"),
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.

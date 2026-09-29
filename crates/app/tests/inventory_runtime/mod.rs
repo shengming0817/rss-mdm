@@ -430,3 +430,25 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     access.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=inventory.runtime: pure discovery does not create an Audit or Ledger head"]
+async fn empty_discovery_has_no_audit_head() -> Result<()> {
+    let database = Arc::new(Database::connect(options("mdm_access")?).await?);
+    let audit = database
+        .audit_store(&crate::config::AuditConfig::Plain)
+        .await?;
+    let tenant = Uuid::new_v4().to_string();
+    let delivery = crate::collection::store::Delivery::new(database.clone(), audit);
+    ensure!(delivery.pending_reports(&tenant).await?.is_empty());
+    let mut tx = database.begin(&tenant).await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.heads WHERE tenant_id=$1::uuid")
+            .bind(&tenant)
+            .fetch_one(&mut *tx)
+            .await?;
+    ensure!(count == 0, "empty discovery created an Audit head");
+    tx.rollback().await?;
+    database.close().await;
+    Ok(())
+}

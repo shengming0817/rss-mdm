@@ -204,6 +204,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
                                 .await
                                 .unwrap(),
                             scope_tenant,
+                            Arc::default(),
                         )
                         .critical(),
                     );

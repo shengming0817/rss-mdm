@@ -3,14 +3,13 @@ use super::*;
 async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(
+    let control = {
+        let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(3))?;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
+    let operation = rss_audit_postgres::Control::new(
         &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(3))?,
-        &cancel,
-    );
-    let operation = rss_mdm_audit_integration::OperationBudget::new(
-        &timer,
-        Deadline::from_timeout(&timer, control.remaining())?,
+        Deadline::from_timeout(&timer, control.total_remaining())?,
         Deadline::from_timeout(&timer, Duration::from_secs(3))?,
         &cancel,
     );
@@ -20,7 +19,7 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let fact = Fact::business(&request, "commit-ack-loss", b"A", 200, "success", None)?;
     store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let attempt = store
-        .execute_with_operation(tenant, &operation, (&store, &fact), |(s, f), tx| {
+        .write(tenant, &operation, (&store, &fact), |(s, f), tx| {
             Box::pin(async move { s.append(tx, f, false).await })
         })
         .await;
@@ -28,7 +27,7 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let original = bytes(pool, tenant).await?;
     ensure!(original.len() == 1);
     let attempt = store
-        .execute_with_operation(tenant, &operation, (&store, &fact), |(s, f), tx| {
+        .write(tenant, &operation, (&store, &fact), |(s, f), tx| {
             Box::pin(async move { s.append(tx, f, true).await })
         })
         .await;
@@ -37,7 +36,7 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let failed = Fact::business(&request, "rollback-ack-loss", b"B", 200, "success", None)?;
     store.inject_next_fault(rss_audit_postgres::PgFault::RollbackFailedAfterAck);
     let attempt = store
-        .execute_with_operation(tenant, &operation, (&store, &failed), |(s, f), tx| {
+        .write(tenant, &operation, (&store, &failed), |(s, f), tx| {
             Box::pin(async move {
                 s.append(tx, f, false).await?;
                 Err::<(), _>(Error::Receipt)
@@ -52,7 +51,7 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
 
 pub(super) async fn crash_write<T: rss_request_context::ExecutionTimer>(
     store: &AuditStore,
-    tx: &mut rss_audit_postgres::AuditTransaction<'_, '_, '_, T>,
+    tx: &mut rss_audit_postgres::WriteAuditTransaction<'_, '_, '_, T>,
     fact: &Fact,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
@@ -98,20 +97,18 @@ async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
     .await??;
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(3))?,
-        &cancel,
-    );
+    let control = {
+        let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(3))?;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
-    let short = Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, Duration::from_millis(50))?,
-        &cancel,
-    );
+    let short = {
+        let cutoff = Deadline::from_timeout(&timer, Duration::from_millis(50))?;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let attempted = std::sync::atomic::AtomicBool::new(false);
     let locked = store
-        .execute(tenant, &short, &attempted, |attempted, _| {
+        .write(tenant, &short, &attempted, |attempted, _| {
             Box::pin(async move {
                 attempted.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok::<(), Error>(())
@@ -134,7 +131,7 @@ async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
         None,
     )?;
     let recovered = store
-        .execute(tenant, &control, (&store, &fact), |(store, fact), tx| {
+        .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move { crash_write(store, tx, fact).await })
         })
         .await;

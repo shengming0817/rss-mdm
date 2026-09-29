@@ -70,9 +70,12 @@ pub(crate) async fn report_statuses(
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = CancellationToken::new();
     let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))?;
-    let control = rss_audit_postgres::Control::new(&timer, deadline, &cancel);
+    let control = {
+        let cutoff = deadline;
+        rss_audit_postgres::Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let attempt = store
-        .execute(
+        .write(
             principal.tenant(),
             &control,
             (&store, &principal, values, statuses, &audit),
@@ -205,8 +208,16 @@ pub(crate) async fn start(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    let mut launch = owner.startup()?.commit();
-    launch.stage_deferred_task_with_token(runtime.registration().critical());
+    let notifications =
+        crate::worker_wake::Listener::new(crate::device::test_support::options("mdm_access")?);
+    let signals = notifications.signals.clone();
+    let mut startup = owner.startup()?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        notifications.clone(),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_task_with_token(notifications.registration().critical());
+    launch.stage_deferred_task_with_token(runtime.registration(signals.clone()).critical());
     launch.finish();
     Ok(Some(owner))
 }

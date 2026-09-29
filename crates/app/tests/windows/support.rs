@@ -247,7 +247,15 @@ impl Host {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
-        let mut launch = owner.startup()?.commit();
+        let notifications =
+            crate::worker_wake::Listener::new(crate::device::test_support::options("mdm_access")?);
+        let signals = notifications.signals.clone();
+        let mut startup = owner.startup()?;
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            notifications.clone(),
+        ));
+        let mut launch = startup.commit();
+        launch.stage_task_with_token(notifications.registration().critical());
         for (listener, router, kind) in [
             (
                 self.enroll.take().unwrap(),
@@ -272,7 +280,12 @@ impl Host {
             );
         }
         if crate::test_support::case::owns_worker() {
-            launch.stage_deferred_task_with_token(self.runtime.clone().registration().critical());
+            launch.stage_deferred_task_with_token(
+                self.runtime
+                    .clone()
+                    .registration(signals.clone())
+                    .critical(),
+            );
         }
         launch.finish();
         self.running = Some(owner);

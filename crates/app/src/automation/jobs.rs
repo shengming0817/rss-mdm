@@ -35,8 +35,10 @@ pub(crate) async fn forward_jobs(
         rss_reconcile_postgres::messaging::wake_in(tx, target, context, |_,tx|Box::pin(async move {
                 let tenant=tx.tenant_id().to_string();
                 tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query("UPDATE mdm_automation.automation_jobs SET forwarded=true WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT forwarded")
-                        .bind(tenant).bind(id.to_string()).execute(c).await?;Ok(())
+                    let changed = sqlx::query("UPDATE mdm_automation.automation_jobs SET forwarded=true WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT forwarded")
+                        .bind(tenant).bind(id.to_string()).execute(&mut *c).await?;
+                    if changed.rows_affected() > 0 { crate::worker_wake::notify(c, crate::worker_wake::Work::Automation).await?; }
+                    Ok(())
                 })).await
             })).await
     }),
@@ -85,6 +87,7 @@ pub(crate) async fn enqueue_job_in(
             sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb)")
                 .bind(tenant).bind(id.to_string()).bind(kind).bind(target).bind(document).execute(c).await?;Ok(())
         })).await?;
+    crate::worker_wake::notify_in(tx, crate::worker_wake::Work::AutomationInput).await?;
     Ok(accepted(id, input))
 }
 pub(crate) fn accepted(id: Uuid, input: &JobInput) -> Value {

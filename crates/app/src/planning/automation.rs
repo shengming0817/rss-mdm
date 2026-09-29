@@ -84,7 +84,7 @@ impl Planning {
                                 let tenant = tx.tenant_id().to_string();
                                 tx.with_connection(move |c| {
                                     Box::pin(async move {
-                                        sqlx::query(
+                                        let result = sqlx::query(
                                             r#"
                       WITH batch AS (
                         SELECT revision FROM mdm.asset_changes
@@ -95,9 +95,16 @@ impl Planning {
                     "#,
                                         )
                                         .bind(tenant)
-                                        .execute(c)
-                                        .await
-                                        .map(|r| r.rows_affected())
+                                        .execute(&mut *c)
+                                        .await?;
+                                        if result.rows_affected() > 0 {
+                                            crate::worker_wake::notify(
+                                                c,
+                                                crate::worker_wake::Work::Automation,
+                                            )
+                                            .await?;
+                                        }
+                                        Ok(result.rows_affected())
                                     })
                                 })
                                 .await

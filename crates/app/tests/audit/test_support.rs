@@ -15,11 +15,10 @@ async fn audit_process_exit_fixture() -> Result<()> {
         .await?;
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(30))?,
-        &cancel,
-    );
+    let control = {
+        let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(30))?;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let store = AuditStore::new(pool, integrity(ledger)?, &control).await?;
     let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
     let fact = Fact::business(
@@ -31,7 +30,7 @@ async fn audit_process_exit_fixture() -> Result<()> {
         None,
     )?;
     let attempt = store
-        .execute(tenant, &control, (&store, &fact), |(store, fact), tx| {
+        .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move {
                 recovery::crash_write(store, tx, fact).await?;
                 println!("MDM_AUDIT_STAGED");

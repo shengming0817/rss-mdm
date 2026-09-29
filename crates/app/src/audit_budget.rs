@@ -46,19 +46,9 @@ impl AuditBudget {
         budget.operation = Deadline::at(now + remaining.mul_f64(0.75));
         budget
     }
-    pub(crate) fn operation_control(
-        &self,
-    ) -> rss_mdm_audit_integration::OperationBudget<'_, RuntimeTimer> {
-        rss_mdm_audit_integration::OperationBudget::new(
-            &self.timer,
-            self.deadline,
-            self.operation,
-            &self.cancel,
-        )
-    }
     /// Reborrowing does not start a new timeout or change the cancellation source.
     pub(crate) fn control(&self) -> rss_audit_postgres::Control<'_, RuntimeTimer> {
-        rss_audit_postgres::Control::new(&self.timer, self.deadline, &self.cancel)
+        rss_audit_postgres::Control::new(&self.timer, self.deadline, self.operation, &self.cancel)
     }
 }
 #[cfg(test)]

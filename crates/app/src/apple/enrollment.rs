@@ -77,7 +77,7 @@ pub(super) async fn download(
     let (auth, proof) = authorized(&app, id, &input.password, &audit).await?;
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome = app.audit_store.execute(app.identity.tenant, &control,
+    let outcome = app.audit_store.write(app.identity.tenant, &control,
         (&app, apple, &auth, &proof, &input, &audit, id),
         |(app, apple, auth, proof, input, audit, id), tx| Box::pin(async move {
             let (attempt, replayed, bytes) = tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *input, *id),
@@ -173,7 +173,7 @@ pub(super) async fn challenge(
     let (auth, proof) = authorized(&app, csr.enrollment, &password, &audit).await?;
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome = app.audit_store.execute(app.identity.tenant, &control,
+    let outcome = app.audit_store.write(app.identity.tenant, &control,
         (&app.audit_store, apple, &auth, &proof, &csr, input.transaction.as_str(), &audit),
         |(store, apple, auth, proof, csr, transaction, audit), tx| Box::pin(async move {
             tx.with_connection_context(&mut (*apple, *auth, *proof, *csr, *transaction),
@@ -239,7 +239,7 @@ pub(super) async fn notify(
     let control = budget.control();
     let outcome = app
         .audit_store
-        .execute(
+        .write(
             app.identity.tenant,
             &control,
             (&app, apple, &leaf, &csr, input.transaction.as_str(), &audit),
@@ -378,12 +378,12 @@ pub(super) async fn bind(
     let fingerprint =
         crate::enrollment::digest(&(leaf.attempt, leaf.fingerprint, udid, auth.operation));
     let budget = app.devices.retirement_budget();
-    let operation_control = budget.operation_control();
+    let control = budget.control();
     let attempt = app
         .audit_store
-        .execute_with_operation(
+        .write(
             app.identity.tenant,
-            &operation_control,
+            &control,
             (
                 app,
                 &fingerprint,
@@ -482,6 +482,9 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
         .bind(&tenant).bind(leaf.attempt.to_string()).bind(receipt.registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state) VALUES($1::uuid,$2::uuid,$3,'pending_token')")
         .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).execute(&mut *tx).await.map_err(db)?;
+    crate::worker_wake::notify(tx, crate::worker_wake::Work::Apple)
+        .await
+        .map_err(db)?;
     crate::enrollment::store::mark_bound_in(tx, &tenant, auth, false).await?;
     proof.bind_audit(audit)?;
     audit.target(&auth.device);

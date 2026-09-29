@@ -167,6 +167,8 @@ impl ExecutionService {
             fingerprint,
         )
         .await?;
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRelay).await?;
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
         Ok(response)
     }
     pub(super) async fn read(
@@ -226,6 +228,8 @@ impl ExecutionService {
             };
             let approval=checked_input(serde_json::to_string(&approval))?;let tenant=service.tenant.to_string();let operation_key=id.to_string();
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET approval=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(approval).execute(c).await?;Ok(())})).await?;
+            crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
+            crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
             let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result).await?;proof.check_live()?;Ok(result)
         }),crate::transaction::TransactionOwner::Execution).await

@@ -48,7 +48,7 @@ relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 
 
 ## Identity 审计投递
 
-`identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多一条，有进展时继续；空闲或暂时失败后一秒再试。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
+`identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多两条，与 Audit 连接池容量一致；有进展时继续；空闲或暂时失败后一秒再试。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
 
 组件日志 `component=identity-audit` 中的 `transactional_messaging.outbox.*` 提供发布、重试和租约信息；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障令 readiness 为 false，后续成功轮询可恢复。若已有事件报告重试，则保持不就绪，直到实际领取并成功处理事件；退避中的空轮询不恢复就绪，初始空闲仍可就绪；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
 
@@ -77,7 +77,11 @@ ROLLBACK;
 审计请求，健康检查及由 Identity 自有结算的路由不占此额度。超额在业务处理前返回 429
 （Agent 使用既有 503 serviceUnavailable）及 Retry-After，不触发 handler 或持久审计。
 已接纳请求的认证拒绝、查询及未知结果仍完整审计，不降采样、不降级 Plain，也不改变先取 Audit 锁的顺序。
-Windows retention 每秒先做无行锁的只读候选检查；无过期会话时不取 Audit head。
+Inventory 和 Windows retention 先做无行锁的只读候选检查；无过期任务时不取 Audit head。
+
+Inventory、资产自动化、命令 relay/recovery 和原生协议维护由产品实例内唯一 PostgreSQL LISTEN 连接接收提交通知。通知仅携带闭合工作类型，不携带租户、设备或任务正文；业务事务提交后才投递，所有 worker 仍从持久状态重新读取、准入并领取。有进展立即继续，空闲等待通知或最近到期点，最长五秒补扫；既有错误退避独立保留。初次 LISTEN 和重连完成后全部补扫，通知丢失、进程重启或多个实例均不改变持久事实的权威。`mdm_notification_connection.connected` 记录连接故障与恢复转换；不需要按通知数量推断完成量。
+
+Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。数据库健康检查不代表产品 readiness。
 有候选时仍先取 Audit/可选 Ledger 锁，再锁业务行，每次至多处理 32 个会话，事务六秒、周期调用七秒有界；
 超时回滚或未知时保留原状态，下轮重新读取，不能把 Audit 锁移到业务锁之后。
 监控网关 429、请求延迟、审计/retention 超时与数据库存储增长；这些是部署 admission 上限，不能解释为吞吐承诺。

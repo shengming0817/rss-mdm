@@ -92,13 +92,13 @@ impl DeviceService {
             return Err(Error::Forbidden);
         }
         let budget = self.retirement_budget();
-        let operation_control = budget.operation_control();
+        let control = budget.control();
         let attempt = self
             .audit_store
-            .execute_with_operation(
+            .write(
                 rss_request_context::TenantId::parse(admin.tenant_id())
                     .map_err(|_| Error::Malformed)?,
-                &operation_control,
+                &control,
                 (
                     &self.audit_store,
                     BindingInputs {
@@ -171,13 +171,13 @@ impl DeviceService {
             digest: &digest,
         };
         let budget = self.retirement_budget();
-        let operation_control = budget.operation_control();
+        let control = budget.control();
         let attempt = self
             .audit_store
-            .execute_with_operation(
+            .write(
                 rss_request_context::TenantId::parse(admin.tenant_id())
                     .map_err(|_| Error::Malformed)?,
-                &operation_control,
+                &control,
                 (
                     &self.audit_store,
                     RevokeInputs {
