@@ -93,6 +93,53 @@ async fn startup_integrity(
     Ok(())
 }
 
+async fn empty_reads_preserve_heads(
+    pool: &PgPool,
+    store: &AuditStore,
+    tenant: TenantId,
+    control: &Control<'_, crate::lifecycle::RuntimeTimer>,
+) -> Result<()> {
+    store.validate_tenant(tenant, control).await?;
+    let read = store
+        .read(tenant, control, (), |_, tx| {
+            Box::pin(async move {
+                let read_only: String = tx
+                    .with_connection(|c| {
+                        Box::pin(async move {
+                            sqlx::query_scalar("SELECT current_setting('transaction_read_only')")
+                                .fetch_one(c)
+                                .await
+                        })
+                    })
+                    .await?;
+                if read_only != "on" {
+                    return Err(Error::Admission);
+                }
+                Ok(())
+            })
+        })
+        .await;
+    ensure!(state(read) == "committed");
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let heads: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM rss_audit.heads WHERE tenant_id=$1::uuid), \
+         (SELECT count(*) FROM rss_ledger.heads WHERE tenant_id=$1::uuid)",
+    )
+    .bind(tenant.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
+    ensure!(
+        heads == (0, 0),
+        "read created Audit or Ledger heads: {heads:?}"
+    );
+    tx.rollback().await?;
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "MODULE=audit.integrity: mode, key, isolation and receipt corruption"]
 async fn storage_integrity_is_enforced() -> Result<()> {
@@ -108,6 +155,7 @@ async fn storage_integrity_is_enforced() -> Result<()> {
             };
             let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
             let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+            empty_reads_preserve_heads(&pool, &store, tenant, &control).await?;
             let request = RequestAudit::new(tenant.to_string(), "audit_integrity_test");
             let fact = Fact::business(&request, "integrity", b"initial", 200, "success", None)?;
             let written = store
