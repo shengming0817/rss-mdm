@@ -29,7 +29,7 @@ async fn history_boundaries(
     ensure!(other.login(router, "other").await? == StatusCode::OK);
     let other_subject = browser_subject(&other, router).await?;
     crate::test_support::identity::set_grants(
-        TENANT,
+        case_tenant(),
         &other_subject,
         crate::test_support::identity::device_grants(None, &["compliance_read"])?,
     )
@@ -58,7 +58,7 @@ async fn history_boundaries(
                 &["compliance_read"],
             )?);
         }
-        crate::test_support::identity::set_grants(TENANT, subject, limited).await?;
+        crate::test_support::identity::set_grants(case_tenant(), subject, limited).await?;
         ensure!(b.call(router, Method::GET, rule_path, None).await?.0 == StatusCode::OK);
         ensure!(
             b.call(
@@ -72,7 +72,7 @@ async fn history_boundaries(
         );
     }
     grants(subject, None).await?;
-    let tenant = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let tenant = case::peer();
     let config = crate::test_support::identity::config(tenant)?;
     let access = database(base).await?;
     let audit = access.audit_store(&config.audit).await?;
@@ -94,7 +94,7 @@ async fn history_boundaries(
     )?;
     crate::test_support::identity::set_grants(
         tenant,
-        crate::test_support::identity::ADMIN,
+        case::context()["admins"][tenant].as_str().unwrap(),
         crate::test_support::identity::device_grants(None, &["compliance_read"])?,
     )
     .await?;
@@ -105,7 +105,7 @@ async fn history_boundaries(
                 &other_router,
                 Method::POST,
                 &format!("/api/v2/tenants/{tenant}/login"),
-                Some(json!({"login":"admin","password":PASSWORD}))
+                Some(json!({"login":case::login("admin"),"password":PASSWORD}))
             )
             .await?
             .0
@@ -307,7 +307,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .is_empty()
     );
     ensure!(audit_count(|r| r.action() == "compliance_read")? > 0);
-    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(automation).await?;
     fixture.close().await;
     Ok(())
 }

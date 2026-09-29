@@ -43,13 +43,13 @@ fn admin(sql: &str) -> String {
     String::from_utf8(result.stdout).unwrap().trim().to_string()
 }
 fn event_count(id: OperationId) -> i64 {
-    admin(&format!("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='group.changed.v1:{id}'")).parse().unwrap()
+    admin(&format!("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='group.changed.v1:{id}'", tenant())).parse().unwrap()
 }
 fn assert_event(r: &Receipt, kind: &str) {
     use serde_json::json;
     use sha2::Digest;
     let e: serde_json::Value = serde_json::from_str(&admin(&format!(
-        "SELECT envelope FROM rss_transactional_messaging.outbox WHERE message_id='group.changed.v1:{}'", r.operation))).unwrap();
+        "SELECT envelope FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='group.changed.v1:{}'", tenant(), r.operation))).unwrap();
     assert_eq!(e["tenant"], tenant().to_string());
     assert_eq!(e["occurred_at"], at().unix_seconds());
     assert_eq!(e["domain"], "mdm-group");
@@ -57,7 +57,7 @@ fn assert_event(r: &Receipt, kind: &str) {
     assert_eq!(e["contract"], "mdm.group.changed");
     assert_eq!(e["version"], "v1");
     assert_eq!(e["partition"], r.group.id.to_string());
-    let ordinal: i64 = admin(&format!("SELECT partition_seq FROM rss_transactional_messaging.outbox WHERE message_id='group.changed.v1:{}'", r.operation)).parse().unwrap();
+    let ordinal: i64 = admin(&format!("SELECT partition_seq FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='group.changed.v1:{}'", tenant(), r.operation)).parse().unwrap();
     // Message ordering and authored configuration CAS are distinct coordinates:
     // member publication emits an event without editing the group definition.
     assert!(ordinal > 0);
@@ -249,12 +249,32 @@ async fn lost_commit_ack_replays_durable_result_once() {
         request.id
     ));
     let config = fixture_config();
-    let _holder = ChildGuard(std::process::Command::new("docker")
-        .args(["exec", config["container"].as_str().unwrap(), "psql", "-At", "-U", "postgres", "-d", config["database"].as_str().unwrap(), "-c", "SET application_name='group_ack_holder'; SELECT pg_advisory_lock(238701); SELECT pg_sleep(30)"])
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());
+    let holder_name = case::name("group-ack-holder");
+    let holder_sql = format!(
+        "SET application_name='{holder_name}'; SELECT pg_advisory_lock(238701); SELECT pg_sleep(30)"
+    );
+    let _holder = ChildGuard(
+        std::process::Command::new("docker")
+            .args([
+                "exec",
+                config["container"].as_str().unwrap(),
+                "psql",
+                "-At",
+                "-U",
+                "postgres",
+                "-d",
+                config["database"].as_str().unwrap(),
+                "-c",
+                &holder_sql,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     tokio::time::timeout(Duration::from_secs(5), async {
         while admin(
-            "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=238701 AND granted",
+            "SELECT count(*) FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND objid=238701 AND granted",
         ) != "1"
         {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -262,11 +282,12 @@ async fn lost_commit_ack_replays_durable_result_once() {
     })
     .await
     .unwrap();
+    let holder_pid: u32 = admin(&format!("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND application_name='{holder_name}'")).parse().unwrap();
     let mut resume = Box::pin(builds::publish(&runtime, &s, &request));
     let at_commit = async {
         loop {
             if admin(
-                "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=238701 AND NOT granted",
+                "SELECT count(*) FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND objid=238701 AND NOT granted",
             ) == "1"
             {
                 break;
@@ -281,9 +302,9 @@ async fn lost_commit_ack_replays_durable_result_once() {
     proxy
         .discard
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    admin(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='group_ack_holder'",
-    );
+    admin(&format!(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND pid={holder_pid} AND application_name='{holder_name}'"
+    ));
     let result = resume.await;
     admin(
         "DROP TRIGGER t2_hold_commit ON mdm_group.member_runs; DROP FUNCTION public.hold_group_commit()",

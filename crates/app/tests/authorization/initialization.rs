@@ -12,14 +12,14 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     ensure!(matches!(
         crate::authorization::store::initialize_authorization(
             &audit_store,
-            crate::test_support::identity::user(TENANT, ADMIN),
+            crate::test_support::identity::user(case_tenant(), case_admin()),
             Uuid::new_v4()
         )
         .await,
         Err(crate::Error::Conflict)
     ));
     // The initializer marker, grant, receipt and audit must all roll back together.
-    let mut isolated = crate::test_support::identity::user(TENANT, ADMIN);
+    let mut isolated = crate::test_support::identity::user(case_tenant(), case_admin());
     isolated.instance_id = Uuid::new_v4().to_string();
     let init_key = Uuid::new_v4();
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")?;
@@ -36,7 +36,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         "authorization_rules",
         "operations",
     ] {
-        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{}'", isolated.instance_id))?.trim() == "0");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{}'", isolated.instance_id, TENANT = case_tenant()))?.trim() == "0");
     }
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     ensure!(matches!(
@@ -57,7 +57,9 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     // Simulate the persisted result of deleting the seed, without changing its marker/receipt.
     pg(&format!(
         "UPDATE mdm_access.authorization_rules SET revision=2,document=NULL WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'",
-        isolated.instance_id, initial.id
+        isolated.instance_id,
+        initial.id,
+        TENANT = case_tenant()
     ))?;
     let reopened = database(&base).await?;
     let replayed = crate::authorization::store::initialize_authorization(
@@ -82,14 +84,14 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         .await,
         Err(crate::Error::Conflict)
     ));
-    ensure!(pg(&format!("SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'", isolated.instance_id, initial.id))?.trim() == "t");
+    ensure!(pg(&format!("SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'", isolated.instance_id, initial.id, TENANT = case_tenant()))?.trim() == "t");
     reopened.close().await;
     // A valid-looking but absent target never acquires the irreversible bootstrap marker.
     let wrong_key = Uuid::new_v4();
     let mut init = json!({"database":base["access_database"],"identityDatabase":base["identity"]["database"],
-        "installation":{"audit_mode":"plain","instance_id":INSTANCE,"target":base["flow"]["storage"]["target"],"lineage":base["flow"]["storage"]["lineage"],"epoch":base["flow"]["storage"]["epoch"],"tenants":[TENANT]},
-        "audit":{"mode":"plain"},"login":"authorization-member","passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
-        "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":TENANT,"principalId":Uuid::new_v4()}});
+        "installation":{"audit_mode":"plain","instance_id":INSTANCE,"target":base["flow"]["storage"]["target"],"lineage":base["flow"]["storage"]["lineage"],"epoch":base["flow"]["storage"]["epoch"],"tenants":[case_tenant()]},
+        "audit":{"mode":"plain"},"login":crate::test_support::case::name("authorization-member"),"passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
+        "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":Uuid::new_v4()}});
     ensure!(matches!(
         crate::authorization::initialize(serde_json::from_value(init.clone())?).await,
         Err(crate::Error::Forbidden)
@@ -121,11 +123,13 @@ async fn bounded_initialization_recovery() -> Result<()> {
         (rss_audit_postgres::PgFault::BeforeCommitPending, false),
         (rss_audit_postgres::PgFault::CommitUnknownAfterAck, true),
     ] {
-        let mut user = crate::test_support::identity::user(TENANT, ADMIN);
+        let mut user = crate::test_support::identity::user(case_tenant(), case_admin());
         user.instance_id = Uuid::new_v4().to_string();
         let key = Uuid::new_v4();
-        let audit =
-            rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "authorization_initialize");
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            case_tenant().into(),
+            "authorization_initialize",
+        );
         store.inject_next_fault(fault);
         let deadline = rss_request_context::Deadline::from_timeout(
             &crate::lifecycle::RuntimeTimer,
@@ -146,7 +150,8 @@ async fn bounded_initialization_recovery() -> Result<()> {
         ensure!(matches!(outcome, Err(crate::Error::CommitUnknown)));
         let durable = pg(&format!(
             "SELECT count(*) FROM mdm_access.authorization_initializations WHERE tenant_id='{TENANT}' AND instance='{}'",
-            user.instance_id
+            user.instance_id,
+            TENANT = case_tenant()
         ))?;
         ensure!(durable.trim() == if committed { "1" } else { "0" });
         let receipt =
@@ -158,8 +163,10 @@ async fn bounded_initialization_recovery() -> Result<()> {
                 == receipt.id
         );
     }
-    let audit =
-        rss_mdm_audit_integration::RequestAudit::new(TENANT.into(), "authorization_initialize");
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().into(),
+        "authorization_initialize",
+    );
     let deadline = rss_request_context::Deadline::from_timeout(
         &crate::lifecycle::RuntimeTimer,
         std::time::Duration::from_millis(10),

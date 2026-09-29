@@ -5,17 +5,16 @@
 use crate::test_support::*;
 #[tokio::test]
 #[ignore = "MODULE=agent.registration: capability binding, re-registration and commit recovery"]
-async fn registration_binding_and_recovery() -> Result<()> {
+async fn registration_binding_and_replay() -> Result<()> {
     let fixture = authority::Authority::open().await?;
     let owned_router = crate::test_support::agent::router(&fixture).await?;
     let router = &owned_router;
-    let audit_store = fixture.audit.as_ref();
     let mut session = fixture.browser("other")?;
     let browser = &mut session;
     set_device_grants(
         browser,
         router,
-        "device-1",
+        crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )
     .await?;
@@ -83,16 +82,40 @@ async fn registration_binding_and_recovery() -> Result<()> {
         .await?
         .0 == StatusCode::ACCEPTED
     );
-    ensure!(!pg(&format!("SELECT locator FROM mdm_access.credentials WHERE tenant_id='{TENANT}' AND registration='{}'", registration["registrationId"].as_str().unwrap()))?.contains(credential), "raw Agent credential persisted");
+    ensure!(!pg(&format!("SELECT locator FROM mdm_access.credentials WHERE tenant_id='{TENANT}' AND registration='{}'", registration["registrationId"].as_str().unwrap(), TENANT = case_tenant()))?.contains(credential), "raw Agent credential persisted");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.registration: tenant audit-head fault and credential recovery"]
+async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let owned_router = crate::test_support::agent::router(&fixture).await?;
+    let router = &owned_router;
+    let audit_store = fixture.audit.as_ref();
+    let mut session = fixture.browser("other")?;
+    let browser = &mut session;
+    set_device_grants(
+        browser,
+        router,
+        case::name("device-1"),
+        &["inventory_read", "enrollment"],
+    )
+    .await?;
+    let agent = crate::test_support::agent::register(router, browser).await?;
+    let credential = agent.credential;
+    let report_id = uuid::Uuid::new_v4();
+    ensure!(agent_call(router, Method::POST, "/api/agent/v3/reports", Some(credential),
+        Some(json!({"wireVersion":3,"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::ACCEPTED);
     let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
-    let next_credential = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    let next_credential = &crate::test_support::credential("replacement");
     browser.operation = Some(uuid::Uuid::new_v4());
     let (status, next_enrollment) = browser
         .call(
             router,
             Method::POST,
             "/api/v3/enrollments",
-            Some(json!({"deviceId":"device-1","password":next_password,"source":"agent.builtin"})),
+            Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":next_password,"source":"agent.builtin"})),
         )
         .await?;
     ensure!(status == StatusCode::OK);
@@ -111,7 +134,7 @@ async fn registration_binding_and_recovery() -> Result<()> {
         rolled_back.0 == StatusCode::SERVICE_UNAVAILABLE
             && rolled_back.1["code"] == "operation_unknown"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'"))?.trim() == "0", "rolled-back registration persisted");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'", TENANT = case_tenant()))?.trim() == "0", "rolled-back registration persisted");
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let unknown = agent_call(
         router,
@@ -134,7 +157,8 @@ async fn registration_binding_and_recovery() -> Result<()> {
     .await?;
     ensure!(recovered.0 == StatusCode::OK);
     let stored_receipt: Value = serde_json::from_str(&pg(&format!(
-        "SELECT result FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'"
+        "SELECT result FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'",
+        TENANT = case_tenant()
     ))?)?;
     ensure!(
         recovered.1 == stored_receipt,

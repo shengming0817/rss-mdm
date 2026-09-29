@@ -23,7 +23,10 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -34,7 +37,7 @@ impl Fixture {
             .create_operation(json!({"kind":"profile_install","enabled":true}))
             .await?;
         let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
-        let mut config = crate::test_support::identity::config(TENANT)?;
+        let mut config = crate::test_support::identity::config(case_tenant())?;
         let port = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         config.listen = port.local_addr()?;
         drop(port);
@@ -98,7 +101,10 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )

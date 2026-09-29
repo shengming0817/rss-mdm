@@ -50,7 +50,7 @@ async fn audit_failure_logs_preserve_action_and_origin() {
                     clock: monotonic(),
                     audit_store,
                     requests: Arc::new(tokio::sync::Semaphore::new(4)),
-                    tenant: "11111111-1111-4111-8111-111111111111".into(),
+                    tenant: crate::test_support::case::tenant().into(),
                 },
                 envelope,
             ));
@@ -136,7 +136,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
                     clock: monotonic(),
                     audit_store: audit_store.clone(),
                     requests: Arc::new(tokio::sync::Semaphore::new(4)),
-                    tenant: "11111111-1111-4111-8111-111111111111".into(),
+                    tenant: crate::test_support::case::tenant().into(),
                 },
                 envelope,
             ));
@@ -190,7 +190,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
                 clock: monotonic(),
                 audit_store,
                 requests: Arc::new(tokio::sync::Semaphore::new(4)),
-                tenant: "11111111-1111-4111-8111-111111111111".into(),
+                tenant: crate::test_support::case::tenant().into(),
             },
             envelope,
         ));

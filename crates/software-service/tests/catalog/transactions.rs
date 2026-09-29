@@ -63,7 +63,7 @@ impl Fixture {
                 Box::pin(async move {
                     let (catalog, audit, operation) = *context;
                     let result = catalog
-                        .source_in(tx, audit, "private-fixture", "1", operation)
+                        .source_in(tx, audit, pg::case::name("private-fixture"), "1", operation)
                         .await?;
                     if rollback {
                         return Err(catalog::Error::Input);
@@ -187,7 +187,7 @@ impl VerifiedContent for Content {
 }
 fn register() -> Operation<SourceChange> {
     serde_json::from_value(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"register","definition":{
-        "id":"private-fixture","revision":"1","kind":"private","location":null,"publishers":[]
+        "id":pg::case::name("private-fixture"),"revision":"1","kind":"private","location":null,"publishers":[]
     }}})).unwrap()
 }
 fn approve(revision: u64) -> Operation<VersionChange> {
@@ -221,27 +221,38 @@ async fn approved_source(fixture: &Fixture) -> Result<Value> {
 async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
     let fixture = Fixture::open().await;
     let operation = register();
+    let tenant = pg::tenant();
+    let audit_sql = format!(
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY position"
+    );
+    let audit_before = pg::sql(&audit_sql);
     ensure!(fixture.source(&operation, true).await.is_err());
-    ensure!(pg::sql("SELECT count(*) FROM mdm_software.sources") == "0");
-    ensure!(pg::sql("SELECT count(*) FROM mdm_software.operations") == "0");
-    ensure!(pg::audit_records().is_empty());
+    ensure!(
+        pg::sql(&format!(
+            "SELECT count(*) FROM mdm_software.sources WHERE tenant_id='{tenant}' AND id='{}' AND revision='1'",
+            pg::case::name("private-fixture")
+        )) == "0"
+    );
+    ensure!(
+        pg::sql(&format!(
+            "SELECT count(*) FROM mdm_software.operations WHERE tenant_id='{tenant}' AND id='{}'",
+            operation.operation_id
+        )) == "0"
+    );
+    ensure!(pg::sql(&audit_sql) == audit_before);
     fixture
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
     ensure!(fixture.source(&operation, false).await.is_err());
     let original: Value = serde_json::from_str(&pg::sql(&format!(
-        "SELECT response FROM mdm_software.operations WHERE id='{}'",
+        "SELECT response FROM mdm_software.operations WHERE tenant_id='{tenant}' AND id='{}'",
         operation.operation_id
     )))?;
-    let first_audit =
-        pg::sql("SELECT encode(canonical,'hex') FROM rss_audit.records ORDER BY position");
-    ensure!(!first_audit.is_empty());
+    let first_audit = pg::sql(&audit_sql);
+    ensure!(first_audit.lines().count() == audit_before.lines().count() + 1);
     let replayed = fixture.source(&operation, false).await?;
     ensure!(replayed == original);
-    ensure!(
-        pg::sql("SELECT encode(canonical,'hex') FROM rss_audit.records ORDER BY position")
-            == first_audit
-    );
+    ensure!(pg::sql(&audit_sql) == first_audit);
     let snapshot: r::SoftwareSource = serde_json::from_value(replayed["snapshot"].clone())?;
     ensure!(fixture.source_allowed(snapshot.clone()).await.is_err());
     let approval = Operation {
@@ -299,13 +310,15 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
     );
     ensure!(
         pg::sql(&format!(
-            "SELECT count(*) FROM mdm_software.operations WHERE id='{}'",
+            "SELECT count(*) FROM mdm_software.operations WHERE tenant_id='{}' AND id='{}'",
+            pg::tenant(),
             approval.operation_id
         )) == "0"
     );
     ensure!(
         pg::sql(&format!(
-            "SELECT count(*) FROM mdm_software.approvals WHERE resource='{}'",
+            "SELECT count(*) FROM mdm_software.approvals WHERE tenant_id='{}' AND resource='{}'",
+            pg::tenant(),
             dependent.resource().as_str()
         )) == "0"
     );

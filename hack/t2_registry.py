@@ -31,6 +31,17 @@ APP = Build('rss-mdm-app', features=('integration',))
 
 
 @dataclass(frozen=True)
+class CasePolicy:
+    selector: str
+    db_mode: str | None
+    scope: str | None
+    fixtures: tuple[str, ...] | None = None
+
+    def matches(self, name):
+        return name.startswith(self.selector) if self.selector.endswith('::') else name == self.selector
+
+
+@dataclass(frozen=True)
 class Module:
     id: str
     build: Build | None
@@ -40,7 +51,9 @@ class Module:
     production_inputs: tuple[str, ...] = ()
     test_inputs: tuple[str, ...] = ()
     support_inputs: tuple[str, ...] = ()
-    exclusive: bool = False
+    db_mode: str | None = 'reuse'
+    scope: str | None = 'objects'
+    policies: tuple[CasePolicy, ...] = ()
     python: str | None = None
     children: tuple[str, ...] = ()
     expected_cases: int | None = None
@@ -69,6 +82,36 @@ class Module:
                    for item in self.selectors)
 
 
+
+def resolve_cases(module, names):
+    """Resolve the discovered set before selection, so stale exceptions never disappear."""
+    for policy in module.policies:
+        if not any(policy.matches(name) for name in names):
+            raise ValueError('stale case policy: ' + module.id + ': ' + policy.selector)
+    resolved = []
+    for name in names:
+        matches = [policy for policy in module.policies if policy.matches(name)]
+        if len(matches) > 1:
+            raise ValueError('overlapping case policies: ' + module.id + ': ' + name)
+        value = module
+        if matches:
+            policy = matches[0]
+            value = replace(module, db_mode=policy.db_mode, scope=policy.scope,
+                            fixtures=module.fixtures if policy.fixtures is None else policy.fixtures)
+        if value.profile == 'none':
+            valid = value.db_mode is None and value.scope is None
+        else:
+            valid = (value.db_mode in {'reuse', 'fresh', 'instance'} and
+                     value.scope in {'objects', 'tenant', 'pair'} and
+                     (value.profile != 'empty' or value.db_mode == 'fresh'))
+        if not valid:
+            raise ValueError('invalid database policy: ' + module.id + ': ' + name)
+        if ('local_worker' in value.fixtures and value.db_mode == 'reuse' and value.scope == 'objects'
+                or {'local_worker', 'shared_worker'} <= set(value.fixtures)):
+            raise ValueError('conflicting consumer ownership: ' + module.id + ': ' + name)
+        resolved.append(replace(value, policies=()))
+    return resolved
+
 # One fixture-owned preparation target. Names are discovered, not copied here.
 IDENTITY_SETUP = Module('identity-setup', APP, ('test_support::identity::',), expected_cases=1)
 
@@ -76,13 +119,15 @@ MODULES: dict[str, Module] = {}
 
 
 def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
-        sources=(), tests=(), support=(), exclusive=False, python=None, children=()):
+        sources=(), tests=(), support=(), python=None, children=()):
     if name in MODULES:
         raise ValueError('duplicate module: ' + name)
     if build is not None and not selectors:
         raise ValueError('module must select a target or Rust namespace: ' + name)
     MODULES[name] = Module(name, build, tuple(selectors), profile, tuple(fixtures),
-                          tuple(sources), tuple(tests), tuple(support), exclusive, python, tuple(children))
+                          tuple(sources), tuple(tests), tuple(support),
+                          db_mode=None if profile == 'none' else 'reuse',
+                          scope=None if profile == 'none' else 'objects', python=python, children=tuple(children))
 
 
 APP_INPUTS = {
@@ -147,7 +192,7 @@ APP_INPUTS = {
 
 
 def app_family(owner, *, namespace=None, identity=True,
-               fixtures=(), exclusive=(), profile='product'):
+               fixtures=(), profile='product'):
     namespace = namespace or owner.replace('.', '::') + '::t2'
     test_root = namespace.replace('::t2', '').replace('::', '/')
     children = [name.rsplit('.', 1)[1] for name in APP_INPUTS if name.rsplit('.', 1)[0] == owner]
@@ -160,13 +205,12 @@ def app_family(owner, *, namespace=None, identity=True,
             sources=tuple('crates/app/src/' + path for path in APP_INPUTS[owner + '.' + child]),
             tests=(f'crates/app/tests/{test_root}/{child}.rs',
                    f'crates/app/tests/{test_root}/{child}/*'),
-            support=(f'crates/app/tests/{test_root}/mod.rs',),
-            exclusive=child in exclusive)
+            support=(f'crates/app/tests/{test_root}/mod.rs',))
 
 
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
     sources=('crates/app/src/migration.rs',),
-    tests=('crates/app/tests/migration/mod.rs',), exclusive=True,
+    tests=('crates/app/tests/migration/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
 for part in ('receipts', 'integrity', 'recovery', 'budget'):
     add('audit.' + part, selectors=(f'audit_integration_tests::{part}::',),
@@ -175,13 +219,12 @@ for part in ('receipts', 'integrity', 'recovery', 'budget'):
         tests=(f'crates/app/tests/audit/{part}.rs',),
         support=('crates/app/tests/audit/mod.rs',))
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], children=('audit_integration_tests::test_support::',))
-app_family('identity', fixtures=(), exclusive=('local',))
+app_family('identity', fixtures=())
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], fixtures=('identity', 'idp'))
 add('identity.audit', selectors=('identity_audit::tests::',), fixtures=('identity',),
     sources=('crates/app/src/identity_audit.rs',),
-    tests=('crates/app/tests/identity_audit/mod.rs',), exclusive=True)
-app_family('authorization',
-           exclusive=('admission',))
+    tests=('crates/app/tests/identity_audit/mod.rs',))
+app_family('authorization')
 for name in ('rules', 'membership', 'capacity', 'initialization', 'admission'):
     key = 'authorization.' + name
     MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/tests/authorization/mod.rs',))
@@ -198,14 +241,14 @@ for name, target in (('manual', 'manual'), ('reader', 'reader')):
         build=Build('rss-mdm-inventory-postgres', 'test', target), selectors=('',),
         sources=('crates/inventory-postgres/src/*', 'crates/inventory-postgres/migrations/*'),
         tests=(f'crates/inventory-postgres/tests/{target}.rs',),
-        support=('crates/inventory-postgres/tests/support/*',), exclusive=name == 'reader')
+        support=('crates/inventory-postgres/tests/support/*',))
 for name in ('projection', 'recovery', 'process'):
     add('inventory.' + name,
         build=Build('rss-mdm-examples', features=('integration',)),
         selectors=('app::t2::' + name + '::',), fixtures=('examples',) if name == 'process' else (),
         sources=('crates/examples/src/app.rs', 'crates/inventory-postgres/src/*'),
         tests=(f'crates/examples/src/app/t2/{name}.rs',),
-        support=('crates/examples/src/app/t2/mod.rs',), exclusive=name == 'recovery')
+        support=('crates/examples/src/app/t2/mod.rs',))
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
     sources=('crates/app/src/inventory_runtime.rs',),
     tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())
@@ -228,7 +271,7 @@ for name, target in (('persistence', 't2'), ('generations', 'generations')):
         selectors=('',), profile='group',
         sources=('crates/group-postgres/src/*', 'crates/group-postgres/migrations/*'),
         tests=(f'crates/group-postgres/tests/{target}.rs',),
-        support=('crates/group-postgres/tests/support/*',), exclusive=name == 'persistence')
+        support=('crates/group-postgres/tests/support/*',))
 app_family('planning',
            namespace='planning::t2')
 for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'planning.recovery',
@@ -238,8 +281,6 @@ for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'plann
 for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'planning.recovery', 'planning.resource_archive'):
     MODULES[name] = replace(MODULES[name], fixtures=())
 MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('tls',))
-for name in ('planning.recovery', 'audit.integrity'):
-    MODULES[name] = replace(MODULES[name], exclusive=True)
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'],
     test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs',))
 for name in ('policy', 'resource', 'software_release'):
@@ -251,8 +292,7 @@ for name in ('policy', 'resource', 'software_release'):
             sources=(f'crates/{package}-postgres/src/*', f'crates/{package}-postgres/migrations/*',
                      'crates/backend-postgres-support/src/*'),
             tests=(f'crates/{package}-postgres/tests/{target}.rs',),
-            support=(f'crates/{package}-postgres/tests/support/*',),
-            exclusive=suffix == 'persistence')
+            support=(f'crates/{package}-postgres/tests/support/*',))
 add('compliance.storage', build=Build('rss-mdm-compliance-postgres', 'test', 't2'),
     selectors=('',), sources=('crates/compliance-postgres/src/*', 'crates/compliance-postgres/migrations/*'),
     tests=('crates/compliance-postgres/tests/t2.rs',),
@@ -265,7 +305,6 @@ app_family('execution.commands',
 for name in ('execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.firewall'):
     MODULES[name] = replace(MODULES[name], fixtures=MODULES[name].fixtures+('windows',),
         support_inputs=MODULES[name].support_inputs+('crates/app/tests/execution/support/*', 'crates/app/tests/windows/support.rs',))
-MODULES['execution.commands.admission'] = replace(MODULES['execution.commands.admission'], exclusive=True)
 app_family('execution.software',
            namespace='execution::t2::software')
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
@@ -277,14 +316,13 @@ for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.a
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
     sources=('crates/software-service/src/catalog/*',),
     tests=('crates/software-service/tests/catalog_t2.rs', 'crates/software-service/tests/catalog/*'),
-    support=(), exclusive=True)
+    support=())
 app_family('software', namespace='software_catalog::t2')
 app_family('content')
 for name in ('content.http', 'content.mirror', 'content.gc', 'software.http'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('tests/support/software/*',))
 MODULES['content.mirror'] = replace(MODULES['content.mirror'], fixtures=('identity', 'tls'))
-MODULES['content.gc'] = replace(MODULES['content.gc'], exclusive=True)
 for part in ('winget', 'brew', 'mapping', 'withdrawal', 'recovery', 'artifact'):
     add('publication.' + part,
         build=Build('rss-mdm-software-service', 'test', 'publication_t2'),
@@ -345,6 +383,198 @@ add('catalog.contract', build=None, python='catalog',
 add('gateway.admission', build=None, python='gateway', profile='none', fixtures=('gateway',),
     sources=('deployment/nginx.conf',), support=('hack/t2_modules/gateway.py',))
 
+
+# Isolation follows state and observation ownership. Only exceptions name a case.
+MODULES['installation.migration'] = replace(MODULES['installation.migration'], db_mode='fresh', scope='objects')
+MODULES['audit.receipts'] = replace(MODULES['audit.receipts'], db_mode='reuse', scope='tenant')
+MODULES['audit.integrity'] = replace(MODULES['audit.integrity'], db_mode='instance', scope='objects', policies=(
+    CasePolicy('audit_integration_tests::integrity::storage_integrity_is_enforced', 'fresh', 'objects'),
+))
+MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='tenant')
+MODULES['audit.budget'] = replace(MODULES['audit.budget'], db_mode='reuse', scope='tenant')
+MODULES['identity.local'] = replace(MODULES['identity.local'], db_mode='instance', scope='objects')
+MODULES['identity.sso'] = replace(MODULES['identity.sso'], db_mode='reuse', scope='tenant')
+MODULES['identity.audit'] = replace(MODULES['identity.audit'], db_mode='instance', scope='objects')
+MODULES['authorization.rules'] = replace(MODULES['authorization.rules'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('authorization::t2::rules::capability_routes_without_application_preserve_revocation_and_atomicity', 'fresh', 'objects'),
+    CasePolicy('authorization::t2::rules::enrollment_grant_does_not_authorize_wipe', 'reuse', 'objects'),
+))
+MODULES['authorization.membership'] = replace(MODULES['authorization.membership'], db_mode='reuse', scope='tenant')
+MODULES['authorization.capacity'] = replace(MODULES['authorization.capacity'], db_mode='reuse', scope='tenant')
+MODULES['authorization.initialization'] = replace(MODULES['authorization.initialization'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('authorization::t2::initialization::initialization_receipt_atomicity_and_recovery', 'fresh', 'objects'),
+))
+MODULES['authorization.admission'] = replace(MODULES['authorization.admission'], db_mode='instance', scope='objects')
+MODULES['device.binding'] = replace(MODULES['device.binding'], db_mode='reuse', scope='pair')
+MODULES['device.recovery'] = replace(MODULES['device.recovery'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('device::t2::recovery::revocation_and_replacement_unknown_commit', 'fresh', 'objects'),
+    CasePolicy('device::t2::recovery::bounded_bind_and_revoke_settlement', 'reuse', 'tenant'),
+))
+MODULES['agent.registration'] = replace(MODULES['agent.registration'], policies=(
+    CasePolicy('agent::t2::registration::registration_recovery_preserves_credential_rotation', 'reuse', 'tenant'),
+))
+MODULES['agent.reports'] = replace(MODULES['agent.reports'], db_mode='reuse', scope='tenant')
+MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='instance', scope='objects', policies=(
+    CasePolicy('watermark_fence_rejects_unrelated_grantee', 'fresh', 'objects'),
+))
+MODULES['inventory.projection'] = replace(MODULES['inventory.projection'], db_mode='reuse', scope='pair', policies=(
+    CasePolicy('app::t2::projection::filter_and_poison', 'fresh', 'objects'),
+    CasePolicy('app::t2::projection::invocation_horizon', 'fresh', 'objects'),
+))
+MODULES['inventory.recovery'] = replace(MODULES['inventory.recovery'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('app::t2::recovery::admission_drift', 'instance', 'objects'),
+))
+MODULES['inventory.process'] = replace(MODULES['inventory.process'], db_mode='fresh', scope='objects')
+MODULES['inventory.runtime'] = replace(MODULES['inventory.runtime'], db_mode='fresh', scope='objects')
+MODULES['examples.cli'] = replace(MODULES['examples.cli'], db_mode='reuse', scope='tenant')
+MODULES['api.identity_context'] = replace(MODULES['api.identity_context'], db_mode='reuse', scope='tenant')
+MODULES['host.lifecycle'] = replace(MODULES['host.lifecycle'], db_mode='fresh', scope='objects')
+MODULES['assets.http'] = replace(MODULES['assets.http'], db_mode='fresh', scope='objects', policies=(
+    CasePolicy('assets::t2::http::storage::asset_capability_owns_execution_and_receipt_recovery', 'reuse', 'tenant'),
+    CasePolicy('assets::t2::http::storage::asset_commit_unknown_recovers_original_receipts', 'reuse', 'objects'),
+))
+MODULES['assets.queries'] = replace(MODULES['assets.queries'], db_mode='reuse', scope='tenant')
+MODULES['assets.sources'] = replace(MODULES['assets.sources'], db_mode='reuse', scope='tenant')
+MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], db_mode='reuse', scope='tenant')
+MODULES['group.persistence'] = replace(MODULES['group.persistence'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('admission_rejects_catalog_and_security_drift', 'instance', 'objects'),
+    CasePolicy('atomic_event_failure_rls_and_large_member_ids', 'fresh', 'objects'),
+    CasePolicy('lost_commit_ack_replays_durable_result_once', 'fresh', 'objects'),
+))
+MODULES['planning.assets'] = replace(MODULES['planning.assets'], db_mode='reuse', scope='tenant')
+MODULES['planning.scope'] = replace(MODULES['planning.scope'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('planning::t2::scope::corrupt_scope_is_a_storage_failure_not_a_client_error', 'fresh', 'objects'),
+))
+MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', 'reuse', 'objects'),
+    CasePolicy('planning::t2::group_scope::group_scope_replay_and_audit_atomicity', 'fresh', 'objects'),
+))
+MODULES['planning.policy'] = replace(MODULES['planning.policy'], db_mode='reuse', scope='tenant')
+MODULES['planning.recovery'] = replace(MODULES['planning.recovery'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('planning::t2::recovery::corrupt_background_query_is_not_client_input', 'fresh', 'objects'),
+    CasePolicy('planning::t2::recovery::management_admission_rejects_schema_and_privilege_drift', 'instance', 'objects'),
+    CasePolicy('planning::t2::recovery::rss_exhaustion_records_failed_task_and_atomic_audit', 'fresh', 'objects'),
+))
+MODULES['planning.http'] = replace(MODULES['planning.http'], db_mode='fresh', scope='objects')
+MODULES['planning.agent_policy'] = replace(MODULES['planning.agent_policy'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('planning::t2::agent_policy::policy_scan_reaches_late_match', 'reuse', 'tenant'),
+    CasePolicy('planning::t2::agent_policy::preview_publish_authorization_and_commit_replay', 'reuse', 'tenant'),
+))
+MODULES['planning.frequency'] = replace(MODULES['planning.frequency'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('planning::t2::frequency::once_per_entry_tracks_membership_epochs', 'reuse', 'tenant'),
+))
+MODULES['planning.remote'] = replace(MODULES['planning.remote'], db_mode='reuse', scope='tenant')
+MODULES['planning.software'] = replace(MODULES['planning.software'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('planning::t2::software::rollout_time_success_gates_and_stage_evidence', 'reuse', 'tenant'),
+))
+MODULES['policy.persistence'] = replace(MODULES['policy.persistence'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('admission_rejects_schema_and_reachable_privilege_drift', 'instance', 'objects'),
+))
+MODULES['policy.recovery'] = replace(MODULES['policy.recovery'], db_mode='fresh', scope='objects')
+MODULES['resource.persistence'] = replace(MODULES['resource.persistence'], db_mode='instance', scope='objects', policies=(
+    CasePolicy('artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback', 'reuse', 'objects'),
+    CasePolicy('resource_cas_events_and_owner_admission', 'fresh', 'objects'),
+    CasePolicy('resource_immutable_versions_restart_and_reference_rollback', 'reuse', 'objects'),
+))
+MODULES['resource.recovery'] = replace(MODULES['resource.recovery'], db_mode='fresh', scope='objects')
+MODULES['software_release.persistence'] = replace(MODULES['software_release.persistence'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('admission_rejects_noninherited_switchable_privileges', 'instance', 'objects'),
+    CasePolicy('release_event_failure_and_runtime_admission', 'fresh', 'objects'),
+))
+MODULES['software_release.recovery'] = replace(MODULES['software_release.recovery'], db_mode='fresh', scope='objects')
+MODULES['compliance.storage'] = replace(MODULES['compliance.storage'], db_mode='fresh', scope='objects', policies=(
+    CasePolicy('immutable_versions_results_and_tenant_transactions', 'reuse', 'pair'),
+))
+MODULES['compliance.http'] = replace(MODULES['compliance.http'], db_mode='reuse', scope='pair')
+MODULES['compliance.evaluation'] = replace(MODULES['compliance.evaluation'], db_mode='reuse', scope='tenant')
+MODULES['compliance.recovery'] = replace(MODULES['compliance.recovery'], db_mode='fresh', scope='objects', policies=(
+    CasePolicy('compliance::t2::recovery::mutation_unknown_commit_recovers_original_response', 'reuse', 'tenant'),
+))
+MODULES['compliance.group_input'] = replace(MODULES['compliance.group_input'], db_mode='reuse', scope='tenant')
+MODULES['execution.agent.delivery'] = replace(MODULES['execution.agent.delivery'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('execution::t2::agent::delivery::registration_capability_and_wire_gate', 'reuse', 'objects'),
+))
+MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'], db_mode='reuse', scope='tenant')
+MODULES['execution.agent.poll'] = replace(MODULES['execution.agent.poll'], db_mode='reuse', scope='tenant')
+MODULES['execution.commands.admission'] = replace(MODULES['execution.commands.admission'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('execution::t2::commands::admission::minimum_role_scope_and_storage_admission', 'instance', 'objects'),
+))
+MODULES['execution.commands.dispatch'] = replace(MODULES['execution.commands.dispatch'], db_mode='reuse', scope='tenant')
+MODULES['execution.commands.recovery'] = replace(MODULES['execution.commands.recovery'], db_mode='fresh', scope='objects')
+MODULES['execution.commands.firewall'] = replace(MODULES['execution.commands.firewall'], db_mode='reuse', scope='tenant')
+MODULES['software.catalog'] = replace(MODULES['software.catalog'], db_mode='instance', scope='objects', policies=(
+    CasePolicy('transactions::dependency_admission_uses_exact_current_approval', 'reuse', 'objects'),
+    CasePolicy('transactions::source_receipts_follow_the_borrowed_transaction', 'reuse', 'tenant'),
+))
+MODULES['software.http'] = replace(MODULES['software.http'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('software_catalog::t2::http::publication::publication_http_authority_receipts_and_unknown_outcome', 'reuse', 'tenant'),
+))
+MODULES['content.http'] = replace(MODULES['content.http'], db_mode='fresh', scope='objects')
+MODULES['content.mirror'] = replace(MODULES['content.mirror'], db_mode='fresh', scope='objects')
+MODULES['content.gc'] = replace(MODULES['content.gc'], db_mode='instance', scope='objects', policies=(
+    CasePolicy('content::t2::gc::reference_and_gc_are_serialized', 'reuse', 'objects'),
+))
+MODULES['publication.winget'] = replace(MODULES['publication.winget'], db_mode='fresh', scope='objects')
+MODULES['publication.brew'] = replace(MODULES['publication.brew'], db_mode='fresh', scope='objects')
+MODULES['publication.mapping'] = replace(MODULES['publication.mapping'], db_mode='fresh', scope='objects')
+MODULES['publication.recovery'] = replace(MODULES['publication.recovery'], db_mode='fresh', scope='objects')
+MODULES['windows.issuance'] = replace(MODULES['windows.issuance'], db_mode='fresh', scope='objects')
+MODULES['windows.retention'] = replace(MODULES['windows.retention'], db_mode='fresh', scope='objects')
+MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', scope='tenant')
+MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'objects'),
+))
+MODULES['apple.renewal'] = replace(MODULES['apple.renewal'], db_mode='reuse', scope='tenant')
+MODULES['apple.identity'] = replace(MODULES['apple.identity'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('apple::tests::identity::token_is_required_before_management', 'reuse', 'objects'),
+))
+MODULES['apple.push'] = replace(MODULES['apple.push'], db_mode='reuse', scope='tenant')
+MODULES['apple.fairness'] = replace(MODULES['apple.fairness'], db_mode='reuse', scope='tenant')
+MODULES['apple.host'] = replace(MODULES['apple.host'], db_mode='fresh', scope='objects')
+
+# These cases need the production consumers; precise stop/restart tests own theirs.
+for name in ('assets.queries', 'assets.sources', 'assets.group_input', 'planning.http',
+             'planning.policy', 'planning.agent_policy', 'planning.frequency', 'planning.remote',
+             'planning.software', 'compliance.evaluation', 'compliance.recovery',
+             'execution.agent.delivery', 'execution.agent.content', 'execution.agent.history',
+             'execution.agent.poll', 'execution.agent.recovery', 'execution.software.offer',
+             'execution.software.content', 'execution.software.recovery'):
+    MODULES[name] = replace(MODULES[name], fixtures=(*MODULES[name].fixtures, 'shared_worker'))
+for name in ('compliance.http', 'compliance.group_input'):
+    MODULES[name] = replace(MODULES[name], fixtures=(*MODULES[name].fixtures, 'local_worker'))
+
+
+def case_fixtures(module, selector, marker):
+    value = MODULES[module]
+    fixtures = tuple(f for f in value.fixtures if f not in {'shared_worker', 'local_worker'})
+    fixtures += (marker,) if marker else ()
+    previous = next((p for p in value.policies if p.selector == selector),
+                    CasePolicy(selector, value.db_mode, value.scope))
+    MODULES[module] = replace(value, policies=(*[p for p in value.policies if p.selector != selector],
+                                               replace(previous, fixtures=fixtures)))
+
+
+case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
+case_fixtures('planning.remote', 'planning::t2::remote::bulk_pages_restart_and_cancellation_are_durable', 'local_worker')
+case_fixtures('compliance.recovery', 'compliance::t2::recovery::mutation_unknown_commit_recovers_original_response', None)
+case_fixtures('compliance.recovery', 'compliance::t2::recovery::rule_and_fact_revisions_fence_stale_publication', 'local_worker')
+case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::registration_capability_and_wire_gate', None)
+MODULES['content.http'] = replace(MODULES['content.http'], policies=(
+    CasePolicy('content::t2::http::corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_content', 'reuse', 'objects'),
+))
+
+case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::offer_start_result_replay_and_inventory_projection', 'local_worker')
+for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.scope',
+             'planning.group_scope', 'planning.recovery', 'execution.commands.dispatch',
+             'execution.commands.recovery', 'execution.commands.firewall', 'windows.retention',
+             'apple.push', 'apple.fairness', 'apple.renewal', 'apple.host'):
+    value = MODULES[name]
+    # Local consumer controls are meaningful only in their own observation tenant.
+    if value.scope == 'tenant' or value.db_mode in {'fresh', 'instance'}:
+        MODULES[name] = replace(value, fixtures=(*value.fixtures, 'local_worker'))
+
+
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', None)
 
 def consume(inputs, names):
     """The named modules test a real production path through these inputs."""
@@ -552,11 +782,18 @@ for relative, consumers in APP_HELPER_CONSUMERS.items():
             inputs += (path,)
         MODULES[name] = replace(module, support_inputs=inputs)
 
+for name, module in list(MODULES.items()):
+    if module.build and module.postgres:
+        MODULES[name] = replace(module, support_inputs=(*module.support_inputs, 'tests/support/context.rs'))
+
 TOOL_INPUTS = {
+    'hack/t2_context.py': ('test_t2_context', 'test_t2_fixtures'),
+    'hack/t2_database.py': ('test_t2_fixtures',),
+    'hack/t2_hosts.py': ('test_t2_hosts',),
     'hack/t2_modules/installation.py': ('test_t2_guards',),
     'hack/t2_python.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/rust_test_layout.py': ('test_audit_surface','test_foundation_boundaries','test_flow_boundaries'),
-    'hack/t2_registry.py': ('test_app_test_layout', 'test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
+    'hack/t2_registry.py': ('test_app_test_layout', 'test_t2_policy', 'test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
     'hack/t2.py': ('test_t2_modules', 'test_t2_runner', 'test_t2_guards'),
     'hack/t2_execution.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner'),
@@ -577,7 +814,7 @@ TOOL_INPUTS = {
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
 EXECUTION_INPUTS = {'hack/t2_python.py', 'hack/t2.py', 'hack/t2_registry.py', 'hack/t2_environment.py',
-                    'hack/t2_fixtures.py', 'hack/t2_execution.py', 'hack/t2_processes.py', 'hack/verification_result.py'}
+                    'hack/t2_fixtures.py', 'hack/t2_context.py', 'hack/t2_database.py', 'hack/t2_hosts.py', 'hack/t2_execution.py', 'hack/t2_processes.py', 'hack/verification_result.py'}
 GLOBAL_INPUTS = {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'Makefile', 'hack/build_run.py'}
 POLICY_INPUTS = {'deny.toml', 'clippy.toml'}
 

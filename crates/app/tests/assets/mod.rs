@@ -30,13 +30,13 @@ async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(TENANT, subject, grants).await
+    crate::test_support::identity::set_grants(case_tenant(), subject, grants).await
 }
 
 struct Fixture {
     base: Value,
     reader: Arc<InventoryReader>,
-    automation: rss_runtime::ShutdownStack,
+    automation: Option<rss_runtime::ShutdownStack>,
     router: Router,
     browser: Browser,
     subject: String,
@@ -62,11 +62,16 @@ impl Fixture {
         let subject = browser_subject(&browser, &router).await?;
         permissions(&subject, None, true).await?;
         pg(&format!(
-            "INSERT INTO mdm_access.devices VALUES('{TENANT}','asset-a'),('{TENANT}','asset-b');"
+            "INSERT INTO mdm_access.devices VALUES('{TENANT}','asset-a'),('{TENANT}','asset-b');",
+            TENANT = case_tenant()
         ))?;
         pg_tenant(
-            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            "INSERT INTO mdm_access.devices VALUES('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','foreign-asset');",
+            case::peer(),
+            &format!(
+                "INSERT INTO mdm_access.devices VALUES('{}','{}');",
+                case::peer(),
+                case::name("foreign-asset")
+            ),
         )?;
         Ok(Self {
             base,
@@ -78,7 +83,7 @@ impl Fixture {
         })
     }
     async fn close(self) -> Result<()> {
-        ensure!(self.automation.shutdown().join().await?.is_clean());
+        crate::test_support::stop_worker(self.automation).await?;
         self.reader.close().await;
         Ok(())
     }

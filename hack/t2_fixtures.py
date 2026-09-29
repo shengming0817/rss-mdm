@@ -5,54 +5,41 @@ ref: PostgreSQL src/backend/commands/dbcommands.c@7885b94dd81b98bbab9ed878680d15
 from __future__ import annotations
 from collections import Counter
 from contextlib import contextmanager, ExitStack
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 import threading
-import time
 from types import SimpleNamespace
-import uuid
 
-from candidate_fixture import installation as product_installation, INSTANCE, ADMIN, TENANTS
+from candidate_fixture import INSTANCE, ADMIN
+from t2_context import contexts, installation
+from t2_database import DatabasePool, measure
+from t2_hosts import Host
 from t2_environment import Environment, private, run
 from t2_registry import ROOT, IDENTITY_SETUP
 from t2_processes import diagnostic_phase, owned_by
 from verification_result import require
 
 
-def installation():
-    config = product_installation()
-    config['tenants'] = [*config['tenants'], '11111111-1111-1111-1111-111111111111',
-                         '22222222-2222-2222-2222-222222222222']
-    return config
-
-
-def identifier(value):
-    return '"' + value.replace('"', '""') + '"'
-
-
-def literal(value):
-    return "'" + value.replace("'", "''") + "'"
-
-
 class RunFixtures:
     def __init__(self, builds, output):
         self.builds = builds
         self.output = output
-        self.owner = Environment(group='t2')
-        self.gateway_owner = Environment(group='t2-gateway')
-        self.started = False
-        self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-certificates-')
-        self.certificates = Environment(group='t2-certificates')
-        self.certificates.root = Path(self.cert_directory.name)
-        self.lock = threading.RLock()
-        self.templates = {}
-        self.ready = False
         self.counts = Counter()
+        self.events = []
+        self.normal = DatabasePool(builds, 't2', self.counts, self.events)
+        self.fault = DatabasePool(builds, 't2-fault', self.counts, self.events)
+        self.gateway_owner = Environment(group='t2-gateway')
+        self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-run-')
+        self.root = Path(self.cert_directory.name)
+        self.certificates = Environment(group='t2-certificates')
+        self.certificates.root = self.root / 'certificates'
+        self.lock = threading.RLock()
+        self.case_contexts = {}
+        self.shared = {}
+        self.hosts = {}
 
     def __enter__(self):
         self.process_ownership = owned_by(self.builds.processes)
@@ -69,7 +56,13 @@ class RunFixtures:
 
     def cleanup_environments(self):
         errors = []
-        for environment in (self.owner, self.gateway_owner):
+        for host in self.hosts.values():
+            try:
+                host.close()
+            except Exception as error:
+                errors.append(error)
+        self.hosts.clear()
+        for environment in (self.normal.owner, self.fault.owner, self.gateway_owner):
             try:
                 if environment.root.exists():
                     environment.reset()
@@ -88,144 +81,107 @@ class RunFixtures:
             finally:
                 self.process_ownership.__exit__(*unused)
 
-    def prepare(self, modules):
-        if any(module.postgres and not module.exclusive for module in modules):
-            self.postgres()
-        if any(set(module.fixtures) & {'tls', 'windows', 'apple', 'apns'} for module in modules):
-            with self.lock:
-                self.certificates.prepare_inputs()
-        for profile in sorted({m.profile for m in modules if m.postgres and not m.exclusive and m.profile != 'empty'}):
-            self.template(profile)
+    def prepare(self, jobs):
+        self.case_contexts = contexts(self.output.name, jobs)
+        normal = [self.case_contexts[job.key] for job in jobs
+                  if job.module.postgres and job.module.db_mode != 'instance']
+        fault = [self.case_contexts[job.key] for job in jobs if job.module.db_mode == 'instance']
+        if normal:
+            self.normal.installation = installation(normal)
+        if fault:
+            self.fault.installation = installation(fault)
+        for job in jobs:
+            root = self.root / job.key
+            root.mkdir()
+            private(root / 'case.json', self.case_contexts[job.key])
+        if any(set(job.module.fixtures) & {'tls', 'windows', 'apple', 'apns'} for job in jobs):
+            self.certificates.prepare_inputs()
+        # A compatible profile owns one writable database for the complete run.
+        for profile in sorted({job.module.profile for job in jobs if job.module.db_mode == 'reuse'}):
+            selected = [job for job in jobs if job.module.profile == profile and job.module.db_mode == 'reuse']
+            with self.normal.database(profile, 'reuse') as database:
+                self.shared[profile] = database
+                identity_jobs = [job for job in selected if 'identity' in job.module.fixtures]
+                if identity_jobs:
+                    self.prepare_identity(self.normal, database, identity_jobs, self.output / 'identity' / profile)
 
-    def postgres(self):
-        with self.lock:
-            if not self.ready:
-                self.started = True
-                if self.owner.root.exists():
-                    # build_run owns the worktree lease; verify and retire only
-                    # residue from this same T2 service before preparing it.
-                    self.owner.reset()
-                self.owner.up()
-                self.owner.roles()
-                self.ready = True
-                self.counts['postgresStarts'] += 1
-            return self.owner
+    def runtime_config(self, pool, root, database, tenant):
+        config = json.loads((ROOT / 'fixtures/mdm-config.example.json').read_text())
+        db = pool.database_config
+        for key, role in [('access_database', 'mdm_access'), ('runtime_database', 'mdm_runtime')]:
+            config[key] = db(root, database, role, 'access-fixture' if role == 'mdm_access' else 'runtime-fixture')
+        for owner, key, role, password in [
+            ('identity', 'database', 'mdm_identity_runtime', 'identity-runtime-fixture'),
+            ('identity', 'audit_worker', 'mdm_identity_audit', 'identity-audit-fixture'),
+            ('execution', 'database', 'mdm_command_runtime', 'runtime-fixture')]:
+            config[owner][key] = db(root, database, role, password)
+        config['flow']['storage']['database'] = db(root, database, 'mdm_flow_runtime', 'runtime-fixture')
+        config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
+        config['identity']['tenant_id'] = tenant
+        config['native_protocols'] = {}
+        config['identity_management'] = [dict(tenant_id=tenant, instance_id=INSTANCE, principal_id=ADMIN,
+                                               permissions=['accounts', 'providers'])]
+        return config
 
-    def reset(self):
-        """Only called after the normal phase is drained, never from parallel jobs."""
-        if self.owner.root.exists():
-            self.owner.reset()
-        self.ready = False
-        self.started = False
-        self.templates.clear()
-        self.counts['exclusiveResets'] += 1
-
-    def database_config(self, root, database, role='mdm_owner', password='owner-fixture'):
-        private(root / (role + '-password'), password)
-        return dict(host='localhost', port=self.owner.port(), name=database, user=role,
-                    password_file=str(root / (role + '-password')), ca_file=str(root / 'ca.crt'))
-
-    def installation_config(self, root, database):
-        return private(root / 'migrate.json', {
-            'installation': installation(), 'database': self.database_config(root, database)})
-
-    def database_grants(self, name):
-        self.owner.sql(f'GRANT CREATE ON DATABASE {identifier(name)} TO mdm_audit_owner,mdm_ledger_owner,mdm_group_owner; '
-                       'GRANT CREATE ON SCHEMA public TO mdm_owner,mdm_group_owner;', name)
-
-    def coordinates(self, name, profile):
-        if profile == 'product':
-            return json.loads(self.owner.sql('SELECT configuration FROM public.mdm_installation', name))
-        return self.owner.sql("SELECT encode(target,'hex')||':'||encode(lineage,'hex') FROM rss_transactional_messaging.storage_lineage ORDER BY target", name)
-
-    def properties(self, name):
-        query = f'''SELECT jsonb_build_object(
-          'owner',pg_get_userbyid(d.datdba),
-          'acl',(SELECT jsonb_agg(jsonb_build_object('role',CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,
-                       'privilege',a.privilege_type,'grantable',a.is_grantable) ORDER BY a.grantee,a.privilege_type)
-                 FROM aclexplode(coalesce(d.datacl,acldefault('d',d.datdba))) a),
-          'settings',(SELECT coalesce(jsonb_agg(jsonb_build_object('role',s.setrole,'values',s.setconfig) ORDER BY s.setrole),'[]'::jsonb)
-                      FROM pg_db_role_setting s WHERE s.setdatabase=d.oid))
-          FROM pg_database d WHERE d.datname={literal(name)}'''
-        return json.loads(self.owner.sql(query))
-
-    def restore_properties(self, name, properties):
-        database = identifier(name)
-        self.owner.sql(f'ALTER DATABASE {database} OWNER TO {identifier(properties["owner"])}; '
-                       f'REVOKE ALL ON DATABASE {database} FROM PUBLIC;')
-        for entry in properties['acl']:
-            privilege = entry['privilege']
-            require(privilege in {'CONNECT', 'CREATE', 'TEMPORARY'}, 'unsupported database privilege')
-            role = 'PUBLIC' if entry['role'] == 'PUBLIC' else identifier(entry['role'])
-            grantable = ' WITH GRANT OPTION' if entry['grantable'] else ''
-            self.owner.sql(f'GRANT {privilege} ON DATABASE {database} TO {role}{grantable};')
-        for entry in properties['settings']:
-            if entry['role']:
-                role = self.owner.sql(f'SELECT rolname FROM pg_roles WHERE oid={int(entry["role"])}')
-                prefix = f'ALTER ROLE {identifier(role)} IN DATABASE {database}'
-            else:
-                prefix = f'ALTER DATABASE {database}'
-            for setting in entry['values']:
-                key, value = setting.split('=', 1)
-                self.owner.sql(f'{prefix} SET {identifier(key)} TO {literal(value)};')
-        require(self.properties(name) == properties, 'cloned database permissions/settings differ from baseline')
-
-    def template(self, profile):
-        with self.lock:
-            if profile in self.templates:
-                return self.templates[profile]
-            owner = self.postgres()
-            name = 't2_template_' + uuid.uuid4().hex
-            owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner')
-            self.database_grants(name)
-            with tempfile.TemporaryDirectory(prefix='mdm-template-') as directory:
-                root = Path(directory)
-                private(root / 'ca.crt', (owner.root / 'ca.crt').read_text())
-                if profile == 'product':
-                    config = self.installation_config(root, name)
-                    run([self.builds.executables['rss-mdm'], 'migrate', '--config', config],
-                        cwd=ROOT, capture_output=True, timeout=90)
-                else:
-                    executable = 'migrations' if profile == 'group' else 'policy_migrations'
-                    sql = run([self.builds.executables[executable]], cwd=ROOT, capture_output=True).stdout
-                    if profile == 'backend':
-                        sql += '\n' + '\n'.join((ROOT / f'crates/{kind}-postgres/migrations/{unit}').read_text()
-                                                 for kind in ('resource', 'software-release')
-                                                 for unit in ('0001.sql', '0002_outbox_writer.sql'))
-                    role = 'mdm_group_owner' if profile == 'group' else 'mdm_owner'
-                    owner.sql(f'BEGIN; SET ROLE {role}; {sql} COMMIT;', name)
-                    owner.sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); "
-                              "INSERT INTO rss_transactional_messaging.tenant_epoch VALUES('11111111-1111-1111-1111-111111111111',1),('22222222-2222-2222-2222-222222222222',1);", name)
-            properties = self.properties(name)
-            coordinates = self.coordinates(name, profile)
-            owner.sql(f'ALTER DATABASE {identifier(name)} ALLOW_CONNECTIONS false;')
-            require(owner.sql(f'SELECT count(*) FROM pg_stat_activity WHERE datname={literal(name)}') == '0',
-                    'migration baseline still has live connections')
-            require(owner.sql(f'SELECT count(*) FROM pg_prepared_xacts WHERE database={literal(name)}') == '0',
-                    'migration baseline has prepared transactions')
-            self.templates[profile] = (name, properties, coordinates)
-            self.counts['baseline:' + profile] += 1
-            return self.templates[profile]
+    def prepare_identity(self, pool, database, jobs, output):
+        root = self.root / database
+        root.mkdir(exist_ok=True)
+        private(root / 'ca.crt', (pool.owner.root / 'ca.crt').read_text())
+        tenants = sorted({tenant for j in jobs for tenant in self.case_contexts[j.key]['identityTenants']})
+        config = self.runtime_config(pool, root, database, tenants[0])
+        env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),
+                   MDM_TEST_CONFIG=str(private(root / 'runtime.json', config)))
+        maintenance = pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
+        password = private(root / 'account-password', 'Fixture-only-correct-horse-battery-2026!')
+        for tenant in tenants:
+            path = private(root / 'initialize.json', dict(database=maintenance, installation=pool.installation,
+                           tenant_id=tenant, principal_id=ADMIN, login='bootstrap', password_file=str(password)))
+            with measure(self.events, 'identity-initialize', database=database, tenant=tenant):
+                run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
+                    cwd=ROOT, env=env, capture_output=True, timeout=30)
+            self.counts['identityInitializations'] += 1
+        manifest = dict(tenants=tenants, cases=[str(self.root / j.key / 'case.json') for j in jobs])
+        env['MDM_IDENTITY_SETUP'] = str(private(root / 'identity-setup.json', manifest))
+        cases = self.builds.discover(IDENTITY_SETUP)
+        require(len(cases) == 1, 'identity setup target is ambiguous')
+        with measure(self.events, 'identity-setup', database=database):
+            self.builds.execute(cases[0], env, output)
+        for event in json.loads((root / 'identity-costs.json').read_text()):
+            self.events.append(dict(event, database=database))
+            self.counts[event['phase']] += event['count']
+        self.counts['identitySetups'] += 1
+        # The helper creates real case accounts and writes their public coordinates.
+        for job in jobs:
+            case_root = self.root / job.key
+            context = json.loads((case_root / 'case.json').read_text())
+            self.case_contexts[job.key] = context
+            value = self.runtime_config(pool, case_root, database, context['tenant'])
+            value['identity_management'][0]['principal_id'] = context['admin']
+            value['content'] = json.loads((root / 'content.json').read_text())
+            value['task_signing'] = json.loads((root / 'task-signing.json').read_text())
+            private(case_root / 'runtime.json', value)
+            private(case_root / 'account-password', password.read_text())
+            pool.database_config(case_root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
 
     @contextmanager
-    def database(self, profile):
-        self.postgres()
-        if profile == 'empty':
-            with self.owner.database() as name:
-                self.counts['emptyDatabases'] += 1
-                yield name
-            return
-        template, properties, coordinates = self.template(profile)
-        name = 't2_case_' + uuid.uuid4().hex
-        self.owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner TEMPLATE {identifier(template)}')
+    def workers(self, job, database, config):
+        key = (database, self.case_contexts[job.key]['tenant'])
+        with self.lock:
+            if key not in self.hosts:
+                with measure(self.events, 'host-start', database=database, tenant=key[1]):
+                    self.hosts[key] = Host(self.builds, config, self.output / 'hosts' / database / key[1])
+                self.counts['hostStarts'] += 1
+            host = self.hosts[key]
+        host.check()
         try:
-            self.restore_properties(name, properties)
-            require(self.coordinates(name, profile) == coordinates, 'cloned installation coordinates differ')
-            with self.lock:
-                self.counts['clonedDatabases'] += 1
-            yield name
+            yield host
+            host.check()
         finally:
-            self.owner.sql(f'DROP DATABASE {identifier(name)} WITH (FORCE)')
+            # The shared object tenant lives for the run. A private consumer tenant
+            # has no remaining clients after this case; retire it within JOBS.
+            if job.module.db_mode != 'reuse' or job.module.scope != 'objects':
+                with self.lock:
+                    self.hosts.pop(key).close()
 
     def source_tls(self, root):
         with self.lock:
@@ -251,44 +207,21 @@ class RunFixtures:
         finally:
             environment.reset()
 
-    def identity(self, root, database, env, output):
-        config = json.loads((ROOT / 'fixtures/mdm-config.example.json').read_text())
-        for key, role in [('access_database', 'mdm_access'), ('runtime_database', 'mdm_runtime')]:
-            config[key] = self.database_config(root, database, role, 'access-fixture' if role == 'mdm_access' else 'runtime-fixture')
-        config['identity']['database'] = self.database_config(root, database, 'mdm_identity_runtime', 'identity-runtime-fixture')
-        config['identity']['audit_worker'] = self.database_config(root, database, 'mdm_identity_audit', 'identity-audit-fixture')
-        config['flow']['storage']['database'] = self.database_config(root, database, 'mdm_flow_runtime', 'runtime-fixture')
-        config['execution']['database'] = self.database_config(root, database, 'mdm_command_runtime', 'runtime-fixture')
-        config['flow']['publication']['database'] = self.database_config(root, database, 'mdm_software_driver', 'runtime-fixture')
-        config['native_protocols'] = {}
-        if (root / 'windows.json').exists():
-            config['native_protocols']['windows'] = json.loads((root / 'windows.json').read_text())
-        config['identity_management'] = [dict(tenant_id=TENANTS[0], instance_id=INSTANCE, principal_id=ADMIN, permissions=['accounts', 'providers'])]
-        env['MDM_TEST_CONFIG'] = str(private(root / 'runtime.json', config))
-        maintenance = self.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
-        password = private(root / 'account-password', 'Fixture-only-correct-horse-battery-2026!')
-        for tenant in TENANTS:
-            path = private(root / 'initialize.json', dict(database=maintenance, installation=installation(),
-                           tenant_id=tenant, principal_id=ADMIN, login='admin', password_file=str(password)))
-            run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
-                cwd=ROOT, env=env, capture_output=True, timeout=30)
-        cases = self.builds.discover(IDENTITY_SETUP)
-        require(len(cases) == 1, 'identity setup target is ambiguous')
-        self.builds.execute(cases[0], env, output / 'identity-setup')
-        with self.lock:
-            self.counts['identitySetups'] += 1
-
     @contextmanager
-    def scenario(self, module, output):
+    def scenario(self, job, output):
+        module = job.module
+        pool = self.fault if module.db_mode == 'instance' else self.normal
+        owner = pool.owner
         stack = ExitStack()
         try:
-            root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='mdm-module-')))
-            env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024))
+            root = self.root / job.key
+            env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),
+                       MDM_CASE_CONTEXT=str(root / 'case.json'))
             database = None
             if module.postgres:
-                database = stack.enter_context(self.database(module.profile))
+                database = stack.enter_context(pool.database(module.profile, module.db_mode))
             if module.postgres or set(module.fixtures) & {'tls', 'windows', 'apple', 'apns'}:
-                certificates = self.owner if module.postgres else self.certificates
+                certificates = owner if module.postgres else self.certificates
                 with self.lock:
                     certificates.prepare_inputs()
                 for name in ('ca.crt', 'server.crt', 'server.key'):
@@ -308,18 +241,26 @@ class RunFixtures:
                 env.update(tls_environment(source_root, self))
             migration_config = None
             if database:
-                port = self.owner.port()
+                port = owner.port()
                 env.update(PG_CA_FILE=str(root / 'ca.crt'),
                            DATABASE_URL=f'postgres://mdm_runtime:runtime-fixture@localhost:{port}/{database}',
                            MDM_OWNER_URL=f'postgres://mdm_owner:owner-fixture@localhost:{port}/{database}',
                            MDM_ADMIN_URL=f'postgres://postgres:local-fixture@localhost:{port}/{database}',
-                           MDM_TEST_PG_CONTAINER=self.owner.container())
+                           MDM_TEST_PG_CONTAINER=owner.container())
                 config = private(root / 'database.json', dict(port=port, ca=str(root / 'ca.crt'),
-                                 container=self.owner.container(), database=database))
+                                 container=owner.container(), database=database))
                 env.update(BACKEND_PG_CONFIG=str(config), GROUP_PG_CONFIG=str(config))
-                migration_config = self.installation_config(root, database)
+                migration_config = pool.installation_config(root, database)
                 if 'identity' in module.fixtures:
-                    self.identity(root, database, env, output)
+                    if module.db_mode != 'reuse':
+                        self.prepare_identity(pool, database, [job], output / 'identity-setup')
+                    value = json.loads((root / 'runtime.json').read_text())
+                    if (root / 'windows.json').exists():
+                        value['native_protocols']['windows'] = json.loads((root / 'windows.json').read_text())
+                    env['MDM_TEST_CONFIG'] = str(private(root / 'runtime.json', value))
+            host = None
+            if 'shared_worker' in module.fixtures:
+                host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
             if 'examples' in module.fixtures:
                 env['MDM_FIXTURE_BIN'] = self.builds.executables['rss-mdm-fixture']
             if 'scep' in module.fixtures:
@@ -330,12 +271,18 @@ class RunFixtures:
                 stack.enter_context(oracle(root, env))
             if 'idp' in module.fixtures:
                 from enterprise_idp import fixture
-                env.update(stack.enter_context(fixture(root, self.owner)))
+                env.update(stack.enter_context(fixture(root, owner)))
             with self.lock:
                 for dependency in module.fixtures:
                     self.counts['fixture:' + dependency] += 1
             yield SimpleNamespace(root=root, env=env, database=database,
-                                  migration_config=migration_config, owner=self.owner,
+                                  migration_config=migration_config, owner=owner,
+                                  evidence=dict(database=database, tenant=self.case_contexts[job.key]['tenant'],
+                                                peer=self.case_contexts[job.key]['peer'],
+                                                pg=owner.project if database else None,
+                                                pgGeneration=pool.generation if database else None,
+                                                host=host.address if host else None,
+                                                hostLog=str(host.log_path.relative_to(self.output)) if host else None),
                                   binary=self.builds.executables.get('rss-mdm'), context=self)
         finally:
             with diagnostic_phase('cleanup'), self.builds.processes.cleanup():

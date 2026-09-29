@@ -25,7 +25,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::set_grants(TENANT, &member, grants).await?;
+    identity::set_grants(case_tenant(), &member, grants).await?;
     let automation = start_automation(&fixture.base).await?;
     let resource = Uuid::new_v4();
     let path = format!("/api/v3/resources/{resource}");
@@ -71,7 +71,8 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     let router = &router;
     let prefix = uuid::Uuid::new_v4();
     pg(&format!(
-        "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,1001) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) SELECT '{TENANT}',request,grant_id,'mdm.windows' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations SELECT '{TENANT}',registration,device,'mdm',1,request,'active' FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777','device-basics/2/model-os/typed-v2',true FROM scale_devices;"
+        "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,1001) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) SELECT '{TENANT}',request,grant_id,'mdm.windows' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations SELECT '{TENANT}',registration,device,'mdm',1,request,'active' FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777','device-basics/2/model-os/typed-v2',true FROM scale_devices;",
+        TENANT = case_tenant()
     ))?;
     await_ingress().await?;
     let group = uuid::Uuid::new_v4();
@@ -121,8 +122,11 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(TENANT, &member, grants).await?;
-    let before = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
+    crate::test_support::identity::set_grants(case_tenant(), &member, grants).await?;
+    let before = pg(&format!(
+        "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
     call(
         browser,
         router,
@@ -149,8 +153,13 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
         }
     }
     ensure!(count == 1001);
-    ensure!(pg("SELECT count(*) FROM mdm_commands.action_runs")? == before);
-    ensure!(automation.shutdown().join().await?.is_clean());
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}'",
+            case_tenant()
+        ))? == before
+    );
+    crate::test_support::stop_worker(automation).await?;
     reader.close().await;
     Ok(())
 }

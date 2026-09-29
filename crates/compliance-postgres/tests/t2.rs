@@ -12,7 +12,11 @@ use sqlx::{
 };
 use uuid::Uuid;
 
-const TENANT: &str = "11111111-1111-4111-8111-111111111111";
+#[path = "../../../tests/support/context.rs"]
+mod case;
+fn case_tenant() -> &'static str {
+    case::tenant()
+}
 async fn connect(owner: bool) -> Result<PgConnection> {
     let mut options: PgConnectOptions = std::env::var(if owner {
         "MDM_ADMIN_URL"
@@ -44,7 +48,7 @@ async fn bind(connection: &mut PgConnection, tenant: &str) -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=compliance.storage: borrowed transactions, immutable evidence and tenant isolation"]
 async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
-    let tenant = TenantId::parse(TENANT)?;
+    let tenant = TenantId::parse(case_tenant())?;
     let mut connection = connect(false).await?;
     // Even an empty read must reject an unbound transaction.
     ensure!(
@@ -52,7 +56,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
             .await
             .is_err()
     );
-    bind(&mut connection, TENANT).await?;
+    bind(&mut connection, case_tenant()).await?;
     storage::admit(&mut connection, tenant).await?;
     let id = Uuid::new_v4();
     let definition: Definition<Value> = serde_json::from_value(json!({
@@ -107,7 +111,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     .await?;
     connection.execute("COMMIT").await?;
 
-    bind(&mut connection, TENANT).await?;
+    bind(&mut connection, case_tenant()).await?;
     ensure!(
         storage::result_at(&mut connection, tenant, task, "device-a")
             .await?
@@ -160,7 +164,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     );
     connection.execute("ROLLBACK").await?;
 
-    let foreign = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let foreign = case::peer();
     bind(&mut connection, foreign).await?;
     ensure!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mdm_compliance.results")
@@ -187,7 +191,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
 #[ignore = "MODULE=compliance.storage: reject schema and permission drift"]
 async fn admission_rejects_unrelated_grantees_and_disabled_rls() -> Result<()> {
     let mut owner = connect(true).await?;
-    bind(&mut owner, TENANT).await?;
+    bind(&mut owner, case_tenant()).await?;
     for change in [
         "SELECT 1",
         "GRANT SELECT ON mdm_compliance.results TO mdm_api",
@@ -198,7 +202,7 @@ async fn admission_rejects_unrelated_grantees_and_disabled_rls() -> Result<()> {
         owner.execute("SAVEPOINT drift").await?;
         owner.execute(change).await?;
         owner.execute("SET LOCAL ROLE mdm_flow_runtime").await?;
-        let admitted = storage::admit(&mut owner, TenantId::parse(TENANT)?).await;
+        let admitted = storage::admit(&mut owner, TenantId::parse(case_tenant())?).await;
         ensure!(
             admitted.is_ok() == (change == "SELECT 1"),
             "unexpected admission for {change}: {admitted:?}"

@@ -91,7 +91,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             "release_approve",
             Method::POST,
             release.clone(),
-            op(json!({"action":"approve","ring":"test","publisherSubject":ADMIN})),
+            op(json!({"action":"approve","ring":"test","publisherSubject":case_admin()})),
         ),
         (
             "release_publish",
@@ -138,9 +138,10 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
         .collect::<std::collections::BTreeSet<_>>();
     let expected_denied = cases.len() * (grants.len() - 1);
     let counts = || {
-        pg(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups),(SELECT count(*) FROM mdm_planning.operations)+(SELECT count(*) FROM mdm_assets.operations)+(SELECT count(*) FROM mdm_resource_catalog.operations)+(SELECT count(*) FROM mdm_publication.operations),(SELECT count(*) FROM mdm_planning.scope_versions),(SELECT count(*) FROM mdm_automation.automation_jobs),(SELECT count(*) FROM mdm_policy.policies),(SELECT count(*) FROM mdm_software_composition.subjects))::text",
-        )
+        pg(&format!(
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_publication.operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.scope_versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id='{tenant}'))::text",
+            tenant = case_tenant()
+        ))
     };
     // Exercise every permission change against the same running service. Rebuilding
     // full applications per grant needlessly multiplies component connection pools.
@@ -164,7 +165,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     };
     for grant in &grants {
         set_management_grants(&member, json!([grant])).await?;
-        set_management_grants(ADMIN, json!(["release_publish"])).await?;
+        set_management_grants(case_admin(), json!(["release_publish"])).await?;
         let before = counts()?;
         for (needed, method, path, body) in &cases {
             if grant == needed {

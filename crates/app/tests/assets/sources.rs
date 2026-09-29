@@ -51,7 +51,7 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
 async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> Result<()> {
     let (registration, epoch) = seed_source("tie-b", "agent", "agent.builtin", "quality-sequence")?;
     let scope = crate::device::scope(
-        rss_request_context::TenantId::parse(TENANT)?,
+        rss_request_context::TenantId::parse(case_tenant())?,
         registration,
         "agent.builtin",
         epoch,
@@ -62,7 +62,8 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
     let newer = "80000000-0000-4000-8000-000000000002";
     for id in [older, newer] {
         pg(&format!(
-            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,'{id}','{registration}','agent.builtin','{epoch}','{scope}',7,started_at,attempts,result,reason,batch,digest,sealed_at,false FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='mdm.windows' AND reason='complete' AND batch IS NOT NULL ORDER BY sequence DESC LIMIT 1"
+            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,'{id}','{registration}','agent.builtin','{epoch}','{scope}',7,started_at,attempts,result,reason,batch,digest,sealed_at,false FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='mdm.windows' AND reason='complete' AND batch IS NOT NULL ORDER BY sequence DESC LIMIT 1",
+            TENANT = case_tenant()
         ))?;
     }
     let query = json!({"criteria":predicate("device.model","string",json!("quality-sequence"))});
@@ -90,7 +91,8 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
         );
         if expected == newer {
             pg(&format!(
-                "DELETE FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{newer}'"
+                "DELETE FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{newer}'",
+                TENANT = case_tenant()
             ))?;
         }
     }
@@ -104,7 +106,8 @@ async fn sources_resolution_and_retained_quality() -> Result<()> {
     let mut browser = fixture.browser.clone();
     source_matrix(&mut browser, router).await?;
     pg(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-b')"
+        "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-b')",
+        TENANT = case_tenant()
     ))?;
     crate::test_support::inventory::completed_windows_run(&fixture.base, "asset-a").await?;
     retained_collection_quality(&mut browser, router).await?;

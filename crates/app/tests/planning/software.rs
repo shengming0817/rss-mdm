@@ -136,7 +136,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
             && reordered_status.1["stages"][1]["verifiedSuccess"] == 0,
         "stage edit reused another scope's evidence: {reordered_status:?}"
     );
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -198,6 +198,6 @@ async fn new_approval_changes_execution_version() -> Result<()> {
         rebound["versionId"] != published["versionId"],
         "reapproval must create a new execution version: {rebound}"
     );
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

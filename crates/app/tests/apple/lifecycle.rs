@@ -34,7 +34,10 @@ impl Peer {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "TokenUpdate".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                     ("Topic", self.topic.clone().into()),
                     ("Token", plist::Value::Data(vec![value; 32])),
                     ("PushMagic", "fixture-magic".into()),
@@ -50,8 +53,13 @@ impl Peer {
         id: Option<Uuid>,
         extra: Option<(&str, plist::Value)>,
     ) -> Result<Vec<u8>> {
-        let mut d =
-            protocol::dictionary([("Status", status.into()), ("UDID", "rss-t2-apple".into())]);
+        let mut d = protocol::dictionary([
+            ("Status", status.into()),
+            (
+                "UDID",
+                crate::test_support::case::name("rss-t2-apple").into(),
+            ),
+        ]);
         if let Some(id) = id {
             d.insert("CommandUUID".into(), id.to_string().into());
         }
@@ -95,7 +103,10 @@ impl Fixture {
             .call(
                 &self.router,
                 Method::GET,
-                &format!("/api/v2/devices/{DEVICE}/operations/{id}"),
+                &format!(
+                    "/api/v2/devices/{DEVICE}/operations/{id}",
+                    DEVICE = case_device()
+                ),
                 None,
             )
             .await?;
@@ -106,7 +117,10 @@ impl Fixture {
         let id = Uuid::new_v4();
         let body =
             json!({"operationId":id,"task":task,"deadline":self.app.clock.unix_seconds()?+300});
-        let path = format!("/api/v2/devices/{DEVICE}/operations");
+        let path = format!(
+            "/api/v2/devices/{DEVICE}/operations",
+            DEVICE = case_device()
+        );
         let reply = self
             .browser
             .call(&self.router, Method::POST, &path, Some(body.clone()))

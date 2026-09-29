@@ -8,7 +8,7 @@ impl Drop for HttpServer {
     }
 }
 pub(crate) struct Fixture {
-    pub(crate) directory: tempfile::TempDir,
+    pub(crate) directory: std::path::PathBuf,
     pub(crate) router: Router,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -27,10 +27,9 @@ impl Fixture {
         } else {
             None
         };
-        let directory = tempfile::tempdir()?;
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        base["content"] = json!({"directory":directory.path(),"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100});
+        let directory = std::path::PathBuf::from(base["content"]["directory"].as_str().unwrap());
         if let Some(peer) = &peer {
             base["content"]["imports"][&peer.logical] = json!([{"base":format!("{}artifacts/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);
         }
@@ -81,10 +80,11 @@ impl Fixture {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-        crate::test_support::identity::set_grants(TENANT, &subject, grants).await?;
-        let source = peer
-            .as_ref()
-            .map_or_else(|| "private-fixture".to_owned(), |peer| peer.logical.clone());
+        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+        let source = peer.as_ref().map_or_else(
+            || case::name("private-fixture").to_owned(),
+            |peer| peer.logical.clone(),
+        );
         let source_path = format!("/api/v3/software/sources/{source}/revisions/1");
         let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","kind":"private","location":null,"publishers":[]}})).await?;
         write(

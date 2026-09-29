@@ -117,12 +117,10 @@ impl Client {
         .iter()
         .map(|p| json!({"operation":p,"scope":{"kind":"tenant"}}))
         .collect();
-        grants.extend(
-            ["operation_read", "operation_cancel"].into_iter().map(
-                |operation| json!({"operation":operation,"scope":{"kind":"device","id":DEVICE}}),
-            ),
-        );
-        let subject = json!({"kind":"user","user":crate::test_support::identity::user(TENANT,crate::test_support::identity::ADMIN)});
+        grants.extend(["operation_read", "operation_cancel"].into_iter().map(
+            |operation| json!({"operation":operation,"scope":{"kind":"device","id":case_device()}}),
+        ));
+        let subject = json!({"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())});
         let reply=self.browser.call(&self.router,Method::PUT,&format!("/api/v1/authorization/rules/{rule}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":subject,"grants":grants}}))).await?;
         ensure!(reply.0 == StatusCode::OK);
         let resource = format!("firewall-{}", Uuid::new_v4());
@@ -160,7 +158,7 @@ impl Client {
             ),
         )
         .await?;
-        let created=self.product(&format!("scopes/{scope}"),op(0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE}],"limitations":null,"exclusions":[]}}))).await?;
+        let created=self.product(&format!("scopes/{scope}"),op(0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}))).await?;
         self.wait_preview(&format!(
             "/api/v2/scopes/{scope}/tasks/{}",
             created["task"].as_str().unwrap()
@@ -188,7 +186,7 @@ impl Client {
         ))
         .await?;
         let uncertain_scope = Uuid::new_v4();
-        let s=self.product(&format!("scopes/{uncertain_scope}"),op(0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE}],"limitations":null,"exclusions":[{"kind":"group","id":unknown_group}]}}))).await?;
+        let s=self.product(&format!("scopes/{uncertain_scope}"),op(0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[{"kind":"group","id":unknown_group}]}}))).await?;
         self.wait_preview(&format!(
             "/api/v2/scopes/{uncertain_scope}/tasks/{}",
             s["task"].as_str().unwrap()
@@ -213,7 +211,7 @@ impl Client {
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let diagnosis:Option<String>=sqlx::query_scalar("SELECT diagnosis FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2").bind(TENANT).bind(DEVICE).fetch_one(&mut db).await?;
+        let diagnosis:Option<String>=sqlx::query_scalar("SELECT diagnosis FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2").bind(case_tenant()).bind(case_device()).fetch_one(&mut db).await?;
         ensure!(
             diagnosis.as_deref() == Some("waiting_scope"),
             "Unknown exclusion did not retain pending claim: {diagnosis:?}"
@@ -255,10 +253,10 @@ impl Client {
             )?)
             .await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-                .bind(TENANT)
+                .bind(case_tenant())
                 .execute(&mut pg)
                 .await?;
-            let diagnostic:Value=sqlx::query_scalar("SELECT jsonb_build_object('command',d.status,'scope',mdm_planning.scope_admission($2::uuid,$3),'task',o.request,'capabilities',(SELECT to_jsonb(c) FROM mdm_commands.capabilities c WHERE c.registration=o.registration),'assignment',(SELECT to_jsonb(x) FROM mdm_planning.configuration_devices x WHERE x.device=$3)) FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.command_id=o.id::text WHERE o.id=$1").bind(operation).bind(scope).bind(DEVICE).fetch_one(&mut pg).await?;
+            let diagnostic:Value=sqlx::query_scalar("SELECT jsonb_build_object('command',d.status,'scope',mdm_planning.scope_admission($2::uuid,$3),'task',o.request,'capabilities',(SELECT to_jsonb(c) FROM mdm_commands.capabilities c WHERE c.registration=o.registration),'assignment',(SELECT to_jsonb(x) FROM mdm_planning.configuration_devices x WHERE x.device=$3)) FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.command_id=o.id::text WHERE o.id=$1").bind(operation).bind(scope).bind(case_device()).fetch_one(&mut pg).await?;
             anyhow::bail!("missing automatic native configuration: {diagnostic}");
         }
         assert_work(
@@ -544,7 +542,7 @@ impl Client {
         )
         .await?;
         let remote = Uuid::new_v4();
-        self.product("remote-operations",json!({"operationId":remote,"resource":{"id":resource,"version":"v2","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"targets":{"kind":"devices","devices":[DEVICE]},"action":{"kind":"apply_configuration"},"deadline":self.app.clock.unix_seconds()?+300})).await?;
+        self.product("remote-operations",json!({"operationId":remote,"resource":{"id":resource,"version":"v2","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"targets":{"kind":"devices","devices":[case_device()]},"action":{"kind":"apply_configuration"},"deadline":self.app.clock.unix_seconds()?+300})).await?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -596,7 +594,7 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         tokio::time::timeout(Duration::from_secs(30),async {loop {
-            let dirty:bool=sqlx::query_scalar("SELECT coalesce((SELECT input_revision>observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2),false)").bind(TENANT).bind(DEVICE).fetch_one(&mut db).await?;
+            let dirty:bool=sqlx::query_scalar("SELECT coalesce((SELECT input_revision>observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2),false)").bind(case_tenant()).bind(case_device()).fetch_one(&mut db).await?;
             if dirty {return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await?
     }
@@ -605,12 +603,14 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let settled=tokio::time::timeout(Duration::from_secs(30),async {loop {
-            let ready:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND kind='policy_reconcile' AND target=$2 AND NOT completed) AND coalesce((SELECT observed_revision=input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$3),false)").bind(TENANT).bind(policy).bind(DEVICE).fetch_one(&mut db).await?;
+            let ready:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND kind='policy_reconcile' AND target=$2 AND NOT completed) AND coalesce((SELECT observed_revision=input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$3),false)").bind(case_tenant()).bind(policy).bind(case_device()).fetch_one(&mut db).await?;
             if ready{return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await;
         if settled.is_err() {
             let state = crate::test_support::pg(&format!(
-                "SELECT jsonb_build_object('device',(SELECT to_jsonb(d) FROM mdm_planning.configuration_devices d WHERE tenant_id='{TENANT}' AND device='{DEVICE}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'target',target,'completed',completed,'failure',failure)) FROM mdm_automation.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed))"
+                "SELECT jsonb_build_object('device',(SELECT to_jsonb(d) FROM mdm_planning.configuration_devices d WHERE tenant_id='{TENANT}' AND device='{DEVICE}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'target',target,'completed',completed,'failure',failure)) FROM mdm_automation.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed))",
+                TENANT = case_tenant(),
+                DEVICE = case_device()
             ))?;
             anyhow::bail!("pending configuration did not settle: {state}");
         }
@@ -625,7 +625,7 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         tokio::time::timeout(Duration::from_secs(30),async {loop {
-            let id:Option<Uuid>=sqlx::query_scalar("SELECT c.operation FROM mdm_planning.configuration_claims c JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(c.tenant_id,c.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE c.tenant_id=$1::uuid AND c.policy=$2::uuid AND c.device=$3 AND o.gateway_accepted AND d.status IN('published','received') AND ($4::uuid IS NULL OR c.operation<>$4)").bind(TENANT).bind(policy).bind(DEVICE).bind(previous).fetch_optional(&mut pg).await?;
+            let id:Option<Uuid>=sqlx::query_scalar("SELECT c.operation FROM mdm_planning.configuration_claims c JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(c.tenant_id,c.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE c.tenant_id=$1::uuid AND c.policy=$2::uuid AND c.device=$3 AND o.gateway_accepted AND d.status IN('published','received') AND ($4::uuid IS NULL OR c.operation<>$4)").bind(case_tenant()).bind(policy).bind(case_device()).bind(previous).fetch_optional(&mut pg).await?;
             if let Some(id)=id {return Ok::<_,anyhow::Error>(id);}
             tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await?

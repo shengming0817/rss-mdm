@@ -6,10 +6,10 @@ use super::*;
 #[tokio::test]
 #[ignore = "MODULE=device.binding: real registration state and PostgreSQL"]
 async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> {
-    let admin_a = admin(A, "admin-a").await?;
-    let admin_b = admin(B, "admin-b").await?;
-    let other = admin(A, "other-a").await?;
-    assert!(admin(B, "admin-a").await.is_err());
+    let admin_a = admin(case_a(), "admin-a").await?;
+    let admin_b = admin(case_b(), "admin-b").await?;
+    let other = admin(case_a(), "other-a").await?;
+    assert!(admin(case_b(), "admin-a").await.is_err());
     let access = Arc::new(
         Database::connect(options("mdm_access")?)
             .await
@@ -17,44 +17,58 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     );
     let service = DeviceService::new(
         access.clone(),
-        A.into(),
+        case_a().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let service_b = DeviceService::new(
         access.clone(),
-        B.into(),
+        case_b().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-        .bind(A)
+        .bind(case_a())
         .execute(&mut root)
         .await?;
-    let mdm = proof(A, Channel::Mdm, 1);
-    let agent = proof(A, Channel::Agent, 1);
-    let (command, first) = bind(&service, &admin_a, &mdm, "same-serial", 0).await?;
-    let (_, other_channel) = bind(&service, &admin_a, &agent, "same-serial", 0).await?;
+    let mdm = proof(case_a(), Channel::Mdm, 1);
+    let agent = proof(case_a(), Channel::Agent, 1);
+    let (command, first) = bind(
+        &service,
+        &admin_a,
+        &mdm,
+        crate::test_support::case::name("same-serial"),
+        0,
+    )
+    .await?;
+    let (_, other_channel) = bind(
+        &service,
+        &admin_a,
+        &agent,
+        crate::test_support::case::name("same-serial"),
+        0,
+    )
+    .await?;
     sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,'[\"inventory.basic.v3\"]','macos','aarch64')")
-        .bind(A)
+        .bind(case_a())
         .bind(other_channel.registration.to_string())
         .execute(&mut root)
         .await?;
     let (_, other_tenant) = bind(
         &service_b,
         &admin_b,
-        &proof(B, Channel::Mdm, 1),
-        "same-serial",
+        &proof(case_b(), Channel::Mdm, 1),
+        crate::test_support::case::name("same-serial"),
         0,
     )
     .await?;
     assert_ne!(first.registration, other_tenant.registration);
     assert!(
         service
-            .authorize_report(&proof(B, Channel::Mdm, 1), ReportSource::MdmWindows)
+            .authorize_report(&proof(case_b(), Channel::Mdm, 1), ReportSource::MdmWindows)
             .await
             .is_err()
     );
@@ -68,7 +82,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     }
     assert!(
         service
-            .bind(&admin_a, &proof(A, Channel::Mdm, 9), command.clone())
+            .bind(&admin_a, &proof(case_a(), Channel::Mdm, 9), command.clone())
             .await
             .is_err()
     );
@@ -86,7 +100,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
             .is_err()
     );
     // Explicit source permission can be removed independently of an active credential.
-    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND source='mdm.windows'").bind(A).execute(&mut root)
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND source='mdm.windows' AND registration=$2").bind(case_a()).bind(first.registration).execute(&mut root)
         .await?;
     assert!(
         service
@@ -94,10 +108,17 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
             .await
             .is_err()
     );
-    sqlx::query("UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND source='mdm.windows'").bind(A).execute(&mut root)
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND source='mdm.windows' AND registration=$2").bind(case_a()).bind(first.registration).execute(&mut root)
         .await?;
-    let newer = proof(A, Channel::Mdm, 2);
-    let (_, second) = bind(&service, &admin_a, &newer, "same-serial", 1).await?;
+    let newer = proof(case_a(), Channel::Mdm, 2);
+    let (_, second) = bind(
+        &service,
+        &admin_a,
+        &newer,
+        crate::test_support::case::name("same-serial"),
+        1,
+    )
+    .await?;
     assert_eq!(second.device, first.device);
     assert_eq!(second.generation, 2);
     assert_ne!(second.epoch, first.epoch);
@@ -116,7 +137,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     let current = service
         .current_scope(
             &admin_a,
-            "same-serial",
+            crate::test_support::case::name("same-serial"),
             Coordinates {
                 source: ReportSource::MdmWindows,
             },
@@ -140,8 +161,8 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
         expected_generation: 0,
         source: ReportSource::MdmWindows,
     };
-    let p1 = proof(A, Channel::Mdm, 50);
-    let p2 = proof(A, Channel::Mdm, 51);
+    let p1 = proof(case_a(), Channel::Mdm, 50);
+    let p2 = proof(case_a(), Channel::Mdm, 51);
     let (l, r) = tokio::join!(
         service.bind(&admin_a, &p1, left),
         service.bind(&admin_a, &p2, right)
@@ -159,10 +180,24 @@ async fn credential_race(
     admin: &AuthorizedPrincipal,
     root: &mut PgConnection,
 ) -> anyhow::Result<()> {
-    let pa = proof(A, Channel::Mdm, 60);
-    let pb = proof(A, Channel::Mdm, 61);
-    let (_, a) = bind(service, admin, &pa, "locator-left", 0).await?;
-    let (_, b) = bind(service, admin, &pb, "locator-right", 0).await?;
+    let pa = proof(case_a(), Channel::Mdm, 60);
+    let pb = proof(case_a(), Channel::Mdm, 61);
+    let (_, a) = bind(
+        service,
+        admin,
+        &pa,
+        crate::test_support::case::name("locator-left"),
+        0,
+    )
+    .await?;
+    let (_, b) = bind(
+        service,
+        admin,
+        &pb,
+        crate::test_support::case::name("locator-right"),
+        0,
+    )
+    .await?;
     let mut commands = Vec::new();
     for device in [&a.device, &b.device] {
         commands.push(BindRegistration {
@@ -174,8 +209,8 @@ async fn credential_race(
     }
     let mut hold = root.begin().await?;
     sqlx::query("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id IN ($2::uuid,$3::uuid) FOR UPDATE")
-        .bind(A).bind(a.registration.to_string()).bind(b.registration.to_string()).fetch_all(&mut *hold).await?;
-    let shared = proof(A, Channel::Mdm, 62);
+        .bind(case_a()).bind(a.registration.to_string()).bind(b.registration.to_string()).fetch_all(&mut *hold).await?;
+    let shared = proof(case_a(), Channel::Mdm, 62);
     let release = async {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -219,7 +254,7 @@ async fn credential_race(
         loser.registration
     );
     let generations:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm'")
-        .bind(A).bind(&loser.device).fetch_one(&mut *root).await?;
+        .bind(case_a()).bind(&loser.device).fetch_one(&mut *root).await?;
     assert_eq!(generations, 1);
     // Even after revocation the winning locator cannot move to the other device.
     service

@@ -55,7 +55,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         "SELECT desired::text FROM mdm_compliance.rules WHERE id='{rule}'"
     ))?;
     ensure!(next.trim() != task);
-    ensure!(worker.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(worker).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -128,7 +128,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
         )
         .await?;
     ensure!(s == StatusCode::CONFLICT, "referenced group was deleted");
-    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(automation).await?;
     assign(&mut browser, router, "compliance-a", 1, false).await?;
     // Group-only race: frozen membership must not survive a later group definition.
     let grouped = definition(json!({"kind":"groups","ids":[group]}));
@@ -161,11 +161,11 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     ensure!(old["phase"] == "superseded");
     tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            if pg(&format!("SELECT d.consumed=c.revision FROM mdm_planning.asset_dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{TENANT}'"))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}
+            if pg(&format!("SELECT d.consumed=c.revision FROM mdm_planning.asset_dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{TENANT}'", TENANT = case_tenant()))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }).await??;
-    ensure!(restarted.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(restarted).await?;
     fixture.close().await;
     Ok(())
 }

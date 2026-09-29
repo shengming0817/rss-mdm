@@ -184,7 +184,7 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
         .devices
         .current_scope(
             &proof,
-            "tls-device",
+            crate::test_support::case::name("tls-device"),
             crate::device::coordinates::Coordinates {
                 source: rss_mdm_inventory::ReportSource::MdmWindows,
             },
@@ -348,7 +348,12 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
 
     // Existing TLS keepalive connections do not cache the active mapping.
     app.devices
-        .revoke(&proof, "tls-device", intent.registration, Uuid::new_v4())
+        .revoke(
+            &proof,
+            crate::test_support::case::name("tls-device"),
+            intent.registration,
+            Uuid::new_v4(),
+        )
         .await?;
     ensure!(post(followup).send().await?.status() == StatusCode::UNAUTHORIZED);
     reader.close().await;

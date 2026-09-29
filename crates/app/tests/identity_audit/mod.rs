@@ -11,7 +11,9 @@ use sqlx::{
 };
 use std::str::FromStr;
 use tower::ServiceExt;
-const TENANT: &str = "11111111-1111-4111-8111-111111111111";
+fn case_tenant() -> &'static str {
+    crate::test_support::case::tenant()
+}
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=identity.audit: installed same-database Identity/Audit worker"]
@@ -57,7 +59,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         target: [1; 16],
         lineage: [2; 16],
         epoch: 1,
-        tenants: vec![TENANT.into()],
+        tenants: vec![case_tenant().into()],
     };
     crate::migration::migrate(&options, &installation).await?;
     let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&fixture)?)?;
@@ -88,15 +90,15 @@ async fn exercise(ledger: bool) -> Result<()> {
         .to_string()
         .into();
     crate::maintenance::run(serde_json::from_value(serde_json::json!({
-        "database":maintenance, "installation":installation, "tenant_id":TENANT,
-        "principal_id":crate::test_support::identity::ADMIN, "login":"admin", "password_file":root.join("account-password")
+        "database":maintenance, "installation":installation, "tenant_id":case_tenant(),
+        "principal_id":crate::test_support::case::admin(), "login":"admin", "password_file":root.join("account-password")
     }))?, true).await?;
     let mut identity_resources = Vec::new();
     let identity = crate::identity::Identity::connect(
         &config,
         Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                TENANT,
+                case_tenant(),
                 crate::test_support::identity::INSTANCE,
                 config.identity_management.clone(),
             )?,
@@ -106,7 +108,7 @@ async fn exercise(ledger: bool) -> Result<()> {
     .await?;
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v2/tenants/{TENANT}/login"))
+        .uri(format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()))
         .header("host", "mdm.example.test")
         .header("origin", "https://mdm.example.test")
         .header("x-identity-request", "1")
@@ -397,7 +399,7 @@ async fn wait_delivered(pool: &PgPool, readiness: &Readiness, expected: i64) -> 
 
 async fn manipulate(pool: &PgPool, statement: &str) -> Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.storage_target',repeat('01',16),true),set_config('rss.storage_lineage',repeat('02',16),true),set_config('rss.execution_epoch','1',true)").bind(TENANT).execute(&mut *tx).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.storage_target',repeat('01',16),true),set_config('rss.storage_lineage',repeat('02',16),true),set_config('rss.execution_epoch','1',true)").bind(case_tenant()).execute(&mut *tx).await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(statement))
         .execute(&mut *tx)
         .await?;

@@ -9,8 +9,12 @@ use axum::{
 use serde_json::{Value, json};
 #[path = "support/native.rs"]
 pub(crate) mod native;
-pub(crate) const TENANT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-pub(crate) const DEVICE: &str = "tls-device";
+pub(crate) fn case_tenant() -> &'static str {
+    crate::test_support::case::tenant()
+}
+pub(crate) fn case_device() -> &'static str {
+    crate::test_support::case::name("tls-device")
+}
 pub(crate) struct Client {
     pub(crate) browser: Browser,
     pub(crate) router: Router,
@@ -32,8 +36,8 @@ impl Client {
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/login"),
-                Some(json!({"login":"admin","password":crate::test_support::identity::PASSWORD})),
+                &format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()),
+                Some(json!({"login":crate::test_support::case::login("admin"),"password":crate::test_support::identity::PASSWORD})),
             )
             .await?;
         ensure!(
@@ -60,7 +64,10 @@ impl Client {
             .call(
                 &self.router,
                 method,
-                &format!("/api/v2/devices/{DEVICE}/operations{suffix}"),
+                &format!(
+                    "/api/v2/devices/{DEVICE}/operations{suffix}",
+                    DEVICE = case_device()
+                ),
                 body,
             )
             .await
@@ -72,9 +79,9 @@ impl Client {
         }
         let grants: Vec<_> = permissions
             .iter()
-            .map(|p| json!({"operation":p,"scope":{"kind":"device","id":DEVICE}}))
+            .map(|p| json!({"operation":p,"scope":{"kind":"device","id":case_device()}}))
             .collect();
-        let value = json!({"subject":{"kind":"user","user":crate::test_support::identity::user(TENANT,crate::test_support::identity::ADMIN)},"grants":grants});
+        let value = json!({"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants});
         let response=self.browser.call(&self.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",self.rule),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":self.rule_revision,"value":value}))).await?;
         ensure!(response.0 == StatusCode::OK, "grant update {:?}", response);
         self.rule_revision += 1;
@@ -84,7 +91,7 @@ impl Client {
         for _ in 0..16 {
             self.app.execution.relay_once().await?;
         }
-        let audit = RequestAudit::new(TENANT.into(), "management_read");
+        let audit = RequestAudit::new(case_tenant().into(), "management_read");
         let service = self.app.execution.as_ref();
         let result = crate::transaction::run(
             &service.audit_store,
@@ -128,10 +135,11 @@ impl Client {
 }
 pub(crate) async fn ordinary() -> anyhow::Result<(crate::windows::test_support::Host, Client)> {
     let host = crate::windows::test_support::Host::open().await?;
-    let proof = crate::device::test_support::admin(TENANT, "admin-a").await?;
+    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
     let credential =
-        crate::device::test_support::proof(TENANT, rss_mdm_inventory::Channel::Mdm, 91);
-    crate::device::test_support::bind(&host.app.devices, &proof, &credential, DEVICE, 0).await?;
+        crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 91);
+    crate::device::test_support::bind(&host.app.devices, &proof, &credential, case_device(), 0)
+        .await?;
     let client = Client::start(host.browser.clone(), host.app.clone()).await?;
     Ok((host, client))
 }
@@ -140,7 +148,7 @@ pub(crate) async fn ordinary() -> anyhow::Result<(crate::windows::test_support::
 #[ignore = "subprocess killed by command T2 after confirmed PG acceptance"]
 async fn relay_crash_child() -> anyhow::Result<()> {
     use rss_transactional_messaging::{outbox::OutboxRelayStore, policy::DeliveryBudget};
-    let config = crate::test_support::identity::config(TENANT)?;
+    let config = crate::test_support::identity::config(case_tenant())?;
     let service = Box::pin(crate::flow::execution::open(
         &config,
         crate::test_support::identity::audit_store(&config).await?,

@@ -1,5 +1,5 @@
 use crate::test_support::software::write;
-use crate::test_support::software_execution::DEVICE;
+use crate::test_support::software_execution::case_device;
 use crate::test_support::software_execution::*;
 use crate::test_support::*;
 use sha2::{Digest, Sha256};
@@ -86,7 +86,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
         json!({"action":"disable"}),
     )
     .await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -151,7 +151,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
         json!({"action":"disable"}),
     )
     .await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -182,14 +182,16 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
     );
     ensure!(event(&router,&unknown_task,json!({"kind":"software_result","intent":"install","installerExitCode":null,"detection":"unknown","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
     let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
-    let next_credential = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    let next_credential = &crate::test_support::credential("replacement");
     author.operation = Some(Uuid::new_v4());
     let next_enrollment = author
         .call(
             &router,
             Method::POST,
             "/api/v3/enrollments",
-            Some(json!({"deviceId":DEVICE,"password":next_password,"source":"agent.builtin"})),
+            Some(
+                json!({"deviceId":case_device(),"password":next_password,"source":"agent.builtin"}),
+            ),
         )
         .await?;
     ensure!(
@@ -214,7 +216,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
         after_reenroll.0 == StatusCode::OK && after_reenroll.1["task"].is_null(),
         "unknown side effect retried after registration replacement: {after_reenroll:?}"
     );
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -311,6 +313,6 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
         resolved.1["stages"][0]["unknown"] == 0 && resolved.1["stages"][0]["verifiedSuccess"] == 1,
         "late detection did not resolve unknown: {resolved:?}"
     );
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

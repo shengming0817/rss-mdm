@@ -7,13 +7,13 @@ use super::*;
 fn members(count: u128) -> Vec<Value> {
     (1..=count)
         .map(
-            |id| json!({"instanceId":INSTANCE,"tenantId":TENANT,"principalId":Uuid::from_u128(id)}),
+            |id| json!({"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":Uuid::from_u128(id)}),
         )
         .collect()
 }
 fn no_write(id: Uuid, operation: Uuid, table: &str) -> Result<()> {
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}' AND id='{id}'"))?.trim() == "0");
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{operation}'"))?.trim() == "0");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}' AND id='{id}'", TENANT = case_tenant()))?.trim() == "0");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{operation}'", TENANT = case_tenant()))?.trim() == "0");
     ensure!(
         audit_count(|r| r.source() == "mdm.business"
             && r.operation() == Some(operation.to_string().as_str())
@@ -118,7 +118,8 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
             == StatusCode::BAD_REQUEST
     );
     pg(&format!(
-        "DELETE FROM mdm_access.user_groups WHERE tenant_id='{TENANT}' AND id='{id}'"
+        "DELETE FROM mdm_access.user_groups WHERE tenant_id='{TENANT}' AND id='{id}'",
+        TENANT = case_tenant()
     ))?;
 
     for (table, path, value) in [
@@ -130,12 +131,13 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         (
             "authorization_rules",
             "rules",
-            json!({"subject":user(ADMIN),"grants":[grant("group_read",json!({"kind":"tenant"}))]}),
+            json!({"subject":user(case_admin()),"grants":[grant("group_read",json!({"kind":"tenant"}))]}),
         ),
     ] {
         // Fill with valid tombstones: they count toward capacity and must not disappear from checks.
         pg(&format!(
-            "INSERT INTO mdm_access.{table}(tenant_id,instance,id,revision,document) SELECT '{TENANT}','{INSTANCE}',('2363f500-0000-4000-8000-'||lpad(n::text,12,'0'))::uuid,1,NULL FROM generate_series(1,9999-(SELECT count(*)::integer FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}')) n"
+            "INSERT INTO mdm_access.{table}(tenant_id,instance,id,revision,document) SELECT '{TENANT}','{INSTANCE}',('2363f500-0000-4000-8000-'||lpad(n::text,12,'0'))::uuid,1,NULL FROM generate_series(1,9999-(SELECT count(*)::integer FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}')) n",
+            TENANT = case_tenant()
         ))?;
         let last = Uuid::new_v4();
         ensure!(
@@ -166,7 +168,8 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         );
         no_write(over, operation, table)?;
         pg(&format!(
-            "INSERT INTO mdm_access.{table}(tenant_id,instance,id,revision,document) VALUES('{TENANT}','{INSTANCE}','{over}',1,NULL)"
+            "INSERT INTO mdm_access.{table}(tenant_id,instance,id,revision,document) VALUES('{TENANT}','{INSTANCE}','{over}',1,NULL)",
+            TENANT = case_tenant()
         ))?;
         ensure!(
             admin
@@ -176,7 +179,8 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
                 == StatusCode::SERVICE_UNAVAILABLE
         );
         pg(&format!(
-            "DELETE FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}' AND (id::text LIKE '2363f500-0000-4000-8000-%' OR id IN ('{last}','{over}'))"
+            "DELETE FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}' AND (id::text LIKE '2363f500-0000-4000-8000-%' OR id IN ('{last}','{over}'))",
+            TENANT = case_tenant()
         ))?;
     }
     let large = json!({"name":"capacity","enabled":true,"members":members(10000)});
@@ -221,12 +225,14 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
     ids.push(oversized);
     for id in ids {
         pg(&format!(
-            "DELETE FROM mdm_access.user_groups WHERE tenant_id='{TENANT}' AND id='{id}'"
+            "DELETE FROM mdm_access.user_groups WHERE tenant_id='{TENANT}' AND id='{id}'",
+            TENANT = case_tenant()
         ))?;
     }
     // The database independently rejects a single over-size document, even if application checks are bypassed.
     pg(&format!(
-        "DO $$ BEGIN BEGIN INSERT INTO mdm_access.user_groups VALUES('{TENANT}','{INSTANCE}','{oversized}',1,jsonb_build_object('oversized',repeat('x',2097152))); EXCEPTION WHEN check_violation THEN RETURN; END; RAISE EXCEPTION 'document limit absent'; END $$"
+        "DO $$ BEGIN BEGIN INSERT INTO mdm_access.user_groups VALUES('{TENANT}','{INSTANCE}','{oversized}',1,jsonb_build_object('oversized',repeat('x',2097152))); EXCEPTION WHEN check_violation THEN RETURN; END; RAISE EXCEPTION 'document limit absent'; END $$",
+        TENANT = case_tenant()
     ))?;
     let operation = Uuid::new_v4();
     let id = Uuid::new_v4();

@@ -2,8 +2,9 @@
 """One public module executor. Discovery, selection and evidence share one owner."""
 from __future__ import annotations
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextvars import copy_context
+from dataclasses import replace
 import json
 import os
 import re
@@ -16,8 +17,8 @@ import traceback
 import uuid
 
 from build_run import require_lease
-from t2_registry import ROOT, MODULES
-from t2_execution import Builds, Processes, CASE_TIMEOUT
+from t2_registry import ROOT, MODULES, resolve_cases
+from t2_execution import Builds, Processes, Invocation, CASE_TIMEOUT
 from t2_processes import diagnostic_phase, diagnostics
 from verification_result import result as stage_result, publish, require
 
@@ -86,7 +87,65 @@ def select_modules(module, selection):
     return [module]
 
 
-def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
+def dispatch(invocations, execute, processes, jobs):
+    """Submit only runnable cases: a waiting fault never occupies a worker slot."""
+    pending = list(invocations)
+    running = {}
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        while pending or running:
+            fault_active = any(job.module.db_mode == 'instance' for job in running.values())
+            while pending and len(running) < jobs and not processes.cancelled.is_set():
+                index = next((i for i, job in enumerate(pending)
+                              if job.module.db_mode != 'instance' or not fault_active), None)
+                if index is None:
+                    break
+                job = pending.pop(index)
+                fault_active |= job.module.db_mode == 'instance'
+                running[executor.submit(copy_context().run, execute, job)] = job
+            if not running:
+                for job in pending:
+                    yield job, stage_result('failed', reason='cancelled-before-start', policy=job.policy)
+                break
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in done:
+                job = running.pop(future)
+                yield job, future.result()
+
+
+def execute_case(job, builds, fixtures, case_dir, output):
+    (case_dir / 'test.log').write_text('Case preparation started; execution output follows when ready.\n')
+    begin = time.monotonic()
+    evidence = {}
+    common = dict(caseId=job.id, invocationId=job.key, policy=job.policy,
+                  startedMonotonic=begin, timeoutSeconds=CASE_TIMEOUT,
+                  log=str((case_dir / 'test.log').relative_to(output)),
+                  fixtureLog=str((case_dir / 'fixture.log').relative_to(output)))
+    try:
+        require(not builds.processes.cancelled.is_set(), 'T2 cancelled')
+        with fixtures.scenario(job, case_dir) as fixture:
+            evidence = fixture.evidence
+            prepared = time.monotonic()
+            with diagnostic_phase('execution'):
+                if job.case:
+                    builds.execute(job.case, fixture.env, case_dir)
+                else:
+                    builds.execute_python(job.module, fixture, case_dir)
+            executed = time.monotonic()
+        end = time.monotonic()
+        result = stage_result('passed', begin, **common, environment=evidence,
+                              setupSeconds=round(prepared-begin, 3), testSeconds=round(executed-prepared, 3),
+                              cleanupSeconds=round(end-executed, 3), endedMonotonic=end)
+    except BaseException as error:
+        (case_dir / 'failure.log').write_text('Fixture diagnostics: fixture.log\n' + traceback.format_exc())
+        result = stage_result('failed', begin, **common, environment=evidence,
+                              reason=type(error).__name__, endedMonotonic=time.monotonic(),
+                              failureLog=str((case_dir / 'failure.log').relative_to(output)))
+        print(f'T2 failure output: {case_dir / "test.log"}; traceback: {case_dir / "failure.log"}', flush=True)
+    print(f'T2 {job.module.id}: {result["status"]} {job.id}', flush=True)
+    return result
+
+
+def run_modules(names, output, *, jobs=2, selected_case='', listing=False, case_order=None):
     require_lease(ROOT)
     require(type(jobs) is int and jobs > 0, 'JOBS must be a positive integer')
     require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
@@ -122,87 +181,57 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
             for case in discovered[module.id]:
                 require(case.id not in owners, 'test belongs to multiple modules: ' + case.id)
                 owners[case.id] = module.id
-        python_cases = {f'python/{module.id}': module.id for module in modules if module.python}
+        invocations = []
+        for module in modules:
+            cases = [*discovered[module.id], *([None] if module.python else [])]
+            case_names = [case.name if case else 'python/' + module.id for case in cases]
+            policies = resolve_cases(module, case_names)
+            invocations.extend(Invocation(policy, case) for policy, case in zip(policies, cases))
+        if case_order is not None:
+            require(not selected_case, 'CASE and an explicit case order cannot be combined')
+            available = {job.id: job for job in invocations}
+            require(case_order and all(name in available for name in case_order), 'case order includes an undiscovered case')
+            occurrences = {}
+            ordered = []
+            for name in case_order:
+                invocation = occurrences.get(name, 0)
+                ordered.append(replace(available[name], invocation=invocation))
+                occurrences[name] = invocation + 1
+            invocations = ordered
         inventory = {'runId': run_id, 'buildSeconds': round(builds.elapsed, 3),
-                     'dependencies': {module.id: {'postgres': module.postgres, 'fixtures': list(module.fixtures), 'exclusive': module.exclusive} for module in modules},
-                     'modules': {name: [case.id for case in cases] +
-                                 ([f'python/{name}'] if MODULES[name].python else [])
-                                 for name, cases in discovered.items()}}
+                     'modules': {module.id: [job.id for job in invocations if job.module.id == module.id]
+                                 for module in modules},
+                     'policies': {job.id: job.policy for job in invocations}}
         publish(directory / 'discovery.json', inventory)
         if selected_case:
-            require(selected_case in owners or selected_case in python_cases,
-                    'unknown CASE in selected modules: ' + selected_case)
-            owner = owners.get(selected_case, python_cases.get(selected_case))
-            modules = [MODULES[owner]]
-            discovered = {owner: [case for case in discovered[owner] if case.id == selected_case]}
+            require(selected_case in inventory['policies'], 'unknown CASE in selected modules: ' + selected_case)
+            invocations = [job for job in invocations if job.id == selected_case]
         if listing:
             print(json.dumps(inventory, indent=2), flush=True)
-            results.update({module.id: stage_result('skipped', reason='list-only') for module in modules})
+            results.update({job.module.id: stage_result('skipped', reason='list-only') for job in invocations})
             return results
         from t2_fixtures import RunFixtures
+        from t2_database import measure
         with diagnostics(directory / 'fixture.log'), RunFixtures(builds, directory) as fixtures:
-            fixtures.prepare(modules)
-            def execute(module):
+            try:
+                with measure(fixtures.events, 'run-prepare'):
+                    fixtures.prepare(invocations)
+                completed = {}
                 started = time.monotonic()
-                module_dir = directory / module.id
-                module_dir.mkdir()
-                cases = {}
-                def scenario(case):
-                    key = case.key if case else 'python'
-                    case_id = case.id if case else 'python/' + module.id
-                    case_dir = module_dir / key
-                    case_dir.mkdir()
+                def execute(job):
+                    case_dir = directory / job.module.id / job.key
+                    case_dir.mkdir(parents=True)
                     with diagnostics(case_dir / 'fixture.log'):
-                        execute_case(case, case_id, case_dir)
-
-                def execute_case(case, case_id, case_dir):
-                    (case_dir / 'test.log').write_text('Case preparation started; execution output follows when ready.\n')
-                    begin = time.monotonic()
-                    try:
-                        require(not processes.cancelled.is_set(), 'T2 cancelled')
-                        if module.exclusive:
-                            fixtures.reset()
-                        with fixtures.scenario(module, case_dir) as fixture:
-                            prepared = time.monotonic()
-                            with diagnostic_phase('execution'):
-                                if case:
-                                    builds.execute(case, fixture.env, case_dir)
-                                else:
-                                    builds.execute_python(module, fixture, case_dir)
-                            executed = time.monotonic()
-                        end = time.monotonic()
-                        cases[case_id] = stage_result('passed', begin,
-                            setupSeconds=round(prepared-begin, 3), testSeconds=round(executed-prepared, 3),
-                            cleanupSeconds=round(end-executed, 3), startedMonotonic=begin, endedMonotonic=end,
-                            log=str((case_dir / 'test.log').relative_to(output)),
-                            fixtureLog=str((case_dir / 'fixture.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
-                    except BaseException as error:
-                        (case_dir / 'failure.log').write_text('Fixture diagnostics: fixture.log\n' + traceback.format_exc())
-                        cases[case_id] = stage_result('failed', begin, reason=type(error).__name__,
-                            startedMonotonic=begin, endedMonotonic=time.monotonic(), log=str((case_dir / 'test.log').relative_to(output)),
-                            fixtureLog=str((case_dir / 'fixture.log').relative_to(output)),
-                            failureLog=str((case_dir / 'failure.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
-                        print(f'T2 failure output: {case_dir / "test.log"}; traceback: {case_dir / "failure.log"}', flush=True)
-                    print(f'T2 {module.id}: {cases[case_id]["status"]} {case_id}', flush=True)
-                for case in discovered[module.id]:
-                    scenario(case)
-                if module.python and (not selected_case or selected_case == 'python/' + module.id):
-                    scenario(None)
-                require(bool(cases), 'module executed no cases: ' + module.id)
-                outcome = stage_result('failed' if any(r['status'] == 'failed' for r in cases.values()) else 'passed',
-                                       started, cases=cases, runId=run_id)
-                publish(module_dir / 'result.json', outcome)
-                return outcome
-            normal = [module for module in modules if not module.exclusive]
-            with ThreadPoolExecutor(max_workers=jobs) as executor:
-                futures = {executor.submit(copy_context().run, execute, module): module.id for module in normal}
-                for future in as_completed(futures):
-                    results[futures[future]] = future.result()
-            # The normal phase is fully drained before a global PG fault can run.
-            for module in modules:
-                if module.exclusive:
-                    results[module.id] = execute(module)
-            publish(directory / 'resources.json', dict(fixtures.counts))
+                        return execute_case(job, builds, fixtures, case_dir, output)
+                for job, outcome in dispatch(invocations, execute, processes, jobs):
+                    completed.setdefault(job.module.id, {})[job.key] = outcome
+                for name, cases in completed.items():
+                    outcome = stage_result('failed' if any(r['status'] == 'failed' for r in cases.values()) else 'passed',
+                                           started, cases=cases, runId=run_id)
+                    publish(directory / name / 'result.json', outcome)
+                    results[name] = outcome
+            finally:
+                publish(directory / 'resources.json', dict(counts=dict(fixtures.counts), operations=fixtures.events))
         require(not processes.cancelled.is_set(), 'T2 cancelled')
         publish(directory / 'result.json', {'runId': run_id, 'modules': results})
         return results

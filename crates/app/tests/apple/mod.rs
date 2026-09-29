@@ -26,8 +26,12 @@ use serde_json::json;
 use std::{path::PathBuf, time::Duration};
 use tower::ServiceExt;
 use uuid::Uuid;
-const TENANT: &str = "11111111-1111-4111-8111-111111111111";
-const DEVICE: &str = "apple-native-mac";
+fn case_tenant() -> &'static str {
+    crate::test_support::case::tenant()
+}
+fn case_device() -> &'static str {
+    crate::test_support::case::name("apple-native-mac")
+}
 struct Fixture {
     app: Arc<Assembly>,
     browser: Browser,
@@ -45,7 +49,7 @@ impl Fixture {
             std::env::var("MDM_APPLE_WEBHOOK_PORT").unwrap_or_else(|_| "0".into())
         ))
         .await?;
-        let mut config = crate::test_support::identity::config(TENANT)?;
+        let mut config = crate::test_support::identity::config(case_tenant())?;
         config.native_protocols.windows = None;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
@@ -60,7 +64,7 @@ impl Fixture {
         let devices = Arc::new(
             crate::device::DeviceService::new(
                 access.clone(),
-                TENANT.into(),
+                case_tenant().into(),
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
                     .await?,
@@ -72,7 +76,7 @@ impl Fixture {
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
             config.runtime_database.options()?,
             access.clone(),
-            rss_request_context::TenantId::parse(TENANT)?,
+            rss_request_context::TenantId::parse(case_tenant())?,
             monotonic.clone(),
         )
         .await?;
@@ -82,7 +86,7 @@ impl Fixture {
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
                     .await?,
-                rss_request_context::TenantId::parse(TENANT)?,
+                rss_request_context::TenantId::parse(case_tenant())?,
                 clock.clone(),
                 |_| {},
             )
@@ -189,7 +193,7 @@ impl Fixture {
                     access
                         .audit_store(&crate::config::AuditConfig::Plain)
                         .await?,
-                    TENANT.into(),
+                    case_tenant().into(),
                     crate::native::NativeListenerKind::AppleManagement,
                 )
                 .critical(),
@@ -201,7 +205,7 @@ impl Fixture {
                     access
                         .audit_store(&crate::config::AuditConfig::Plain)
                         .await?,
-                    TENANT.into(),
+                    case_tenant().into(),
                     crate::native::NativeListenerKind::AppleWebhookFixture,
                 )
                 .critical(),
@@ -211,10 +215,10 @@ impl Fixture {
             launch.finish();
         }
         crate::test_support::identity::set_grants(
-            TENANT,
-            crate::test_support::identity::ADMIN,
+            case_tenant(),
+            crate::test_support::case::admin(),
             crate::test_support::identity::device_grants(
-                Some(DEVICE),
+                Some(case_device()),
                 &[
                     "enrollment",
                     "credentials",
@@ -251,7 +255,7 @@ impl Fixture {
                 &self.router,
                 Method::POST,
                 "/api/v3/enrollments",
-                Some(json!({"deviceId":DEVICE,"source":"mdm.apple","password":password})),
+                Some(json!({"deviceId":case_device(),"source":"mdm.apple","password":password})),
             )
             .await?;
         ensure!(reply.0 == StatusCode::OK, "Apple enrollment {reply:?}");
@@ -466,7 +470,10 @@ impl Fixture {
                 "/checkin",
                 protocol::dictionary([
                     ("MessageType", "Authenticate".into()),
-                    ("UDID", "rss-t2-apple".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
                     ("Topic", peer.topic.clone().into()),
                 ]),
             )
@@ -497,7 +504,10 @@ impl Fixture {
                 .call(
                     &self.router,
                     Method::POST,
-                    &format!("/api/v1/devices/{DEVICE}/collection-runs"),
+                    &format!(
+                        "/api/v1/devices/{DEVICE}/collection-runs",
+                        DEVICE = case_device()
+                    ),
                     Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
                 )
                 .await?;

@@ -1,14 +1,24 @@
 //! Real Policy publication, lazy device admission, delivery, result intake and recovery.
 use crate::test_support::*;
-use base64::Engine;
-use ring::signature::KeyPair;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-pub(crate) const CREDENTIAL: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
-pub(crate) const INVENTORY_CREDENTIAL: &str = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
-pub(crate) const TASK_SCOPE: Uuid = Uuid::from_u128(0x90101010_1234_4321_8123_101010101010);
-pub(crate) const EMPTY_SCOPE: Uuid = Uuid::from_u128(0x90101010_1234_4321_8123_202020202020);
-pub(crate) const DEVICE_ID: &str = "enterprise-device";
+pub(crate) fn case_credential() -> &'static str {
+    static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VALUE.get_or_init(|| crate::test_support::credential("agent_execution-CREDENTIAL"))
+}
+pub(crate) fn case_inventory_credential() -> &'static str {
+    static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VALUE.get_or_init(|| crate::test_support::credential("agent_execution-INVENTORY_CREDENTIAL"))
+}
+pub(crate) fn case_task_scope() -> Uuid {
+    Uuid::from_u128(crate::test_support::case::id("TASK_SCOPE"))
+}
+pub(crate) fn case_empty_scope() -> Uuid {
+    Uuid::from_u128(crate::test_support::case::id("EMPTY_SCOPE"))
+}
+pub(crate) fn case_device_id() -> &'static str {
+    crate::test_support::case::name("enterprise-device")
+}
 
 pub(crate) async fn post(
     browser: &mut Browser,
@@ -65,14 +75,14 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v3/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(CREDENTIAL),Some(json!({"wireVersion":3,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v3/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":3,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
         "/api/agent/v3/tasks/claim",
-        Some(CREDENTIAL),
+        Some(case_credential()),
         Some(json!({"wireVersion":3,"operationId":operation})),
     )
     .await
@@ -96,7 +106,6 @@ pub(crate) fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
     json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"scope":scope,"behavior":{"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
 }
 pub(crate) struct Fixture {
-    _temp: tempfile::TempDir,
     pub(crate) base: Value,
     pub(crate) router: Router,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
@@ -108,19 +117,12 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub(crate) async fn new() -> Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir()?;
-        let keyfile = temp.path().join("signing.pk8");
-        let pkcs8 =
-            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
-                .unwrap();
-        std::fs::write(&keyfile, pkcs8.as_ref())?;
-        std::fs::set_permissions(&keyfile, std::fs::Permissions::from_mode(0o600))?;
-        let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-        let mut base: Value =
+        let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        base["content"] = json!({"directory":temp.path(),"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100});
-        base["task_signing"] = json!({"private_key_file":keyfile,"key_id":"fixture","trusted_keys":{"fixture":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())}});
+        let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(
+            base["task_signing"]["private_key_file"].as_str().unwrap(),
+        )?)
+        .unwrap();
         let (router, execution, plan_runtime) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
@@ -140,7 +142,7 @@ impl Fixture {
         ensure!(author.login(&router, "other").await? == StatusCode::OK);
         let author_id = browser_subject(&author, &router).await?;
         let mut grants = crate::test_support::identity::device_grants(
-            Some(DEVICE_ID),
+            Some(case_device_id()),
             &[
                 "enrollment",
                 "inventory_read",
@@ -173,9 +175,9 @@ impl Fixture {
             None,
             &["script_execute"],
         )?);
-        crate::test_support::identity::set_grants(TENANT, &author_id, grants.clone()).await?;
+        crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone())
+            .await?;
         Ok(Self {
-            _temp: temp,
             base,
             router,
             execution,
@@ -195,11 +197,11 @@ impl Fixture {
             author,
             router,
             "/api/v3/enrollments",
-            json!({"deviceId":DEVICE_ID,"password":password,"source":"agent.builtin"}),
+            json!({"deviceId":case_device_id(),"password":password,"source":"agent.builtin"}),
         )
         .await?;
         author.operation = None;
-        let registration=agent_call(router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":CREDENTIAL,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","task.execute.v3"]}))).await?;
+        let registration=agent_call(router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","task.execute.v3"]}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED
                 && registration.1["capabilities"]
@@ -223,7 +225,7 @@ impl Fixture {
             ),
         )
         .await?;
-        ensure!(setup_automation.shutdown().join().await?.is_clean());
+        crate::test_support::stop_worker(setup_automation).await?;
         Ok(())
     }
     pub(crate) async fn resource(&mut self) -> Result<(Uuid, &'static [u8], Value)> {
@@ -256,10 +258,21 @@ impl Fixture {
 }
 pub(crate) async fn publish(author: &mut Browser, router: &Router, resource: Uuid) -> Result<Uuid> {
     let id = Uuid::new_v4();
-    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,TASK_SCOPE)}})).await?;
+    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
     Ok(id)
 }
-pub(crate) async fn worker(base: &Value) -> Result<rss_runtime::ShutdownStack> {
+pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
+    if crate::test_support::case::shared_worker() {
+        return Ok(None);
+    }
+    ensure!(
+        crate::test_support::case::context()["fixtures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "local_worker"),
+        "worker ownership is missing from case policy"
+    );
     let config: Config = serde_json::from_value(base.clone())?;
     let service = crate::flow::execution::open(
         &config,
@@ -277,11 +290,18 @@ pub(crate) async fn worker(base: &Value) -> Result<rss_runtime::ShutdownStack> {
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(service.registration().critical());
     launch.finish();
-    Ok(owner)
+    Ok(Some(owner))
 }
 pub(crate) async fn complete(router: &Router, task: &Value) -> Result<()> {
     task_event(router, task, json!({"kind":"received"})).await?;
     task_event(router, task, json!({"kind":"start"})).await?;
     task_event(router,task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
     Ok(())
+}
+
+pub(crate) fn run_count(policy: Uuid) -> Result<String> {
+    pg(&format!(
+        "SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{policy}'",
+        case_tenant()
+    ))
 }

@@ -20,7 +20,7 @@ async fn put(
         .await
 }
 fn user(subject: &str) -> Value {
-    json!({"kind":"user","user":{"instanceId":INSTANCE,"tenantId":TENANT,"principalId":subject}})
+    json!({"kind":"user","user":{"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":subject}})
 }
 fn grant(operation: &str, scope: Value) -> Value {
     json!({"operation":operation,"scope":scope})
@@ -59,14 +59,22 @@ async fn fixture() -> Result<Fixture> {
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/accounts"),
-                Some(json!({"login":"authorization-member","password":PASSWORD}))
+                &format!("/api/v2/tenants/{TENANT}/accounts", TENANT = case_tenant()),
+                Some(json!({"login":crate::test_support::case::name("authorization-member"),"password":PASSWORD}))
             )
             .await?
             .0
             == StatusCode::CREATED
     );
-    ensure!(member.login(&router, "authorization-member").await? == StatusCode::OK);
+    ensure!(
+        member
+            .login(
+                &router,
+                crate::test_support::case::name("authorization-member")
+            )
+            .await?
+            == StatusCode::OK
+    );
     let subject = browser_subject(&member, &router).await?;
     let store = database(&base).await?;
     let audit_store = store

@@ -640,7 +640,10 @@ async fn ingress_batches_reuse_published_group_coverage() {
         .await
         .unwrap();
     assert_eq!(
-        sql("SELECT count(*) FROM mdm_automation.automation_jobs"),
+        sql(&format!(
+            "SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}'",
+            tenant()
+        )),
         "1"
     );
     let claim = claims
@@ -658,11 +661,17 @@ async fn ingress_batches_reuse_published_group_coverage() {
         let diff = worker.observe(&claim, &control).await.unwrap();
         worker.apply(&claim, diff, &control).await.unwrap();
         assert_eq!(
-            sql("SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch"),
+            sql(&format!(
+                "SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'",
+                tenant()
+            )),
             format!("{consumed},{watermark},{phase}")
         );
         assert_eq!(
-            sql("SELECT count(*) FROM mdm_automation.automation_jobs"),
+            sql(&format!(
+                "SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}'",
+                tenant()
+            )),
             "1",
             "covered batches recreated the million-device calculation"
         );

@@ -17,9 +17,9 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(selection.modules, ('installation.migration',))
         self.assertIn('test_t2_guards', selection.tools)
 
-    def test_cluster_role_admission_test_is_exclusive(self):
-        self.assertTrue(MODULES['inventory.reader'].exclusive)
-        self.assertFalse(MODULES['inventory.manual'].exclusive)
+    def test_cluster_role_admission_owns_an_instance(self):
+        self.assertEqual(MODULES['inventory.reader'].db_mode, 'instance')
+        self.assertEqual(MODULES['inventory.manual'].db_mode, 'reuse')
 
     def test_unknown_ci_or_nextest_inputs_cannot_silently_skip_integration(self):
         for path in ('.github/workflows/new.yml', '.github/actions/new/action.yml', '.config/nextest.toml'):

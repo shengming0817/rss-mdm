@@ -13,7 +13,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use std::{path::PathBuf, time::Duration};
 use x509_cert::der::Decode;
-pub(crate) const TENANT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+pub(crate) fn case_tenant() -> &'static str {
+    crate::test_support::case::tenant()
+}
 pub(super) fn root() -> anyhow::Result<PathBuf> {
     Ok(std::env::var("MDM_WINDOWS_FIXTURES")?.into())
 }
@@ -108,7 +110,7 @@ impl Host {
             std::env::var("MDM_TEST_CONFIG")?,
         )?)?["identity"]
             .clone();
-        value["identity"]["tenant_id"] = serde_json::json!(TENANT);
+        value["identity"]["tenant_id"] = serde_json::json!(case_tenant());
         let db: sqlx::postgres::PgConnectOptions = std::env::var("DATABASE_URL")?.parse()?;
         let management_password = root.join("management-password");
         std::fs::write(&management_password, "runtime-fixture")?;
@@ -121,7 +123,7 @@ impl Host {
         let clock = Arc::new(crate::clock::SystemClock);
         let identity_management = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                TENANT,
+                case_tenant(),
                 crate::test_support::identity::INSTANCE,
                 config.identity_management.clone(),
             )?,
@@ -137,7 +139,7 @@ impl Host {
         let store = Arc::new(Database::connect(options("mdm_access")?).await?);
         let devices = Arc::new(crate::device::DeviceService::new(
             store.clone(),
-            TENANT.into(),
+            case_tenant().into(),
             store
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
@@ -145,7 +147,7 @@ impl Host {
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
             options("mdm_runtime")?,
             store.clone(),
-            rss_request_context::TenantId::parse(TENANT)?,
+            rss_request_context::TenantId::parse(case_tenant())?,
             monotonic(),
         )
         .await?;
@@ -155,7 +157,7 @@ impl Host {
                 store
                     .audit_store(&crate::config::AuditConfig::Plain)
                     .await?,
-                rss_request_context::TenantId::parse(TENANT)?,
+                rss_request_context::TenantId::parse(case_tenant())?,
                 Arc::new(crate::clock::SystemClock),
                 |_| {},
             )
@@ -263,7 +265,7 @@ impl Host {
                     listener,
                     router,
                     self.app.audit_store.clone(),
-                    TENANT.into(),
+                    case_tenant().into(),
                     kind,
                 )
                 .critical(),
@@ -290,13 +292,13 @@ impl Host {
         let reference = self.reference;
         let client = &self.client;
         let root_cert = &self.root_cert;
-        let proof = admin(TENANT, "admin-a").await?;
+        let proof = admin(case_tenant(), "admin-a").await?;
         let plain = crate::enrollment::random();
         let password = Password::new(plain.clone())?;
         let receipt = create(
             store,
             &proof,
-            "tls-device",
+            crate::test_support::case::name("tls-device"),
             &password,
             reference,
             Uuid::new_v4(),
@@ -328,7 +330,7 @@ impl Host {
         body.csr = Secret(std::fs::read(root.join("device.csr"))?);
         for (key, value) in &mut body.additional_context.0 {
             if key == "DeviceID" {
-                *value = "tls-device".into();
+                *value = crate::test_support::case::name("tls-device").into();
             }
         }
         let wire = soap::encode(&issue, &CodecLimits::default())?;
@@ -351,7 +353,7 @@ impl Host {
         ensure!(String::from_utf8_lossy(&result.provisioning.0).contains("AAUTHLEVEL"));
         let auth = crate::enrollment::store::enrollment_authorization(
             store,
-            TENANT,
+            case_tenant(),
             receipt.enrollment_id,
             &password,
         )
@@ -390,11 +392,11 @@ impl Host {
             &CodecLimits::default(),
         )?;
         message.header.target = url.clone();
-        message.header.source = "tls-device".into();
+        message.header.source = crate::test_support::case::name("tls-device").into();
         let secrets = app
             .windows()?
             .protection
-            .open(TENANT, auth.id, &intent.sealed)?;
+            .open(case_tenant(), auth.id, &intent.sealed)?;
         message.header.credential = Some(syncml::Credential {
             meta: syncml::Meta {
                 format: Some("b64".into()),
@@ -411,7 +413,8 @@ impl Host {
             if let Command::DevInfo { items, .. } = command {
                 for item in items {
                     if item.source.as_deref() == Some("./DevInfo/DevId") {
-                        item.data = Some(Secret("tls-device".into()));
+                        item.data =
+                            Some(Secret(crate::test_support::case::name("tls-device").into()));
                     }
                 }
             }
@@ -478,7 +481,7 @@ impl Host {
         let next = create(
             &self.store,
             &peer.proof,
-            "tls-device",
+            crate::test_support::case::name("tls-device"),
             &password,
             self.reference,
             Uuid::new_v4(),

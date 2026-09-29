@@ -5,27 +5,32 @@
 //! Real enterprise software Policy through Agent Offer, content, Start and detection.
 use crate::test_support::software::write;
 use crate::test_support::*;
-use base64::Engine;
-use ring::signature::KeyPair;
 use sha2::{Digest, Sha256};
 
-pub(crate) const DEVICE: &str = "software-deployment-device";
-pub(crate) const WINDOWS_DEVICE: &str = "windows-software-deployment-device";
-pub(crate) const CREDENTIAL: &str = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ";
+pub(crate) fn case_device() -> &'static str {
+    crate::test_support::case::name("software-deployment-device")
+}
+pub(crate) fn case_windows_device() -> &'static str {
+    crate::test_support::case::name("windows-software-deployment-device")
+}
+pub(crate) fn case_credential() -> &'static str {
+    static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VALUE.get_or_init(|| crate::test_support::credential("software_execution-CREDENTIAL"))
+}
 
 pub(crate) async fn agent(
     router: &Router,
     path: &str,
     body: Option<Value>,
 ) -> Result<(StatusCode, Value)> {
-    agent_call(router, Method::POST, path, Some(CREDENTIAL), body).await
+    agent_call(router, Method::POST, path, Some(case_credential()), body).await
 }
 pub(crate) async fn event(
     router: &Router,
     task: &Value,
     event: Value,
 ) -> Result<(StatusCode, Value)> {
-    event_with(router, CREDENTIAL, task, event).await
+    event_with(router, case_credential(), task, event).await
 }
 pub(crate) async fn event_with(
     router: &Router,
@@ -50,7 +55,7 @@ pub(crate) async fn event_with(
         Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) async fn claim(router: &Router) -> Result<Value> {
-    claim_with(router, CREDENTIAL).await
+    claim_with(router, case_credential()).await
 }
 pub(crate) async fn claim_with(router: &Router, credential: &str) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -97,7 +102,6 @@ pub(crate) enum Platform {
 /// A real authorized session, one Agent/Scope, and an approved dependency/root pair.
 /// Behavior assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
-    _temp: tempfile::TempDir,
     pub(crate) base: Value,
     pub(crate) router: Router,
     pub(crate) author: Browser,
@@ -112,19 +116,8 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub(crate) async fn approved(platform: Platform) -> Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir()?;
-        let keyfile = temp.path().join("signing.pk8");
-        let pkcs8 =
-            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
-                .unwrap();
-        std::fs::write(&keyfile, pkcs8.as_ref())?;
-        std::fs::set_permissions(&keyfile, std::fs::Permissions::from_mode(0o600))?;
-        let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-        let mut base: Value =
+        let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        base["content"] = json!({"directory":temp.path(),"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100});
-        base["task_signing"] = json!({"private_key_file":keyfile,"key_id":"fixture","trusted_keys":{"fixture":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())}});
         let (router, _, _) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
@@ -169,14 +162,19 @@ impl Fixture {
                 scope: crate::authorization::Scope::Tenant,
             });
         }
-        crate::test_support::identity::set_grants(TENANT, &subject, grants).await?;
+        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
         let (device, platform_name, architecture, credential) = match platform {
-            Platform::MacOs => (DEVICE, "macos", "aarch64", CREDENTIAL.to_owned()),
+            Platform::MacOs => (
+                case_device(),
+                "macos",
+                "aarch64",
+                case_credential().to_owned(),
+            ),
             Platform::Windows => (
-                WINDOWS_DEVICE,
+                case_windows_device(),
                 "windows",
                 "x86_64",
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; 32]),
+                crate::test_support::credential("windows-software"),
             ),
         };
         author.operation = Some(Uuid::new_v4());
@@ -314,7 +312,6 @@ impl Fixture {
         .await?;
         let first_operation = first_approval["admission"]["operation"].clone();
         Ok(Self {
-            _temp: temp,
             base,
             router,
             author,
@@ -358,11 +355,22 @@ pub(crate) async fn prepared_scope(
         ),
     )
     .await?;
-    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(automation).await?;
     Ok(scope)
 }
 
-pub(crate) async fn worker(base: &Value) -> Result<rss_runtime::ShutdownStack> {
+pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
+    if crate::test_support::case::shared_worker() {
+        return Ok(None);
+    }
+    ensure!(
+        crate::test_support::case::context()["fixtures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "local_worker"),
+        "worker ownership is missing from case policy"
+    );
     let config: Config = serde_json::from_value(base.clone())?;
     let worker = crate::flow::execution::open(
         &config,
@@ -380,7 +388,7 @@ pub(crate) async fn worker(base: &Value) -> Result<rss_runtime::ShutdownStack> {
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(worker.registration().critical());
     launch.finish();
-    Ok(stack)
+    Ok(Some(stack))
 }
 pub(crate) fn authored(resource: Uuid, scope: Uuid, intent: &str, operation: &Value) -> Value {
     json!({"resource":{"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"scope":scope,"behavior":{"kind":"software","intent":intent,"admissionOperation":operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})

@@ -24,13 +24,13 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         tokio::time::timeout(Duration::from_secs(30),async {loop {
-            let id:Option<Uuid>=sqlx::query_scalar("SELECT c.operation FROM mdm_planning.configuration_claims c JOIN rss_device_command.commands d ON d.tenant_id=c.tenant_id AND d.command_id=c.operation::text WHERE c.tenant_id=$1::uuid AND c.policy=$2 AND d.status IN('published','received','applied')").bind(TENANT).bind(policy).fetch_optional(&mut db).await?;
+            let id:Option<Uuid>=sqlx::query_scalar("SELECT c.operation FROM mdm_planning.configuration_claims c JOIN rss_device_command.commands d ON d.tenant_id=c.tenant_id AND d.command_id=c.operation::text WHERE c.tenant_id=$1::uuid AND c.policy=$2 AND d.status IN('published','received','applied')").bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
             if let Some(id)=id {return Ok::<_,anyhow::Error>(id);}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await?
     }
     pub(super) async fn policy_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
         let mut grants = crate::test_support::identity::device_grants(
-            Some(DEVICE),
+            Some(case_device()),
             &[
                 "enrollment",
                 "credentials",
@@ -59,8 +59,8 @@ impl Fixture {
             &["inventory_read", "firewall_write"],
         )?);
         crate::test_support::identity::set_grants(
-            TENANT,
-            crate::test_support::identity::ADMIN,
+            case_tenant(),
+            crate::test_support::case::admin(),
             grants,
         )
         .await?;
@@ -102,7 +102,7 @@ impl Fixture {
         )
         .await?;
         let scope = Uuid::new_v4();
-        self.policy_post(&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":DEVICE}],"limitations":null,"exclusions":[]}})).await?;
+        self.policy_post(&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
         let definition = json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"firewall-profile"},"scope":scope,"behavior":{"kind":"configuration","exit":"remove"}});
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
@@ -124,7 +124,7 @@ impl Fixture {
                 plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
                     (
                         "PayloadIdentifier",
-                        profile::identifier(TENANT, DEVICE).into(),
+                        profile::identifier(case_tenant(), case_device()).into(),
                     ),
                     ("PayloadUUID", install.to_string().into()),
                     ("PayloadVersion", 1.into()),
@@ -171,7 +171,7 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         tokio::time::timeout(Duration::from_secs(30),async {loop {
-            let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(TENANT).bind(DEVICE).fetch_one(&mut db).await?;
+            let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(case_tenant()).bind(case_device()).fetch_one(&mut db).await?;
             if count==0 {return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await??;
         ensure!(owner.shutdown().join().await?.is_clean());
@@ -185,7 +185,10 @@ impl Fixture {
         let op = self
             .create_operation(json!({"kind":"profile_install","enabled":true}))
             .await?;
-        let path = format!("/api/v1/devices/{DEVICE}/collection-runs");
+        let path = format!(
+            "/api/v1/devices/{DEVICE}/collection-runs",
+            DEVICE = case_device()
+        );
         let reply = self
             .browser
             .call(
@@ -198,10 +201,10 @@ impl Fixture {
         ensure!(reply.0 == StatusCode::ACCEPTED);
         let run = reply.1["runId"].as_str().unwrap();
         crate::test_support::identity::set_grants(
-            TENANT,
-            crate::test_support::identity::ADMIN,
+            case_tenant(),
+            crate::test_support::case::admin(),
             crate::test_support::identity::device_grants(
-                Some(DEVICE),
+                Some(case_device()),
                 &[
                     "enrollment",
                     "credentials",
@@ -240,7 +243,10 @@ impl Fixture {
             .call(
                 &self.router,
                 Method::POST,
-                &format!("/api/v2/devices/{DEVICE}/operations/{op}/cancel"),
+                &format!(
+                    "/api/v2/devices/{DEVICE}/operations/{op}/cancel",
+                    DEVICE = case_device()
+                ),
                 Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1})),
             )
             .await?;
@@ -249,7 +255,7 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-            .bind(TENANT)
+            .bind(case_tenant())
             .execute(&mut pg)
             .await?;
         // Provider time injection, not a fabricated device response or result.
@@ -280,10 +286,10 @@ impl Fixture {
             && r.actor() == Some("service:collection-finalizer")));
         pg.close().await?;
         crate::test_support::identity::set_grants(
-            TENANT,
-            crate::test_support::identity::ADMIN,
+            case_tenant(),
+            crate::test_support::case::admin(),
             crate::test_support::identity::device_grants(
-                Some(DEVICE),
+                Some(case_device()),
                 &[
                     "enrollment",
                     "credentials",

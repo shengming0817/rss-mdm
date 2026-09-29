@@ -17,7 +17,7 @@ impl Authority {
         let access = database(&base).await?;
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                TENANT,
+                case_tenant(),
                 INSTANCE,
                 config.identity_management.clone(),
             )?,
@@ -68,7 +68,7 @@ impl Authority {
                     )),
                     devices: Arc::new(crate::device::DeviceService::new(
                         self.access.clone(),
-                        TENANT.into(),
+                        case_tenant().into(),
                         self.audit.clone(),
                     )),
                     apple: false,
@@ -103,7 +103,7 @@ impl Authority {
                     clock: monotonic(),
                     audit_store: self.audit.clone(),
                     requests,
-                    tenant: TENANT.into(),
+                    tenant: case_tenant().into(),
                 },
                 crate::api::envelope,
             ))

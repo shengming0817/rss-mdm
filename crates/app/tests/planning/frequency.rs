@@ -62,7 +62,7 @@ async fn membership(
     present: bool,
     scope: Uuid,
 ) -> Result<()> {
-    let changed=post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"members","add":if present {vec![DEVICE_ID]}else{vec![]},"remove":if present {vec![]}else{vec![DEVICE_ID]}}})).await?;
+    let changed=post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"members","add":if present {vec![case_device_id()]}else{vec![]},"remove":if present {vec![]}else{vec![case_device_id()]}}})).await?;
     await_task(
         author,
         router,
@@ -75,7 +75,8 @@ async fn membership(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let state = pg(&format!(
-                "SELECT mdm_planning.scope_admission('{scope}','{DEVICE_ID}')->>'state'"
+                "SELECT mdm_planning.scope_admission('{scope}','{DEVICE_ID}')->>'state'",
+                DEVICE_ID = case_device_id()
             ))?;
             if state.trim() == if present { "eligible" } else { "excluded" } {
                 return Ok::<_, anyhow::Error>(());
@@ -99,7 +100,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     let group = Uuid::new_v4();
     let scope = Uuid::new_v4();
     post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"entry-frequency","description":"","criteria":null}})).await?;
-    let added=post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[DEVICE_ID],"remove":[]}})).await?;
+    let added=post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[case_device_id()],"remove":[]}})).await?;
     await_task(
         author,
         router,
@@ -137,8 +138,8 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     ensure!(count(entry)? == 2);
     ensure!(pg(&format!("SELECT count(DISTINCT occurrence) FROM mdm_commands.action_runs WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{entry}')"))?.trim()=="2");
     disable(author, router, entry).await?;
-    ensure!(automation.shutdown().join().await?.is_clean());
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -148,7 +149,10 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let stack = worker(&fixture.base).await?;
     let base = &fixture.base;
@@ -158,7 +162,7 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
         author,
         router,
         resource,
-        TASK_SCOPE,
+        case_task_scope(),
         "every_trigger",
         Some(json!({"trigger":{"kind":"registration"},"notBefore":0,"jitterSeconds":0})),
     )
@@ -169,7 +173,15 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     let restarted = app_with_access(base, database(base).await?).await?.0;
     no_repeat(&restarted, registration, 1).await?;
     disable(author, router, registration).await?;
-    let checkin = publish(author, router, resource, TASK_SCOPE, "every_trigger", None).await?;
+    let checkin = publish(
+        author,
+        router,
+        resource,
+        case_task_scope(),
+        "every_trigger",
+        None,
+    )
+    .await?;
     let task = claim(&restarted).await?;
     belongs_to(&task, checkin)?;
     complete(&restarted, &task).await?;
@@ -182,7 +194,7 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     complete(&restarted, &task).await?;
     ensure!(count(checkin)? == 2);
     disable(author, router, checkin).await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -192,23 +204,26 @@ async fn interval_misfire_skip_and_coalesce() -> Result<()> {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let stack = worker(&fixture.base).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let trigger = json!({"kind":"interval","anchor":now-7320,"seconds":3600});
-    let skip=publish(author,router,resource,TASK_SCOPE,"every_trigger",Some(json!({"trigger":trigger,"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"skip","maxLatenessSeconds":30}}))).await?;
+    let skip=publish(author,router,resource,case_task_scope(),"every_trigger",Some(json!({"trigger":trigger,"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"skip","maxLatenessSeconds":30}}))).await?;
     no_repeat(router, skip, 0).await?;
     disable(author, router, skip).await?;
-    let coalesce=publish(author,router,resource,TASK_SCOPE,"every_trigger",Some(json!({"trigger":trigger,"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}}))).await?;
+    let coalesce=publish(author,router,resource,case_task_scope(),"every_trigger",Some(json!({"trigger":trigger,"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}}))).await?;
     let task = claim(router).await?;
     belongs_to(&task, coalesce)?;
     complete(router, &task).await?;
     no_repeat(router, coalesce, 1).await?;
     ensure!(pg(&format!("SELECT occurrence LIKE 'timer:{}:%' FROM mdm_commands.action_runs WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{coalesce}')",now-120))?.trim()=="t");
     disable(author, router, coalesce).await?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

@@ -35,7 +35,8 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     let base = &fixture.base;
     let mut browser = fixture.browser.clone();
     pg(&format!(
-        "INSERT INTO mdm_access.devices SELECT '{TENANT}', 'page-'||lpad(n::text,2,'0') FROM generate_series(1,33) n"
+        "INSERT INTO mdm_access.devices SELECT '{TENANT}', 'page-'||lpad(n::text,2,'0') FROM generate_series(1,33) n",
+        TENANT = case_tenant()
     ))?;
     let (_, path, _) = fixture.rule().await?;
     assign(&mut browser, router, "compliance-a", 0, true).await?;
@@ -104,7 +105,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     ensure!(
         audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")? == 1
     );
-    ensure!(automation.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(automation).await?;
     fixture.close().await;
     Ok(())
 }
@@ -116,7 +117,8 @@ async fn rule_and_fact_revisions_fence_stale_publication() -> Result<()> {
     let base = &fixture.base;
     let mut browser = fixture.browser.clone();
     pg(&format!(
-        "INSERT INTO mdm_access.devices SELECT '{TENANT}', 'page-'||lpad(n::text,2,'0') FROM generate_series(1,33) n"
+        "INSERT INTO mdm_access.devices SELECT '{TENANT}', 'page-'||lpad(n::text,2,'0') FROM generate_series(1,33) n",
+        TENANT = case_tenant()
     ))?;
     let (id, path, _) = fixture.rule().await?;
     assign(&mut browser, router, "compliance-a", 0, true).await?;
@@ -156,7 +158,7 @@ async fn rule_and_fact_revisions_fence_stale_publication() -> Result<()> {
         old["completed"] == true && old["failure"] == "superseded",
         "stale run was published: {old}"
     );
-    ensure!(restarted.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(restarted).await?;
     // Fact-only race: the rule revision remains unchanged across restart.
     let stale_fact = ok(
         &mut browser,
@@ -193,7 +195,7 @@ async fn rule_and_fact_revisions_fence_stale_publication() -> Result<()> {
     )
     .await?;
     ensure!(progress["phase"] == "published" && progress["processed"].as_i64().unwrap() > 32);
-    ensure!(restarted.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(restarted).await?;
     // A late transaction failure must roll back definition, receipt, enqueue and staged audit.
     pg(
         "CREATE FUNCTION public.reject_compliance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_compliance AFTER UPDATE ON mdm_compliance.rules DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.reject_compliance()",

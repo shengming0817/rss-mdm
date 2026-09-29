@@ -84,7 +84,7 @@ async fn grants(subject: &str, device: Option<&str>) -> Result<()> {
             });
         }
     }
-    crate::test_support::identity::set_grants(TENANT, subject, grants).await
+    crate::test_support::identity::set_grants(case_tenant(), subject, grants).await
 }
 
 async fn task_phase(b: &mut Browser, router: &Router, path: &str, phase: &str) -> Result<Value> {
@@ -140,7 +140,8 @@ impl Fixture {
         let subject = browser_subject(&browser, &router).await?;
         grants(&subject, None).await?;
         pg(&format!(
-            "INSERT INTO mdm_access.devices VALUES('{TENANT}','compliance-a'),('{TENANT}','compliance-b')"
+            "INSERT INTO mdm_access.devices VALUES('{TENANT}','compliance-a'),('{TENANT}','compliance-b')",
+            TENANT = case_tenant()
         ))?;
         Ok(Self {
             base,

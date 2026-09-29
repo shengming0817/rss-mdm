@@ -15,7 +15,7 @@ pub(crate) use std::{sync::Arc, time::Duration};
 pub(crate) use uuid::Uuid;
 
 pub(crate) fn tenant() -> TenantId {
-    TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
+    TenantId::parse(crate::test_support::case::tenant()).unwrap()
 }
 
 pub(crate) fn fixture() -> Value {
@@ -25,7 +25,7 @@ pub(crate) fn fixture() -> Value {
 
 pub(crate) fn audit_records() -> Vec<crate::audit_test_support::Record> {
     crate::audit_test_support::decode_hex(&sql(
-        "SELECT encode(canonical,'hex') FROM rss_audit.records ORDER BY tenant_id,position",
+        &format!("SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}' ORDER BY position", tenant()),
     ))
     .unwrap()
 }

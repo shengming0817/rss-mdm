@@ -40,7 +40,10 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {CREDENTIAL}"))
+        .header(
+            "authorization",
+            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        )
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(expired).await?.status() == StatusCode::FORBIDDEN);
     sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,expiresAt}',to_jsonb($2::bigint)) WHERE id=$1::uuid")
@@ -55,7 +58,10 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {CREDENTIAL}"))
+        .header(
+            "authorization",
+            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        )
         .body(Body::empty())?;
     let content = router.clone().oneshot(content).await?;
     ensure!(
@@ -72,7 +78,10 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {CREDENTIAL}"))
+        .header(
+            "authorization",
+            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        )
         .body(Body::empty())?;
     let prerequisite = router.clone().oneshot(prerequisite).await?;
     ensure!(prerequisite.status() == StatusCode::OK);
@@ -94,11 +103,14 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {CREDENTIAL}"))
+        .header(
+            "authorization",
+            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        )
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(denied).await?.status() == StatusCode::FORBIDDEN);
     ensure!(event(&router, &task, json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -136,7 +148,10 @@ async fn uninstall_content_permission() -> Result<()> {
             removal_task["payload"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {CREDENTIAL}"))
+        .header(
+            "authorization",
+            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        )
         .body(Body::empty())?;
     let content = router.clone().oneshot(content).await?;
     ensure!(
@@ -145,7 +160,7 @@ async fn uninstall_content_permission() -> Result<()> {
         content.status()
     );
     ensure!(content.into_body().collect().await?.to_bytes() == removal);
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -199,6 +214,6 @@ async fn windows_variant_content() -> Result<()> {
     let windows_content = router.clone().oneshot(windows_content).await?;
     ensure!(windows_content.status() == StatusCode::OK);
     ensure!(windows_content.into_body().collect().await?.to_bytes() == windows_bytes);
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

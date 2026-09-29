@@ -69,7 +69,10 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
         .build()?;
     let body = protocol::xml(protocol::dictionary([
         ("MessageType", "Authenticate".into()),
-        ("UDID", "rss-t2-apple".into()),
+        (
+            "UDID",
+            crate::test_support::case::name("rss-t2-apple").into(),
+        ),
         ("Topic", apple.config.apns_topic.clone().into()),
     ]))?;
     let oracle = oracle::Oracle::new(&der)?;

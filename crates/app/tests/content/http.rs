@@ -219,7 +219,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
         original.0 == StatusCode::OK && original.1 == approved.1,
         "recovery preserves historical approval, not a new grant"
     );
-    crate::test_support::identity::set_grants(TENANT, subject, vec![]).await?;
+    crate::test_support::identity::set_grants(case_tenant(), subject, vec![]).await?;
     ensure!(
         user.call(router, Method::GET, &admission_path, None)
             .await?
@@ -283,7 +283,8 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
             response.text().await?
         );
         let count = pg(&format!(
-            "SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND operation='{operation}'"
+            "SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND operation='{operation}'",
+            TENANT = case_tenant()
         ))?;
         let expected_count = usize::from(expected == StatusCode::CREATED);
         ensure!(count.trim() == expected_count.to_string());
@@ -295,6 +296,6 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
                 == expected_count
         );
     }
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND resource='{resource}'"))?.trim() == "2");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND resource='{resource}'", TENANT = case_tenant()))?.trim() == "2");
     Ok(())
 }

@@ -9,7 +9,10 @@ impl Fixture {
         ] {
             let request = Uuid::new_v4();
             let body = json!({"source":"mdm.apple","requestId":request});
-            let path = format!("/api/v1/devices/{DEVICE}/collection-runs");
+            let path = format!(
+                "/api/v1/devices/{DEVICE}/collection-runs",
+                DEVICE = case_device()
+            );
             let reply = self
                 .browser
                 .call(&self.router, Method::POST, &path, Some(body.clone()))
@@ -81,7 +84,7 @@ impl Fixture {
             // Read actual Inventory projection, waiting only for the real worker.
             let mut projected = false;
             for _ in 0..100 {
-                let rows:Vec<(String,Option<String>)>=sqlx::query_as("SELECT field,value FROM mdm.inventory WHERE tenant_id=$1::uuid AND source='mdm.apple' ORDER BY field").bind(TENANT).fetch_all(&mut pg).await?;
+                let rows:Vec<(String,Option<String>)>=sqlx::query_as("SELECT field,value FROM mdm.inventory WHERE tenant_id=$1::uuid AND source='mdm.apple' ORDER BY field").bind(case_tenant()).fetch_all(&mut pg).await?;
                 let delivered: bool = sqlx::query_scalar(
                     "SELECT NOT delivery_pending FROM mdm_access.collection_runs WHERE id=$1::uuid",
                 )
@@ -110,7 +113,7 @@ impl Fixture {
                         None,
                     )
                     .await?;
-                let rows:Vec<(String,Option<String>)>=sqlx::query_as("SELECT field,value FROM mdm.inventory WHERE tenant_id=$1::uuid AND source='mdm.apple' ORDER BY field").bind(TENANT).fetch_all(&mut pg).await?;
+                let rows:Vec<(String,Option<String>)>=sqlx::query_as("SELECT field,value FROM mdm.inventory WHERE tenant_id=$1::uuid AND source='mdm.apple' ORDER BY field").bind(case_tenant()).fetch_all(&mut pg).await?;
                 anyhow::bail!("Inventory did not preserve partial response: {read:?}; {rows:?}")
             }
             pg.close().await?;
@@ -119,7 +122,7 @@ impl Fixture {
                 .call(
                     &self.router,
                     Method::GET,
-                    &format!("/api/v2/devices/{DEVICE}/inventory"),
+                    &format!("/api/v2/devices/{DEVICE}/inventory", DEVICE = case_device()),
                     None,
                 )
                 .await?;

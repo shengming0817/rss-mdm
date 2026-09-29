@@ -6,8 +6,8 @@ async fn runtime_role_cannot_mutate_history_or_bypass_tenants() -> anyhow::Resul
     bind(
         &service,
         &admin_a,
-        &proof(A, Channel::Mdm, 1),
-        "role-boundary",
+        &proof(case_a(), Channel::Mdm, 1),
+        crate::test_support::case::name("role-boundary"),
         0,
     )
     .await?;

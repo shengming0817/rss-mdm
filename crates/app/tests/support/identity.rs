@@ -8,17 +8,28 @@ use rss_identity_core::{
 use rss_identity_postgres::AttemptSource;
 use std::sync::Arc;
 pub(crate) const INSTANCE: &str = "33333333-3333-4333-8333-333333333333";
-pub(crate) const ADMIN: &str = "44444444-4444-4444-8444-444444444444";
+const BOOTSTRAP: &str = "44444444-4444-4444-8444-444444444444";
 pub(crate) const PASSWORD: &str = "Fixture-only-correct-horse-battery-2026!";
 pub(crate) fn config(tenant: &str) -> Result<Config> {
+    configured(
+        tenant,
+        super::case::context()["admins"][tenant]
+            .as_str()
+            .expect("case tenant account"),
+    )
+}
+fn configured(tenant: &str, principal: &str) -> Result<Config> {
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     value["identity"]["tenant_id"] = tenant.into();
-    value["identity_management"] = serde_json::json!([{"tenant_id":tenant,"instance_id":INSTANCE,"principal_id":ADMIN,"permissions":["accounts","providers"]}]);
+    value["identity_management"] = serde_json::json!([{"tenant_id":tenant,"instance_id":INSTANCE,"principal_id":principal,"permissions":["accounts","providers"]}]);
     Ok(serde_json::from_value(value)?)
 }
 pub(crate) async fn identity(tenant: &str) -> Result<Identity> {
-    let config = config(tenant)?;
+    identity_with(config(tenant)?).await
+}
+async fn identity_with(config: Config) -> Result<Identity> {
+    let tenant = &config.identity.tenant_id;
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(
             tenant,
@@ -29,13 +40,16 @@ pub(crate) async fn identity(tenant: &str) -> Result<Identity> {
     Ok(Identity::connect(&config, policy, |_| {}).await?)
 }
 pub(crate) async fn login(identity: &Identity, login: &str) -> Result<SessionSecret> {
+    login_named(identity, super::case::login(login)).await
+}
+async fn login_named(identity: &Identity, login: &str) -> Result<SessionSecret> {
     let issued = identity
         .authority
         .login_local(
             identity.tenant,
             LoginKey::parse(login)?,
             Password::new(PASSWORD.into())?,
-            AttemptSource::parse("owned-pg-fixture")?,
+            AttemptSource::parse(&format!("t2-{}-{login}", identity.tenant))?,
             None,
             crate::identity::deadline(),
         )
@@ -52,62 +66,138 @@ pub(crate) fn credential(identity: &Identity, login: &str) -> Result<SessionSecr
         crate::config::secret(&path)?.to_string(),
     )?)
 }
-fn save(identity: &Identity, login: &str, secret: &SessionSecret) -> Result<()> {
+fn write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let config = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
-    let path = config
-        .parent()
-        .unwrap()
-        .join(format!("credential-{}-{login}", identity.tenant));
-    std::fs::write(&path, secret.expose())?;
+    std::fs::write(path, bytes)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
+fn save(root: &std::path::Path, tenant: &str, login: &str, secret: &SessionSecret) -> Result<()> {
+    write(
+        &root.join(format!("credential-{tenant}-{login}")),
+        secret.expose().as_bytes(),
+    )
+}
 #[tokio::test]
-#[ignore = "make t2: seed through public account planning after operator initialization"]
+#[ignore = "make t2: prepare real case accounts once per compatible environment"]
 async fn seed_accounts() -> Result<()> {
-    for tenant in [
-        "11111111-1111-4111-8111-111111111111",
-        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-    ] {
-        let identity = identity(tenant)
-            .await
-            .map_err(|e| anyhow::anyhow!("identity seed admission: {e:?}"))?;
-        let access = crate::Database::connect(config(tenant)?.access_database.options()?)
-            .await
-            .map_err(|e| anyhow::anyhow!("access seed admission: {e:?}"))?;
+    use base64::Engine;
+    use ring::signature::KeyPair;
+    use serde_json::{Value, json};
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_IDENTITY_SETUP")?)?)?;
+    let config_path = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
+    let root = config_path.parent().unwrap();
+    let pkcs8 =
+        ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let keyfile = root.join("task-signing.pk8");
+    write(&keyfile, pkcs8.as_ref())?;
+    write(
+        &root.join("task-signing.json"),
+        &serde_json::to_vec(&json!({
+            "private_key_file":keyfile,"key_id":"t2","trusted_keys":{"t2":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())}
+        }))?,
+    )?;
+    let content = root.join("content");
+    std::fs::create_dir(&content)?;
+    write(
+        &root.join("content.json"),
+        &serde_json::to_vec(
+            &json!({"directory":content,"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100}),
+        )?,
+    )?;
+    let mut costs = Vec::new();
+    for tenant in manifest["tenants"].as_array().unwrap() {
+        let tenant = tenant.as_str().unwrap();
+        let config = configured(tenant, BOOTSTRAP)?;
+        let access = crate::Database::connect(config.access_database.options()?).await?;
+        let audit = access.audit_store(&config.audit).await?;
+        let identity = identity_with(config).await?;
         crate::authorization::store::initialize_authorization(
-            access.audit_store(&config(tenant)?.audit).await?.as_ref(),
-            user(tenant, ADMIN),
+            &audit,
+            user(tenant, BOOTSTRAP),
             uuid::Uuid::new_v4(),
         )
         .await?;
-        let secret = login(&identity, "admin").await?;
-        save(&identity, "admin", &secret)?;
-        let actor = identity
-            .authority
-            .authenticate_session(identity.tenant, secret, crate::identity::deadline())
-            .await?;
-        identity
-            .authority
-            .create_local_account(
-                actor,
-                LoginKey::parse("other")?,
-                Password::new(PASSWORD.into())?,
-                crate::identity::deadline(),
-            )
-            .await?;
-        set_grants(
-            tenant,
-            ADMIN,
-            device_grants(None, &["inventory_read", "enrollment", "credentials"])?,
-        )
-        .await?;
-        // Each independently runnable module reuses its run-local real session.
-        // Login behavior itself remains covered by identity.local.
-        save(&identity, "other", &login(&identity, "other").await?)?;
+        let bootstrap = login_named(&identity, "bootstrap").await?;
+        for case in manifest["cases"].as_array().unwrap() {
+            let path = std::path::Path::new(case.as_str().unwrap());
+            let mut context: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+            if !context["identityTenants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == tenant)
+            {
+                continue;
+            }
+            for (kind, field) in [("admin", "adminLogin"), ("other", "otherLogin")] {
+                let name = context[field].as_str().unwrap();
+                let started = std::time::Instant::now();
+                let actor = identity
+                    .authority
+                    .authenticate_session(
+                        identity.tenant,
+                        SessionSecret::parse(bootstrap.expose().into())?,
+                        crate::identity::deadline(),
+                    )
+                    .await?;
+                let account = identity
+                    .authority
+                    .create_local_account(
+                        actor,
+                        LoginKey::parse(name)?,
+                        Password::new(PASSWORD.into())?,
+                        crate::identity::deadline(),
+                    )
+                    .await?;
+                let subject = account.key().principal.as_uuid().to_string();
+                if kind == "admin" {
+                    let principal = crate::authorization::context::AuthorizedPrincipal::new(
+                        identity
+                            .authority
+                            .inspect_session(
+                                identity.tenant,
+                                SessionSecret::parse(bootstrap.expose().into())?,
+                                crate::identity::deadline(),
+                            )
+                            .await?,
+                    )?
+                    .load_authorization(&access)
+                    .await?;
+                    let mut grants =
+                        device_grants(None, &["inventory_read", "enrollment", "credentials"])?;
+                    grants.push(crate::authorization::Grant {
+                        operation: crate::authorization::Permission::AuthorizationWrite,
+                        scope: crate::authorization::Scope::Tenant,
+                    });
+                    grant(&audit, &principal, tenant, &subject, grants).await?;
+                }
+                costs.push(json!({"phase":"identity-accounts","count":1,"tenant":tenant,"invocationId":context["invocationId"],"seconds":started.elapsed().as_secs_f64()}));
+                let started = std::time::Instant::now();
+                save(
+                    path.parent().unwrap(),
+                    tenant,
+                    kind,
+                    &login_named(&identity, name).await?,
+                )?;
+                costs.push(json!({"phase":"identity-sessions","count":1,"tenant":tenant,"invocationId":context["invocationId"],"seconds":started.elapsed().as_secs_f64()}));
+                if kind == "admin" {
+                    if context["tenant"] == tenant {
+                        context["admin"] = subject.clone().into();
+                    }
+                    context["admins"][tenant] = subject.into();
+                }
+            }
+            write(path, &serde_json::to_vec(&context)?)?;
+        }
+        access.close().await;
     }
+    write(
+        &root.join("identity-costs.json"),
+        &serde_json::to_vec(&costs)?,
+    )?;
     Ok(())
 }
 
@@ -139,7 +229,6 @@ pub(crate) async fn set_grants(
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
-    use crate::authorization::{Change, Permission, Rule, Subject};
     let identity = identity(tenant).await?;
     let access = crate::Database::connect(config(tenant)?.access_database.options()?).await?;
     let principal = crate::authorization::context::AuthorizedPrincipal::new(
@@ -154,6 +243,35 @@ pub(crate) async fn set_grants(
     )?
     .load_authorization(&access)
     .await?;
+    grant(
+        access.audit_store(&config(tenant)?.audit).await?.as_ref(),
+        &principal,
+        tenant,
+        subject,
+        grants,
+    )
+    .await?;
+    access.close().await;
+    Ok(())
+}
+
+pub(crate) async fn audit_store(
+    config: &crate::config::Config,
+) -> anyhow::Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>> {
+    Ok(crate::Database::connect(config.access_database.options()?)
+        .await?
+        .audit_store(&config.audit)
+        .await?)
+}
+
+async fn grant(
+    audit_store: &rss_mdm_audit_integration::AuditStore,
+    principal: &crate::authorization::context::AuthorizedPrincipal,
+    tenant: &str,
+    subject: &str,
+    grants: Vec<crate::authorization::Grant>,
+) -> Result<()> {
+    use crate::authorization::{Change, Permission, Rule, Subject};
     for record in &principal.authorization()?.rules {
         let Some(rule) = &record.value else { continue };
         if matches!(&rule.subject, Subject::User { user } if user.principal_id == subject)
@@ -166,7 +284,7 @@ pub(crate) async fn set_grants(
                 rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
             principal.bind_audit(&audit)?;
             crate::authorization::store::change_rule(
-                access.audit_store(&config(tenant)?.audit).await?.as_ref(),
+                audit_store,
                 &principal,
                 record.id,
                 Change {
@@ -185,7 +303,7 @@ pub(crate) async fn set_grants(
             rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
         principal.bind_audit(&audit)?;
         crate::authorization::store::change_rule(
-            access.audit_store(&config(tenant)?.audit).await?.as_ref(),
+            audit_store,
             &principal,
             uuid::Uuid::new_v4(),
             Change {
@@ -203,15 +321,5 @@ pub(crate) async fn set_grants(
         .await?;
         audit.finalize(None);
     }
-    access.close().await;
     Ok(())
-}
-
-pub(crate) async fn audit_store(
-    config: &crate::config::Config,
-) -> anyhow::Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>> {
-    Ok(crate::Database::connect(config.access_database.options()?)
-        .await?
-        .audit_store(&config.audit)
-        .await?)
 }

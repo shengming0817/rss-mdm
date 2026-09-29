@@ -9,12 +9,16 @@ use rss_mdm_inventory::Channel;
 use rss_observation::Body;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
-const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+fn case_a() -> &'static str {
+    crate::test_support::case::tenant()
+}
+fn case_b() -> &'static str {
+    crate::test_support::case::peer()
+}
 
 #[test]
 fn journal_permission_is_independent_and_readiness_requires_a_running_worker() {
-    let tenant = TenantId::parse(A).unwrap();
+    let tenant = TenantId::parse(case_a()).unwrap();
     let token = CancellationToken::new();
     let authority = JournalAuthority {
         tenant,
@@ -27,7 +31,7 @@ fn journal_permission_is_independent_and_readiness_requires_a_running_worker() {
 }
 fn ensure_authority(authority: &JournalAuthority<'_>, tenant: TenantId, token: &CancellationToken) {
     assert!(JournalReadGrant::verify(authority, tenant).is_ok());
-    assert!(JournalReadGrant::verify(authority, TenantId::parse(B).unwrap()).is_err());
+    assert!(JournalReadGrant::verify(authority, TenantId::parse(case_b()).unwrap()).is_err());
     let scope =
         crate::device::scope(tenant, Uuid::new_v4(), "mdm.windows", Uuid::new_v4()).unwrap();
     assert!(LifecycleGrant::verify(authority, scope.clone()).is_err());
@@ -81,19 +85,19 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let access = Arc::new(Database::connect(options("mdm_access")?).await?);
     let service = Arc::new(DeviceService::new(
         access.clone(),
-        A.into(),
+        case_a().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     ));
-    let admin = admin(A, "admin-a").await?;
-    let credential = proof(A, Channel::Mdm, 121);
+    let admin = admin(case_a(), "admin-a").await?;
+    let credential = proof(case_a(), Channel::Mdm, 121);
     let (_, registration) = bind(&service, &admin, &credential, "collection-recovery", 0).await?;
     let first = report(&service, &access, &credential, [Some("First"), Some("10")]).await?;
     // Simulate a corrupt relational coordinate while retaining a valid sealed blob/digest.
     let mut corrupt_root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-        .bind(A)
+        .bind(case_a())
         .execute(&mut corrupt_root)
         .await?;
     corrupt_root
@@ -101,9 +105,9 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         .await?;
     let corrupt_epoch = Uuid::new_v4();
     sqlx::query("UPDATE mdm_access.collection_runs SET epoch=$1::uuid WHERE tenant_id=$2::uuid AND id=$3::uuid")
-        .bind(corrupt_epoch.to_string()).bind(A).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
+        .bind(corrupt_epoch.to_string()).bind(case_a()).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
     let corrupt_scope = crate::device::scope(
-        TenantId::parse(A)?,
+        TenantId::parse(case_a())?,
         registration.registration,
         "mdm.windows",
         corrupt_epoch,
@@ -115,10 +119,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     )
-    .pending_reports(A)
+    .pending_reports(case_a())
     .await;
     sqlx::query("UPDATE mdm_access.collection_runs SET epoch=$1::uuid WHERE tenant_id=$2::uuid AND id=$3::uuid")
-        .bind(first.scope.epoch().as_str()).bind(A).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
+        .bind(first.scope.epoch().as_str()).bind(case_a()).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
     corrupt_root
         .execute("ALTER TABLE mdm_access.collection_runs ENABLE TRIGGER immutable_collection")
         .await?;
@@ -136,7 +140,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
     )
-    .pending_reports(A)
+    .pending_reports(case_a())
     .await?;
     let durable = reports
         .iter()
@@ -153,7 +157,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         )
         .await?;
     ensure!(service.management_principal(&credential).await.is_err());
-    let mut tx = access.begin(A).await?;
+    let mut tx = access.begin(case_a()).await?;
     ensure!(
         crate::device::store::revalidate(&mut tx, &stale)
             .await
@@ -194,7 +198,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
                         .audit_store(&crate::config::AuditConfig::Plain)
                         .await?
                 )
-                .pending_reports(A)
+                .pending_reports(case_a())
                 .await?
                 .iter()
                 .any(|r| r.batch().id() == durable.batch().id())
@@ -230,7 +234,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         crate::collection::store::collection(
             &access,
             &crate::device::scope(
-                TenantId::parse(B)?,
+                TenantId::parse(case_b())?,
                 registration.registration,
                 "mdm.windows",
                 registration.epoch
@@ -248,7 +252,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(runtime.readiness.ready());
     runtime.readiness.stop();
     ensure!(!runtime.readiness.ready());
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
     ensure!(
@@ -262,7 +266,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     runtime.close_fixture().await?;
 
     // Fresh epoch; Partial/Failed receipts retain the last complete values.
-    let newer = proof(A, Channel::Mdm, 122);
+    let newer = proof(case_a(), Channel::Mdm, 122);
     let (_, registration) = bind(&service, &admin, &newer, "collection-recovery", 1).await?;
     let full = report(&service, &access, &newer, [Some("New"), Some("11")]).await?;
     let partial = report(&service, &access, &newer, [Some("Unconfirmed"), None]).await?;
@@ -290,7 +294,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .state
             == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("New".into()))
     );
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
     // A borrowed repeatable-read snapshot never mixes a concurrently committed projection.
@@ -302,7 +306,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         .execute(&mut *snapshot)
         .await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(A)
+        .bind(case_a())
         .execute(&mut *snapshot)
         .await?;
     let before = rss_mdm_inventory_postgres::read_in(
@@ -331,20 +335,20 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .iter()
             .all(|f| f.fact.evidence.snapshot_id == newer_run.id.to_string())
     );
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-        .bind(A)
+        .bind(case_a())
         .execute(&mut root)
         .await?;
     // The role cannot rewrite accepted bytes, reset sequence, or delete collection history.
-    let mut tx = access.begin(A).await?;
+    let mut tx = access.begin(case_a()).await?;
     ensure!(sqlx::query("UPDATE mdm_access.collection_runs SET batch=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-        .bind(A).bind(full.id.to_string()).bind(canonical).execute(&mut *tx).await.is_err());
+        .bind(case_a()).bind(full.id.to_string()).bind(canonical).execute(&mut *tx).await.is_err());
     tx.rollback().await?;
-    let mut tx = access.begin(A).await?;
+    let mut tx = access.begin(case_a()).await?;
     ensure!(
         sqlx::query("DELETE FROM mdm_access.collection_runs")
             .execute(&mut *tx)
@@ -370,7 +374,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     )
     .await?;
     ensure!(matches!(stopped, rss_runtime::TaskExit::Failed(_)) && !runtime.readiness.ready());
-    ensure!(!owner.shutdown().join().await?.is_clean());
+    ensure!(
+        !owner
+            .expect("fault case owns its inventory worker")
+            .shutdown()
+            .join()
+            .await?
+            .is_clean()
+    );
     ensure!(
         reader
             .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
@@ -398,10 +409,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
                 "After-failure".into()
             ))
     );
-    ensure!(owner.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(owner).await?;
 
     // Explicit CmdID exhaustion fails without allocating a new run or wrapping to old IDs.
-    sqlx::query("UPDATE mdm_access.report_sources SET next_command=4294967296 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(A).bind(registration.registration.to_string()).execute(&mut root).await?;
+    sqlx::query("UPDATE mdm_access.report_sources SET next_command=4294967296 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(case_a()).bind(registration.registration.to_string()).execute(&mut root).await?;
     ensure!(
         report(&service, &access, &newer, [Some("wrap"), Some("13")])
             .await

@@ -9,7 +9,10 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let stack = worker(&fixture.base).await?;
     let router = &fixture.router;
@@ -20,9 +23,12 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
     pg(&format!(
         "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'starvation-fixture:'||n,created_at,0,1,jsonb_set(jsonb_set(state,'{{execution}}','\"unknown\"'),'{{cancellation}}','\"requested\"'),true,dispatch_fingerprint FROM mdm_commands.action_runs CROSS JOIN generate_series(1,129) n WHERE id='{id}'; UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE id='{id}'"
     ))?;
-    let before = pg("SELECT count(*) FROM mdm_commands.action_receipts")?
-        .trim()
-        .parse::<i64>()?;
+    let before = pg(&format!(
+        "SELECT count(*) FROM mdm_commands.action_receipts WHERE tenant_id='{}'",
+        case_tenant()
+    ))?
+    .trim()
+    .parse::<i64>()?;
     let mut seen = BTreeSet::new();
     let mut offered = None;
     for _ in 0..4 {
@@ -30,7 +36,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
             router,
             Method::POST,
             "/api/agent/v3/tasks/claim",
-            Some(CREDENTIAL),
+            Some(case_credential()),
             Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
         )
         .await?;
@@ -51,14 +57,28 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
         seen.len()
     );
     ensure!(
-        pg("SELECT count(*) FROM mdm_commands.action_receipts")?
-            .trim()
-            .parse::<i64>()?
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.action_receipts WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+        .parse::<i64>()?
             == before + 1,
         "empty claim grew permanent receipts"
     );
-    ensure!(pg("SELECT count(*) FROM mdm_commands.action_polls")?.trim() == "1");
-    pg("DELETE FROM mdm_commands.action_runs WHERE occurrence LIKE 'starvation-fixture:%'")?;
-    ensure!(stack.shutdown().join().await?.is_clean());
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.action_polls WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "1"
+    );
+    pg(&format!(
+        "DELETE FROM mdm_commands.action_runs WHERE tenant_id='{}' AND device='{}' AND occurrence LIKE 'starvation-fixture:%'",
+        case_tenant(),
+        case_device_id()
+    ))?;
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

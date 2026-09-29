@@ -29,7 +29,11 @@ impl Oracle {
             if self.queued.lock().await.insert(id.into()) {
                 let reply = self
                     .client
-                    .post(format!("{}/v1/enqueue/rss-t2-apple?nopush=1", self.origin))
+                    .post(format!(
+                        "{}/v1/enqueue/{}?nopush=1",
+                        self.origin,
+                        crate::test_support::case::name("rss-t2-apple")
+                    ))
                     .basic_auth("nanomdm", Some(&self.key))
                     .body(response.to_vec())
                     .send()

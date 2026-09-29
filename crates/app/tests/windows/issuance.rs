@@ -49,7 +49,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .is_err()
     );
-    let proof = admin(TENANT, "admin-a").await?;
+    let proof = admin(case_tenant(), "admin-a").await?;
     let store = Database::connect(options("mdm_access")?).await?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
     let password = Password::new(crate::enrollment::random())?;
@@ -65,7 +65,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     .await?;
     let auth = crate::enrollment::store::enrollment_authorization(
         &store,
-        TENANT,
+        case_tenant(),
         receipt.enrollment_id,
         &password,
     )
@@ -117,16 +117,12 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     );
     ensure!(
         w.protection
-            .open(
-                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                auth.id,
-                &intent.sealed
-            )
+            .open(crate::test_support::case::peer(), auth.id, &intent.sealed)
             .is_err()
     );
     let mut altered = intent.sealed.clone();
     altered[15] ^= 1;
-    ensure!(w.protection.open(TENANT, auth.id, &altered).is_err());
+    ensure!(w.protection.open(case_tenant(), auth.id, &altered).is_err());
     ensure!(
         w.ca.verify(&[CertificateDer::from(cert.as_slice())], now() + 91 * 86400)
             .is_err()
@@ -146,7 +142,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let checked =
         w.ca.verify(&[CertificateDer::from(cert.as_slice())], now())?;
     let credential = crate::device::VerifiedChannelCredential::windows(
-        rss_request_context::TenantId::parse(TENANT)?,
+        rss_request_context::TenantId::parse(case_tenant())?,
         &checked,
     );
     let access = Arc::new(store);
@@ -155,7 +151,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .await?;
     let service = crate::device::DeviceService::new(
         access.clone(),
-        TENANT.into(),
+        case_tenant().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?,
@@ -248,7 +244,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .await?;
         let a = crate::enrollment::store::enrollment_authorization(
             &access,
-            TENANT,
+            case_tenant(),
             r.enrollment_id,
             &password,
         )
@@ -285,7 +281,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2",
         )
-        .bind(TENANT)
+        .bind(case_tenant())
         .bind(&device)
         .fetch_one(&mut pg)
         .await?;
@@ -309,9 +305,14 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     .await?;
     a.finalize(None);
     ensure!(
-        crate::enrollment::store::enrollment_authorization(&access, TENANT, auth.id, &password)
-            .await
-            .is_err()
+        crate::enrollment::store::enrollment_authorization(
+            &access,
+            case_tenant(),
+            auth.id,
+            &password
+        )
+        .await
+        .is_err()
     );
     ensure!(
         complete(&audit_store, &w, &auth, &proof, &intent, &cert)
@@ -319,7 +320,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .is_err()
     );
     let resumed =
-        crate::enrollment::store::enrollment_authorization(&access, TENANT, auth.id, &next).await?;
+        crate::enrollment::store::enrollment_authorization(&access, case_tenant(), auth.id, &next)
+            .await?;
     ensure!(
         resumed.operation == auth.operation
             && resumed.expected_generation == auth.expected_generation
@@ -342,7 +344,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .await?;
         let auth = crate::enrollment::store::enrollment_authorization(
             &access,
-            TENANT,
+            case_tenant(),
             pending.enrollment_id,
             &password,
         )
@@ -376,16 +378,16 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .await?;
             a.finalize(None);
         } else if cause == "expiry" {
-            sqlx::query("UPDATE mdm_access.requests SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(TENANT).bind(auth.id.to_string()).execute(&mut pg).await?;
+            sqlx::query("UPDATE mdm_access.requests SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(auth.id.to_string()).execute(&mut pg).await?;
         }
         let current = if cause == "permission" {
             crate::test_support::identity::set_grants(
-                TENANT,
-                crate::test_support::identity::ADMIN,
+                case_tenant(),
+                crate::test_support::case::admin(),
                 vec![],
             )
             .await?;
-            Some(admin(TENANT, "admin-a").await?)
+            Some(admin(case_tenant(), "admin-a").await?)
         } else {
             None
         };
@@ -400,8 +402,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .await;
         if cause == "permission" {
             crate::test_support::identity::set_grants(
-                TENANT,
-                crate::test_support::identity::ADMIN,
+                case_tenant(),
+                crate::test_support::case::admin(),
                 crate::test_support::identity::device_grants(
                     None,
                     &["inventory_read", "enrollment", "credentials"],
@@ -411,7 +413,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         }
         ensure!(result.is_err());
         let bound: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
-            .bind(TENANT).bind(auth.id.to_string()).fetch_one(&mut pg).await?;
+            .bind(case_tenant()).bind(auth.id.to_string()).fetch_one(&mut pg).await?;
         ensure!(bound == 0);
     }
     // RequestAudit failure rolls back the entire final binding, then the same intent can finish.
@@ -426,7 +428,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     .await?;
     let a = crate::enrollment::store::enrollment_authorization(
         &access,
-        TENANT,
+        case_tenant(),
         r.enrollment_id,
         &password,
     )
@@ -482,14 +484,14 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     .await?;
     let a1 = crate::enrollment::store::enrollment_authorization(
         &access,
-        TENANT,
+        case_tenant(),
         first.enrollment_id,
         &password,
     )
     .await?;
     let a2 = crate::enrollment::store::enrollment_authorization(
         &access,
-        TENANT,
+        case_tenant(),
         second.enrollment_id,
         &password,
     )

@@ -7,7 +7,10 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     fixture.register().await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
@@ -18,7 +21,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     let unknown_policy = publish(&mut author, &router, id).await?;
     let pending = claim(&router).await?;
     // Organization assignment survives its author's departure.
-    crate::test_support::identity::set_grants(TENANT, &author_id, vec![]).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &author_id, vec![]).await?;
     task_event(&router, &pending, json!({"kind":"received"})).await?;
     task_event(&router, &pending, json!({"kind":"start"})).await?;
     let task_id = pending["payload"]["taskId"].as_str().unwrap();
@@ -35,13 +38,13 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
         .trim()
             == "unknown"
     );
-    let before = pg("SELECT count(*) FROM mdm_commands.action_runs")?;
+    let before = run_count(unknown_policy)?;
     ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
     ensure!(
-        pg("SELECT count(*) FROM mdm_commands.action_runs")? == before,
+        run_count(unknown_policy)? == before,
         "unknown execution repeated"
     );
-    crate::test_support::identity::set_grants(TENANT, &author_id, grants.clone()).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone()).await?;
     post(
         &mut author,
         &router,
@@ -57,6 +60,6 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
         .trim()
             == "requested"
     );
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

@@ -7,7 +7,10 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
     fixture.register().await?;
     let (id, bytes, _definition) = fixture.resource().await?;
     fixture
-        .scope(TASK_SCOPE, json!([{"kind":"device","id":DEVICE_ID}]))
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
         .await?;
     let stack = worker(&fixture.base).await?;
     let router = fixture.router;
@@ -38,7 +41,10 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
         let mut request = Request::builder()
             .uri(&path)
             .header("host", "mdm.example.test")
-            .header("authorization", format!("Bearer {CREDENTIAL}"))
+            .header(
+                "authorization",
+                format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+            )
             .header("range", range);
         if let Some(tag) = if_range {
             request = request.header("if-range", tag);
@@ -74,7 +80,10 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
             Request::builder()
                 .uri(&path)
                 .header("host", "mdm.example.test")
-                .header("authorization", format!("Bearer {CREDENTIAL}"))
+                .header(
+                    "authorization",
+                    format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+                )
                 .header("range", "bytes=0-3")
                 .header("range", "bytes=4-7")
                 .body(Body::empty())?,
@@ -98,11 +107,14 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
             Request::builder()
                 .uri(wrong)
                 .header("host", "mdm.example.test")
-                .header("authorization", format!("Bearer {CREDENTIAL}"))
+                .header(
+                    "authorization",
+                    format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+                )
                 .body(Body::empty())?,
         )
         .await?;
     ensure!(response.status() == StatusCode::FORBIDDEN);
-    ensure!(stack.shutdown().join().await?.is_clean());
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

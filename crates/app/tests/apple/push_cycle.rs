@@ -3,13 +3,14 @@ use super::*;
 use crate::apple::push;
 use sqlx::{Connection, PgConnection};
 async fn due(pg: &mut PgConnection) -> Result<()> {
-    sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second'")
+    sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
+        .bind(case_tenant()).bind(case_device())
         .execute(pg)
         .await?;
     Ok(())
 }
 async fn state(pg: &mut PgConnection) -> Result<serde_json::Value> {
-    Ok(sqlx::query_scalar("SELECT jsonb_build_object('state',state,'token',token IS NOT NULL,'magic',magic IS NOT NULL,'lease',push_lease_until IS NOT NULL,'status',push_status,'outcome',push_outcome,'failures',push_failures,'delay',extract(epoch FROM next_push-clock_timestamp())::double precision) FROM mdm_apple.devices WHERE state<>'retired'").fetch_one(pg).await?)
+    Ok(sqlx::query_scalar("SELECT jsonb_build_object('state',state,'token',token IS NOT NULL,'magic',magic IS NOT NULL,'lease',push_lease_until IS NOT NULL,'status',push_status,'outcome',push_outcome,'failures',push_failures,'delay',extract(epoch FROM next_push-clock_timestamp())::double precision) FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state<>'retired'").bind(case_tenant()).bind(case_device()).fetch_one(pg).await?)
 }
 impl Fixture {
     pub async fn push_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
@@ -19,7 +20,7 @@ impl Fixture {
         let mut pg =
             PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-            .bind(TENANT)
+            .bind(case_tenant())
             .execute(&mut pg)
             .await?;
         let participant =
@@ -94,7 +95,13 @@ impl Fixture {
         let denied = peer
             .send(
                 "/mdm",
-                protocol::dictionary([("Status", "Idle".into()), ("UDID", "rss-t2-apple".into())]),
+                protocol::dictionary([
+                    ("Status", "Idle".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
+                ]),
             )
             .await?;
         ensure!(denied.0 == StatusCode::UNAUTHORIZED);
@@ -117,7 +124,7 @@ impl Fixture {
         recovered.close().await?;
         pg.close().await?;
         let operation_state = self.operation(operation).await?;
-        let cancelled=self.browser.call(&self.router,Method::POST,&format!("/api/v2/devices/{DEVICE}/operations/{operation}/cancel"),Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":operation_state["revision"]}))).await?;
+        let cancelled=self.browser.call(&self.router,Method::POST,&format!("/api/v2/devices/{DEVICE}/operations/{operation}/cancel", DEVICE = case_device()),Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":operation_state["revision"]}))).await?;
         ensure!(cancelled.0 == StatusCode::OK);
         Ok(())
     }

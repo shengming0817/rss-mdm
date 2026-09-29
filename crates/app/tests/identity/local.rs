@@ -9,11 +9,14 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     let fixture = authority::Authority::open().await?;
     let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
     let mut browser = Browser::default();
-    ensure!(browser.login(&initial, "other").await? == StatusCode::OK);
+    ensure!(browser.login_password(&initial, "other", PASSWORD).await? == StatusCode::OK);
     let credential = &browser.cookies["__Host-identity-session"];
     for (method, path) in [
         (Method::GET, "/api/v1/authorization".to_owned()),
-        (Method::GET, format!("/api/v2/tenants/{TENANT}/session")),
+        (
+            Method::GET,
+            format!("/api/v2/tenants/{TENANT}/session", TENANT = case_tenant()),
+        ),
         (Method::POST, "/api/v3/enrollments".to_owned()),
     ] {
         for cookie in [
@@ -41,7 +44,11 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     let (_, me) = browser
         .call(&initial, Method::GET, "/api/v1/authorization", None)
         .await?;
-    ensure!(me["instanceId"] == INSTANCE && me["tenantId"] == TENANT && me["grants"] == json!([]));
+    ensure!(
+        me["instanceId"] == INSTANCE
+            && me["tenantId"] == case_tenant()
+            && me["grants"] == json!([])
+    );
     let subject = me["principalId"].as_str().unwrap();
     // Reconstruct the authority and routes to prove session persistence across host restarts.
     let restarted = authority::Authority::open().await?;
@@ -63,9 +70,14 @@ async fn native_accounts(
     browser: &mut Browser,
     principal: &str,
 ) -> Result<()> {
-    let tenant = format!("/api/v2/tenants/{TENANT}");
+    let tenant = format!("/api/v2/tenants/{TENANT}", TENANT = case_tenant());
     let mut admin = Browser::default();
-    ensure!(admin.login(admin_router, "admin").await? == StatusCode::OK);
+    ensure!(
+        admin
+            .login_password(admin_router, "admin", PASSWORD)
+            .await?
+            == StatusCode::OK
+    );
     let account = format!("{tenant}/accounts/{principal}");
     ensure!(
         browser
@@ -79,7 +91,7 @@ async fn native_accounts(
             .call(
                 admin_router,
                 Method::POST,
-                &format!("{tenant}/accounts/{ADMIN}/enabled"),
+                &format!("{tenant}/accounts/{ADMIN}/enabled", ADMIN = case_admin()),
                 Some(json!({"enabled":false}))
             )
             .await?
@@ -88,7 +100,8 @@ async fn native_accounts(
     );
     // Passive product queries do not extend idle; the current cookie survives a process restart.
     let before = pg(&format!(
-        "SELECT jsonb_agg(idle_expires_at ORDER BY session_id)::text FROM identity_authority.sessions WHERE tenant_id='{TENANT}' AND principal_id='{principal}'"
+        "SELECT jsonb_agg(idle_expires_at ORDER BY session_id)::text FROM identity_authority.sessions WHERE tenant_id='{TENANT}' AND principal_id='{principal}'",
+        TENANT = case_tenant()
     ))?;
     for _ in 0..2 {
         ensure!(
@@ -102,7 +115,8 @@ async fn native_accounts(
     ensure!(
         before
             == pg(&format!(
-                "SELECT jsonb_agg(idle_expires_at ORDER BY session_id)::text FROM identity_authority.sessions WHERE tenant_id='{TENANT}' AND principal_id='{principal}'"
+                "SELECT jsonb_agg(idle_expires_at ORDER BY session_id)::text FROM identity_authority.sessions WHERE tenant_id='{TENANT}' AND principal_id='{principal}'",
+                TENANT = case_tenant()
             ))?
     );
     // Successful authentication cannot be reused while the authority becomes unavailable.
@@ -112,7 +126,7 @@ async fn native_accounts(
         .await?;
     pg("GRANT SELECT ON identity_authority.sessions TO mdm_identity_runtime")?;
     ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE && denied.1.get("roles").is_none());
-    let identity = crate::test_support::identity::identity(TENANT).await?;
+    let identity = crate::test_support::identity::identity(case_tenant()).await?;
     let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 16);
     let cache = |browser: &Browser| -> Result<uuid::Uuid> {
         Ok(
@@ -161,7 +175,7 @@ async fn native_accounts(
                 .is_err()
         );
         *browser = Browser::default();
-        ensure!(browser.login(product, "other").await? == StatusCode::OK);
+        ensure!(browser.login_password(product, "other", PASSWORD).await? == StatusCode::OK);
     }
     let reference = cache(browser)?;
     let mut stale = browser.clone();
@@ -217,7 +231,7 @@ async fn native_accounts(
             .is_err()
     );
     *browser = Browser::default();
-    ensure!(browser.login(product, "other").await? == StatusCode::OK);
+    ensure!(browser.login_password(product, "other", PASSWORD).await? == StatusCode::OK);
     let password_reference = cache(browser)?;
     ensure!(
         admin
@@ -273,7 +287,7 @@ async fn native_accounts(
     let mut managed = Browser::default();
     ensure!(managed.login(admin_router, "managed-user").await? == StatusCode::OK);
     ensure!(managed.call(admin_router, Method::POST, &format!("{tenant}/account/password"), Some(json!({"currentPassword":PASSWORD,"password":"Self-changed-fixture-password-2026!"}))).await?.0 == StatusCode::OK);
-    let wrong_tenant = "/api/v2/tenants/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/session";
+    let wrong_tenant = &format!("/api/v2/tenants/{}/session", case::peer());
     ensure!(
         admin
             .call(admin_router, Method::GET, wrong_tenant, None)
@@ -283,7 +297,9 @@ async fn native_accounts(
     );
     // Product planning policy asks the component for Recent(300s), including native accounts.
     pg(&format!(
-        "UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'"
+        "UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'",
+        ADMIN = case_admin(),
+        TENANT = case_tenant()
     ))?;
     let stale_management = admin
         .call(
@@ -302,7 +318,9 @@ async fn native_accounts(
         )
         .await;
     pg(&format!(
-        "UPDATE identity_authority.sessions SET auth_time=auth_time+301,absolute_expires_at=absolute_expires_at+301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'"
+        "UPDATE identity_authority.sessions SET auth_time=auth_time+301,absolute_expires_at=absolute_expires_at+301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'",
+        ADMIN = case_admin(),
+        TENANT = case_tenant()
     ))?;
     let stale_management = stale_management?;
     ensure!(

@@ -57,36 +57,48 @@ impl AckProxy {
 
 pub struct CommitGate {
     holder: std::process::Child,
+    name: String,
+    pid: i32,
 }
 impl CommitGate {
     pub async fn start(id: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let name = format!(
+            "{}_{}",
+            case::name("gate").replace('-', "_"),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         sql(&format!(
-            "CREATE FUNCTION public.hold_backend_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(238899); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER t2_hold_commit AFTER UPDATE ON mdm_software_release.aggregates DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.id='{id}') EXECUTE FUNCTION public.hold_backend_commit();"
+            "CREATE FUNCTION public.{name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(238899); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER {name} AFTER UPDATE ON mdm_software_release.aggregates DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.id='{id}') EXECUTE FUNCTION public.{name}();"
         ));
         let c = config();
-        let holder=std::process::Command::new("docker").args(["exec",c["container"].as_str().unwrap(),"psql","-At","-U","postgres","-d",c["database"].as_str().unwrap(),"-c","SET application_name='backend_ack_holder'; SELECT pg_advisory_lock(238899); SELECT pg_sleep(30)"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let holder=std::process::Command::new("docker").args(["exec",c["container"].as_str().unwrap(),"psql","-At","-U","postgres","-d",c["database"].as_str().unwrap(),"-c",&format!("SET application_name='{name}'; SELECT pg_advisory_lock(238899); SELECT pg_sleep(30)")]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
         wait_for(
-            "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=238899 AND granted",
+            "SELECT count(*) FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND objid=238899 AND granted",
         )
         .await;
-        Self { holder }
+        let pid = sql(&format!("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND application_name='{name}'")).parse().unwrap();
+        Self { holder, name, pid }
     }
     pub async fn entered(&self) {
-        wait_for("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=238899 AND NOT granted").await;
+        wait_for("SELECT count(*) FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND objid=238899 AND NOT granted").await;
     }
     pub fn release(&self) {
-        sql(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='backend_ack_holder'",
-        );
+        sql(&format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND pid={} AND application_name='{}'",
+            self.pid, self.name,
+        ));
     }
 }
 impl Drop for CommitGate {
     fn drop(&mut self) {
+        self.release();
         let _ = self.holder.kill();
         let _ = self.holder.wait();
-        sql(
-            "DROP TRIGGER t2_hold_commit ON mdm_software_release.aggregates; DROP FUNCTION public.hold_backend_commit()",
-        );
+        sql(&format!(
+            "DROP TRIGGER {name} ON mdm_software_release.aggregates; DROP FUNCTION public.{name}()",
+            name = self.name,
+        ));
     }
 }
 async fn wait_for(q: &str) {

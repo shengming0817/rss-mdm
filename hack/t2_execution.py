@@ -53,6 +53,26 @@ class Case:
         return hashlib.sha256(self.id.encode()).hexdigest()[:20]
 
 
+@dataclass(frozen=True)
+class Invocation:
+    module: Module
+    case: Case | None
+    invocation: int = 0
+
+    @property
+    def id(self):
+        return self.case.id if self.case else 'python/' + self.module.id
+
+    @property
+    def key(self):
+        return hashlib.sha256(f'{self.id}:{self.invocation}'.encode()).hexdigest()[:20]
+
+    @property
+    def policy(self):
+        return dict(profile=self.module.profile, dbMode=self.module.db_mode,
+                    scope=self.module.scope, fixtures=list(self.module.fixtures))
+
+
 def validate_ownership(document, build, modules):
     """Every ignored test is executed by exactly one public owner or declared caller."""
     modules = [module for module in modules if module.build == build]

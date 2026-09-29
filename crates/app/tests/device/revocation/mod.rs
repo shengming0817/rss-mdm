@@ -11,24 +11,23 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
         uuid::Uuid::new_v4(),
         uuid::Uuid::new_v4(),
     );
+    let device = case::name("revoke-device");
+    let locator = crate::test_support::secret("revoke-device")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
-    pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','{INSTANCE}','revoke-device','enrollment','consumed',clock_timestamp()+interval '200 seconds');
+    pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');
         INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','mdm.windows');
-        INSERT INTO mdm_access.devices VALUES('{TENANT}','revoke-device');
-        INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','revoke-device','mdm',1,'{request}','active');
-        INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm',repeat('c',64),'active');
-        INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);"))?;
-    let path = format!("/api/v3/devices/revoke-device/registrations/{registration}/revoke");
-    let listing = "/api/v3/devices/revoke-device/registrations";
+        INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');
+        INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active');
+        INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm','{locator}','active');
+        INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);", TENANT = case_tenant()))?;
+    let path = format!("/api/v3/devices/{device}/registrations/{registration}/revoke");
+    let listing = &format!("/api/v3/devices/{device}/registrations");
     let fixture = authority::Authority::open().await?;
     let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
-    set_device_grants(
-        &mut session.clone(),
-        &initial,
-        "revoke-device",
-        &["inventory_read"],
-    )
-    .await?;
+    set_device_grants(&mut session.clone(), &initial, device, &["inventory_read"]).await?;
     let denied = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
     let mut browser = session.clone();
     ensure!(browser.call(&denied, Method::GET, listing, None).await?.0 == StatusCode::FORBIDDEN);
@@ -40,7 +39,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    set_device_grants(&mut browser, &denied, "revoke-device", &["credentials"]).await?;
+    set_device_grants(&mut browser, &denied, device, &["credentials"]).await?;
     let allowed = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
     browser = session.clone();
     let listed = browser.call(&allowed, Method::GET, listing, None).await?;
@@ -90,7 +89,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
     for bad in [
         "/api/v3/enrollments/not-a-uuid/resume",
         "/api/v3/enrollments/not-a-uuid/cancel",
-        "/api/v3/devices/revoke-device/registrations/not-a-uuid/revoke",
+        "/api/v3/devices/{device}/registrations/not-a-uuid/revoke",
     ] {
         let response = browser
             .call(&allowed, Method::POST, bad, Some(json!({})))
@@ -146,7 +145,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_access.registrations r JOIN mdm_access.credentials c ON c.tenant_id=r.tenant_id AND c.registration=r.id JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.registration=r.id WHERE r.tenant_id='{TENANT}' AND r.id='{registration}' AND r.state='revoked' AND c.state='revoked' AND NOT s.enabled"
-        ))?.trim() == "1"
+        , TENANT = case_tenant()))?.trim() == "1"
     );
     ensure!(
         audit_count(|r| r.source() == "mdm.business"

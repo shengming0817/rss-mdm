@@ -1,5 +1,6 @@
 """Selection, preparation, concurrency and evidence contracts of the public MODULE runner."""
 from contextlib import contextmanager, ExitStack, redirect_stdout, redirect_stderr
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 import sys
@@ -15,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 import t2
 import t2_fixtures
 from t2_registry import MODULES
-from t2_execution import Case
+from t2_execution import Case, Processes
 
 
 class Selection(unittest.TestCase):
@@ -45,21 +46,38 @@ class Execution(unittest.TestCase):
     def harness(self, *, execute=None, discover=None):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             stack.enter_context(patch.object(t2, 'require_lease'))
+            stack.enter_context(patch.dict(MODULES, {name: replace(value, policies=()) for name, value in MODULES.items()}))
             stack.enter_context(patch.object(t2.shutil, 'which', return_value='/tool'))
             stack.enter_context(redirect_stdout(StringIO()))
             builds = stack.enter_context(patch.object(t2, 'Builds')).return_value
             builds.elapsed = 0
+            builds.processes = Processes()
             builds.discover.side_effect = discover or (lambda module: [
                 Case(module.build, module.id, Path('/leased/binary'), module.id + '::case')])
             builds.execute.side_effect = execute
             fixtures_type = stack.enter_context(patch.object(t2_fixtures, 'RunFixtures'))
             fixtures = fixtures_type.return_value.__enter__.return_value
             fixtures.counts = {}
+            fixtures.events = []
             @contextmanager
-            def scenario(module, output):
-                yield SimpleNamespace(env={'MODULE_ID': module.id})
+            def scenario(job, output):
+                yield SimpleNamespace(env={'MODULE_ID': job.module.id}, evidence={})
             fixtures.scenario.side_effect = scenario
             yield Path(directory), builds, fixtures_type, fixtures
+
+    def test_repeated_case_keeps_each_invocation_in_one_run(self):
+        seen = []
+        with self.harness(execute=lambda case, *_: seen.append(case.name)) as (root, builds, _, fixture):
+            first = Case(MODULES['agent.registration'].build, 'agent.registration', Path('/leased/binary'), 'agent.registration::case').id
+            second = Case(MODULES['enrollment.http'].build, 'enrollment.http', Path('/leased/binary'), 'enrollment.http::case').id
+            result = t2.run_modules(['agent.registration', 'enrollment.http'], root, jobs=1,
+                                    case_order=[first, second, first])
+            self.assertEqual(seen, ['agent.registration::case', 'enrollment.http::case', 'agent.registration::case'])
+            fixture.prepare.assert_called_once()
+            repeated = list(result['agent.registration']['cases'].values())
+            self.assertEqual(len(repeated), 2)
+            self.assertEqual(repeated[0]['caseId'], repeated[1]['caseId'])
+            self.assertNotEqual(repeated[0]['invocationId'], repeated[1]['invocationId'])
 
     def test_missing_dependencies_fail_before_build_and_service_start(self):
         with self.harness() as (root, builds, fixture_type, _), patch.object(t2.shutil, 'which', return_value=None):
@@ -108,13 +126,13 @@ class Execution(unittest.TestCase):
                 def scenario(module, output):
                     private(output / 'account-password', secret)
                     if phase == 'cleanup':
-                        yield SimpleNamespace(env={})
+                        yield SimpleNamespace(env={}, evidence={})
                     with diagnostic_phase(phase):
                         run([sys.executable, '-c',
                              'import sys; print("fixture stdout"); '
                              'print("fixture stderr", file=sys.stderr); raise SystemExit(2)'],
                             capture_output=True, timeout=3)
-                    yield SimpleNamespace(env={})
+                    yield SimpleNamespace(env={}, evidence={})
                 fixtures.scenario.side_effect = scenario
                 value = t2.run_modules(['sources.winget'], root)['sources.winget']
                 self.assertEqual(value['status'], 'failed')
@@ -142,9 +160,9 @@ class Execution(unittest.TestCase):
         @contextmanager
         def scenario(module, output):
             barrier.wait(timeout=3)
-            run([sys.executable, '-c', 'import sys; print(sys.argv[1]); raise SystemExit(2)', module.id],
+            run([sys.executable, '-c', 'import sys; print(sys.argv[1]); raise SystemExit(2)', module.module.id],
                 capture_output=True, timeout=3)
-            yield SimpleNamespace(env={})
+            yield SimpleNamespace(env={}, evidence={})
         with self.harness() as (root, _, _, fixtures):
             fixtures.scenario.side_effect = scenario
             names = ['agent.registration', 'agent.reports']
@@ -165,7 +183,7 @@ class Execution(unittest.TestCase):
                 run([sys.executable, '-c',
                      'import sys; print(' + repr(secret) + ', file=sys.stderr); raise SystemExit(2)'],
                     capture_output=True, timeout=3)
-                yield SimpleNamespace(env={})
+                yield SimpleNamespace(env={}, evidence={})
             fixtures.scenario.side_effect = scenario
             value = t2.run_modules(['sources.winget'], root)['sources.winget']
             case = next(iter(value['cases'].values()))
@@ -260,7 +278,7 @@ class Execution(unittest.TestCase):
                 t2.run_modules(['agent.registration', 'agent.reports'], root)
             fixture_type.assert_not_called()
 
-    def test_jobs_bound_module_concurrency_and_exclusive_phase_waits(self):
+    def test_jobs_bound_cases_and_fault_instance_overlaps_normal(self):
         ordinary = ['agent.registration', 'agent.reports']
         for jobs in (1, 2):
             with self.subTest(jobs=jobs):
@@ -271,28 +289,36 @@ class Execution(unittest.TestCase):
                     nonlocal active, peak
                     module = env['MODULE_ID']
                     with lock:
-                        if module == 'identity.local':
-                            self.assertEqual(completed, set(ordinary))
-                            self.assertEqual(active, 0)
                         active += 1
                         peak = max(peak, active)
-                    if module in ordinary and barrier:
+                    if module in ('agent.registration', 'identity.local') and barrier:
                         barrier.wait(timeout=3)
                     time.sleep(.01)
                     with lock:
                         active -= 1
                         completed.add(module)
                 with self.harness(execute=execute) as (root, _, _, fixtures):
-                    results = t2.run_modules([*ordinary, 'identity.local'], root, jobs=jobs)
+                    results = t2.run_modules(['agent.registration', 'identity.local', 'agent.reports'], root, jobs=jobs)
                     self.assertTrue(all(results[name]['status'] == 'passed' for name in [*ordinary, 'identity.local']))
                     self.assertEqual(peak, jobs)
-                    fixtures.reset.assert_called_once()
+                    fixtures.reset.assert_not_called()
+
+    def test_cases_from_one_module_overlap(self):
+        barrier = threading.Barrier(2)
+        def discover(module):
+            return [Case(module.build, module.id, Path('/leased/binary'), f'{module.id}::{n}')
+                    for n in range(2)]
+        def execute(*unused):
+            barrier.wait(timeout=3)
+        with self.harness(execute=execute, discover=discover) as (root, *_):
+            result = t2.run_modules(['agent.registration'], root, jobs=2)
+            self.assertEqual(result['agent.registration']['status'], 'passed')
 
     def test_python_scenarios_use_the_owned_logged_executor(self):
         with self.harness() as (root, builds, _, _):
             result = t2.run_modules(['gateway.admission'], root)
             builds.execute_python.assert_called_once()
-            case = result['gateway.admission']['cases']['python/gateway.admission']
+            case = next(iter(result['gateway.admission']['cases'].values()))
             self.assertTrue(case['log'].endswith('/test.log'))
             self.assertEqual(case['timeoutSeconds'], 600)
 

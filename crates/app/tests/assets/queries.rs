@@ -190,7 +190,8 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     );
     permissions(subject, None, true).await?;
     pg(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-c'),('{TENANT}','tie-a'),('{TENANT}','tie-b')"
+        "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-c'),('{TENANT}','tie-a'),('{TENANT}','tie-b')",
+        TENANT = case_tenant()
     ))?;
     for device in ["tie-c", "tie-a", "tie-b"] {
         ok(
