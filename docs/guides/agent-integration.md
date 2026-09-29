@@ -80,6 +80,6 @@ V4 基础库存接受 snapshot、partial、failed；通道状态使用独立的 
 
 ## #2534 的 V3 → V4 无兼容退出决定
 
-本次基线为 `1261f13`，V3 schema 指纹 `e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5`，V4 指纹 `0055de0870f0cd936e96ef3d46e5028b006f7ef84ad07830e21e529c1b5e8fba`。用户对 #2534 明确要求不向后兼容：V3 路由、schema、签名域和 capability 退出，所有 Agent 消费者须切换到 V4；不提供代理重写、双解码或旧执行许可。管理 HTTP API 的版本不随 Agent wire 一起变化。
+本次基线为 `1261f13`，V3 schema 指纹 `e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5`，V4 指纹 `925c5a7438f2a483fa280b5d5f8e26bcd451afa7d9a09c7a6129f37a155e40e0`。用户对 #2534 明确要求不向后兼容：V3 路由、schema、签名域和 capability 退出，所有 Agent 消费者须切换到 V4；不提供代理重写、双解码或旧执行许可。管理 HTTP API 的版本不随 Agent wire 一起变化。
 
 V4 共 13 个网络 shape，新增 ManagedRegistrationRequest，并扩展通道观察和标准注册入口任务。当前数据库安装准入只接受空库或完整当前账本，不提供旧 Agent 注册数据的在线转换。固定签名 MSI/公证 PKG 及真实系统证书使用分别由 #2535/#2536 和 #2480/#2481 验证；本次受控协议样本不证明生产安装包或真机已可用。

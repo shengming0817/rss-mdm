@@ -100,7 +100,10 @@ pub fn architecture(d: &Dictionary) -> Result<&'static str, Error> {
 pub enum Presence {
     Absent,
     Installing,
-    Installed { version: String },
+    /// Bundle/version presence cannot verify the signing team or package receipt.
+    PresentUnverified {
+        version: String,
+    },
 }
 pub fn presence(d: &Dictionary, bundle: &str) -> Result<Presence, Error> {
     let list = d
@@ -128,7 +131,7 @@ pub fn presence(d: &Dictionary, bundle: &str) -> Result<Presence, Error> {
     if !bounded(version) {
         return Err(Error::Malformed);
     }
-    Ok(Presence::Installed {
+    Ok(Presence::PresentUnverified {
         version: version.into(),
     })
 }

@@ -240,32 +240,19 @@ async fn receive(
         }
         (_, wire::Status::Error) => dc::DeviceEvent::Rejected,
         ("execute", wire::Status::Acknowledged) => dc::DeviceEvent::Received,
+        ("observe", wire::Status::Acknowledged)
+            if matches!(op.request.task, Task::AgentInstall { .. }) =>
+        {
+            // InstalledApplicationList cannot verify the pinned team or package receipt.
+            return Ok(());
+        }
         ("observe", wire::Status::Acknowledged) => {
-            if let Task::AgentInstall { package } = &op.request.task {
-                let policies::agent_install::Identity::Macos { bundle, .. } = &package.identity
-                else {
-                    return Err(Error::Unsupported.into());
-                };
-                if rss_mdm_apple_mdm::agent_install::presence(d, bundle).ok()
-                    != Some(rss_mdm_apple_mdm::agent_install::Presence::Installed {
-                        version: package.version.clone(),
-                    })
-                {
-                    return Ok(());
-                }
-                dc::DeviceEvent::Reported(
-                    op.request.digest(&service.tenant.to_string(), &op.device)?,
-                )
-            } else {
-                let (profile, present) = op.request.profile_target().ok_or(Error::Conflict)?;
-                let identifier = profile::identifier(&service.tenant.to_string(), &op.device);
-                if profile::presence(d, &identifier, profile).ok() != Some(present) {
-                    return Ok(());
-                }
-                dc::DeviceEvent::Reported(
-                    op.request.digest(&service.tenant.to_string(), &op.device)?,
-                )
+            let (profile, present) = op.request.profile_target().ok_or(Error::Conflict)?;
+            let identifier = profile::identifier(&service.tenant.to_string(), &op.device);
+            if profile::presence(d, &identifier, profile).ok() != Some(present) {
+                return Ok(());
             }
+            dc::DeviceEvent::Reported(op.request.digest(&service.tenant.to_string(), &op.device)?)
         }
         _ => return Err(Error::Conflict.into()),
     };
@@ -275,28 +262,6 @@ async fn receive(
         coordinate: op.coordinate,
         event,
     };
-    // Verified presence can arrive after a lost execute ACK. Advance command progress,
-    // while the separate native attempt still records delivery as unknown.
-    if matches!(op.request.task, Task::AgentInstall { .. })
-        && matches!(report.event, dc::DeviceEvent::Reported(_))
-        && service.required_command(tx, &op).await?.status() == dc::Status::Published
-        && service
-            .store
-            .report(
-                tx,
-                &dc::DeviceReport {
-                    scope: op.scope,
-                    command_id: op.command_id()?,
-                    coordinate: op.coordinate,
-                    event: dc::DeviceEvent::Received,
-                },
-            )
-            .await?
-            .outcome
-            == dc::Outcome::OutOfOrder
-    {
-        return Err(Error::Conflict.into());
-    }
     let transition = service.store.report(tx, &report).await?;
     if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());

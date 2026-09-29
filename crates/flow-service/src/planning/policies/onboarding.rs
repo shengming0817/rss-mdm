@@ -82,7 +82,9 @@ pub async fn state_in(
     match frozen {
         Frozen::AgentInstall { action } => {
             match fact.state.as_str() {
-                "installed" => return status(State::AlreadySatisfied),
+                "installed" if source == ReportSource::MdmWindows => {
+                    return status(State::AlreadySatisfied);
+                }
                 "absent" => (),
                 _ => return status(State::ChannelUnknown),
             }

@@ -438,7 +438,7 @@ pub async fn installation_observation(
                     Identity::Windows { product, publisher } => {
                         e.identity == product.to_string() && e.publisher.as_ref() == Some(publisher)
                     }
-                    Identity::Macos { bundle, .. } => e.identity == *bundle,
+                    Identity::Macos { .. } => false,
                 }
         })
     {
@@ -472,11 +472,6 @@ pub async fn installation_observation(
                 } else {
                     Err(rss_mdm_apple_mdm::Error::Malformed)
                 } {
-                    Ok(rss_mdm_apple_mdm::agent_install::Presence::Installed { version })
-                        if version == package.version =>
-                    {
-                        "installed"
-                    }
                     Ok(rss_mdm_apple_mdm::agent_install::Presence::Installing) => "installing",
                     Ok(rss_mdm_apple_mdm::agent_install::Presence::Absent) => "absent",
                     _ => "unknown",

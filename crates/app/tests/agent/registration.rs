@@ -7,7 +7,9 @@ use crate::test_support::*;
 #[ignore = "MODULE=agent.registration: capability binding, re-registration and commit recovery"]
 async fn registration_binding_and_replay() -> Result<()> {
     let fixture = authority::Authority::open().await?;
-    let owned_router = crate::test_support::agent::router(&fixture).await?;
+    let owned_router = app_with_access(&fixture.base, fixture.access.clone())
+        .await?
+        .0;
     let router = &owned_router;
     let mut session = fixture.browser("other")?;
     let browser = &mut session;
@@ -29,6 +31,28 @@ async fn registration_binding_and_replay() -> Result<()> {
             .0
             == StatusCode::NOT_FOUND
     );
+    for path in [
+        "/api/agent/v3/registrations",
+        "/api/agent/v3/reports",
+        "/api/agent/v3/tasks/claim",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(path)
+                    .header("host", "mdm.example.test")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {credential}"))
+                    .body(Body::from(r#"{"wireVersion":3}"#))?,
+            )
+            .await?;
+        ensure!(
+            response.status() == StatusCode::NOT_FOUND,
+            "retired Agent route survived: {path}"
+        );
+    }
     let mut unsupported_wire = registration_request.clone();
     unsupported_wire["wireVersion"] = json!(1);
     let response = agent_call(

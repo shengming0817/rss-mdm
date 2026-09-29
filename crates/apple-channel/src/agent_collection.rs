@@ -62,8 +62,8 @@ pub async fn receive(
     };
     let (state, version) = match presence {
         Some(wire::Presence::Absent) => (AgentInstallation::Absent, None),
-        Some(wire::Presence::Installed { version }) => {
-            (AgentInstallation::Installed, Some(version))
+        Some(wire::Presence::PresentUnverified { version }) => {
+            (AgentInstallation::Unknown, Some(version))
         }
         _ => (AgentInstallation::Unknown, None),
     };

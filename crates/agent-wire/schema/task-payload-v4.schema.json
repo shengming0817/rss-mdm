@@ -945,7 +945,7 @@
         "deviceId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 1024,
+          "maxLength": 256,
           "pattern": "^[^\\p{Cc}]+$"
         },
         "registrationId": {
@@ -985,7 +985,7 @@
         },
         "expiresAt": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 1,
           "maximum": 9223372036854775807
         },
         "platform": {

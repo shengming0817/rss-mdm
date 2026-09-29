@@ -69,3 +69,22 @@ fn complete_empty_query_is_absence_but_partial_and_installing_are_unknown() {
         .is_err()
     );
 }
+
+#[test]
+fn bundle_version_and_untrusted_team_field_do_not_verify_installation() {
+    let item = wire::dictionary([
+        ("Identifier", "com.rss.agent".into()),
+        ("Version", "1.2.3".into()),
+        ("TeamID", "RSS1234567".into()),
+    ]);
+    assert_eq!(
+        agent::presence(
+            &wire::dictionary([("InstalledApplicationList", Value::Array(vec![item.into()]))]),
+            "com.rss.agent"
+        )
+        .unwrap(),
+        agent::Presence::PresentUnverified {
+            version: "1.2.3".into()
+        }
+    );
+}

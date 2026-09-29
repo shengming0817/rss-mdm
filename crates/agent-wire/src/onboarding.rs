@@ -168,7 +168,7 @@ impl EnrollmentTaskSpec {
             || self.generation > i64::MAX as u64
             || self.expires_at <= 0
             || self.device_id.is_empty()
-            || self.device_id.len() > 256
+            || self.device_id.chars().count() > 256
             || self.device_id.chars().any(char::is_control)
             || key_id.is_empty()
             || key_id.len() > 128

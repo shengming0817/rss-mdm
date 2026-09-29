@@ -69,11 +69,19 @@ impl Config {
                 Err(Error::Malformed)
             };
         }
-        rss_mdm_agent_wire::EnrollmentEntry::Windows {
-            server: self.content_origin.clone(),
+        let origin = url::Url::parse(&self.content_origin).map_err(|_| Error::Malformed)?;
+        if self.content_origin.len() > 2048
+            || self.content_origin.chars().any(char::is_control)
+            || origin.scheme() != "https"
+            || origin.host_str().is_none()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+        {
+            return Err(Error::Malformed);
         }
-        .validate(rss_mdm_agent_wire::TaskPlatform::Windows)
-        .map_err(|_| Error::Malformed)?;
         for (target, pin) in &self.packages {
             pin.identity.validate()?;
             if target.parts().0 != pin.identity.platform()
@@ -458,3 +466,7 @@ pub async fn dispatch_ready_on(
     }
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "../../../tests/planning/agent_install_unit.rs"]
+mod tests;

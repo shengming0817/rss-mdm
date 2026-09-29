@@ -138,13 +138,18 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
                 protocol::dictionary([
                     ("Identifier", "com.rss.agent".into()),
                     ("Version", "1.2.3".into()),
+                    ("TeamID", "RSS1234567".into()),
                 ])
                 .into(),
             ]),
         )),
     )
     .await?;
-    ensure!(f.operation(operation).await?["commandStatus"] == "applied");
+    let state = f.operation(operation).await?;
+    ensure!(
+        state["observation"]["installation"] == "unknown" && state["commandStatus"] != "applied",
+        "unverified bundle promoted to installed: {state}"
+    );
     let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","mdm.enrollment.v4"]});
     let url = format!("{}/api/agent/v4/managed-registrations", peer.origin);
     for (field, value, code) in [
@@ -180,6 +185,12 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     ensure!(response.json::<serde_json::Value>().await? == receipt);
     ensure!(pg(&format!("SELECT count(*) FROM mdm_apple.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'",case_tenant()))?.trim()=="1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="1");
+    let state = f.operation(operation).await?;
+    ensure!(
+        state["observation"]["installation"] == "unknown"
+            && !state["observation"]["agentRegistration"].is_null(),
+        "{state}"
+    );
     let _ = install;
     ensure!(owner.shutdown().join().await?.is_clean());
     drop(device);
@@ -253,4 +264,55 @@ async fn next_after_cooldown(
         }
     })
     .await?
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "MODULE=apple.onboarding: native bundle evidence never verifies the publisher"]
+async fn collected_bundle_presence_remains_unknown() -> Result<()> {
+    let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let (platform, _) = peer.next("DeviceInformation").await?;
+    let bytes = peer
+        .manage(
+            "Acknowledged",
+            Some(platform),
+            Some((
+                "QueryResponses",
+                protocol::dictionary([
+                    ("OSVersion", "14.0".into()),
+                    ("IsAppleSilicon", true.into()),
+                ])
+                .into(),
+            )),
+        )
+        .await?;
+    let (query, _) = lifecycle::command(&bytes, "InstalledApplicationList")?;
+    peer.manage(
+        "Acknowledged",
+        Some(query),
+        Some((
+            "InstalledApplicationList",
+            plist::Value::Array(vec![
+                protocol::dictionary([
+                    ("Identifier", "com.rss.agent".into()),
+                    ("Version", "1.2.3".into()),
+                    ("TeamID", "RSS1234567".into()),
+                ])
+                .into(),
+            ]),
+        )),
+    )
+    .await?;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let value = pg(&format!("SELECT value FROM mdm.inventory WHERE tenant_id='{}' AND source='mdm.apple' AND field='channel.agent.installation'", case_tenant()))?;
+            if !value.trim().is_empty() {
+                ensure!(value.trim() == "unknown", "unverified native observation: {value}");
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await??;
+    drop(device);
+    f.close().await
 }

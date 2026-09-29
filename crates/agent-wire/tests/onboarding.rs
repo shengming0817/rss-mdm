@@ -52,3 +52,31 @@ fn managed_registration_has_no_device_identity_or_bearer_claim() {
     invalid["capabilities"] = json!(["inventory.basic.v4", "inventory.basic.v4"]);
     assert!(serde_json::from_value::<ManagedRegistrationRequest>(invalid).is_err());
 }
+
+#[test]
+fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
+    use rss_mdm_agent_wire::EnrollmentTaskSpec;
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../schema/task-payload-v4.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let tenant = Uuid::new_v4();
+    let base = json!({"wireVersion":4,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
+    for (field, value, expected) in [
+        ("expiresAt", json!(0), false),
+        ("expiresAt", json!(1), true),
+        ("deviceId", json!("a".repeat(256)), true),
+        ("deviceId", json!("a".repeat(257)), false),
+        ("deviceId", json!("界".repeat(256)), true),
+        ("deviceId", json!("界".repeat(257)), false),
+    ] {
+        let mut value_json = base.clone();
+        value_json[field] = value;
+        let task: EnrollmentTaskSpec = serde_json::from_value(value_json.clone()).unwrap();
+        assert_eq!(validator.is_valid(&value_json), expected, "schema: {field}");
+        assert_eq!(
+            task.signing_bytes("key").is_ok(),
+            expected,
+            "signing: {field}"
+        );
+    }
+}
