@@ -58,7 +58,7 @@ pub(crate) async fn create_enrollment(
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
     let attempt = store
-        .execute(
+        .write(
             rss_request_context::TenantId::parse(proof.tenant_id())
                 .map_err(|_| Error::Malformed)?,
             &control,
@@ -208,7 +208,7 @@ pub(crate) async fn change_enrollment(
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
     let attempt = store
-        .execute(
+        .write(
             rss_request_context::TenantId::parse(proof.tenant_id())
                 .map_err(|_| Error::Malformed)?,
             &control,

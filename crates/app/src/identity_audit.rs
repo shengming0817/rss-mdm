@@ -87,7 +87,7 @@ impl Worker {
         acquire(DynManagedResource::new_box(PoolResource(pool.clone())));
         let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(5));
         let control = budget.control();
-        tokio::time::timeout(control.remaining(), async {
+        tokio::time::timeout(control.total_remaining(), async {
             let mut connection = pool.acquire().await.map_err(|_| unavailable())?;
             verify_profile(&mut connection, config.audit.mode())
                 .await
@@ -171,7 +171,10 @@ impl Worker {
             // Do not race this call with cancellation: the component owns commit/rollback.
             let retry = match self
                 .delivery
-                .run_once(RelayBatchLimit::new(NonZeroUsize::MIN).expect("one event"))
+                .run_once(
+                    RelayBatchLimit::new(NonZeroUsize::new(2).expect("audit pool capacity"))
+                        .expect("bounded batch"),
+                )
                 .await
             {
                 Ok(report) => {

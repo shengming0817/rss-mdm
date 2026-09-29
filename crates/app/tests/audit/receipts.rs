@@ -4,7 +4,10 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let deadline = Deadline::from_timeout(&timer, Duration::from_secs(10))?;
-    let control = Control::new(&timer, deadline, &cancel);
+    let control = {
+        let cutoff = deadline;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let mode = integrity(ledger)?;
     let store = AuditStore::new(pool.clone(), mode, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
@@ -19,7 +22,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
         None,
     )?;
     let first = store
-        .execute(tenant, &control, (&store, &fact), |(store, fact), tx| {
+        .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move { store.append(tx, fact, false).await })
         })
         .await;
@@ -27,7 +30,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
     let original = bytes(pool, tenant).await?;
     ensure!(original.len() == 1);
     let replay = store
-        .execute(tenant, &control, (&store, &fact), |(store, fact), tx| {
+        .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move { store.append(tx, fact, true).await })
         })
         .await;
@@ -35,7 +38,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
     ensure!(bytes(pool, tenant).await? == original);
     // An absent business receipt cannot acquire a pre-existing audit fact.
     let inconsistent = store
-        .execute(tenant, &control, (&store, &fact), |(store, fact), tx| {
+        .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move { store.append(tx, fact, false).await })
         })
         .await;
@@ -49,7 +52,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
         None,
     )?;
     let conflict = store
-        .execute(tenant, &control, (&store, &changed), |(store, fact), tx| {
+        .write(tenant, &control, (&store, &changed), |(store, fact), tx| {
             Box::pin(async move { store.append(tx, fact, true).await })
         })
         .await;
@@ -63,7 +66,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
         None,
     )?;
     let missing = store
-        .execute(tenant, &control, (&store, &missing), |(store, fact), tx| {
+        .write(tenant, &control, (&store, &missing), |(store, fact), tx| {
             Box::pin(async move { store.append(tx, fact, true).await })
         })
         .await;
@@ -77,7 +80,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
         None,
     )?;
     let rollback = store
-        .execute(
+        .write(
             tenant,
             &control,
             (&store, &rollback),
@@ -98,11 +101,10 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
 async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(30))?,
-        &cancel,
-    );
+    let control = {
+        let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(30))?;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let request = RequestAudit::new(tenant.to_string(), "collection_finish");
@@ -121,13 +123,12 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut original = None;
     for replayed in [false, true] {
-        let control = Control::new(
-            &timer,
-            Deadline::from_timeout(&timer, Duration::from_secs(30))?,
-            &cancel,
-        );
+        let control = {
+            let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(30))?;
+            Control::new(&timer, cutoff, cutoff, &cancel)
+        };
         let attempt = store
-            .execute(tenant, &control, (&store, &facts), |(store, facts), tx| {
+            .write(tenant, &control, (&store, &facts), |(store, facts), tx| {
                 Box::pin(async move {
                     for fact in facts.iter() {
                         store.append(tx, fact, replayed).await?;

@@ -221,6 +221,9 @@ async fn receive_capabilities(
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
+                    crate::worker_wake::notify(c, crate::worker_wake::Work::CommandRecovery)
+                        .await
+                        .map_err(db)?;
                 }
             }
         }

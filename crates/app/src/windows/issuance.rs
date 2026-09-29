@@ -172,11 +172,11 @@ pub(super) async fn complete_issuance(
         digest: &digest,
     };
     let budget = crate::audit_budget::AuditBudget::retirement(None);
-    let operation_control = budget.operation_control();
+    let control = budget.control();
     let attempt = store
-        .execute_with_operation(
+        .write(
             TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-            &operation_control,
+            &control,
             (
                 store,
                 CompletionInputs {

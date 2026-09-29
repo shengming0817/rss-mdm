@@ -56,29 +56,35 @@ impl Automation {
             store,
         }))
     }
-    pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
+    pub(crate) fn registration(
+        self: Arc<Self>,
+        signals: Arc<crate::worker_wake::Signals>,
+    ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) =
             rss_runtime::ManagedTask::prepare("mdm-asset-automation", Duration::from_secs(8));
         let _ = self.service.automation_task.set(status);
         task.into_registration(move |cancel|async move {
             let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&cancel);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:4,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),
+                concurrency:4,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.assets").expect("constant domain");
-            let runner=async {rss_reconcile::run(self.as_ref(),self.as_ref(),&scope,policy,&control,|event| {
+            let runner=async {rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,signals.get(crate::worker_wake::Work::Automation),|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
             let bridge=async {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
-                    let result=async {self.service.forward_asset_changes().await?;jobs::forward_jobs(&self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(())}.await;
-                    let delay=if let Err(error)=result {
-                        eprintln!("{}",serde_json::json!({"event":"mdm_automation_bridge_failure","reason":format!("{error:?}")}));
-                        Duration::from_secs(1)
-                    }else{Duration::from_millis(50)};
-                    tokio::select! {()=cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(delay)=>{}}
+                    let result=async {let assets=self.service.forward_asset_changes().await?;let jobs=jobs::forward_jobs(&self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+jobs as u64)}.await;
+                    match result {
+                        Ok(count) if count > 0 => continue,
+                        Ok(_) => crate::worker_wake::wait(signals.get(crate::worker_wake::Work::AutomationInput), &cancel, None).await,
+                        Err(error) => {
+                            eprintln!("{}",serde_json::json!({"event":"mdm_automation_bridge_failure","reason":format!("{error:?}")}));
+                            tokio::select! {()=cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(1))=>{}}
+                        }
+                    }
                 }
             };
             tokio::try_join!(runner,bridge).map(|_|())

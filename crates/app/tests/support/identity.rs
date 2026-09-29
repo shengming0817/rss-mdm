@@ -84,7 +84,7 @@ fn save(root: &std::path::Path, tenant: &str, login: &str, secret: &SessionSecre
 }
 #[tokio::test]
 #[ignore = "make t2: prepare real case accounts once per compatible environment"]
-async fn seed_accounts() -> Result<()> {
+async fn prepare_identity() -> Result<()> {
     use super::case::{CaseContext, Phase};
     use base64::Engine;
     use ring::signature::KeyPair;
@@ -92,6 +92,7 @@ async fn seed_accounts() -> Result<()> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Setup {
+        stage: PreparationStage,
         tenants: Vec<String>,
         cases: Vec<std::path::PathBuf>,
     }
@@ -99,6 +100,9 @@ async fn seed_accounts() -> Result<()> {
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_IDENTITY_SETUP")?)?)?;
     let config_path = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
     let root = config_path.parent().unwrap();
+    if matches!(manifest.stage, PreparationStage::Sessions) {
+        return prepare_sessions(&manifest.cases, root).await;
+    }
     let pkcs8 =
         ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
     let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
@@ -211,12 +215,6 @@ async fn seed_accounts() -> Result<()> {
                     .await?;
                 }
                 costs.push(json!({"phase":"identity-accounts","count":1,"tenant":tenant,"invocationId":context.invocation_id(),"seconds":rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer).saturating_duration_since(started).as_secs_f64()}));
-                let started = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
-                phase = "login-account";
-                let secret = login_named(&identity, &name).await?;
-                phase = "save-session";
-                save(path.parent().unwrap(), tenant, kind, &secret)?;
-                costs.push(json!({"phase":"identity-sessions","count":1,"tenant":tenant,"invocationId":context.invocation_id(),"seconds":rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer).saturating_duration_since(started).as_secs_f64()}));
                 Ok(subject)
                 }.await;
                 let subject = prepared.with_context(|| {
@@ -244,6 +242,42 @@ async fn seed_accounts() -> Result<()> {
         &serde_json::to_vec(&costs)?,
     )?;
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PreparationStage {
+    Accounts,
+    Sessions,
+}
+async fn prepare_sessions(cases: &[std::path::PathBuf], root: &std::path::Path) -> Result<()> {
+    use super::case::{CaseContext, Phase};
+    let mut costs = Vec::new();
+    for path in cases {
+        let context = CaseContext::read(path, Phase::Ready)?;
+        for tenant in context.identity_tenants() {
+            let identity = identity_with(configured(tenant, context.admin_for(tenant))?).await?;
+            for kind in ["admin", "other"] {
+                let started = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
+                let secret = login_named(&identity, context.account_login(kind))
+                    .await
+                    .with_context(|| {
+                        preparation_coordinate(
+                            tenant,
+                            context.invocation_id(),
+                            kind,
+                            "login-account",
+                        )
+                    })?;
+                save(path.parent().unwrap(), tenant, kind, &secret)?;
+                costs.push(serde_json::json!({"phase":"identity-sessions","count":1,"tenant":tenant,"invocationId":context.invocation_id(),"seconds":rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer).saturating_duration_since(started).as_secs_f64()}));
+            }
+        }
+    }
+    write(
+        &root.join("identity-costs.json"),
+        &serde_json::to_vec(&costs)?,
+    )
 }
 
 fn preparation_coordinate(tenant: &str, invocation: &str, kind: &str, phase: &str) -> String {

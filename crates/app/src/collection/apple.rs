@@ -47,7 +47,7 @@ pub(crate) async fn create(
     let control = budget.control();
     let attempt = app
         .audit_store
-        .execute(
+        .write(
             app.tenant,
             &control,
             (
@@ -153,6 +153,12 @@ async fn create_on(
         .bind(serde_json::to_string(&Attempts::default()).expect("closed attempts")).bind(serde_json::to_string(&approval).expect("closed approval")).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,deadline) SELECT tenant_id,id,registration,$3,id,'collect',$4,'pending',apple_deadline FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(tenant).bind(id.to_string()).bind(row.try_get::<i64,_>("generation").map_err(db)?).bind(request).execute(&mut *tx).await.map_err(db)?;
+    crate::worker_wake::notify(tx, crate::worker_wake::Work::Inventory)
+        .await
+        .map_err(db)?;
+    crate::worker_wake::notify(tx, crate::worker_wake::Work::Apple)
+        .await
+        .map_err(db)?;
     let receipt = serde_json::json!({"runId":id,"result":"pending"});
     proof.check_live()?;
     crate::operations::save(tx, &operation, &receipt.to_string(), audit).await?;
@@ -163,9 +169,10 @@ pub(crate) async fn expire(
     c: &mut PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     let ids=sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline<=clock_timestamp() ORDER BY apple_deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
         .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
+    let count = ids.len();
     for id in ids {
         let mut run = store::load_on(
             c,
@@ -175,7 +182,7 @@ pub(crate) async fn expire(
         .await?;
         facts.extend(store::seal(c, &mut run, "timeout").await?);
     }
-    Ok(())
+    Ok(count)
 }
 async fn approved(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, Error> {
     let row=sqlx::query("SELECT apple_approval::text,apple_deadline>clock_timestamp() AND sealed_at IS NULL AND EXISTS(SELECT 1 FROM mdm_access.report_sources s WHERE (s.tenant_id,s.registration,s.source,s.epoch)=(collection_runs.tenant_id,collection_runs.registration,collection_runs.source,collection_runs.epoch) AND s.enabled) AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE")
@@ -240,10 +247,16 @@ pub(crate) async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Ve
         let id = uuid(&row, "id")?;
         if !approved(c, &tenant, id).await? {
             sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
+            crate::worker_wake::notify(c, crate::worker_wake::Work::Apple)
+                .await
+                .map_err(db)?;
             continue;
         }
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
             .bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
+        crate::worker_wake::notify(c, crate::worker_wake::Work::Apple)
+            .await
+            .map_err(db)?;
         return row.try_get("request").map_err(db);
     }
     Ok(Vec::new())

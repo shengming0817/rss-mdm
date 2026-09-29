@@ -75,7 +75,12 @@ impl Attempt {
             Status::Idle => return Err(Error::Malformed),
         };
         sqlx::query("UPDATE mdm_apple.attempts SET state=$3,response=$4,response_digest=$5,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
-            .bind(self.tenant).bind(self.id.to_string()).bind(state).bind(self.bytes).bind(self.digest).execute(c).await.map_err(db)?;
+            .bind(self.tenant).bind(self.id.to_string()).bind(state).bind(self.bytes).bind(self.digest).execute(&mut *c).await.map_err(db)?;
+        if status == Status::NotNow {
+            crate::worker_wake::notify(c, crate::worker_wake::Work::Apple)
+                .await
+                .map_err(db)?;
+        }
         Ok(())
     }
 }

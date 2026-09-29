@@ -21,7 +21,6 @@ sha2.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros"] }
-tokio-util.workspace = true
 futures.workspace = true
 
 [features]

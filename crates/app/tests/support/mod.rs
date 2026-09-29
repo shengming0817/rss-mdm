@@ -344,8 +344,17 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::automation::Resource(automation.clone()),
     ));
+    let notifications = crate::worker_wake::Listener::new(
+        config.access_database.options()?,
+        rss_request_context::TenantId::parse(case_tenant())?,
+    );
+    let signals = notifications.signals.clone();
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        notifications.clone(),
+    ));
     let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(automation.registration().critical());
+    launch.stage_task_with_token(notifications.registration().critical());
+    launch.stage_deferred_task_with_token(automation.registration(signals).critical());
     launch.finish();
     Ok(Some(stack))
 }

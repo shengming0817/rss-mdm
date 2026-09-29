@@ -348,7 +348,11 @@ async fn commit_deadlines(
         };
         service.audit_store.inject_next_fault(fault);
         let result = service.bind(admin, &credential, command.clone()).await;
-        outcomes.push(matches!(result, Err(Error::CommitUnknown)));
+        outcomes.push(if committed {
+            matches!(result, Err(Error::CommitUnknown))
+        } else {
+            matches!(result, Err(Error::RollbackFailed))
+        });
         let stored: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
         )
@@ -364,7 +368,11 @@ async fn commit_deadlines(
         let result = service
             .revoke(admin, &device, receipt.registration, key)
             .await;
-        outcomes.push(matches!(result, Err(Error::CommitUnknown)));
+        outcomes.push(if committed {
+            matches!(result, Err(Error::CommitUnknown))
+        } else {
+            matches!(result, Err(Error::RollbackFailed))
+        });
         let stored: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
         )
@@ -384,7 +392,7 @@ async fn commit_deadlines(
     }
     assert_eq!(
         outcomes, [true; 4],
-        "bind/revoke must preserve unknown for both possible commit results"
+        "bind/revoke must distinguish unattempted COMMIT from unknown commit"
     );
     Ok(())
 }

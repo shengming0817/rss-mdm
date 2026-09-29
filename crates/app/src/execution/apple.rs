@@ -338,6 +338,7 @@ async fn send_one(
         sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds')")
             .bind(tenant).bind(id.to_string()).bind(registration).bind(generation).bind(operation).bind(phase).bind(request).bind(deadline as f64).execute(c).await?;Ok(())
     })).await?;
+    crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
     Ok(Some(bytes))
 }
 fn payload(
@@ -370,5 +371,6 @@ async fn mark_sent(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
     tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).execute(c).await?;Ok(())
     })).await?;
+    crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
     Ok(())
 }

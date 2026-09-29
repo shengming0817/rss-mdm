@@ -91,6 +91,7 @@ pub async fn serve(
                         execution,
                         automation,
                         identity_audit,
+                        notifications,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
                             crate::Database::connect(
@@ -104,6 +105,23 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(AccessResource(
                             access.clone(),
                         )));
+                        let notifications = crate::worker_wake::Listener::new(
+                            compiled
+                                .config
+                                .access_database
+                                .options()
+                                .map_err(|e| ProcessError::at("startup.notifications", e))?,
+                            rss_request_context::TenantId::parse(
+                                &compiled.config.identity.tenant_id,
+                            )
+                            .map_err(|_| {
+                                ProcessError::at(
+                                    "startup.notification_tenant",
+                                    crate::Error::Malformed,
+                                )
+                            })?,
+                        );
+                        startup.stage_resource(DynManagedResource::new_box(notifications.clone()));
                         use crate::inventory_runtime::{
                             Clock, InventoryRuntime, ObservationResource, ProjectionResource,
                         };
@@ -268,6 +286,7 @@ pub async fn serve(
                             execution,
                             automation,
                             identity_audit,
+                            notifications,
                         ))
                     })
                     .await
@@ -275,7 +294,9 @@ pub async fn serve(
                         stage: "startup",
                         kind: "total deadline exceeded",
                     })??;
+                    let signals = notifications.signals.clone();
                     let mut launch = startup.commit();
+                    launch.stage_task_with_token(notifications.registration().critical());
                     if let Some(apple) = app.apple {
                         launch.stage_task_with_token(
                             crate::apple::push::registration(
@@ -284,14 +305,21 @@ pub async fn serve(
                                 access.clone(),
                                 audit_store.clone(),
                                 tenant.clone(),
+                                signals.clone(),
                             )
                             .critical(),
                         );
                     }
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
-                    launch.stage_deferred_task_with_token(execution.registration().critical());
-                    launch.stage_deferred_task_with_token(automation.registration().critical());
-                    launch.stage_deferred_task_with_token(runtime.registration().critical());
+                    launch.stage_deferred_task_with_token(
+                        execution.registration(signals.clone()).critical(),
+                    );
+                    launch.stage_deferred_task_with_token(
+                        automation.registration(signals.clone()).critical(),
+                    );
+                    launch.stage_deferred_task_with_token(
+                        runtime.registration(signals.clone()).critical(),
+                    );
                     if native_listeners
                         .iter()
                         .any(|(kind, _, _)| kind.windows_retention())
@@ -301,6 +329,7 @@ pub async fn serve(
                                 access.clone(),
                                 audit_store.clone(),
                                 tenant.clone(),
+                                signals.clone(),
                             )
                             .critical(),
                         );

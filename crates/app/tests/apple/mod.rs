@@ -37,6 +37,7 @@ struct Fixture {
     browser: Browser,
     router: Router,
     owner: rss_runtime::ShutdownStack,
+    signals: Arc<crate::worker_wake::Signals>,
     root: PathBuf,
     lose_notify: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -181,11 +182,21 @@ impl Fixture {
             router: hooks.layer(axum::middleware::from_fn(native::admission::admit)),
         };
         let mut owner = rss_runtime::ShutdownStack::try_new(
-            rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
+        let notifications = crate::worker_wake::Listener::new(
+            crate::device::test_support::options("mdm_access")?,
+            rss_request_context::TenantId::parse(case_tenant())?,
+        );
+        let signals = notifications.signals.clone();
         {
-            let mut launch = owner.startup()?.commit();
+            let mut startup = owner.startup()?;
+            startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+                notifications.clone(),
+            ));
+            let mut launch = startup.commit();
+            launch.stage_task_with_token(notifications.registration().critical());
             launch.stage_task_with_token(
                 tls::registration(
                     manage,
@@ -210,8 +221,9 @@ impl Fixture {
                 )
                 .critical(),
             );
-            launch.stage_deferred_task_with_token(execution.registration().critical());
-            launch.stage_deferred_task_with_token(runtime.registration().critical());
+            launch
+                .stage_deferred_task_with_token(execution.registration(signals.clone()).critical());
+            launch.stage_deferred_task_with_token(runtime.registration(signals.clone()).critical());
             launch.finish();
         }
         crate::test_support::identity::set_grants(
@@ -242,6 +254,7 @@ impl Fixture {
             browser,
             router,
             owner,
+            signals,
             root,
             lose_notify,
         })

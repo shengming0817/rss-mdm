@@ -1,6 +1,8 @@
 use crate::{Fact, InvalidFact};
 use rss_audit_core::PreparedAuditV1;
-use rss_audit_postgres::{AuditTransaction, Control, Integrity, PgAudit, Record};
+use rss_audit_postgres::{
+    Control, Integrity, PgAudit, ReadAuditTransaction, Record, WriteAuditTransaction,
+};
 use rss_contract::Timepoint;
 use rss_request_context::ExecutionTimer;
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
@@ -58,7 +60,7 @@ impl AuditStore {
         integrity: Integrity,
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
-        let mut connection = tokio::time::timeout(control.remaining(), pool.acquire())
+        let mut connection = tokio::time::timeout(control.total_remaining(), pool.acquire())
             .await
             .map_err(|_| {
                 rss_audit_postgres::Error::Deadline(
@@ -66,7 +68,7 @@ impl AuditStore {
                 )
             })??;
         let isolation =
-            tokio::time::timeout(control.remaining(), admit_receipts(&mut connection)).await;
+            tokio::time::timeout(control.total_remaining(), admit_receipts(&mut connection)).await;
         match isolation {
             Ok(result) => result?,
             Err(_) => {
@@ -94,7 +96,7 @@ impl AuditStore {
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
         let ledger = self.ledger;
-        self.execute(tenant, control, (), move |_, tx| {
+        self.read(tenant, control, (), move |_, tx| {
             Box::pin(async move {
                 let page = tx
                     .read_page(
@@ -145,8 +147,8 @@ impl AuditStore {
         }
         Ok(())
     }
-    /// Run product SQL under Audit then optional Ledger locks, using the component owner.
-    pub async fn execute<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
+    /// Read under the Audit owner without creating or locking Audit/Ledger heads.
+    pub async fn read<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
         &self,
         tenant: rss_request_context::TenantId,
         control: &Control<'_, T>,
@@ -159,12 +161,12 @@ impl AuditStore {
     where
         F: for<'a> FnOnce(
                 &'a mut C,
-                &'a mut AuditTransaction<'_, '_, '_, T>,
+                &'a mut ReadAuditTransaction<'_, '_, '_, T>,
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
         self.adapter
-            .local_tx_with_context(
+            .read_tx_with_context(
                 tenant,
                 control,
                 (context, Some(operation)),
@@ -173,7 +175,6 @@ impl AuditStore {
                         tx.with_connection(|c| Box::pin(admit_receipts(c)))
                             .await
                             .map_err(E::from)?;
-                        tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
                         let operation = operation
                             .take()
                             .expect("component invokes its transaction callback once");
@@ -183,20 +184,11 @@ impl AuditStore {
             )
             .await
     }
-    /// Cap product work by the owner's total cutoff, then await the owner's settlement.
-    /// Select an earlier operation deadline to reserve settlement time.
-    /// Only cancels the borrowed callback, never the enclosing transaction future. Provider
-    /// acquisition/setup remain subject to its total cutoff and may have an unconfirmed rollback.
-    pub async fn execute_with_operation<
-        T: ExecutionTimer,
-        C: Send,
-        R: Send,
-        E: Send + From<Error>,
-        F,
-    >(
+    /// Run product SQL under Audit then optional Ledger locks, using the component owner.
+    pub async fn write<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
         &self,
         tenant: rss_request_context::TenantId,
-        budget: &crate::OperationBudget<'_, T>,
+        control: &Control<'_, T>,
         context: C,
         operation: F,
     ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
@@ -206,27 +198,24 @@ impl AuditStore {
     where
         F: for<'a> FnOnce(
                 &'a mut C,
-                &'a mut AuditTransaction<'_, '_, '_, T>,
+                &'a mut WriteAuditTransaction<'_, '_, '_, T>,
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        let total = budget.owner();
         self.adapter
-            .local_tx_with_context(
+            .write_tx_with_context(
                 tenant,
-                &total,
-                (context, Some(operation), budget),
-                |(context, operation, budget), tx| {
+                control,
+                (context, Some(operation)),
+                |(context, operation), tx| {
                     Box::pin(async move {
-                        budget
-                            .run(async {
-                                tx.with_connection(|c| Box::pin(admit_receipts(c)))
-                                    .await
-                                    .map_err(E::from)?;
-                                tx.lock_head().await.map_err(Error::from).map_err(E::from)?;
-                                operation.take().expect("one owner callback")(context, tx).await
-                            })
+                        tx.with_connection(|c| Box::pin(admit_receipts(c)))
                             .await
+                            .map_err(E::from)?;
+                        let operation = operation
+                            .take()
+                            .expect("component invokes its transaction callback once");
+                        operation(context, tx).await
                     })
                 },
             )
@@ -271,7 +260,7 @@ impl AuditStore {
         rss_audit_postgres::Committed<()>,
         rss_audit_postgres::TransactionError<Error>,
     > {
-        self.execute(
+        self.write(
             fact.identity().tenant(),
             control,
             (self, fact),
@@ -285,7 +274,7 @@ impl AuditStore {
     /// use `settle_request` instead after a separate business transaction has ended.
     pub async fn append_request<T: ExecutionTimer>(
         &self,
-        tx: &mut AuditTransaction<'_, '_, '_, T>,
+        tx: &mut WriteAuditTransaction<'_, '_, '_, T>,
         request: &crate::RequestAudit,
         status: u16,
         result: &str,
@@ -293,13 +282,13 @@ impl AuditStore {
         let fact = Fact::request(request, status, result)?;
         self.append_checked(tx, &fact, None).await
     }
-    /// Stage a business fact inside `execute`; head locks must already precede business locks.
+    /// Stage a business fact inside `write`; head locks must already precede business locks.
     /// `replayed` must reflect the producer's actual locked business receipt. A mismatched pair
     /// is an integrity failure, never permission to reconstruct or overwrite an event.
     /// Return errors to the original owner; this result is not a commit receipt.
     pub async fn append<T: ExecutionTimer>(
         &self,
-        tx: &mut AuditTransaction<'_, '_, '_, T>,
+        tx: &mut WriteAuditTransaction<'_, '_, '_, T>,
         fact: &Fact,
         replayed: bool,
     ) -> Result<(), Error> {
@@ -310,7 +299,7 @@ impl AuditStore {
     // erased writer/transaction trait that could expose a second settlement path.
     async fn append_checked<T: ExecutionTimer>(
         &self,
-        tx: &mut AuditTransaction<'_, '_, '_, T>,
+        tx: &mut WriteAuditTransaction<'_, '_, '_, T>,
         fact: &Fact,
         existing: Option<bool>,
     ) -> Result<(), Error> {

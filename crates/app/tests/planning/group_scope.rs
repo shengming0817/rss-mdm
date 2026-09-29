@@ -14,6 +14,13 @@ async fn durable_asset_group_scope_pipeline() {
         .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
+    let notifications = crate::worker_wake::Listener::new(
+        options
+            .clone()
+            .username("mdm_access")
+            .password("access-fixture"),
+        service.tenant,
+    );
     let automation =
         crate::automation::Automation::connect(service.clone(), assets(&service).await, options)
             .await
@@ -67,8 +74,18 @@ async fn durable_asset_group_scope_pipeline() {
         Arc::new(crate::lifecycle::RuntimeTimer),
     )
     .unwrap();
-    let mut launch = stack.startup().unwrap().commit();
-    launch.stage_deferred_task_with_token(automation.clone().registration().critical());
+    let mut startup = stack.startup().unwrap();
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        notifications.clone(),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_task_with_token(notifications.clone().registration().critical());
+    launch.stage_deferred_task_with_token(
+        automation
+            .clone()
+            .registration(notifications.signals.clone())
+            .critical(),
+    );
     launch.finish();
     let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
     assert_eq!(

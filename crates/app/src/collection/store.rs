@@ -277,6 +277,11 @@ pub(super) async fn seal(
     if changed == 0 {
         return Ok(None);
     }
+    if batch.is_some() {
+        crate::worker_wake::notify(tx, crate::worker_wake::Work::Inventory)
+            .await
+            .map_err(db)?;
+    }
     // The terminal fact is audited in the caller's transaction. Its owner records commit
     // uncertainty (HTTP envelope or retention task); this helper never commits independently.
     let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -419,26 +424,53 @@ impl Delivery {
         }
     }
     pub(crate) async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
+        let mut tx = self.database.begin_read(tenant).await?;
+        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
+            .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
+        tx.rollback().await.map_err(db)?;
+        rows.into_iter().map(durable_report).collect()
+    }
+    pub(crate) async fn expire_apple(&self, tenant: &str) -> Result<usize, Error> {
+        let mut hint = self.database.begin_read(tenant).await?;
+        let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline<=clock_timestamp())")
+            .bind(tenant).fetch_one(&mut *hint).await.map_err(db)?;
+        hint.rollback().await.map_err(db)?;
+        if !due {
+            return Ok(0);
+        }
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
         audit.identify_service("service:inventory-delivery");
-        let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
+        let budget = crate::audit_budget::AuditBudget::retirement(None);
         let control = budget.control();
-        let attempt = self.audit_store.execute(
-            rss_request_context::TenantId::parse(tenant).map_err(|_| corrupt())?, &control,
-            (&self.audit_store, tenant, &audit), |(store, tenant, audit), tx| Box::pin(async move {
-                let mut facts = Vec::new();
-                let reports = tx.with_connection_context(&mut (*tenant, &mut facts), |(tenant, facts), c| Box::pin(async move {
-                    crate::collection::apple::expire(c, facts, tenant).await?;
-                    let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
-                        .bind(*tenant).fetch_all(c).await.map_err(db)?;
-                    rows.into_iter().map(durable_report).collect::<Result<Vec<_>, Error>>()
-                })).await?;
-                for fact in &facts { store.append(tx, fact, false).await.map_err(Error::from)?; }
-                audit.mark_commit_started();
-                Ok(reports)
-            }),
-        ).await;
+        let attempt = self
+            .audit_store
+            .write(
+                rss_request_context::TenantId::parse(tenant).map_err(|_| corrupt())?,
+                &control,
+                (&self.audit_store, tenant, &audit),
+                |(store, tenant, audit), tx| {
+                    Box::pin(async move {
+                        let mut facts = Vec::new();
+                        let count = tx
+                            .with_connection_context(
+                                &mut (*tenant, &mut facts),
+                                |(tenant, facts), c| {
+                                    Box::pin(async move {
+                                        crate::collection::apple::expire(c, facts, tenant).await
+                                    })
+                                },
+                            )
+                            .await?;
+                        for fact in &facts {
+                            store.append(tx, fact, false).await.map_err(Error::from)?;
+                        }
+                        audit.mark_commit_started();
+                        Ok(count)
+                    })
+                },
+            )
+            .await;
         let result = crate::operations::settle(attempt, &audit);
         audit.finalize(
             result
@@ -447,6 +479,16 @@ impl Delivery {
                 .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
         );
         result
+    }
+    pub(crate) async fn next_expiry(
+        &self,
+        tenant: &str,
+    ) -> Result<Option<std::time::Duration>, Error> {
+        let mut tx = self.database.begin_read(tenant).await?;
+        let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(apple_deadline)-clock_timestamp())*1000)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline>clock_timestamp()")
+            .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
+        tx.rollback().await.map_err(db)?;
+        Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
     }
     pub(crate) async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
         let mut tx = self

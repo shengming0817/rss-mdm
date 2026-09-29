@@ -68,5 +68,8 @@ pub(crate) async fn accept_in(
         .bind(i64::try_from(input.sequence()).map_err(|_| Error::Malformed)?).bind(scope.encode().map_err(|_| Error::Malformed)?)
         .bind(batch.encode()).bind(&digest).bind(received_at).bind(result)
         .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
+    crate::worker_wake::notify(tx, crate::worker_wake::Work::Inventory)
+        .await
+        .map_err(db)?;
     Ok((received_at, true))
 }

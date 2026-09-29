@@ -44,6 +44,19 @@ impl Database {
         Self::configure_transaction(&mut tx, tenant).await?;
         Ok(tx)
     }
+    /// Pure work discovery uses the normal tenant boundary without Audit head ownership.
+    pub(crate) async fn begin_read(
+        &self,
+        tenant: &str,
+    ) -> Result<Transaction<'_, Postgres>, Error> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SET TRANSACTION READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        Self::configure_transaction(&mut tx, tenant).await?;
+        Ok(tx)
+    }
     pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
         self.pool.acquire().await.map_err(db)
     }

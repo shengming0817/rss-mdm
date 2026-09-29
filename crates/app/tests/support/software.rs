@@ -1,6 +1,23 @@
 //! Real HTTP preparation for content and software adapters; no behavior matrix runs here.
 use super::*;
 use uuid::Uuid;
+// Only fixture preparation is serialized; business contention tests use the API directly.
+// The file belongs to the shared content environment and coordinates separate test processes.
+pub(crate) async fn content_setup_guard() -> Result<std::fs::File> {
+    let config: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let directory = std::path::PathBuf::from(config["content"]["directory"].as_str().unwrap());
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.join(".t2-content-setup.lock"))?;
+        file.lock()?;
+        Ok(file)
+    })
+    .await?
+}
 pub(crate) struct HttpServer(tokio::task::JoinHandle<std::io::Result<()>>);
 impl Drop for HttpServer {
     fn drop(&mut self) {
@@ -153,6 +170,7 @@ pub(crate) async fn create_software_version(
 }
 impl Fixture {
     pub(crate) async fn seed_content(&self, bytes: &[u8]) -> Result<rss_mdm_resource::Artifact> {
+        let _guard = content_setup_guard().await?;
         let mut user = self.user.clone();
         let definition =
             publication_support::private_definition(self.registered["snapshot"].clone(), bytes);

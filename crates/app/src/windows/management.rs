@@ -111,15 +111,7 @@ pub(crate) async fn management_on(
     let digest = format!("{:x}", Sha256::digest(bytes));
     let tx = conn;
     let scope = crate::device::store::revalidate(tx, principal).await?;
-    // One registration lock orders nonce changes across sessions and restarts.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2351))")
-        .bind(format!("{tenant}:{registration}"))
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
-    // Session rows precede their collection row, including supersession and retention.
-    sqlx::query("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting') FOR UPDATE")
-            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
+    lock_sessions(tx, &tenant, &registration).await?;
     let stored = match session_decision(tx, principal, message, &digest, audit).await? {
         SessionDecision::Replay(bytes) => {
             return Ok(ManagementReply { bytes, facts });
@@ -189,6 +181,9 @@ pub(crate) async fn management_on(
     if stored.is_none() {
         sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
                 .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
+        crate::worker_wake::notify(tx, crate::worker_wake::Work::Windows)
+            .await
+            .map_err(db)?;
     } else {
         sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,correlation=$7,nonce=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
                 .bind(&tenant).bind(&registration).bind(&session).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
@@ -202,6 +197,23 @@ pub(crate) async fn management_on(
         bytes: response,
         facts,
     })
+}
+
+async fn lock_sessions(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: &str,
+) -> Result<(), Error> {
+    // One registration lock orders nonce changes across sessions and restarts.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2351))")
+        .bind(format!("{tenant}:{registration}"))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    // Session rows precede their collection row, including supersession and retention.
+    sqlx::query("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting') FOR UPDATE")
+            .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(db)?;
+    Ok(())
 }
 
 fn session_state(complete: bool, run_id: Option<Uuid>) -> &'static str {

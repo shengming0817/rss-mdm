@@ -68,12 +68,15 @@ impl Client {
             lease_ttl: Duration::from_secs(10),
             attempt_timeout: Duration::from_secs(1),
             scan_interval: Duration::from_millis(100),
+            idle_scan_interval: Duration::from_millis(100),
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(1),
             max_attempts: 3,
         })?;
         let scope = recovery_scope(restarted.tenant);
-        let report = restarted.run_recovery(&scope, policy, &control).await?;
+        let report = restarted
+            .run_recovery(&scope, policy, &control, &tokio::sync::Notify::new())
+            .await?;
         ensure!(
             report.execution_failed == 0 && report.suspended == 0,
             "recovery did not complete {:?}",
@@ -87,13 +90,26 @@ impl Client {
             "expiry or unknown effect lost {:?}",
             read
         );
+        // Empty discovery defers structural checks. Make an actual operation due
+        // before corrupting the catalog, so the worker must reject its claim.
+        let wake_timer = recovery::Timer::new();
+        let wake_control =
+            rss_reconcile::Control::new(&wake_timer, Duration::from_secs(2), &cancel);
+        rss_reconcile::DurableStore::wake(
+            &restarted.reconcile,
+            &service::target(restarted.tenant, case_device()),
+            &wake_control,
+        )
+        .await?;
         sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'damaged'")
             .execute(&mut pg)
             .await?;
         let fatal_timer = recovery::Timer::new();
         let fatal_control =
             rss_reconcile::Control::new(&fatal_timer, Duration::from_secs(2), &cancel);
-        let fatal = restarted.run_recovery(&scope, policy, &fatal_control).await;
+        let fatal = restarted
+            .run_recovery(&scope, policy, &fatal_control, &tokio::sync::Notify::new())
+            .await;
         sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'rss-reconcile-postgres:1'")
             .execute(&mut pg)
             .await?;
@@ -113,7 +129,8 @@ impl Client {
         .await?;
         ensure!(pending == "pending");
         let worker_cancel = tokio_util::sync::CancellationToken::new();
-        let mut worker = Box::pin(restarted.run_worker(&worker_cancel));
+        let signals = crate::worker_wake::Signals::default();
+        let mut worker = Box::pin(restarted.run_worker(&worker_cancel, &signals));
         tokio::select! {
             outcome=&mut worker => anyhow::bail!("production worker exited before publication: {outcome:?}"),
             observed=tokio::time::timeout(Duration::from_secs(5),async {

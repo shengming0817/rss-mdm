@@ -223,6 +223,8 @@ pub(in crate::execution) async fn queue_run_in(
             None,
         )?;
         service.audit_store.append_in(tx, &fact, false).await?;
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRelay).await?;
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
         Ok(())
     }
     .await;

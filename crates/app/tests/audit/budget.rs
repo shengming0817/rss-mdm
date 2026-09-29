@@ -7,18 +7,17 @@ async fn lock_then_fresh_snapshot(pool: &PgPool, ledger: bool) -> Result<()> {
         .await?;
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(5))?,
-        &cancel,
-    );
+    let control = {
+        let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(5))?;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let store = AuditStore::new(peers.clone(), integrity(ledger)?, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
     let fact = Fact::business(&request, "overlap", b"same-request", 200, "success", None)?;
     let entered = tokio::sync::Notify::new();
     let release = tokio::sync::Notify::new();
-    let original = store.execute(
+    let original = store.write(
         tenant,
         &control,
         (&store, &fact, &entered, &release),
@@ -33,7 +32,7 @@ async fn lock_then_fresh_snapshot(pool: &PgPool, ledger: bool) -> Result<()> {
     );
     let recover = async {
         entered.notified().await;
-        let replay = store.execute(tenant, &control, (&store, &fact), |(s, f), tx| {
+        let replay = store.write(tenant, &control, (&store, &fact), |(s, f), tx| {
             Box::pin(async move { s.append(tx, f, true).await })
         });
         let unlock = async {
@@ -71,11 +70,10 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
     for ledger in [false, true] {
         let timer = crate::lifecycle::RuntimeTimer;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let total = Control::new(
-            &timer,
-            Deadline::from_timeout(&timer, Duration::from_secs(10))?,
-            &cancel,
-        );
+        let total = {
+            let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(10))?;
+            Control::new(&timer, cutoff, cutoff, &cancel)
+        };
         let store = AuditStore::new(pool.clone(), integrity(ledger)?, &total).await?;
         let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
         let request = RequestAudit::new(tenant.to_string(), "bounded_retirement");
@@ -88,15 +86,15 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
             "success",
             None,
         )?;
-        let operation = rss_mdm_audit_integration::OperationBudget::new(
+        let operation = rss_audit_postgres::Control::new(
             &timer,
-            Deadline::from_timeout(&timer, total.remaining())?,
+            Deadline::from_timeout(&timer, total.total_remaining())?,
             Deadline::from_timeout(&timer, Duration::from_secs(2))?,
             &cancel,
         );
         let reached = std::sync::atomic::AtomicBool::new(false);
         let attempt = store
-            .execute_with_operation(
+            .write(
                 tenant,
                 &operation,
                 (&store, &fact, &reached),
@@ -126,7 +124,7 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
         observer.rollback().await?;
         // The expired absolute operation cutoff cannot run even an immediately-ready callback.
         let forbidden = store
-            .execute_with_operation(tenant, &operation, (), |_, _| {
+            .write(tenant, &operation, (), |_, _| {
                 Box::pin(async {
                     panic!("expired callback ran");
                     #[allow(unreachable_code)]
@@ -136,7 +134,7 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
             .await;
         ensure!(state(forbidden) == "rolled_back");
         let recovery = store
-            .execute(tenant, &total, (&store, &fact), |(store, fact), tx| {
+            .write(tenant, &total, (&store, &fact), |(store, fact), tx| {
                 Box::pin(async move { store.append(tx, fact, false).await })
             })
             .await;
@@ -170,20 +168,19 @@ async fn lock_wait_uses_settlement_reserve(
         .await?;
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let total = Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, Duration::from_secs(4))?,
-        &cancel,
-    );
+    let total = {
+        let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(4))?;
+        Control::new(&timer, cutoff, cutoff, &cancel)
+    };
     let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(1))?;
-    let work = rss_mdm_audit_integration::OperationBudget::new(
+    let work = rss_audit_postgres::Control::new(
         &timer,
-        Deadline::from_timeout(&timer, total.remaining())?,
+        Deadline::from_timeout(&timer, total.total_remaining())?,
         cutoff,
         &cancel,
     );
     let entered = std::sync::atomic::AtomicBool::new(false);
-    let attempt = store.execute_with_operation(tenant, &work, &entered, |entered, _| {
+    let attempt = store.write(tenant, &work, &entered, |entered, _| {
         Box::pin(async move {
             entered.store(true, std::sync::atomic::Ordering::Release);
             Ok::<(), Error>(())

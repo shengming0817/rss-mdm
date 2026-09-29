@@ -12,7 +12,7 @@
 
 /livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过、Identity 审计首轮投递成功，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
-SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
+SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算，单任务关闭上限二十秒覆盖领取、接受、结算各六秒的预算；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
 
 审计恢复要求各产品运行连接使用 `READ COMMITTED`；启动与每次借用事务均检查，组件不替调用方修改隔离级别。业务事务先取得 Audit head，以及 Ledger 模式下固定审计链的 head，再取得业务和 Outbox 锁。提交未知后使用原操作身份和原请求重试，锁后的新语句快照同时核对业务回执、产品审计回执与组件记录；恢复原 canonical bytes 和 recorded_at，不生成新的事件身份。单边缺失、指纹或字节冲突均拒绝并要求修复，不能补造记录。两者都不存在也只有在成功取得同一锁、确认先前数据库事务已结束后才允许重新判定业务；这不证明设备或软件源的外部副作用回滚。锁或读取超时继续保留未知状态。注册替换、撤销、Apple CheckOut 和共用退役策略的 Windows 路径保留六秒总上限，业务窗口最多四点五秒，余下四分之一留给原 Audit owner 提交/回滚；已有更早调用方 deadline 时同步收紧。截止时间在入口一次冻结，下游和逐事件追加不续期。这个兼容策略不保证任意采集积压能在六秒完成，也不是吞吐 SLO。业务超时后停止新增工作并等待原 owner 结算；上游 Acquire/Begin/Setup 尚未进入产品回调，仍受原总截止时间约束，Setup 耗尽预算仍可能回滚未确认。按实际结算状态处理，不分批伪装成完整退役。
 
@@ -48,9 +48,9 @@ relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 
 
 ## Identity 审计投递
 
-`identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多一条，有进展时继续；空闲或暂时失败后一秒再试。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
+`identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多两条，与 Audit 连接池容量一致；有进展时继续；空闲或暂时失败后一秒再试。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
 
-组件日志 `component=identity-audit` 中的 `transactional_messaging.outbox.*` 提供发布、重试和租约信息；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障令 readiness 为 false，后续成功轮询可恢复。若已有事件报告重试，则保持不就绪，直到实际领取并成功处理事件；退避中的空轮询不恢复就绪，初始空闲仍可就绪；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
+组件日志 `component=identity-audit` 中的 `transactional_messaging.outbox.*` 提供发布、重试和租约信息；成功 claim 的耗时 tick 不写日志，避免空轮询噪声；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障令 readiness 为 false，后续成功轮询可恢复。若已有事件报告重试，则保持不就绪，直到实际领取并成功处理事件；退避中的空轮询不恢复就绪，初始空闲仍可就绪；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
 
 只读查询示例（psql 的 `tenant_id` 变量由已授权操作员提供）：
 
@@ -77,7 +77,11 @@ ROLLBACK;
 审计请求，健康检查及由 Identity 自有结算的路由不占此额度。超额在业务处理前返回 429
 （Agent 使用既有 503 serviceUnavailable）及 Retry-After，不触发 handler 或持久审计。
 已接纳请求的认证拒绝、查询及未知结果仍完整审计，不降采样、不降级 Plain，也不改变先取 Audit 锁的顺序。
-Windows retention 每秒先做无行锁的只读候选检查；无过期会话时不取 Audit head。
+Inventory 和 Windows retention 先做无行锁的只读候选检查；无过期任务时不取 Audit head。
+
+Inventory、资产自动化、命令 relay/recovery 和原生协议维护由产品实例内唯一 PostgreSQL LISTEN 连接接收提交通知。连接只监听配置租户的独立通道，发送端从同一业务事务已绑定的租户派生通道；同租户多实例均可接收，无关租户不会被唤醒。通知仅携带闭合工作类型，不携带租户、设备或任务正文；业务事务提交后才投递，所有 worker 仍从持久状态重新读取、准入并领取。有进展立即继续，空闲等待通知或最近到期点，最长五秒补扫；既有错误退避独立保留。资产自动化成功动作后的 Reobserve 仍为二十毫秒，与五秒空闲补扫分别配置；已确认提交的短期重观察/重试可提前唤醒。初次 LISTEN 和重连完成后全部补扫，通知丢失、进程重启或多个实例均不改变持久事实的权威。`mdm_notification_connection.connected` 记录连接故障与恢复转换，SQLx自动重连完成也补记这对转换；不需要按通知数量推断完成量。
+
+Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。数据库健康检查不代表产品 readiness。
 有候选时仍先取 Audit/可选 Ledger 锁，再锁业务行，每次至多处理 32 个会话，事务六秒、周期调用七秒有界；
 超时回滚或未知时保留原状态，下轮重新读取，不能把 Audit 锁移到业务锁之后。
 监控网关 429、请求延迟、审计/retention 超时与数据库存储增长；这些是部署 admission 上限，不能解释为吞吐承诺。

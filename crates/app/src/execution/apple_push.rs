@@ -15,6 +15,16 @@ impl ExecutionService {
         configuration: &[u8; 32],
     ) -> std::result::Result<Option<Wake>, Error> {
         let configuration = *configuration;
+        let tenant = self.tenant.to_string();
+        let discovered = self.runtime.local_tx(self.tenant, deadline(), |tx| Box::pin(async move {
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices a JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(a.tenant_id,a.registration) WHERE a.tenant_id=$1::uuid AND a.state='active' AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.report_sources s WHERE (s.tenant_id,s.registration)=(a.tenant_id,a.registration) AND s.source='mdm.apple' AND s.enabled) AND (a.push_outcome IS DISTINCT FROM 'rejected' OR a.push_configuration IS DISTINCT FROM $2) AND a.next_push<=clock_timestamp() AND (a.push_lease_until IS NULL OR a.push_lease_until<clock_timestamp()))")
+                    .bind(tenant).bind(configuration.as_slice()).fetch_one(c).await
+            })).await
+        })).await.fold(Ok, |_| Err(Error::Unavailable(Failure::CommandStorage)), |_| Err(Error::Unavailable(Failure::CommandStorage)), |_| Err(Error::RollbackFailed), |_| Err(Error::CommitUnknown), |_| Err(Error::Unavailable(Failure::CommandStorage)))?;
+        if !discovered {
+            return Ok(None);
+        }
         let audit = RequestAudit::new(self.tenant.to_string(), "apple_push");
         audit.identify_service("apple-push");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,&audit),|ctx,tx|Box::pin(async move {
@@ -85,6 +95,7 @@ impl ExecutionService {
                 Ok(Some(sqlx::query("UPDATE mdm_apple.devices SET push_lease_until=NULL,push_status=$5,push_outcome=$6,next_push=clock_timestamp()+make_interval(secs => CASE WHEN $6='retryable' THEN greatest(CASE WHEN $5>=500 THEN 900 ELSE 30 END,30*(1<<least(push_failures,5))) ELSE 30 END),push_failures=CASE WHEN $6='retryable' THEN least(push_failures+1,6) ELSE 0 END,token=CASE WHEN $7 THEN NULL ELSE token END,magic=CASE WHEN $7 THEN NULL ELSE magic END,state=CASE WHEN $7 THEN 'pending_token' ELSE state END WHERE tenant_id=$1::uuid AND registration=$2::uuid AND push_id=$3::uuid AND token_revision=$4 AND state='active' AND push_lease_until IS NOT NULL")
                     .bind(tenant).bind(registration.to_string()).bind(id.to_string()).bind(revision).bind(status.map(i32::from)).bind(outcome).bind(unregistered).execute(c).await?.rows_affected()))
             })).await?;
+            if changed == Some(1) { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
             match changed {
                 Some(0|1)=>{service.audit_store.append_in(tx,&fact,changed==Some(0)).await?;},
                 Some(_)=>return Err(Error::Conflict.into()),

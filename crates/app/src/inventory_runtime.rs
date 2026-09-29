@@ -300,14 +300,19 @@ impl InventoryRuntime {
             readiness,
         }
     }
-    pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
-        let (task, status) = ManagedTask::prepare("mdm-inventory", Duration::from_secs(8));
+    pub(crate) fn registration(
+        self: Arc<Self>,
+        signals: Arc<crate::worker_wake::Signals>,
+    ) -> ManagedTaskRegistration {
+        let (task, status) = ManagedTask::prepare("mdm-inventory", Duration::from_secs(10));
         self.readiness
             .task
             .set(status)
             .expect("one inventory worker");
         task.into_registration(move |token| async move {
-            let result = self.work(&token).await;
+            let result = self
+                .work(&token, signals.get(crate::worker_wake::Work::Inventory))
+                .await;
             self.readiness.initialized.store(false, Ordering::Release);
             if token.is_cancelled() {
                 return Ok(());
@@ -355,7 +360,42 @@ impl InventoryRuntime {
             .map_err(|_| WorkerFailure::DeliveryProgress)?
             .map_err(|_| WorkerFailure::DeliveryProgress)
     }
-    async fn work(&self, token: &CancellationToken) -> Result<(), WorkerFailure> {
+    async fn deliver_pending(
+        &self,
+        reports: Vec<DurableReport>,
+        deadline: Deadline,
+        token: &CancellationToken,
+    ) -> Result<(), WorkerFailure> {
+        let pending_count = reports.len();
+        for report in reports {
+            if deadline.remaining(self.clock.now.now()).is_none() {
+                break;
+            }
+            if token.is_cancelled() {
+                return Ok(());
+            }
+            if let Err(phase) = self.deliver(&report, deadline).await {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event":"mdm_inventory_delivery_failure",
+                        "phase":phase,
+                        "reportId":report.batch().id().as_str(),
+                        "source":report.scope().source().as_str(),
+                        "stream":stream_correlation(report.scope()),
+                        "pendingCount":pending_count,
+                    })
+                );
+                return Err(phase);
+            }
+        }
+        Ok(())
+    }
+    async fn work(
+        &self,
+        token: &CancellationToken,
+        notify: &tokio::sync::Notify,
+    ) -> Result<(), WorkerFailure> {
         let source = Arc::new(
             PgSource::new(
                 self.observation.clone(),
@@ -398,17 +438,27 @@ impl InventoryRuntime {
                 rss_mdm_inventory_postgres::Inventory::new(source.clone()),
             )
             .map_err(|_| WorkerFailure::ProjectionCompose)?;
-        let mut interval = tokio::time::interval(Duration::from_millis(250));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            tokio::select! { biased; () = token.cancelled() => return Ok(()), _ = interval.tick() => {} }
+            if token.is_cancelled() {
+                return Ok(());
+            }
+            // The Audit transaction owns its settlement budget; never drop that owner
+            // at the shorter discovery deadline or when shutdown is requested.
+            let expired = self.delivery.expire_apple(&self.tenant.to_string()).await;
+            if token.is_cancelled() {
+                return Ok(());
+            }
             let deadline = self.clock.deadline();
-            let reports = tokio::time::timeout_at(
-                deadline.instant().into(),
-                self.delivery.pending_reports(&self.tenant.to_string()),
-            )
-            .await;
-            let reports = match reports {
+            let reports = match expired {
+                Ok(expired) => tokio::time::timeout_at(
+                    deadline.instant().into(),
+                    self.delivery.pending_reports(&self.tenant.to_string()),
+                )
+                .await
+                .map(|result| result.map(|reports| (expired, reports))),
+                Err(error) => Ok(Err(error)),
+            };
+            let (expired, reports) = match reports {
                 Ok(Ok(reports)) => reports,
                 // A contended Audit head or uncertain settlement leaves durable work
                 // pending. The next pass acquires the same locks and reads fresh state.
@@ -417,31 +467,16 @@ impl InventoryRuntime {
                     Error::CommitUnknown
                     | Error::RollbackFailed
                     | Error::Unavailable(crate::Failure::RequestDeadline),
-                )) => continue,
+                )) => {
+                    tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
+                    continue;
+                }
                 Ok(Err(_)) => return Err(WorkerFailure::PendingReports),
             };
             let pending_count = reports.len();
-            for report in reports {
-                if deadline.remaining(self.clock.now.now()).is_none() {
-                    break;
-                }
-                if token.is_cancelled() {
-                    return Ok(());
-                }
-                if let Err(phase) = self.deliver(&report, deadline).await {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({
-                            "event":"mdm_inventory_delivery_failure",
-                            "phase":phase,
-                            "reportId":report.batch().id().as_str(),
-                            "source":report.scope().source().as_str(),
-                            "stream":stream_correlation(report.scope()),
-                            "pendingCount":pending_count,
-                        })
-                    );
-                    return Err(phase);
-                }
+            self.deliver_pending(reports, deadline, token).await?;
+            if token.is_cancelled() {
+                return Ok(());
             }
             let control = Control::new(&self.clock, self.clock.cutoff(), token);
             let report = rss_projection::run(
@@ -455,6 +490,14 @@ impl InventoryRuntime {
             .into_result()
             .map_err(|_| WorkerFailure::ProjectionRun)?;
             self.readiness.initialized.store(true, Ordering::Release);
+            if expired == 0 && pending_count == 0 && report.applied == 0 {
+                let nearest = self
+                    .delivery
+                    .next_expiry(&self.tenant.to_string())
+                    .await
+                    .map_err(|_| WorkerFailure::PendingReports)?;
+                crate::worker_wake::wait(notify, token, nearest).await;
+            }
             if report.applied > 0 {
                 eprintln!(
                     "{}",

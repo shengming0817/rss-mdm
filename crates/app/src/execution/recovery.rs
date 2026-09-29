@@ -86,46 +86,79 @@ fn relay_diagnostic(phase: &str, message_id: Option<&str>, error: &Error) {
     eprintln!("{}", relay_diagnostic_value(phase, message_id, error));
 }
 impl ExecutionService {
-    pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
+    pub(crate) fn registration(
+        self: Arc<Self>,
+        signals: Arc<crate::worker_wake::Signals>,
+    ) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) =
-            rss_runtime::ManagedTask::prepare("mdm-command-recovery", Duration::from_secs(8));
-        task.into_registration(move |cancel| async move { self.run_worker(&cancel).await })
+            rss_runtime::ManagedTask::prepare("mdm-command-recovery", Duration::from_secs(20));
+        task.into_registration(
+            move |cancel| async move { self.run_worker(&cancel, &signals).await },
+        )
     }
     pub(super) async fn run_worker(
         &self,
         cancel: &tokio_util::sync::CancellationToken,
+        signals: &crate::worker_wake::Signals,
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
         let timer = Timer::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::MAX, cancel);
+        let stopped = cancel.child_token();
+        let control = rss_reconcile::Control::new(&timer, Duration::MAX, &stopped);
         let scope = recovery_scope(self.tenant);
         let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
             concurrency: 1,
             lease_ttl: Duration::from_secs(30),
             attempt_timeout: Duration::from_secs(6),
             scan_interval: Duration::from_secs(5),
+            idle_scan_interval: Duration::from_secs(5),
             initial_backoff: Duration::from_secs(5),
             max_backoff: Duration::from_secs(60),
             max_attempts: 1000,
         })
         .map_err(rss_runtime::ShutdownError::new)?;
-        tokio::select! {
-            result=self.run_recovery(&scope,policy,&control)=>{result.map_err(rss_runtime::ShutdownError::new)?;},
-            result=self.relay(cancel)=>{result.map_err(rss_runtime::ShutdownError::new)?;},
-        }
-        Ok(())
+        let recovery = async {
+            self.run_recovery(
+                &scope,
+                policy,
+                &control,
+                signals.get(crate::worker_wake::Work::CommandRecovery),
+            )
+            .await
+            .map(|_| ())
+            .map_err(rss_runtime::ShutdownError::new)
+        };
+        let relay = async {
+            self.relay(
+                &stopped,
+                signals.get(crate::worker_wake::Work::CommandRelay),
+            )
+            .await
+            .map_err(rss_runtime::ShutdownError::new)
+        };
+        tokio::pin!(recovery, relay);
+        // Stop new claims when either branch exits, then let the other owner settle.
+        // Claim, gateway transaction and outbox settlement each have a six-second limit.
+        let (first, remaining) = tokio::select! {
+            result = &mut recovery => { stopped.cancel(); (result, relay.await) },
+            result = &mut relay => { stopped.cancel(); (result, recovery.await) },
+        };
+        first.and(remaining)
     }
+
     pub(super) async fn run_recovery<T: rss_reconcile::Timer>(
         &self,
         scope: &rss_reconcile::Scope,
         policy: rss_reconcile::Policy,
         control: &rss_reconcile::Control<'_, T>,
+        notify: &tokio::sync::Notify,
     ) -> std::result::Result<rss_reconcile::Report, rss_reconcile::Error> {
-        let result = Box::pin(rss_reconcile::run(
+        let result = Box::pin(rss_reconcile::run_with_notify(
             &self.reconcile,
             self,
             scope,
             policy,
             control,
+            notify,
             diagnostic,
         ))
         .await;
@@ -140,22 +173,29 @@ impl ExecutionService {
     async fn relay(
         &self,
         cancel: &tokio_util::sync::CancellationToken,
+        notify: &tokio::sync::Notify,
     ) -> std::result::Result<(), Error> {
         let mut delay = 1;
         loop {
-            tokio::select! {biased;
-                ()=cancel.cancelled()=>return Ok(()),
-                result=async {tokio::time::sleep(Duration::from_secs(delay)).await;self.relay_once().await}=>{
-                    match result {
-                        Ok(()) => delay = 1,
-                        Err(e) if permanent(&e) => return Err(e),
-                        Err(_) => delay = (delay * 2).min(60),
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
+            match self.relay_once().await {
+                Ok(count) => {
+                    delay = 1;
+                    if count == 0 {
+                        crate::worker_wake::wait(notify, cancel, None).await;
                     }
+                }
+                Err(error) if permanent(&error) => return Err(error),
+                Err(_) => {
+                    delay = (delay * 2).min(60);
+                    tokio::select! { () = cancel.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(delay)) => {} }
                 }
             }
         }
     }
-    pub(super) async fn relay_once(&self) -> std::result::Result<(), Error> {
+    pub(super) async fn relay_once(&self) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
             .claim_partition_heads(std::num::NonZeroUsize::MIN, deadline())
@@ -165,10 +205,11 @@ impl ExecutionService {
                 relay_diagnostic("claim", None, &e);
                 e
             })?;
+        let count = claims.len();
         for claim in claims {
             self.relay_claim(claim).await?;
         }
-        Ok(())
+        Ok(count)
     }
     pub(super) async fn relay_claim(
         &self,
@@ -233,7 +274,9 @@ impl ExecutionService {
                 Ok(old)
             })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             if old {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            service.audit_store.append_in(tx,&fact,old).await?;Ok(())
+            service.audit_store.append_in(tx,&fact,old).await?;
+            if !old { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
+            Ok(())
         }),crate::transaction::TransactionOwner::Execution).await;
         audit.finalize(
             result

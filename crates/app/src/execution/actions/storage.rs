@@ -67,7 +67,10 @@ pub(super) async fn save_run(tx: &mut PgTransaction<'_>, run: &Run) -> Result<()
     let id = run.id.to_string();
     let state = checked_input(serde_json::to_value(&run.state))?;
     let result = run.result.clone();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).bind(state).bind(result).execute(c).await?;Ok(())})).await?;
+    let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
+    if changed.rows_affected() > 0 {
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
+    }
     Ok(())
 }
 pub(super) async fn replay(

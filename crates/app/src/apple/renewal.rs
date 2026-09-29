@@ -19,13 +19,14 @@ pub(super) async fn maintain(
     audit_store: &rss_mdm_audit_integration::AuditStore,
     tenant: &str,
     now: i64,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     let mut tx = access.begin(tenant).await?;
     let health = sqlx::query("WITH due AS (SELECT a.registration,s.not_after,CASE WHEN s.not_after<=$2 THEN 2 WHEN s.not_after-least((s.not_after-s.not_before)/3,604800)<=$2 THEN 1 ELSE 0 END AS level FROM mdm_apple.devices a JOIN mdm_apple.scep_attempts s ON (s.tenant_id,s.registration)=(a.tenant_id,a.registration) WHERE a.tenant_id=$1::uuid AND a.state='active' AND s.state='bound' AND a.identity_health<>CASE WHEN s.not_after<=$2 THEN 2 WHEN s.not_after-least((s.not_after-s.not_before)/3,604800)<=$2 THEN 1 ELSE 0 END ORDER BY s.not_after,a.registration LIMIT 32) UPDATE mdm_apple.devices a SET identity_health=due.level FROM due WHERE a.tenant_id=$1::uuid AND a.registration=due.registration RETURNING a.registration::text,due.not_after,due.level")
         .bind(tenant).bind(now).fetch_all(&mut *tx).await.map_err(db)?;
     let candidates = sqlx::query("SELECT s.id::text,s.not_before,s.not_after,r.device FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(r.tenant_id,r.id) WHERE s.tenant_id=$1::uuid AND s.state='bound' AND r.state='active' AND a.state='active' AND s.configuration=$3 AND s.not_after>$2 AND s.not_after-least((s.not_after-s.not_before)/3,604800)<=$2 AND EXISTS(SELECT 1 FROM mdm_access.report_sources p WHERE (p.tenant_id,p.registration)=(r.tenant_id,r.id) AND p.source='mdm.apple' AND p.enabled) AND NOT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts pending WHERE pending.tenant_id=s.tenant_id AND pending.renewal_of=s.id AND pending.state IN ('prepared','consumed') AND pending.expires_at>clock_timestamp()) ORDER BY s.not_after,s.id LIMIT 32")
         .bind(tenant).bind(now).bind(apple.configuration.as_slice()).fetch_all(&mut *tx).await.map_err(db)?;
     tx.commit().await.map_err(db)?;
+    let progress = health.len() + candidates.len();
     for row in health {
         let level: i32 = row.try_get("level").map_err(db)?;
         eprintln!(
@@ -36,7 +37,7 @@ pub(super) async fn maintain(
     for candidate in candidates {
         prepare(apple, audit_store, tenant, now, candidate).await?;
     }
-    Ok(())
+    Ok(progress)
 }
 async fn prepare(
     apple: &Apple,
@@ -50,7 +51,7 @@ async fn prepare(
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
     let outcome = store
-        .execute(
+        .write(
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
             &control,
             (store, apple, tenant, now, &candidate, &audit),
@@ -179,6 +180,9 @@ async fn prepare_on(
     sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,certificate,phase,request,state,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'renew',$5,'pending',to_timestamp($6))")
         .bind(tenant).bind(id.to_string()).bind(&registration).bind(generation).bind(request).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(&registration).execute(&mut *c).await.map_err(db)?;
+    crate::worker_wake::notify(c, crate::worker_wake::Work::Apple)
+        .await
+        .map_err(db)?;
     let registration = Uuid::parse_str(&registration)
         .map_err(|_| Error::Unavailable(crate::Failure::AppleInvariant))?;
     audit.target(&device);
@@ -221,7 +225,7 @@ pub(super) async fn challenge(
 ) -> Result<bool, Error> {
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome = app.audit_store.execute(app.identity.tenant, &control, (app, csr, secret, transaction, audit),
+    let outcome = app.audit_store.write(app.identity.tenant, &control, (app, csr, secret, transaction, audit),
         |(app, csr, secret, transaction, audit), tx| Box::pin(async move {
             let replayed = tx.with_connection_context(&mut (*app, *csr, *secret, *transaction, *audit), |(app, csr, secret, transaction, audit), c| Box::pin(async move {
                 let app = *app; let csr = *csr; let secret = *secret; let transaction = *transaction; let audit = *audit;
@@ -274,7 +278,7 @@ pub(super) async fn notify(
     let control = budget.control();
     let outcome = app
         .audit_store
-        .execute(
+        .write(
             app.identity.tenant,
             &control,
             (app, leaf, csr, transaction, audit),
@@ -376,7 +380,7 @@ pub(super) async fn activate(
     let audit = RequestAudit::new(app.identity.tenant.to_string(), "apple_renewal");
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome = app.audit_store.execute(app.identity.tenant, &control, (app, leaf, udid, &audit),
+    let outcome = app.audit_store.write(app.identity.tenant, &control, (app, leaf, udid, &audit),
         |(app, leaf, udid, audit), tx| Box::pin(async move {
             let changed = tx.with_connection_context(&mut (*app, *leaf, *udid, *audit),
                 |(app, leaf, udid, audit), c| Box::pin(async move {
@@ -442,7 +446,7 @@ pub(super) async fn management(
 ) -> Result<Option<Vec<u8>>, Error> {
     let budget = crate::audit_budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome = app.audit_store.execute(app.identity.tenant, &control, (app, p, d, bytes, audit),
+    let outcome = app.audit_store.write(app.identity.tenant, &control, (app, p, d, bytes, audit),
         |(app, p, d, bytes, audit), tx| Box::pin(async move {
             let result = tx.with_connection_context(&mut (*p, *d, *bytes), |(p, d, bytes), c| Box::pin(async move {
                 let p = *p; let d = *d; let bytes = *bytes;
@@ -465,6 +469,7 @@ pub(super) async fn management(
         .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
     let result = if let Some(row) = next {
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(row.try_get::<String,_>("id").map_err(db)?).execute(&mut *c).await.map_err(db)?;
+        crate::worker_wake::notify(c, crate::worker_wake::Work::Apple).await.map_err(db)?;
         Some(row.try_get("request").map_err(db)?)
     } else {
         message.command.map(|_| Vec::new())
@@ -485,3 +490,15 @@ pub(super) async fn management(
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+/// The next future maintenance boundary is a scheduling hint, never certificate authority.
+pub(super) async fn next_maintenance(
+    access: &Database,
+    tenant: &str,
+) -> Result<Option<std::time::Duration>, Error> {
+    let mut tx = access.begin_read(tenant).await?;
+    let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(due)-clock_timestamp())*1000)::bigint FROM (SELECT next_push AS due FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT push_lease_until FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT to_timestamp(not_after) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT to_timestamp(not_after-least((not_after-not_before)/3,604800)) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT expires_at FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state IN ('prepared','consumed') UNION ALL SELECT next_attempt FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now') UNION ALL SELECT deadline FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now')) times WHERE due>clock_timestamp()")
+        .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
+    tx.rollback().await.map_err(db)?;
+    Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
+}

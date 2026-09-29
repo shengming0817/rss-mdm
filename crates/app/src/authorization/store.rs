@@ -133,7 +133,7 @@ async fn change_authorization<T: serde::Serialize + Sync>(
         audit,
     };
     let attempt = store
-        .execute(
+        .write(
             rss_request_context::TenantId::parse(proof.tenant_id())
                 .map_err(|_| Error::Malformed)?,
             &control,
@@ -383,7 +383,7 @@ pub(crate) async fn initialize_authorization_audited(
     )
     .map_err(Error::from)?;
     let attempt = store
-        .execute(
+        .write(
             rss_request_context::TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?,
             &control,
             (store, &user, &operation, audit, fact),

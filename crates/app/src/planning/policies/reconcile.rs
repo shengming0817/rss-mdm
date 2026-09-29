@@ -51,5 +51,6 @@ pub(crate) async fn wake_native_in(tx: &mut PgTransaction<'_>, device: &str) -> 
     .map_err(|_| Error::Malformed)?;
     rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;
+    crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     Ok(())
 }
