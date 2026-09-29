@@ -9,6 +9,48 @@ from t2_hosts import Host
 
 
 class HostTests(unittest.TestCase):
+    def test_child_owns_ephemeral_port_even_when_competitor_takes_probed_port(self):
+        import json
+        import socket
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from t2_execution import Processes
+        with tempfile.TemporaryDirectory() as tmp, socket.socket() as competitor, \
+             patch('t2_execution.lease_fds', return_value=()):
+            root = Path(tmp)
+            script = root / 'serve.py'
+            script.write_text('''import http.server, json, sys
+config = json.load(open(sys.argv[-1]))
+host, port = config['listen'].split(':')
+class Ready(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers()
+server = http.server.HTTPServer((host, int(port)), Ready)
+print(json.dumps({'event':'listener-bound','address': '%s:%s' % server.server_address}), flush=True)
+server.serve_forever()
+''')
+            config = root / 'config.json'
+            config.write_text(json.dumps({'product_origin': 'https://mdm.example.test'}))
+            processes = Processes()
+            spawn = processes.spawn
+            def start(args, **kwargs):
+                chosen = json.loads(Path(args[-1]).read_text())['listen']
+                competitor.bind(('127.0.0.1', int(chosen.rsplit(':', 1)[1])))
+                competitor.listen()
+                return spawn([sys.executable, script, args[-1]], **kwargs)
+            try:
+                with patch.object(processes, 'spawn', side_effect=start):
+                    host = Host(SimpleNamespace(processes=processes, executables={'rss-mdm':'unused'}), config, root/'output')
+                try:
+                    self.assertNotEqual(int(host.address.rsplit(':', 1)[1]), competitor.getsockname()[1])
+                    with socket.socket() as thief, self.assertRaises(OSError):
+                        thief.bind(('127.0.0.1', int(host.address.rsplit(':', 1)[1])))
+                finally:
+                    host.close()
+            finally:
+                processes.close()
+
     def host(self):
         host = Host.__new__(Host)
         host.processes = Mock()

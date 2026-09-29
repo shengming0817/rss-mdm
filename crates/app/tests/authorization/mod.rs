@@ -51,8 +51,9 @@ async fn fixture() -> Result<Fixture> {
         .await?,
     );
     let router = app(&base, reader.clone()).await?;
-    let fixture = authority::Authority::open().await?;
-    let mut admin = fixture.browser("admin")?;
+    let mut admin = Browser::default();
+    identity::age_prepared_admin_session()?;
+    ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
     let mut member = Browser::default();
     ensure!(
         admin

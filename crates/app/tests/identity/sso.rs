@@ -210,7 +210,8 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         "127.0.0.1".parse()?,
     )));
     let mut admin = Browser::default();
-    ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
+    identity::age_prepared_admin_session()?;
+    ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
     let tenant = format!("/api/v2/tenants/{TENANT}", TENANT = case_tenant());
     let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"email":"email","groups":"groups","departmentSnapshot":{"claim":"organization_snapshot","maxAgeSeconds":20}},"jit":true});
     let (status,created)=admin.call(&router,Method::POST,&format!("{tenant}/providers"),Some(json!({"settings":settings,"clientSecret":"fixture-secret","caPem":std::fs::read_to_string(std::env::var("MDM_TEST_SSO_CA")?)?}))).await?;

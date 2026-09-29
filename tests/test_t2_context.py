@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 from t2_execution import Case, Invocation
 from t2_registry import MODULES
 from t2_context import contexts, installation
+import t2_context
 
 
 def job(name, scope='objects', invocation=0):
@@ -16,6 +17,24 @@ def job(name, scope='objects', invocation=0):
 
 
 class ContextTests(unittest.TestCase):
+    def test_contract_rejects_missing_wrong_typed_and_unprepared_fields(self):
+        from copy import deepcopy
+        value = next(iter(contexts('run', [job('a')]).values()))
+        for field in ('caseId', 'invocationId', 'namespace', 'tenant', 'peer',
+                      'adminLogin', 'otherLogin', 'identityTenants', 'fixtures', 'admins'):
+            for replacement in (None, 42, ''):
+                broken = deepcopy(value)
+                if replacement is None:
+                    del broken[field]
+                else:
+                    broken[field] = replacement
+                with self.subTest(field=field, value=replacement), self.assertRaises(ValueError):
+                    t2_context.validate(broken)
+        with self.assertRaisesRegex(ValueError, 'admins'):
+            t2_context.validate(value, ready=True)
+        value['admins'] = {value['tenant']: '44444444-4444-4444-8444-444444444444'}
+        self.assertEqual(t2_context.validate(value, ready=True), value)
+
     def test_objects_share_tenant_and_repeated_invocations_change_namespace(self):
         jobs = [job('a'), job('b'), job('a', invocation=1)]
         values = list(contexts('run', jobs).values())

@@ -79,9 +79,9 @@ make t2 MODULE=content.http LIST=1
 make t2 MODULE=content.http CASE='<LIST 输出的完整测试 ID>'
 ```
 
-默认管理 `development` 环境；T2 使用同一 worktree 的 `t2` 环境，一次运行复用一个 PG 服务，退出时销毁。破坏性模块在普通阶段结束后独占并重置同一服务。显式清理遗留 T2 环境使用 `DEV_ARGS="--group t2"`；启动新一轮前也会核验归属并清理旧服务。stop 保留数据，reset 核验归属后只删除指定环境，不清理共享 target 池。不要直接依赖 Docker Compose 自动推导的项目名。环境数据可丢弃，角色输入不兼容时 reset 后重新 init，没有旧环境升级或兼容解析。
+默认管理 `development` 环境；T2 的普通 PG 使用同一 worktree 的 `t2` 环境，实例故障使用独立的 `t2-fault` 环境，两者可并行，退出时销毁。新一轮开始前会核验归属并清理确定性环境，即使本地目录已丢失。手动恢复时依次运行 `make dev ACTION=reset DEV_ARGS="--group t2"`、`make dev ACTION=reset DEV_ARGS="--group t2-fault"`；网关专项遗留使用 `--group t2-gateway`。stop 保留数据，reset 核验归属后只删除指定环境，不清理共享 target 池。不要直接依赖 Docker Compose 自动推导的项目名。环境数据可丢弃，角色输入不兼容时 reset 后重新 init，没有旧环境升级或兼容解析。
 
-init 使用正式角色 SQL、产品 migrate、initialize 和 initialize-authorization。输出本机 Rust 的配置路径、HTTPS origin 和 nginx 配置路径，账号密码仅写入权限 0600 的 operator/account-password 文件。通过已有构建启动器运行 `rss-mdm serve --config <输出路径>`；本机 HTTPS 调试使用输出的 nginx 配置，设置 `MDM_WEB_ROOT` 指向已构建 UI，必要时设置 `MDM_NGINX_MIME_TYPES`。私有 CA 仅为该环境使用，不跳过 TLS 校验。
+init 使用正式角色 SQL、产品 migrate、initialize 和 initialize-authorization。输出本机 Rust 的配置路径、HTTPS origin 和 nginx 配置路径，账号密码仅写入权限 0600 的 operator/account-password 文件。通过已有构建启动器运行 `rss-mdm serve --config <输出路径>`；`serve` 在绑定管理 listener 后向 stdout 写一行 `{"event":"listener-bound","address":"127.0.0.1:实际端口"}`；`listen` 端口为 0 时由操作系统分配，回执不代表 readiness，仍须探测 `/readyz`。本机 HTTPS 调试使用输出的 nginx 配置，设置 `MDM_WEB_ROOT` 指向已构建 UI，必要时设置 `MDM_NGINX_MIME_TYPES`。私有 CA 仅为该环境使用，不跳过 TLS 校验。
 
 完整容器联调使用已经构建的产品和 UI 镜像，init 固定其实际镜像 ID：
 
@@ -92,7 +92,7 @@ make dev ACTION=up MODE=container
 
 产品构建仍使用 release.py 正式入口，`CARGO_BUILD_JOBS` 控制镜像编译并发，BuildKit 缓存按 worktree 命名。网关与应用共享容器网络命名空间，管理端口保持 loopback-only，PG 经 bridge DNS 访问；外部端口只绑定 127.0.0.1。容器重建导致端口变化时重新 init。运行容器不挂载操作员秘密。
 
-每个阶段报告耗时与环境标识。普通测试重建自己的数据库并保留真实提交，PG 与 CA 复用；角色、权限或停库故障不作用于普通 PG。Windows、Apple 和 IdP 按专项准备。NanoMDM 以校验源码、实际 Go 工具链、平台和参数识别缓存，损坏时只恢复该项。
+每个阶段报告耗时与环境标识。`reuse` 用例在兼容 profile 内共享可写库，并以对象、主体或专用观察租户隔离；每次调用有独立命名空间。`fresh` 为 DDL、库内权限及损坏材料分配一次性库，安装使用空库。`instance` 在故障 PG 内串行，恢复核查成功后复用，失败或不确定则隔离并为后续用例替换环境。原失败不重试；实例角色或停库故障不作用于普通 PG。生命周期与复用资格见[测试模块](test-modules.md)。Windows、Apple 和 IdP 按专项准备。NanoMDM 以校验源码、实际 Go 工具链、平台和参数识别缓存，损坏时只恢复该项。
 
 ## 浏览器正常与故障验证
 

@@ -14,7 +14,7 @@ import time
 from types import SimpleNamespace
 
 from candidate_fixture import INSTANCE, ADMIN
-from t2_context import contexts, installation
+from t2_context import contexts, installation, validate
 from t2_database import Costs, DatabasePool, measure
 from t2_hosts import Host
 from t2_environment import Environment, private, run
@@ -64,9 +64,8 @@ class RunFixtures:
         self.hosts.clear()
         for environment in (self.normal.owner, self.fault.owner, self.gateway_owner):
             try:
-                if environment.root.exists():
-                    with measure(self.costs, phase, pg=environment.project):
-                        environment.reset()
+                with measure(self.costs, phase, pg=environment.project):
+                    environment.reset()
             except Exception as error:
                 errors.append(error)
         if errors:
@@ -154,10 +153,10 @@ class RunFixtures:
         # The helper creates real case accounts and writes their public coordinates.
         for job in jobs:
             case_root = self.root / job.key
-            context = json.loads((case_root / 'case.json').read_text())
+            context = validate(json.loads((case_root / 'case.json').read_text()), ready=True)
             self.case_contexts[job.key] = context
             value = self.runtime_config(pool, case_root, database, context['tenant'])
-            value['identity_management'][0]['principal_id'] = context['admin']
+            value['identity_management'][0]['principal_id'] = context['admins'][context['tenant']]
             value['content'] = json.loads((root / 'content.json').read_text())
             value['task_signing'] = json.loads((root / 'task-signing.json').read_text())
             private(case_root / 'runtime.json', value)
@@ -226,6 +225,7 @@ class RunFixtures:
             root = self.root / job.key
             env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),
                        MDM_CASE_CONTEXT=str(root / 'case.json'))
+            env.pop('MDM_CASE_RENDEZVOUS', None)
             database = None
             if module.postgres:
                 database = stack.enter_context(pool.database(module.profile, module.db_mode))

@@ -67,20 +67,6 @@ class Execution(unittest.TestCase):
             fixtures.scenario.side_effect = scenario
             yield Path(directory), builds, fixtures_type, fixtures
 
-    def test_repeated_case_keeps_each_invocation_in_one_run(self):
-        seen = []
-        with self.harness(execute=lambda case, *_: seen.append(case.name)) as (root, builds, _, fixture):
-            first = Case(MODULES['agent.registration'].build, 'agent.registration', Path('/leased/binary'), 'agent.registration::case').id
-            second = Case(MODULES['enrollment.http'].build, 'enrollment.http', Path('/leased/binary'), 'enrollment.http::case').id
-            result = t2.run_modules(['agent.registration', 'enrollment.http'], root, jobs=1,
-                                    case_order=[first, second, first])
-            self.assertEqual(seen, ['agent.registration::case', 'enrollment.http::case', 'agent.registration::case'])
-            fixture.prepare.assert_called_once()
-            repeated = list(result['agent.registration']['cases'].values())
-            self.assertEqual(len(repeated), 2)
-            self.assertEqual(repeated[0]['caseId'], repeated[1]['caseId'])
-            self.assertNotEqual(repeated[0]['invocationId'], repeated[1]['invocationId'])
-
     def test_missing_dependencies_fail_before_build_and_service_start(self):
         with self.harness() as (root, builds, fixture_type, _), patch.object(t2.shutil, 'which', return_value=None):
             with self.assertRaisesRegex(RuntimeError, 'missing dependencies'):

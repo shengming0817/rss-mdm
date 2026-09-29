@@ -1,7 +1,6 @@
 """The run owns ordinary workers through the existing product serve entry point."""
 import json
 from pathlib import Path
-import socket
 import threading
 import time
 import urllib.request
@@ -22,20 +21,30 @@ class Host:
         self.log_path = output / 'host.log'
         self.log = self.log_path.open('w')
         config = json.loads(Path(config_path).read_text())
-        with socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0))
-            self.address = f'127.0.0.1:{listener.getsockname()[1]}'
-        config.update(listen=self.address, native_protocols={})
+        self.address = None
+        config.update(listen='127.0.0.1:0', native_protocols={})
         path = private(Path(config_path).with_name('host.json'), config)
         try:
-            self.child = self.processes.spawn([builds.executables['rss-mdm'], 'serve', '--config', path],
-                                               cwd=ROOT, stdout=self.log, stderr=self.log)
+            receipt_path = output / 'listener.jsonl'
+            with receipt_path.open('w') as receipt:
+                self.child = self.processes.spawn([builds.executables['rss-mdm'], 'serve', '--config', path],
+                                                   cwd=ROOT, stdout=receipt, stderr=self.log)
             end = time.monotonic() + 30
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             while True:
                 self.processes.check()
                 require(self.child.poll() is None, f'public T2 host exited during startup; see {self.log_path}')
+                if self.address is None:
+                    value = receipt_path.read_text()
+                    if value.endswith('\n'):
+                        receipt = json.loads(value)
+                        address = urlsplit('http://' + receipt['address'])
+                        require(receipt['event'] == 'listener-bound' and address.hostname == '127.0.0.1'
+                                and address.port and address.netloc == receipt['address'], 'invalid T2 listener receipt')
+                        self.address = receipt['address']
                 try:
+                    if self.address is None:
+                        raise OSError('listener receipt pending')
                     request = urllib.request.Request('http://' + self.address + '/readyz',
                                                      headers={'Host': urlsplit(config['product_origin']).netloc})
                     with opener.open(request, timeout=1) as response:

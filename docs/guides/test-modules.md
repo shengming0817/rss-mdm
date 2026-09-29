@@ -74,6 +74,8 @@ Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Car
 
 复用资格必须包含同库 A→B→A、换序、同租户不同对象实际重叠及异租户同步写入；关键同对象竞争使用同步点。故障不得靠隐式换库重试隐藏。
 
+正式资格入口为 `make t2 MODULE=all REUSE_PLAN=/absolute/reuse-plan.json JOBS=2`。计划取 LIST 中实际发现的完整 ID，格式为 `{"objects":["A的ID","B的ID"],"tenants":["C的ID","D的ID"]}`：四项必须同 profile、`reuse`、Rust 用例，A/B 为 objects，C/D 为 tenant 或 pair。建议 A/B 选择注册与内容/执行，C/D 选择主体授权与全租户观察。执行器在一次环境生命周期内固定运行 A→B→A、B→A→B，再并发 A/B 与 C/D；所有调用重新分配对象和主体，保持同一物理 PG/数据库。并发组在两个实际 Rust 用例进入 context 后会合，核对执行区间重叠及租户关系。`reuse.json` 和逐调用 result 保存计划、顺序、数据库与运行证据；未到达会合、换库或任何业务断言失败均不能通过。该代表场景资格不替代全量 T2。
+
 T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个连接，另为普通公共宿主预留 128；故障 PG 因串行使用，容量为 128。此容量覆盖组件 fixture 中的多个产品连接池，记录于 `postgres-start.maxConnections`；不是另一个并发开关，也不按该数量建库。
 
 构建、发现和执行复用同一二进制与 Cargo 环境。每个发现的 ignored 业务测试必须有唯一模块归属；辅助子进程入口必须在同一模块描述中声明调用 owner，每个声明恰好发现一个入口；身份准备使用唯一 fixture target。未知 ignored helper 不再按命名空间豁免，函数名仍全部来自发现。空发现、重复归属、错误 CASE、缺依赖、二进制或运行中源码变化都失败。nextest JUnit 必须证明实际运行了唯一精确测试、无忽略/重试/失败；每个 Rust/Python 场景执行预算为 600 秒，Rust 的 nextest 与外层进程截止共同保证有界终止。Python 场景通过受控子进程执行并保留 test.log 完成标记；超时、取消及遗留 Compose 环境均由本轮统一清理。LIST 只要求构建/发现工具，不要求 Docker 等运行依赖。

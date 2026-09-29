@@ -94,7 +94,7 @@ async fn history_boundaries(
     )?;
     crate::test_support::identity::set_grants(
         tenant,
-        case::context()["admins"][tenant].as_str().unwrap(),
+        case::context().admin_for(tenant),
         crate::test_support::identity::device_grants(None, &["compliance_read"])?,
     )
     .await?;

@@ -295,6 +295,24 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
                 && record.result() == "success")?
                 == expected_count
         );
+        if expected == StatusCode::BAD_REQUEST {
+            // Rejected bodies remain resumable and reserve tenant upload capacity.
+            // Retire only this case's finished negative request, retaining successful
+            // content/bindings and every other case's active upload.
+            let directory = fixture.directory.join(case_tenant());
+            let _directory = crate::content::lock(&directory.join(".upload.lock"))?;
+            let _session =
+                crate::content::lock(&directory.join(format!(".upload-{operation}.part")))?;
+            for extension in ["json", "next", "part"] {
+                match std::fs::remove_file(
+                    directory.join(format!(".upload-{operation}.{extension}")),
+                ) {
+                    Ok(()) => (),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
     }
     ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND resource='{resource}'", TENANT = case_tenant()))?.trim() == "2");
     Ok(())

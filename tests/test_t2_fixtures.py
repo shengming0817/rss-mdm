@@ -107,6 +107,27 @@ class PreparationTests(unittest.TestCase):
             finally:
                 fixture.cert_directory.cleanup()
 
+    def test_cleanup_recovers_compose_resources_when_local_directories_are_missing(self):
+        from t2_environment import Environment
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.fixture(Path(tmp))
+            try:
+                for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+                    owner.root = Path(tmp) / owner.project
+                fixture.cleanup_environments()
+                for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+                    owner.reset.assert_called_once()
+                # The existing reset still verifies Docker ownership without owner.json.
+                environment = Environment(Path(tmp))
+                with patch.object(environment, 'verify_ownership') as verify, \
+                     patch.object(environment, 'compose') as compose, \
+                     patch.object(environment, 'host_ports'):
+                    environment.reset()
+                    verify.assert_called_once()
+                    compose.assert_called_once_with('--profile', '*', 'down', '--volumes', '--remove-orphans')
+            finally:
+                fixture.cert_directory.cleanup()
+
     def test_instance_only_does_not_start_normal_pg(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = self.fixture(Path(tmp))
