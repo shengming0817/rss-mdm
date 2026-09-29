@@ -62,12 +62,12 @@ impl Authority {
             crate::enrollment::http::routes().with_state(Arc::new(
                 crate::enrollment::http::HttpState {
                     service: Arc::new(crate::enrollment::EnrollmentService::new(
-                        self.access.clone(),
+                        self.access.registration(),
                         self.credentials.clone(),
                         self.audit.clone(),
                     )),
                     devices: Arc::new(crate::device::DeviceService::new(
-                        self.access.clone(),
+                        self.access.registration(),
                         case_tenant().into(),
                         self.audit.clone(),
                     )),
@@ -87,17 +87,15 @@ impl Authority {
         Ok(routes
             .route_layer(middleware::from_fn_with_state(
                 Arc::new(crate::authorization::http::AuthenticationState {
-                    identity: self.identity.clone(),
-                    access: self.access.clone(),
+                    identity: self.identity.browser(),
+                    access: self.access.authorization_store(),
                     requests: requests.clone(),
                 }),
                 crate::authorization::http::protect,
             ))
-            .merge(public)
-            .merge(self.identity.routes())
             .layer(axum::extract::DefaultBodyLimit::max(16384))
             .layer(middleware::from_fn_with_state(
-                crate::api::Envelope {
+                rss_mdm_management_http::boundary::Envelope {
                     admission: Arc::new(tokio::sync::Semaphore::new(32)),
                     host: "mdm.example.test".into(),
                     clock: monotonic(),
@@ -105,8 +103,10 @@ impl Authority {
                     requests,
                     tenant: case_tenant().into(),
                 },
-                crate::api::envelope,
+                rss_mdm_management_http::boundary::admit,
             ))
+            .merge(public)
+            .merge(self.identity.routes())
             .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
                 "127.0.0.1".parse()?,
             ))))

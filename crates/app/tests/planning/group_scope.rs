@@ -37,7 +37,7 @@ async fn durable_asset_group_scope_pipeline() {
             device: device.clone(),
             field: assets::FieldKey::IsLoaner,
             owner: owner.clone(),
-            change: operation(
+            change: inventory_operation(
                 0,
                 assets::ManualChange::Set {
                     value: assets::Scalar::Boolean(true),
@@ -83,7 +83,7 @@ async fn durable_asset_group_scope_pipeline() {
     launch.stage_deferred_task_with_token(
         automation
             .clone()
-            .registration(notifications.signals.clone())
+            .registration(notifications.signals.flow())
             .critical(),
     );
     launch.finish();
@@ -129,9 +129,11 @@ async fn durable_asset_group_scope_pipeline() {
     let denied_audit = RequestAudit::new(tenant().to_string(), "management_read");
     assert!(matches!(
         service
-            .execute(&page_command, &denied_audit, &|| Err(Error::Forbidden))
+            .execute(&page_command, &denied_audit, &|| Err(
+                rss_mdm_flow_service::Error::Forbidden
+            ))
             .await,
-        Err(Error::Forbidden)
+        Err(rss_mdm_flow_service::Error::Forbidden)
     ));
     denied_audit.finalize(None);
     let query_scope = assets::ReadScope {
@@ -141,7 +143,7 @@ async fn durable_asset_group_scope_pipeline() {
     let query = execute_asset(
         &service,
         &assets::Command::Search {
-            request: operation(
+            request: inventory_operation(
                 0,
                 assets::Query {
                     criteria: Some(assets::Criteria::Predicate {
@@ -214,7 +216,7 @@ async fn durable_asset_group_scope_pipeline() {
             }
         )
         .await,
-        Err(Error::Forbidden)
+        Err(Error::Service(rss_mdm_flow_service::Error::Forbidden))
     ));
     let facets = execute_asset(
         &service,
@@ -363,7 +365,9 @@ async fn group_scope_replay_and_audit_atomicity() {
     sql("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime");
     assert!(matches!(
         result,
-        Err(Error::Unavailable(Failure::AuditAdmission))
+        Err(Error::Service(rss_mdm_flow_service::Error::Unavailable(
+            rss_mdm_flow_service::Failure::AuditAdmission
+        )))
     ));
     assert_eq!(
         sql(&format!(

@@ -1,4 +1,5 @@
 use super::*;
+use axum::http::HeaderMap;
 #[test]
 fn private_provider_permission_is_explicit_and_tenant_bound() {
     let mut value = serde_json::json!({

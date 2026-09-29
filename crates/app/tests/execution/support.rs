@@ -93,7 +93,7 @@ impl Client {
         }
         let audit = RequestAudit::new(case_tenant().into(), "management_read");
         let service = self.app.execution.as_ref();
-        let result = crate::transaction::run(
+        let result = rss_mdm_flow_service::transaction::run(
             &service.audit_store,
             &service.runtime,
             service.tenant,
@@ -110,7 +110,7 @@ impl Client {
                     Ok(())
                 })
             },
-            crate::transaction::TransactionOwner::Execution,
+            rss_mdm_flow_service::transaction::TransactionOwner::Execution,
         )
         .await;
         audit.finalize(None);

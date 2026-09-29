@@ -400,7 +400,7 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.registration().critical());
-    launch.stage_deferred_task_with_token(worker.registration(signals).critical());
+    launch.stage_deferred_task_with_token(worker.registration(signals.flow()).critical());
     launch.finish();
     Ok(Some(stack))
 }

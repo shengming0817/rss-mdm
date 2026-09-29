@@ -1,0 +1,58 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_access",
+      "table": "enrollment_certificates",
+      "read_write": true,
+      "updates": [
+        "server_nonce"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "enrollment_intents",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "management_messages",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp"
+    },
+    {
+      "schema": "mdm_access",
+      "table": "management_sessions",
+      "read_write": true,
+      "updates": [
+        "state",
+        "last_message",
+        "correlation",
+        "nonce",
+        "client_authenticated",
+        "run_id"
+      ],
+      "delete_policy": "expires_at<clock_timestamp"
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "collections",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

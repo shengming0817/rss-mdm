@@ -85,7 +85,7 @@ impl Worker {
             .acquire_timeout(Duration::from_secs(5))
             .connect_lazy_with(database.options()?);
         acquire(DynManagedResource::new_box(PoolResource(pool.clone())));
-        let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(5));
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let control = budget.control();
         tokio::time::timeout(control.total_remaining(), async {
             let mut connection = pool.acquire().await.map_err(|_| unavailable())?;
@@ -115,8 +115,8 @@ impl Worker {
                     |_| Ok(()),
                     |_| Err(unavailable()),
                     |_| Err(unavailable()),
-                    |_| Err(Error::RollbackFailed),
-                    |_| Err(Error::CommitUnknown),
+                    |_| Err(Error::Service(rss_mdm_flow_service::Error::RollbackFailed)),
+                    |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
                     |_| Err(unavailable()),
                 )?;
         }

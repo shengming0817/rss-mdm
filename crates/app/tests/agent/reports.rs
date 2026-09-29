@@ -191,7 +191,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     runtime.close_fixture().await?;
 
     pg(&format!(
-        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,g,NULL,NULL,NULL,NULL,started_at-g,attempts,result,reason,batch,digest,sealed_at-g,false FROM mdm_access.collection_runs CROSS JOIN generate_series(1,230) g WHERE tenant_id='{TENANT}' AND id='{report_id}'",
+        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,g,started_at-g,attempts,result,reason,batch,digest,sealed_at-g,false FROM mdm_access.collection_runs CROSS JOIN generate_series(1,230) g WHERE tenant_id='{TENANT}' AND id='{report_id}'",
         TENANT = case_tenant()
     ))?;
     let partial_id = uuid::Uuid::new_v4();
@@ -214,7 +214,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     }
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND NOT delivery_pending", registration["registrationId"].as_str().unwrap(), TENANT = case_tenant()))?.trim().parse::<i64>()? <= 224, "delivered Agent retention was not enforced");
     pg(&format!(
-        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,1000+g,NULL,NULL,NULL,NULL,started_at,attempts,result,reason,batch,digest,sealed_at,true FROM mdm_access.collection_runs CROSS JOIN generate_series(1,29) g WHERE tenant_id='{TENANT}' AND id='{partial_id}'",
+        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,1000+g,started_at,attempts,result,reason,batch,digest,sealed_at,true FROM mdm_access.collection_runs CROSS JOIN generate_series(1,29) g WHERE tenant_id='{TENANT}' AND id='{partial_id}'",
         TENANT = case_tenant()
     ))?;
     let mut capacity = tokio::task::JoinSet::new();

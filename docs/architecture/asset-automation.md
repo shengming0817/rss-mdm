@@ -14,22 +14,24 @@ Agent 在签入时受理自己的 Run，配置型仅对必要差分入队；发�
 
 ## 唯一职责
 
-- Inventory 保存字段版本历史；应用保存注册与来源版本历史。
+- Inventory 保存字段版本历史；Registration 保存注册与来源版本历史。
 - 事实事务同时保存提交有序水位和 ingress。租户计数器行锁持续到事务结束，
   普通 sequence 最大值不能代表已提交水位。
-- 应用转交器通过 RSS 公共 `messaging::wake_with` 原子唤醒并标记转交。
+- Flow 转交器通过 RSS 公共 `messaging::wake_with` 原子唤醒并标记转交。
   RSS 独占 claim、lease、重试及恢复；产品不直接调用组件私有 SQL。
   新输入通过持久水位合并；已运行的计算保留检查点，完成后追赶较新输入。
   Scope 计算冲突自动产生可查询的替代任务；临时未完成的来源不能授权新执行。
-- Group/Scope 各自保存不可变分批结果，应用组合跨 owner 事务和授权。
+- Inventory 的 Group 和 Flow 的 Scope 各自保存不可变分批结果，发起用例的能力组合跨 owner 事务和授权。
   有界求值复用原决策逻辑；页输入和完整结果使用不同类型。
 - ingress 每批冻结最多 1,000 条已提交变更。Group owner 通过反向索引按设备查询最新
-  已发布成员，逐设备最多取 33 个候选组再合并；应用只维护字段→组索引和任务引用。
+  已发布成员，逐设备最多取 33 个候选组再合并；Inventory 维护字段→组索引，Flow 维护任务引用。
   已发布结果覆盖当前批次水位与规则时跳过重算；待处理任务用冻结的定义修订去重。
 - 动态 Group 在规则不变时，按有界输入批次只求值受相关字段或身份变化影响的设备。
   稀疏计算保留前一完整基线，历史结果仍按其冻结发布序列读取，规则变化必要全算。
 - Policy 发布锁定资源版本和目标引用。Scope 是唯一目标 owner；消费者通过同一个
   `scope_admission` 合同判断新鲜度、有效成员和 Unknown 阻断，不另存永久目标副本。
+
+Registration 的 `mdm_access.asset_authority_history` 是提交有序、只追加的授权历史投影；Inventory 的 `mdm_assets.group_fields` 是规则字段依赖索引。二者发布给 Flow 的只读 SQL 合同用于同一事务中的有界联合查询和 `scope_admission`，由各 owner 的安装定义、精确角色权限与 catalog 校验约束；活动注册/凭据的检查及变更必须使用 Registration 的借用事务接口。
 
 ## 发布与失效
 
@@ -62,4 +64,4 @@ RSS 目标；提交未知沿原 claim/任务身份恢复，不把未知结果当
 
 操作与分页见 [组、范围与 Policy](../guides/groups-scopes-policies.md)。容量目标须由独立性能验证给出证据，功能边界测试不作规模证明。
 
-业务回执的 operationId 以能力 owner 为作用域；规划、资产、资源目录与软件发布的审计事件键使用同一 owner namespace。同 owner 的重复请求恢复原回执，复用标识但改变请求返回冲突；跨 owner 的独立操作不会误报审计完整性故障。
+业务回执的 operationId 以能力 owner、租户和已验证主体为作用域；规划、资产、资源目录与软件发布的审计事件键使用同一 owner namespace。同一作用域内的重复请求恢复原回执，复用标识但改变请求返回冲突；不同主体或能力的操作不会混用回执。

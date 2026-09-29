@@ -27,7 +27,12 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
             )
         });
         assert!(
-            matches!(result, Err(Error::Unavailable(Failure::AuditIsolation))),
+            matches!(
+                result,
+                Err(Error::Service(rss_mdm_flow_service::Error::Unavailable(
+                    rss_mdm_flow_service::Failure::AuditIsolation
+                )))
+            ),
             "{role}: {result:?}"
         );
         let runtime = runtime_role(tenant(), role).await;

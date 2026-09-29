@@ -26,7 +26,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         0,
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,'[\"inventory.basic.v3\"]','macos','aarch64')")
+    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,3,'[\"inventory.basic.v3\"]','macos','aarch64')")
         .bind(case_a()).bind(other_channel.registration.to_string()).execute(&mut root).await?;
     let newer = proof(case_a(), Channel::Mdm, 2);
     let (next, second) = bind(
@@ -52,7 +52,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     );
     // Real commit succeeds but its ACK is lost; recreate the owner and recover by original key.
     service
-        .audit_store
+        .fixture_audit_store()
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     assert!(matches!(
         service
@@ -71,7 +71,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .context("access store admission")?,
     );
     let restart = DeviceService::new(
-        restart_access.clone(),
+        restart_access.registration(),
         case_a().into(),
         restart_access
             .audit_store(&crate::config::AuditConfig::Plain)
@@ -177,7 +177,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid").bind(case_a()).bind(pending.request_id.to_string()).fetch_one(&mut root).await?;
     assert_eq!(count, 0);
     service
-        .audit_store
+        .fixture_audit_store()
         .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     assert!(
         service
@@ -186,7 +186,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .is_err()
     );
     service
-        .audit_store
+        .fixture_audit_store()
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     assert!(matches!(
         service.bind(&admin_a, &third_proof, pending.clone()).await,
@@ -245,7 +245,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     // Replacement commits with its old generation still active, then loses its ACK.
     let fourth_proof = proof(case_a(), Channel::Mdm, 4);
     service
-        .audit_store
+        .fixture_audit_store()
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     assert!(matches!(
         service.bind(&admin_a, &fourth_proof, replace.clone()).await,
@@ -342,11 +342,13 @@ async fn commit_deadlines(
         let credential = proof(case_a(), Channel::Mdm, 100 + number);
         let command = BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(&service.access, admin, &device, Channel::Mdm).await?,
+            request_id: service
+                .fixture_request(admin, &device, Channel::Mdm)
+                .await?,
             expected_generation: 0,
             source: ReportSource::MdmWindows,
         };
-        service.audit_store.inject_next_fault(fault);
+        service.fixture_audit_store().inject_next_fault(fault);
         let result = service.bind(admin, &credential, command.clone()).await;
         outcomes.push(if committed {
             matches!(result, Err(Error::CommitUnknown))
@@ -354,7 +356,7 @@ async fn commit_deadlines(
             matches!(result, Err(Error::RollbackFailed))
         });
         let stored: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
+            "SELECT count(*) FROM mdm_access.registration_operations WHERE operation_id=$1::uuid",
         )
         .bind(command.operation_id.to_string())
         .fetch_one(&mut *root)
@@ -364,7 +366,7 @@ async fn commit_deadlines(
         assert_eq!(service.bind(admin, &credential, command).await?, receipt);
 
         let key = Uuid::new_v4();
-        service.audit_store.inject_next_fault(fault);
+        service.fixture_audit_store().inject_next_fault(fault);
         let result = service
             .revoke(admin, &device, receipt.registration, key)
             .await;
@@ -374,7 +376,7 @@ async fn commit_deadlines(
             matches!(result, Err(Error::RollbackFailed))
         });
         let stored: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM mdm_access.operations WHERE operation_id=$1::uuid",
+            "SELECT count(*) FROM mdm_access.registration_operations WHERE operation_id=$1::uuid",
         )
         .bind(key.to_string())
         .fetch_one(&mut *root)

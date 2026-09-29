@@ -117,7 +117,7 @@ pub async fn serve(
                             .map_err(|_| {
                                 ProcessError::at(
                                     "startup.notification_tenant",
-                                    crate::Error::Malformed,
+                                    crate::Error::Service(rss_mdm_flow_service::Error::Malformed),
                                 )
                             })?,
                         );
@@ -133,7 +133,7 @@ pub async fn serve(
                         let observation =
                             ObservationResource::open(runtime_options.clone(), clock.clone())
                                 .await
-                                .map_err(|e| ProcessError::at("startup.observation", e))?;
+                                .map_err(|e| ProcessError::at("startup.observation", e.into()))?;
                         let observation_store = observation.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(observation));
                         let startup_control =
@@ -144,17 +144,18 @@ pub async fn serve(
                             &startup_control,
                         )
                         .await
-                        .map_err(|e| ProcessError::at("startup.projection", e))?;
+                        .map_err(|e| ProcessError::at("startup.projection", e.into()))?;
                         let projection_store = projection.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(projection));
                         let audit_store = access
                             .audit_store(&compiled.config.audit)
                             .await
                             .map_err(|e| ProcessError::at("startup.audit", e))?;
-                        let audit_budget = crate::audit_budget::AuditBudget::with_cancellation(
-                            Duration::from_secs(5),
-                            startup_cancel.clone(),
-                        );
+                        let audit_budget =
+                            rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
+                                Duration::from_secs(5),
+                                startup_cancel.clone(),
+                            );
                         let audit_control = audit_budget.control();
                         audit_store
                             .validate_tenant(
@@ -174,7 +175,7 @@ pub async fn serve(
                         let runtime = Arc::new(InventoryRuntime::new(
                             observation_store,
                             projection_store,
-                            access.clone(),
+                            access.inventory(),
                             audit_store.clone(),
                             rss_request_context::TenantId::parse(
                                 &compiled.config.identity.tenant_id,
@@ -193,7 +194,11 @@ pub async fn serve(
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,
                                 )
-                                .map_err(|_| assembly_error(Error::Malformed))?,
+                                .map_err(|_| {
+                                    assembly_error(Error::Service(
+                                        rss_mdm_flow_service::Error::Malformed,
+                                    ))
+                                })?,
                                 Arc::new(crate::clock::SystemClock),
                                 |resource| {
                                     startup.stage_resource(DynManagedResource::new_box(resource))
@@ -205,12 +210,19 @@ pub async fn serve(
                             crate::flow::execution::open(&compiled.config, audit_store.clone())
                                 .await
                                 .map_err(|e| ProcessError::at("startup.execution", e))?;
-                        let automation = crate::automation::Automation::open(
-                            planning.clone(),
-                            &compiled.config.flow.storage.database,
+                        let automation = crate::automation::Automation::connect(
+                            planning.planning.clone(),
+                            planning.assets.clone(),
+                            compiled
+                                .config
+                                .flow
+                                .storage
+                                .database
+                                .options()
+                                .map_err(|e| ProcessError::at("startup.asset_automation", e))?,
                         )
                         .await
-                        .map_err(|e| ProcessError::at("startup.asset_automation", e))?;
+                        .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::automation::Resource(automation.clone()),
                         ));
@@ -299,37 +311,39 @@ pub async fn serve(
                     launch.stage_task_with_token(notifications.registration().critical());
                     if let Some(apple) = app.apple {
                         launch.stage_task_with_token(
-                            crate::apple::push::registration(
-                                apple,
+                            rss_mdm_apple_channel::push::registration(
+                                apple.channel.clone(),
                                 execution.clone(),
-                                access.clone(),
+                                access.apple_store(),
                                 audit_store.clone(),
                                 tenant.clone(),
-                                signals.clone(),
+                                signals.handle(crate::worker_wake::Work::Apple),
                             )
                             .critical(),
                         );
                     }
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(
-                        execution.registration(signals.clone()).critical(),
+                        execution.registration(signals.flow()).critical(),
                     );
                     launch.stage_deferred_task_with_token(
-                        automation.registration(signals.clone()).critical(),
+                        automation.registration(signals.flow()).critical(),
                     );
                     launch.stage_deferred_task_with_token(
-                        runtime.registration(signals.clone()).critical(),
+                        runtime
+                            .registration(signals.handle(crate::worker_wake::Work::Inventory))
+                            .critical(),
                     );
                     if native_listeners
                         .iter()
                         .any(|(kind, _, _)| kind.windows_retention())
                     {
                         launch.stage_task_with_token(
-                            crate::windows::retention::registration(
-                                access.clone(),
+                            rss_mdm_windows_channel::retention::registration(
+                                access.windows_store(),
                                 audit_store.clone(),
                                 tenant.clone(),
-                                signals.clone(),
+                                signals.handle(crate::worker_wake::Work::Windows),
                             )
                             .critical(),
                         );

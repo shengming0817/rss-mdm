@@ -1,0 +1,77 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_access",
+      "table": "asset_authority_history",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "credentials",
+      "read_write": true,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "devices",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "grants",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "registration_operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "registrations",
+      "read_write": true,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "report_sources",
+      "read_write": true,
+      "updates": [
+        "enabled",
+        "next_command",
+        "next_sequence"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "requests",
+      "read_write": true,
+      "updates": [
+        "state",
+        "password_digest",
+        "password_version",
+        "credential_ref",
+        "expires_at"
+      ],
+      "delete_policy": null
+    }
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

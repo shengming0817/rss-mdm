@@ -1,0 +1,41 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_access",
+      "table": "collection_history",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "collection_runs",
+      "read_write": true,
+      "updates": [
+        "attempts",
+        "result",
+        "reason",
+        "batch",
+        "digest",
+        "sealed_at",
+        "delivery_pending"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_inventory",
+      "table": "collection_operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "mdm_access.prune_agent_collections",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

@@ -163,11 +163,12 @@ async fn listener_connections_and_bounded_shutdown() -> anyhow::Result<()> {
             get({
                 let entered = entered.clone();
                 let dropped = dropped.clone();
-                move |Extension(peer): Extension<Peer>, Extension(_gate): Extension<RequestGate>| {
+                move |peer: Option<Extension<HandshakePeer>>,
+                      Extension(_gate): Extension<RequestGate>| {
                     let entered = entered.clone();
                     let dropped = dropped.clone();
                     async move {
-                        assert!(peer.chain().is_empty());
+                        assert!(peer.is_none());
                         let _guard = Dropped(dropped);
                         entered.notify_one();
                         std::future::pending::<&'static str>().await

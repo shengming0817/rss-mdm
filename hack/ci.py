@@ -23,6 +23,17 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-management-http": "crates/management-http",
+    "rss-mdm-apple-channel": "crates/apple-channel",
+    "rss-mdm-windows-channel": "crates/windows-channel",
+    "rss-mdm-agent-channel": "crates/agent-channel",
+    "rss-mdm-flow-service": "crates/flow-service",
+    "rss-mdm-inventory-service": "crates/inventory-service",
+    "rss-mdm-registration-service": "crates/registration-service",
+    "rss-mdm-authorization-service": "crates/authorization-service",
+    "rss-mdm-content-service": "crates/content-service",
+    "rss-mdm-certificate": "crates/certificate",
+    "rss-mdm-apple-mdm": "crates/apple-mdm",
     "rss-mdm-software-service": "crates/software-service",
     "rss-mdm-compliance": "crates/compliance",
     "rss-mdm-compliance-postgres": "crates/compliance-postgres",
@@ -158,7 +169,7 @@ def verify_backend_support(data):
     ident = ids[0]
     require(nodes[ident]['features'] == [], "backend support has no feature surface")
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == ident for d in n['deps'])}
-    require(parents == adapters, "only three backend adapters may directly consume support")
+    require(parents == adapters | {"rss-mdm-app"}, "only backend adapters and App admission may directly consume support")
     visited, pending = set(), [ident]
     while pending:
         key = pending.pop()
@@ -175,7 +186,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-mdm-app', 'rss-mdm-software-service'}, 'only host and software business producers may consume audit integration')
+    require(parents == {'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default', 'integration'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:

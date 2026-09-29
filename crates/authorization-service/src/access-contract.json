@@ -1,0 +1,41 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_access",
+      "table": "authorization_initializations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "authorization_operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "authorization_rules",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "document"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "user_groups",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "document"
+      ],
+      "delete_policy": null
+    }
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

@@ -59,27 +59,54 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
 pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
     let runtime = agent_runtime(&fixture.base).await?;
     let devices = Arc::new(crate::device::DeviceService::new(
-        fixture.access.clone(),
+        fixture.access.registration(),
         case_tenant().into(),
         fixture.audit.clone(),
     ));
     let collection = Arc::new(crate::assets::collection::CollectionService::new(
         devices.clone(),
-        fixture.access.clone(),
+        fixture.access.inventory(),
         runtime,
     ));
-    let agent = crate::agent::routes().with_state(Arc::new(crate::agent::HttpState {
-        audit_store: fixture.audit.clone(),
-        access: fixture.access.clone(),
-        identity: fixture.identity.clone(),
-        credentials: fixture.credentials.clone(),
-        devices,
-        collection,
-    }));
-    fixture.router_with_public(
-        fixture.authorization().merge(fixture.enrollment()),
-        Router::new().nest("/api/agent/v3", agent),
-    )
+    let agent = crate::agent::router(
+        Arc::new(crate::agent::HttpState {
+            mount: crate::device::ChannelMount::new(
+                fixture.identity.tenant,
+                rss_mdm_inventory::ReportSource::AgentBuiltin,
+            ),
+            audit_store: fixture.audit.clone(),
+            access: Arc::new(fixture.access.agent_store()),
+            identity: Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    fixture.identity.authority.clone(),
+                    fixture.identity.tenant,
+                ),
+            ),
+            credentials: fixture.credentials.clone(),
+            devices,
+            collection,
+        }),
+        rss_mdm_agent_channel::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test".into(),
+            clock: monotonic(),
+            audit_store: fixture.audit.clone(),
+            requests: Arc::new(tokio::sync::Semaphore::new(4)),
+            tenant: case_tenant().into(),
+        },
+    );
+    let fallback = Router::new()
+        .fallback(|| async { StatusCode::NOT_FOUND })
+        .layer(axum::middleware::from_fn_with_state(
+            "mdm.example.test".to_owned(),
+            crate::http_host::guard,
+        ));
+    Ok(fixture
+        .router_with_public(
+            fixture.authorization().merge(fixture.enrollment()),
+            Router::new().nest("/api/agent/v3", agent),
+        )?
+        .merge(fallback))
 }
 
 /// Prepare additional task-capable targets from one real HTTP registration.
@@ -113,11 +140,11 @@ INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,covera
  FROM task_targets t CROSS JOIN mdm_access.report_sources s
  JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
  WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
-INSERT INTO mdm_access.agent_bindings(tenant_id,registration,wire_version,capabilities,platform,architecture)
+INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture)
  SELECT '{TENANT}',registration,3,'["inventory.basic.v3","task.execute.v3"]','macos','aarch64' FROM task_targets;
 DO $$ BEGIN
  IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
-     JOIN mdm_access.agent_bindings b ON b.registration=r.id
+     JOIN mdm_agent.bindings b ON b.registration=r.id
      JOIN mdm_access.credentials c ON c.registration=r.id
      JOIN mdm_access.requests q ON q.id=r.request_id
      JOIN mdm_access.devices d ON (d.tenant_id,d.id)=(r.tenant_id,r.device)

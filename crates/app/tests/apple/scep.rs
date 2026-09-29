@@ -52,13 +52,13 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
     f.lose_notify
         .store(false, std::sync::atomic::Ordering::SeqCst);
     unbound_leaf_and_replay(&f, &device, &request, attempt).await?;
-    let checked = apple.authority.verify(
+    let checked = apple.channel.trust_fixture().verify(
         &[tokio_rustls::rustls::pki_types::CertificateDer::from(
             der.clone(),
         )],
         f.app.clock.unix_seconds()?,
     )?;
-    ensure!(checked.enrollment == enrollment && checked.attempt == attempt);
+    ensure!(checked.enrollment() == enrollment && checked.attempt() == attempt);
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(40))

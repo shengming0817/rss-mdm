@@ -7,165 +7,172 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"hack"))
 from rust_test_layout import is_test_path
 
-ROOT = Path(__file__).resolve().parents[1] / "crates/app/src"
-SERVICE = ROOT.parents[1] / "software-service/src"
+ROOT = Path(__file__).resolve().parents[1]
+PRODUCERS = ('app','software-service','authorization-service','registration-service','inventory-service','flow-service','content-service','management-http','agent-channel','windows-channel','apple-channel')
 def production_paths():
-    return [*ROOT.rglob("*.rs"), *SERVICE.rglob("*.rs")]
+    return [path for owner in PRODUCERS for path in (ROOT/'crates'/owner/'src').rglob('*.rs')]
 
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
-OWNERS = {
-    "compliance_write": "compliance/http.rs",
-    "compliance_read": "compliance/http.rs",
-    "agent_registration": "agent.rs",
-    "agent_report": "agent.rs",
-    "agent_report_read": "api.rs",
-    "apple_checkin": "api.rs",
-    "apple_management": "api.rs",
-    "apple_profile": "api.rs",
-    "apple_push": "execution/apple_push.rs",
-    "apple_renewal": "apple/renewal.rs",
-    "apple_scep": "api.rs",
-    "authentication": "api.rs",
-    "authorization_departments_read": "api.rs",
-    "authorization_effective_read": "api.rs",
-    "authorization_groups_read": "api.rs",
-    "authorization_initialize": "authorization/store.rs",
-    "authorization_members_read": "api.rs",
-    "authorization_rules_read": "api.rs",
-    "authorization_write": "authorization/store.rs",
-    "automation_failed": "planning/automation/health.rs",
-    "automation_completed": "automation/jobs.rs",
-    "collection_finish": "collection/store.rs",
-    "collection_read": "api.rs",
-    "collection_start": "collection/apple.rs",
-    "command_accept": "execution/actions/http.rs",
-    "command_approve": "execution/http.rs",
-    "command_cancel": "execution/http.rs",
-    "command_dispatch": "execution/recovery.rs",
-    "command_read": "execution/actions/http.rs",
-    "command_reconcile": "execution/actions/recovery.rs",
-    "credential_revoke": "device.rs",
-    "device_action": "api.rs",
-    "enrollment_cancel": "api.rs",
-    "enrollment_create": "api.rs",
-    "enrollment_issue": "api.rs",
-    "enrollment_read": "api.rs",
-    "enrollment_resume": "api.rs",
-    "inventory_read": "api.rs",
-    "management_read": "execution/recovery.rs",
-    "management_write": "resource_catalog/http.rs",
-    "protected_request": "api.rs",
-    "registration_bind": "device.rs",
-    "registration_read": "api.rs",
-    "software_binding": "../../software-service/src/publication/storage.rs",
-    "software_candidate": "../../software-service/src/publication/service.rs",
-    "software_validate": "../../software-service/src/publication/service.rs",
-    "software_approve": "../../software-service/src/publication/service.rs",
-    "software_authorize": "../../software-service/src/publication/service.rs",
-    "software_call": "../../software-service/src/publication/driver.rs",
-    "software_preflight": "../../software-service/src/publication/driver.rs",
-    "software_result": "../../software-service/src/publication/driver.rs",
-    "software_withdraw": "../../software-service/src/publication/driver.rs",
-    "windows_discovery": "api.rs",
-    "windows_management": "api.rs",
-    "windows_policy": "api.rs",
-}
+OWNERS = {'authentication':'crates/management-http/src/boundary.rs','agent_registration': 'crates/agent-channel/src/lib.rs',
+ 'agent_report': 'crates/agent-channel/src/lib.rs',
+ 'agent_report_read': 'crates/agent-channel/src/lib.rs',
+ 'apple_checkin': 'crates/apple-channel/src/boundary.rs',
+ 'apple_management': 'crates/app/src/native/mod.rs',
+ 'apple_profile': 'crates/apple-channel/src/boundary.rs',
+ 'apple_push': 'crates/flow-service/src/execution/apple_push.rs',
+ 'apple_renewal': 'crates/apple-channel/src/renewal.rs',
+ 'apple_scep': 'crates/app/src/native/mod.rs',
+ 'authorization_departments_read': 'crates/management-http/src/boundary.rs',
+ 'authorization_effective_read': 'crates/management-http/src/boundary.rs',
+ 'authorization_groups_read': 'crates/management-http/src/boundary.rs',
+ 'authorization_initialize': 'crates/authorization-service/src/store.rs',
+ 'authorization_members_read': 'crates/management-http/src/boundary.rs',
+ 'authorization_rules_read': 'crates/management-http/src/boundary.rs',
+ 'authorization_write': 'crates/authorization-service/src/store.rs',
+ 'automation_completed': 'crates/flow-service/src/automation/jobs.rs',
+ 'automation_failed': 'crates/flow-service/src/planning/automation/health.rs',
+ 'collection_finish': 'crates/inventory-service/src/collection/store.rs',
+ 'collection_read': 'crates/management-http/src/router.rs',
+ 'collection_start': 'crates/inventory-service/src/apple_collection.rs',
+ 'command_accept': 'crates/agent-channel/src/tasks.rs',
+ 'command_approve': 'crates/management-http/src/execution/http.rs',
+ 'command_cancel': 'crates/management-http/src/execution/http.rs',
+ 'command_dispatch': 'crates/flow-service/src/execution/actions/recovery.rs',
+ 'command_read': 'crates/agent-channel/src/tasks.rs',
+ 'command_reconcile': 'crates/flow-service/src/execution/actions/recovery.rs',
+ 'compliance_read': 'crates/management-http/src/compliance/http.rs',
+ 'compliance_write': 'crates/management-http/src/compliance/http.rs',
+ 'credential_revoke': 'crates/registration-service/src/device.rs',
+ 'device_action': 'crates/management-http/src/router.rs',
+ 'enrollment_cancel': 'crates/management-http/src/boundary.rs',
+ 'enrollment_create': 'crates/registration-service/src/device.rs',
+ 'enrollment_issue': 'crates/windows-channel/src/lib.rs',
+ 'enrollment_read': 'crates/management-http/src/boundary.rs',
+ 'enrollment_resume': 'crates/management-http/src/boundary.rs',
+ 'inventory_read': 'crates/management-http/src/assets/http.rs',
+ 'management_read': 'crates/content-service/src/service.rs',
+ 'management_write': 'crates/content-service/src/service.rs',
+ 'protected_request': 'crates/app/src/native/mod.rs',
+ 'registration_bind': 'crates/registration-service/src/device.rs',
+ 'registration_read': 'crates/management-http/src/boundary.rs',
+ 'software_approve': 'crates/software-service/src/publication/service.rs',
+ 'software_authorize': 'crates/software-service/src/publication/service.rs',
+ 'software_binding': 'crates/software-service/src/publication/storage.rs',
+ 'software_call': 'crates/software-service/src/publication/driver.rs',
+ 'software_candidate': 'crates/software-service/src/publication/service.rs',
+ 'software_preflight': 'crates/flow-service/src/software_publication/service.rs',
+ 'software_result': 'crates/software-service/src/publication/driver.rs',
+ 'software_validate': 'crates/software-service/src/publication/service.rs',
+ 'software_withdraw': 'crates/software-service/src/publication/driver.rs',
+ 'windows_discovery': 'crates/windows-channel/src/boundary.rs',
+ 'windows_management': 'crates/windows-channel/src/management.rs',
+ 'windows_policy': 'crates/windows-channel/src/boundary.rs'}
 
+DECLARATIONS = {('authentication','crates/management-http/src/boundary.rs'),('agent_registration', 'crates/agent-channel/src/boundary.rs'),
+ ('agent_registration', 'crates/agent-channel/src/lib.rs'),
+ ('agent_report', 'crates/agent-channel/src/boundary.rs'),
+ ('agent_report', 'crates/agent-channel/src/lib.rs'),
+ ('agent_report_read', 'crates/agent-channel/src/boundary.rs'),
+ ('agent_report_read', 'crates/agent-channel/src/lib.rs'),
+ ('apple_checkin', 'crates/apple-channel/src/boundary.rs'),
+ ('apple_management', 'crates/app/src/native/mod.rs'),
+ ('apple_management', 'crates/apple-channel/src/boundary.rs'),
+ ('apple_profile', 'crates/apple-channel/src/boundary.rs'),
+ ('apple_push', 'crates/flow-service/src/execution/apple_push.rs'),
+ ('apple_renewal', 'crates/apple-channel/src/renewal.rs'),
+ ('apple_scep', 'crates/app/src/native/mod.rs'),
+ ('apple_scep', 'crates/apple-channel/src/boundary.rs'),
+ ('authorization_departments_read', 'crates/management-http/src/boundary.rs'),
+ ('authorization_effective_read', 'crates/management-http/src/boundary.rs'),
+ ('authorization_groups_read', 'crates/management-http/src/boundary.rs'),
+ ('authorization_initialize', 'crates/app/src/authorization_bootstrap.rs'),
+ ('authorization_initialize', 'crates/authorization-service/src/store.rs'),
+ ('authorization_members_read', 'crates/management-http/src/boundary.rs'),
+ ('authorization_rules_read', 'crates/management-http/src/boundary.rs'),
+ ('authorization_write', 'crates/authorization-service/src/store.rs'),
+ ('authorization_write', 'crates/management-http/src/authorization/http.rs'),
+ ('authorization_write', 'crates/management-http/src/boundary.rs'),
+ ('automation_completed', 'crates/flow-service/src/automation/jobs.rs'),
+ ('automation_failed', 'crates/flow-service/src/planning/automation/health.rs'),
+ ('collection_finish', 'crates/inventory-service/src/collection/store.rs'),
+ ('collection_finish', 'crates/windows-channel/src/retention.rs'),
+ ('collection_read', 'crates/management-http/src/boundary.rs'),
+ ('collection_read', 'crates/management-http/src/router.rs'),
+ ('collection_start', 'crates/inventory-service/src/apple_collection.rs'),
+ ('collection_start', 'crates/management-http/src/boundary.rs'),
+ ('command_accept', 'crates/agent-channel/src/tasks.rs'),
+ ('command_accept', 'crates/flow-service/src/execution/actions/production.rs'),
+ ('command_accept', 'crates/flow-service/src/execution/configuration.rs'),
+ ('command_accept', 'crates/flow-service/src/execution/remote.rs'),
+ ('command_accept', 'crates/management-http/src/execution/http.rs'),
+ ('command_approve', 'crates/management-http/src/execution/http.rs'),
+ ('command_cancel', 'crates/management-http/src/execution/http.rs'),
+ ('command_dispatch', 'crates/flow-service/src/execution/actions/recovery.rs'),
+ ('command_dispatch', 'crates/flow-service/src/execution/recovery.rs'),
+ ('command_read', 'crates/agent-channel/src/tasks.rs'),
+ ('command_read', 'crates/management-http/src/execution/actions/http.rs'),
+ ('command_read', 'crates/management-http/src/execution/http.rs'),
+ ('command_read', 'crates/management-http/src/planning/remote_operations/http.rs'),
+ ('command_reconcile', 'crates/flow-service/src/execution/actions/recovery.rs'),
+ ('command_reconcile', 'crates/flow-service/src/execution/recovery.rs'),
+ ('compliance_read', 'crates/management-http/src/compliance/http.rs'),
+ ('compliance_write', 'crates/management-http/src/compliance/http.rs'),
+ ('credential_revoke', 'crates/management-http/src/boundary.rs'),
+ ('credential_revoke', 'crates/registration-service/src/device.rs'),
+ ('device_action', 'crates/management-http/src/boundary.rs'),
+ ('device_action', 'crates/management-http/src/router.rs'),
+ ('enrollment_cancel', 'crates/management-http/src/boundary.rs'),
+ ('enrollment_create', 'crates/management-http/src/boundary.rs'),
+ ('enrollment_create', 'crates/registration-service/src/device.rs'),
+ ('enrollment_issue', 'crates/windows-channel/src/boundary.rs'),
+ ('enrollment_issue', 'crates/windows-channel/src/lib.rs'),
+ ('enrollment_read', 'crates/management-http/src/boundary.rs'),
+ ('enrollment_resume', 'crates/management-http/src/boundary.rs'),
+ ('inventory_read', 'crates/management-http/src/assets/http.rs'),
+ ('inventory_read', 'crates/management-http/src/boundary.rs'),
+ ('management_read', 'crates/content-service/src/service.rs'),
+ ('management_read', 'crates/flow-service/src/execution/recovery.rs'),
+ ('management_read', 'crates/flow-service/src/planning/policies/preview.rs'),
+ ('management_read', 'crates/flow-service/src/planning/policies/read.rs'),
+ ('management_read', 'crates/flow-service/src/planning/remote_operations/read.rs'),
+ ('management_read', 'crates/flow-service/src/software_catalog.rs'),
+ ('management_read', 'crates/flow-service/src/software_publication/service.rs'),
+ ('management_read', 'crates/management-http/src/planning/http.rs'),
+ ('management_read', 'crates/management-http/src/resource_catalog/http.rs'),
+ ('management_write', 'crates/content-service/src/service.rs'),
+ ('management_write', 'crates/flow-service/src/execution/actions/recovery.rs'),
+ ('management_write', 'crates/flow-service/src/execution/recovery.rs'),
+ ('management_write', 'crates/flow-service/src/planning/remote_operations/read.rs'),
+ ('management_write', 'crates/flow-service/src/software_catalog.rs'),
+ ('management_write', 'crates/flow-service/src/software_publication/service.rs'),
+ ('management_write', 'crates/management-http/src/assets/http.rs'),
+ ('management_write', 'crates/management-http/src/planning/http.rs'),
+ ('management_write', 'crates/management-http/src/planning/policies/http.rs'),
+ ('management_write', 'crates/management-http/src/planning/remote_operations/http.rs'),
+ ('management_write', 'crates/management-http/src/resource_catalog/http.rs'),
+ ('protected_request', 'crates/agent-channel/src/boundary.rs'),
+ ('protected_request', 'crates/app/src/native/mod.rs'),
+ ('protected_request', 'crates/apple-channel/src/boundary.rs'),
+ ('protected_request', 'crates/management-http/src/boundary.rs'),
+ ('protected_request', 'crates/windows-channel/src/boundary.rs'),
+ ('registration_bind', 'crates/registration-service/src/device.rs'),
+ ('registration_read', 'crates/management-http/src/boundary.rs'),
+ ('software_approve', 'crates/software-service/src/publication/service.rs'),
+ ('software_authorize', 'crates/software-service/src/publication/service.rs'),
+ ('software_binding', 'crates/software-service/src/publication/storage.rs'),
+ ('software_call', 'crates/software-service/src/publication/driver.rs'),
+ ('software_candidate', 'crates/software-service/src/publication/service.rs'),
+ ('software_preflight', 'crates/flow-service/src/software_publication/service.rs'),
+ ('software_preflight', 'crates/software-service/src/publication/driver.rs'),
+ ('software_result', 'crates/software-service/src/publication/driver.rs'),
+ ('software_validate', 'crates/software-service/src/publication/service.rs'),
+ ('software_withdraw', 'crates/software-service/src/publication/driver.rs'),
+ ('windows_discovery', 'crates/windows-channel/src/boundary.rs'),
+ ('windows_management', 'crates/app/src/native/mod.rs'),
+ ('windows_management', 'crates/windows-channel/src/boundary.rs'),
+ ('windows_management', 'crates/windows-channel/src/management.rs'),
+ ('windows_policy', 'crates/windows-channel/src/boundary.rs')}
 
-DECLARATIONS = {
-    ('compliance_write', 'compliance/http.rs'),
-    ('compliance_read', 'compliance/http.rs'),
-    ('agent_registration', 'agent.rs'),
-    ('agent_registration', 'api.rs'),
-    ('agent_report', 'agent.rs'),
-    ('agent_report', 'api.rs'),
-    ('agent_report_read', 'agent.rs'),
-    ('agent_report_read', 'api.rs'),
-    ('apple_checkin', 'api.rs'),
-    ('apple_management', 'api.rs'),
-    ('apple_management', 'native/mod.rs'),
-    ('apple_profile', 'api.rs'),
-    ('apple_push', 'execution/apple_push.rs'),
-    ('apple_renewal', 'apple/renewal.rs'),
-    ('apple_scep', 'api.rs'),
-    ('apple_scep', 'native/mod.rs'),
-    ('authentication', 'api.rs'),
-    ('authorization_departments_read', 'api.rs'),
-    ('authorization_effective_read', 'api.rs'),
-    ('authorization_groups_read', 'api.rs'),
-    ('authorization_initialize', 'authorization/initialize.rs'),
-    ('authorization_initialize', 'authorization/store.rs'),
-    ('authorization_members_read', 'api.rs'),
-    ('authorization_rules_read', 'api.rs'),
-    ('authorization_write', 'api.rs'),
-    ('authorization_write', 'authorization/http.rs'),
-    ('authorization_write', 'authorization/store.rs'),
-    ('automation_completed', 'automation/jobs.rs'),
-    ('automation_failed', 'planning/automation/health.rs'),
-    ('collection_finish', 'collection/store.rs'),
-    ('collection_finish', 'windows/retention.rs'),
-    ('collection_read', 'api.rs'),
-    ('collection_start', 'api.rs'),
-    ('collection_start', 'collection/apple.rs'),
-    ('command_accept', 'execution/actions/http.rs'),
-    ('command_accept', 'execution/actions/production.rs'),
-    ('command_accept', 'execution/http.rs'),
-    ('command_approve', 'execution/http.rs'),
-    ('command_cancel', 'execution/http.rs'),
-    ('command_dispatch', 'execution/actions/recovery.rs'),
-    ('command_dispatch', 'execution/recovery.rs'),
-    ('command_read', 'execution/actions/http.rs'),
-    ('command_read', 'execution/http.rs'),
-    ('command_reconcile', 'execution/actions/recovery.rs'),
-    ('command_reconcile', 'execution/recovery.rs'),
-    ('credential_revoke', 'api.rs'),
-    ('credential_revoke', 'device.rs'),
-    ('device_action', 'api.rs'),
-    ('enrollment_cancel', 'api.rs'),
-    ('enrollment_create', 'api.rs'),
-    ('enrollment_issue', 'api.rs'),
-    ('enrollment_issue', 'windows/mod.rs'),
-    ('enrollment_read', 'api.rs'),
-    ('enrollment_resume', 'api.rs'),
-    ('inventory_read', 'api.rs'),
-    ('inventory_read', 'assets/http.rs'),
-    ('management_read', 'execution/recovery.rs'),
-    ('management_read', 'planning/http.rs'),
-    ('management_read', 'software_publication/http.rs'),
-    ('management_write', 'content/http.rs'),
-    ('management_write', 'execution/actions/recovery.rs'),
-    ('management_write', 'execution/recovery.rs'),
-    ('management_write', 'assets/http.rs'),
-    ('management_write', 'planning/http.rs'),
-    ('management_write', 'software_publication/http.rs'),
-    ('protected_request', 'api.rs'),
-    ('protected_request', 'native/mod.rs'),
-    ('registration_bind', 'device.rs'),
-    ('registration_read', 'api.rs'),
-    ('software_approve', '../../software-service/src/publication/service.rs'),
-    ('software_authorize', '../../software-service/src/publication/service.rs'),
-    ('software_binding', '../../software-service/src/publication/storage.rs'),
-    ('software_call', '../../software-service/src/publication/driver.rs'),
-    ('software_candidate', '../../software-service/src/publication/service.rs'),
-    ('software_preflight', 'software_publication/http.rs'),
-    ('software_preflight', '../../software-service/src/publication/driver.rs'),
-    ('software_result', '../../software-service/src/publication/driver.rs'),
-    ('software_validate', '../../software-service/src/publication/service.rs'),
-    ('software_withdraw', '../../software-service/src/publication/driver.rs'),
-    ('windows_discovery', 'api.rs'),
-    ('windows_management', 'api.rs'),
-    ('windows_management', 'native/mod.rs'),
-    ('windows_management', 'windows/management.rs'),
-    ('windows_policy', 'api.rs'),
-    ('management_read', 'resource_catalog/http.rs'),
-    ('management_write', 'resource_catalog/http.rs'),
-}
-
-
-DECLARATIONS.update({("command_read","planning/remote_operations/http.rs")})
-DECLARATIONS.update({("management_read","planning/policies/http.rs"),("management_read","planning/policies/preview.rs"),("management_read","planning/remote_operations/http.rs")})
-DECLARATIONS.update({('command_accept', 'execution/configuration.rs'), ('command_accept', 'execution/remote.rs'), ('management_write', 'planning/policies/http.rs'), ('management_write', 'planning/remote_operations/http.rs')})
-DECLARATIONS.update({('management_read','software_catalog.rs'),('management_read','content/http.rs'),('management_write','software_catalog.rs')})
 
 def arguments(source, start):
     """Read one Rust call's arguments, respecting nested delimiters and quoted strings."""
@@ -208,15 +215,15 @@ def declared_actions():
                 args = arguments(source, match.end())
                 if len(args) > index:
                     result.update((action, os.path.relpath(path, ROOT)) for action in re.findall(r'"([a-z_]+)"', args[index]))
-    for name, start, end in [("api.rs", "fn route_action", "pub(crate) async fn envelope"),
-                              ("native/mod.rs", "const fn audit_action", "pub(crate) fn")]:
-        source = (ROOT / name).read_text().split(start, 1)[1].split(end, 1)[0]
-        result.update((action, name) for action in re.findall(r'"([a-z_]+)"', source))
-    # These two labels are selected inside product dispatch, not passed literally to a call.
-    for action, name in [("software_binding", "../../software-service/src/publication/storage.rs"),
-                         ("automation_completed", "automation/jobs.rs")]:
-        if '"' + action + '"' in (ROOT / name).read_text():
-            result.add((action, name))
+    for owner in ('management-http','agent-channel','windows-channel','apple-channel'):
+        name=f'crates/{owner}/src/boundary.rs'
+        source=(ROOT/name).read_text().split('fn route_action',1)[1].split('#[cfg(test)]',1)[0]
+        result.update((action,name) for action in re.findall(r'"([a-z_]+)"',source))
+    name='crates/app/src/native/mod.rs'
+    source=(ROOT/name).read_text().split('const fn audit_action',1)[1].split('pub(crate) fn',1)[0]
+    result.update((action,name) for action in re.findall(r'"([a-z_]+)"',source))
+    for action,name in [('software_binding','crates/software-service/src/publication/storage.rs'),('automation_completed','crates/flow-service/src/automation/jobs.rs')]:
+        if '"'+action+'"' in (ROOT/name).read_text():result.add((action,name))
     return result
 
 
@@ -229,16 +236,16 @@ class AuditSurface(unittest.TestCase):
                 self.assertIn((action, owner), DECLARATIONS)
 
     def test_retired_audit_writes_and_transaction_forwarders_do_not_exist(self):
-        self.assertFalse((ROOT / "audit.rs").exists())
-        self.assertNotIn("'audit'", (ROOT / "execution/dependencies.sql").read_text())
-        for path in [*ROOT.rglob("*.rs"), *ROOT.rglob("*.sql")]:
+        self.assertFalse((ROOT / "crates/app/src/audit.rs").exists())
+        self.assertNotIn("'audit'", (ROOT / "crates/flow-service/src/execution/dependencies.sql").read_text())
+        for path in production_paths():
             source = path.read_text()
             self.assertNotIn("mdm_access.audit", source, str(path))
             self.assertNotIn("append_on_connection", source, str(path))
 
 class PrincipalBindingBoundary(unittest.TestCase):
     def test_browser_and_native_producers_use_authorization_owner(self):
-        owners = {'authorization/context.rs', 'authorization/store.rs', '../../software-service/src/publication/storage.rs'}
+        owners = {'crates/authorization-service/src/context.rs', 'crates/authorization-service/src/store.rs', 'crates/software-service/src/publication/storage.rs'}
         actual = set()
         for path in production_paths():
             relative = os.path.relpath(path, ROOT)

@@ -40,7 +40,7 @@ pub(crate) async fn completed_windows_run(base: &Value, device: &str) -> Result<
     ))?;
     let access = database(base).await?;
     let service = crate::device::DeviceService::new(
-        access.clone(),
+        access.registration(),
         case_tenant().into(),
         access
             .audit_store(&crate::config::AuditConfig::Plain)

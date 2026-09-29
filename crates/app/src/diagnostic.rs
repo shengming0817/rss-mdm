@@ -50,7 +50,6 @@ pub enum ConfigIssue {
     AppleNotifyWebhook,
     Execution,
     Content,
-    TaskSigning,
     Flow,
     Publication,
     Listen,
@@ -80,38 +79,18 @@ pub enum ConfigIssue {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
-    ResourceAdmission,
-    PlanningAdmission,
     FlowSource,
     FlowConnection,
-    FlowAdmission,
-    AutomationConnection,
-    AutomationAdmission,
-    ApplePush,
-    AppleStorage,
-    AppleInvariant,
     ContentStorage,
     ContentMetadata,
     ContentInvariant,
     ContentDeadline,
     ContentCleanup,
-    ContentImport,
-    SoftwareCatalogStorage,
-    SoftwareCatalogInvariant,
     CommandStorage,
     CommandInvariant,
     PlanningStorage,
-    AssetsStorage,
-    ComplianceStorage,
-    ResourceStorage,
-    PublicationStorage,
-    AutomationStorage,
-    FlowStorage,
     RequestDeadline,
     IdentityStorage,
-    IdentityValidation,
-    IdentityDeadline,
-    IdentityProtocol,
     InventoryPool,
     #[serde(rename = "access_store")]
     Database,
@@ -119,23 +98,17 @@ pub enum Failure {
     Audit,
     AuditIntegrity,
     AuditIsolation,
-    AuditContract,
     AuditAdmission,
     InventoryQuery,
-    AssetCandidates,
-    AssetSources,
     ManualQuery,
     CollectionQuery,
     AssetObjectLimit,
     AssetSourceLimit,
     AssetBytesLimit,
-    InventoryRuntime,
-    Observation,
     Clock,
     Capacity,
     Runtime,
     Certificate,
-    Protocol,
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ProcessError {
@@ -154,6 +127,11 @@ pub enum ProcessError {
     Dependency {
         stage: &'static str,
         reason: Failure,
+    },
+    #[error("{stage}: {error:?}")]
+    Service {
+        stage: &'static str,
+        error: rss_mdm_flow_service::Error,
     },
     #[error("configuration file unavailable or unsafe: {0:?}")]
     ConfigFile(PathBuf),
@@ -181,15 +159,23 @@ impl ProcessError {
         match error {
             Error::Configuration(issue) => Self::Configuration { stage, issue },
             Error::Unavailable(reason) => Self::Dependency { stage, reason },
+            Error::Service(
+                error @ (rss_mdm_flow_service::Error::Configuration(_)
+                | rss_mdm_flow_service::Error::Unavailable(_)),
+            ) => Self::Service { stage, error },
             error => Self::Stage {
                 stage,
                 kind: match error {
-                    Error::CommitUnknown => "commit_unknown; retry_same_operation",
-                    Error::RollbackFailed => "rollback_unconfirmed; retry_same_operation",
-                    Error::Conflict => "conflict",
-                    Error::Malformed => "malformed_input",
-                    Error::Unauthorized => "unauthorized",
-                    Error::Forbidden => "forbidden",
+                    Error::Service(rss_mdm_flow_service::Error::CommitUnknown) => {
+                        "commit_unknown; retry_same_operation"
+                    }
+                    Error::Service(rss_mdm_flow_service::Error::RollbackFailed) => {
+                        "rollback_unconfirmed; retry_same_operation"
+                    }
+                    Error::Service(rss_mdm_flow_service::Error::Conflict) => "conflict",
+                    Error::Service(rss_mdm_flow_service::Error::Malformed) => "malformed_input",
+                    Error::Service(rss_mdm_flow_service::Error::Unauthorized) => "unauthorized",
+                    Error::Service(rss_mdm_flow_service::Error::Forbidden) => "forbidden",
                     _ => "operation rejected",
                 },
             },

@@ -1,6 +1,6 @@
 use super::*;
-use crate::apple::profile;
 use lifecycle::{Peer, command};
+use rss_mdm_apple_mdm::profile;
 use sqlx::Connection;
 impl Fixture {
     pub async fn profile_cycle(&mut self, peer: &Peer) -> Result<()> {

@@ -134,7 +134,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         rolled_back.0 == StatusCode::SERVICE_UNAVAILABLE
             && rolled_back.1["code"] == "operation_unknown"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'", TENANT = case_tenant()))?.trim() == "0", "rolled-back registration persisted");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_agent.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'", TENANT = case_tenant()))?.trim() == "0", "rolled-back registration persisted");
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let unknown = agent_call(
         router,
@@ -157,7 +157,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     .await?;
     ensure!(recovered.0 == StatusCode::OK);
     let stored_receipt: Value = serde_json::from_str(&pg(&format!(
-        "SELECT result FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'",
+        "SELECT result FROM mdm_agent.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'",
         TENANT = case_tenant()
     ))?)?;
     ensure!(

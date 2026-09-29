@@ -52,7 +52,7 @@ impl Fixture {
         ensure!(
             self.app
                 .execution
-                .apple_wake(&self.app.apple()?.push.configuration)
+                .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
                 .await?
                 .is_none()
         );
@@ -63,7 +63,7 @@ impl Fixture {
         let wake = self
             .app
             .execution
-            .apple_wake(&self.app.apple()?.push.configuration)
+            .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("blocked queue page starved approved wake"))?;
         self.app

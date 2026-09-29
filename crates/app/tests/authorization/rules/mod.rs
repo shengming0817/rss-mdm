@@ -172,7 +172,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             )
             .await?,
     )?
-    .load_authorization(&store)
+    .load_authorization(store.authorization())
     .await?;
     ensure!(
         put(
@@ -194,7 +194,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     );
     ensure!(matches!(
         stale.bind_audit(&foreign_audit),
-        Err(crate::Error::Forbidden)
+        Err(rss_mdm_authorization_service::Error::Forbidden)
     ));
     ensure!(foreign_audit.snapshot().actor.is_none());
     foreign_audit.finalize(None);
@@ -203,7 +203,10 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         operation_id:Uuid::new_v4(), expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
     }, &audit).await;
     audit.finalize(None);
-    let stale_denied = matches!(rejected, Err(crate::Error::Forbidden));
+    let stale_denied = matches!(
+        rejected,
+        Err(rss_mdm_authorization_service::Error::Forbidden)
+    );
     // Membership administration cannot confer a group's unrelated authority.
     let privilege_group = Uuid::new_v4();
     let privilege_group_path = format!("/api/v1/authorization/user-groups/{privilege_group}");
@@ -255,18 +258,18 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     }));
     let requests = Arc::new(tokio::sync::Semaphore::new(4));
     let authentication = Arc::new(AuthenticationState {
-        identity: identity.clone(),
-        access: access.clone(),
+        identity: identity.browser(),
+        access: access.authorization_store(),
         requests: requests.clone(),
     });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
         service: Arc::new(EnrollmentService::new(
-            access.clone(),
+            access.registration(),
             Arc::new(Credentials::new(monotonic.clone(), 16)),
             access.audit_store(&config.audit).await?,
         )),
         devices: Arc::new(crate::device::DeviceService::new(
-            access.clone(),
+            access.registration(),
             case_tenant().into(),
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
@@ -293,7 +296,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     let router = protected
         .merge(identity.routes())
         .layer(middleware::from_fn_with_state(
-            crate::api::Envelope {
+            rss_mdm_management_http::boundary::Envelope {
                 admission: Arc::new(tokio::sync::Semaphore::new(32)),
                 host: "mdm.example.test".into(),
                 clock: monotonic,
@@ -301,7 +304,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
                 requests,
                 tenant: case_tenant().into(),
             },
-            crate::api::envelope,
+            rss_mdm_management_http::boundary::admit,
         ));
     let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
         "127.0.0.1".parse()?,

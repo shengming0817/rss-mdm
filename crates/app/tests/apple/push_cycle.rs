@@ -28,7 +28,7 @@ impl Fixture {
                 .await?;
         for (status, failures, minimum) in [(429, 1, 25.0), (503, 2, 55.0), (400, 0, 25.0)] {
             due(&mut pg).await?;
-            push::wake(&participant.push, &self.app.execution).await?;
+            rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
             let receipt = state(&mut pg).await?;
             ensure!(
                 receipt["status"] == status
@@ -45,7 +45,7 @@ impl Fixture {
             ensure!(self.operation(operation).await?["commandStatus"] == "published");
         }
         due(&mut pg).await?;
-        push::wake(&participant.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
         ensure!(
             state(&mut pg).await?["status"] == 400,
             "permanent rejection was retried without recovery"
@@ -65,7 +65,7 @@ impl Fixture {
         )
         .await?;
         ensure!(rotated.push.configuration != participant.push.configuration);
-        push::wake(&rotated.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&rotated.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["outcome"] == "rejected");
         ensure!(
             self.app
@@ -76,15 +76,15 @@ impl Fixture {
         );
         // TokenUpdate is the explicit recovery transition for a paused token.
         peer.token().await?;
-        push::wake(&rotated.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&rotated.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["outcome"] == "accepted");
         rotated.close().await?;
         due(&mut pg).await?;
-        push::wake(&participant.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["outcome"] == "accepted");
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         due(&mut pg).await?;
-        push::wake(&participant.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
         let unregistered = state(&mut pg).await?;
         ensure!(
             unregistered["state"] == "pending_token"
@@ -108,7 +108,7 @@ impl Fixture {
         participant.close().await?;
         peer.token().await?;
         let unavailable = push::test_support::Participant::unavailable_push().await?;
-        push::wake(&unavailable, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&unavailable, &self.app.execution).await?;
         let failed = state(&mut pg).await?;
         ensure!(
             failed["status"].is_null()
@@ -119,7 +119,7 @@ impl Fixture {
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         due(&mut pg).await?;
         let recovered = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
-        push::wake(&recovered.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&recovered.push, &self.app.execution).await?;
         ensure!(state(&mut pg).await?["failures"] == 0);
         recovered.close().await?;
         pg.close().await?;
@@ -149,20 +149,20 @@ async fn deadline_query_failure_is_not_healthy_idle() -> Result<()> {
         PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
     pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
         .await?;
-    let result = push::cycle(
-        fixture.app.apple()?,
+    let result = rss_mdm_apple_channel::push::cycle(
+        &fixture.app.apple()?.channel,
         &fixture.app.execution,
-        &fixture.app.access,
+        &fixture.app.access.apple_store(),
         &fixture.app.audit_store,
         case_tenant(),
     )
     .await;
     pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
         .await?;
-    let restored = push::cycle(
-        fixture.app.apple()?,
+    let restored = rss_mdm_apple_channel::push::cycle(
+        &fixture.app.apple()?.channel,
         &fixture.app.execution,
-        &fixture.app.access,
+        &fixture.app.access.apple_store(),
         &fixture.app.audit_store,
         case_tenant(),
     )

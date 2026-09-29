@@ -108,30 +108,12 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "audit-receipts-v1",
             rss_mdm_audit_integration::MIGRATION_SQL,
         ),
-        (
-            "audit-runtime-v1",
-            include_str!("../schema/audit-runtime.sql"),
-        ),
-        (
-            "identity-audit-runtime-v1",
-            include_str!("../schema/identity-audit-runtime.sql"),
-        ),
-        ("access-v1", include_str!("../migrations/0001_access.sql")),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
         ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
         ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
         (
             "inventory-api-reader-v1",
             rss_mdm_inventory_postgres::READER_MIGRATION_SQL,
-        ),
-        ("device-identity-v1", crate::device::IDENTITY_MIGRATION_SQL),
-        (
-            "windows-enrollment-v1",
-            include_str!("../migrations/0004_windows_enrollment.sql"),
-        ),
-        (
-            "windows-collection-v1",
-            crate::collection::COLLECTION_MIGRATION_SQL,
         ),
         (
             "transactional-messaging-v1",
@@ -145,20 +127,12 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_release_postgres::MIGRATION_SQL,
         ),
         (
-            "software-publication-v1",
-            rss_mdm_software_service::publication::MIGRATION_SQL,
+            "registration-service-schema-v1",
+            rss_mdm_registration_service::INSTALL_SQL,
         ),
         (
-            "flow-v1",
-            concat!(
-                "BEGIN;\n",
-                include_str!("../migrations/0007_flow.sql"),
-                include_str!("planning/install.sql"),
-                include_str!("assets/install.sql"),
-                include_str!("resource_catalog/install.sql"),
-                include_str!("automation/install.sql"),
-                "COMMIT;\n",
-            ),
+            "software-publication-v1",
+            rss_mdm_software_service::publication::MIGRATION_SQL,
         ),
         (
             "group-outbox-writer-v1",
@@ -177,20 +151,20 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_release_postgres::OUTBOX_MIGRATION_SQL,
         ),
         (
+            "audit-runtime-v1",
+            include_str!("../schema/audit-runtime.sql"),
+        ),
+        (
+            "identity-audit-runtime-v1",
+            include_str!("../schema/identity-audit-runtime.sql"),
+        ),
+        (
             "installation-binding-v1",
-            include_str!("../migrations/0009_installation.sql"),
+            include_str!("../schema/installation.sql"),
         ),
         (
             "identity-authority-v11",
             rss_identity_postgres::MIGRATION_SQL,
-        ),
-        (
-            "embedded-identity-coordinates-v1",
-            include_str!("../migrations/0008_embedded_identity_coordinates.sql"),
-        ),
-        (
-            "authorization-v1",
-            crate::authorization::AUTHORIZATION_MIGRATION_SQL,
         ),
         (
             "device-command-v1",
@@ -198,15 +172,9 @@ fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("reconcile-v1", rss_reconcile_postgres::MIGRATION_SQL),
         (
-            "execution-v1",
-            include_str!("../migrations/0011_commands.sql"),
-        ),
-        (
             "inventory-v2",
             rss_mdm_inventory_postgres::ASSETS_MIGRATION_SQL,
         ),
-        ("assets-v1", crate::assets::ASSETS_MIGRATION_SQL),
-        ("agent-access-v1", crate::device::AGENT_ACCESS_MIGRATION_SQL),
         (
             "group-generations-v1",
             rss_mdm_group_postgres::GENERATIONS_MIGRATION_SQL,
@@ -216,86 +184,78 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_inventory_postgres::HISTORY_MIGRATION_SQL,
         ),
         (
-            "asset-authority-history-v1",
-            crate::device::AUTHORITY_HISTORY_MIGRATION_SQL,
-        ),
-        (
-            "automation-v1",
-            include_str!("../migrations/0013_automation.sql"),
-        ),
-        (
-            "collection-history-v1",
-            crate::collection::HISTORY_MIGRATION_SQL,
-        ),
-        (
             "group-reverse-index-v1",
             rss_mdm_group_postgres::REVERSE_INDEX_MIGRATION_SQL,
-        ),
-        (
-            "windows-configuration-v1",
-            include_str!("../migrations/0012_windows_configuration.sql"),
-        ),
-        (
-            "apple-management-v1",
-            include_str!("../migrations/0015_apple_management.sql"),
-        ),
-        (
-            "agent-access-v2",
-            include_str!("../migrations/0015_agent_v2.sql"),
-        ),
-        (
-            "policy-assignments-v1",
-            include_str!("planning/policies/schema.sql"),
-        ),
-        (
-            "remote-operations-v1",
-            include_str!("planning/remote_operations/schema.sql"),
-        ),
-        (
-            "enterprise-tasks-v1",
-            include_str!("../migrations/0016_enterprise_tasks.sql"),
         ),
         (
             "inventory-enterprise-v1",
             rss_mdm_inventory_postgres::ENTERPRISE_MIGRATION_SQL,
         ),
         (
-            "enterprise-inventory-v1",
-            include_str!("../migrations/0017_enterprise_inventory.sql"),
-        ),
-        (
-            "action-polls-v1",
-            include_str!("../migrations/0018_action_polls.sql"),
-        ),
-        (
-            "enterprise-task-admission-v2",
-            include_str!("../migrations/0019_action_blocked_occurrence.sql"),
-        ),
-        (
-            "publication-operations-v1",
-            rss_mdm_software_service::publication::OPERATIONS_SQL,
-        ),
-        (
             "software-catalog-v1",
             rss_mdm_software_service::catalog::INSTALL_SQL,
         ),
-        ("content-v1", include_str!("content/install.sql")),
         (
             "asset-watermark-fence-v1",
             rss_mdm_inventory_postgres::WATERMARK_FENCE_MIGRATION_SQL,
         ),
         ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
         (
-            "compliance-jobs-v1",
-            include_str!("../migrations/0020_compliance.sql"),
+            "authorization-service-schema-v1",
+            rss_mdm_authorization_service::INSTALL_SQL,
         ),
         (
-            "software-deployment-v1",
-            include_str!("../migrations/0021_software_deployment.sql"),
+            "inventory-service-schema-v1",
+            rss_mdm_inventory_service::INSTALL_SQL,
         ),
         (
-            "asset-worker-notify-v1",
-            include_str!("../migrations/0022_asset_worker_notify.sql"),
+            "content-service-schema-v1",
+            rss_mdm_content_service::INSTALL_SQL,
+        ),
+        ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
+        (
+            "agent-channel-schema-v1",
+            rss_mdm_agent_channel::INSTALL_SQL,
+        ),
+        (
+            "windows-channel-schema-v1",
+            rss_mdm_windows_channel::INSTALL_SQL,
+        ),
+        (
+            "apple-channel-schema-v1",
+            rss_mdm_apple_channel::INSTALL_SQL,
+        ),
+        (
+            "registration-service-relations-v1",
+            rss_mdm_registration_service::RELATIONS_SQL,
+        ),
+        (
+            "authorization-service-relations-v1",
+            rss_mdm_authorization_service::RELATIONS_SQL,
+        ),
+        (
+            "inventory-service-relations-v1",
+            rss_mdm_inventory_service::RELATIONS_SQL,
+        ),
+        (
+            "content-service-relations-v1",
+            rss_mdm_content_service::RELATIONS_SQL,
+        ),
+        (
+            "flow-service-relations-v1",
+            rss_mdm_flow_service::RELATIONS_SQL,
+        ),
+        (
+            "agent-channel-relations-v1",
+            rss_mdm_agent_channel::RELATIONS_SQL,
+        ),
+        (
+            "windows-channel-relations-v1",
+            rss_mdm_windows_channel::RELATIONS_SQL,
+        ),
+        (
+            "apple-channel-relations-v1",
+            rss_mdm_apple_channel::RELATIONS_SQL,
         ),
     ]
 }

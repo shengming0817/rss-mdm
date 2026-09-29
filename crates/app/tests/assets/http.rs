@@ -107,7 +107,7 @@ mod storage {
             AssetCommand::Manual {
                 device: device.clone(),
                 field: FieldKey::AssetTag,
-                change: operation(
+                change: inventory_operation(
                     0,
                     ManualChange::Set {
                         value: Scalar::String("retained".into()),
@@ -118,7 +118,7 @@ mod storage {
             AssetCommand::SavedWrite {
                 id,
                 owner,
-                change: operation(
+                change: inventory_operation(
                     0,
                     SavedChange::Put {
                         definition: SavedDefinition {
@@ -136,7 +136,7 @@ mod storage {
             );
             assert!(matches!(
                 execute_asset_service(&m, &service, &command).await,
-                Err(Error::CommitUnknown)
+                Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown))
             ));
             let recovered = execute_asset_service(&m, &service, &command).await.unwrap();
             assert_eq!(
@@ -200,7 +200,7 @@ mod storage {
             ),
         ] {
             let runtime = runtime(tenant).await;
-            let key = crate::flow::storage::cursor_key(&runtime, tenant)
+            let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
                 .await
                 .unwrap();
             let service = assets::AssetService::new(
@@ -220,13 +220,14 @@ mod storage {
                 tenant,
                 Arc::new(crate::clock::SystemClock),
                 &key,
+                Arc::new(crate::automation::inventory_tasks::InventoryTasks),
             );
             let device = format!("independent-{}", Uuid::new_v4());
             seed_device_in(tenant, &device);
             let command = assets::Command::Manual {
                 device: device.clone(),
                 field: assets::FieldKey::AssetTag,
-                change: operation(
+                change: inventory_operation(
                     0,
                     assets::ManualChange::Set {
                         value: assets::Scalar::String("independent".into()),
@@ -248,7 +249,7 @@ mod storage {
             let first = audit();
             assert!(matches!(
                 service.execute(&command, &first, &|| Ok(())).await,
-                Err(Error::CommitUnknown)
+                Err(rss_mdm_inventory_service::Error::CommitUnknown)
             ));
             first.finalize(None);
             let canonical = || {
@@ -269,15 +270,17 @@ mod storage {
             let denied = audit();
             assert!(matches!(
                 service
-                    .execute(&command, &denied, &|| Err(Error::Forbidden))
+                    .execute(&command, &denied, &|| Err(
+                        rss_mdm_inventory_service::Error::Forbidden
+                    ))
                     .await,
-                Err(Error::Forbidden)
+                Err(rss_mdm_inventory_service::Error::Forbidden)
             ));
             denied.finalize(None);
             let competing = |value: &str| assets::Command::Manual {
                 device: device.clone(),
                 field: assets::FieldKey::AssetTag,
-                change: operation(
+                change: inventory_operation(
                     1,
                     assets::ManualChange::Set {
                         value: assets::Scalar::String(value.into()),
@@ -301,8 +304,8 @@ mod storage {
                 1
             );
             assert!(
-                matches!(a_result, Err(Error::Conflict))
-                    || matches!(b_result, Err(Error::Conflict))
+                matches!(a_result, Err(rss_mdm_inventory_service::Error::Conflict))
+                    || matches!(b_result, Err(rss_mdm_inventory_service::Error::Conflict))
             );
             a.finalize(None);
             b.finalize(None);

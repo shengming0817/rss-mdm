@@ -193,7 +193,7 @@ async fn prepare_identity() -> Result<()> {
                             )
                             .await?,
                     )?
-                    .load_authorization(&access)
+                    .load_authorization(access.authorization())
                     .await?;
                     phase = "load-foundational-grants";
                     let foundational = principal.authorization()?.rules.iter()
@@ -326,7 +326,7 @@ pub(crate) async fn set_grants(
             )
             .await?,
     )?
-    .load_authorization(&access)
+    .load_authorization(access.authorization())
     .await?;
     grant(
         access.audit_store(&config(tenant)?.audit).await?.as_ref(),

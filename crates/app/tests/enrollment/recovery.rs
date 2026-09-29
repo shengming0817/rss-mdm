@@ -38,13 +38,17 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
             .is_err()
     );
     ensure!(
-        crate::enrollment::store::enrollment_target(&store, &other, receipt.enrollment_id)
-            .await
-            .is_err()
+        crate::enrollment::store::enrollment_target(
+            &store.registration(),
+            &other,
+            receipt.enrollment_id
+        )
+        .await
+        .is_err()
     );
     ensure!(
         crate::enrollment::store::enrollment_authorization(
-            &store,
+            &store.registration(),
             crate::test_support::case::peer(),
             receipt.enrollment_id,
             &password
@@ -54,7 +58,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
     );
     ensure!(
         crate::enrollment::store::enrollment_authorization(
-            &store,
+            &store.registration(),
             case_tenant(),
             receipt.enrollment_id,
             &Password::new(crate::enrollment::random())?
@@ -63,7 +67,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
         .is_err()
     );
     let _auth = crate::enrollment::store::enrollment_authorization(
-        &store,
+        &store.registration(),
         case_tenant(),
         receipt.enrollment_id,
         &password,

@@ -497,8 +497,8 @@ impl Client {
                 .await?;
         sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND session_id='900' AND registration=(SELECT registration FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid)").bind(case_tenant()).bind(self.operation.to_string()).execute(&mut pg).await?;
         ensure!(
-            crate::windows::retention::prune_management(
-                &self.app.access,
+            rss_mdm_windows_channel::retention::prune_management(
+                &self.app.access.windows_store(),
                 &self.app.audit_store,
                 case_tenant()
             )

@@ -1,29 +1,10 @@
-#[test]
-fn registration_routes_keep_audit_identity_before_handler_rejections() {
-    for (route, action) in [
-        (
-            "/api/v3/devices/{device}/registrations",
-            "registration_read",
-        ),
-        (
-            "/api/v3/devices/{device}/registrations/{registration}/revoke",
-            "credential_revoke",
-        ),
-        ("/api/agent/v3/registrations", "agent_registration"),
-    ] {
-        assert_eq!(route_action(route, false), action);
-    }
-}
-
 use super::*;
-#[test]
-fn collection_creation_has_a_business_action_before_authorization() {
-    assert_eq!(
-        route_action("/api/v1/devices/{id}/collection-runs", false),
-        "collection_start"
-    );
-}
-
+use axum::http::{Request, StatusCode, header};
+use rss_mdm_flow_service::Failure;
+use rss_mdm_management_http::{
+    Error,
+    boundary::{Envelope, admit as envelope},
+};
 #[tokio::test]
 #[ignore = "make t2: close an admitted Audit pool before protected response settlement"]
 async fn audit_failure_logs_preserve_action_and_origin() {
@@ -37,7 +18,8 @@ async fn audit_failure_logs_preserve_action_and_origin() {
                 "/api/v2/devices/{id}/inventory",
                 get(move || async move {
                     if mode == "transaction" {
-                        Error::Unavailable(Failure::Audit).into_response()
+                        Error(rss_mdm_flow_service::Error::Unavailable(Failure::Audit))
+                            .into_response()
                     } else {
                         Json(json!({"sensitive":"inventory-result"})).into_response()
                     }
@@ -114,7 +96,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
     for reason in [
         Failure::RequestDeadline,
         Failure::IdentityStorage,
-        Failure::InventoryPool,
+        Failure::AssetsStorage,
         Failure::InventoryQuery,
         Failure::ManualQuery,
         Failure::CollectionQuery,
@@ -127,7 +109,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         let router = Router::new()
             .route(
                 "/livez",
-                get(move || async move { Error::Unavailable(reason) }),
+                get(move || async move { Error(rss_mdm_flow_service::Error::Unavailable(reason)) }),
             )
             .layer(middleware::from_fn_with_state(
                 Envelope {
@@ -159,7 +141,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         );
         assert!(matches!(
             response.extensions().get::<Error>(),
-            Some(Error::Unavailable(_))
+            Some(Error(rss_mdm_flow_service::Error::Unavailable(_)))
         ));
         let bytes = axum::body::to_bytes(response.into_body(), 1024)
             .await
@@ -208,16 +190,242 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
     assert_eq!(response.headers()[header::RETRY_AFTER], "1");
     assert!(!entered.load(std::sync::atomic::Ordering::SeqCst));
 }
-#[test]
-fn operation_coordinate_does_not_claim_request_replay() {
-    let audit = RequestAudit::new(
-        "11111111-1111-4111-8111-111111111111".into(),
-        "command_read",
-    );
-    audit.operation(uuid::Uuid::new_v4(), "command_read");
-    let response = StatusCode::OK.into_response();
-    assert_eq!(audit_result(&response, &audit.snapshot()), "success");
-    audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-    assert_eq!(audit_result(&response, &audit.snapshot()), "replay");
-    audit.finalize(None);
+
+#[derive(Clone, Copy, Debug)]
+enum DeviceProtocol {
+    Agent,
+    Windows,
+    Apple,
+}
+impl DeviceProtocol {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Agent => "/reports",
+            Self::Windows => "/EnrollmentServer/Enrollment.svc",
+            Self::Apple => "/mdm",
+        }
+    }
+    fn success(self) -> axum::response::Response {
+        match self {
+            Self::Agent => Json(json!({"sensitive":"device-result"})).into_response(),
+            Self::Windows => ([(header::CONTENT_TYPE, "application/soap+xml")],
+                "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\"><s:Body>sensitive-device-result</s:Body></s:Envelope>").into_response(),
+            Self::Apple => ([(header::CONTENT_TYPE, "application/xml")],
+                "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CommandUUID</key><string>sensitive-device-result</string></dict></plist>").into_response(),
+        }
+    }
+    fn wrap(self, router: Router, store: Arc<rss_mdm_audit_integration::AuditStore>) -> Router {
+        macro_rules! wrap {
+            ($channel:ident) => {
+                $channel::boundary::wrap(
+                    router,
+                    $channel::boundary::Envelope {
+                        admission: Arc::new(tokio::sync::Semaphore::new(4)),
+                        host: "mdm.example.test".into(),
+                        clock: monotonic(),
+                        audit_store: store,
+                        requests: Arc::new(tokio::sync::Semaphore::new(4)),
+                        tenant: crate::test_support::case::tenant().into(),
+                    },
+                )
+            };
+        }
+        match self {
+            Self::Agent => wrap!(rss_mdm_agent_channel),
+            Self::Windows => wrap!(rss_mdm_windows_channel),
+            Self::Apple => wrap!(rss_mdm_apple_channel),
+        }
+    }
+    fn category(self, response: &axum::response::Response) -> &'static str {
+        use rss_mdm_flow_service::Error as E;
+        match self {
+            DeviceProtocol::Agent => match response.extensions().get::<E>() {
+                Some(E::CommitUnknown) => "operation_unknown",
+                Some(E::RollbackFailed) => "operation_rollback_unconfirmed",
+                Some(E::Unavailable(Failure::Audit)) => "service_unavailable",
+                other => panic!("{self:?}: unexpected {other:?}"),
+            },
+            DeviceProtocol::Windows => match response
+                .extensions()
+                .get::<rss_mdm_windows_channel::Error>()
+            {
+                Some(rss_mdm_windows_channel::Error::CommitUnknown) => "operation_unknown",
+                Some(rss_mdm_windows_channel::Error::RollbackFailed) => {
+                    "operation_rollback_unconfirmed"
+                }
+                Some(rss_mdm_windows_channel::Error::Service(E::Unavailable(Failure::Audit))) => {
+                    "service_unavailable"
+                }
+                other => panic!("{self:?}: unexpected {other:?}"),
+            },
+            DeviceProtocol::Apple => {
+                match response.extensions().get::<rss_mdm_apple_channel::Error>() {
+                    Some(rss_mdm_apple_channel::Error::CommitUnknown) => "operation_unknown",
+                    Some(rss_mdm_apple_channel::Error::RollbackFailed) => {
+                        "operation_rollback_unconfirmed"
+                    }
+                    Some(rss_mdm_apple_channel::Error::Service(E::Unavailable(Failure::Audit))) => {
+                        "service_unavailable"
+                    }
+                    other => panic!("{self:?}: unexpected {other:?}"),
+                }
+            }
+        }
+    }
+    async fn assert_wire(
+        self,
+        response: axum::response::Response,
+        expected: &str,
+    ) -> anyhow::Result<()> {
+        let status = response.status();
+        let content_type = response.headers()[header::CONTENT_TYPE]
+            .to_str()?
+            .to_owned();
+        let bytes = axum::body::to_bytes(response.into_body(), 16384).await?;
+        assert!(!String::from_utf8_lossy(&bytes).contains("sensitive-device-result"));
+        match self {
+            DeviceProtocol::Windows => {
+                assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+                assert!(content_type.starts_with("application/soap+xml"));
+                let soap = String::from_utf8(bytes.to_vec())?;
+                assert!(soap.contains(":Fault>") && soap.contains("EnrollmentServer"));
+            }
+            DeviceProtocol::Agent | DeviceProtocol::Apple => {
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(content_type, "application/json");
+                let code = if matches!(self, DeviceProtocol::Agent)
+                    && expected == "operation_rollback_unconfirmed"
+                {
+                    "operation_unknown"
+                } else {
+                    expected
+                };
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&bytes)?,
+                    json!({"code": code})
+                );
+            }
+        }
+        Ok(())
+    }
+    fn original(self, error: rss_mdm_flow_service::Error) -> axum::response::Response {
+        match self {
+            Self::Agent => {
+                // Feed the service result into the real Agent boundary, without exposing
+                // its handler-only error wrapper to an external consumer.
+                let mut response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+                response.extensions_mut().insert(error);
+                response
+            }
+            Self::Windows => rss_mdm_windows_channel::Error::from(error).into_response(),
+            Self::Apple => rss_mdm_apple_channel::Error::from(error).into_response(),
+        }
+    }
+}
+
+async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()> {
+    use rss_mdm_audit_integration::{RequestAudit, WriteOutcome as W};
+    use rss_mdm_flow_service::Error as E;
+    use tower::ServiceExt;
+    let (pool, store) = crate::audit_test_support::request_store().await?;
+    let request = || {
+        Request::builder()
+            .uri(protocol.path())
+            .header(header::HOST, "mdm.example.test")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    // Establish that this real admitted store can settle the same ingress before failure.
+    let healthy = protocol
+        .wrap(
+            Router::new().route(
+                protocol.path(),
+                get(move || async move { protocol.success() }),
+            ),
+            store.clone(),
+        )
+        .oneshot(request())
+        .await?;
+    assert_eq!(healthy.status(), StatusCode::OK);
+    pool.close().await;
+    let operation = uuid::Uuid::new_v4();
+    for (outcome, original, expected) in [
+        (W::CommitNotStarted, None, "service_unavailable"),
+        (W::RolledBack, Some(E::Conflict), "service_unavailable"),
+        (W::Committed, None, "operation_unknown"),
+        (
+            W::Unknown,
+            Some(E::Unavailable(Failure::RequestDeadline)),
+            "operation_unknown",
+        ),
+        (
+            W::RollbackFailed,
+            Some(E::Conflict),
+            "operation_rollback_unconfirmed",
+        ),
+        (
+            W::CommitNotStarted,
+            Some(E::CommitUnknown),
+            "operation_unknown",
+        ),
+        (
+            W::CommitNotStarted,
+            Some(E::RollbackFailed),
+            "operation_rollback_unconfirmed",
+        ),
+    ] {
+        let router = Router::new().route(
+            protocol.path(),
+            get(
+                move |axum::Extension(audit): axum::Extension<RequestAudit>| {
+                    let original = original.clone();
+                    async move {
+                        audit.operation(operation, "protected_request");
+                        audit.require_request_settlement();
+                        match outcome {
+                            W::Committed => {
+                                audit.mark_commit_started();
+                                audit.mark_committed();
+                            }
+                            W::Unknown => audit.mark_commit_started(),
+                            W::RolledBack => audit.mark_rolled_back(),
+                            W::RollbackFailed => audit.mark_rollback_failed(),
+                            W::CommitNotStarted => (),
+                        }
+                        original
+                            .map_or_else(|| protocol.success(), |error| protocol.original(error))
+                    }
+                },
+            ),
+        );
+        let response = protocol
+            .wrap(router, store.clone())
+            .oneshot(request())
+            .await?;
+        assert_eq!(response.headers()["idempotency-key"], operation.to_string());
+        assert!(uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str()?).is_ok());
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        // The protocol adapter must retain the closed uncertainty category, even
+        // where the wire protocol deliberately collapses both failures.
+        let category = protocol.category(&response);
+        assert_eq!(category, expected, "{protocol:?} {outcome:?}");
+        protocol.assert_wire(response, expected).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=api.diagnostics: real Audit pool failure at Agent response settlement"]
+async fn agent_audit_settlement_preserves_wire_and_uncertainty() -> anyhow::Result<()> {
+    failed_device_settlement(DeviceProtocol::Agent).await
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=api.diagnostics: real Audit pool failure at Windows SOAP settlement"]
+async fn windows_audit_settlement_preserves_wire_and_uncertainty() -> anyhow::Result<()> {
+    failed_device_settlement(DeviceProtocol::Windows).await
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=api.diagnostics: real Audit pool failure before Apple plist delivery"]
+async fn apple_audit_settlement_preserves_wire_and_uncertainty() -> anyhow::Result<()> {
+    failed_device_settlement(DeviceProtocol::Apple).await
 }

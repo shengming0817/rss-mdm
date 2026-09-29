@@ -132,8 +132,12 @@ impl Device {
             recipient.as_os_str(),
         ])?;
         let bytes = std::fs::read(encrypted)?;
-        let cms = super::super::certificate::Signer::load(&self.self_signed, &self.pk8, now)?
-            .sign(&bytes, now)?;
+        let cms = super::super::certificate::ProfileSigner::from_bytes(
+            &std::fs::read(&self.self_signed)?,
+            &std::fs::read(&self.pk8)?,
+            now,
+        )?
+        .sign(&bytes, now)?;
         let mut content = ContentInfo::from_der(&cms)?;
         let mut signed = content.content.decode_as::<SignedData>()?;
         let oid = |s: &str| ObjectIdentifier::new(s).unwrap();

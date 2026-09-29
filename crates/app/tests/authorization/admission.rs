@@ -54,6 +54,32 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             && context.0 == StatusCode::OK
             && context.1["navigation"]["manageAccounts"] == true
     );
+    // The union rejects undeclared objects, grants and permissive tenant policies.
+    for (drift, restore) in [
+        (
+            "GRANT UPDATE (instance) ON mdm_access.authorization_rules TO mdm_access",
+            "REVOKE UPDATE (instance) ON mdm_access.authorization_rules FROM mdm_access",
+        ),
+        (
+            "CREATE TABLE mdm_agent.unexpected(tenant_id uuid)",
+            "DROP TABLE mdm_agent.unexpected",
+        ),
+        (
+            "CREATE POLICY bypass ON mdm_access.authorization_rules USING(true)",
+            "DROP POLICY bypass ON mdm_access.authorization_rules",
+        ),
+        (
+            "GRANT SELECT ON mdm_access.authorization_rules TO mdm_access WITH GRANT OPTION",
+            "REVOKE GRANT OPTION FOR SELECT ON mdm_access.authorization_rules FROM mdm_access",
+        ),
+    ] {
+        pg(drift)?;
+        let rejected = crate::Database::connect(config.access_database.options()?)
+            .await
+            .is_err();
+        pg(restore)?;
+        ensure!(rejected, "undeclared access privilege admitted");
+    }
     let identity = crate::test_support::identity::identity(case_tenant()).await?;
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
@@ -67,7 +93,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             )
             .await?,
     )?
-    .load_authorization(&store)
+    .load_authorization(store.authorization())
     .await?;
     // Stop protocol replies after BEGIN/query, beyond the pool acquire timeout.
     use sqlx::Connection;
@@ -104,7 +130,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     let (stalled, frozen) = tokio::join!(
         tokio::time::timeout(
             Duration::from_secs(4),
-            crate::authorization::store::authorization_snapshot(&store, &stale)
+            crate::authorization::store::authorization_snapshot(store.authorization(), &stale)
         ),
         freeze
     );
@@ -112,9 +138,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     holder.close().await?;
     ensure!(matches!(
         stalled,
-        Ok(Err(crate::Error::Unavailable(
-            crate::Failure::RequestDeadline
-        )))
+        Ok(Err(rss_mdm_authorization_service::Error::Deadline))
     ));
     ensure!(
         member

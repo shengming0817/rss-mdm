@@ -1,5 +1,4 @@
 use crate::planning::test_support::*;
-use crate::planning::*;
 
 #[tokio::test]
 #[ignore = "MODULE=planning.assets: real capability storage and transactions"]
@@ -120,7 +119,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     let collection = Uuid::new_v4();
     let attempts = serde_json::to_string(&crate::collection::Attempts::default()).unwrap();
     sql(&format!(
-        "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{t}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','device.model','Old','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}'); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,session_id,request_message,first_command,request,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,'history',1,1024,decode('01','hex'),1,'{attempts}','pending')"
+        "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{t}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','device.model','Old','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}'); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,1,'{attempts}','pending')"
     ));
     let service = planning(t).await;
     let manual = |revision, input| assets::Command::Manual {
@@ -130,7 +129,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
             instance: "history".into(),
             principal: "operator".into(),
         },
-        change: operation(revision, input),
+        change: inventory_operation(revision, input),
     };
     execute_asset(
         &service,

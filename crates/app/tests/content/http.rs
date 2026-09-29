@@ -300,13 +300,11 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
             // Retire only this case's finished negative request, retaining successful
             // content/bindings and every other case's active upload.
             let directory = fixture.directory.join(case_tenant());
-            let _directory = crate::content::lock(&directory.join(".upload.lock"))?;
-            let _session =
-                crate::content::lock(&directory.join(format!(".upload-{operation}.part")))?;
+            let _directory = lock_upload_fixture(&directory.join(".upload.lock"))?;
+            let metadata = super::upload_metadata(&directory, operation)?;
+            let _session = lock_upload_fixture(&metadata.with_extension("part"))?;
             for extension in ["json", "next", "part"] {
-                match std::fs::remove_file(
-                    directory.join(format!(".upload-{operation}.{extension}")),
-                ) {
+                match std::fs::remove_file(metadata.with_extension(extension)) {
                     Ok(()) => (),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
                     Err(error) => return Err(error.into()),
@@ -316,4 +314,19 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
     }
     ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND resource='{resource}'", TENANT = case_tenant()))?.trim() == "2");
     Ok(())
+}
+
+// Match the filesystem lock protocol while cleaning this test's rejected resumable upload.
+fn lock_upload_fixture(path: &std::path::Path) -> anyhow::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    anyhow::ensure!(file.metadata()?.is_file());
+    file.try_lock()?;
+    Ok(file)
 }

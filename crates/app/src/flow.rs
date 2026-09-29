@@ -10,7 +10,7 @@ use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
     pub storage: StorageBinding,
-    pub publication: crate::software_publication::http::Config,
+    pub publication: crate::publication_config::Config,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,7 +104,7 @@ impl Config {
             audit_store.clone(),
             runtime.clone(),
             tenant,
-            clock.clone(),
+            Arc::new(crate::clock::FlowClock(clock.clone())),
             catalog.clone(),
             &key,
         )
@@ -115,8 +115,9 @@ impl Config {
                     audit_store.clone(),
                     runtime.clone(),
                     tenant,
-                    clock.clone(),
+                    Arc::new(crate::clock::InventoryClock(clock.clone())),
                     &key,
+                    Arc::new(crate::automation::inventory_tasks::InventoryTasks),
                 ));
                 let mut service = Flow {
                     runtime: runtime.clone(),
@@ -124,12 +125,12 @@ impl Config {
                     catalog,
                     assets,
                     publications: Arc::new(
-                        crate::software_publication::http::PublicationDirectory {
+                        rss_mdm_flow_service::software_publication::service::PublicationDirectory {
                             services: Default::default(),
                             tenant,
                             runtime: runtime.clone(),
                             audit_store,
-                            clock,
+                            clock: Arc::new(crate::clock::FlowClock(clock)),
                         },
                     ),
                     publication_runtime: None,
@@ -150,7 +151,7 @@ impl Config {
             }
             Err(error) => {
                 runtime.close().await;
-                Err(error)
+                Err(error.into())
             }
         }
     }
@@ -206,13 +207,11 @@ impl Config {
                     audit: Arc::new(crate::software_publication::host::Audit(
                         planning.publications.audit_store.clone(),
                     )),
-                    credentials: Arc::new(
-                        crate::software_publication::host::SourceCredentials::load(
-                            tenant,
-                            &source.name,
-                            &source.credentials,
-                        )?,
-                    ),
+                    credentials: Arc::new(crate::source_credentials::SourceCredentials::load(
+                        tenant,
+                        &source.name,
+                        &source.credentials,
+                    )?),
                 },
                 tenant,
                 source.name.clone(),
@@ -276,7 +275,8 @@ pub(crate) struct Flow {
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
     pub(crate) planning: Arc<Planning>,
     pub(crate) assets: Arc<crate::assets::AssetService>,
-    pub(crate) publications: Arc<crate::software_publication::http::PublicationDirectory>,
+    pub(crate) publications:
+        Arc<rss_mdm_flow_service::software_publication::service::PublicationDirectory>,
     publication_runtime: Option<Arc<PgRuntime>>,
 }
 
@@ -291,40 +291,14 @@ pub(crate) async fn catalog(
             audit,
             runtime,
             tenant,
-            clock,
+            Arc::new(crate::clock::FlowClock(clock)),
             Arc::new(crate::planning::configuration::FirewallAuthor),
-            Arc::new(ResourceReferences),
+            Arc::new(rss_mdm_flow_service::resource_catalog::StoredReferences),
         )
         .await?,
     ))
 }
-struct ResourceReferences;
-impl crate::resource_catalog::References for ResourceReferences {
-    fn count_in<'a>(
-        &'a self,
-        tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        resource: &'a str,
-        version: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = crate::transaction::Result<u64>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            let assignments = crate::planning::references::count_in(tx, resource, version).await?;
-            let publications =
-                rss_mdm_software_service::publication::references::count_in(tx, resource, version)
-                    .await?;
-            let tenant = tx.tenant_id().to_string();
-            let resource = resource.to_owned();
-            let version = version.to_owned();
-            let approvals:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
-            assignments
-                .checked_add(approvals as u64)
-                .and_then(|n| n.checked_add(publications))
-                .ok_or_else(|| Error::Unavailable(Failure::FlowStorage).into())
-        })
-    }
-}
 
 pub(crate) mod execution;
 
-pub(crate) mod storage;
+use rss_mdm_flow_service::storage;

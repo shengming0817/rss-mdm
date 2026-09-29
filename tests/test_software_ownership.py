@@ -4,7 +4,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 class SoftwareOwnership(unittest.TestCase):
     def test_content_has_no_signing_or_whole_body_path(self):
-        content = ROOT / 'crates/app/src/content'
+        content = ROOT / 'crates/content-service/src'
         self.assertTrue(content.is_dir())
         for path in content.rglob('*.rs'):
             if path.name == 'tests.rs':

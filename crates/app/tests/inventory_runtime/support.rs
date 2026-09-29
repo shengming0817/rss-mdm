@@ -1,8 +1,5 @@
 use super::*;
-use crate::{
-    collection,
-    device::{DeviceService, VerifiedChannelCredential, test_support::options},
-};
+use crate::device::{DeviceService, VerifiedChannelCredential, test_support::options};
 use anyhow::{Result, ensure};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_windows_mdm::{
@@ -120,7 +117,7 @@ pub(crate) async fn report_statuses(
     );
     let (scope, id) = result?;
     Ok(
-        crate::collection::store::collection(access, &scope, Some(id))
+        crate::collection::store::collection(&access.inventory(), &scope, Some(id))
             .await?
             .unwrap(),
     )
@@ -146,7 +143,7 @@ async fn report_on(
         commands: vec![status(1, 0, CommandName::SyncHdr, 212)],
         final_message: true,
     };
-    let id = collection::create(tx, &scope, &mut request).await?;
+    let id = rss_mdm_windows_channel::test_support::create(tx, &scope, &mut request).await?;
     let previous = String::from_utf8(syncml::encode(&request, &CodecLimits::default())?)?;
     let mut response = Message {
         header: Header {
@@ -185,7 +182,7 @@ async fn report_on(
         }
     }
     ensure!(
-        collection::accept(
+        rss_mdm_windows_channel::test_support::accept(
             tx,
             facts,
             &principal.tenant().to_string(),
@@ -219,7 +216,11 @@ pub(crate) async fn start(
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.registration().critical());
-    launch.stage_deferred_task_with_token(runtime.registration(signals.clone()).critical());
+    launch.stage_deferred_task_with_token(
+        runtime
+            .registration(signals.handle(crate::worker_wake::Work::Inventory))
+            .critical(),
+    );
     launch.finish();
     Ok(Some(owner))
 }
@@ -244,9 +245,12 @@ pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run)
 pub(super) async fn open(access: Arc<Database>) -> Result<Arc<InventoryRuntime>> {
     Ok(InventoryRuntime::fixture(
         options("mdm_runtime")?,
-        access,
+        access.inventory(),
         TenantId::parse(case_a())?,
         clock(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
     )
     .await?)
 }

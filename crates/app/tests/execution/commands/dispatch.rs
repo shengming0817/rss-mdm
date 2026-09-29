@@ -33,7 +33,8 @@ async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> 
     .await?;
     let cancel = tokio_util::sync::CancellationToken::new();
     let signals = crate::worker_wake::Signals::default();
-    let mut worker = Box::pin(client.app.execution.run_worker(&cancel, &signals));
+    let flow_signals = signals.flow();
+    let mut worker = Box::pin(client.app.execution.run_worker(&cancel, &flow_signals));
     let message = format!("dispatch.{}", client.operation);
     tokio::select! {
         result = &mut worker => anyhow::bail!("worker exited before claim: {result:?}"),
@@ -86,7 +87,7 @@ impl Client {
         // Drive the public bounded recovery seam without a competing fault consumer.
         let s = self.app.execution.clone();
         let id = self.operation;
-        crate::transaction::run(
+        rss_mdm_flow_service::transaction::run(
             &s.audit_store,
             &s.runtime,
             s.tenant,
@@ -103,7 +104,7 @@ impl Client {
                     Ok(())
                 })
             },
-            crate::transaction::TransactionOwner::Execution,
+            rss_mdm_flow_service::transaction::TransactionOwner::Execution,
         )
         .await?;
         audit.finalize(None);
@@ -184,7 +185,7 @@ impl Client {
                 service.inject_fault(fault);
                 ensure!(matches!(
                     service.relay_claim(claim).await,
-                    Err(Error::CommitUnknown)
+                    Err(rss_mdm_flow_service::Error::CommitUnknown)
                 ));
                 let row:(String,i32,Vec<u8>)=sqlx::query_as("SELECT status,retry_count,fingerprint FROM rss_transactional_messaging.outbox WHERE message_id=$1").bind(format!("dispatch.{}",self.operation)).fetch_one(&mut pg).await?;
                 ensure!(

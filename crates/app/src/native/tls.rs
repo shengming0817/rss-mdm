@@ -25,15 +25,7 @@ use tokio_rustls::{
     server::TlsStream,
 };
 
-#[derive(Clone)]
-pub(crate) struct Peer {
-    chain: Arc<Vec<CertificateDer<'static>>>,
-}
-impl Peer {
-    pub(crate) fn chain(&self) -> &[CertificateDer<'static>] {
-        &self.chain
-    }
-}
+use rss_mdm_certificate::HandshakePeer;
 pub(crate) fn configuration(
     endpoint: &TlsEndpoint,
     client: Option<Arc<dyn ClientCertVerifier>>,
@@ -42,9 +34,9 @@ pub(crate) fn configuration(
         let certs = crate::config::read(&endpoint.certificate_file, 128 * 1024, false)?;
         let certs = CertificateDer::pem_slice_iter(&certs)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| Error::Malformed)?;
+            .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?;
         if certs.is_empty() || certs.len() > 4 {
-            return Err(Error::Malformed);
+            return Err(Error::Service(rss_mdm_flow_service::Error::Malformed));
         }
         let key = crate::config::read(&endpoint.private_key_file, 32768, true)?;
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec()));
@@ -52,14 +44,14 @@ pub(crate) fn configuration(
             rustls::crypto::ring::default_provider(),
         ))
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
-        .map_err(|_| Error::Malformed)?;
+        .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?;
         let builder = match client {
             Some(verifier) => builder.with_client_cert_verifier(verifier),
             None => builder.with_no_client_auth(),
         };
         let mut config = builder
             .with_single_cert(certs, key)
-            .map_err(|_| Error::Malformed)?;
+            .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?;
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         // Full client-certificate authentication on every connection; per-request validity is rechecked too.
         config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
@@ -92,12 +84,14 @@ pub(crate) fn registration(
 
 // Only this product adapter projects RSS-bound preparation metadata into handler inputs.
 async fn evidence(
-    Extension(info): Extension<AcceptedConnectionInfo<(Peer, RequestGate)>>,
+    Extension(info): Extension<AcceptedConnectionInfo<(Option<HandshakePeer>, RequestGate)>>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let (peer, gate) = info.metadata();
-    request.extensions_mut().insert(peer.clone());
+    if let Some(peer) = peer {
+        request.extensions_mut().insert(peer.clone());
+    }
     request.extensions_mut().insert(gate.clone());
     next.run(request).await
 }
@@ -111,7 +105,7 @@ struct TlsTransport {
 }
 impl ConnectionTransport for TlsTransport {
     type Io = TlsStream<TcpStream>;
-    type Metadata = (Peer, RequestGate);
+    type Metadata = (Option<HandshakePeer>, RequestGate);
     type Guard = ConnectionPermit;
     type Error = ConnectionFailure;
 
@@ -141,7 +135,8 @@ impl ConnectionTransport for TlsTransport {
                 // Emit before the bounded audit so cancellation cannot hide the diagnosed failure.
                 eprintln!("{}", event(self.kind.name(), kind));
                 let audit = RequestAudit::new(self.tenant.clone(), self.kind.audit_action());
-                let budget = crate::audit_budget::AuditBudget::new(Duration::from_secs(2));
+                let budget =
+                    rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
                 let control = budget.control();
                 let failed = self
                     .audit_store
@@ -152,16 +147,7 @@ impl ConnectionTransport for TlsTransport {
                 return Err(kind);
             }
         };
-        let peer = Peer {
-            chain: Arc::new(
-                stream
-                    .get_ref()
-                    .1
-                    .peer_certificates()
-                    .unwrap_or_default()
-                    .to_vec(),
-            ),
-        };
+        let peer = HandshakePeer::from_completed_tls(stream.get_ref().1).ok();
         // The move-only permit goes to RSS; cloned request metadata never owns its lifetime.
         let gate = permit.gate();
         Ok(EstablishedTransport::new(stream, (peer, gate), permit))

@@ -317,7 +317,9 @@ impl Client {
             .await;
         ensure!(matches!(
             poison,
-            Err(Error::Unavailable(Failure::CommandInvariant))
+            Err(rss_mdm_flow_service::Error::Unavailable(
+                rss_mdm_flow_service::Failure::CommandInvariant
+            ))
         ));
         pg.close().await?;
         Ok(())

@@ -9,13 +9,13 @@ import tempfile
 from build_run import lease_fds
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOGS = {"compliance": "../../compliance-postgres/src/catalog", "catalog": "execution/catalog", "dependencies": "execution/dependencies", "planning": "planning/catalog", "assets": "assets/catalog", "automation": "automation/catalog", "resources": "resource_catalog/catalog", "publication": "../../software-service/src/publication/http_catalog", "software": "../../software-service/src/catalog/catalog", "content": "content/catalog", "flow": "flow/storage/catalog"}
+CATALOGS = {'compliance': 'compliance-postgres/src/catalog', 'catalog': 'flow-service/src/execution/catalog', 'dependencies': 'flow-service/src/execution/dependencies', 'planning': 'flow-service/src/planning/catalog', 'assets': 'inventory-service/src/assets/catalog', 'automation': 'flow-service/src/automation/catalog', 'resources': 'flow-service/src/resource_catalog/catalog', 'publication': 'flow-service/src/software_publication/http_catalog', 'software': 'software-service/src/catalog/catalog', 'content': 'content-service/src/catalog', 'flow': 'flow-service/src/storage/catalog'}
 NAMES = tuple(CATALOGS)
 
 def capture(container, mode, database):
-    directory = ROOT / "crates/app/src/execution"
+    directory = ROOT / "crates/flow-service/src/execution"
     query = "BEGIN; SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog;\n"
-    paths = {name: ROOT / "crates/app/src" / (relative + ".sql") for name, relative in CATALOGS.items()}
+    paths = {name: ROOT / "crates" / (relative + ".sql") for name, relative in CATALOGS.items()}
     query += "\n".join(paths[name].read_text() + ";" for name in NAMES)
     query += "\nROLLBACK;"
     result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input=query, text=True, capture_output=True, pass_fds=lease_fds())

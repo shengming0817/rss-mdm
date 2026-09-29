@@ -31,7 +31,7 @@ RSS 提供其明确接纳的公共契约、事务消息、Saga、投影、状态
 
 ## MDM 产品审计接入（#2498）
 
-`rss-mdm-audit-integration` 是产品内唯一审计接缝，当前仅 App 与 software-service 业务生产端直接消费；
+`rss-mdm-audit-integration` 是产品内唯一审计接缝，直接消费者限定为 App、software-service、authorization-service、registration-service、inventory-service、flow-service、content-service，以及 management-http、agent-channel、windows-channel、apple-channel；实际依赖集合由 CI 校验。
 不反向依赖 App、Identity 或任何 MDM 领域/应用包，纯领域核心不得依赖它。
 共同 envelope、精确 canonical 字节/指纹回执、恢复核对、请求结算和取消诊断归此包；
 业务事件及主体真实性、资源授权仍归各业务 owner。组件 schema/锁/追加实现归 Audit/Ledger，

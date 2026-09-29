@@ -1,6 +1,6 @@
 //! Persistent configuration owns the native effect through install and removal recovery.
 use super::*;
-use crate::apple::profile;
+use rss_mdm_apple_mdm::profile;
 use serde_json::Value;
 use sqlx::Connection;
 impl Fixture {
@@ -80,7 +80,7 @@ impl Fixture {
         ));
         let mut launch = startup.commit();
         launch.stage_deferred_task_with_token(
-            automation.registration(self.signals.clone()).critical(),
+            automation.registration(self.signals.flow()).critical(),
         );
         launch.finish();
         let resource = format!("profile-{}", Uuid::new_v4());
@@ -235,7 +235,7 @@ impl Fixture {
         ensure!(
             self.app
                 .execution
-                .apple_wake(&self.app.apple()?.push.configuration)
+                .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
                 .await?
                 .is_none(),
             "revoked approval triggered APNs"

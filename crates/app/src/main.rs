@@ -54,7 +54,7 @@ async fn execute() -> Result<(), ProcessError> {
             Ok(())
         }
         "initialize-authorization" => {
-            let receipt = rss_mdm_app::authorization::initialize(config::load(path)?)
+            let receipt = rss_mdm_app::initialize_authorization(config::load(path)?)
                 .await
                 .map_err(|error| ProcessError::at("authorization.initialize", error))?;
             println!(

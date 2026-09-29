@@ -13,3 +13,10 @@ pub use store::{AuditStore, Error};
 
 /// Product receipt schema, installed by the separately provisioned MDM owner.
 pub const MIGRATION_SQL: &str = include_str!("receipts.sql");
+
+pub mod budget;
+
+pub mod completion;
+
+/// This capability's closed privileges in the shared access connection.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

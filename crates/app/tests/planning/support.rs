@@ -1,10 +1,10 @@
 //! Capability preparation shared by planning, asset and audit storage tests.
-pub(crate) use crate::http_operation::Operation;
 use crate::planning::{Command, automation};
 pub(crate) use crate::planning::{Planning, model::*};
-pub(crate) use crate::transaction::deadline;
-pub(crate) use crate::{Error, Failure, assets};
+pub(crate) use crate::{Error, assets};
 pub(crate) use rss_mdm_audit_integration::RequestAudit;
+pub(crate) use rss_mdm_flow_service::operation::Operation;
+pub(crate) use rss_mdm_flow_service::transaction::deadline;
 pub(crate) use rss_request_context::{Deadline, TenantId};
 pub(crate) use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 pub(crate) use rss_transactional_messaging_postgres::{
@@ -104,8 +104,12 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), t, clock.clone())
         .await
         .unwrap();
-    crate::flow::storage::admit(&runtime, t).await.unwrap();
-    let key = crate::flow::storage::cursor_key(&runtime, t).await.unwrap();
+    rss_mdm_flow_service::storage::admit(&runtime, t)
+        .await
+        .unwrap();
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
+        .await
+        .unwrap();
     Planning::new(audit, runtime, t, clock, catalog, &key)
         .await
         .unwrap()
@@ -116,7 +120,7 @@ pub(super) async fn execute(m: &Planning, c: &Command) -> std::result::Result<Va
     audit.set_principal("operator", "mdm");
     let result = m.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
-    result
+    result.map_err(Into::into)
 }
 
 pub(crate) async fn execute_asset(
@@ -136,7 +140,7 @@ pub(crate) async fn execute_asset_service(
     audit.set_principal("operator", "mdm");
     let result = service.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
-    result
+    result.map_err(Error::from)
 }
 
 pub(crate) fn operation<T>(expected_revision: u64, input: T) -> Operation<T> {
@@ -189,7 +193,12 @@ pub(crate) async fn wait_task(
             .await;
             let value = match result {
                 Ok(value) => value,
-                Err(Error::Unavailable(Failure::PlanningStorage) | Error::CommitUnknown) => {
+                Err(
+                    Error::Service(rss_mdm_flow_service::Error::Unavailable(
+                        rss_mdm_flow_service::Failure::PlanningStorage,
+                    ))
+                    | Error::Service(rss_mdm_flow_service::Error::CommitUnknown),
+                ) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     continue;
                 }
@@ -242,15 +251,18 @@ pub(crate) async fn audit_store_with_integrity(
 }
 
 pub(crate) async fn assets(service: &Planning) -> Arc<assets::AssetService> {
-    let key = crate::flow::storage::cursor_key(&service.runtime, service.tenant)
+    let key = rss_mdm_flow_service::storage::cursor_key(&service.runtime, service.tenant)
         .await
         .unwrap();
     Arc::new(assets::AssetService::new(
         service.audit_store.clone(),
         service.runtime.clone(),
         service.tenant,
-        service.clock.clone(),
+        Arc::new(rss_mdm_flow_service::clock::InventoryClock(
+            service.clock.clone(),
+        )),
         &key,
+        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
     ))
 }
 
@@ -276,7 +288,7 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
     execute_asset(
         service,
         &assets::Command::Search {
-            request: Operation {
+            request: rss_mdm_inventory_service::operation::Operation {
                 operation_id: task,
                 expected_revision: 0,
                 input: assets::Query::default(),
@@ -400,7 +412,7 @@ impl RunningAutomation {
         let mut launch = startup.commit();
         launch.stage_task_with_token(notifications.registration().critical());
         launch.stage_deferred_task_with_token(
-            automation.clone().registration(signals.clone()).critical(),
+            automation.clone().registration(signals.flow()).critical(),
         );
         launch.finish();
         Self { stack, automation }
@@ -410,5 +422,16 @@ impl RunningAutomation {
         rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(self.automation))
             .await
             .unwrap();
+    }
+}
+
+pub(crate) fn inventory_operation<T>(
+    expected_revision: u64,
+    input: T,
+) -> rss_mdm_inventory_service::operation::Operation<T> {
+    rss_mdm_inventory_service::operation::Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision,
+        input,
     }
 }

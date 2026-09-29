@@ -13,7 +13,7 @@ fn members(count: u128) -> Vec<Value> {
 }
 fn no_write(id: Uuid, operation: Uuid, table: &str) -> Result<()> {
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}' AND id='{id}'", TENANT = case_tenant()))?.trim() == "0");
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.operations WHERE tenant_id='{TENANT}' AND operation_id='{operation}'", TENANT = case_tenant()))?.trim() == "0");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id='{TENANT}' AND operation_id='{operation}'", TENANT = case_tenant()))?.trim() == "0");
     ensure!(
         audit_count(|r| r.source() == "mdm.business"
             && r.operation() == Some(operation.to_string().as_str())

@@ -48,7 +48,7 @@ class AppTestLayout(unittest.TestCase):
         self.assertNotIn('audit.receipts',select_paths(['crates/app/tests/support/mod.rs']).modules)
 
     def test_moved_t1_remains_t1_and_new_owners_select_exactly(self):
-        self.assertEqual(select_paths(['crates/app/tests/content/unit.rs']).modules,())
+        self.assertEqual(select_paths(['crates/content-service/tests/unit.rs']).modules,())
         self.assertEqual(select_paths(['crates/app/tests/apple/apns.rs']).modules,('apple.apns',))
         self.assertEqual(select_paths(['crates/app/tests/agent/registration.rs']).modules,('agent.registration',))
 

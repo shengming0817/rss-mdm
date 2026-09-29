@@ -11,6 +11,27 @@ class ModuleImpactTests(unittest.TestCase):
     def selected(self, path):
         return set(select_paths([path]).modules)
 
+    def test_channel_registrars_select_their_live_consumers(self):
+        app = self.selected('crates/app/src/api.rs')
+        self.assertTrue({'agent.registration', 'agent.reports', 'windows.management',
+                         'apple.identity', 'content.http', 'authorization.rules',
+                         'host.lifecycle', 'api.identity_context'} <= app)
+        self.assertTrue(app.isdisjoint({'apple.cms', 'apple.apns', 'sources.winget'}))
+        self.assertEqual(self.selected('crates/agent-channel/src/tasks.rs'), {
+            'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
+            'execution.agent.recovery', 'execution.software.offer',
+            'execution.software.content', 'execution.software.recovery'})
+        self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
+            'windows.enrollment', 'windows.issuance', 'windows.management',
+            'windows.commands', 'windows.retention', 'windows.limits'})
+
+    def test_device_audit_boundaries_select_fault_projection_tests(self):
+        for path in ('crates/audit-integration/src/completion.rs',
+                     'crates/agent-channel/src/boundary.rs',
+                     'crates/windows-channel/src/boundary.rs',
+                     'crates/apple-channel/src/boundary.rs'):
+            self.assertIn('api.diagnostics', self.selected(path), path)
+
     def test_installation_python_selects_only_its_module_and_guards(self):
         selection = select_paths(['hack/t2_modules/installation.py'])
         self.assertFalse(selection.full)
@@ -66,7 +87,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_test_changes_do_not_select_production_consumers(self):
         self.assertEqual(self.selected('crates/resource-postgres/tests/behavior.rs'),
                          {'resource.persistence'})
-        self.assertEqual(self.selected('crates/app/tests/content/unit.rs'), set())
+        self.assertEqual(self.selected('crates/content-service/tests/unit.rs'), set())
         self.assertEqual(self.selected('crates/scope/tests/model.rs'), set())
         self.assertEqual(self.selected('crates/app/tests/apple/apns.rs'), {'apple.apns'})
 
@@ -88,7 +109,7 @@ class ModuleImpactTests(unittest.TestCase):
                          {'agent.registration', 'agent.reports', 'planning.remote'})
 
     def test_content_range_selects_real_download_consumers(self):
-        self.assertEqual(self.selected('crates/app/src/content/range.rs'),
+        self.assertEqual(self.selected('crates/content-service/src/range.rs'),
                          {'content.http', 'execution.agent.content', 'execution.software.content'})
 
     def test_git_change_selects_only_git_seams(self):
@@ -165,7 +186,7 @@ class ModuleImpactTests(unittest.TestCase):
                     'execution.software.recovery'}
         for path in ('crates/agent-wire/src/tasks.rs',
                      'crates/agent-wire/schema/signed-task-v3.schema.json',
-                     'crates/app/src/task_signing.rs'):
+                     'crates/flow-service/src/task_signing.rs'):
             selected = self.selected(path)
             self.assertTrue(expected <= selected, expected - selected)
             self.assertTrue(selected.isdisjoint({'agent.registration','agent.reports','windows.management',
@@ -184,15 +205,15 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/group-postgres/tests/t2.rs'), {'group.persistence'})
 
     def test_apple_push_includes_transport_durable_push_and_health_only(self):
-        self.assertEqual(self.selected('crates/app/src/apple/push.rs'),
+        self.assertEqual(self.selected('crates/apple-channel/src/push.rs'),
                          {'apple.apns','apple.push','apple.host'})
 
     def test_formal_migration_excludes_every_no_pg_module(self):
-        selected = self.selected('crates/app/migrations/0021_software_deployment.sql')
+        selected = self.selected('crates/flow-service/schema/install.sql')
         self.assertEqual(selected, {name for name, module in MODULES.items() if module.postgres})
 
     def test_authority_and_audit_select_distinct_mutation_seams(self):
-        selected = self.selected('crates/app/src/authorization/context.rs')
+        selected = self.selected('crates/authorization-service/src/context.rs')
         self.assertTrue({'authorization.rules','enrollment.http','content.http','content.mirror',
                          'planning.agent_policy','planning.software','software.http','windows.issuance',
                          'apple.scep','apple.renewal','compliance.http','execution.commands.admission'} <= selected)
@@ -209,7 +230,7 @@ class ModuleImpactTests(unittest.TestCase):
                          {'publication.winget','publication.brew','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/references.rs'),
                          {'publication.mapping','planning.resource_archive'})
-        self.assertEqual(self.selected('crates/app/src/software_catalog.rs'), {'software.http'})
+        self.assertEqual(self.selected('crates/management-http/src/software_catalog.rs'), {'software.http'})
 
     def test_shared_software_helpers_follow_behavioral_consumption(self):
         self.assertEqual(self.selected('tests/support/software/ack.rs'), {'publication.recovery'})
@@ -231,8 +252,8 @@ class ModuleImpactTests(unittest.TestCase):
                         test_inputs=('crates/app/tests/new/mod.rs',))
         with patch.dict(MODULES, {'new.owner': module}):
             self.assertEqual(self.selected('crates/app/tests/new/mod.rs'), {'new.owner'})
-        selected = set(select_paths(['crates/app/tests/content/unit.rs',
-                                    'crates/app/src/content/range.rs',
+        selected = set(select_paths(['crates/content-service/tests/unit.rs',
+                                    'crates/content-service/src/range.rs',
                                     'crates/resource-postgres/tests/behavior.rs']).modules)
         self.assertEqual(selected, {'content.http','execution.agent.content',
                                     'execution.software.content','resource.persistence'})

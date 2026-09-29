@@ -287,7 +287,7 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
         )
         .await?;
     let proof = crate::authorization::context::AuthorizedPrincipal::new(session)?
-        .load_authorization(&access)
+        .load_authorization(access.authorization())
         .await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
     ensure!(matches!(
@@ -295,7 +295,7 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
             crate::authorization::Permission::InventoryRead,
             Some("user-device")
         ),
-        Err(crate::Error::Unauthorized)
+        Err(rss_mdm_authorization_service::Error::Unauthorized)
     ));
     access.close().await;
     for path in paths {
