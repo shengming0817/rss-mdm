@@ -81,6 +81,7 @@ impl Client {
         url: &str,
         initial: &s::Message,
         ack: &s::Message,
+        signals: Arc<crate::worker_wake::Signals>,
     ) -> anyhow::Result<()> {
         let mut automation_owner = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
@@ -97,7 +98,7 @@ impl Client {
             crate::automation::Resource(automation.clone()),
         ));
         let mut launch = startup.commit();
-        launch.stage_deferred_task_with_token(automation.registration(Arc::default()).critical());
+        launch.stage_deferred_task_with_token(automation.registration(signals.clone()).critical());
         launch.finish();
         let cap = native::begin(peer, url, initial, ack, 950, None).await?;
         let message = native::report(&cap.first, &cap.gets, "10.0.19045.0", 200);
@@ -204,8 +205,8 @@ impl Client {
         self.pending_configuration_input()
             .await
             .context("pending configuration input")?;
-        let mut command_owner = self.command_worker()?;
-        self.settled_configuration(&pending_policy)
+        let mut command_owner = self.command_worker(signals.clone())?;
+        self.settled_configuration(&pending_policy, Duration::from_secs(30))
             .await
             .context("pending policy settlement")?;
         let mut db =
@@ -226,14 +227,14 @@ impl Client {
             .context("first configuration dispatch")?;
         // The native command has been published but no device ACK exists yet.
         ensure!(command_owner.shutdown().join().await?.is_clean());
-        command_owner = self.command_worker()?;
+        command_owner = self.command_worker(signals.clone())?;
         ensure!(self.wait_configuration(&policy, None).await? == operation);
         self.product(
             &format!("policies/{pending_policy}"),
             op(1, json!({"action":"disable"})),
         )
         .await?;
-        self.settled_configuration(&pending_policy)
+        self.settled_configuration(&pending_policy, restart_recovery_budget())
             .await
             .context("pending policy settlement")?;
         let write = native::begin(peer, url, initial, ack, 951, None).await?;
@@ -402,8 +403,9 @@ impl Client {
         self.pending_configuration_input()
             .await
             .context("pending configuration input")?;
-        command_owner = self.command_worker()?;
-        self.settled_configuration(&policy).await?;
+        command_owner = self.command_worker(signals.clone())?;
+        self.settled_configuration(&policy, restart_recovery_budget())
+            .await?;
         ensure!(self.wait_configuration(&shared, None).await? == operation);
         ensure!(
             self.call(Method::GET, &format!("/{operation}"), None)
@@ -438,7 +440,8 @@ impl Client {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
-        .await??;
+        .await
+        .context("retire shared configuration claim")??;
         ensure!(self.wait_configuration(&policy, None).await? == operation);
         // A new frozen version cancels the old command, without claiming cleanup.
         let next = self
@@ -546,7 +549,12 @@ impl Client {
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let remote_command=tokio::time::timeout(Duration::from_secs(30),async {loop {let id:Option<Uuid>=sqlx::query_scalar("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.remote_operation=$1 AND d.status='published'").bind(remote).fetch_optional(&mut db).await?;if let Some(id)=id {break Ok::<_,anyhow::Error>(id);}tokio::time::sleep(Duration::from_millis(50)).await;}}).await??;
+        let remote_command=tokio::time::timeout(Duration::from_secs(30),async {loop {let id:Option<Uuid>=sqlx::query_scalar("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.remote_operation=$1 AND d.status='published'").bind(remote).fetch_optional(&mut db).await?;if let Some(id)=id {break Ok::<_,anyhow::Error>(id);}tokio::time::sleep(Duration::from_millis(50)).await;}}).await;
+        if remote_command.is_err() {
+            let state:Value=sqlx::query_scalar("SELECT jsonb_build_object('staged',r.staged,'cancelled',r.cancelled,'targets',(SELECT jsonb_agg(to_jsonb(t)) FROM mdm_planning.remote_operation_targets t WHERE t.operation=r.id),'commands',(SELECT jsonb_agg(jsonb_build_object('id',o.id,'accepted',o.gateway_accepted,'status',d.status)) FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.remote_operation=r.id)) FROM mdm_planning.remote_operations r WHERE r.id=$1").bind(remote).fetch_one(&mut db).await?;
+            anyhow::bail!("remote configuration did not publish: {state}");
+        }
+        let remote_command = remote_command??;
         ensure!(
             self.call(
                 Method::POST,
@@ -579,9 +587,12 @@ impl Client {
         ensure!(automation_owner.shutdown().join().await?.is_clean());
         Ok(())
     }
-    fn command_worker(&self) -> anyhow::Result<rss_runtime::ShutdownStack> {
+    fn command_worker(
+        &self,
+        signals: Arc<crate::worker_wake::Signals>,
+    ) -> anyhow::Result<rss_runtime::ShutdownStack> {
         let mut owner = rss_runtime::ShutdownStack::try_new(
-            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
         let mut launch = owner.startup()?.commit();
@@ -589,7 +600,7 @@ impl Client {
             self.app
                 .execution
                 .clone()
-                .registration(Arc::default())
+                .registration(signals.clone())
                 .critical(),
         );
         launch.finish();
@@ -604,17 +615,17 @@ impl Client {
             if dirty {return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await?
     }
-    async fn settled_configuration(&self, policy: &str) -> anyhow::Result<()> {
+    async fn settled_configuration(&self, policy: &str, timeout: Duration) -> anyhow::Result<()> {
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let settled=tokio::time::timeout(Duration::from_secs(30),async {loop {
+        let settled=tokio::time::timeout(timeout,async {loop {
             let ready:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND kind='policy_reconcile' AND target=$2 AND NOT completed) AND coalesce((SELECT observed_revision=input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$3),false)").bind(case_tenant()).bind(policy).bind(case_device()).fetch_one(&mut db).await?;
             if ready{return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await;
         if settled.is_err() {
             let state = crate::test_support::pg(&format!(
-                "SELECT jsonb_build_object('device',(SELECT to_jsonb(d) FROM mdm_planning.configuration_devices d WHERE tenant_id='{TENANT}' AND device='{DEVICE}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'target',target,'completed',completed,'failure',failure)) FROM mdm_automation.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed))",
+                "SELECT jsonb_build_object('device',(SELECT to_jsonb(d) FROM mdm_planning.configuration_devices d WHERE tenant_id='{TENANT}' AND device='{DEVICE}'),'reconcile',(SELECT jsonb_agg(jsonb_build_object('entity',entity,'result',result,'lease_remaining',extract(epoch from lease_until-clock_timestamp()),'next_in',extract(epoch from next_run-clock_timestamp()))) FROM rss_reconcile.targets WHERE tenant_id='{TENANT}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'target',target,'completed',completed,'failure',failure)) FROM mdm_automation.automation_jobs WHERE tenant_id='{TENANT}' AND NOT completed))",
                 TENANT = case_tenant(),
                 DEVICE = case_device()
             ))?;
@@ -634,7 +645,7 @@ impl Client {
             let id:Option<Uuid>=sqlx::query_scalar("SELECT c.operation FROM mdm_planning.configuration_claims c JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(c.tenant_id,c.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE c.tenant_id=$1::uuid AND c.policy=$2::uuid AND c.device=$3 AND o.gateway_accepted AND d.status IN('published','received') AND ($4::uuid IS NULL OR c.operation<>$4)").bind(case_tenant()).bind(policy).bind(case_device()).bind(previous).fetch_optional(&mut pg).await?;
             if let Some(id)=id {return Ok::<_,anyhow::Error>(id);}
             tokio::time::sleep(Duration::from_millis(50)).await;
-        }}).await?
+        }}).await.with_context(|| format!("configuration dispatch for {policy}, previous {previous:?}"))?
     }
     async fn next_configuration(
         &mut self,
@@ -692,6 +703,11 @@ impl Client {
         .await?;
         self.wait_configuration(policy, Some(previous)).await
     }
+}
+// Cancellation intentionally retains a reconcile claim for lease fencing. After a
+// restart allow the 30s lease, 5s recovery scan, 6s attempt and 4s scheduling margin.
+fn restart_recovery_budget() -> Duration {
+    Duration::from_secs(30 + 5 + 6 + 4)
 }
 async fn peer_reply(
     peer: &reqwest::Client,
@@ -757,7 +773,13 @@ async fn policy_replace_get_and_ownership() -> anyhow::Result<()> {
     let peer = host.peer().await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client
-        .firewall_cycle(&peer.mutual, &peer.url, &peer.message, &peer.ack)
+        .firewall_cycle(
+            &peer.mutual,
+            &peer.url,
+            &peer.message,
+            &peer.ack,
+            host.notifications.signals.clone(),
+        )
         .await?;
     host.close().await?;
     Ok(())

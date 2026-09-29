@@ -75,6 +75,7 @@ impl IngressClock {
 pub(crate) struct Host {
     pub(crate) root: PathBuf,
     pub(crate) app: Arc<Assembly>,
+    pub(crate) notifications: crate::worker_wake::Listener,
     pub(crate) browser: Router,
     pub(crate) store: Arc<Database>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
@@ -217,6 +218,9 @@ impl Host {
         Ok(Self {
             root,
             app,
+            notifications: crate::worker_wake::Listener::new(crate::device::test_support::options(
+                "mdm_access",
+            )?),
             browser,
             store,
             runtime,
@@ -247,8 +251,7 @@ impl Host {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
-        let notifications =
-            crate::worker_wake::Listener::new(crate::device::test_support::options("mdm_access")?);
+        let notifications = self.notifications.clone();
         let signals = notifications.signals.clone();
         let mut startup = owner.startup()?;
         startup.stage_resource(rss_runtime::DynManagedResource::new_box(

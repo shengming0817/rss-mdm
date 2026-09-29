@@ -77,6 +77,12 @@ pub(crate) async fn claim_with(router: &Router, credential: &str) -> Result<Valu
     })
     .await?
 }
+async fn upload_fixture(router: &Router, request: Request<Body>) -> Result<()> {
+    let _guard = super::software::content_setup_guard().await?;
+    let status = router.clone().oneshot(request).await?.status();
+    ensure!(status == StatusCode::CREATED, "fixture upload: {status}");
+    Ok(())
+}
 pub(crate) async fn upload_windows(
     author: &Browser,
     router: &Router,
@@ -89,7 +95,7 @@ pub(crate) async fn upload_windows(
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
-    ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+    upload_fixture(router, request).await?;
     Ok(())
 }
 
@@ -107,10 +113,10 @@ pub(crate) struct Fixture {
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
     pub(crate) scope: Uuid,
-    pub(crate) dependency_bytes: &'static [u8],
-    pub(crate) bytes: &'static [u8],
-    pub(crate) removal: &'static [u8],
-    pub(crate) windows_bytes: &'static [u8],
+    pub(crate) dependency_bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) removal: Vec<u8>,
+    pub(crate) windows_bytes: Vec<u8>,
     pub(crate) credential: String,
     pub(crate) first_operation: Value,
 }
@@ -217,11 +223,12 @@ impl Fixture {
             json!({"action":"create","kind":"software"}),
         )
         .await?;
-        let dependency_bytes = b"controlled dependency package";
-        let dependency_digest: [u8; 32] = Sha256::digest(dependency_bytes).into();
+        let dependency_bytes = format!("controlled dependency package {dependency}").into_bytes();
+        let dependency_digest: [u8; 32] = Sha256::digest(&dependency_bytes).into();
         let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","format":"pkg","primary":"scripts/install.sh","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
-        let windows_dependency_bytes = b"controlled windows dependency msi";
-        let windows_dependency_digest: [u8; 32] = Sha256::digest(windows_dependency_bytes).into();
+        let windows_dependency_bytes =
+            format!("controlled windows dependency msi {dependency}").into_bytes();
+        let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
         let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
         write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { dependency_definition } else { windows_dependency_definition }}}]})).await?;
         if platform == Platform::MacOs {
@@ -230,9 +237,15 @@ impl Fixture {
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
-            ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+            upload_fixture(&router, request).await?;
         } else {
-            upload_windows(&author, &router, &dependency_path, windows_dependency_bytes).await?;
+            upload_windows(
+                &author,
+                &router,
+                &dependency_path,
+                &windows_dependency_bytes,
+            )
+            .await?;
         }
         write(
             &mut author,
@@ -269,13 +282,13 @@ impl Fixture {
             json!({"action":"create","kind":"software"}),
         )
         .await?;
-        let bytes = b"controlled software package";
-        let digest: [u8; 32] = Sha256::digest(bytes).into();
-        let removal = b"#!/bin/sh\nexit 0\n";
-        let removal_digest: [u8; 32] = Sha256::digest(removal).into();
+        let bytes = format!("controlled software package {resource}").into_bytes();
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        let removal = format!("#!/bin/sh\n# {resource}\nexit 0\n").into_bytes();
+        let removal_digest: [u8; 32] = Sha256::digest(&removal).into();
         let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","format":"pkg","primary":"package","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":{"executor":"posix_sh","entry":"remove","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
-        let windows_bytes = b"controlled windows root msi";
-        let windows_digest: [u8; 32] = Sha256::digest(windows_bytes).into();
+        let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
+        let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
         let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
         write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { definition } else { windows_definition }}}]})).await?;
         if platform == Platform::MacOs {
@@ -284,15 +297,15 @@ impl Fixture {
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
-            ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+            upload_fixture(&router, request).await?;
             let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(removal.to_vec()))?;
-            ensure!(router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
+            upload_fixture(&router, request).await?;
         } else {
-            upload_windows(&author, &router, &path, windows_bytes).await?;
+            upload_windows(&author, &router, &path, &windows_bytes).await?;
         }
         write(
             &mut author,
@@ -370,15 +383,21 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     )
     .await?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::execution::Resource(worker.clone()),
     ));
+    let notifications = crate::worker_wake::Listener::new(config.access_database.options()?);
+    let signals = notifications.signals.clone();
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        notifications.clone(),
+    ));
     let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(worker.registration(Arc::default()).critical());
+    launch.stage_task_with_token(notifications.registration().critical());
+    launch.stage_deferred_task_with_token(worker.registration(signals).critical());
     launch.finish();
     Ok(Some(stack))
 }

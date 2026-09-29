@@ -66,7 +66,7 @@ impl Automation {
         task.into_registration(move |cancel|async move {
             let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&cancel);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:4,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:crate::worker_wake::RECOVERY,
+                concurrency:4,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.assets").expect("constant domain");

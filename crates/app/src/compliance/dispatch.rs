@@ -15,6 +15,7 @@ pub(crate) async fn group_changed(tx: &mut PgTransaction<'_>, group: Uuid) -> Re
             |_, _| Box::pin(async { Ok(()) }),
         )
         .await?;
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Automation).await?;
     }
     Ok(())
 }

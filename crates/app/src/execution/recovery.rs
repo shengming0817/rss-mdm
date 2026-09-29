@@ -91,7 +91,7 @@ impl ExecutionService {
         signals: Arc<crate::worker_wake::Signals>,
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) =
-            rss_runtime::ManagedTask::prepare("mdm-command-recovery", Duration::from_secs(8));
+            rss_runtime::ManagedTask::prepare("mdm-command-recovery", Duration::from_secs(20));
         task.into_registration(
             move |cancel| async move { self.run_worker(&cancel, &signals).await },
         )
@@ -102,24 +102,49 @@ impl ExecutionService {
         signals: &crate::worker_wake::Signals,
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
         let timer = Timer::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::MAX, cancel);
+        let stopped = cancel.child_token();
+        let control = rss_reconcile::Control::new(&timer, Duration::MAX, &stopped);
         let scope = recovery_scope(self.tenant);
         let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
             concurrency: 1,
             lease_ttl: Duration::from_secs(30),
             attempt_timeout: Duration::from_secs(6),
             scan_interval: Duration::from_secs(5),
+            idle_scan_interval: Duration::from_secs(5),
             initial_backoff: Duration::from_secs(5),
             max_backoff: Duration::from_secs(60),
             max_attempts: 1000,
         })
         .map_err(rss_runtime::ShutdownError::new)?;
-        tokio::select! {
-            result=self.run_recovery(&scope,policy,&control, signals.get(crate::worker_wake::Work::CommandRecovery))=>{result.map_err(rss_runtime::ShutdownError::new)?;},
-            result=self.relay(cancel, signals.get(crate::worker_wake::Work::CommandRelay))=>{result.map_err(rss_runtime::ShutdownError::new)?;},
-        }
-        Ok(())
+        let recovery = async {
+            self.run_recovery(
+                &scope,
+                policy,
+                &control,
+                signals.get(crate::worker_wake::Work::CommandRecovery),
+            )
+            .await
+            .map(|_| ())
+            .map_err(rss_runtime::ShutdownError::new)
+        };
+        let relay = async {
+            self.relay(
+                &stopped,
+                signals.get(crate::worker_wake::Work::CommandRelay),
+            )
+            .await
+            .map_err(rss_runtime::ShutdownError::new)
+        };
+        tokio::pin!(recovery, relay);
+        // Stop new claims when either branch exits, then let the other owner settle.
+        // Claim, gateway transaction and outbox settlement each have a six-second limit.
+        let (first, remaining) = tokio::select! {
+            result = &mut recovery => { stopped.cancel(); (result, relay.await) },
+            result = &mut relay => { stopped.cancel(); (result, recovery.await) },
+        };
+        first.and(remaining)
     }
+
     pub(super) async fn run_recovery<T: rss_reconcile::Timer>(
         &self,
         scope: &rss_reconcile::Scope,

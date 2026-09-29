@@ -140,7 +140,7 @@ class RunFixtures:
                 run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
                     cwd=ROOT, env=env, capture_output=True, timeout=30)
             self.costs.increment('identityInitializations', 1)
-        manifest = dict(tenants=tenants, cases=[str(self.root / j.key / 'case.json') for j in jobs])
+        manifest = dict(stage='accounts', tenants=tenants, cases=[str(self.root / j.key / 'case.json') for j in jobs])
         env['MDM_IDENTITY_SETUP'] = str(private(root / 'identity-setup.json', manifest))
         cases = self.builds.discover(IDENTITY_SETUP)
         require(len(cases) == 1, 'identity setup target is ambiguous')
@@ -162,6 +162,19 @@ class RunFixtures:
             private(case_root / 'runtime.json', value)
             private(case_root / 'account-password', password.read_text())
             pool.database_config(case_root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
+
+    def prepare_sessions(self, job, env, database, output):
+        # Credentials age from case admission, not from the start of a long run.
+        root = self.root / job.key
+        manifest = dict(stage='sessions', tenants=[], cases=[str(root / 'case.json')])
+        session_env = dict(env, MDM_IDENTITY_SETUP=str(private(root / 'identity-sessions.json', manifest)))
+        cases = self.builds.discover(IDENTITY_SETUP)
+        require(len(cases) == 1, 'identity setup target is ambiguous')
+        with measure(self.costs, 'identity-session-setup', database=database, invocationId=job.key):
+            self.builds.execute(cases[0], session_env, output)
+        for event in json.loads((root / 'identity-costs.json').read_text()):
+            self.costs.append(dict(event, database=database))
+            self.costs.increment(event['phase'], event['count'])
 
     @contextmanager
     def workers(self, job, database, config):
@@ -285,6 +298,8 @@ class RunFixtures:
             if 'idp' in module.fixtures:
                 from enterprise_idp import fixture
                 env.update(stack.enter_context(fixture(root, owner)))
+            if 'identity' in module.fixtures:
+                self.prepare_sessions(job, env, database, output / 'identity-sessions')
             with self.lock:
                 for dependency in module.fixtures:
                     self.costs.increment('fixture:' + dependency, 1)

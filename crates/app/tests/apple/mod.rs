@@ -37,6 +37,7 @@ struct Fixture {
     browser: Browser,
     router: Router,
     owner: rss_runtime::ShutdownStack,
+    signals: Arc<crate::worker_wake::Signals>,
     root: PathBuf,
     lose_notify: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -181,14 +182,13 @@ impl Fixture {
             router: hooks.layer(axum::middleware::from_fn(native::admission::admit)),
         };
         let mut owner = rss_runtime::ShutdownStack::try_new(
-            rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
+        let notifications =
+            crate::worker_wake::Listener::new(crate::device::test_support::options("mdm_access")?);
+        let signals = notifications.signals.clone();
         {
-            let notifications = crate::worker_wake::Listener::new(
-                crate::device::test_support::options("mdm_access")?,
-            );
-            let signals = notifications.signals.clone();
             let mut startup = owner.startup()?;
             startup.stage_resource(rss_runtime::DynManagedResource::new_box(
                 notifications.clone(),
@@ -252,6 +252,7 @@ impl Fixture {
             browser,
             router,
             owner,
+            signals,
             root,
             lose_notify,
         })

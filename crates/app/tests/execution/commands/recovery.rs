@@ -68,6 +68,7 @@ impl Client {
             lease_ttl: Duration::from_secs(10),
             attempt_timeout: Duration::from_secs(1),
             scan_interval: Duration::from_millis(100),
+            idle_scan_interval: Duration::from_millis(100),
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(1),
             max_attempts: 3,
@@ -89,6 +90,17 @@ impl Client {
             "expiry or unknown effect lost {:?}",
             read
         );
+        // Empty discovery defers structural checks. Make an actual operation due
+        // before corrupting the catalog, so the worker must reject its claim.
+        let wake_timer = recovery::Timer::new();
+        let wake_control =
+            rss_reconcile::Control::new(&wake_timer, Duration::from_secs(2), &cancel);
+        rss_reconcile::DurableStore::wake(
+            &restarted.reconcile,
+            &service::target(restarted.tenant, case_device()),
+            &wake_control,
+        )
+        .await?;
         sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'damaged'")
             .execute(&mut pg)
             .await?;

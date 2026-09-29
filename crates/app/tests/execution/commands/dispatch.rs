@@ -12,6 +12,69 @@ async fn outbox_gateway_ack_and_process_recovery() -> anyhow::Result<()> {
     host.close().await?;
     Ok(())
 }
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.dispatch"]
+async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> {
+    let (host, mut client) = ordinary().await?;
+    client.accept_approved().await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut lock =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut transaction = lock.begin().await?;
+    sqlx::query(
+        "SELECT id FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
+    )
+    .bind(case_tenant())
+    .bind(client.operation)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let signals = crate::worker_wake::Signals::default();
+    let mut worker = Box::pin(client.app.execution.run_worker(&cancel, &signals));
+    let message = format!("dispatch.{}", client.operation);
+    tokio::select! {
+        result = &mut worker => anyhow::bail!("worker exited before claim: {result:?}"),
+        result = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let claimed: bool = sqlx::query_scalar("SELECT status='publishing' FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
+                    .bind(case_tenant()).bind(&message).fetch_one(&mut pg).await?;
+                if claimed { return Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }) => result??,
+    }
+    cancel.cancel();
+    tokio::select! {
+        result = &mut worker => anyhow::bail!("clean shutdown abandoned a claimed message: {result:?}"),
+        () = tokio::time::sleep(Duration::from_millis(50)) => {},
+    }
+    transaction.rollback().await?;
+    tokio::time::timeout(Duration::from_secs(5), worker).await??;
+    let settled: bool = sqlx::query_scalar("SELECT status='published' AND lease_token IS NULL AND lease_until IS NULL FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
+        .bind(case_tenant()).bind(&message).fetch_one(&mut pg).await?;
+    ensure!(
+        settled,
+        "clean shutdown left a live lease instead of confirmed settlement"
+    );
+    let accepted: bool = sqlx::query_scalar(
+        "SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(client.operation)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(
+        accepted,
+        "settlement must follow confirmed gateway acceptance"
+    );
+    pg.close().await?;
+    lock.close().await?;
+    host.close().await?;
+    Ok(())
+}
 impl Client {
     async fn dispatch_receipts(&mut self) -> anyhow::Result<()> {
         let audit = RequestAudit::new(case_tenant().into(), "management_read");

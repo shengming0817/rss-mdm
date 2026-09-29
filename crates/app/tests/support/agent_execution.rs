@@ -51,6 +51,7 @@ pub(crate) async fn upload(
     id: Uuid,
     bytes: &[u8],
 ) -> Result<StatusCode> {
+    let _guard = super::software::content_setup_guard().await?;
     let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",browser.csrf.as_ref().unwrap())
         .header("cookie",browser.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
@@ -272,15 +273,21 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::execution::Resource(service.clone()),
     ));
+    let notifications = crate::worker_wake::Listener::new(config.access_database.options()?);
+    let signals = notifications.signals.clone();
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        notifications.clone(),
+    ));
     let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(service.registration(Arc::default()).critical());
+    launch.stage_task_with_token(notifications.registration().critical());
+    launch.stage_deferred_task_with_token(service.registration(signals).critical());
     launch.finish();
     Ok(Some(owner))
 }

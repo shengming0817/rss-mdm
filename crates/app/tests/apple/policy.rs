@@ -79,7 +79,9 @@ impl Fixture {
             crate::automation::Resource(automation.clone()),
         ));
         let mut launch = startup.commit();
-        launch.stage_deferred_task_with_token(automation.registration(Arc::default()).critical());
+        launch.stage_deferred_task_with_token(
+            automation.registration(self.signals.clone()).critical(),
+        );
         launch.finish();
         let resource = format!("profile-{}", Uuid::new_v4());
         let path = format!("/api/v3/resources/{resource}");

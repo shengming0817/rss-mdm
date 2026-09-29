@@ -383,6 +383,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         lease_ttl: Duration::from_secs(3),
         attempt_timeout: Duration::from_secs(1),
         scan_interval: Duration::from_millis(20),
+        idle_scan_interval: Duration::from_millis(20),
         initial_backoff: Duration::from_millis(20),
         max_backoff: Duration::from_millis(20),
         max_attempts: 1,
