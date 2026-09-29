@@ -107,12 +107,12 @@ Agent 只收到单次可执行任务，不消费 Policy、Scope、灰度、Catal
 
 MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
 
-`action:{kind:"ensure_agent_installed",resource:{kind:"software",id,version,variants},admissionOperation,runLifetimeSeconds}` 仅引用当前批准的固定 Agent 软件。发布需要覆盖未来成员的全设备 SoftwareDeploy 与 Enrollment 授权；它们随策略冻结，后续执行仍核对实际权限。Windows 采用固定 ProductID 的 Add/Exec；macOS 采用固定 PKG Manifest。版本、SHA-256、发布身份、无自定义参数和无依赖均需匹配部署 pin。已有 Agent 不自动升级，Scope 退出不卸载 Agent。重叠策略和重复报告共享来源注册下的一次安装；结果未知先继续查询，不重新运行安装器。单个操作仍受原始期限、取消及普通命令容量限制。
+`action:{kind:"ensure_agent_installed",resource:{kind:"software",id,version,variants},admissionOperation,runLifetimeSeconds}` 仅引用当前批准的固定 Agent 软件。发布需要覆盖未来成员的全设备 SoftwareDeploy 与 Enrollment 授权；它们随策略冻结，后续执行仍核对实际权限。Windows 采用固定 ProductID 的 Add/Exec；macOS 采用固定 PKG Manifest。版本、SHA-256、发布身份、无自定义参数和无依赖均需匹配部署 pin。已有 Agent 不自动升级，Scope 退出阻止尚未派发的新安装；已派发安装可在原期限内完成独立 Agent 注册，但当前策略版本、实际权限、软件批准和来源世代仍须有效。Scope 退出不卸载 Agent。重叠策略和重复报告共享来源注册下的一次安装；结果未知先继续查询，不重新运行安装器。单个操作仍受原始期限、取消及普通命令容量限制。
 
 安装配置默认关闭。部署 `agent_installation`：`content_origin` 为公开 HTTPS 内容服务根地址；`packages` 按 `windows_x86_64`、`windows_aarch64`、`macos_x86_64`、`macos_aarch64` 选择实际发布组合，每项包含 `identity`、`package`、`version`、`sha256`（32 个字节的 JSON 数组）。Windows identity 为 `{platform:"windows",product:"ProductID UUID",publisher:"签名发布者"}`；macOS 为 `{platform:"macos",receipt:"PKG receipt",bundle:"Agent bundle ID",team:"10 字符 Team ID"}`。这些值必须与普通 Software 目录中审核、上传、激活和批准的 release 相同。同平台不同架构必须使用同一产品身份。
 
 Apple 新注册 profile 在启用该能力时申请已安装应用查询与企业应用安装 AccessRights；既有 profile 不会因服务器配置更新获得权限，需通过正常注册流程更新。采集要求 macOS 12+ 的明确 IsAppleSilicon 结果；Windows 只对明确的 64 位架构证据选择包。固定内容下载只暴露批准的包，不承载秘密，并复用单段 Range/ETag 和撤销检查。应分别读取操作中的原生 delivery、installation、独立 agentRegistration 与 capabilities；Acknowledged 不能证明安装完成。
 
-`action:{kind:"request_mdm_enrollment",organization:"本租户 UUID",runLifetimeSeconds}` 使用部署 `enrollment_entries:{windows:"https://发现服务域名",macos:"https://注册页面"}`，需要全设备 Enrollment 权限和 Agent 的 `mdm.enrollment.v4` 能力。任务有签名 Offer/Start permit，Windows 打开标准注册 UI，macOS 打开 HTTPS 注册页面，保留系统、账户和用户确认。`enrollment_result` 的 opened、cancelled、failed、unknown 分开保存；opened 不证明 MDM 已注册。自动触发在同一 Agent 注册下去重；未知执行阻止重试，管理员显式 rerun 仍受当前权限、观察、期限和取消约束。
+`action:{kind:"request_mdm_enrollment",organization:"本租户 UUID",runLifetimeSeconds}` 使用部署 `enrollment_entries:{windows:"https://发现服务域名",macos:"https://注册页面"}`，需要全设备 Enrollment 权限和 Agent 的 `mdm.enrollment.v4` 能力。任务有签名 Offer/Start permit，Windows 打开标准注册 UI，macOS 打开 HTTPS 注册页面，保留系统、账户和用户确认。`enrollment_result` 的 `opened`、`user_required`、`third_party_conflict`、`unsupported`、`failed`、`unknown` 分开保存；取消使用独立的 `{kind:"cancelled"}` 事件。opened 不证明 MDM 已注册。自动触发在同一 Agent 注册下去重；未知执行阻止重试，管理员显式 rerun 仍受当前权限、观察、期限和取消约束。
 
 两种动作分别配置与启停，不依赖另一通道先完成，也不使用跨通道设备关联。物理设备关联由 #2578 持有；生产 Agent 和安装包由独立客户端任务消费本契约。

@@ -1,6 +1,7 @@
 //! Real mTLS/SyncML, approved software, Policy and one atomic independent Agent registration.
 use crate::execution::test_support::{Client, case_device, case_tenant, native};
 use crate::test_support::{channel_onboarding as setup, *};
+use anyhow::Context;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 async fn post(
     peer: &crate::windows::test_support::Peer,
@@ -208,6 +209,26 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         unknown.status() == StatusCode::SERVICE_UNAVAILABLE
             && unknown.json::<Value>().await?["code"] == "operation_unknown"
     );
+    for (field, value, code) in [
+        ("wireVersion", json!(3), "unsupported_wire"),
+        (
+            "capabilities",
+            json!(["inventory.basic.v3"]),
+            "unsupported_capability",
+        ),
+        (
+            "capabilities",
+            json!(["inventory.basic.v4", "inventory.basic.v4"]),
+            "unsupported_capability",
+        ),
+        ("deviceId", json!("untrusted"), "malformed_request"),
+    ] {
+        let mut invalid = input.clone();
+        invalid[field] = value;
+        let response = peer.mutual.post(&url).json(&invalid).send().await?;
+        ensure!(response.status() == StatusCode::BAD_REQUEST);
+        ensure!(response.json::<serde_json::Value>().await?["code"] == code);
+    }
     let response = peer.mutual.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: Value = response.json().await?;
@@ -264,6 +285,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     ensure!(commands.shutdown().join().await?.is_clean());
     let subject = browser_subject(&client.browser, &client.router).await?;
     identity::set_grants(case_tenant(), &subject, vec![]).await?;
+    ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(
         peer.mutual
             .post(&url)
@@ -275,7 +297,34 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     );
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::OK);
     setup::grants(&client.browser, &client.router).await?;
+    begin(&peer, 945).await?;
+    let incomplete = pg(&format!(
+        "SELECT r.id FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id='{}' AND w.session_id='945' AND w.channel_state IS NOT NULL AND r.sealed_at IS NULL",
+        case_tenant()
+    ))?;
+    let incomplete = incomplete.trim();
+    ensure!(
+        !incomplete.is_empty(),
+        "expected an unfinished native channel collection"
+    );
     host.replace(&peer).await?;
+    let records = crate::audit_test_support::decode_hex(&pg(&format!(
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}'",
+        case_tenant()
+    ))?)?;
+    let terminal = records
+        .iter()
+        .find(|r| r.action() == "collection_finish" && r.operation() == Some(incomplete))
+        .context("retired channel audit")?;
+    ensure!(
+        terminal.payload["registration"].as_str().is_some()
+            && terminal.payload["details"]["collectionResult"] == "failed"
+            && terminal.payload["details"]["reason"] == "superseded"
+            && terminal.payload["details"]["sealedAt"].as_i64().is_some(),
+        "{:?}",
+        terminal.payload
+    );
+    ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
     let report = json!({"wireVersion":4,"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
@@ -291,6 +340,14 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     );
     host.close().await?;
     Ok(())
+}
+
+async fn package_status(router: &Router, operation: Uuid) -> Result<StatusCode> {
+    let request = Request::builder()
+        .uri(format!("/api/agent/v4/installations/{operation}/package"))
+        .header("host", "mdm.example.test")
+        .body(Body::empty())?;
+    Ok(router.clone().oneshot(request).await?.status())
 }
 
 async fn start_fixture() -> Result<(
@@ -489,6 +546,7 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
     );
     let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("cancelled-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
+    ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
@@ -530,12 +588,139 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
     );
     let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("expired-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
+    ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
     ensure!(
         state.1["observation"]["installation"] == "unknown",
         "expiry is not a failed installation: {state:?}"
+    );
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn replacement_rejects_old_installation_and_requires_current_epoch_absence() -> Result<()> {
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    execute(&peer).await?;
+    let current = host.peer().await?;
+    let url = peer.url.replace(
+        "/ManagementServer/MDM.svc",
+        "/api/agent/v4/managed-registrations",
+    );
+    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("replacement-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
+    ensure!(
+        current
+            .mutual
+            .post(&url)
+            .json(&input)
+            .send()
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
+    ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
+    let state =
+        setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
+    ensure!(
+        state["taskAdmission"]["state"] == "channel_unknown",
+        "old epoch drove admission: {state}"
+    );
+    let (initial, query) = begin(&current, 940).await?;
+    ensure!(
+        !query
+            .commands
+            .iter()
+            .any(|c| matches!(c, s::Command::AgentInstall { .. }))
+    );
+    let count = || {
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND request->'task'->>'kind'='agent_install'",
+            case_tenant()
+        ))
+    };
+    ensure!(
+        count()?.trim() == "1",
+        "old absence created a new installation"
+    );
+    post(&current, &reply(&initial, &query, false)).await?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while count()?.trim() != "2" {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    let state =
+        setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
+    ensure!(
+        state["taskAdmission"]["state"] == "eligible",
+        "current epoch not admitted: {state}"
+    );
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadline() -> Result<()> {
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    execute(&peer).await?;
+    let policy_view = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v2/policies/{policy}"),
+            None,
+        )
+        .await?;
+    ensure!(policy_view.0 == StatusCode::OK, "{policy_view:?}");
+    let scope = policy_view.1["definition"]["scope"]
+        .as_str()
+        .context("policy scope")?;
+    let scope_path = format!("/api/v2/scopes/{scope}");
+    let changed = software::write(
+        &mut client.browser,
+        &client.router,
+        &scope_path,
+        1,
+        json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}),
+    )
+    .await?;
+    await_task(
+        &mut client.browser,
+        &client.router,
+        &format!(
+            "{scope_path}/tasks/{}",
+            changed["task"].as_str().context("scope task")?
+        ),
+    )
+    .await?;
+    let state =
+        setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
+    ensure!(
+        state["assignment"] != "eligible",
+        "Scope exit not visible: {state}"
+    );
+    ensure!(package_status(&client.router, operation).await? == StatusCode::OK);
+    let url = peer.url.replace(
+        "/ManagementServer/MDM.svc",
+        "/api/agent/v4/managed-registrations",
+    );
+    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("scope-exit-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let response = peer.mutual.post(&url).json(&input).send().await?;
+    let status = response.status();
+    let receipt: Value = response.json().await?;
+    ensure!(
+        status == StatusCode::CREATED && receipt["deviceId"] != case_device(),
+        "{status}: {receipt}"
     );
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());

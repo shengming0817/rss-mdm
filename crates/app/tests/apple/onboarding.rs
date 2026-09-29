@@ -147,6 +147,26 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     ensure!(f.operation(operation).await?["commandStatus"] == "applied");
     let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","mdm.enrollment.v4"]});
     let url = format!("{}/api/agent/v4/managed-registrations", peer.origin);
+    for (field, value, code) in [
+        ("wireVersion", json!(3), "unsupported_wire"),
+        (
+            "capabilities",
+            json!(["inventory.basic.v3"]),
+            "unsupported_capability",
+        ),
+        (
+            "capabilities",
+            json!(["inventory.basic.v4", "inventory.basic.v4"]),
+            "unsupported_capability",
+        ),
+        ("deviceId", json!("untrusted"), "malformed_request"),
+    ] {
+        let mut invalid = input.clone();
+        invalid[field] = value;
+        let response = peer.client.post(&url).json(&invalid).send().await?;
+        ensure!(response.status() == StatusCode::BAD_REQUEST);
+        ensure!(response.json::<serde_json::Value>().await?["code"] == code);
+    }
     let response = peer.client.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: serde_json::Value = response.json().await?;

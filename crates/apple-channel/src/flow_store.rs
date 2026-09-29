@@ -128,7 +128,7 @@ impl channels::AppleStore for Store {
             let mut result = Vec::new();
             let mut offset = 0i64;
             while result.len() < limit {
-                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND collection IS NOT NULL AND next_attempt<=clock_timestamp() ORDER BY next_attempt,collection LIMIT 64 OFFSET $3").bind(&tenant).bind(registration).bind(offset).fetch_all(&mut *c).await.map_err(storage)?;
+                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND collection IS NOT NULL AND state IN('pending','sent','not_now') AND deadline>clock_timestamp() AND next_attempt<=clock_timestamp() GROUP BY collection ORDER BY min(next_attempt),collection LIMIT 64 OFFSET $3").bind(&tenant).bind(registration).bind(offset).fetch_all(&mut *c).await.map_err(storage)?;
                 let mut pending = rss_mdm_inventory_service::collection::read::pending_apple_in(
                     c,
                     &tenant,

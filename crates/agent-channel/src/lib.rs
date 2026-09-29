@@ -488,24 +488,7 @@ async fn status_inner(
 }
 
 fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentError> {
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    let version = value
-        .get("wireVersion")
-        .and_then(Value::as_u64)
-        .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if version != u64::from(wire::WIRE_VERSION) {
-        return Err(AgentError::Wire(wire::ErrorCode::UnsupportedWire));
-    }
-    let capabilities = value
-        .get("capabilities")
-        .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    let capabilities: Vec<wire::Capability> = serde_json::from_value(capabilities.clone())
-        .map_err(|_| AgentError::Wire(wire::ErrorCode::UnsupportedCapability))?;
-    if !wire::supported_capabilities(&capabilities) {
-        return Err(AgentError::Wire(wire::ErrorCode::UnsupportedCapability));
-    }
-    serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
+    wire::RegistrationRequest::decode(body).map_err(AgentError::Wire)
 }
 fn json_content_type(headers: &HeaderMap) -> Result<(), AgentError> {
     if headers.get_all(header::CONTENT_TYPE).iter().count() != 1

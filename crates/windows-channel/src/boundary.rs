@@ -220,7 +220,12 @@ fn agent_response(response: Response) -> Response {
                 R::Storage
             }
         });
-    let (status, body) = rejection.agent_error();
+    let (status, body) = response
+        .extensions()
+        .get::<rss_mdm_agent_wire::ErrorBody>()
+        .copied()
+        .map(|body| (400, body))
+        .unwrap_or_else(|| rejection.agent_error());
     let (parts, _) = response.into_parts();
     let mut projected = (
         StatusCode::from_u16(status).expect("closed status"),

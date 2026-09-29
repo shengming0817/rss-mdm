@@ -280,8 +280,7 @@ async fn receive(
     if matches!(op.request.task, Task::AgentInstall { .. })
         && matches!(report.event, dc::DeviceEvent::Reported(_))
         && service.required_command(tx, &op).await?.status() == dc::Status::Published
-    {
-        if service
+        && service
             .store
             .report(
                 tx,
@@ -295,9 +294,8 @@ async fn receive(
             .await?
             .outcome
             == dc::Outcome::OutOfOrder
-        {
-            return Err(Error::Conflict.into());
-        }
+    {
+        return Err(Error::Conflict.into());
     }
     let transition = service.store.report(tx, &report).await?;
     if transition.outcome == dc::Outcome::OutOfOrder {

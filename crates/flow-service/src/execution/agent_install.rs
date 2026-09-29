@@ -341,8 +341,7 @@ impl ExecutionService {
             };
             if matches!(report.event, dc::DeviceEvent::Reported(_))
                 && self.required_command(tx, &op).await?.status() == dc::Status::Published
-            {
-                if self
+                && self
                     .store
                     .report(
                         tx,
@@ -356,9 +355,8 @@ impl ExecutionService {
                     .await?
                     .outcome
                     == dc::Outcome::OutOfOrder
-                {
-                    return Err(Error::Conflict.into());
-                }
+            {
+                return Err(Error::Conflict.into());
             }
             if self.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
                 return Err(Error::Conflict.into());

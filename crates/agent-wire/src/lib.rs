@@ -179,6 +179,10 @@ impl<'de> Deserialize<'de> for RegistrationRequest {
     }
 }
 impl RegistrationRequest {
+    /// Decode strict input while preserving version and capability error categories.
+    pub fn decode(body: &[u8]) -> Result<Self, ErrorCode> {
+        decode_registration(body)
+    }
     /// Construct one supported V4 registration capability profile.
     pub fn new(
         operation_id: Uuid,
@@ -607,6 +611,27 @@ pub struct ReportStatus {
     pub observation: ObservationStatus,
     /// Projection stage.
     pub projection: ProjectionStatus,
+}
+
+fn decode_registration<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ErrorCode> {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| ErrorCode::MalformedRequest)?;
+    let version = value
+        .get("wireVersion")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(ErrorCode::MalformedRequest)?;
+    if version != u64::from(WIRE_VERSION) {
+        return Err(ErrorCode::UnsupportedWire);
+    }
+    let capabilities = value
+        .get("capabilities")
+        .ok_or(ErrorCode::MalformedRequest)?;
+    let capabilities: Vec<Capability> = serde_json::from_value(capabilities.clone())
+        .map_err(|_| ErrorCode::UnsupportedCapability)?;
+    if !supported_capabilities(&capabilities) {
+        return Err(ErrorCode::UnsupportedCapability);
+    }
+    serde_json::from_value(value).map_err(|_| ErrorCode::MalformedRequest)
 }
 
 /// Closed Agent HTTP error codes.

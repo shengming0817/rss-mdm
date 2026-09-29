@@ -664,14 +664,34 @@ consume(('crates/inventory/src/*', 'crates/inventory-postgres/src/*', 'crates/in
         'inventory.manual inventory.reader inventory.projection inventory.recovery inventory.runtime assets.http assets.queries assets.sources assets.group_input planning.assets planning.group_scope compliance.evaluation')
 consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/compliance-postgres/migrations/*'),
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
-TASK_CONSUMERS = 'planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
+TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
          'crates/agent-wire/schema/signed-task-v4.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
 consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v4.schema.json',
-         'crates/agent-wire/schema/agent-v4.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports')
+         'crates/agent-wire/schema/agent-v4.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
 consume(('crates/agent-wire/schema/registration-*.json',), 'agent.registration')
-consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports')
+consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports planning.onboarding')
+consume(('crates/agent-wire/src/onboarding.rs',),
+        'agent.reports planning.onboarding execution.commands.onboarding apple.onboarding execution.agent.delivery execution.agent.poll execution.agent.recovery')
+consume(('crates/agent-wire/schema/managed-registration-request-v4.schema.json',),
+        'execution.commands.onboarding apple.onboarding')
+# Native onboarding shares one durable installation and managed-registration owner.
+consume(('crates/flow-service/src/execution/agent_install.rs',
+         'crates/flow-service/src/execution/managed_registration.rs',
+         'crates/flow-service/src/planning/policies/agent_install.rs',
+         'crates/agent-channel/src/managed.rs',
+         'crates/registration-service/src/enrollment/managed.rs'),
+        'execution.commands.onboarding apple.onboarding')
+consume(('crates/flow-service/src/planning/policies/onboarding.rs',
+         'crates/inventory-service/src/collection/channel.rs',
+         'crates/inventory-service/src/assets/channel.rs',
+         'crates/flow-service/src/planning/automation/scopes.rs'),
+        'planning.onboarding execution.commands.onboarding apple.onboarding')
+consume(('crates/windows-channel/src/management.rs','crates/windows-channel/src/boundary.rs'),
+        'execution.commands.onboarding')
+consume(('crates/apple-channel/src/checkin.rs','crates/apple-channel/src/boundary.rs'),
+        'apple.onboarding')
 consume(('crates/windows-mdm/src/*',),
         'windows.enrollment windows.management windows.commands execution.commands.windows')
 consume(('crates/apple-channel/src/push.rs',), 'apple.push apple.host')
@@ -852,20 +872,20 @@ APP_HELPER_CONSUMERS = {
     'support/process.rs': ('inventory.runtime','execution.commands.recovery'),
     'execution/support.rs': (
         'execution.commands.admission','execution.commands.dispatch','execution.commands.recovery',
-        'execution.commands.windows','execution.commands.firewall','windows.commands'),
+        'execution.commands.windows','execution.commands.firewall','execution.commands.onboarding','windows.commands'),
     'device/support.rs': (
         'device.binding','device.revocation','device.recovery','device.admission',
         'agent.reports','inventory.runtime','assets.group_input','assets.sources','compliance.evaluation',
         'execution.agent.delivery','authorization.admission','enrollment.recovery','native.tls',
         'planning.http','software.http','execution.software.offer','execution.software.content',
         'execution.software.recovery','execution.commands.admission','execution.commands.dispatch',
-        'execution.commands.recovery','execution.commands.windows','execution.commands.firewall',
+        'execution.commands.recovery','execution.commands.windows','execution.commands.firewall','execution.commands.onboarding',
         'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention',
         'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
         'apple.fairness','apple.host','apple.scep'),
     'support/audit.rs': (
         'audit.receipts','audit.integrity','audit.recovery','audit.budget',
-        'api.diagnostics','device.recovery','device.revocation','execution.commands.admission',
+        'api.diagnostics','device.recovery','device.revocation','execution.commands.admission','execution.commands.onboarding',
         'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
         'apple.policy','apple.identity','planning.scope','planning.group_scope','planning.assets',
         'planning.recovery','planning.resource_archive','planning.agent_policy','assets.http',

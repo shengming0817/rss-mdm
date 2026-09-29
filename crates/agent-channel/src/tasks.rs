@@ -150,6 +150,12 @@ async fn installation_package(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, crate::AgentError> {
-    let content = app.execution.installation_content(id, &audit).await?;
-    Ok(crate::content::response(content, &headers).await?)
+    let content = app
+        .execution
+        .installation_content(id, &audit)
+        .await
+        .map_err(task_error)?;
+    crate::content::response(content, &headers)
+        .await
+        .map_err(task_error)
 }

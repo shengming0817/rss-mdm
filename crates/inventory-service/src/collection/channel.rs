@@ -144,22 +144,26 @@ pub async fn abandon_in(
         received_at: at,
         evidence: None,
     };
-    let n=sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result='failed',reason=$4,sealed_at=$5,delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL")
-        .bind(tenant).bind(id).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).bind(reason).bind(at).execute(&mut *c).await.map_err(db)?.rows_affected();
-    if n == 0 {
+    let registration=sqlx::query_scalar::<_,Uuid>("UPDATE mdm_access.collection_runs SET attempts=$3,result='failed',reason=$4,sealed_at=$5,delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL RETURNING registration")
+        .bind(tenant).bind(id).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).bind(reason).bind(at).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some(registration) = registration else {
         return Ok(None);
-    }
+    };
     let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
     audit.operation(id, "collection_finish");
     audit.identify_service("service:collection-finalizer");
+    audit.registration(registration);
+    let details = serde_json::json!({"collectionResult":"failed","reason":reason,"sealedAt":at});
+    let fingerprint = serde_json::to_vec(&details).map_err(|_| Error::Malformed)?;
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
         &format!("channel-collection:{id}"),
-        reason.as_bytes(),
+        &fingerprint,
         200,
         "failed",
         None,
     )
+    .and_then(|fact| fact.with_details(details))
     .map_err(Error::from);
     audit.finalize(None);
     fact.map(Some)

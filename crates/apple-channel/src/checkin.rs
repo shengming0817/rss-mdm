@@ -284,8 +284,16 @@ pub async fn register_agent(
         .devices
         .management_principal(&app.mount.credential(leaf.fingerprint()))
         .await?;
-    let input: rss_mdm_agent_wire::ManagedRegistrationRequest =
-        serde_json::from_slice(&bytes).map_err(|_| Error::Malformed)?;
+    let input = match rss_mdm_agent_wire::ManagedRegistrationRequest::decode(&bytes) {
+        Ok(input) => input,
+        Err(code) => {
+            let mut response = Error::Malformed.into_response();
+            response
+                .extensions_mut()
+                .insert(rss_mdm_agent_wire::ErrorBody { code });
+            return Ok(response);
+        }
+    };
     let (receipt, replay) = app
         .execution
         .managed_registration(

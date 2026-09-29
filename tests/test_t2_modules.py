@@ -64,7 +64,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
-                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','firewall')} | {'windows.commands'})
+                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','firewall','onboarding')} | {'windows.commands'})
         self.assertEqual(self.selected('crates/app/tests/execution/support/native.rs'),
                          self.selected('crates/app/tests/execution/support.rs'))
         device = self.selected('crates/app/tests/device/support.rs')
@@ -75,7 +75,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue(required <= device,required-device)
         self.assertTrue(device.isdisjoint({'identity.sso','content.http','apple.cms','apple.apns','publication.artifact'}))
         audit = self.selected('crates/app/tests/support/audit.rs')
-        required = {'api.diagnostics','device.recovery','device.revocation','execution.commands.admission',
+        required = {'api.diagnostics','device.recovery','device.revocation','execution.commands.admission','execution.commands.onboarding',
                     'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
                     'apple.policy','apple.identity','planning.scope','planning.group_scope','planning.assets',
                     'planning.recovery','planning.resource_archive','planning.agent_policy','assets.http',
@@ -185,16 +185,38 @@ class ModuleImpactTests(unittest.TestCase):
                     'execution.agent.recovery','execution.software.offer','execution.software.content',
                     'execution.software.recovery'}
         for path in ('crates/agent-wire/src/tasks.rs',
-                     'crates/agent-wire/schema/signed-task-v3.schema.json',
+                     'crates/agent-wire/schema/signed-task-v4.schema.json',
                      'crates/flow-service/src/task_signing.rs'):
             selected = self.selected(path)
             self.assertTrue(expected <= selected, expected - selected)
             self.assertTrue(selected.isdisjoint({'agent.registration','agent.reports','windows.management',
                                                 'apple.policy','identity.sso','gateway.admission'}))
-        self.assertEqual(self.selected('crates/agent-wire/schema/registration-request-v3.schema.json'),
+        self.assertEqual(self.selected('crates/agent-wire/schema/registration-request-v4.schema.json'),
                          {'agent.registration'})
-        self.assertEqual(self.selected('crates/agent-wire/schema/report-request-v3.schema.json'),
-                         {'agent.reports'})
+        self.assertEqual(self.selected('crates/agent-wire/schema/report-request-v4.schema.json'),
+                         {'agent.reports','planning.onboarding'})
+
+    def test_onboarding_wire_selects_its_actual_consumers(self):
+        inputs = {
+            'crates/agent-wire/src/onboarding.rs': {
+                'agent.reports','planning.onboarding','execution.commands.onboarding',
+                'apple.onboarding','execution.agent.delivery','execution.agent.poll','execution.agent.recovery'},
+            'crates/agent-wire/schema/managed-registration-request-v4.schema.json': {
+                'execution.commands.onboarding','apple.onboarding'},
+        }
+        for path, expected in inputs.items():
+            selected = select_paths([path])
+            self.assertFalse(selected.full, path)
+            self.assertEqual(set(selected.modules), expected, path)
+
+    def test_shared_onboarding_paths_reach_both_native_protocols(self):
+        for path in ('crates/agent-wire/src/lib.rs',
+                     'crates/flow-service/src/execution/managed_registration.rs',
+                     'crates/flow-service/src/execution/agent_install.rs',
+                     'crates/inventory-service/src/collection/channel.rs'):
+            selection = select_paths([path])
+            self.assertFalse(selection.full, path)
+            self.assertTrue({'execution.commands.onboarding','apple.onboarding'} <= set(selection.modules), path)
 
     def test_group_inputs_reach_published_scope_consumers_only(self):
         selected = self.selected('crates/group-postgres/src/lib.rs')
@@ -220,7 +242,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue(selected.isdisjoint({'assets.queries','execution.agent.history','windows.limits',
                                             'publication.artifact','sources.brew_git','apple.apns'}))
         selected = self.selected('crates/audit-integration/src/lib.rs')
-        self.assertTrue({'audit.receipts','audit.integrity','audit.recovery','audit.budget',
+        self.assertTrue({'audit.receipts','audit.integrity','audit.recovery','audit.budget','execution.commands.onboarding',
                          'authorization.rules','enrollment.recovery','device.binding','content.http',
                          'software.catalog','execution.commands.dispatch','publication.recovery'} <= selected)
         self.assertTrue(selected.isdisjoint({'publication.artifact','sources.brew_git','apple.apns','apple.cms'}))

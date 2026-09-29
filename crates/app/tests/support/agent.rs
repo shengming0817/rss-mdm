@@ -121,7 +121,7 @@ pub(crate) fn bulk_task_agents(canonical: &str, count: usize) -> Result<Vec<Stri
         r#"
 BEGIN;
 CREATE TEMP TABLE task_targets ON COMMIT DROP AS
- SELECT 'restart-agent-' || lpad(n::text ,4,'0') AS device, gen_random_uuid() AS grant_id,
+ SELECT 'restart-agent-' || lpad(n::text,3,'0') AS device, gen_random_uuid() AS grant_id,
         gen_random_uuid() AS request, gen_random_uuid() AS registration
  FROM generate_series(1,{count}) n;
 INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at)
@@ -141,7 +141,7 @@ INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,covera
  JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
  WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
 INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture)
- SELECT '{TENANT}',registration ,4,'["inventory.basic.v4","task.execute.v4"]','macos','aarch64' FROM task_targets;
+ SELECT '{TENANT}',registration,4,'["inventory.basic.v4","task.execute.v4"]','macos','aarch64' FROM task_targets;
 DO $$ BEGIN
  IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
      JOIN mdm_agent.bindings b ON b.registration=r.id

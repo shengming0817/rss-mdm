@@ -52,6 +52,11 @@ pub struct ManagedRegistrationRequest {
     pub architecture: TaskArchitecture,
 }
 impl ManagedRegistrationRequest {
+    /// Decode the closed request with the same negotiation errors as regular registration.
+    pub fn decode(body: &[u8]) -> Result<Self, crate::ErrorCode> {
+        crate::decode_registration(body)
+    }
+
     /// Validate producer-created values as well as strict decoded values.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.wire_version != crate::WIRE_VERSION
