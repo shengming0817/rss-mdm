@@ -5,6 +5,7 @@ extern crate self as rss_mdm_app;
 mod action_admission;
 mod assets;
 #[cfg(test)]
+#[path = "../tests/audit/mod.rs"]
 mod audit_integration_tests;
 pub mod authorization;
 mod automation;
@@ -22,11 +23,7 @@ mod inventory_runtime;
 mod operations;
 pub mod planning;
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the shared publication fixture exposes scenarios used by separate test modules"
-)]
-#[path = "../tests/publication_support/mod.rs"]
+#[path = "../../../tests/support/software/mod.rs"]
 mod publication_support;
 mod registration_lifecycle;
 pub mod resource_catalog;
@@ -46,15 +43,14 @@ mod clock;
 pub mod config;
 mod identity;
 mod identity_audit;
-#[cfg(test)]
-mod identity_fixture;
-#[cfg(test)]
-mod identity_t2;
 mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
 pub mod software_publication;
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;
 pub mod windows;
 use axum::{
     Json,
@@ -144,6 +140,7 @@ impl IntoResponse for Error {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/audit.rs"]
 mod audit_test_support;
 
 impl Error {

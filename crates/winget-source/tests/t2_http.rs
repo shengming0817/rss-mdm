@@ -326,10 +326,10 @@ async fn fixture(host: &str, path: &str) -> (Source, TcpListener, tokio_rustls::
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     };
     let root = std::path::PathBuf::from(
-        std::env::var("SOURCE_T2_TLS").expect("run make t2 SUITE=sources"),
+        std::env::var("SOURCE_T2_TLS").expect("run make t2 MODULE=sources.winget"),
     );
     let address: IpAddr = std::env::var("SOURCE_T2_ADDRESS")
-        .expect("run make t2 SUITE=sources")
+        .expect("run make t2 MODULE=sources.winget")
         .parse()
         .unwrap();
     assert!(!address.is_loopback());

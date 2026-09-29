@@ -1,95 +1,272 @@
 #!/usr/bin/env python3
-"""The sole public T2 dispatcher. Suite implementations have no CLI."""
+"""One public module executor. Discovery, selection and evidence share one owner."""
+from __future__ import annotations
 import argparse
-import contextlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 import json
 import os
+import re
 from pathlib import Path
 import shutil
+import signal
 import sys
 import time
 import traceback
+import uuid
+
 from build_run import require_lease
-from ci_registry import ROOT, SUITES, execute
-from t2_environment import T2Context
-from verification_result import result as stage_result, publish
+from t2_registry import ROOT, MODULES
+from t2_execution import Builds, Processes, CASE_TIMEOUT
+from t2_processes import diagnostic_phase, diagnostics
+from verification_result import result as stage_result, publish, require
 
-def select_suites(suite,selection):
-    if suite=='all':return sorted(SUITES)
-    if suite=='affected':return sorted(SUITES) if selection.get('full') else sorted(selection['t2Suites'])
-    if suite not in SUITES:raise ValueError('unknown SUITE; available: '+', '.join(['affected','all',*sorted(SUITES)]))
-    return [suite]
 
-def run_suites(names, output):
+MAX_RETAINED_RUNS = 5
+RUN_ID = re.compile(r'[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}')
+
+
+def prune_runs(output, current=None):
+    """Bound only this entry point's proven records; never follow directory symlinks.
+
+    ref: https://nexte.st/docs/features/record-replay-rerun/managing-runs/
+    """
+    def read(path):
+        if path.is_symlink():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {}
+    def references(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'runId' and isinstance(item, str):
+                    yield item
+                else:
+                    yield from references(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from references(item)
+    owned = []
+    for directory in output.iterdir():
+        if directory.is_symlink() or not directory.is_dir() or not RUN_ID.fullmatch(directory.name):
+            continue
+        for record in ('run.json', 'result.json', 'discovery.json'):
+            value = read(directory / record)
+            if isinstance(value, dict) and value.get('runId') == directory.name:
+                owned.append(directory)
+                break
+    protected = {current} | set(references(read(output/'result.json'))) | set(references(read(output/'list.json')))
+    protected &= {directory.name for directory in owned}
+    require(len(protected) <= MAX_RETAINED_RUNS, 'result references exceed T2 retention limit')
+    recent = sorted((directory for directory in owned if directory.name not in protected),
+                    key=lambda directory: (directory.stat().st_mtime_ns, directory.name), reverse=True)
+    for directory in recent[MAX_RETAINED_RUNS-len(protected):]:
+        shutil.rmtree(directory)
+
+
+class RunFailure(RuntimeError):
+    def __init__(self, message, evidence):
+        super().__init__(message)
+        self.evidence = evidence
+
+
+def module_choices():
+    return ('affected', 'all', *sorted(MODULES))
+
+
+def select_modules(module, selection):
+    if module == 'all':
+        return sorted(MODULES)
+    if module == 'affected':
+        return sorted(MODULES) if selection['t2Full'] else sorted(selection['modules'])
+    if module not in MODULES:
+        raise ValueError('unknown MODULE; available: ' + ', '.join(module_choices()))
+    return [module]
+
+
+def run_modules(names, output, *, jobs=2, selected_case='', listing=False):
     require_lease(ROOT)
-    output.mkdir(parents=True,exist_ok=True)
-    if output.is_symlink():raise RuntimeError('T2 output directory cannot be a symlink')
-    for name in SUITES:
-        path=output/(name+'.log')
-        if path.is_dir() and not path.is_symlink():shutil.rmtree(path)
-        else:path.unlink(missing_ok=True)
-    results={name:stage_result('skipped',reason='not-selected') for name in SUITES}
-    if not names:return results
-    with T2Context() as context:
-        for name in names:
-            (output/(name+'.log')).write_text('')
-            started=time.monotonic()
-            details={}
-            try:
-                missing=[tool for tool in SUITES[name].tools if not shutil.which(tool)]
-                if missing:raise RuntimeError('missing dependencies: '+', '.join(missing))
-                print('T2: '+name,flush=True)
-                # FD redirection also captures inherited child output while preserving the build lease.
-                with (output/(name+'.log')).open('w') as log:
-                    sys.stdout.flush();sys.stderr.flush()
-                    saved=[os.dup(1),os.dup(2)]
+    require(type(jobs) is int and jobs > 0, 'JOBS must be a positive integer')
+    require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
+    output = output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    results = {name: stage_result('skipped', reason='not-selected') for name in MODULES}
+    if not names:
+        require(not selected_case, 'CASE does not belong to any selected module')
+        prune_runs(output)
+        return results
+    run_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
+    directory = output / run_id
+    directory.mkdir()
+    publish(directory / 'run.json', {'runId': run_id})
+    prune_runs(output, run_id)
+    modules = [MODULES[name] for name in names]
+    processes = Processes()
+    previous = {}
+    def cancel(number, frame):
+        processes.cancel()
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        previous[sig] = signal.signal(sig, cancel)
+    try:
+        for module in modules:
+            tools = (('python3', 'cargo', 'cargo-nextest') if module.build else ('python3',)) if listing else module.tools
+            missing = [tool for tool in tools if not shutil.which(tool)]
+            require(not missing, 'missing dependencies for ' + module.id + ': ' + ', '.join(missing))
+        builds = Builds(directory, processes)
+        builds.prepare(modules)
+        discovered = {module.id: builds.discover(module) if module.build else [] for module in modules}
+        owners = {}
+        for module in modules:
+            for case in discovered[module.id]:
+                require(case.id not in owners, 'test belongs to multiple modules: ' + case.id)
+                owners[case.id] = module.id
+        python_cases = {f'python/{module.id}': module.id for module in modules if module.python}
+        inventory = {'runId': run_id, 'buildSeconds': round(builds.elapsed, 3),
+                     'dependencies': {module.id: {'postgres': module.postgres, 'fixtures': list(module.fixtures), 'exclusive': module.exclusive} for module in modules},
+                     'modules': {name: [case.id for case in cases] +
+                                 ([f'python/{name}'] if MODULES[name].python else [])
+                                 for name, cases in discovered.items()}}
+        publish(directory / 'discovery.json', inventory)
+        if selected_case:
+            require(selected_case in owners or selected_case in python_cases,
+                    'unknown CASE in selected modules: ' + selected_case)
+            owner = owners.get(selected_case, python_cases.get(selected_case))
+            modules = [MODULES[owner]]
+            discovered = {owner: [case for case in discovered[owner] if case.id == selected_case]}
+        if listing:
+            print(json.dumps(inventory, indent=2), flush=True)
+            results.update({module.id: stage_result('skipped', reason='list-only') for module in modules})
+            return results
+        from t2_fixtures import RunFixtures
+        with diagnostics(directory / 'fixture.log'), RunFixtures(builds, directory) as fixtures:
+            fixtures.prepare(modules)
+            def execute(module):
+                started = time.monotonic()
+                module_dir = directory / module.id
+                module_dir.mkdir()
+                cases = {}
+                def scenario(case):
+                    key = case.key if case else 'python'
+                    case_id = case.id if case else 'python/' + module.id
+                    case_dir = module_dir / key
+                    case_dir.mkdir()
+                    with diagnostics(case_dir / 'fixture.log'):
+                        execute_case(case, case_id, case_dir)
+
+                def execute_case(case, case_id, case_dir):
+                    (case_dir / 'test.log').write_text('Case preparation started; execution output follows when ready.\n')
+                    begin = time.monotonic()
                     try:
-                        os.dup2(log.fileno(),1);os.dup2(log.fileno(),2)
-                        outcome=execute(name,context)
-                        if outcome not in (None,0):raise RuntimeError('suite returned failure')
-                    finally:
-                        sys.stdout.flush();sys.stderr.flush()
-                        os.dup2(saved[0],1);os.dup2(saved[1],2)
-                        for fd in saved:os.close(fd)
-                SUITES[name].verify((output/(name+'.log')).read_text())
-                status='passed'
-            except Exception as error:
-                status='failed'
-                with (output/(name+'.log')).open('a') as log:traceback.print_exc(file=log)
-                details=dict(reason=type(error).__name__,log=name+'.log')
-            results[name]=stage_result(status,started,**details)
-            print(f'T2 {name}: {status} ({results[name]["elapsedSeconds"]}s)',flush=True)
-    return results
+                        require(not processes.cancelled.is_set(), 'T2 cancelled')
+                        if module.exclusive:
+                            fixtures.reset()
+                        with fixtures.scenario(module, case_dir) as fixture:
+                            prepared = time.monotonic()
+                            with diagnostic_phase('execution'):
+                                if case:
+                                    builds.execute(case, fixture.env, case_dir)
+                                else:
+                                    builds.execute_python(module, fixture, case_dir)
+                            executed = time.monotonic()
+                        end = time.monotonic()
+                        cases[case_id] = stage_result('passed', begin,
+                            setupSeconds=round(prepared-begin, 3), testSeconds=round(executed-prepared, 3),
+                            cleanupSeconds=round(end-executed, 3), startedMonotonic=begin, endedMonotonic=end,
+                            log=str((case_dir / 'test.log').relative_to(output)),
+                            fixtureLog=str((case_dir / 'fixture.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
+                    except BaseException as error:
+                        (case_dir / 'failure.log').write_text('Fixture diagnostics: fixture.log\n' + traceback.format_exc())
+                        cases[case_id] = stage_result('failed', begin, reason=type(error).__name__,
+                            startedMonotonic=begin, endedMonotonic=time.monotonic(), log=str((case_dir / 'test.log').relative_to(output)),
+                            fixtureLog=str((case_dir / 'fixture.log').relative_to(output)),
+                            failureLog=str((case_dir / 'failure.log').relative_to(output)), timeoutSeconds=CASE_TIMEOUT)
+                        print(f'T2 failure output: {case_dir / "test.log"}; traceback: {case_dir / "failure.log"}', flush=True)
+                    print(f'T2 {module.id}: {cases[case_id]["status"]} {case_id}', flush=True)
+                for case in discovered[module.id]:
+                    scenario(case)
+                if module.python and (not selected_case or selected_case == 'python/' + module.id):
+                    scenario(None)
+                require(bool(cases), 'module executed no cases: ' + module.id)
+                outcome = stage_result('failed' if any(r['status'] == 'failed' for r in cases.values()) else 'passed',
+                                       started, cases=cases, runId=run_id)
+                publish(module_dir / 'result.json', outcome)
+                return outcome
+            normal = [module for module in modules if not module.exclusive]
+            with ThreadPoolExecutor(max_workers=jobs) as executor:
+                futures = {executor.submit(copy_context().run, execute, module): module.id for module in normal}
+                for future in as_completed(futures):
+                    results[futures[future]] = future.result()
+            # The normal phase is fully drained before a global PG fault can run.
+            for module in modules:
+                if module.exclusive:
+                    results[module.id] = execute(module)
+            publish(directory / 'resources.json', dict(fixtures.counts))
+        require(not processes.cancelled.is_set(), 'T2 cancelled')
+        publish(directory / 'result.json', {'runId': run_id, 'modules': results})
+        return results
+    except BaseException as error:
+        (directory / 'failure.log').write_text(traceback.format_exc())
+        failure = {'runId': run_id, 'status': 'failed', 'reason': type(error).__name__,
+                   'log': str((directory / 'failure.log').relative_to(output))}
+        if (directory / 'fixture.log').exists():
+            failure['fixtureLog'] = str((directory / 'fixture.log').relative_to(output))
+        publish(directory / 'result.json', failure)
+        raise RunFailure(str(error), failure) from error
+    finally:
+        processes.close()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
 
 def main(argv=None):
-    parser=argparse.ArgumentParser()
-    parser.add_argument('--suite',default='affected')
-    parser.add_argument('--base',default=os.environ.get('CI_BASE','origin/develop'))
-    args=parser.parse_args(argv)
-    # Validate spelling before selection or starting any services.
-    if args.suite not in ('all','affected',*SUITES):parser.error('unknown SUITE; available: '+', '.join(['affected','all',*sorted(SUITES)]))
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--module', default='affected')
+    parser.add_argument('--base', default=os.environ.get('CI_BASE', 'origin/develop'))
+    parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--case', default='')
+    parser.add_argument('--list', nargs='?', const='1', choices=('0', '1'), default='0')
+    arguments = sys.argv[1:] if argv is None else argv
+    if any(arg == '--suite' or arg.startswith('--suite=') for arg in arguments):
+        parser.error('--suite was removed; use --module')
+    args = parser.parse_args(arguments)
+    if 'SUITE' in os.environ:
+        parser.error('SUITE was removed; use MODULE')
+    if args.module not in module_choices():
+        parser.error('unknown MODULE; available: ' + ', '.join(module_choices()))
+    if args.jobs < 1:
+        parser.error('JOBS must be positive')
     require_lease(ROOT)
-    output=ROOT/'artifacts/local-t2'
-    if output.is_symlink():raise RuntimeError('T2 output directory cannot be a symlink')
-    output.mkdir(parents=True,exist_ok=True)
-    (output/'result.json').unlink(missing_ok=True)
-    started=time.monotonic()
-    try:return execute_t2(args,output)
+    import ci
+    output = ROOT / 'artifacts/local-t2'
+    require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
+    output.mkdir(parents=True, exist_ok=True)
+    result_path = output / ('list.json' if args.list == '1' else 'result.json')
+    result_path.unlink(missing_ok=True)
+    started = time.monotonic()
+    try:
+        source = ci.working_source_state()
+        if args.module == 'affected':
+            head = ci.command(['/usr/bin/git', 'rev-parse', 'HEAD']).stdout.strip()
+            selection = ci.select_impact(head, base=args.base)
+        else:
+            selection = {'t2Full': args.module == 'all', 'modules': select_modules(args.module, {})}
+        names = select_modules(args.module, selection)
+        results = run_modules(names, output, jobs=args.jobs, selected_case=args.case, listing=args.list == '1')
+        require(ci.working_source_state() == source, 'source changed during T2')
+        status = ('failed' if any(item['status'] == 'failed' for item in results.values()) else
+                  'skipped' if not names or args.list == '1' else 'passed')
+        evidence = {'module': args.module, 'selection': selection, 'status': status, 'modules': results}
+        if not names:
+            evidence['reason'] = 'no-modules-selected'
+        publish(result_path, evidence)
+        return int(status == 'failed')
     except BaseException as error:
-        publish(output/'result.json',{'status':'failed','suite':args.suite,'suites':{'execution':stage_result('failed',started,reason=type(error).__name__)}})
+        publish(result_path,
+                {'status': 'failed', 'module': args.module, 'execution': error.evidence if isinstance(error, RunFailure) else stage_result('failed', started, reason=type(error).__name__)})
         raise
 
-def execute_t2(args,output):
-    import ci
-    source_state=ci.working_source_state()
-    selection=ci.select_impact(ci.command(['/usr/bin/git','rev-parse','HEAD']).stdout.strip(),base=args.base)
-    names=select_suites(args.suite,selection)
-    if not names:print('T2: no-t2-selected (integration verification not performed)',flush=True)
-    results=run_suites(names,output)
-    if ci.working_source_state()!=source_state:
-        results['source-stability']=stage_result('failed',reason='source changed during T2')
-    evidence={'selection':selection,'suite':args.suite,'status':'failed' if any(x['status']=='failed' for x in results.values()) else 'passed' if names else 'skipped','suites':results}
-    publish(output/'result.json',evidence)
-    return int(evidence['status']=='failed')
 
-if __name__=='__main__':sys.exit(main())
+if __name__ == '__main__':
+    sys.exit(main())

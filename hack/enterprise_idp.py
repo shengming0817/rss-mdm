@@ -6,7 +6,7 @@ import contextlib
 import json
 from pathlib import Path
 import ssl
-import subprocess
+from t2_processes import subprocess
 import sys
 import time
 import urllib.request

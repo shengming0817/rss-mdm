@@ -10,7 +10,7 @@ make t2
 make ci-plan CI_BASE=origin/develop
 ```
 
-`make ci` 只执行快速检查并报告建议 T2。`make t2` 默认按影响范围选择，显式 `SUITE=management` 运行专项，`SUITE=all` 运行全部；非法套件名立即失败。选中的套件按需启动真实依赖，缺少 Docker 或必要工具必须失败。编辑循环选择受影响测试，最终检查不要求先提交源码。
+`make ci` 只执行快速检查并报告建议 T2。`make t2` 默认按影响范围选择，显式 `MODULE=planning.http` 运行专项，`MODULE=all` 运行全部；非法模块名及旧 SUITE 参数立即失败。选中的模块按需启动真实依赖，缺少 Docker 或必要工具必须失败。编辑循环选择受影响测试，最终检查不要求先提交源码。
 
 ## 构建槽位与缓存
 
@@ -72,12 +72,14 @@ make dev ACTION=init
 make dev ACTION=status
 make dev ACTION=stop
 make dev ACTION=reset
-make t2 SUITE=management
-make t2 SUITE=affected CI_BASE=origin/develop
-make t2 SUITE=all
+make t2 MODULE=planning.http
+make t2 MODULE=affected CI_BASE=origin/develop
+make t2 MODULE=all
+make t2 MODULE=content.http LIST=1
+make t2 MODULE=content.http CASE='<LIST 输出的完整测试 ID>'
 ```
 
-默认管理 `development` 环境；T2 普通 PG 使用同一 worktree 的 `main` 环境，破坏性实例按组自动销毁。显式管理 T2 环境使用 `DEV_ARGS="--group main"`。stop 保留数据，reset 核验归属后只删除指定环境，不清理共享 target 池。不要直接依赖 Docker Compose 自动推导的项目名。环境数据可丢弃，角色输入不兼容时 reset 后重新 init，没有旧环境升级或兼容解析。
+默认管理 `development` 环境；T2 使用同一 worktree 的 `t2` 环境，一次运行复用一个 PG 服务，退出时销毁。破坏性模块在普通阶段结束后独占并重置同一服务。显式清理遗留 T2 环境使用 `DEV_ARGS="--group t2"`；启动新一轮前也会核验归属并清理旧服务。stop 保留数据，reset 核验归属后只删除指定环境，不清理共享 target 池。不要直接依赖 Docker Compose 自动推导的项目名。环境数据可丢弃，角色输入不兼容时 reset 后重新 init，没有旧环境升级或兼容解析。
 
 init 使用正式角色 SQL、产品 migrate、initialize 和 initialize-authorization。输出本机 Rust 的配置路径、HTTPS origin 和 nginx 配置路径，账号密码仅写入权限 0600 的 operator/account-password 文件。通过已有构建启动器运行 `rss-mdm serve --config <输出路径>`；本机 HTTPS 调试使用输出的 nginx 配置，设置 `MDM_WEB_ROOT` 指向已构建 UI，必要时设置 `MDM_NGINX_MIME_TYPES`。私有 CA 仅为该环境使用，不跳过 TLS 校验。
 
@@ -110,6 +112,8 @@ make t3-auth T3_ARGS="--mode faults --candidate <候选目录> --tools-image <�
 
 重启、停 IdP、暂停 PG、安装失配及数据库白盒断言只在其新建专用环境运行。normal 和 faults 分别报告覆盖，normal 成功不表示完整候选或故障验证通过。
 
-更新受审查的 catalog 快照使用 `python3 hack/build_run.py -- python3 hack/command_catalog.py --write`，检查仍只用 `make t2 SUITE=catalog`。宿主端口由带锁的跨 worktree 分配记录协调，init 检查占用；出现外部进程占用时停止该进程，或 reset 后重新 init 获取空闲端口。
+更新受审查的 catalog 快照使用 `python3 hack/build_run.py -- python3 hack/command_catalog.py --write`，检查仍只用 `make t2 MODULE=catalog.contract`。宿主端口由带锁的跨 worktree 分配记录协调，init 检查占用；出现外部进程占用时停止该进程，或 reset 后重新 init 获取空闲端口。
 
 多个 localhost 端口的浏览器调试使用独立浏览器 profile 或自动化 context；Cookie 按主机而非端口隔离。
+
+T2 的模块职责、选择边界、并发与结果格式见[测试模块](test-modules.md)。`JOBS=1` 可顺序诊断；默认 `JOBS=2`。LIST 只构建和发现测试，不启动服务，不覆盖正式执行结果。

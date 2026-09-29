@@ -1420,15 +1420,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inventory-postgres-integration"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rss-mdm-examples",
- "tokio",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2699,11 +2690,13 @@ dependencies = [
 name = "rss-mdm-compliance-postgres"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "rss-mdm-compliance",
  "rss-request-context",
  "serde",
  "serde_json",
  "sqlx",
+ "tokio",
  "uuid",
 ]
 
@@ -2886,9 +2879,11 @@ dependencies = [
 name = "rss-mdm-software-service"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "futures",
  "reqwest",
  "rss-audit-core",
+ "rss-audit-postgres",
  "rss-contract",
  "rss-mdm-audit-integration",
  "rss-mdm-brew-source",
@@ -2904,9 +2899,13 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
+ "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]

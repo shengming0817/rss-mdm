@@ -12,12 +12,3 @@ class AccessOwnership(unittest.TestCase):
         self.assertNotIn('rss-mdm-examples', manifest.get('dependencies', {}))
         example = tomllib.loads((ROOT / 'crates/examples/Cargo.toml').read_text())
         self.assertEqual([b['name'] for b in example['bin']], ['rss-mdm-fixture'])
-
-    def test_identity_has_one_fixed_public_source(self):
-        shared = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['dependencies']
-        client = shared['rss-identity-core']
-        self.assertRegex(client['rev'], r'^[0-9a-f]{40}$')
-        for name in ['rss-identity-postgres','rss-identity-http-axum','rss-identity-oidc']:
-            self.assertEqual(client, shared[name])
-        self.assertNotEqual(client['git'], shared['rss-runtime']['git'])
-        self.assertNotIn('path', client)

@@ -1,6 +1,9 @@
 """Product flow ownership: prevent reintroducing the pre-2521 service graph."""
 from pathlib import Path
 import unittest
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"hack"))
+from rust_test_layout import is_test_path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "crates/app/src"
@@ -37,7 +40,7 @@ class FlowOwnership(unittest.TestCase):
         self.assertFalse((APP / "mutation.rs").exists())
         self.assertFalse((APP / "execution_transaction.rs").exists())
         for path in (APP / "planning").rglob("*.rs"):
-            if path.name.endswith("tests.rs"):
+            if is_test_path(path):
                 continue
             self.assertNotIn("crate::flow::", path.read_text(), str(path))
 

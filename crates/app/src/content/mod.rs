@@ -7,6 +7,7 @@ mod cleanup;
 mod event;
 pub(crate) mod http;
 #[cfg(test)]
+#[path = "../../tests/content/unit.rs"]
 mod tests;
 mod upload;
 use crate::{ConfigIssue, Error, Failure};
@@ -304,3 +305,7 @@ fn verify_file(
     Ok(())
 }
 pub(crate) use upload::{Binding, Upload};
+
+#[cfg(all(test, feature = "integration"))]
+#[path = "../../tests/content/mod.rs"]
+mod t2;

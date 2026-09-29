@@ -98,16 +98,6 @@ class EnvironmentTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'occupied'):environments[0].host_ports()
             environments[0].host_ports(release=True)
 
-    def test_fault_environment_is_reset_after_controlled_cancellation(self):
-        from t2_environment import T2Context, Cancelled
-        from types import SimpleNamespace
-        from unittest.mock import patch,MagicMock
-        context=T2Context();context.spec=SimpleNamespace(name='software',isolation='server',destructive=frozenset())
-        owned=MagicMock()
-        with patch('t2_environment.Environment',return_value=owned):
-            with self.assertRaises(Cancelled),context.cluster():raise Cancelled()
-        owned.reset.assert_called_once()
-
     def test_gateway_modes_have_distinct_keys_under_the_same_ca(self):
         import hashlib
         import subprocess

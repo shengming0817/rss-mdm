@@ -2,6 +2,9 @@
 from pathlib import Path
 import re
 import unittest
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"hack"))
+from rust_test_layout import is_test_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'crates/app/src'
@@ -37,9 +40,9 @@ class FoundationBoundaries(unittest.TestCase):
         violations = []
         for path in SOURCE.rglob('*.rs'):
             relative = path.relative_to(SOURCE)
-            if any('test' in part or 'fixture' in part or part.startswith('identity_t2') for part in relative.parts):
+            if is_test_path(relative):
                 continue
-            source = path.read_text().split('#[cfg(test)]\nmod tests')[0]
+            source = path.read_text()
             for table in re.findall(r'(?:INSERT INTO|UPDATE|DELETE FROM)\s+mdm_access\.(\w+)', source):
                 owner = owners.get(table)
                 if owner and relative.parts[0] not in (owner, owner + '.rs'):
@@ -53,7 +56,7 @@ class FoundationBoundaries(unittest.TestCase):
     def test_only_composition_and_fixtures_can_use_assembly(self):
         for path in SOURCE.rglob('*.rs'):
             relative = path.relative_to(SOURCE)
-            if str(relative) == 'api.rs' or any('test' in part for part in relative.parts):
+            if str(relative) == 'api.rs' or is_test_path(relative):
                 continue
             self.assertFalse(re.search(r'\bAssembly\b', path.read_text()), str(relative))
 

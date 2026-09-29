@@ -3,6 +3,9 @@ from pathlib import Path
 import re
 import os
 import unittest
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"hack"))
+from rust_test_layout import is_test_path
 
 ROOT = Path(__file__).resolve().parents[1] / "crates/app/src"
 SERVICE = ROOT.parents[1] / "software-service/src"
@@ -121,6 +124,7 @@ DECLARATIONS = {
     ('enrollment_cancel', 'api.rs'),
     ('enrollment_create', 'api.rs'),
     ('enrollment_issue', 'api.rs'),
+    ('enrollment_issue', 'windows/mod.rs'),
     ('enrollment_read', 'api.rs'),
     ('enrollment_resume', 'api.rs'),
     ('inventory_read', 'api.rs'),
@@ -196,10 +200,9 @@ def declared_actions():
              "db::fact": 3, ".transition_audited": 3}
     result = set()
     for path in production_paths():
-        if "test" in path.stem or "fixture" in path.stem or any(
-                part in ("tests", "identity_t2") for part in path.parts):
+        if is_test_path(path):
             continue
-        source = path.read_text().split("#[cfg(test)]\nmod tests")[0]
+        source = path.read_text()
         for call, index in calls.items():
             for match in re.finditer(re.escape(call) + r"\s*\(", source):
                 args = arguments(source, match.end())
@@ -239,9 +242,9 @@ class PrincipalBindingBoundary(unittest.TestCase):
         actual = set()
         for path in production_paths():
             relative = os.path.relpath(path, ROOT)
-            if 'tests' in relative or 'identity_fixture' in relative or 'identity_t2' in relative:
+            if is_test_path(path):
                 continue
-            source = path.read_text().split('#[cfg(test)]\nmod tests')[0]
+            source = path.read_text()
             self.assertNotRegex(source, r'\.identify(?:_operator)?\(')
             if '.set_principal(' in source:
                 actual.add(relative)

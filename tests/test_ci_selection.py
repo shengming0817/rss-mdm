@@ -18,31 +18,42 @@ spec.loader.exec_module(ci)
 
 
 def result(stdout='', returncode=0):
-    return SimpleNamespace(stdout=stdout, returncode=returncode)
+    return SimpleNamespace(stdout=stdout, stderr='', returncode=returncode)
 
 
 class Selection(unittest.TestCase):
+    def test_explicit_cargo_full_does_not_expand_integration(self):
+        decision = dict(cargoFull=False, t2Full=False,
+                        packages=['rss-mdm-resource-postgres'], reasons=['test-input'],
+                        modules=['resource.persistence'], toolTests=[])
+        with patch.dict(ci.os.environ, {'CI_FULL': '1'}), patch.object(
+                ci, 'command', side_effect=[result('base'), result(json.dumps(decision))]):
+            selected = ci.select_impact('head')
+        self.assertTrue(selected['cargoFull'])
+        self.assertFalse(selected['t2Full'])
+        self.assertEqual(selected['modules'], ['resource.persistence'])
+
     def test_merge_base_and_fallbacks(self):
-        decision=dict(full=False,packages=['rss-mdm-group'],reasons=['package-change'],t2Suites=['group'],toolTests=[])
+        decision=dict(cargoFull=False,t2Full=False,packages=['rss-mdm-group'],reasons=['package-change'],modules=['group.persistence'],toolTests=[])
         with patch.dict(ci.os.environ, {'CI_FULL':'0'}), patch.object(ci,'command',side_effect=[result('base'),result(json.dumps(decision))]) as command:
             selected=ci.select_impact('head')
-            self.assertFalse(selected['full'])
-            self.assertEqual(selected['t2Suites'],['group'])
+            self.assertFalse(selected['cargoFull'])
+            self.assertEqual(selected['modules'],['group.persistence'])
             self.assertFalse(any('branch' in call.args[0] for call in command.call_args_list))
         for outputs in ([result(returncode=1)], [result('base'),result('{}')]):
             with patch.dict(ci.os.environ, {'CI_FULL':'0'}), patch.object(ci,'command',side_effect=outputs):
-                self.assertTrue(ci.select_impact('head')['full'])
+                self.assertTrue(ci.select_impact('head')['cargoFull'])
 
     def test_package_commands_and_external_fixture_inputs(self):
-        selection=dict(full=False,packages=['rss-mdm-winget-source'],toolTests=[],t2Suites=['sources'])
+        selection=dict(cargoFull=False,t2Full=False,packages=['rss-mdm-winget-source'],toolTests=[],modules=['sources.winget'])
         self.assertEqual(ci.gate_command('t1',['cargo','test','--workspace','--lib'],selection),['cargo','test','-p','rss-mdm-winget-source','--lib'])
         self.assertFalse(ci.selected_gate('script-tests',selection))
 
-    def test_compliance_owner_selects_real_router_suite(self):
-        from ci_registry import select_paths
+    def test_compliance_owner_selects_real_router_module(self):
+        from t2_registry import select_paths
         for owner in ['compliance','compliance-postgres','group-postgres']:
-            self.assertIn('compliance',select_paths(['crates/'+owner+'/src/lib.rs'])[0])
-        self.assertNotIn('compliance',select_paths(['crates/winget-source/src/lib.rs'])[0])
+            self.assertTrue(any(name.startswith('compliance.') for name in select_paths(['crates/'+owner+'/src/lib.rs']).modules))
+        self.assertFalse(any(name.startswith('compliance.') for name in select_paths(['crates/winget-source/src/lib.rs']).modules))
 
     def test_docs_skip_rust_and_failure_collection_keeps_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -59,7 +70,7 @@ class Selection(unittest.TestCase):
                 if 'status' in args: return result()
                 if 'fmt' in args: return result('failure', 1)
                 return result()
-            selection = {'full': False, 'packages': [], 'reasons': ['docs-only'], 't2Suites': [], 'toolTests': []}
+            selection = {'cargoFull': False, 't2Full': False, 'packages': [], 'reasons': ['docs-only'], 'modules': [], 'toolTests': []}
             with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'dependency_graphs') as graphs, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((out / 'result.json').read_text())
@@ -97,7 +108,7 @@ class Selection(unittest.TestCase):
             out = Path(directory)
             (out / 'result.json').write_text('previous execution')
             (out / 'selection.json').write_text('previous selection')
-            with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value={'full': True, 'packages': [], 'reasons': ['explicit-full'], 't2Suites': sorted(ci.SUITES), 'toolTests': ci.all_tools()}), patch.object(ci, 'command', return_value=result('head')) as command, patch.dict(ci.os.environ, {'CI_PLAN': '1'}), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value={'cargoFull': True, 't2Full': True, 'packages': [], 'reasons': ['explicit-full'], 'modules': sorted(ci.MODULES), 'toolTests': ci.all_tools()}), patch.object(ci, 'command', return_value=result('head')) as command, patch.dict(ci.os.environ, {'CI_PLAN': '1'}), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ci.main(), 0)
             self.assertEqual(command.call_count, 1)
             self.assertEqual((out / 'result.json').read_text(), 'previous execution')
@@ -135,7 +146,7 @@ class EntryModes(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.object(impact.sys,'argv',['ci-impact.py','--base','base']), patch.object(impact,'run',return_value=SimpleNamespace(returncode=0,stdout=str(ci.ROOT).encode())), patch.object(impact,'select',side_effect=RuntimeError('private-error-text')), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             impact.main()
-        self.assertEqual(json.loads(stdout.getvalue()),{'full':True,'packages':[],'reasons':['selector-internal'],'t2Suites':sorted(ci.SUITES),'toolTests':ci.all_tools()})
+        self.assertEqual(json.loads(stdout.getvalue()),{'cargoFull':True,'t2Full':True,'packages':[],'reasons':['selector-internal'],'modules':sorted(ci.MODULES),'toolTests':ci.all_tools()})
         self.assertIn('phase=selection',stderr.getvalue())
         self.assertIn('RuntimeError',stderr.getvalue())
         self.assertNotIn('private-error-text',stderr.getvalue())
@@ -149,7 +160,7 @@ class EntryModes(unittest.TestCase):
             if 'merge-base' in args: return result('base')
             if 'status' in args: return result()
             self.assertTrue(kwargs.get('separate_stderr'))
-            payload = json.dumps({'full':True, 'packages':[], 'reasons':['selector-internal'],'t2Suites':sorted(ci.SUITES),'toolTests':ci.all_tools()})
+            payload = json.dumps({'cargoFull':True,'t2Full':True, 'packages':[], 'reasons':['selector-internal'],'modules':sorted(ci.MODULES),'toolTests':ci.all_tools()})
             script = f"import sys; print({payload!r}); print('selector-internal phase=selection exception=RuntimeError', file=sys.stderr)"
             return original([sys.executable, '-c', script], **kwargs)
         with patch.dict(ci.os.environ, {'CI_FULL':'0'}), patch.object(ci,'command',side_effect=command):

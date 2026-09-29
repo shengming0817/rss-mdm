@@ -1,9 +1,10 @@
 """Disposable fixed NanoMDM oracle: private loopback/file storage, no product database or hooks."""
 from contextlib import contextmanager
 import os
+import json
 from pathlib import Path
 import secrets
-import subprocess
+from t2_processes import subprocess
 import time
 import urllib.request
 import urllib.error
@@ -18,7 +19,7 @@ def running(root, env):
     address = '127.0.0.1:'+str(port())
     api_key = secrets.token_urlsafe(32)
     with (root/'nano.log').open('w') as log:
-        process = subprocess.Popen([str(binary),'-listen',address,'-ca',str(root/'step/certs/intermediate_ca.crt'),
+        process = subprocess.Popen([str(binary),'-listen',address,'-ca',json.loads((root/'apple.json').read_text())['issuer_certificate_file'],
                                     '-storage','filekv','-storage-dsn',str(root/'nano-data'),
                                     '-cert-header','X-Fixture-Certificate','-checkin',
                                     '-push-url','http://127.0.0.1:1'],

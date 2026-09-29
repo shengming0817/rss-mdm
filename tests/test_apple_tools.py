@@ -53,7 +53,7 @@ class OracleSource(unittest.TestCase):
 
 class NanoCache(unittest.TestCase):
     def test_cache_identity_includes_effective_toolchain_and_flags(self):
-        with patch('subprocess.check_output',return_value='{"GOOS":"darwin","GOARCH":"arm64","GOVERSION":"go1.25.1","CGO_ENABLED":"1","GOFLAGS":"","GOROOT":"/go"}'):
+        with patch('t2_processes.subprocess.check_output',return_value='{"GOOS":"darwin","GOARCH":"arm64","GOVERSION":"go1.25.1","CGO_ENABLED":"1","GOFLAGS":"","GOROOT":"/go"}'):
             first=tools.nano_identity()
-        with patch('subprocess.check_output',return_value='{"GOOS":"darwin","GOARCH":"arm64","GOVERSION":"go1.25.2","CGO_ENABLED":"1","GOFLAGS":"","GOROOT":"/go"}'):
+        with patch('t2_processes.subprocess.check_output',return_value='{"GOOS":"darwin","GOARCH":"arm64","GOVERSION":"go1.25.2","CGO_ENABLED":"1","GOFLAGS":"","GOROOT":"/go"}'):
             self.assertNotEqual(first,tools.nano_identity())

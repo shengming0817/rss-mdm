@@ -236,4 +236,5 @@ impl ManagedResource for RuntimeResource {
 }
 
 #[cfg(test)]
+#[path = "../tests/identity_audit/mod.rs"]
 mod tests;

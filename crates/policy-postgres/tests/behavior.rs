@@ -6,7 +6,7 @@ mod operations;
 use operations::*;
 use uuid::Uuid;
 #[tokio::test]
-#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
+#[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
 async fn configuration_cas_replay_and_runtime_isolation() {
     let runtime = runtime().await;
     let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
@@ -70,7 +70,7 @@ async fn configuration_cas_replay_and_runtime_isolation() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
+#[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
 async fn scope_changes_preserve_execution_version() {
     let runtime = runtime().await;
     let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
@@ -123,7 +123,7 @@ async fn scope_changes_preserve_execution_version() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
+#[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
 async fn companion_failure_rolls_back_publication() {
     let runtime = runtime().await;
     let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
@@ -166,7 +166,7 @@ async fn companion_failure_rolls_back_publication() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
+#[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
 async fn admission_rejects_schema_and_reachable_privilege_drift() {
     let runtime = runtime().await;
     for (damage, restore) in [
@@ -194,7 +194,7 @@ async fn admission_rejects_schema_and_reachable_privilege_drift() {
     runtime.close().await;
 }
 #[tokio::test]
-#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
+#[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
 async fn explicit_trigger_does_not_edit_configuration() {
     let mut definition = definition();
     definition.behavior = serde_json::from_value(
@@ -240,7 +240,7 @@ async fn explicit_trigger_does_not_edit_configuration() {
 }
 
 #[tokio::test]
-#[ignore = "real PostgreSQL: make t2 SUITE=backend"]
+#[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
 async fn borrowed_reads_reject_foreign_runtime_and_tenant() {
     let runtime = runtime().await;
     let store = PolicyStore::new(runtime.clone(), tenant(), deadline())

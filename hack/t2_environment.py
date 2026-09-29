@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
-import subprocess
+from t2_processes import private_value, subprocess
 import time
 import uuid
 from build_run import lease_fds, require_lease
@@ -27,6 +27,7 @@ def run(args, **kwargs):
     return subprocess.run([str(arg) for arg in args], pass_fds=lease_fds(), check=True, text=True, **kwargs)
 
 def private(path, content):
+    private_value(content)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as stream:
@@ -64,16 +65,18 @@ class Environment:
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'], **getattr(self,'extra',{})}
 
     def compose(self, *args, **kwargs):
+        private_values=[]
+        for path in self.root.rglob('*'):
+            if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
+                value = path.read_text()
+                private_values.append(value)
+                private_value(value)
         try:
             return run(['docker','compose','-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
                        env=self.variables(), capture_output=True, **kwargs).stdout.strip()
         except subprocess.CalledProcessError as error:
             from candidate_runtime import safe_evidence
             diagnostic=error.stderr or 'no Compose diagnostic'
-            private_values=[]
-            for path in self.root.rglob('*'):
-                if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
-                    private_values.append(path.read_text())
             try:diagnostic=safe_evidence(diagnostic,private_values)
             except RuntimeError:diagnostic='diagnostic-withheld'
             print(f'Compose failed ({error.returncode}): {diagnostic}',file=sys.stderr,flush=True)
@@ -350,77 +353,6 @@ class Environment:
             except OSError:pass
             if time.monotonic()>deadline:raise RuntimeError('product HTTPS readiness deadline; inspect this environment logs')
             time.sleep(.2)
-
-class Cancelled(BaseException):
-    pass
-
-class T2Context:
-    """One run owns preparation, isolation policy, cancellation and stale fault recovery."""
-    def __init__(self):
-        self.main=Environment()
-        self.prepared=False
-        self.spec=None
-        self.handlers={}
-
-    def __enter__(self):
-        import signal
-        require_lease(ROOT)
-        def cancel(number, frame):
-            # Further TERM signals must not interrupt the cleanup subprocesses.
-            for sig in self.handlers:signal.signal(sig,signal.SIG_IGN)
-            raise Cancelled('T2 cancelled')
-        for sig in (signal.SIGTERM,signal.SIGHUP,signal.SIGQUIT):
-            self.handlers[sig]=signal.signal(sig,cancel)
-        try:
-            for path in sorted((ROOT/'artifacts/dev-environment').glob('fault-*')):
-                environment=Environment(group=path.name)
-                marker=path/'owner.json'
-                if path.is_symlink() or not marker.exists() or json.loads(marker.read_text())!={'worktree':str(ROOT),'project':environment.project}:
-                    raise RuntimeError('unrecognized fault residue; inspect and reset explicitly')
-                environment.reset()
-        except BaseException:
-            self.__exit__(None,None,None)
-            raise
-        return self
-
-    def __exit__(self,*unused):
-        import signal
-        for sig,handler in self.handlers.items():signal.signal(sig,handler)
-
-    @contextlib.contextmanager
-    def cluster(self, case=None):
-        destructive=self.spec.isolation=='server' or case in self.spec.destructive
-        group='fault-'+self.spec.name+'-'+hashlib.sha256((case or self.spec.name).encode()).hexdigest()[:10]
-        environment=Environment(group=group) if destructive else self.main
-        try:
-            if destructive or not self.prepared:
-                environment.up()
-                with environment.phase('roles',reused=environment.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'")=='1'):environment.roles()
-                if not destructive:self.prepared=True
-            yield environment
-        finally:
-            if destructive:environment.reset()
-
-    def source_tls(self, root):
-        self.main.prepare_inputs()
-        directory=self.main.root/'source-cert'
-        self.main.issue_leaf(directory,['source.invalid'])
-        for source,target in ((self.main.root/'ca.crt','ca.pem'),(directory/'server.crt','server.pem'),(directory/'server.key','server.key')):
-            private(root/target,source.read_text())
-
-    @contextlib.contextmanager
-    def gateway(self, config):
-        environment=Environment(group='fault-gateway-probe')
-        try:
-            environment.prepare_inputs(certificates=False)
-            private(environment.root/'probe/nginx.conf',config)
-            environment.verify_ownership()
-            environment.compose('--profile','probe','up','-d','gateway-probe')
-            name=environment.compose('ps','-q','gateway-probe')
-            port=int(environment.compose('port','gateway-probe','8080').rsplit(':',1)[1])
-            yield name,port
-        finally:
-            environment.reset()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
