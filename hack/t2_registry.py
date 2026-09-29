@@ -251,7 +251,7 @@ for name in ('projection', 'recovery', 'process'):
         support=('crates/examples/src/app/t2/mod.rs',))
 add('worker.wake', selectors=('worker_wake::tests::',),
     sources=('crates/app/src/worker_wake.rs',),
-    tests=('crates/app/tests/worker_wake.rs',), support=())
+    tests=('crates/app/tests/worker_wake/mod.rs',), support=())
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
     sources=('crates/app/src/inventory_runtime.rs',),
     tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())

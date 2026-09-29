@@ -161,5 +161,5 @@ impl ManagedResource for Listener {
 }
 
 #[cfg(test)]
-#[path = "../tests/worker_wake.rs"]
+#[path = "../tests/worker_wake/mod.rs"]
 mod tests;

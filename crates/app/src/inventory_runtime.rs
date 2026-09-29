@@ -360,6 +360,37 @@ impl InventoryRuntime {
             .map_err(|_| WorkerFailure::DeliveryProgress)?
             .map_err(|_| WorkerFailure::DeliveryProgress)
     }
+    async fn deliver_pending(
+        &self,
+        reports: Vec<DurableReport>,
+        deadline: Deadline,
+        token: &CancellationToken,
+    ) -> Result<(), WorkerFailure> {
+        let pending_count = reports.len();
+        for report in reports {
+            if deadline.remaining(self.clock.now.now()).is_none() {
+                break;
+            }
+            if token.is_cancelled() {
+                return Ok(());
+            }
+            if let Err(phase) = self.deliver(&report, deadline).await {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event":"mdm_inventory_delivery_failure",
+                        "phase":phase,
+                        "reportId":report.batch().id().as_str(),
+                        "source":report.scope().source().as_str(),
+                        "stream":stream_correlation(report.scope()),
+                        "pendingCount":pending_count,
+                    })
+                );
+                return Err(phase);
+            }
+        }
+        Ok(())
+    }
     async fn work(
         &self,
         token: &CancellationToken,
@@ -443,28 +474,7 @@ impl InventoryRuntime {
                 Ok(Err(_)) => return Err(WorkerFailure::PendingReports),
             };
             let pending_count = reports.len();
-            for report in reports {
-                if deadline.remaining(self.clock.now.now()).is_none() {
-                    break;
-                }
-                if token.is_cancelled() {
-                    return Ok(());
-                }
-                if let Err(phase) = self.deliver(&report, deadline).await {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({
-                            "event":"mdm_inventory_delivery_failure",
-                            "phase":phase,
-                            "reportId":report.batch().id().as_str(),
-                            "source":report.scope().source().as_str(),
-                            "stream":stream_correlation(report.scope()),
-                            "pendingCount":pending_count,
-                        })
-                    );
-                    return Err(phase);
-                }
-            }
+            self.deliver_pending(reports, deadline, token).await?;
             if token.is_cancelled() {
                 return Ok(());
             }
