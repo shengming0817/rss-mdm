@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 pub struct Planning {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    automation_observation: std::sync::Mutex<automation::health::AutomationObservation>,
     pub automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     pub runtime: Arc<PgRuntime>,
     cursor_key: ring::hmac::Key,
@@ -59,6 +60,7 @@ impl Planning {
                 .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
         Ok(Self {
             audit_store: audit_store.clone(),
+            automation_observation: std::sync::Mutex::new(Default::default()),
             automation_task: std::sync::OnceLock::new(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             asset_reader: assets::planning::SnapshotReader { tenant },

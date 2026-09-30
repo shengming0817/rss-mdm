@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn runtime_diagnostics_permission_is_tenant_only_and_exact() {
+    let permission: Permission = serde_json::from_str("\"runtime_diagnostics_read\"").unwrap();
+    let grant = Grant {
+        operation: permission,
+        scope: Scope::Tenant,
+    };
+    assert!(grant.validate().is_ok());
+    assert!(grant.covers(permission, None));
+    assert!(!grant.covers(Permission::AuthorizationRead, None));
+    assert!(!grant.covers(permission, Some("device")));
+    for scope in [
+        Scope::AllDevices,
+        Scope::Device {
+            id: "device".into(),
+        },
+    ] {
+        assert!(
+            Grant {
+                operation: permission,
+                scope
+            }
+            .validate()
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn user_group_requires_an_explicit_enabled_state() {
     assert!(
         serde_json::from_value::<UserGroup>(serde_json::json!({"name":"operators","members":[]}))

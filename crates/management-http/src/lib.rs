@@ -21,6 +21,7 @@ use rss_mdm_flow_service::{Failure, automation};
 use rss_mdm_registration_service::device;
 
 mod router;
+pub mod runtime_diagnostics;
 pub use router::{Services, router};
 
 pub mod boundary;

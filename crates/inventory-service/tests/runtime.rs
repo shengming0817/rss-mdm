@@ -12,7 +12,7 @@ fn journal_permission_is_independent_and_readiness_requires_a_running_worker() {
     ensure_authority(&authority, tenant, &token);
     let readiness = Readiness::default();
     readiness.initialized.store(true, Ordering::Release);
-    assert!(!readiness.ready());
+    assert!(!readiness.health().is_ready());
 }
 fn ensure_authority(authority: &JournalAuthority<'_>, tenant: TenantId, token: &CancellationToken) {
     assert!(JournalReadGrant::verify(authority, tenant).is_ok());

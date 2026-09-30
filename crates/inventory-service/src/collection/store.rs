@@ -303,6 +303,14 @@ impl Delivery {
             audit_store,
         }
     }
+    /// Bounded count of real pending delivery rows; 1001 is the overflow sentinel.
+    pub async fn pending_count(&self, tenant: &str) -> Result<u64, Error> {
+        let mut tx = self.database.begin_read(tenant).await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending LIMIT 1001) q")
+            .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
+        tx.rollback().await.map_err(db)?;
+        Ok(count as u64)
+    }
     pub async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
         let mut tx = self.database.begin_read(tenant).await?;
         let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))

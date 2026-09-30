@@ -21,7 +21,9 @@ impl DurableStore for Automation {
         lease: Duration,
         control: &Control<'_, T>,
     ) -> std::result::Result<Vec<PgClaim>, ReconcileError> {
-        self.store.claim_due(scope, limit, lease, control).await
+        let result = self.store.claim_due(scope, limit, lease, control).await;
+        self.service.record_scan(result.as_ref().map(|_| ()));
+        result
     }
     async fn renew<T: Timer>(
         &self,
@@ -114,6 +116,7 @@ impl DurableStore for Automation {
                     )?;
             }
             self.store.finish(claim, completion, control).await?;
+            self.service.record_settled(claim.target(), completion);
             if let Completion::Suspended { failures } = completion {
                 eprintln!(
                     "{}",

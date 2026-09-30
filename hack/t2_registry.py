@@ -312,6 +312,14 @@ add('api.diagnostics', selectors=('api::tests::',),
 add('api.identity_context', selectors=('api::t2::identity_context::',), fixtures=('identity',),
     sources=('crates/app/src/api.rs',),
     tests=('crates/app/tests/api/identity_context.rs',))
+add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=('identity','local_worker'),
+    sources=('crates/app/src/runtime_diagnostics.rs', 'crates/management-http/src/runtime_diagnostics.rs',
+             'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
+             'crates/flow-service/src/planning/automation/health.rs'),
+    tests=('crates/app/tests/api/runtime_diagnostics.rs',))
+MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('crates/app/tests/support/audit.rs','crates/app/tests/device/support.rs','crates/app/tests/inventory_runtime/support.rs','crates/app/tests/planning/support.rs'), policies=(
+    CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_bridge_and_queries_succeed', 'instance', 'tenant'),
+))
 add('host.lifecycle', build=None, python='host', fixtures=('identity',),
     sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs'),
     support=('hack/t2_modules/host.py',))
@@ -700,8 +708,9 @@ consume(('crates/software-service/src/lib.rs', 'crates/software-service/src/publ
         'software.catalog software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery publication.artifact')
 consume(('crates/software-service/src/catalog/*',),
         'software.http planning.software execution.software.offer execution.software.content execution.software.recovery')
-AUTH_CONSUMERS = 'authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
-consume(('crates/authorization-service/src/*.rs',), AUTH_CONSUMERS)
+AUTH_CONSUMERS = 'diagnostics.http authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
+consume(('crates/authorization-service/src/*.rs','crates/management-http/src/authorization/http.rs','crates/management-http/src/lib.rs'), AUTH_CONSUMERS)
+consume(('crates/flow-service/src/planning/automation.rs','crates/inventory-service/src/inventory_runtime.rs','crates/inventory-service/src/inventory_runtime/*','crates/flow-service/src/automation/runtime.rs','crates/flow-service/src/automation/completion.rs','crates/flow-service/src/planning/mod.rs','crates/app/src/identity_audit.rs','crates/app/src/identity.rs','crates/apple-channel/src/lib.rs','crates/inventory-service/src/collection/*'), 'diagnostics.http')
 consume(('crates/app/src/identity.rs',), 'identity.local identity.sso identity.audit api.identity_context')
 consume(('crates/registration-service/src/device/*', 'crates/registration-service/src/device.rs', 'crates/app/src/registration_lifecycle.rs'),
         'device.binding device.revocation device.recovery device.admission agent.registration agent.reports windows.issuance windows.management apple.identity inventory.runtime execution.agent.delivery')
@@ -718,7 +727,7 @@ consume(('crates/flow-service/src/execution/actions/history.rs',), 'execution.ag
 consume(('crates/flow-service/src/execution/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/flow-service/src/execution/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
 consume(('crates/flow-service/src/execution/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
-AUDITED_MODULES = 'audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.firewall execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
+AUDITED_MODULES = 'diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.firewall execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
 consume(('crates/flow-service/src/transaction.rs',), ' '.join(name for name in AUDITED_MODULES.split() if MODULES[name].build == APP))
 consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
@@ -855,7 +864,7 @@ def all_tools():
 
 # These carrier files compose exactly these test children, not production consumers.
 for name, module in list(MODULES.items()):
-    carrier = ('crates/app/tests/api/mod.rs' if name == 'api.identity_context' else
+    carrier = ('crates/app/tests/api/mod.rs' if name in ('api.identity_context','diagnostics.http') else
                'crates/app/tests/execution/mod.rs' if name.startswith('execution.') else None)
     if carrier:
         MODULES[name] = replace(module, support_inputs=(*module.support_inputs, carrier))
@@ -874,6 +883,7 @@ APP_HELPER_CONSUMERS = {
         'execution.commands.admission','execution.commands.dispatch','execution.commands.recovery',
         'execution.commands.windows','execution.commands.firewall','execution.commands.onboarding','windows.commands'),
     'device/support.rs': (
+        'diagnostics.http',
         'device.binding','device.revocation','device.recovery','device.admission',
         'agent.reports','inventory.runtime','assets.group_input','assets.sources','compliance.evaluation',
         'execution.agent.delivery','authorization.admission','enrollment.recovery','native.tls',
@@ -884,6 +894,7 @@ APP_HELPER_CONSUMERS = {
         'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
         'apple.fairness','apple.host','apple.scep'),
     'support/audit.rs': (
+        'diagnostics.http',
         'audit.receipts','audit.integrity','audit.recovery','audit.budget',
         'api.diagnostics','device.recovery','device.revocation','execution.commands.admission','execution.commands.onboarding',
         'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
@@ -942,7 +953,7 @@ def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
-T1_INPUTS = tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',

@@ -12,6 +12,34 @@
 
 /livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过、Identity 审计首轮投递成功，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
+经授权的 `GET /api/v2/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready` 和 `components`。
+管理员通过现有授权规则显式授予租户级 `runtime_diagnostics_read`；该权限不由设备读权限或授权管理权限隐式获得。
+查询为被动会话活动，经现有请求审计结算；认证、授权库或审计不可用时仍拒绝请求，没有匿名诊断旁路。
+公开健康探针只返回存活或就绪布尔值，详情和 `/readyz` 消费同一宿主聚合。
+
+组件分别展示就绪原因、诊断 health、真实受控任务状态和适用的依赖、队列或进度。health 的 degraded/unknown 表示本次观测故障或缺失；
+readiness 仍表达公开探针的既定条件，两者不能互相推断。入口暂停与依赖读取失败分开；
+任务 running、已转发任务、服务就绪均不表示业务完成或设备实际效果。执行恢复的存活和首扫合同由 #2563 完善，
+当前未提供合同的状态显示 unknown，不纳入新的就绪承诺。未启用的 Apple 组件显示 not_applicable。
+
+Automation 的 `bridge` 记录输入转发结果，`runner.scan` 记录独立运行连接池的实际扫描结果；
+两者各自携带观测时间，转发成功不能证明 runner 健康。`runner.unresolvedAttempts` 保留本进程内
+尚未由同一目标成功执行并确认结算消除的故障，`latestFailure` 只返回受控阶段、原因与时间。
+扫描或其它目标成功不会清除这类故障，Retry/Suspended 结算也不算执行恢复。
+最多保留 1000 个故障目标，超出后 `runner.truncated` 持续为 true，health 不能恢复为 healthy，
+因为被丢弃的身份已无法核对；重启开始新的观测窗口。该窗口不替代持久任务队列状态。
+
+队列按真实租户持久事实有界统计，`truncated` 表示计数达到源码定义的观察上限；失败时计数为 null，不能当作无积压。
+Flow 的 pending/running/completed/failed/superseded 沿用既有任务状态，running 表示已转发且未终结，
+不是操作系统任务存活证明；asset_changes_pending 表示尚未转发的资产输入。Inventory delivery_pending 与投影进度分别展示。
+投影直接消费 RSS 的 invocation 观察和已确认位置，sourceHead 是另一时刻的 scoped journal high-water；
+lagging 是位置比较，不是精确事件数或原子快照。invocationAgeMs 和 completedPassAgeMs 指明本地观察所属运行及最近完成时间，
+旧进度不会被当作当前依赖健康。未读取过 checkpoint、已确认的空 checkpoint 与读取失败分别表达。
+
+局部探测失败时查询仍可返回 HTTP 200 和已知组件结果；响应成功只表示查询成功。授权加载与诊断共用宿主绝对截止时间，
+不逐依赖续期，审计由原 owner 完成结算。诊断不返回设备身份、任务输入、数据库地址、配置、秘密或底层错误原文。
+
+
 SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算，单任务关闭上限二十秒覆盖领取、接受、结算各六秒的预算；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
 
 审计恢复要求各产品运行连接使用 `READ COMMITTED`；启动与每次借用事务均检查，组件不替调用方修改隔离级别。业务事务先取得 Audit head，以及 Ledger 模式下固定审计链的 head，再取得业务和 Outbox 锁。提交未知后使用原操作身份和原请求重试，锁后的新语句快照同时核对业务回执、产品审计回执与组件记录；恢复原 canonical bytes 和 recorded_at，不生成新的事件身份。单边缺失、指纹或字节冲突均拒绝并要求修复，不能补造记录。两者都不存在也只有在成功取得同一锁、确认先前数据库事务已结束后才允许重新判定业务；这不证明设备或软件源的外部副作用回滚。锁或读取超时继续保留未知状态。注册替换、撤销、Apple CheckOut 和共用退役策略的 Windows 路径保留六秒总上限，业务窗口最多四点五秒，余下四分之一留给原 Audit owner 提交/回滚；已有更早调用方 deadline 时同步收紧。截止时间在入口一次冻结，下游和逐事件追加不续期。这个兼容策略不保证任意采集积压能在六秒完成，也不是吞吐 SLO。业务超时后停止新增工作并等待原 owner 结算；上游 Acquire/Begin/Setup 尚未进入产品回调，仍受原总截止时间约束，Setup 耗尽预算仍可能回滚未确认。按实际结算状态处理，不分批伪装成完整退役。

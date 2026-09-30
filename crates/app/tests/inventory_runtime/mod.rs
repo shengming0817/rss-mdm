@@ -208,9 +208,9 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_ready_projection(&runtime, &first).await?;
-    ensure!(runtime.readiness.ready());
+    ensure!(runtime.readiness.health().is_ready());
     runtime.readiness.stop();
-    ensure!(!runtime.readiness.ready());
+    ensure!(!runtime.readiness.health().is_ready());
     crate::test_support::stop_worker(owner).await?;
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
@@ -329,7 +329,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let owner = start(runtime.clone()).await?;
     let stopped =
         tokio::time::timeout(Duration::from_secs(8), runtime.fixture_wait_stopped()).await?;
-    ensure!(matches!(stopped, rss_runtime::TaskExit::Failed(_)) && !runtime.readiness.ready());
+    ensure!(
+        matches!(stopped, rss_runtime::TaskExit::Failed(_))
+            && !runtime.readiness.health().is_ready()
+    );
     ensure!(
         !owner
             .expect("fault case owns its inventory worker")

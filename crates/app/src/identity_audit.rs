@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) const ROLE: &str = "mdm_identity_audit";
 #[derive(Default)]
 pub(crate) struct Readiness {
-    healthy: AtomicBool,
+    phase: std::sync::Mutex<AuditPhase>,
     retrying: AtomicBool,
     task: OnceLock<TaskStatus>,
 }
@@ -34,14 +34,38 @@ impl Readiness {
         } else if claimed > 0 {
             self.retrying.store(false, Ordering::Release);
         }
-        self.healthy
-            .store(!self.retrying.load(Ordering::Acquire), Ordering::Release);
+        *self.phase.lock().expect("audit health") = if self.retrying.load(Ordering::Acquire) {
+            AuditPhase::Retrying
+        } else {
+            AuditPhase::Healthy
+        };
     }
     fn transient_failure(&self) {
-        self.healthy.store(false, Ordering::Release);
+        *self.phase.lock().expect("audit health") = AuditPhase::DependencyUnavailable;
     }
-    pub(crate) fn ready(&self) -> bool {
-        self.healthy.load(Ordering::Acquire) && self.task.get().is_some_and(TaskStatus::is_running)
+    pub(crate) fn health(&self) -> AuditHealth {
+        AuditHealth {
+            phase: *self.phase.lock().expect("audit health"),
+            task: self.task.get().map(TaskStatus::current),
+        }
+    }
+}
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum AuditPhase {
+    #[default]
+    Initializing,
+    Healthy,
+    Retrying,
+    DependencyUnavailable,
+    Stopped,
+}
+pub(crate) struct AuditHealth {
+    pub phase: AuditPhase,
+    pub task: Option<rss_runtime::TaskState>,
+}
+impl AuditHealth {
+    pub fn is_ready(&self) -> bool {
+        self.phase == AuditPhase::Healthy && self.task == Some(rss_runtime::TaskState::Running)
     }
 }
 pub(crate) struct Worker {
@@ -159,7 +183,7 @@ impl Worker {
             .expect("one identity audit task");
         task.into_registration(move |token| async move {
             let result = self.work(&token).await;
-            self.readiness.healthy.store(false, Ordering::Release);
+            *self.readiness.phase.lock().expect("audit health") = AuditPhase::Stopped;
             result.map_err(|error| {
                 diagnose(error);
                 ShutdownError::new(error)

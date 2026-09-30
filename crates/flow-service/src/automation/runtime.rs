@@ -61,11 +61,19 @@ impl Automation {
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.assets").expect("constant domain");
             let runner=async {rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,signals.automation(),|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
+                self.service.record_runner_failure(event);
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
             let bridge=async {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
                     let result=async {let assets=self.service.forward_asset_changes().await?;let jobs=jobs::forward_jobs(&self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+jobs as u64)}.await;
+                    self.service.record_bridge(match &result {
+                        Ok(_) => None,
+                        Err(Error::CommitUnknown | Error::RollbackFailed) => Some(crate::planning::automation::AutomationFailure::SettlementUnknown),
+                        Err(Error::Unavailable(Failure::RequestDeadline)) => Some(crate::planning::automation::AutomationFailure::Deadline),
+                        Err(Error::Unavailable(_)) => Some(crate::planning::automation::AutomationFailure::StorageUnavailable),
+                        Err(_) => Some(crate::planning::automation::AutomationFailure::Rejected),
+                    });
                     match result {
                         Ok(count) if count > 0 => continue,
                         Ok(_) => crate::worker_wake::wait(signals.automation_input(), &cancel, None).await,
