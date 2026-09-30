@@ -23,6 +23,7 @@ pub struct Snapshot {
     pub instance: Option<String>,
     pub action: &'static str,
     pub target: Option<String>,
+    pub device_target: Option<String>,
     pub operation_id: Option<Uuid>,
     pub registration_id: Option<Uuid>,
     pub write_outcome: WriteOutcome,
@@ -94,6 +95,7 @@ impl RequestAudit {
                     instance: None,
                     action,
                     target: None,
+                    device_target: None,
                     operation_id: None,
                     registration_id: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
@@ -155,9 +157,21 @@ impl RequestAudit {
     }
     /// Set a bounded, non-control-character target; invalid optional targets are omitted.
     pub fn target(&self, target: &str) {
-        self.0.state.lock().expect("audit lock").snapshot.target =
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.device_target = None;
+        state.snapshot.target =
             (target.len() <= 256 && !target.is_empty() && !target.chars().any(char::is_control))
                 .then(|| target.to_owned());
+    }
+    /// Source-owned device target, distinct from a generic management resource ID.
+    /// Neutral audit coordinates, never authentication or an authorization grant.
+    pub fn target_device(&self, device: &str) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        let value =
+            (device.len() <= 256 && !device.is_empty() && !device.chars().any(char::is_control))
+                .then(|| device.to_owned());
+        state.snapshot.target = value.clone();
+        state.snapshot.device_target = value;
     }
     /// Attach an operation coordinate; its presence does not imply successful execution or replay.
     pub fn operation(&self, id: Uuid, action: &'static str) {

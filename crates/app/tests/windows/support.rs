@@ -184,18 +184,7 @@ impl Host {
                 .await?,
         )
         .await?;
-        let management = config
-            .flow
-            .open(
-                store
-                    .audit_store(&crate::config::AuditConfig::Plain)
-                    .await?,
-                rss_request_context::TenantId::parse(case_tenant())?,
-                Arc::new(crate::clock::SystemClock),
-                |_| {},
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("management startup: {e:?}"))?;
+        let (management, timeline) = management(&config, &store).await?;
         let execution = crate::flow::execution::open(
             &config,
             store
@@ -204,14 +193,6 @@ impl Host {
         )
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
-        let timeline = store.timeline(
-            store
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?,
-            identity.tenant,
-            &management.cursor_key,
-        )?;
-        timeline.initialize().await?;
         let app = Arc::new(Assembly {
             timeline,
             content_writer: execution.content.clone(),
@@ -588,4 +569,34 @@ impl Host {
         );
         Ok(())
     }
+}
+
+async fn management(
+    config: &crate::config::Config,
+    access: &Database,
+) -> anyhow::Result<(
+    Arc<crate::flow::Flow>,
+    Arc<rss_mdm_timeline_service::Timeline>,
+)> {
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let flow = config
+        .flow
+        .open(
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            |_| {},
+        )
+        .await?;
+    let timeline = access.timeline(
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+        tenant,
+        &flow.cursor_key,
+    )?;
+    timeline.initialize().await?;
+    Ok((flow, timeline))
 }

@@ -93,6 +93,7 @@ pub struct FactView {
     pub actor: String,
     pub action: String,
     pub target: Option<String>,
+    pub device_id: Option<String>,
     pub operation_id: Option<Uuid>,
     pub related_operation_ids: Vec<Uuid>,
     pub request_id: Option<Uuid>,
@@ -111,6 +112,7 @@ pub struct FactView {
 pub struct Coverage {
     pub indexed_through: Option<u64>,
     pub source_through: Option<u64>,
+    /// Source positions are indexed; this does not prove lifecycle or association completeness.
     pub complete: bool,
 }
 #[derive(Debug, Serialize)]

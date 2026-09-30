@@ -345,6 +345,12 @@ async fn correlate(
         return Ok(Vec::new());
     }
     let mut devices = std::collections::BTreeSet::new();
+    if let Some(device) = &view.device_id
+        && rss_mdm_registration_service::device::read::exists(c, tenant.into(), device.clone())
+            .await?
+    {
+        devices.insert(device.clone());
+    }
     if let Some(reg) = view.registration_id
         && let Some(device) =
             rss_mdm_registration_service::device::read::timeline_device_in(c, tenant, reg).await?
@@ -354,16 +360,6 @@ async fn correlate(
     if let Some(request) = view.registration_request_id
         && let Some(device) =
             rss_mdm_registration_service::device::read::timeline_enrollment_in(c, tenant, request)
-                .await?
-    {
-        devices.insert(device);
-    }
-    if matches!(
-        view.action.as_str(),
-        "enrollment_read" | "enrollment_resume" | "enrollment_cancel"
-    ) && let Some(target) = view.target.as_deref().and_then(|v| Uuid::parse_str(v).ok())
-        && let Some(device) =
-            rss_mdm_registration_service::device::read::timeline_enrollment_in(c, tenant, target)
                 .await?
     {
         devices.insert(device);
@@ -406,6 +402,9 @@ async fn correlate(
         "registration_bind"
             | "credential_revoke"
             | "enrollment_create"
+            | "enrollment_read"
+            | "enrollment_resume"
+            | "enrollment_cancel"
             | "inventory_read"
             | "command_accept"
             | "command_approve"

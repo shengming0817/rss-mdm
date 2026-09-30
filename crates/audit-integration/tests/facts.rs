@@ -136,3 +136,25 @@ fn invalid_facts_expose_closed_categories_without_input_values() {
     context.finalize(None);
     valid.finalize(None);
 }
+
+#[test]
+fn device_request_coordinates_are_explicit_and_generic_targets_clear_them() {
+    let audit = RequestAudit::new(
+        "11111111-1111-4111-8111-111111111111".into(),
+        "management_write",
+    );
+    audit.target_device("device-a");
+    let payload = |fact: Fact| {
+        let event = fact
+            .event(rss_contract::Timepoint::try_from(1i64).unwrap())
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(event.context().payload().as_bytes()).unwrap()
+    };
+    assert_eq!(
+        payload(Fact::request(&audit, 403, "denied").unwrap())["details"]["deviceId"],
+        "device-a"
+    );
+    audit.target("saved-query-id");
+    assert!(payload(Fact::request(&audit, 403, "denied").unwrap())["details"].is_null());
+    audit.finalize(None);
+}

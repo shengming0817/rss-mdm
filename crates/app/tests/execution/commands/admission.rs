@@ -73,6 +73,32 @@ impl Client {
             "acceptance {:?}",
             accepted
         );
+        for _ in 0..100 {
+            if self.app.timeline.catch_up().await? == 0 {
+                break;
+            }
+        }
+        let path = format!(
+            "/api/v3/devices/{}/timeline?operationId={}",
+            case_device(),
+            self.operation
+        );
+        let (status, timeline) = self
+            .browser
+            .call(&self.router, Method::GET, &path, None)
+            .await?;
+        ensure!(status == StatusCode::OK);
+        ensure!(
+            timeline["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["source"] == "mdm.business"
+                    && v["action"] == "command_accept"
+                    && v["phase"] == "accepted"
+                    && v["effect"] == "unknown"
+                    && v["operationId"] == self.operation.to_string())
+        );
         let replay = self.call(Method::POST, "", Some(request.clone())).await?;
         ensure!(replay == accepted);
         let mut conflict = request.clone();

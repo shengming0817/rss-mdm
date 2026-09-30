@@ -69,6 +69,15 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
         Some("waiting_reboot") => "waiting_reboot",
         _ => phase,
     };
+    let device_id = if supported && request && action == "management_write" {
+        match payload.pointer("/details/deviceId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(device)) if crate::model::identifier(device) => Some(device.clone()),
+            _ => return Err(Error::Integrity),
+        }
+    } else {
+        None
+    };
     Ok(FactView {
         source: source.source_id().as_str().into(),
         event_id: event.identity().event_id().as_str().into(),
@@ -80,6 +89,7 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
         action: action.into(),
         target: (supported && phase != "unknown")
             .then(|| event.facts().resource().id().as_str().to_owned()),
+        device_id,
         operation_id: event
             .context()
             .coordinates()

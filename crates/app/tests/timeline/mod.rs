@@ -100,8 +100,47 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     identity::set_grants(case_tenant(), &subject, grants).await?;
     let operation = Uuid::new_v4();
     f.admin.operation = Some(operation);
-    let (status,_)=f.admin.call(&f.router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))).await?;
+    let (status,issued)=f.admin.call(&f.router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))).await?;
     ensure!(status == StatusCode::OK);
+    let enrollment = issued["enrollmentId"].as_str().unwrap();
+    ensure!(
+        f.admin
+            .call(
+                &f.router,
+                Method::GET,
+                &format!("/api/v3/enrollments/{enrollment}"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    f.admin.operation = Some(Uuid::new_v4());
+    ensure!(
+        f.admin
+            .call(
+                &f.router,
+                Method::POST,
+                &format!("/api/v3/enrollments/{enrollment}/resume"),
+                Some(json!({"password":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"}))
+            )
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    f.admin.operation = Some(Uuid::new_v4());
+    ensure!(
+        f.admin
+            .call(
+                &f.router,
+                Method::POST,
+                &format!("/api/v3/enrollments/{enrollment}/cancel"),
+                Some(json!({}))
+            )
+            .await?
+            .0
+            == StatusCode::OK
+    );
     let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
     let service = crate::device::DeviceService::new(
         f.authority.access.registration(),
@@ -129,6 +168,21 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     let manual = Uuid::new_v4();
     let (status,value)=f.admin.call(&f.router,Method::PUT,&format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":manual,"expectedRevision":0,"input":{"action":"set","value":{"kind":"integer","value":9}}}))).await?;
     ensure!(status == StatusCode::OK, "manual: {status} {value}");
+    // Replay and denied manual writes retain a source-owned device coordinate.
+    let (replay_status,_)=f.admin.call(&f.router,Method::PUT,&format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":manual,"expectedRevision":0,"input":{"action":"set","value":{"kind":"integer","value":9}}}))).await?;
+    ensure!(replay_status == StatusCode::OK);
+    let other = f.authority.browser("other")?;
+    let denied_subject = browser_subject(&other, &f.router).await?;
+    identity::set_grants(
+        case_tenant(),
+        &denied_subject,
+        identity::device_grants(Some(device), &["inventory_read"])?,
+    )
+    .await?;
+    let mut other = other;
+    let denied = Uuid::new_v4();
+    let (denied_status,_)=other.call(&f.router,Method::PUT,&format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":denied,"expectedRevision":1,"input":{"action":"set","value":{"kind":"integer","value":10}}}))).await?;
+    ensure!(denied_status == StatusCode::FORBIDDEN);
     // Actual management API denial is a persisted fact, never a fabricated execution success.
     let management = Uuid::new_v4();
     let (status, _) = f
@@ -146,6 +200,9 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     let items = page["items"].as_array().unwrap();
     for action in [
         "enrollment_create",
+        "enrollment_read",
+        "enrollment_resume",
+        "enrollment_cancel",
         "registration_bind",
         "credential_revoke",
         "management_write",
@@ -156,6 +213,13 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
             "missing {action}: {items:?}"
         );
     }
+    ensure!(items.iter().any(|v| v["source"] == "mdm.request"
+        && v["operationId"] == manual.to_string()
+        && v["deviceId"] == device));
+    ensure!(items.iter().any(|v| v["source"] == "mdm.request"
+        && v["operationId"] == denied.to_string()
+        && v["auditOutcome"] == "denied"
+        && v["deviceId"] == device));
     let stored = audit_records()?;
     for item in items {
         ensure!(
