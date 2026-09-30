@@ -38,6 +38,20 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
     ))?;
     let accepted = post(author, router, "/api/v2/remote-operations", input.clone()).await?;
     ensure!(accepted == post(author, router, "/api/v2/remote-operations", input).await?);
+    let directory = author
+        .call(
+            router,
+            Method::GET,
+            &format!("/api/v2/remote-operations?kind=script&resource={resource}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        directory.0 == StatusCode::OK
+            && directory.1["items"][0]["id"] == id.to_string()
+            && directory.1["statistics"]["total"] == 1,
+        "remote directory: {directory:?}"
+    );
     let changed=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}})).await?;
     await_task(
         author,
@@ -127,6 +141,13 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
     ensure!(
         denied.0 == StatusCode::FORBIDDEN,
         "remote detail bypassed OperationRead: {denied:?}"
+    );
+    ensure!(
+        author
+            .call(router, Method::GET, "/api/v2/remote-operations", None)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
     );
     crate::test_support::identity::set_grants(case_tenant(), &member, grants).await?;
     ensure!(

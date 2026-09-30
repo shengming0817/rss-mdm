@@ -921,6 +921,20 @@ for name, module in list(MODULES.items()):
     if module.build and module.postgres:
         MODULES[name] = replace(module, support_inputs=(*module.support_inputs, 'tests/support/context.rs'))
 
+# Console reads use the existing real HTTP integration owners.
+MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(*MODULES['planning.http'].production_inputs,
+    'crates/registration-service/src/device/directory.rs',
+    'crates/inventory-service/src/assets/directory.rs',
+    'crates/inventory-service/src/groups/directory.rs',
+    'crates/group-postgres/src/directory.rs',
+    'crates/resource-postgres/src/directory.rs',
+    'crates/flow-service/src/resource_catalog/directory.rs',
+    'crates/flow-service/src/planning/directory.rs',
+    'crates/management-http/src/enrollment/directory.rs',
+    'crates/management-http/src/resource_catalog/http.rs'))
+MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'], production_inputs=(*MODULES['execution.agent.history'].production_inputs,
+    'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'))
+
 TOOL_INPUTS = {
     'hack/t2_context.py': ('test_t2_context', 'test_t2_fixtures'),
     'hack/t2_database.py': ('test_t2_fixtures',),

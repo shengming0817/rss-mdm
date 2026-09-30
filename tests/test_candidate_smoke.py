@@ -11,6 +11,17 @@ import candidate_runtime as candidate
 
 
 class SmokeCompletion(unittest.TestCase):
+    def test_public_host_inputs_track_runtime_without_exporting_secrets(self):
+        config={"product_origin":"https://mdm.example.test","identity":{"tenant_id":"11111111-1111-4111-8111-111111111111","oidc":None,"database":{"password_file":"private-secret"}}}
+        public=candidate.public_host_inputs(config)
+        self.assertEqual(public['mdm.json'],{'canonicalOrigin':config['product_origin'],'tenant':config['identity']['tenant_id']})
+        self.assertEqual(public['ui.json'],{'canonicalOrigin':config['product_origin'],'oidcEnabled':False})
+        config['product_origin']='https://other.example.test';config['identity']['tenant_id']='22222222-2222-4222-8222-222222222222';config['identity']['oidc']={'client_secret_file':'private-secret'}
+        changed=candidate.public_host_inputs(config)
+        self.assertEqual(changed['mdm.json']['tenant'],config['identity']['tenant_id'])
+        self.assertEqual(changed['mdm.json']['canonicalOrigin'],config['product_origin'])
+        self.assertTrue(changed['ui.json']['oidcEnabled'])
+        self.assertNotIn('private-secret',json.dumps(changed))
     def test_readiness_retries_temporary_html_gateway_error(self):
         browser = smoke.Browser.__new__(smoke.Browser)
         browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""

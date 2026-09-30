@@ -2,6 +2,7 @@
 //! No network DTO can construct credential evidence or a device principal.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 pub mod coordinates;
+pub mod directory;
 pub mod read;
 pub mod store;
 use crate::{Error, Store, device::coordinates::Coordinates};

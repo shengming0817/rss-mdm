@@ -36,6 +36,13 @@ pub struct Services {
     pub apple: bool,
 }
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
+    let directory = Arc::new(crate::enrollment::directory::HttpState {
+        devices: state.devices.clone(),
+        assets: state.assets.clone(),
+        execution: state.execution.clone(),
+        windows: state.windows,
+        apple: state.apple,
+    });
     let execution = Arc::new(crate::execution::http::HttpState {
         execution: state.execution,
         windows: state.windows,
@@ -114,6 +121,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
+        .merge(crate::enrollment::directory::routes().with_state(directory))
         .merge(crate::timeline::routes().with_state(state.timeline))
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
@@ -128,15 +136,60 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             authentication_state.clone(),
             crate::authorization::http::identity_only,
         ));
+    let workspace = Router::new()
+        .route("/api/mdm-candidate/v1/workspace", get(workspace))
+        .route_layer(middleware::from_fn_with_state(
+            authentication_state.clone(),
+            crate::authorization::http::protect,
+        ));
     crate::boundary::wrap(
         Router::new()
             .merge(host_context)
+            .merge(workspace)
             .nest("/api/v1", protected_v1)
             .nest("/api/v2", protected_v2)
             .nest("/api/v3", protected_v3)
             .layer(axum::extract::DefaultBodyLimit::max(16384)),
         envelope,
     )
+}
+async fn workspace(
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<serde_json::Value>, Error> {
+    use rss_mdm_authorization_service::Permission as P;
+    let p = &auth.proof;
+    let device = |permission| {
+        p.authorization()
+            .and_then(|a| a.devices_for(p, permission).map_err(Into::into))
+            .is_ok()
+    };
+    let manage = |permission| p.manage(permission).is_ok();
+    let modules = [
+        ("devices", device(P::InventoryRead)),
+        (
+            "policies",
+            manage(P::PolicyRead)
+                || manage(P::GroupRead)
+                || manage(P::ScopeRead)
+                || manage(P::ResourceRead),
+        ),
+        (
+            "software",
+            manage(P::SoftwareRead) || manage(P::ResourceRead) || manage(P::ReleaseRead),
+        ),
+        (
+            "security",
+            device(P::ComplianceRead) || manage(P::ComplianceRuleRead),
+        ),
+        (
+            "operations",
+            manage(P::AuthorizationRead) || manage(P::RuntimeDiagnosticsRead),
+        ),
+    ];
+    p.check_live()?;
+    Ok(Json(
+        serde_json::json!({"modules":modules.into_iter().map(|(id,available)|serde_json::json!({"id":id,"source":"real","available":available})).collect::<Vec<_>>()}),
+    ))
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

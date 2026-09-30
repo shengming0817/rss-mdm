@@ -6,6 +6,369 @@ use crate::test_support::planning_http::*;
 use crate::test_support::*;
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
+async fn console_collection_routes_reuse_current_policy() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let reader = authority::reader(&fixture.base).await?;
+    let router = app(&fixture.base, reader).await?;
+    let mut browser = fixture.browser("other")?;
+    let subject = browser_subject(&browser, &router).await?;
+    set_management_grants(
+        &subject,
+        json!(["group_read", "scope_read", "policy_read", "resource_read"]),
+    )
+    .await?;
+    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v3/resources"] {
+        let (status, page) = browser.call(&router, Method::GET, path, None).await?;
+        ensure!(
+            status == StatusCode::OK,
+            "missing collection {path}: {status} {page}"
+        );
+        ensure!(page["items"].is_array() && page["nextCursor"].is_null());
+        ensure!(
+            browser
+                .call(&router, Method::GET, &format!("{path}?limit=0"), None)
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+        ensure!(
+            browser
+                .call(&router, Method::GET, &format!("{path}?limit=1001"), None)
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+    }
+    set_management_grants(&subject, json!([])).await?;
+    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v3/resources"] {
+        ensure!(browser.call(&router, Method::GET, path, None).await?.0 == StatusCode::FORBIDDEN);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
+async fn console_pending_directory_and_permission_changes() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut browser = fixture.browser("other")?;
+    let device = case::name("pending-console");
+    set_device_grants(
+        &mut browser,
+        &router,
+        &device,
+        &["enrollment", "inventory_read"],
+    )
+    .await?;
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let (status, enrollment) = browser.call(&router, Method::POST, "/api/v3/enrollments", Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"agent.builtin"}))).await?;
+    ensure!(
+        status == StatusCode::OK,
+        "enrollment: {status} {enrollment}"
+    );
+    let (status, page) = browser
+        .call(&router, Method::GET, "/api/v3/devices?limit=1", None)
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "pending directory: {status} {page}"
+    );
+    ensure!(page["items"][0]["id"] == device && page["items"][0]["status"] == "pending");
+    ensure!(page["items"][0]["inventoryAvailable"] == false && page["statistics"]["total"] == 1);
+    let detail = browser
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v3/devices/{device}"),
+            None,
+        )
+        .await?;
+    ensure!(detail.0 == StatusCode::OK && detail.1["id"] == device);
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.devices WHERE tenant_id='{}' AND id='{device}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0",
+        "directory inserted pending device authority"
+    );
+    set_device_grants(&mut browser, &router, &device, &["enrollment"]).await?;
+    for id in [&device, &case::name("hidden-console")] {
+        ensure!(
+            browser
+                .call(&router, Method::GET, &format!("/api/v3/devices/{id}"), None)
+                .await?
+                .0
+                == StatusCode::FORBIDDEN
+        );
+    }
+    ensure!(
+        browser
+            .call(&router, Method::GET, "/api/v3/devices", None)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
+async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut browser = fixture.browser("other")?;
+    let subject = browser_subject(&browser, &router).await?;
+    identity::set_grants(
+        case_tenant(),
+        &subject,
+        identity::device_grants(None, &["inventory_read", "enrollment", "credentials"])?,
+    )
+    .await?;
+    let pending = case::name("a-pending");
+    let revoked = case::name("b-revoked");
+    let registered = case::name("c-registered");
+    browser.operation = Some(Uuid::new_v4());
+    ensure!(browser.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":pending,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"agent.builtin"}))).await?.0==StatusCode::OK);
+    let principal = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+    let service = rss_mdm_registration_service::DeviceService::new(
+        fixture.access.registration(),
+        case_tenant().into(),
+        fixture.audit.clone(),
+    );
+    let credential = rss_mdm_registration_service::ChannelMount::new(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        rss_mdm_inventory::ReportSource::AgentBuiltin,
+    )
+    .credential(crate::test_support::secret("console-agent"));
+    let (_, receipt) =
+        crate::device::test_support::bind(&service, &principal, &credential, &revoked, 0).await?;
+    service
+        .revoke(&principal, &revoked, receipt.registration, Uuid::new_v4())
+        .await?;
+    pg(&format!(
+        "INSERT INTO mdm_access.devices VALUES('{}','{registered}')",
+        case_tenant()
+    ))?;
+    pg_tenant(
+        case::peer(),
+        &format!(
+            "INSERT INTO mdm_access.devices VALUES('{}','{}')",
+            case::peer(),
+            case::name("peer-hidden")
+        ),
+    )?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let hosted = router.clone();
+    let _server = Server(tokio::spawn(
+        async move { axum::serve(listener, hosted).await },
+    ));
+    browser.network = Some((
+        Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(12))
+            .build()?,
+        format!("http://{address}"),
+    ));
+    for descending in [false, true] {
+        let mut path = format!("/api/v3/devices?limit=1&descending={descending}");
+        let mut ids = Vec::new();
+        loop {
+            let (status, page) = browser.call(&router, Method::GET, &path, None).await?;
+            ensure!(status == StatusCode::OK, "directory page: {status} {page}");
+            ensure!(
+                page["statistics"]["total"] == 3
+                    && page["statistics"]["pending"] == 1
+                    && page["statistics"]["revoked"] == 1,
+                "inconsistent or cross-tenant statistics: {page}"
+            );
+            for item in page["items"].as_array().unwrap() {
+                ids.push(item["id"].as_str().unwrap().to_owned());
+                ensure!(item["inventoryAvailable"] == false);
+            }
+            let Some(after) = page["nextCursor"].as_str() else {
+                break;
+            };
+            path = format!("/api/v3/devices?limit=1&descending={descending}&after={after}");
+            ensure!(ids.len() <= 3, "directory repeated page");
+        }
+        let mut expected = vec![pending.clone(), revoked.clone(), registered.clone()];
+        if descending {
+            expected.reverse();
+        }
+        ensure!(ids == expected, "directory order: {ids:?}");
+    }
+    let (_, detail) = browser
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v3/devices/{revoked}"),
+            None,
+        )
+        .await?;
+    ensure!(detail["status"] == "revoked" && detail["channels"][0]["status"] == "revoked");
+    ensure!(detail["capabilities"][0]["devicePrerequisite"]["reason"] == "not_registered");
+    set_device_grants(&mut browser, &router, &pending, &["inventory_read"]).await?;
+    let (_, page) = browser
+        .call(&router, Method::GET, "/api/v3/devices?limit=1", None)
+        .await?;
+    ensure!(page["statistics"]["total"] == 1 && page["items"][0]["id"] == pending);
+    for id in [&revoked, &case::name("absent")] {
+        ensure!(
+            browser
+                .call(&router, Method::GET, &format!("/api/v3/devices/{id}"), None)
+                .await?
+                .0
+                == StatusCode::FORBIDDEN
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
+async fn console_metadata_filters_and_selectors() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut browser = fixture.browser("other")?;
+    let subject = browser_subject(&browser, &router).await?;
+    set_management_grants(
+        &subject,
+        json!([
+            "group_read",
+            "group_write",
+            "scope_read",
+            "scope_write",
+            "resource_read",
+            "resource_write",
+            "policy_read"
+        ]),
+    )
+    .await?;
+    let mut groups = vec![Uuid::new_v4(), Uuid::new_v4()];
+    groups.sort();
+    for (i, id) in groups.iter().enumerate() {
+        call(&mut browser,&router,&format!("/api/v2/groups/{id}"),0,json!({"action":"create","name":format!("console-{i}"),"description":"","criteria":null})).await?;
+    }
+    let (_, first) = browser
+        .call(
+            &router,
+            Method::GET,
+            "/api/v2/groups?limit=1&kind=static",
+            None,
+        )
+        .await?;
+    ensure!(
+        first["items"][0]["id"] == groups[0].to_string()
+            && first["nextCursor"] == groups[0].to_string()
+    );
+    let (_, second) = browser
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v2/groups?limit=1&after={}", groups[0]),
+            None,
+        )
+        .await?;
+    ensure!(second["items"][0]["id"] == groups[1].to_string() && second["nextCursor"].is_null());
+    let (_, named) = browser
+        .call(
+            &router,
+            Method::GET,
+            "/api/v2/groups?name=console-1&descending=true",
+            None,
+        )
+        .await?;
+    ensure!(
+        named["items"].as_array().unwrap().len() == 1
+            && named["items"][0]["id"] == groups[1].to_string()
+    );
+    let resource = case::name("directory-script");
+    call(
+        &mut browser,
+        &router,
+        &format!("/api/v3/resources/{resource}"),
+        0,
+        json!({"action":"create","kind":"script"}),
+    )
+    .await?;
+    let (_, resources) = browser
+        .call(
+            &router,
+            Method::GET,
+            "/api/v3/resources?kind=script&active=false",
+            None,
+        )
+        .await?;
+    ensure!(
+        resources["items"][0]["id"] == resource
+            && resources["items"][0]["kind"] == "script"
+            && resources["items"][0]["activeVersion"].is_null()
+    );
+    for path in [
+        "/api/v2/groups?kind=wrong",
+        "/api/v3/resources?kind=wrong",
+        "/api/v2/policies?limit=0",
+        "/api/v2/policies?action=wrong",
+        "/api/v2/scopes?limit=1001",
+    ] {
+        ensure!(
+            browser.call(&router, Method::GET, path, None).await?.0 == StatusCode::BAD_REQUEST,
+            "accepted malformed query {path}"
+        );
+    }
+    let (_, workspace) = browser
+        .call(
+            &router,
+            Method::GET,
+            "/api/mdm-candidate/v1/workspace",
+            None,
+        )
+        .await?;
+    ensure!(
+        workspace["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["source"] == "real")
+    );
+    set_management_grants(&subject, json!([])).await?;
+    let (_, workspace) = browser
+        .call(
+            &router,
+            Method::GET,
+            "/api/mdm-candidate/v1/workspace",
+            None,
+        )
+        .await?;
+    ensure!(
+        workspace["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == "policies")
+            .unwrap()["available"]
+            == false
+    );
+    ensure!(
+        browser
+            .call(
+                &router,
+                Method::GET,
+                &format!("/api/v2/groups?after={}", groups[0]),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
 async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let fixture = authority::Authority::open().await?;
     let reader = authority::reader(&fixture.base).await?;

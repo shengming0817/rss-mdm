@@ -15,6 +15,7 @@ use uuid::Uuid;
 pub mod channel;
 pub mod filter;
 
+mod directory;
 mod model;
 pub mod planning;
 mod quality;

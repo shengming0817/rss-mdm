@@ -15,6 +15,7 @@ pub use decisions::{
 };
 mod model;
 pub use generations::{BuildRequest, DifferenceStep, MAX_MEMBERS, MemberBuild, MemberPatch};
+pub mod directory;
 mod storage;
 mod store;
 pub use event::EVENT_SCHEMA;

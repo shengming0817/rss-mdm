@@ -23,12 +23,13 @@ def verify(context):
     # This real upstream delivers less than one proxy buffer over four seconds.
     # A buffered control proves the fixture distinguishes early delivery from completion.
     locations = ''.join('location = ' + path + ' { limit_rate 512; return 200 "' + stream_body + '"; }' for path in [*stream_paths, buffered_path])
+    locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
     config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
     with context.gateway(config) as (name,port):
-        def request(path,forward='',body=None):
+        def request(path,forward='',body=None,method='POST'):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
             try:
-                c.request('POST',path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-Identity-Request':'1','X-Forwarded-For':forward})
+                c.request(method,path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-Identity-Request':'1','X-Forwarded-For':forward})
                 r=c.getresponse();body=r.read()
                 if r.status>=400 and any(r.getheader(k)!=v for k,v in [('Cache-Control','no-store'),('Referrer-Policy','no-referrer'),('X-Content-Type-Options','nosniff')]):raise RuntimeError('gateway rejection omitted security headers')
                 return r.status,body
@@ -40,6 +41,13 @@ def verify(context):
             except OSError:pass
             if time.monotonic()>end:raise RuntimeError('gateway startup failed')
             time.sleep(.1)
+        from candidate_runtime import public_host_inputs
+        public=public_host_inputs({'product_origin':'https://mdm.example.test','identity':{'tenant_id':'11111111-1111-4111-8111-111111111111','oidc':None}})['mdm.json']
+        subprocess.run(['docker','exec','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)
+        status,body=request('/api/mdm-host/v1/config.json',method='GET')
+        if status!=200 or json.loads(body)!=public:raise RuntimeError('MDM host configuration was not served by the exact static route')
+        status,body=request('/api/unsupported-test',method='GET')
+        if status!=404 or json.loads(body)!={'code':'not_found'}:raise RuntimeError('API error fell through to SPA')
         for path in [buffered_path, *stream_paths]:
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=8)
             try:

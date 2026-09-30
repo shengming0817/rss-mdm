@@ -2,6 +2,15 @@
 
 ## 范围与接口
 
+`GET /api/v2/operations` 查询现有命令与 Agent action run，支持 `device/kind/policy/remoteOperation/status`
+筛选，以及 `limit`（默认 64、1–1000）和 `descending`。`nextCursor` 包含 `id/kind`，续页同时传入
+`after/afterKind`，避免两种执行记录使用相同 UUID 时丢失记录。统计与列表候选使用同一次数据库读取，
+先按当前 `operation_read` 设备范围限制；摘要不返回原始输出和诊断流，通过 `detailUrl` 下钻既有接口。
+
+`GET /api/v2/remote-operations` 提供一次性操作目录，可按 `resource/kind/cancelled` 筛选，
+支持 `limit/after/descending`。显式设备快照须全部可读，Scope 快照沿用全设备读取要求。
+普通脚本计划使用执行型 Policy 和一次性操作目录，没有独立 ScriptPlan。
+
 首个任务类型是 Windows 状态核实。已有注册设备在下一次通过 mTLS 和 SyncML 双向认证的签入中，由任务自身的 Get 读取实际值。支持 `model` 与 `os_version`，值沿用 Inventory 的有界 UTF-8 校验且不裁剪或改写。每个任务核实一个字段；任务本身不修改设备。普通资产采集继续由既有通道负责。
 
 管理请求使用现有 Identity 会话、Origin/CSRF 和设备范围授权。端点为：

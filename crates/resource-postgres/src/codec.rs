@@ -312,3 +312,49 @@ pub(crate) fn active_header(
     }
     Ok(active)
 }
+
+pub(crate) fn directory_header(
+    bytes: &[u8],
+    tenant: TenantId,
+    resource: &str,
+    revision: i64,
+) -> Result<Value, PgError> {
+    let value: Value = STORAGE.decode(bytes)?;
+    let a = array(&value, 6)?;
+    if n(&a[0])? != 1
+        || s(&a[1])? != tenant.to_string()
+        || id(&a[2])?.as_str() != resource
+        || revision < 0
+    {
+        return Err(STORAGE.fault("codec::directory_header"));
+    }
+    let kind = match read_kind(&a[3])? {
+        Kind::Software => "software",
+        Kind::Script => "script",
+        Kind::Configuration => "configuration",
+    };
+    let states = a[5]
+        .as_array()
+        .filter(|v| v.len() <= 10000)
+        .ok_or_else(|| STORAGE.fault("codec::directory_header"))?;
+    let mut keys = std::collections::BTreeSet::new();
+    let mut active = None;
+    for v in states {
+        let entry = array(v, 2)?;
+        let key = id(&entry[0])?;
+        if !keys.insert(key.clone()) {
+            return Err(STORAGE.fault("codec::directory_header"));
+        }
+        match read_state(&entry[1])? {
+            State::Frozen => (),
+            State::Active => {
+                if active.replace(key.as_str().to_owned()).is_some() {
+                    return Err(STORAGE.fault("codec::directory_header"));
+                }
+            }
+            State::Deprecated => (),
+            State::Archived => (),
+        };
+    }
+    Ok(json!({"id":resource,"revision":revision,"kind":kind,"activeVersion":active}))
+}
