@@ -7,6 +7,8 @@
 //! Persist snapshots and reference checks atomically in the consuming adapter; a
 //! returned decision does not prove a database commit or execution on a device.
 mod script;
+mod sql;
+pub use sql::SqlTemplate;
 mod software;
 pub use script::*;
 pub use software::*;

@@ -123,6 +123,20 @@ impl GroupStore {
             None,
         )
     }
+    /// Read an immutable rule in the caller's tenant transaction.
+    pub async fn rule_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: GroupId,
+        version: &str,
+    ) -> InTransaction<Option<Rule>> {
+        input!(self.check_transaction(tx)?);
+        input!(text(version, false));
+        if version.len() > 256 {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        Ok(Ok(db::find_rule(tx, id, version.to_owned()).await?))
+    }
     /// N12 takes this lock before creating/checking references; deletion uses the same lock.
     pub async fn lock_reference_target_in(
         &self,

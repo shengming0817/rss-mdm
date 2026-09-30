@@ -182,7 +182,7 @@ fn allows(field: &Field, op: Op) -> bool {
         Eq | Ne | In | NotIn => matches!(field.kind, FieldType::Scalar(_)),
         Lt | Le | Gt | Ge => matches!(
             field.kind,
-            FieldType::Scalar(ScalarType::Integer | ScalarType::Time)
+            FieldType::Scalar(ScalarType::Integer | ScalarType::Number | ScalarType::Time)
         ),
         Contains | NotContains => field.kind == FieldType::Scalar(ScalarType::String),
         ContainsAny | ContainsAll => matches!(field.kind, FieldType::Set(_)),

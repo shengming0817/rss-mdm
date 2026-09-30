@@ -7,6 +7,7 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         device: &str,
     ) -> Result<DeviceView> {
+        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
         let tenant = self.tenant.to_string();
         let requested = device.to_owned();
         let id: Option<String> = tx
@@ -44,6 +45,7 @@ impl AssetService {
         if rows.len() > 20_000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
+        let datasets = datasets_in(tx, self.tenant).await?;
         let mut scopes = Vec::new();
         let mut subjects = BTreeMap::new();
         let mut generations = BTreeMap::new();
@@ -54,7 +56,7 @@ impl AssetService {
             if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
                 return Err(Error::Unavailable(Failure::InventoryQuery).into());
             }
-            for dataset in rss_mdm_inventory::datasets(source) {
+            for dataset in datasets.get(&source).into_iter().flatten() {
                 let scope = crate::device::scope_dataset(
                     self.tenant,
                     checked_input(Uuid::parse_str(row.try_get("registration")?))?,
@@ -145,12 +147,18 @@ impl AssetService {
                 .push(quality::decode(&row, generation)?);
         }
         for (id, device) in &mut devices {
-            for field in FieldKey::ALL {
+            for definition in catalog.fields() {
+                let field = definition.key;
                 device.fields.insert(
                     field,
                     stored(rss_mdm_inventory::resolve(
-                        field,
-                        facts.remove(&(id.clone(), field)).unwrap_or_default(),
+                        definition,
+                        facts
+                            .remove(&(id.clone(), field))
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|fact| definition.sources.contains_key(&fact.evidence.source))
+                            .collect(),
                     ))?,
                 );
             }
@@ -175,7 +183,9 @@ impl AssetService {
         owner: &Owner,
         at: Timepoint,
     ) -> Result<Response> {
-        if !field.definition().manual || change.expected_revision >= i64::MAX as u64 {
+        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let definition = checked_input(catalog.definition(field))?;
+        if !definition.manual || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed.into());
         }
         checked_input(rss_observation::Id::new(device))?;
@@ -204,7 +214,7 @@ impl AssetService {
         let old = prior.into_iter().find(|a| a.field == field);
         let state = match &change.input {
             ManualChange::Set { value } => {
-                checked_input(field.validate_scalar(value))?;
+                checked_input(definition.validate_scalar(value))?;
                 State::Known(value.clone())
             }
             ManualChange::Null {} => State::Null,
@@ -212,6 +222,7 @@ impl AssetService {
         };
         let evidence = Evidence {
             source: rss_mdm_inventory::Source::Manual,
+            dataset: None,
             registration: None,
             registration_generation: None,
             epoch: None,
@@ -319,7 +330,10 @@ impl AssetService {
             SavedChange::Delete {} => None,
             SavedChange::Put { definition } => {
                 crate::authorization::exact_id(&definition.name)?;
-                self.validate_query(&definition.query)?;
+                self.validate_query(
+                    &definition.query,
+                    &catalog_in(tx, self.tenant, i64::MAX).await?,
+                )?;
                 if checked_input(serde_json::to_vec(definition))?.len() > 16384 {
                     return Err(Error::Malformed.into());
                 }

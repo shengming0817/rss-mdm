@@ -198,7 +198,6 @@ pub struct PushCandidate {
 }
 pub struct PendingCollection {
     pub id: Uuid,
-    pub approval: serde_json::Value,
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -228,19 +227,19 @@ pub struct AgentBinding {
 impl AgentBinding {
     pub fn inventory(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::InventoryBasicV4)
+            .contains(&rss_mdm_agent_wire::Capability::InventoryCollectionV5)
     }
     pub fn script(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::TaskExecuteV4)
+            .contains(&rss_mdm_agent_wire::Capability::TaskExecuteV5)
     }
     pub fn software(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::SoftwareExecuteV4)
+            .contains(&rss_mdm_agent_wire::Capability::SoftwareExecuteV5)
     }
     pub fn enrollment(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::MdmEnrollmentV4)
+            .contains(&rss_mdm_agent_wire::Capability::MdmEnrollmentV5)
     }
     pub fn task(&self) -> bool {
         self.script() || self.software() || self.enrollment()

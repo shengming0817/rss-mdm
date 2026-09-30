@@ -32,14 +32,18 @@ fn restored_scope(row: &PgRow) -> Result<Scope, Error> {
         || scope.registration().as_str() != row.try_get::<String, _>("registration").map_err(db)?
         || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
         || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
-        || rss_mdm_inventory::scope_coverage(&scope).is_err()
+        || rss_mdm_inventory::Source::parse(scope.source().as_str()).is_err()
     {
         return Err(corrupt());
     }
     Ok(scope)
 }
 
-fn restored_batch(row: &PgRow, scope: &Scope) -> Result<(Uuid, u64, Option<Batch>), Error> {
+fn restored_batch(
+    row: &PgRow,
+    scope: &Scope,
+    definition: &rss_mdm_inventory::CollectionDefinition,
+) -> Result<(Uuid, u64, Option<Batch>), Error> {
     let id =
         Uuid::parse_str(&row.try_get::<String, _>("id").map_err(db)?).map_err(|_| corrupt())?;
     let sequence =
@@ -53,13 +57,23 @@ fn restored_batch(row: &PgRow, scope: &Scope) -> Result<(Uuid, u64, Option<Batch
             if batch.encode() != b
                 || batch.id().as_str() != id.to_string()
                 || batch.sequence() != sequence
-                || batch.coverage()
-                    != &rss_mdm_inventory::scope_coverage(scope).map_err(|_| corrupt())?
+                || batch.coverage() != &definition.coverage().map_err(|_| corrupt())?
                 || Some(digest) != row.try_get::<Option<String>, _>("digest").map_err(db)?
             {
                 return Err(corrupt());
             }
-            rss_mdm_inventory::validate(&batch).map_err(|_| corrupt())?;
+            let reference = rss_mdm_inventory::CollectionReference::from_batch(definition, &batch)
+                .map_err(|_| corrupt())?;
+            let progress: Attempts = serde_json::from_str(row.try_get("attempts").map_err(db)?)
+                .map_err(|_| corrupt())?;
+            use sha2::{Digest, Sha256};
+            if format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&progress).map_err(|_| corrupt())?)
+            ) != reference.digest()
+            {
+                return Err(corrupt());
+            }
             Ok(batch)
         })
         .transpose()?;
@@ -69,7 +83,13 @@ fn restored_batch(row: &PgRow, scope: &Scope) -> Result<(Uuid, u64, Option<Batch
 impl Run {
     pub fn from_row(row: PgRow) -> Result<Self, Error> {
         let scope = restored_scope(&row)?;
-        let (id, sequence, batch) = restored_batch(&row, &scope)?;
+        let attempts: Attempts =
+            serde_json::from_str(row.try_get("attempts").map_err(db)?).map_err(|_| corrupt())?;
+        attempts
+            .definition()
+            .validate_scope(&scope)
+            .map_err(|_| corrupt())?;
+        let (id, sequence, batch) = restored_batch(&row, &scope, attempts.definition())?;
         Ok(Self {
             id,
             scope,
@@ -77,8 +97,7 @@ impl Run {
             batch,
             started_at: row.try_get("started_at").map_err(db)?,
             sealed_at: row.try_get("sealed_at").map_err(db)?,
-            attempts: serde_json::from_str(&row.try_get::<String, _>("attempts").map_err(db)?)
-                .map_err(|_| corrupt())?,
+            attempts,
             result: RunResult::parse(&row.try_get::<String, _>("result").map_err(db)?)?,
             reason: row
                 .try_get::<Option<String>, _>("reason")
@@ -106,14 +125,22 @@ pub async fn start_in(
     tx: &mut sqlx::PgConnection,
     scope: &Scope,
     sequence: i64,
+    definition: rss_mdm_inventory::CollectionDefinition,
 ) -> Result<Uuid, Error> {
     if scope.source().as_str() != "mdm.windows" || sequence < 0 {
         return Err(Error::Malformed);
     }
+    definition
+        .validate_scope(scope)
+        .map_err(|_| Error::Malformed)?;
+    rss_mdm_inventory_postgres::register_collection_in(tx, scope.tenant(), &definition)
+        .await
+        .map_err(|_| corrupt())?;
+    let attempts = Attempts::new(definition);
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,floor(extract(epoch FROM clock_timestamp()))::bigint,$8,'pending')")
         .bind(scope.tenant().to_string()).bind(id.to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_| corrupt())?).bind(sequence)
-        .bind(serde_json::to_string(&Attempts::default()).expect("closed attempts")).execute(tx).await.map_err(db)?;
+        .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(tx).await.map_err(db)?;
     Ok(id)
 }
 pub async fn save_attempts_in(tx: &mut sqlx::PgConnection, run: &Run) -> Result<(), Error> {
@@ -132,32 +159,36 @@ pub async fn seal(
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
-    let body = run.attempts.body();
+    let body = run.attempts.body().map_err(|_| corrupt())?;
     let result = match body {
         Some(Body::Snapshot(_)) => "snapshot",
         Some(Body::Partial(_)) => "partial",
         _ => "failed",
     };
-    let batch = body
-        .map(|body| {
-            Batch::new(
-                Id::new(run.id.to_string()).map_err(|_| corrupt())?,
-                run.sequence,
-                rss_contract::Timepoint::try_from(
-                    run.attempts
-                        .fields
-                        .iter()
-                        .filter_map(|field| field.received_at)
+    let batch = if body.is_some() {
+        Some(
+            rss_mdm_inventory_postgres::seal_collection_in(
+                tx,
+                rss_mdm_inventory_postgres::CollectionCompletion {
+                    scope: &run.scope,
+                    run: &run.id.to_string(),
+                    sequence: run.sequence,
+                    observed_at: run
+                        .attempts
+                        .fields()
+                        .values()
+                        .filter_map(|f| f.received_at)
                         .max()
                         .ok_or_else(corrupt)?,
-                )
-                .map_err(|_| corrupt())?,
-                rss_mdm_inventory::coverage(),
-                body,
+                    progress: &run.attempts,
+                },
             )
-            .map_err(|_| corrupt())
-        })
-        .transpose()?;
+            .await
+            .map_err(|_| corrupt())?,
+        )
+    } else {
+        None
+    };
     let digest = batch
         .as_ref()
         .map(|b| fingerprint(b, &run.scope))
@@ -265,7 +296,13 @@ pub async fn collection(
 
 fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
     let scope = restored_scope(&row)?;
-    let (_, _, batch) = restored_batch(&row, &scope)?;
+    let attempts: Attempts =
+        serde_json::from_str(row.try_get("attempts").map_err(db)?).map_err(|_| corrupt())?;
+    attempts
+        .definition()
+        .validate_scope(&scope)
+        .map_err(|_| corrupt())?;
+    let (_, _, batch) = restored_batch(&row, &scope, attempts.definition())?;
     if row
         .try_get::<Option<i64>, _>("sealed_at")
         .map_err(db)?
@@ -416,7 +453,7 @@ pub async fn expire_apple(
         .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
     let count = ids.len();
     for (id, dataset) in ids {
-        if dataset == rss_mdm_inventory::FieldKey::AgentInstallation.as_str() {
+        if dataset == rss_mdm_inventory::builtin::AGENT_INSTALLATION.as_str() {
             facts.extend(
                 super::channel::abandon_in(
                     c,
@@ -437,4 +474,37 @@ pub async fn expire_apple(
         facts.extend(seal(c, &mut run, "timeout").await?);
     }
     Ok(count)
+}
+
+/// Freeze published field versions when a native adapter admits a run.
+pub async fn freeze_in(
+    c: &mut sqlx::PgConnection,
+    scope: &Scope,
+    version: u64,
+    keys: &[rss_mdm_inventory::FieldKey],
+) -> Result<rss_mdm_inventory::CollectionDefinition, Error> {
+    let catalog = rss_mdm_inventory_postgres::catalog_in(c, scope.tenant())
+        .await
+        .map_err(|_| corrupt())?;
+    let fields = keys
+        .iter()
+        .map(|key| catalog.definition(*key).cloned())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::Malformed)?;
+    use sha2::{Digest, Sha256};
+    let version = format!(
+        "{version}.{:x}",
+        Sha256::digest(serde_json::to_vec(&fields).map_err(|_| corrupt())?)
+    );
+    let definition = rss_mdm_inventory::CollectionDefinition::new(
+        scope.dataset().as_str(),
+        version,
+        rss_mdm_inventory::Source::parse(scope.source().as_str()).map_err(|_| Error::Malformed)?,
+        fields,
+    )
+    .map_err(|_| Error::Malformed)?;
+    rss_mdm_inventory_postgres::register_collection_in(c, scope.tenant(), &definition)
+        .await
+        .map_err(|_| corrupt())?;
+    Ok(definition)
 }

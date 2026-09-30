@@ -45,7 +45,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     );
     let waiting = agent(
         &router,
-        "/api/agent/v4/tasks/claim",
+        "/api/agent/v5/tasks/claim",
         Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
     )
     .await?;
@@ -83,7 +83,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     .await?;
     let gated = agent(
         &router,
-        "/api/agent/v4/tasks/claim",
+        "/api/agent/v5/tasks/claim",
         Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
     )
     .await?;

@@ -136,8 +136,14 @@ impl Compliance {
                 &crate::assets::ReadScope::all(),
             )
             .await?;
-        let facts = crate::assets::filter::page(self.tenant(), &page.devices)?;
-        let rule = crate::assets::rule(self.tenant(), input.rule, &input.definition.criteria)?;
+        let rule = crate::assets::rule(
+            self.tenant(),
+            input.rule,
+            &input.definition.criteria,
+            &page.catalog,
+        )?;
+        let facts =
+            crate::assets::filter::page(self.tenant(), &page.devices, &page.catalog, &rule)?;
         let id = task.to_string();
         let version = format!("assets:{}", input.watermark);
         let after = cursor

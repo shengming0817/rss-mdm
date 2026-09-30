@@ -8,12 +8,13 @@ pub(super) fn validate_definition(
     definition: &Definition,
     t: TenantId,
     id: Uuid,
+    catalog: &rss_mdm_inventory::Catalog,
 ) -> Result<Vec<String>> {
     checked_input(definition.validate())?;
     if checked_input(serde_json::to_vec(definition))?.len() > 65536 {
         return Err(Error::Malformed.into());
     }
-    let rule = crate::assets::rule(t, id, &definition.criteria)?;
+    let rule = crate::assets::rule(t, id, &definition.criteria, catalog)?;
     fn fields(
         c: &rss_mdm_group_postgres::core::Criteria,
         out: &mut std::collections::BTreeSet<String>,
@@ -32,7 +33,16 @@ pub(super) fn validate_definition(
     }
     let mut out = std::collections::BTreeSet::new();
     fields(rule.view().criteria, &mut out);
-    Ok(out.into_iter().collect())
+    out.into_iter()
+        .map(|name| {
+            let key = checked_input(rss_mdm_inventory::FieldKey::parse(&name))?;
+            Ok(checked_input(catalog.path(key))?
+                .root
+                .key
+                .as_str()
+                .to_owned())
+        })
+        .collect()
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

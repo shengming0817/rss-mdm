@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v4/task-claim-response.schema.json",
+  "$id": "https://rss.example/mdm/agent/v5/task-claim-response.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,7 @@
   ],
   "properties": {
     "wireVersion": {
-      "const": 4
+      "const": 5
     },
     "task": {
       "oneOf": [
@@ -55,7 +55,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 4
+                      "const": 5
                     },
                     "tenantId": {
                       "type": "string",
@@ -151,7 +151,7 @@
                         "power_shell7",
                         "posix_sh",
                         "bash",
-                        "osquery_info_v1"
+                        "osquery"
                       ]
                     },
                     "runAs": {
@@ -212,6 +212,15 @@
                         "x86_64",
                         "aarch64"
                       ]
+                    },
+                    "sql": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "minLength": 1,
+                      "maxLength": 65536,
+                      "pattern": "^[^\\u0000]*$"
                     }
                   },
                   "allOf": [
@@ -219,11 +228,14 @@
                       "if": {
                         "properties": {
                           "profile": {
-                            "const": "osquery_info_v1"
+                            "const": "osquery"
                           }
                         }
                       },
                       "then": {
+                        "required": [
+                          "sql"
+                        ],
                         "properties": {
                           "arguments": {
                             "maxItems": 0
@@ -231,11 +243,20 @@
                           "environment": {
                             "maxProperties": 0
                           },
-                          "maxRows": {
-                            "const": 1
-                          },
                           "runAs": {
                             "const": "system"
+                          },
+                          "sql": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536
+                          }
+                        }
+                      },
+                      "else": {
+                        "properties": {
+                          "sql": {
+                            "type": "null"
                           }
                         }
                       }
@@ -264,7 +285,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 4
+                      "const": 5
                     },
                     "tenantId": {
                       "type": "string",
@@ -958,7 +979,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 4
+                      "const": 5
                     },
                     "tenantId": {
                       "type": "string",

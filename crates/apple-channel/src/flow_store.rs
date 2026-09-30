@@ -138,8 +138,8 @@ impl channels::AppleStore for Store {
                 .await
                 .map_err(|e| channels::Rejection::from(Error::from(e)))?;
                 for id in &ids {
-                    if let Some(approval) = pending.remove(id) {
-                        result.push(channels::PendingCollection { id: *id, approval });
+                    if pending.remove(id) {
+                        result.push(channels::PendingCollection { id: *id });
                         if result.len() == limit {
                             break;
                         }

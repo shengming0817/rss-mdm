@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 const JOURNAL: &str = "mdm.observation.v1";
 const PROJECTION: &str = "inventory";
-const GENERATION: &str = "inventory-v3";
+const GENERATION: &str = "inventory-v4";
 
 /// The product's canonical journal and read-model generation, shared by writer and reader.
 pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScope {
@@ -24,7 +24,8 @@ pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScop
 pub fn definition() -> DefinitionIdentity {
     let mut digest = Sha256::new();
     digest.update(GENERATION);
-    digest.update(":device-basics:2:model-os:typed-v2:exact-scope:observed-received:");
+    digest.update(":registered-collection:typed-fields-v2:exact-scope:observed-received:");
+    digest.update(include_str!("../migrations/0007_unified_collection.sql"));
     digest.update(include_str!("../migrations/0001_inventory.sql"));
     digest.update(include_str!("../migrations/0003_assets.sql"));
     digest.update(include_str!("../migrations/0004_history.sql"));
@@ -72,20 +73,39 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
             .await
             .map_err(|error| source_error(error, event.position()))?;
         let record = applicable.record();
-        if record.scope().dataset().as_str() != model::DATASET
-            && !model::FieldKey::ENTERPRISE
-                .iter()
-                .chain(model::FieldKey::CHANNEL.iter())
-                .any(|f| f.as_str() == record.scope().dataset().as_str())
-        {
-            return Ok(PgEffectOutcome::Filtered);
-        }
-        let expected = model::scope_coverage(record.scope())
-            .map_err(|error| rejected(event.position(), error))?;
-        if record.batch().coverage() != &expected {
-            return Err(rejected(event.position(), model::Invalid::Evidence));
-        }
-        model::validate(record.batch()).map_err(|error| rejected(event.position(), error))?;
+        let tenant = projection.source().tenant();
+        let source = model::Source::parse(record.scope().source().as_str())
+            .map_err(|e| rejected(event.position(), e))?;
+        let coverage = serde_json::to_string(record.batch().coverage())
+            .map_err(|e| rejected(event.position(), e))?;
+        let expected = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    crate::collection_in(c, tenant, source, &coverage)
+                        .await
+                        .map_err(|_| {
+                            sqlx::Error::Protocol("unregistered inventory collection".into())
+                        })
+                })
+            })
+            .await?;
+        expected
+            .validate_scope(record.scope())
+            .map_err(|e| rejected(event.position(), e))?;
+        let report_scope = record.scope().clone();
+        let report_batch = record.batch().clone();
+        let frozen = expected.clone();
+        let progress = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    crate::collection_result_in(c, &report_scope, &report_batch, &frozen)
+                        .await
+                        .map_err(|_| {
+                            sqlx::Error::Protocol("invalid collection result reference".into())
+                        })
+                })
+            })
+            .await?;
         let scope = record
             .scope()
             .encode()
@@ -99,36 +119,33 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         let observed = record.batch().observed_at_seconds();
         let received = i64::try_from(record.received_at())
             .map_err(|error| rejected(event.position(), error))?;
-        let fields: Vec<_> = if record.scope().dataset().as_str() == model::DATASET {
-            model::FieldKey::OBSERVED.to_vec()
-        } else {
-            vec![
-                model::FieldKey::parse(record.scope().dataset().as_str())
-                    .expect("validated dataset"),
-            ]
-        };
-        let body = record.batch().body().clone();
+        let sequence = i64::try_from(record.batch().sequence())
+            .map_err(|error| rejected(event.position(), error))?;
+        let fields: Vec<_> = expected.fields().iter().map(|f| f.key).collect();
+        let body = progress
+            .body()
+            .map_err(|e| rejected(event.position(), e))?
+            .ok_or_else(|| rejected(event.position(), rss_projection::ErrorKind::SourceContract))?;
         let registration = record.scope().registration().as_str().to_owned();
         let source = record.scope().source().as_str().to_owned();
         let epoch = record.scope().epoch().as_str().to_owned();
         tx.with_connection(move |conn| Box::pin(async move {
             if matches!(body, Body::Snapshot(_)) {
-                sqlx::query("UPDATE mdm.inventory SET state='deleted',value=NULL,batch_id=$6,observed_at=$7,received_at=$8 WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 AND coverage=$5")
-                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(&batch).bind(observed).bind(received).execute(&mut *conn).await?;
+                sqlx::query("UPDATE mdm.inventory SET state='deleted',value=NULL,batch_id=$5,observed_at=$6,received_at=$7,collection_sequence=$8 WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 AND collection_sequence<=$8")
+                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&batch).bind(observed).bind(received).bind(sequence).execute(&mut *conn).await?;
             }
-            for change in body.changes() {
+            let mut changes=body.changes().to_vec();
+            if matches!(body,Body::Snapshot(_)) {
+                for field in &fields {
+                    if !changes.iter().any(|c|c.key().as_str()==field.as_str()) {changes.push(rss_observation::Change::delete(rss_observation::Id::new(field.as_str()).expect("validated field")));}
+                }
+            }
+            for change in &changes {
                 let field=model::FieldKey::parse(change.key().as_str()).expect("validated field");
-                let outcome=change.value().map(|v|model::CollectedValue::decode(field,v).expect("validated collected outcome"));
-                let (state,value)=match &outcome {Some(model::CollectedValue::Known(s))=>("known",Some(s.clone())),Some(model::CollectedValue::Scalar(v))=>("known",Some(serde_json::to_string(v).expect("scalar encoding"))),Some(model::CollectedValue::Unsupported)=>("unsupported",None),None=>("deleted",None)};
-                sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $7 IS NOT NULL THEN $8 END,CASE WHEN $7 IS NOT NULL THEN $9 END,CASE WHEN $7 IS NOT NULL THEN $10 END,$12,$13,$14) ON CONFLICT(tenant_id,journal,generation,scope,coverage,field) DO UPDATE SET value=excluded.value,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=coalesce(excluded.value,mdm.inventory.last_known),last_known_batch=CASE WHEN excluded.value IS NOT NULL THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.value IS NOT NULL THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.value IS NOT NULL THEN excluded.received_at ELSE mdm.inventory.last_known_received END")
-                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).execute(&mut *conn).await?;
-            }
-            // An empty complete report may write no fact rows at all. Its durable
-            // input signal must still share the projection checkpoint transaction.
-            if body.changes().is_empty() {
-                let fields:Vec<_>=fields.iter().map(|f|f.as_str()).collect();
-                sqlx::query("SELECT mdm.record_asset_change($1::uuid,'inventory',jsonb_build_object('registration',$2::text,'scope',$3::text,'batch',$4::text),$5::text[])")
-                    .bind(&tenant).bind(&registration).bind(&scope).bind(&batch).bind(fields).execute(&mut *conn).await?;
+                let outcome=change.value().map(|v|model::CollectedValue::decode(expected.field(field).expect("validated field"),v).expect("validated collected outcome"));
+                let (state,value)=match &outcome {Some(model::CollectedValue::Value(v))=>("known",Some(serde_json::to_string(v).expect("scalar encoding"))),Some(model::CollectedValue::Null)=>("null",None),Some(model::CollectedValue::Deleted)=>("deleted",None),Some(model::CollectedValue::Unsupported)=>("unsupported",None),None=>("deleted",None)};
+                sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $7 IS NOT NULL THEN $8 END,CASE WHEN $7 IS NOT NULL THEN $9 END,CASE WHEN $7 IS NOT NULL THEN $10 END,$12,$13,$14,$15) ON CONFLICT(tenant_id,journal,generation,scope,field) DO UPDATE SET coverage=excluded.coverage,collection_sequence=excluded.collection_sequence,value=excluded.value,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=coalesce(excluded.value,mdm.inventory.last_known),last_known_batch=CASE WHEN excluded.value IS NOT NULL THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.value IS NOT NULL THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.value IS NOT NULL THEN excluded.received_at ELSE mdm.inventory.last_known_received END WHERE mdm.inventory.collection_sequence<=excluded.collection_sequence")
+                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).bind(sequence).execute(&mut *conn).await?;
             }
             Ok(())
         })).await?;
@@ -180,7 +197,7 @@ mod tests {
     fn canonical_scope_binds_the_current_definition() {
         let tenant =
             rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-        assert_eq!(projection_scope(tenant).generation(), "inventory-v3");
+        assert_eq!(projection_scope(tenant).generation(), "inventory-v4");
         assert_ne!(definition().as_bytes(), &[0; 32]);
     }
     #[test]

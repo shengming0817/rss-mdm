@@ -12,6 +12,7 @@ sha2 = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 jsonschema.workspace = true
+sqlparser = { version = "=0.63.0", default-features = false, features = ["std", "visitor"] }
 
 [lints]
 workspace = true

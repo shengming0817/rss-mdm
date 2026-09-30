@@ -51,7 +51,7 @@ pub(crate) async fn event_with(
             Value::Null
         };
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v4/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
+    agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
         Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) async fn claim(router: &Router) -> Result<Value> {
@@ -63,7 +63,7 @@ pub(crate) async fn claim_with(router: &Router, credential: &str) -> Result<Valu
             let response = agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v4/tasks/claim",
+                "/api/agent/v5/tasks/claim",
                 Some(credential),
                 Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
             )
@@ -195,8 +195,8 @@ impl Fixture {
             .await?;
         ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
         author.operation = None;
-        let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,
-            Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.basic.v4","software.execute.v4"]}))).await?;
+        let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,
+            Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.collect.v5","software.execute.v5"]}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "registration: {registration:?}"

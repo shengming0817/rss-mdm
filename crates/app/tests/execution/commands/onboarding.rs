@@ -150,9 +150,9 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     let (initial, execute) = execute(&peer).await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/v4/managed-registrations",
+        "/api/agent/v5/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4","task.execute.v4"]});
+    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v5","task.execute.v5"]});
     let spoof = peer
         .mutual
         .post(&url)
@@ -171,7 +171,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     wrong["installationOperation"] = json!(Uuid::new_v4());
     ensure!(peer.mutual.post(&url).json(&wrong).send().await?.status() == StatusCode::FORBIDDEN);
     let package = Request::builder()
-        .uri(format!("/api/agent/v4/installations/{operation}/package"))
+        .uri(format!("/api/agent/v5/installations/{operation}/package"))
         .header("host", "mdm.example.test")
         .header("range", "bytes=0-3")
         .body(Body::empty())?;
@@ -218,7 +218,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         ),
         (
             "capabilities",
-            json!(["inventory.basic.v4", "inventory.basic.v4"]),
+            json!(["inventory.collect.v5", "inventory.collect.v5"]),
             "unsupported_capability",
         ),
         ("deviceId", json!("untrusted"), "malformed_request"),
@@ -331,7 +331,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         agent_call(
             &client.router,
             Method::POST,
-            "/api/agent/v4/reports",
+            "/api/agent/v5/reports",
             Some(&credential("managed-agent")),
             Some(report)
         )
@@ -344,7 +344,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
 
 async fn package_status(router: &Router, operation: Uuid) -> Result<StatusCode> {
     let request = Request::builder()
-        .uri(format!("/api/agent/v4/installations/{operation}/package"))
+        .uri(format!("/api/agent/v5/installations/{operation}/package"))
         .header("host", "mdm.example.test")
         .body(Body::empty())?;
     Ok(router.clone().oneshot(request).await?.status())
@@ -542,9 +542,9 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
     ensure!(result.0 == StatusCode::OK, "{result:?}");
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/v4/managed-registrations",
+        "/api/agent/v5/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("cancelled-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("cancelled-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v5"]});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -584,9 +584,9 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
     .await??;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/v4/managed-registrations",
+        "/api/agent/v5/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("expired-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("expired-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v5"]});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -609,9 +609,9 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     let current = host.peer().await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/v4/managed-registrations",
+        "/api/agent/v5/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("replacement-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("replacement-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v5"]});
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
     ensure!(
         current
@@ -712,9 +712,9 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
     ensure!(package_status(&client.router, operation).await? == StatusCode::OK);
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/v4/managed-registrations",
+        "/api/agent/v5/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("scope-exit-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("scope-exit-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v5"]});
     let response = peer.mutual.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: Value = response.json().await?;

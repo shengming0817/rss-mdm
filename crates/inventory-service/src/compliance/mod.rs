@@ -220,7 +220,12 @@ impl Compliance {
         if id.is_nil() {
             return Err(Error::Malformed.into());
         }
-        let fields = validate_definition(&request.input, t, id)?;
+        let fields = validate_definition(
+            &request.input,
+            t,
+            id,
+            &crate::assets::catalog_in(tx, t, i64::MAX).await?,
+        )?;
         let target = id;
         let old = tx
             .with_connection(move |c| {

@@ -20,6 +20,7 @@ pub struct ExecutionInput {
 pub struct FrozenAction {
     pub input: ExecutionInput,
     pub definition: r::ScriptDefinition,
+    pub collection: Option<rss_mdm_inventory::CollectionDefinition>,
     pub resource_digest: [u8; 32],
     pub artifact_reference: String,
     pub content: wire::TaskContent,

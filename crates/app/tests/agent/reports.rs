@@ -27,7 +27,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::GET,
-        "/api/agent/v4/reports/not-a-uuid",
+        "/api/agent/v5/reports/not-a-uuid",
         Some(credential),
         None,
     )
@@ -39,7 +39,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v4/reports",
+        "/api/agent/v5/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(17_000)})),
     )
@@ -51,7 +51,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v4/reports",
+        "/api/agent/v5/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(2 * 1024 * 1024 + 1)})),
     )
@@ -65,7 +65,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v4/reports/{missing}"),
+            &format!("/api/agent/v5/reports/{missing}"),
             Some(credential),
             None
         )
@@ -76,7 +76,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v4/reports/{missing}"),
+            &format!("/api/agent/v5/reports/{missing}"),
             Some(password),
             None
         )
@@ -97,7 +97,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, ack) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v4/reports",
+        "/api/agent/v5/reports",
         Some(credential),
         Some(report.clone()),
     )
@@ -110,7 +110,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v4/reports",
+            "/api/agent/v5/reports",
             Some(credential),
             Some(report.clone())
         )
@@ -128,7 +128,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v4/reports",
+                "/api/agent/v5/reports",
                 Some(credential),
                 Some(body),
             )
@@ -159,7 +159,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v4/reports",
+            "/api/agent/v5/reports",
             Some(credential),
             Some(changed)
         )
@@ -170,7 +170,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, current) = agent_call(
         router,
         Method::GET,
-        &format!("/api/agent/v4/reports/{report_id}"),
+        &format!("/api/agent/v5/reports/{report_id}"),
         Some(credential),
         None,
     )
@@ -204,7 +204,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v4/reports",
+                "/api/agent/v5/reports",
                 Some(credential),
                 Some(body)
             )
@@ -225,7 +225,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v4/reports",
+                "/api/agent/v5/reports",
                 Some(credential),
                 Some(body),
             )
@@ -289,7 +289,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         let failed = agent_call(
             router,
             Method::POST,
-            "/api/agent/v4/reports",
+            "/api/agent/v5/reports",
             Some(credential),
             Some(body.clone()),
         )
@@ -303,7 +303,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         let retry = agent_call(
             router,
             Method::POST,
-            "/api/agent/v4/reports",
+            "/api/agent/v5/reports",
             Some(credential),
             Some(body.clone()),
         )
@@ -313,7 +313,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v4/reports",
+                "/api/agent/v5/reports",
                 Some(credential),
                 Some(body)
             )

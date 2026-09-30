@@ -20,7 +20,7 @@ pub async fn receive(
         Some(Reception::Replay) => return Ok(true),
         Some(Reception::Ready(attempt)) => attempt,
     };
-    if !rss_mdm_inventory_service::apple_collection::approved(c, &tenant, id).await? {
+    if !rss_mdm_inventory_service::apple_collection::current(c, &tenant, id).await? {
         return Err(Error::Forbidden);
     }
     attempt.settle(c, status).await?;
@@ -40,15 +40,31 @@ pub async fn receive(
             None
         };
         use rss_mdm_inventory_service::collection::NativeValue;
-        let values = ["Model", "OSVersion"].map(|key| match values {
-            None => NativeValue::Failed,
-            Some(d) => match d.get(key) {
-                Some(plist::Value::String(s)) => NativeValue::Value(s.clone()),
-                Some(_) => NativeValue::Invalid,
-                None => NativeValue::Missing,
-            },
-        });
-        run.attempts = Attempts::native(values, now);
+        let values = [
+            (rss_mdm_inventory::builtin::MODEL, "Model"),
+            (rss_mdm_inventory::builtin::OS_VERSION, "OSVersion"),
+        ]
+        .into_iter()
+        .map(|(field, key)| {
+            (
+                field,
+                match values {
+                    None => NativeValue::Failed,
+                    Some(d) => match d.get(key) {
+                        Some(plist::Value::String(s)) => {
+                            NativeValue::Value(rss_mdm_inventory::CollectedValue::Value(
+                                rss_mdm_inventory::Scalar::String(s.clone()),
+                            ))
+                        }
+                        Some(_) => NativeValue::Invalid,
+                        None => NativeValue::Missing,
+                    },
+                },
+            )
+        })
+        .collect();
+        run.attempts = Attempts::native(run.attempts.definition().clone(), values, now)
+            .map_err(|_| Error::Malformed)?;
         facts.extend(store::seal(c, &mut run, "complete").await?);
     }
     Ok(true)
@@ -59,7 +75,7 @@ pub async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Vec<u8>, 
         .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = uuid(&row, "id")?;
-        if !rss_mdm_inventory_service::apple_collection::approved(c, &tenant, id).await? {
+        if !rss_mdm_inventory_service::apple_collection::current(c, &tenant, id).await? {
             sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
             crate::notify(c, "apple").await.map_err(db)?;
             continue;

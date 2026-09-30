@@ -52,7 +52,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
         0,
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,4,'[\"inventory.basic.v4\"]','macos','aarch64')")
+    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,4,'[\"inventory.collect.v5\"]','macos','aarch64')")
         .bind(case_a())
         .bind(other_channel.registration.to_string())
         .execute(&mut root)

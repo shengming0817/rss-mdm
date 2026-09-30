@@ -7,7 +7,9 @@ publish.workspace = true
 
 [dependencies]
 rss-observation.workspace = true
+sha2.workspace = true
 
+ordered-float = { version = "=2.10.1", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 rss-contract.workspace = true

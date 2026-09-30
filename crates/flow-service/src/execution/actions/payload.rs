@@ -65,8 +65,14 @@ impl FrozenAction {
                 r::ScriptProfile::PowerShell7 => wire::ExecutorProfile::PowerShell7,
                 r::ScriptProfile::PosixSh => wire::ExecutorProfile::PosixSh,
                 r::ScriptProfile::Bash => wire::ExecutorProfile::Bash,
-                r::ScriptProfile::OsqueryInfoV1 => wire::ExecutorProfile::OsqueryInfoV1,
+                r::ScriptProfile::Osquery => wire::ExecutorProfile::Osquery,
             },
+            sql: spec
+                .sql
+                .as_ref()
+                .map(|sql| sql.render(&self.input.parameters, u32::from(spec.max_rows)))
+                .transpose()
+                .map_err(|_| Error::Malformed)?,
             run_as: match spec.run_as {
                 r::RunAs::System => wire::ExecutionIdentity::System,
                 r::RunAs::LoggedInUser => wire::ExecutionIdentity::LoggedInUser,

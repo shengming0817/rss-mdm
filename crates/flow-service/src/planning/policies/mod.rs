@@ -394,14 +394,83 @@ impl Policies {
                 if artifact.length() > 16_777_216 {
                     return Err(Error::Malformed.into());
                 }
-                if script.spec().profile == resource::ScriptProfile::OsqueryInfoV1
-                    && artifact.digest()
-                        != resource::Digest::of(b"SELECT version FROM osquery_info;\n")
-                {
-                    return Err(Error::Malformed.into());
+                if let Some(sql) = &script.spec().sql {
+                    if artifact.digest() != resource::Digest::of(sql.query().as_bytes())
+                        || artifact.length() != sql.query().len() as u64
+                    {
+                        return Err(Error::Malformed.into());
+                    }
                 }
+                let collection = if let resource::ScriptPurpose::Collection { mappings } =
+                    &script.spec().purpose
+                {
+                    use sha2::{Digest, Sha256};
+                    let dataset = format!(
+                        "resource.{:x}",
+                        Sha256::digest(checked_input(serde_json::to_vec(&(
+                            version.resource().as_str(),
+                            v.key().as_str()
+                        )))?)
+                    );
+                    let template = format!("{:x}", Sha256::digest(version.digest().bytes()));
+                    let source = if script.spec().profile == resource::ScriptProfile::Osquery {
+                        rss_mdm_inventory::Source::AgentOsquery
+                    } else {
+                        rss_mdm_inventory::Source::AgentScript
+                    };
+                    let tenant = self.planning.tenant;
+                    let key = (dataset.clone(), template.clone());
+                    let existing = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_postgres::collection_version_in(
+                                    c, tenant, source, &key.0, &key.1,
+                                )
+                                .await
+                                .map_err(|_| {
+                                    sqlx::Error::Protocol("collection template unavailable".into())
+                                })
+                            })
+                        })
+                        .await?;
+                    if let Some(existing) = existing {
+                        Some(existing)
+                    } else {
+                        let catalog =
+                            crate::assets::catalog_in(tx, self.planning.tenant, i64::MAX).await?;
+                        let fields = mappings
+                            .keys()
+                            .map(|name| {
+                                let key = checked_input(rss_mdm_inventory::FieldKey::parse(name))?;
+                                checked_input(catalog.definition(key).cloned())
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        let definition =
+                            checked_input(rss_mdm_inventory::CollectionDefinition::new(
+                                &dataset, template, source, fields,
+                            ))?;
+                        let tenant = self.planning.tenant;
+                        let frozen = definition.clone();
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_postgres::register_collection_in(
+                                    c, tenant, &frozen,
+                                )
+                                .await
+                                .map_err(|_| {
+                                    sqlx::Error::Protocol("collection template conflict".into())
+                                })
+                            })
+                        })
+                        .await?;
+                        Some(definition)
+                    }
+                } else {
+                    None
+                };
                 Ok(Frozen::Execution {
                     action: Box::new(FrozenAction {
+                        collection,
                         input: ExecutionInput {
                             platform: exact.platform,
                             architecture: exact.architecture,

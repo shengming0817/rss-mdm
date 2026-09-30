@@ -85,7 +85,7 @@ pub fn routers(
     let management = Router::new()
         .route("/ManagementServer/MDM.svc", post(management::manage))
         .route(
-            "/api/agent/v4/managed-registrations",
+            "/api/agent/v5/managed-registrations",
             post(management::register_agent),
         );
     (

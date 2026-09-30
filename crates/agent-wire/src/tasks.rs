@@ -552,8 +552,8 @@ pub enum ExecutorProfile {
     PosixSh,
     /// Bash on macOS.
     Bash,
-    /// Fixed version-only osquery query.
-    OsqueryInfoV1,
+    /// Bound query from a published read-only SQL template.
+    Osquery,
 }
 /// Required operating-system execution identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -618,6 +618,8 @@ pub struct TaskSpec {
     pub content: TaskContent,
     /// Fixed interpreter profile.
     pub profile: ExecutorProfile,
+    /// Bound SQL for the osquery profile; Agent revalidates AST, platform and budget.
+    pub sql: Option<String>,
     /// Required execution identity.
     pub run_as: ExecutionIdentity,
     /// Literal arguments, with no shell interpolation.
@@ -671,11 +673,15 @@ impl TaskSpec {
                     || key.len() > 64
                     || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
             })
-            || (self.profile == ExecutorProfile::OsqueryInfoV1
+            || (self.profile == ExecutorProfile::Osquery
                 && (!self.arguments.is_empty()
                     || !self.environment.is_empty()
-                    || self.max_rows != 1
+                    || self
+                        .sql
+                        .as_ref()
+                        .is_none_or(|s| s.is_empty() || s.len() > 65536 || s.contains('\0'))
                     || self.run_as != ExecutionIdentity::System))
+            || (self.profile != ExecutorProfile::Osquery && self.sql.is_some())
         {
             return Err(WireError::InvalidValue);
         }
@@ -692,7 +698,7 @@ impl TaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-script-task-v4-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-script-task-v5-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
@@ -1074,7 +1080,7 @@ impl SoftwareTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-software-task-v4-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-software-task-v5-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);

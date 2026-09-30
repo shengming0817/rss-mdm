@@ -41,6 +41,7 @@ enum Literal {
     String(String),
     Boolean(bool),
     Integer(i64),
+    Number(ordered_float::NotNan<f64>),
     Time(i64),
 }
 fn literal(v: &Scalar) -> Literal {
@@ -48,6 +49,7 @@ fn literal(v: &Scalar) -> Literal {
         Scalar::String(s) => Literal::String(s.clone()),
         Scalar::Boolean(b) => Literal::Boolean(*b),
         Scalar::Integer(i) => Literal::Integer(*i),
+        Scalar::Number(n) => Literal::Number(*n),
         Scalar::Time(t) => Literal::Time(t.unix_seconds()),
     }
 }
@@ -59,6 +61,10 @@ fn scalar(v: Literal) -> Result<Scalar> {
         }
         Literal::Boolean(b) => Scalar::Boolean(b),
         Literal::Integer(i) => Scalar::Integer(i),
+        Literal::Number(n) => {
+            check(n.into_inner().is_finite())?;
+            Scalar::Number(n)
+        }
         Literal::Time(t) => Scalar::Time(time(t)?),
     })
 }
@@ -68,6 +74,7 @@ enum Kind {
     String,
     Boolean,
     Integer,
+    Number,
     Time,
 }
 fn kind(k: ScalarType) -> Kind {
@@ -75,6 +82,7 @@ fn kind(k: ScalarType) -> Kind {
         ScalarType::String => Kind::String,
         ScalarType::Boolean => Kind::Boolean,
         ScalarType::Integer => Kind::Integer,
+        ScalarType::Number => Kind::Number,
         ScalarType::Time => Kind::Time,
     }
 }
@@ -83,6 +91,7 @@ fn scalar_type(k: Kind) -> ScalarType {
         Kind::String => ScalarType::String,
         Kind::Boolean => ScalarType::Boolean,
         Kind::Integer => ScalarType::Integer,
+        Kind::Number => ScalarType::Number,
         Kind::Time => ScalarType::Time,
     }
 }

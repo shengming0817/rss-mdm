@@ -2,7 +2,7 @@
 use crate::{Error, collection::Attempts, database::db};
 use receipts::Operation;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::{Permission, UserGrant, context::AuthorizedPrincipal};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_inventory::ReportSource;
 use serde::Deserialize;
 use sqlx::{PgConnection, Row};
@@ -154,10 +154,20 @@ async fn create_on(
     let scope = crate::device::scope(tenant_id, registration, input.source.as_str(), target.epoch)?;
     let sequence = target.sequence;
     let id = Uuid::new_v4();
-    let approval = UserGrant::from_proof(&snapshot, proof, device, Permission::InventoryCollect)?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,apple_approval,apple_deadline) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm.apple',$4::uuid,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint,$7,'pending',$8::jsonb,clock_timestamp()+interval '10 minutes')")
+    let definition = crate::collection::store::freeze_in(
+        tx,
+        &scope,
+        1,
+        &[
+            rss_mdm_inventory::builtin::MODEL,
+            rss_mdm_inventory::builtin::OS_VERSION,
+        ],
+    )
+    .await?;
+    let attempts = Attempts::new(definition);
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,apple_deadline) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm.apple',$4::uuid,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint,$7,'pending',clock_timestamp()+interval '10 minutes')")
         .bind(tenant).bind(id.to_string()).bind(registration.to_string()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Unavailable(crate::Failure::Database))?).bind(sequence)
-        .bind(serde_json::to_string(&Attempts::default()).expect("closed attempts")).bind(serde_json::to_string(&approval).expect("closed approval")).execute(&mut *tx).await.map_err(db)?;
+        .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
     let deadline:String=sqlx::query_scalar("SELECT apple_deadline::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(&mut *tx).await.map_err(db)?;
     participant
         .start(
@@ -177,8 +187,8 @@ async fn create_on(
     Ok((receipt, false, digest))
 }
 
-pub async fn approved(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, Error> {
-    let row=sqlx::query("SELECT registration,epoch,apple_approval::text,apple_deadline>clock_timestamp() AND sealed_at IS NULL AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, Error> {
+    let row=sqlx::query("SELECT registration,epoch,apple_deadline>clock_timestamp() AND sealed_at IS NULL AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
     let current = crate::device::store::source_current_in(
         c,
         tenant,
@@ -187,16 +197,5 @@ pub async fn approved(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bo
         row.try_get("epoch").map_err(db)?,
     )
     .await?;
-    let approval: UserGrant =
-        serde_json::from_str(&row.try_get::<String, _>("apple_approval").map_err(db)?)
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-    Ok(current
-        && row.try_get::<bool, _>("live").map_err(db)?
-        && approval
-            .valid(
-                c,
-                Permission::InventoryCollect,
-                row.try_get("now").map_err(db)?,
-            )
-            .await?)
+    Ok(current && row.try_get::<bool, _>("live").map_err(db)?)
 }

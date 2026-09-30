@@ -4,14 +4,31 @@ use crate::tasks::JobInput;
 use rss_mdm_group_postgres::core as g;
 use rss_mdm_inventory::State;
 impl AssetService {
-    pub(super) fn validate_query(&self, q: &Query) -> Result<()> {
-        if q.select.len() > FieldKey::ALL.len()
-            || q.select.iter().collect::<BTreeSet<_>>().len() != q.select.len()
+    pub(super) fn validate_query(
+        &self,
+        q: &Query,
+        catalog: &rss_mdm_inventory::Catalog,
+    ) -> Result<()> {
+        if q.select.len() > 1024 || q.select.iter().collect::<BTreeSet<_>>().len() != q.select.len()
         {
             return Err(Error::Malformed.into());
         }
+        for key in &q.select {
+            checked_input(catalog.definition(*key))?;
+        }
+        if let Some(sort) = &q.sort {
+            let field = checked_input(catalog.definition(sort.field))?;
+            if !field.searchable
+                || matches!(
+                    field.value_type.kind(),
+                    rss_mdm_inventory::Kind::Array | rss_mdm_inventory::Kind::Object
+                )
+            {
+                return Err(Error::Malformed.into());
+            }
+        }
         if let Some(criteria) = &q.criteria {
-            rule(self.tenant, Uuid::nil(), criteria)?;
+            rule(self.tenant, Uuid::nil(), criteria, catalog)?;
         }
         Ok(())
     }
@@ -23,7 +40,7 @@ impl AssetService {
         q: &Query,
         at: Timepoint,
     ) -> Result<Response> {
-        self.validate_query(q)?;
+        self.validate_query(q, &catalog_in(tx, self.tenant, i64::MAX).await?)?;
         let tenant = self.tenant;
         let watermark = tx
             .with_connection(move |c| {
@@ -73,10 +90,11 @@ impl AssetService {
         };
         let watermark = *watermark;
         let at = stored(Timepoint::try_from(*as_of))?;
+        let catalog = catalog_in(tx, self.tenant, watermark).await?;
         let rule = q
             .criteria
             .as_ref()
-            .map(|c| stored(rule(self.tenant, task, c)))
+            .map(|c| stored(rule(self.tenant, task, c, &catalog)))
             .transpose()?;
         let mut limit = 128;
         let (page, decisions) = loop {
@@ -94,12 +112,17 @@ impl AssetService {
                 }
                 result => result?,
             };
-            let snapshot = stored(filter::page(self.tenant, &page.devices))?;
             let key = after
                 .as_ref()
                 .map(|s| stored(g::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
             let decisions = if let Some(rule) = &rule {
+                let snapshot = stored(filter::page(
+                    self.tenant,
+                    &page.devices,
+                    &page.catalog,
+                    rule,
+                ))?;
                 match rule.evaluate_page(
                     &g::PageInput {
                         tenant: self.tenant,
@@ -150,7 +173,9 @@ impl AssetService {
             for channel in &device.channels {
                 *facets.entry(("channels", channel.clone())).or_default() += 1;
             }
-            if let State::Known(Scalar::String(os)) = &device.fields[&FieldKey::OsVersion].state {
+            if let State::Known(Scalar::String(os)) =
+                &device.fields[&rss_mdm_inventory::builtin::OS_VERSION].state
+            {
                 *facets.entry(("os_versions", os.clone())).or_default() += 1;
             }
             for field in device.fields.values() {
@@ -158,12 +183,15 @@ impl AssetService {
                     .entry(("asset_states", state_name(&field.state).into()))
                     .or_default() += 1;
             }
-            let key = q.sort.as_ref().map_or_else(Vec::new, |sort| {
-                query_sort::key(
-                    device.fields.get(&sort.field).map(|f| &f.state),
-                    sort.descending,
-                )
-            });
+            let key = q.sort.as_ref().map_or_else(
+                || Ok(Vec::new()),
+                |sort| {
+                    query_sort::key(
+                        device.fields.get(&sort.field).map(|f| &f.state),
+                        sort.descending,
+                    )
+                },
+            )?;
             if !q.select.is_empty() {
                 device.fields.retain(|f, _| q.select.contains(f));
                 device.revisions.retain(|f, _| q.select.contains(f));

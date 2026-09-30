@@ -1,11 +1,12 @@
 [package]
 name = "rss-mdm-agent-wire"
-version = "4.0.0"
+version = "5.0.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
+rss-mdm-inventory.workspace = true
 base64.workspace = true
 ring.workspace = true
 serde.workspace = true

@@ -680,15 +680,15 @@ consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
-         'crates/agent-wire/schema/signed-task-v4.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/signed-task-v5.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
-consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v4.schema.json',
-         'crates/agent-wire/schema/agent-v4.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v5.schema.json',
+         'crates/agent-wire/schema/agent-v5.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
 consume(('crates/agent-wire/schema/registration-*.json',), 'agent.registration')
 consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports planning.onboarding')
 consume(('crates/agent-wire/src/onboarding.rs',),
         'agent.reports planning.onboarding execution.commands.onboarding apple.onboarding execution.agent.delivery execution.agent.poll execution.agent.recovery')
-consume(('crates/agent-wire/schema/managed-registration-request-v4.schema.json',),
+consume(('crates/agent-wire/schema/managed-registration-request-v5.schema.json',),
         'execution.commands.onboarding apple.onboarding')
 # Native onboarding shares one durable installation and managed-registration owner.
 consume(('crates/flow-service/src/execution/agent_install.rs',

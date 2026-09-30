@@ -1,6 +1,6 @@
 //! Current source registration owns channel facts; connection time and asset age are irrelevant.
 use crate::{Error, Failure, database::db};
-use rss_mdm_inventory::{FieldKey, ReportSource, Scalar, State};
+use rss_mdm_inventory::{ReportSource, Scalar, State};
 use rss_request_context::TenantId;
 use sqlx::Row;
 use uuid::Uuid;
@@ -45,12 +45,12 @@ pub async fn detail_in(
         return Ok(None);
     };
     let field = match source {
-        ReportSource::AgentBuiltin => FieldKey::MdmEnrollment,
-        _ => FieldKey::AgentInstallation,
+        ReportSource::AgentBuiltin => rss_mdm_inventory::builtin::MDM_ENROLLMENT,
+        _ => rss_mdm_inventory::builtin::AGENT_INSTALLATION,
     };
     let scope =
         crate::device::scope_dataset(tenant, registration, source.as_str(), epoch, field.as_str())?;
-    let latest=sqlx::query("SELECT id,result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3 AND epoch=$4 AND scope=$5 AND sealed_at IS NOT NULL ORDER BY sequence DESC LIMIT 1")
+    let latest=sqlx::query("SELECT id,result,attempts,evidence::text AS evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3 AND epoch=$4 AND scope=$5 AND sealed_at IS NOT NULL ORDER BY sequence DESC LIMIT 1")
         .bind(tenant.to_string()).bind(registration).bind(source.as_str()).bind(epoch).bind(scope.encode().map_err(|_|Error::Malformed)?)
         .fetch_optional(&mut *c).await.map_err(db)?;
     let Some(latest) = latest else {
@@ -60,9 +60,21 @@ pub async fn detail_in(
         return Ok(None);
     }
     let id: Uuid = latest.try_get("id").map_err(db)?;
-    let attempt: crate::collection::ChannelAttempt =
+    let attempt: crate::collection::Attempts =
         serde_json::from_str(latest.try_get("attempts").map_err(db)?)
             .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+    let received_at = attempt
+        .fields()
+        .get(&field)
+        .and_then(|f| f.received_at)
+        .ok_or(Error::Malformed)?;
+    let evidence: Option<crate::collection::channel::AgentEvidence> = latest
+        .try_get::<Option<String>, _>("evidence")
+        .map_err(db)?
+        .map(|s| serde_json::from_str(&s))
+        .transpose()
+        .map_err(|_| Error::Malformed)?
+        .flatten();
     let facts = rss_mdm_inventory_postgres::read_in(c, tenant, &[scope])
         .await
         .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
@@ -77,8 +89,8 @@ pub async fn detail_in(
             State::Known(Scalar::String(value)) => Some(Current {
                 state: value,
                 snapshot: id,
-                received_at: attempt.received_at,
-                evidence: attempt.evidence.clone(),
+                received_at,
+                evidence: evidence.clone(),
             }),
             _ => None,
         }

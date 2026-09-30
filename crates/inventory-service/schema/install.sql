@@ -59,7 +59,7 @@ CREATE TABLE mdm_access.collection_history (
     sequence bigint NOT NULL,
     revision bigint NOT NULL,
     document jsonb,
-    CONSTRAINT collection_history_document_check CHECK (((document IS NULL) OR (octet_length((document)::text) <= 16384)))
+    CONSTRAINT collection_history_document_check CHECK (((document IS NULL) OR (octet_length((document)::text) <= 67108864)))
 );
 
 ALTER TABLE ONLY mdm_access.collection_history FORCE ROW LEVEL SECURITY;
@@ -74,16 +74,18 @@ CREATE TABLE mdm_access.collection_runs (
     sequence bigint NOT NULL,
     started_at bigint NOT NULL,
     attempts text NOT NULL,
+    evidence jsonb,
+    CONSTRAINT collection_evidence_check CHECK (octet_length(evidence::text)<=8192),
     result text NOT NULL,
     reason text,
     batch bytea,
     digest text,
+    input_digest text CHECK(input_digest ~ '^[0-9a-f]{64}$'),
     sealed_at bigint,
     delivery_pending boolean DEFAULT false NOT NULL,
-    apple_approval jsonb,
     apple_deadline timestamp with time zone,
-    CONSTRAINT collection_runs_attempts_check CHECK ((octet_length(attempts) <= 8192)),
-    CONSTRAINT collection_runs_batch_check CHECK (((octet_length(batch) >= 1) AND (octet_length(batch) <= 8192))),
+    CONSTRAINT collection_runs_attempts_check CHECK ((octet_length(attempts) <= 33554432)),
+    CONSTRAINT collection_runs_batch_check CHECK (((octet_length(batch) >= 1) AND (octet_length(batch) <= 4194304))),
     CONSTRAINT collection_runs_check CHECK (((result = 'pending'::text) = (sealed_at IS NULL))),
     CONSTRAINT collection_runs_check1 CHECK (((sealed_at IS NULL) = (reason IS NULL))),
     CONSTRAINT collection_runs_check2 CHECK (((batch IS NULL) = (digest IS NULL))),
@@ -95,7 +97,7 @@ CREATE TABLE mdm_access.collection_runs (
     CONSTRAINT collection_runs_scope_check CHECK ((octet_length(scope) <= 4096)),
     CONSTRAINT collection_runs_sequence_check CHECK ((sequence >= 0)),
     CONSTRAINT collection_runs_started_at_check CHECK ((started_at >= 0)),
-    CONSTRAINT collection_source_profile CHECK ((((source = 'mdm.windows'::text) AND (apple_approval IS NULL) AND (apple_deadline IS NULL)) OR ((source = ANY (ARRAY['agent.builtin'::text, 'agent.script'::text, 'agent.osquery'::text])) AND (sealed_at IS NOT NULL) AND (result <> 'pending'::text) AND (reason = 'complete'::text) AND (batch IS NOT NULL) AND (apple_approval IS NULL) AND (apple_deadline IS NULL)) OR ((source = 'mdm.apple'::text) AND (apple_deadline IS NOT NULL) AND (((scope::jsonb->>'dataset')='inventory' AND apple_approval IS NOT NULL) OR ((scope::jsonb->>'dataset')='channel.agent.installation' AND apple_approval IS NULL)))))
+    CONSTRAINT collection_source_profile CHECK ((source='mdm.apple' AND apple_deadline IS NOT NULL) OR (source IN('mdm.windows','agent.builtin','agent.script','agent.osquery') AND apple_deadline IS NULL))
 );
 
 ALTER TABLE ONLY mdm_access.collection_runs FORCE ROW LEVEL SECURITY;
@@ -181,7 +183,7 @@ CREATE TABLE mdm_assets.saved_queries (
     id uuid NOT NULL,
     revision bigint NOT NULL,
     document jsonb,
-    CONSTRAINT saved_queries_document_check CHECK ((octet_length((document)::text) <= 16384)),
+    CONSTRAINT saved_queries_document_check CHECK ((octet_length((document)::text) <= 67108864)),
     CONSTRAINT saved_queries_revision_check CHECK ((revision > 0))
 );
 

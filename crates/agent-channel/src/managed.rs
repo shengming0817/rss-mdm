@@ -81,6 +81,13 @@ pub async fn register(
         source: wire::ReportSource::AgentBuiltin,
         epoch: receipt.epoch,
         capabilities: input.capabilities.clone(),
+        collections: crate::builtin_collections(
+            c,
+            rss_request_context::TenantId::parse(&tenant).map_err(|_| Error::Malformed)?,
+            receipt.registration,
+            receipt.epoch,
+        )
+        .await?,
     };
     let digest = digest(input);
     let operation = Operation {

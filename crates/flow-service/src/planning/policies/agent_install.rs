@@ -127,7 +127,7 @@ pub struct Package {
 impl Package {
     pub fn url(&self, operation: Uuid) -> String {
         format!(
-            "{}/api/agent/v4/installations/{operation}/package",
+            "{}/api/agent/v5/installations/{operation}/package",
             self.content_origin.trim_end_matches('/')
         )
     }

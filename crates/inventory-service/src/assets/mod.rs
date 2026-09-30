@@ -42,9 +42,10 @@ impl AssetService {
         let response = match command {
             Command::Fields => Response::Fields {
                 dictionary: rss_mdm_inventory::DICTIONARY.into(),
-                fields: FieldKey::ALL
-                    .into_iter()
-                    .map(|f| checked_input(serde_json::to_value(f.definition())))
+                fields: catalog_in(tx, self.tenant, i64::MAX)
+                    .await?
+                    .fields()
+                    .map(|f| checked_input(serde_json::to_value(f)))
                     .collect::<Result<_>>()?,
             },
             Command::Detail { device, scope } => {
@@ -289,4 +290,35 @@ pub async fn timeline_device_in(
     }
     sqlx::query_scalar("SELECT response->'asset'->>'device' FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND response->'asset'->>'kind'='assignment'")
         .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten)
+}
+
+/// Load one authoritative catalog snapshot within the caller's tenant transaction.
+pub async fn catalog_in(
+    tx: &mut PgTransaction<'_>,
+    tenant: TenantId,
+    watermark: i64,
+) -> Result<rss_mdm_inventory::Catalog> {
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+                .await
+                .map_err(|_| sqlx::Error::Protocol("asset catalog unavailable".into()))
+        })
+    })
+    .await
+    .map_err(Into::into)
+}
+async fn datasets_in(
+    tx: &mut PgTransaction<'_>,
+    tenant: TenantId,
+) -> Result<BTreeMap<rss_mdm_inventory::Source, Vec<String>>> {
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::datasets_in(c, tenant)
+                .await
+                .map_err(|_| sqlx::Error::Protocol("asset datasets unavailable".into()))
+        })
+    })
+    .await
+    .map_err(Into::into)
 }

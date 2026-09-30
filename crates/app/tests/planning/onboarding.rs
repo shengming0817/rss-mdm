@@ -10,7 +10,7 @@ async fn fixture() -> Result<Fixture> {
     f.grants
         .extend(identity::device_grants(None, &["enrollment"])?);
     identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
-    f.register_profile(json!(["inventory.basic.v4", "mdm.enrollment.v4"]))
+    f.register_profile(json!(["inventory.collect.v5", "mdm.enrollment.v5"]))
         .await?;
     let setup = start_automation(&f.base).await?;
     let group = Uuid::new_v4();
@@ -31,7 +31,7 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
     let response = agent_call(
         &f.router,
         Method::POST,
-        "/api/agent/v4/reports",
+        "/api/agent/v5/reports",
         Some(case_credential()),
         Some(input.clone()),
     )
@@ -42,7 +42,7 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
             == agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/v4/reports",
+                "/api/agent/v5/reports",
                 Some(case_credential()),
                 Some(input)
             )

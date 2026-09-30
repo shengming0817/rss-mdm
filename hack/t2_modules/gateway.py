@@ -17,7 +17,7 @@ def verify(context):
     config=(ROOT/'deployment/nginx.conf').read_text()
     config=config.replace('listen 443 ssl;','listen 8080;').replace('ssl_certificate /private/mdm-tls.crt;','').replace('ssl_certificate_key /private/mdm-tls.key;','')
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
-    stream_paths = ['/api/agent/v4/tasks/task/content', '/api/agent/v4/installations/operation/package']
+    stream_paths = ['/api/agent/v5/tasks/task/content', '/api/agent/v5/installations/operation/package']
     buffered_path = '/api/probe-stream-buffered'
     stream_body = 'x' * 2048
     # This real upstream delivers less than one proxy buffer over four seconds.

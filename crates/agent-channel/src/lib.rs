@@ -36,7 +36,7 @@ use axum::{
 };
 use rss_mdm_agent_wire as wire;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_inventory::{FieldKey, ReportSource as InventorySource};
+use rss_mdm_inventory::ReportSource as InventorySource;
 use rss_observation::{Batch, Body, Change, Id};
 use rss_request_context::TenantId;
 use serde_json::Value;
@@ -337,6 +337,13 @@ async fn register_on(
         source: wire::ReportSource::AgentBuiltin,
         epoch: receipt.epoch,
         capabilities: input.capabilities().to_vec(),
+        collections: builtin_collections(
+            tx,
+            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+            receipt.registration,
+            receipt.epoch,
+        )
+        .await?,
     };
     crate::operations::save(
         tx,
@@ -374,18 +381,14 @@ async fn report_inner(
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
-    let scope = if matches!(input.body(), wire::ReportBody::MdmEnrollment { .. }) {
-        crate::device::scope_dataset(
-            principal.tenant(),
-            principal.registration(),
-            InventorySource::AgentBuiltin.as_str(),
-            Uuid::parse_str(scope.epoch().as_str()).map_err(|_| Error::Malformed)?,
-            FieldKey::MdmEnrollment.as_str(),
-        )
-        .map_err(Error::from)?
-    } else {
-        scope
-    };
+    let scope = crate::device::scope_dataset(
+        principal.tenant(),
+        principal.registration(),
+        InventorySource::AgentBuiltin.as_str(),
+        Uuid::parse_str(scope.epoch().as_str()).map_err(|_| Error::Malformed)?,
+        input.collection().dataset(),
+    )
+    .map_err(Error::from)?;
     let batch = batch(&input)?;
     let fingerprint = batch.fingerprint(&scope).map_err(|_| Error::Malformed)?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
@@ -395,7 +398,7 @@ async fn report_inner(
         |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
                 |(principal, scope, _input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;crate::collection::agent::accept_in(c,principal,scope,batch).await.map_err(Error::from)})).await?;
-            let result = match input.body() { wire::ReportBody::Snapshot(_) | wire::ReportBody::MdmEnrollment { .. } => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
+            let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
             let fact = rss_mdm_audit_integration::Fact::business(audit,
                 &format!("agent-report:{}", input.report_id()), fingerprint.as_slice(), 202, "success", None)
                 .and_then(|fact| fact.with_details(serde_json::json!({"reportId":input.report_id(),"collectionResult":result,"receivedAt":received_at})))
@@ -536,29 +539,17 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
         .values()
         .iter()
         .map(|item| {
-            let field = match item.field {
-                wire::Field::Model => FieldKey::Model,
-                wire::Field::OsVersion => FieldKey::OsVersion,
-            };
-            let value = match &item.value {
-                wire::CollectedValue::Known(value) => {
-                    rss_mdm_inventory::CollectedValue::Known(value.clone())
-                }
-                wire::CollectedValue::Unsupported => rss_mdm_inventory::CollectedValue::Unsupported,
-            };
+            let field = input
+                .collection()
+                .field(item.field)
+                .map_err(|_| Error::Malformed)?;
             Ok(Change::upsert(
-                Id::new(field.as_str()).map_err(|_| Error::Malformed)?,
-                value.encode(field).map_err(|_| Error::Malformed)?,
+                Id::new(item.field.as_str()).map_err(|_| Error::Malformed)?,
+                item.value.encode(field).map_err(|_| Error::Malformed)?,
             ))
         })
         .collect::<Result<Vec<_>, AgentError>>()?;
     let body = match input.body() {
-        wire::ReportBody::MdmEnrollment { state } => Body::Snapshot(vec![Change::upsert(
-            Id::new(FieldKey::MdmEnrollment.as_str()).expect("fixed field"),
-            rss_mdm_inventory::CollectedValue::Known(state.as_str().into())
-                .encode(FieldKey::MdmEnrollment)
-                .map_err(|_| Error::Malformed)?,
-        )]),
         wire::ReportBody::Snapshot(_) => Body::Snapshot(changes),
         wire::ReportBody::Partial(_) => Body::Partial(changes),
         wire::ReportBody::Failed { code } => Body::Failed {
@@ -574,11 +565,10 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
         Id::new(input.report_id().to_string()).map_err(|_| Error::Malformed)?,
         input.sequence(),
         rss_contract::Timepoint::try_from(input.observed_at()).map_err(|_| Error::Malformed)?,
-        if matches!(input.body(), wire::ReportBody::MdmEnrollment { .. }) {
-            rss_mdm_inventory::channel_coverage(FieldKey::MdmEnrollment)
-        } else {
-            rss_mdm_inventory::coverage()
-        },
+        input
+            .collection()
+            .coverage()
+            .map_err(|_| Error::Malformed)?,
         body,
     )
     .map_err(|_| Error::Malformed.into())
@@ -680,3 +670,35 @@ pub mod boundary;
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+async fn builtin_collections(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    registration: Uuid,
+    epoch: Uuid,
+) -> Result<Vec<wire::CollectionDefinition>, Error> {
+    let mut definitions = Vec::new();
+    for (dataset, keys) in [
+        (
+            rss_mdm_inventory::DATASET,
+            vec![
+                rss_mdm_inventory::builtin::MODEL,
+                rss_mdm_inventory::builtin::OS_VERSION,
+            ],
+        ),
+        (
+            rss_mdm_inventory::builtin::MDM_ENROLLMENT.as_str(),
+            vec![rss_mdm_inventory::builtin::MDM_ENROLLMENT],
+        ),
+    ] {
+        let scope = device::scope_dataset(
+            tenant,
+            registration,
+            InventorySource::AgentBuiltin.as_str(),
+            epoch,
+            dataset,
+        )?;
+        definitions.push(collection::store::freeze_in(c, &scope, 1, &keys).await?);
+    }
+    Ok(definitions)
+}

@@ -35,7 +35,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
         let response = agent_call(
             router,
             Method::POST,
-            "/api/agent/v4/tasks/claim",
+            "/api/agent/v5/tasks/claim",
             Some(case_credential()),
             Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
         )

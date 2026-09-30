@@ -76,13 +76,13 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v4/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":4,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":4,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
-        "/api/agent/v4/tasks/claim",
+        "/api/agent/v5/tasks/claim",
         Some(case_credential()),
         Some(json!({"wireVersion":4,"operationId":operation})),
     )
@@ -193,7 +193,7 @@ impl Fixture {
         })
     }
     pub(crate) async fn register(&mut self) -> Result<Value> {
-        self.register_profile(json!(["inventory.basic.v4", "task.execute.v4"]))
+        self.register_profile(json!(["inventory.collect.v5", "task.execute.v5"]))
             .await
     }
     pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {
@@ -209,7 +209,7 @@ impl Fixture {
         )
         .await?;
         author.operation = None;
-        let registration=agent_call(router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
+        let registration=agent_call(router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED && registration.1["capabilities"] == capabilities,
             "task registration: {registration:?}"

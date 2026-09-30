@@ -45,21 +45,35 @@ fn closed_manual_and_query_wire_rejects_legacy_deadlines() {
 fn one_typed_condition_round_trips_through_the_existing_group_core() {
     let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let c = Criteria::Predicate {
-        field: FieldKey::OfficeFloor,
+        field: rss_mdm_inventory::builtin::OFFICE_FLOOR,
         op: Operator::Ge,
         value: Some(Scalar::Integer(3)),
         values: None,
     };
-    let r = rule(tenant, Uuid::new_v4(), &c).unwrap();
+    let r = rule(
+        tenant,
+        Uuid::new_v4(),
+        &c,
+        &rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         serde_json::to_value(&c).unwrap(),
         serde_json::to_value(criteria_view(r.view().criteria).unwrap()).unwrap()
     );
     let invalid = Criteria::Predicate {
-        field: FieldKey::OfficeFloor,
+        field: rss_mdm_inventory::builtin::OFFICE_FLOOR,
         op: Operator::Eq,
         value: Some(Scalar::String("3".into())),
         values: None,
     };
-    assert!(rule(tenant, Uuid::new_v4(), &invalid).is_err());
+    assert!(
+        rule(
+            tenant,
+            Uuid::new_v4(),
+            &invalid,
+            &rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap()
+        )
+        .is_err()
+    );
 }

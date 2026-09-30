@@ -57,7 +57,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             &mut tx,
             tenant,
             "manual-device",
-            FieldKey::OfficeFloor,
+            rss_mdm_inventory::builtin::OFFICE_FLOOR,
             0,
             &fact
         )
@@ -69,7 +69,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             &mut tx,
             tenant,
             "manual-device",
-            FieldKey::OfficeFloor,
+            rss_mdm_inventory::builtin::OFFICE_FLOOR,
             0,
             &fact
         )

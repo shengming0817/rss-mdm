@@ -124,7 +124,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     let service = planning(t).await;
     let manual = |revision, input| assets::Command::Manual {
         device: device.into(),
-        field: assets::FieldKey::IsLoaner,
+        field: assets::rss_mdm_inventory::builtin::IS_LOANER,
         owner: assets::Owner {
             instance: "history".into(),
             principal: "operator".into(),

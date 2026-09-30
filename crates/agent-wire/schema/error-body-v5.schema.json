@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v4/error-body.schema.json",
+  "$id": "https://rss.example/mdm/agent/v5/error-body.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -204,7 +204,7 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
     // This consumer starts from a legal registered source and its projected fact.
     let (registration, _) = seed_source("asset-a", "agent", "agent.builtin", "fixture")?;
     let epoch = Uuid::new_v4();
-    let field = rss_mdm_inventory::FieldKey::CorporateAgentHealthy;
+    let field = rss_mdm_inventory::builtin::CORPORATE_AGENT_HEALTHY;
     let scope = crate::device::scope_dataset(
         rss_request_context::TenantId::parse(case_tenant())?,
         registration,

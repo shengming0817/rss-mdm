@@ -43,13 +43,13 @@ fn facts(value: &str) -> Vec<Change> {
         Change::upsert(
             Id::new("device.model").unwrap(),
             rss_mdm_inventory::CollectedValue::Known(value.into())
-                .encode(rss_mdm_inventory::FieldKey::Model)
+                .encode(rss_mdm_inventory::builtin::MODEL)
                 .unwrap(),
         ),
         Change::upsert(
             Id::new("device.os.version").unwrap(),
             rss_mdm_inventory::CollectedValue::Known("1".into())
-                .encode(rss_mdm_inventory::FieldKey::OsVersion)
+                .encode(rss_mdm_inventory::builtin::OS_VERSION)
                 .unwrap(),
         ),
     ]

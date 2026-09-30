@@ -17,16 +17,16 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.basic.v4"]),
+            && registration.1["capabilities"] == json!(["inventory.collect.v5"]),
         "registration: {registration:?}"
     );
     let taskless = agent_call(
         &router,
         Method::POST,
-        "/api/agent/v4/tasks/claim",
+        "/api/agent/v5/tasks/claim",
         Some(case_inventory_credential()),
         Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
     )
@@ -44,10 +44,10 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","task.execute.v4"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","task.execute.v5"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.basic.v4", "task.execute.v4"]),
+            && registration.1["capabilities"] == json!(["inventory.collect.v5", "task.execute.v5"]),
         "task registration: {registration:?}"
     );
     // Legacy URL and major cannot enter task intake.
@@ -66,7 +66,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/v4/tasks/claim",
+            "/api/agent/v5/tasks/claim",
             Some(case_credential()),
             Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
         )

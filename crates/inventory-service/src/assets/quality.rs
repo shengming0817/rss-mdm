@@ -7,47 +7,19 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
     let source = stored(rss_mdm_inventory::Source::parse(
         coordinate.source().as_str(),
     ))?;
-    stored(rss_mdm_inventory::scope_coverage(&coordinate))?;
-    let fields = if coordinate.dataset().as_str() == rss_mdm_inventory::DATASET {
-        let attempts: crate::collection::Attempts =
-            stored(serde_json::from_str(row.try_get("attempts")?))?;
-        FieldKey::observed()
-            .zip(attempts.fields)
-            .map(|(field, a)| QualityField {
-                field,
-                quality: a.quality,
-                status: a.status,
-                received_at: a.received_at,
-            })
-            .collect()
-    } else if FieldKey::CHANNEL
+    let attempts: crate::collection::Attempts =
+        stored(serde_json::from_str(row.try_get("attempts")?))?;
+    stored(attempts.definition().validate_scope(&coordinate))?;
+    let fields = attempts
+        .fields()
         .iter()
-        .any(|field| field.as_str() == coordinate.dataset().as_str())
-    {
-        let attempt: crate::collection::ChannelAttempt =
-            stored(serde_json::from_str(row.try_get("attempts")?))?;
-        if attempt.field.as_str() != coordinate.dataset().as_str() {
-            return Err(Error::Malformed.into());
-        }
-        vec![QualityField {
-            field: attempt.field,
-            quality: attempt.quality,
-            status: None,
-            received_at: Some(attempt.received_at),
-        }]
-    } else {
-        let attempt: crate::collection::EnterpriseAttempt =
-            stored(serde_json::from_str(row.try_get("attempts")?))?;
-        if attempt.field.as_str() != coordinate.dataset().as_str() {
-            return Err(Error::Malformed.into());
-        }
-        vec![QualityField {
-            field: attempt.field,
-            quality: attempt.quality,
-            status: None,
-            received_at: Some(attempt.received_at),
-        }]
-    };
+        .map(|(field, a)| QualityField {
+            field: *field,
+            quality: a.quality,
+            status: a.status,
+            received_at: a.received_at,
+        })
+        .collect();
     Ok(QualityRun {
         source,
         channel: source.channel().ok_or(Error::Malformed)?,

@@ -49,7 +49,7 @@ fn script_contract_rejects_legacy_external_schema_and_hidden_arguments() {
             v["timeoutSeconds"] = json!(0);
         },
         |v: &mut Value| {
-            v["purpose"]["mappings"] = json!({"custom.asset_tag":"/version"});
+            v["purpose"]["mappings"] = json!({"legacy.asset_tag":"/version"});
         },
     ] {
         let mut v = definition();
@@ -128,7 +128,7 @@ fn frozen_digest_covers_execution_interface_and_rejects_old_script() {
 #[test]
 fn successful_output_must_supply_the_declared_inventory_type() {
     let mut value = definition();
-    value["output"] = json!({});
+    value["output"] = json!({"type":"object","properties":{"healthy":{"type":"boolean"}},"required":["healthy"],"additionalProperties":false});
     value["purpose"]["mappings"] = json!({"custom.corporate_agent.healthy":"/healthy"});
     let script: ScriptDefinition = serde_json::from_value(value).unwrap();
     assert!(script.validate_output(&json!({"healthy":true})).is_ok());
@@ -158,4 +158,16 @@ fn schema_cost_and_nested_output_are_bounded_before_validation() {
         value["output"] = schema;
         assert!(serde_json::from_value::<ScriptDefinition>(value.clone()).is_err());
     }
+}
+
+#[test]
+fn collection_mapping_accepts_registered_extension_identities_without_a_field_enum() {
+    let mut value = definition();
+    value["purpose"]["mappings"] = json!({"custom.security_agent.build":"/version"});
+    let script: ScriptDefinition = serde_json::from_value(value).unwrap();
+    assert!(
+        script
+            .validate_output(&json!({"version":"build-123"}))
+            .is_ok()
+    );
 }

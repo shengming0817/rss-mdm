@@ -35,7 +35,7 @@ async fn durable_asset_group_scope_pipeline() {
         &service,
         &assets::Command::Manual {
             device: device.clone(),
-            field: assets::FieldKey::IsLoaner,
+            field: assets::rss_mdm_inventory::builtin::IS_LOANER,
             owner: owner.clone(),
             change: inventory_operation(
                 0,
@@ -58,7 +58,7 @@ async fn durable_asset_group_scope_pipeline() {
                     name: "automation".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: assets::rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,
@@ -147,14 +147,14 @@ async fn durable_asset_group_scope_pipeline() {
                 0,
                 assets::Query {
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: assets::rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,
                     }),
-                    select: vec![assets::FieldKey::IsLoaner],
+                    select: vec![assets::rss_mdm_inventory::builtin::IS_LOANER],
                     sort: Some(assets::Sort {
-                        field: assets::FieldKey::IsLoaner,
+                        field: assets::rss_mdm_inventory::builtin::IS_LOANER,
                         descending: true,
                     }),
                 },
@@ -616,7 +616,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
                     name: "bounded-ingress".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: assets::rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,
@@ -723,7 +723,7 @@ async fn superseded_group_links_reused_successor() {
                     name: "successor".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: assets::rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,

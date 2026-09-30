@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+ordered-float = { version = "=2.10.1", features = ["serde"] }
 rss-request-context.workspace = true
 rss-contract.workspace = true
 

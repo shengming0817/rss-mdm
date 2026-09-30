@@ -95,11 +95,12 @@ async fn resolve_in(
             {
                 return Err(Error::Malformed.into());
             }
-            if definition.spec().profile == r::ScriptProfile::OsqueryInfoV1
-                && (artifact.length() != 32
-                    || artifact.digest() != r::Digest::of(b"SELECT version FROM osquery_info;\n"))
-            {
-                return Err(Error::Malformed.into());
+            if let Some(sql) = &definition.spec().sql {
+                if artifact.length() != sql.query().len() as u64
+                    || artifact.digest() != r::Digest::of(sql.query().as_bytes())
+                {
+                    return Err(Error::Malformed.into());
+                }
             }
             artifact.clone()
         }

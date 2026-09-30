@@ -106,7 +106,7 @@ mod storage {
         let execution = [
             AssetCommand::Manual {
                 device: device.clone(),
-                field: FieldKey::AssetTag,
+                field: rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     0,
                     ManualChange::Set {
@@ -226,7 +226,7 @@ mod storage {
             seed_device_in(tenant, &device);
             let command = assets::Command::Manual {
                 device: device.clone(),
-                field: assets::FieldKey::AssetTag,
+                field: assets::rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     0,
                     assets::ManualChange::Set {
@@ -279,7 +279,7 @@ mod storage {
             denied.finalize(None);
             let competing = |value: &str| assets::Command::Manual {
                 device: device.clone(),
-                field: assets::FieldKey::AssetTag,
+                field: assets::rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     1,
                     assets::ManualChange::Set {

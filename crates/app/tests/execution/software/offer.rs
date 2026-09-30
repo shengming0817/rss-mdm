@@ -96,7 +96,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     owner.close().await?;
     let repeated = agent(
         &router,
-        "/api/agent/v4/tasks/claim",
+        "/api/agent/v5/tasks/claim",
         Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
     )
     .await?;
