@@ -61,6 +61,40 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         anyhow::bail!("missing issuance replay");
     };
     ensure!(replay.provisioning.0 == peer.provisioning);
+    for _ in 0..100 {
+        if app.timeline.catch_up().await? == 0 {
+            break;
+        }
+    }
+    let mut admin = crate::test_support::Browser {
+        cookies: std::collections::BTreeMap::from([(
+            "__Host-identity-session".into(),
+            host.secret.expose().into(),
+        )]),
+        csrf: Some(host.secret.csrf()),
+        ..Default::default()
+    };
+    let (status, timeline) = admin
+        .call(
+            &host.browser,
+            axum::http::Method::GET,
+            &format!(
+                "/api/v3/devices/{}/timeline",
+                crate::test_support::case::name("tls-device")
+            ),
+            None,
+        )
+        .await?;
+    ensure!(status == StatusCode::OK);
+    ensure!(
+        timeline["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["source"] == "mdm.business"
+                && v["action"] == "enrollment_issue"
+                && !v["registrationId"].is_null())
+    );
     let root = &host.root;
     let root_cert = &host.root_cert;
     let url = &peer.url;

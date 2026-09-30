@@ -1,0 +1,29 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_timeline",
+      "table": "checkpoints",
+      "read_write": true,
+      "updates": [
+        "position",
+        "source_through",
+        "healthy"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_timeline",
+      "table": "facts",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [],
+  "external_relations": [
+    "mdm_commands.action_runs",
+    "mdm_assets.operations",
+    "mdm_commands.requests"
+  ],
+  "verified_schemas": []
+}

@@ -73,6 +73,32 @@ impl Client {
             "acceptance {:?}",
             accepted
         );
+        for _ in 0..100 {
+            if self.app.timeline.catch_up().await? == 0 {
+                break;
+            }
+        }
+        let path = format!(
+            "/api/v3/devices/{}/timeline?operationId={}",
+            case_device(),
+            self.operation
+        );
+        let (status, timeline) = self
+            .browser
+            .call(&self.router, Method::GET, &path, None)
+            .await?;
+        ensure!(status == StatusCode::OK);
+        ensure!(
+            timeline["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["source"] == "mdm.business"
+                    && v["action"] == "command_accept"
+                    && v["phase"] == "accepted"
+                    && v["effect"] == "unknown"
+                    && v["operationId"] == self.operation.to_string())
+        );
         let replay = self.call(Method::POST, "", Some(request.clone())).await?;
         ensure!(replay == accepted);
         let mut conflict = request.clone();
@@ -355,5 +381,156 @@ impl Client {
         );
         pg.close().await?;
         Ok(())
+    }
+}
+
+// Request IDs, native operations and action runs are independent identity spaces.
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.admission"]
+async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow::Result<()> {
+    let (host, mut client) = ordinary().await?;
+    let (other, other_operation) = client.timeline_pair().await?;
+    let cancelled = client
+        .call(
+            Method::POST,
+            &format!("/{}/cancel", client.operation),
+            Some(json!({"requestId":other_operation,"expectedRevision":1})),
+        )
+        .await?;
+    ensure!(cancelled.0 == StatusCode::OK, "cancel: {cancelled:?}");
+    client.drain_timeline().await?;
+    let path = format!(
+        "/api/v3/devices/{other}/timeline?action=command_cancel&operationId={other_operation}"
+    );
+    let (status, page) = client
+        .browser
+        .call(&client.router, Method::GET, &path, None)
+        .await?;
+    ensure!(
+        status == StatusCode::OK && page["items"].as_array().unwrap().is_empty(),
+        "request UUID claimed other device: {page}"
+    );
+    let path = format!(
+        "/api/v3/devices/{}/timeline?action=command_cancel&operationId={}",
+        case_device(),
+        client.operation
+    );
+    let (_, page) = client
+        .browser
+        .call(&client.router, Method::GET, &path, None)
+        .await?;
+    ensure!(
+        !page["items"].as_array().unwrap().is_empty(),
+        "fact must remain searchable by actual operation: {page}"
+    );
+    host.close().await?;
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.admission"]
+async fn child_dispatch_keeps_its_device_and_parent_search_link() -> anyhow::Result<()> {
+    let (host, mut client) = ordinary().await?;
+    let (other, child) = client.timeline_pair().await?;
+    let parent = Uuid::new_v4();
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    // Persist the two-target owner relation; the child UUID deliberately equals B's native operation.
+    sqlx::query("INSERT INTO mdm_planning.remote_operations(tenant_id,id,resource,resource_version,frozen,snapshot,created_at,deadline,author) VALUES($1::uuid,$2,'fixture','1','{}','{}',1,10000000000,'{}')")
+        .bind(case_tenant()).bind(parent).execute(&mut pg).await?;
+    sqlx::query("INSERT INTO mdm_planning.remote_operation_targets(tenant_id,operation,device,status,diagnosis) VALUES($1::uuid,$2,$3,'blocked','fixture'),($1::uuid,$2,$4,'blocked','fixture')")
+        .bind(case_tenant()).bind(parent).bind(case_device()).bind(&other).execute(&mut pg).await?;
+    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,remote_operation,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint) SELECT tenant_id,$2,'remote_operation',$3,device,registration,registration_generation,'fixture',1,1,10000000000,'{}',decode(repeat('00',32),'hex') FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$4")
+        .bind(case_tenant()).bind(child).bind(parent).bind(client.operation).execute(&mut pg).await?;
+    pg.close().await?;
+    client
+        .app
+        .execution
+        .accept_action_dispatch(child, vec![0; 32])
+        .await?;
+    client.drain_timeline().await?;
+    let path =
+        format!("/api/v3/devices/{other}/timeline?action=command_dispatch&operationId={child}");
+    let (_, page) = client
+        .browser
+        .call(&client.router, Method::GET, &path, None)
+        .await?;
+    ensure!(
+        page["items"].as_array().unwrap().is_empty(),
+        "child fact leaked to sibling/native UUID: {page}"
+    );
+    let path = format!(
+        "/api/v3/devices/{}/timeline?action=command_dispatch&operationId={parent}",
+        case_device()
+    );
+    let (_, page) = client
+        .browser
+        .call(&client.router, Method::GET, &path, None)
+        .await?;
+    ensure!(
+        page["items"].as_array().unwrap().len() == 1,
+        "parent search link lost: {page}"
+    );
+    host.close().await?;
+    Ok(())
+}
+impl Client {
+    async fn timeline_pair(&mut self) -> anyhow::Result<(String, Uuid)> {
+        let other = crate::test_support::case::name("timeline-other").to_owned();
+        let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+        let credential =
+            crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 94);
+        crate::device::test_support::bind(&self.app.devices, &proof, &credential, &other, 0)
+            .await?;
+        let subject = crate::test_support::browser_subject(&self.browser, &self.router).await?;
+        let mut grants = crate::test_support::identity::device_grants(
+            None,
+            &["state_verify", "operation_read", "operation_cancel"],
+        )?;
+        grants.push(crate::authorization::Grant {
+            operation: crate::authorization::Permission::AuthorizationRead,
+            scope: crate::authorization::Scope::Tenant,
+        });
+        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+        let request = |id| json!({"operationId":id,"task":{"kind":"state_verify","field":"model","expectedValue":"Final-Model"},"deadline":self.app.clock.unix_seconds().unwrap()+300});
+        let id = Uuid::new_v4();
+        let mut other_browser = crate::test_support::Browser::default();
+        let login = other_browser.call(&self.router,Method::POST,&format!("/api/v2/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
+        ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
+        let other_subject =
+            crate::test_support::browser_subject(&other_browser, &self.router).await?;
+        crate::test_support::identity::set_grants(
+            case_tenant(),
+            &other_subject,
+            crate::test_support::identity::device_grants(Some(&other), &["state_verify"])?,
+        )
+        .await?;
+        ensure!(
+            other_browser
+                .call(
+                    &self.router,
+                    Method::POST,
+                    &format!("/api/v2/devices/{other}/operations"),
+                    Some(request(id))
+                )
+                .await?
+                .0
+                == StatusCode::ACCEPTED
+        );
+        ensure!(
+            self.call(Method::POST, "", Some(request(self.operation)))
+                .await?
+                .0
+                == StatusCode::ACCEPTED
+        );
+        Ok((other, id))
+    }
+    async fn drain_timeline(&self) -> anyhow::Result<()> {
+        for _ in 0..100 {
+            if self.app.timeline.catch_up().await? == 0 {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("fixture projection did not drain")
     }
 }

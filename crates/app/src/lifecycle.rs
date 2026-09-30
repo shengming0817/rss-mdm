@@ -91,6 +91,7 @@ pub async fn serve(
                         execution,
                         automation,
                         identity_audit,
+                        timeline,
                         notifications,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
@@ -246,9 +247,19 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity_audit", error))?;
+                        let timeline = access
+                            .timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)
+                            .map_err(|e| ProcessError::at("startup.timeline", e))?;
+                        timeline.initialize().await.map_err(|_| {
+                            ProcessError::at(
+                                "startup.timeline",
+                                Error::Unavailable(Failure::Database),
+                            )
+                        })?;
                         let mut app = crate::api::from_compiled(
                             compiled,
                             crate::api::AssemblyDependencies {
+                                timeline: timeline.clone(),
                                 audit_store: audit_store.clone(),
                                 clock: Arc::new(crate::clock::SystemClock),
                                 monotonic,
@@ -298,6 +309,7 @@ pub async fn serve(
                             execution,
                             automation,
                             identity_audit,
+                            timeline,
                             notifications,
                         ))
                     })
@@ -323,6 +335,7 @@ pub async fn serve(
                         );
                     }
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
+                    launch.stage_deferred_task_with_token(timeline.registration().critical());
                     launch.stage_deferred_task_with_token(
                         execution.registration(signals.flow()).critical(),
                     );

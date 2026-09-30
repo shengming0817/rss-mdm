@@ -117,7 +117,16 @@ impl Fixture {
         )
         .await?;
         let config = compiled.config;
+        let timeline = access.timeline(
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
+            identity.tenant,
+            &management.cursor_key,
+        )?;
+        timeline.initialize().await?;
         let app = Arc::new(Assembly {
+            timeline,
             content_writer: execution.content.clone(),
             audit_store: access
                 .audit_store(&crate::config::AuditConfig::Plain)

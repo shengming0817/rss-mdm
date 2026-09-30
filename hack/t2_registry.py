@@ -259,6 +259,11 @@ add('installation.migration', selectors=('migration::tests::',), profile='empty'
     sources=('crates/app/src/migration.rs',),
     tests=('crates/app/tests/migration/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
+add('timeline.http',fixtures=('identity',),selectors=('timeline_tests::',),sources=('crates/timeline-service/src/*','crates/timeline-service/schema/*','crates/management-http/src/timeline.rs','crates/registration-service/src/device/read.rs','crates/inventory-service/src/assets/mod.rs','crates/flow-service/src/execution/timeline.rs'),tests=('crates/app/tests/timeline/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
+MODULES['timeline.http']=replace(MODULES['timeline.http'],db_mode='fresh',policies=(
+    CasePolicy('timeline_tests::existing_business_facts_are_queryable_over_real_http','fresh','objects',('identity','windows')),
+    CasePolicy('timeline_tests::administrators_use_existing_access_and_tenant_isolation_is_preserved','fresh','pair',('identity',)),
+))
 for part in ('receipts', 'integrity', 'recovery', 'budget'):
     add('audit.' + part, selectors=(f'audit_integration_tests::{part}::',),
         sources=('crates/audit-integration/src/*', 'crates/audit-integration/src/budget.rs',

@@ -177,3 +177,7 @@ mod source_credentials;
 pub use authorization_bootstrap::{
     Initialize as AuthorizationInitialization, initialize as initialize_authorization,
 };
+
+#[cfg(test)]
+#[path = "../tests/timeline/mod.rs"]
+mod timeline_tests;

@@ -120,6 +120,7 @@ impl Config {
                     Arc::new(crate::automation::inventory_tasks::InventoryTasks),
                 ));
                 let mut service = Flow {
+                    cursor_key: key,
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
                     catalog,
@@ -271,6 +272,7 @@ impl rss_runtime::ManagedResource for Resource {
 mod tests;
 
 pub(crate) struct Flow {
+    pub(crate) cursor_key: Vec<u8>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
     pub(crate) planning: Arc<Planning>,

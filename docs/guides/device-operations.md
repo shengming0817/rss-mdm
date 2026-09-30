@@ -66,3 +66,11 @@ Inventory 与任务各自产生请求，由同一管理响应 owner 分配不冲
 原生关联绑定 tenant/device/registration generation/credential/session/message/command/attempt。回执、观察和底层命令终态分别保存；旧尝试和迟到消息不推进新版本命令。底层命令到期不能覆盖已有写入回执。只有当时有效的原生成功回执（`receiptAccepted: true`）产生 `progress: succeeded`；迟到回执单独留存。观察缺失到期为 `quality: missing`，不改变既有写入成功或 unknown 效果。取消返回实际命令状态；历史终态不会被改写成 cancelled。
 
 安装、升级和后台诊断见 [运维](../deployment/operations.md)。ActionRun 与状态型任务分离，脚本退出码不能转成 Applied；见 [企业任务](enterprise-tasks.md)。
+
+## 设备时间线
+
+管理员通过 `GET /api/v3/devices/{device}/timeline` 检索现有注册、凭据、资产和管理审计事实，可用 `operationId` 和时间区间筛选。入口复用现有管理读取能力；不需要额外申请时间线权限。时间线只呈现已经持久化的事实，受理、请求结算、执行状态和实际效果分别解释；缺失结果保持未知，202 不表示设备执行成功。
+
+排序使用持久记录时间，发生时间另行显示。分页使用响应中的签名游标和相同筛选条件；第一页固定上界，新事实需要重新查询。响应的覆盖进度说明索引追赶情况，未完成追赶不表示设备没有历史事件。字段、筛选和预算的唯一契约见 [timeline-service](../../crates/timeline-service/src/model.rs)。
+
+未保存可信设备关联的历史事实不推测归属，仍可从管理审计入口按 operation 查阅。覆盖进度只说明源记录索引进度，不证明设备生命周期或所有业务阶段齐全。

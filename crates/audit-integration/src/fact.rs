@@ -70,7 +70,7 @@ impl Fact {
         Ok(fact)
     }
     pub fn request(context: &RequestAudit, status: u16, result: &str) -> Result<Self, InvalidFact> {
-        Self::new(
+        let fact = Self::new(
             context,
             "mdm.request",
             &context.request_id().to_string(),
@@ -78,7 +78,11 @@ impl Fact {
             status,
             result,
             None,
-        )
+        )?;
+        match fact.snapshot.device_target.clone() {
+            Some(device) => fact.with_details(serde_json::json!({"deviceId":device})),
+            None => Ok(fact),
+        }
     }
     fn new(
         context: &RequestAudit,

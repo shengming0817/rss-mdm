@@ -22,6 +22,10 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 旧中央身份、会话与新实例不自动映射；历史审计保留原含义。授权设计原因见 [持久授权 ADR](../architecture/adr/202609200002-2363-persistent-authorization.md)，HTTP 形态由 [管理 HTTP](../../crates/management-http/src) 持有。
 
+## 管理审计检索
+
+`GET /api/v3/audit-events` 与设备时间线复用既有 `authorization_read` 管理入口及正常请求上下文，不新增权限项或分页授权读取。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。
+## 运行诊断
 
 运行诊断通过 `GET /api/v2/runtime/diagnostics` 查询；使用现有授权规则，为获准运维主体显式授予
 `{"operation":"runtime_diagnostics_read","scope":{"kind":"tenant"}}`。设备范围无效，既有管理权限不隐式包含此权限。

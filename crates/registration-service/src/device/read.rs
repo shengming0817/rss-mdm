@@ -183,3 +183,27 @@ pub async fn stale_registration_in(
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.device=$3 AND r.generation=$4 AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active'))").bind(tenant).bind(registration).bind(device).bind(generation).fetch_one(c).await
 }
+
+/// Immutable registration association for historical facts; revocation does not erase it.
+pub async fn timeline_device_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: uuid::Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_optional(c)
+    .await
+}
+
+/// Persisted enrollment/grant association remains usable after resume or cancellation.
+pub async fn timeline_enrollment_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: uuid::Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(tenant).bind(id).fetch_optional(c).await
+}

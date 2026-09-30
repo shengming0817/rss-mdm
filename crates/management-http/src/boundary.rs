@@ -205,6 +205,8 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
+        "/api/v3/devices/{device}/timeline" => "timeline_read",
+        "/api/v3/audit-events" => "audit_search",
         "/api/v2/runtime/diagnostics" => "runtime_diagnostics_read",
         "/api/v1/authorization" => "authorization_effective_read",
         "/api/v1/authorization/rules" => "authorization_rules_read",

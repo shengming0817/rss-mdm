@@ -80,7 +80,8 @@ async fn run(
         "inventory_read"
     });
     match &command {
-        Command::Manual { device, .. } | Command::Detail { device, .. } => audit.target(device),
+        Command::Manual { device, .. } => audit.target_device(device),
+        Command::Detail { device, .. } => audit.target(device),
         Command::QueryStatus { task, .. }
         | Command::QueryItems { task, .. }
         | Command::QueryFacets { task, .. } => audit.target(&task.to_string()),
