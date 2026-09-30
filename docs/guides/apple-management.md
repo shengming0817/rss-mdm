@@ -6,7 +6,7 @@
 
 管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v3/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。生命周期整组已切换 v3，旧版本不挂载；Windows 使用 `mdm.windows`，Agent 使用 `agent.builtin`，不接受请求 `channel`。
 
-设备通过 HTTPS `POST /api/v3/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 19、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 返回 410，不建立用户身份。
+设备通过 HTTPS `POST /api/v3/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 19（启用固定 Agent 安装时为 4371）、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 返回 410，不建立用户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
 
 SCEP challenge 在返回 allow 前提交唯一消费事实，绑定 enrollment、签发 attempt、事务 ID、CSR 摘要、公钥和配置身份。相同请求重试也被拒绝。通知丢失时，首次携带匹配有效证书的 Authenticate 可完成绑定；签发响应丢失不能重新签发，须由原管理员 resume，换口令后重新下载 Profile。新 attempt 使用新密钥；活跃已消费公钥不能跨 attempt 复用。
 

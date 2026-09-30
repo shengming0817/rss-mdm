@@ -118,6 +118,7 @@ pub async fn audit_details(
 pub enum ScheduledPolicy {
     Script(ExecutionPolicy),
     Software(SoftwareExecutionPolicy),
+    Enrollment(crate::planning::policies::enrollment::EnrollmentPolicy),
 }
 pub struct TaskIssue {
     pub run: Uuid,
@@ -130,12 +131,14 @@ impl ScheduledPolicy {
         match self {
             Self::Script(v) => v.owner,
             Self::Software(v) => v.owner,
+            Self::Enrollment(v) => v.owner,
         }
     }
     pub fn timeout_seconds(&self) -> u32 {
         match self {
             Self::Script(v) => v.frozen.definition.spec().timeout_seconds,
             Self::Software(v) => v.frozen.run_lifetime_seconds,
+            Self::Enrollment(v) => v.frozen.run_lifetime_seconds,
         }
     }
     pub async fn authorized_in(
@@ -147,6 +150,7 @@ impl ScheduledPolicy {
     ) -> Result<bool> {
         match self {
             Self::Script(v) => v.authorized_in(tx, &target.device, now).await,
+            Self::Enrollment(v) => v.authorized_in(service, tx, target, now).await,
             Self::Software(v) => {
                 let Some((platform, architecture)) =
                     agent_profile_in(service, tx, target.registration).await?
@@ -167,7 +171,9 @@ impl ScheduledPolicy {
     ) -> Result<bool> {
         match self {
             Self::Script(v) => v.withdrawn_in(tx, &target.device).await,
-            Self::Software(_) => Ok(!self.authorized_in(service, tx, target, now).await?),
+            Self::Software(_) | Self::Enrollment(_) => {
+                Ok(!self.authorized_in(service, tx, target, now).await?)
+            }
         }
     }
     pub async fn task(
@@ -178,6 +184,7 @@ impl ScheduledPolicy {
         issue: TaskIssue,
     ) -> Result<rss_mdm_agent_wire::TaskPayload> {
         match self {
+            Self::Enrollment(v) => v.task(service, tx, target, issue).await,
             Self::Script(v) => Ok(v.frozen.task(
                 checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
                 target,
@@ -427,8 +434,16 @@ pub async fn load_policy_version(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<ScheduledPolicy> {
-    let (_, frozen) = crate::planning::policies::storage::version_in(reader, tx, id).await?;
+    let (policy, frozen) = crate::planning::policies::storage::version_in(reader, tx, id).await?;
     match frozen {
+        crate::planning::policies::Frozen::MdmEnrollment { action } => Ok(
+            ScheduledPolicy::Enrollment(crate::planning::policies::enrollment::EnrollmentPolicy {
+                id,
+                owner: policy.id,
+                policy,
+                frozen: *action,
+            }),
+        ),
         crate::planning::policies::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(
             crate::planning::policies::admission::read_in(reader, tx, id).await?,
         )),

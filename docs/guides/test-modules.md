@@ -24,7 +24,7 @@ make ci-full
 | `identity.{local,sso,audit}` | 身份生命周期、联合登录、Identity outbox→Audit worker；不承载资产或任务矩阵。 |
 | `authorization.{rules,membership,capacity,initialization,admission}` | 规则与产品用户组、CAS/撤权、真实容量、初始化恢复和准入；路由权限交叉矩阵只在 rules 执行。 |
 | `enrollment.{http,recovery}`、`device.{binding,revocation,recovery,admission}` | 注册请求生命周期与回执；设备世代、凭据、来源、绑定竞争和撤销分别归属。 |
-| `agent.{registration,reports}` | V3 注册和报告的真实 HTTP/PG 接线；wire 排列仍归 agent-wire T1 和现有 V3 artifact gate。 |
+| `agent.{registration,reports}` | V4 注册和报告的真实 HTTP/PG 接线；wire 排列仍归 agent-wire T1 和现有 V4 artifact gate。 |
 | `inventory.{manual,reader,projection,recovery,process,runtime}`、`examples.cli` | manual/reader 在 Inventory PG；投影、恢复、进程与 CLI 在 examples 的 cfg(test) 模块；App 只验证 intake/runtime 协作。 |
 | `api.{diagnostics,identity_context}`、`host.lifecycle` | API envelope、身份上下文和安全诊断；真实宿主启动、readiness、依赖故障与有界关闭。 |
 | `assets.{http,queries,sources,group_input}` | 资产授权/事务、查询分页、来源质量、资产成为设备 Group 输入；不重复 Group 完整生命周期。 |

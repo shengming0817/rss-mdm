@@ -95,7 +95,7 @@ CREATE TABLE mdm_access.collection_runs (
     CONSTRAINT collection_runs_scope_check CHECK ((octet_length(scope) <= 4096)),
     CONSTRAINT collection_runs_sequence_check CHECK ((sequence >= 0)),
     CONSTRAINT collection_runs_started_at_check CHECK ((started_at >= 0)),
-    CONSTRAINT collection_source_profile CHECK ((((source = 'mdm.windows'::text) AND (apple_approval IS NULL) AND (apple_deadline IS NULL)) OR ((source = ANY (ARRAY['agent.builtin'::text, 'agent.script'::text, 'agent.osquery'::text])) AND (sealed_at IS NOT NULL) AND (result <> 'pending'::text) AND (reason = 'complete'::text) AND (batch IS NOT NULL) AND (apple_approval IS NULL) AND (apple_deadline IS NULL)) OR ((source = 'mdm.apple'::text) AND (apple_approval IS NOT NULL) AND (apple_deadline IS NOT NULL))))
+    CONSTRAINT collection_source_profile CHECK ((((source = 'mdm.windows'::text) AND (apple_approval IS NULL) AND (apple_deadline IS NULL)) OR ((source = ANY (ARRAY['agent.builtin'::text, 'agent.script'::text, 'agent.osquery'::text])) AND (sealed_at IS NOT NULL) AND (result <> 'pending'::text) AND (reason = 'complete'::text) AND (batch IS NOT NULL) AND (apple_approval IS NULL) AND (apple_deadline IS NULL)) OR ((source = 'mdm.apple'::text) AND (apple_deadline IS NOT NULL) AND (((scope::jsonb->>'dataset')='inventory' AND apple_approval IS NOT NULL) OR ((scope::jsonb->>'dataset')='channel.agent.installation' AND apple_approval IS NULL)))))
 );
 
 ALTER TABLE ONLY mdm_access.collection_runs FORCE ROW LEVEL SECURITY;

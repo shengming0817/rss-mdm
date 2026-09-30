@@ -1,32 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v3/report-ack.schema.json",
+  "$id": "https://rss.example/mdm/agent/v4/task-claim-request.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "wireVersion",
-    "reportId",
-    "receivedAt",
-    "intake"
+    "operationId"
   ],
   "properties": {
     "wireVersion": {
-      "const": 3
+      "const": 4
     },
-    "reportId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "receivedAt": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9223372036854775807
-    },
-    "intake": {
-      "const": "durable"
-    }
-  },
-  "$defs": {
-    "nonNilUuid": {
+    "operationId": {
       "type": "string",
       "format": "uuid",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",

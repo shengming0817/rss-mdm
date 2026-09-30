@@ -1,5 +1,5 @@
 use crate::device::DevicePrincipal;
-use crate::execution::channels::{self, AppleCommand, Pending, ProfileTask, Reception};
+use crate::execution::channels::{self, AppleCommand, NativeTask, Pending, Reception};
 use crate::{Error, database::db};
 use rss_mdm_apple_mdm::{profile, protocol as wire};
 use sqlx::{PgConnection, Row};
@@ -128,7 +128,7 @@ impl channels::AppleStore for Store {
             let mut result = Vec::new();
             let mut offset = 0i64;
             while result.len() < limit {
-                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND collection IS NOT NULL AND next_attempt<=clock_timestamp() ORDER BY next_attempt,collection LIMIT 64 OFFSET $3").bind(&tenant).bind(registration).bind(offset).fetch_all(&mut *c).await.map_err(storage)?;
+                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND collection IS NOT NULL AND state IN('pending','sent','not_now') AND deadline>clock_timestamp() AND next_attempt<=clock_timestamp() GROUP BY collection ORDER BY min(next_attempt),collection LIMIT 64 OFFSET $3").bind(&tenant).bind(registration).bind(offset).fetch_all(&mut *c).await.map_err(storage)?;
                 let mut pending = rss_mdm_inventory_service::collection::read::pending_apple_in(
                     c,
                     &tenant,
@@ -172,7 +172,7 @@ impl channels::AppleStore for Store {
         operation: Uuid,
     ) -> Pending<'a, Vec<channels::Observation>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT phase,state,response,received_at FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY phase").bind(tenant).bind(operation).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+            let rows=sqlx::query("SELECT phase,state,response,received_at FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal,phase").bind(tenant).bind(operation).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
             rows.into_iter()
                 .map(|r| {
                     Ok(channels::Observation {
@@ -228,6 +228,13 @@ impl channels::Apple for super::Apple {
         bytes: &'a [u8],
     ) -> Pending<'a, (bool, Vec<rss_mdm_audit_integration::Fact>)> {
         Box::pin(async move {
+            if let Some(facts) =
+                crate::agent_collection::receive(c, p, id, status, dictionary, bytes)
+                    .await
+                    .map_err(channels::Rejection::from)?
+            {
+                return Ok((true, facts));
+            }
             let mut facts = Vec::new();
             let collected =
                 crate::collection::receive(c, &mut facts, p, id, status, dictionary, bytes)
@@ -267,8 +274,19 @@ impl channels::Apple for super::Apple {
         &'a self,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
-    ) -> Pending<'a, Vec<u8>> {
-        Box::pin(async move { crate::collection::send(c, p).await.map_err(Into::into) })
+    ) -> Pending<'a, channels::Reply> {
+        Box::pin(async move {
+            let (mut bytes, facts) =
+                crate::agent_collection::send(c, p, self.agent_identity.as_ref())
+                    .await
+                    .map_err(channels::Rejection::from)?;
+            if bytes.is_empty() {
+                bytes = crate::collection::send(c, p)
+                    .await
+                    .map_err(channels::Rejection::from)?;
+            }
+            Ok(channels::Reply { bytes, facts })
+        })
     }
 }
 async fn current(c: &mut PgConnection, p: &DevicePrincipal, udid: &str) -> Result<(), Error> {
@@ -288,29 +306,48 @@ async fn send_command(
     command: &AppleCommand,
 ) -> Result<Option<Vec<u8>>, Error> {
     let tenant = p.tenant().to_string();
-    let rows=sqlx::query("SELECT id,phase,state,request,next_attempt<=clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY phase FOR UPDATE").bind(&tenant).bind(command.operation).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT id,phase,ordinal,state,request,next_attempt<=clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal DESC,phase FOR UPDATE").bind(&tenant).bind(command.operation).fetch_all(&mut *c).await.map_err(db)?;
+    let agent = matches!(command.task, NativeTask::AgentInstall { .. });
+    if agent {
+        let rights:bool=sqlx::query_scalar("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+        if !rights {
+            return Ok(None);
+        }
+    }
     let phase = if rows.iter().any(|r| {
         r.try_get::<String, _>("phase").ok().as_deref() == Some("execute")
             && r.try_get::<String, _>("state").ok().as_deref() == Some("acknowledged")
+            || (agent
+                && r.try_get::<String, _>("phase").ok().as_deref() == Some("execute")
+                && r.try_get::<String, _>("state").ok().as_deref() == Some("sent"))
     }) {
         "observe"
     } else {
         "execute"
     };
+    let mut ordinal = 0_i32;
     if let Some(row) = rows
         .iter()
         .find(|r| r.try_get::<String, _>("phase").ok().as_deref() == Some(phase))
     {
         let state: String = row.try_get("state").map_err(db)?;
-        if !matches!(state.as_str(), "pending" | "sent" | "not_now")
-            || !row.try_get::<bool, _>("ready").map_err(db)?
-        {
+        if !row.try_get::<bool, _>("ready").map_err(db)? {
             return Ok(None);
         }
-        let id: Uuid = row.try_get("id").map_err(db)?;
-        sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
-        crate::notify(c, "apple").await.map_err(db)?;
-        return row.try_get("request").map(Some).map_err(db);
+        if agent && phase == "observe" && matches!(state.as_str(), "acknowledged" | "error") {
+            ordinal = row.try_get::<i32, _>("ordinal").map_err(db)? + 1;
+            if ordinal > 32 {
+                return Ok(None);
+            }
+        } else {
+            if !matches!(state.as_str(), "pending" | "sent" | "not_now") {
+                return Ok(None);
+            }
+            let id: Uuid = row.try_get("id").map_err(db)?;
+            sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
+            crate::notify(c, "apple").await.map_err(db)?;
+            return row.try_get("request").map(Some).map_err(db);
+        }
     }
     let id = Uuid::new_v4();
     let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -319,30 +356,47 @@ async fn send_command(
         .map_err(db)?;
     let identifier = profile::identifier(&tenant, p.device());
     let payload = if phase == "observe" {
-        wire::dictionary([("RequestType", "ProfileList".into())])
+        match &command.task {
+            NativeTask::AgentInstall { bundle, .. } => {
+                rss_mdm_apple_mdm::agent_install::query(bundle)?
+            }
+            _ => wire::dictionary([("RequestType", "ProfileList".into())]),
+        }
     } else {
-        match command.task {
-            ProfileTask::Install { enabled } => wire::dictionary([
+        match &command.task {
+            NativeTask::AgentInstall {
+                bundle,
+                version,
+                url,
+                sha256,
+            } => rss_mdm_apple_mdm::agent_install::install(
+                bundle,
+                version,
+                url,
+                *sha256,
+                command.operation,
+            )?,
+            NativeTask::Install { enabled } => wire::dictionary([
                 ("RequestType", "InstallProfile".into()),
                 (
                     "Payload",
                     plist::Value::Data(apple.signed_firewall(
                         &identifier,
                         command.operation,
-                        enabled,
+                        *enabled,
                         now,
                     )?),
                 ),
             ]),
-            ProfileTask::Remove => wire::dictionary([
+            NativeTask::Remove => wire::dictionary([
                 ("RequestType", "RemoveProfile".into()),
                 ("Identifier", identifier.into()),
             ]),
         }
     };
     let bytes = wire::command(id, payload)?;
-    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds')")
- .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(command.operation).bind(phase).bind(&bytes).bind(command.deadline as f64).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt,ordinal) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds',$9)")
+ .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(command.operation).bind(phase).bind(&bytes).bind(command.deadline as f64).bind(ordinal).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
     Ok(Some(bytes))
 }

@@ -6,7 +6,7 @@ use crate::{
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
-use rss_mdm_policy::{Behavior, Exit, Frequency, ResourceBinding};
+use rss_mdm_policy::{Action as PolicyAction, Exit, Frequency, ResourceBinding};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -68,7 +68,7 @@ pub struct Remote {
     pub snapshot: Snapshot,
 }
 impl Input {
-    fn behavior(&self, now: i64) -> std::result::Result<Behavior, Error> {
+    fn policy_action(&self, now: i64) -> std::result::Result<PolicyAction, Error> {
         if self.operation_id.is_nil()
             || self.deadline < now.saturating_add(60)
             || self.deadline > now.saturating_add(604800)
@@ -95,7 +95,8 @@ impl Input {
             _ => (),
         }
         let behavior = match &self.action {
-            Action::Execute { parameters } => Behavior::Execution {
+            Action::Execute { parameters } => PolicyAction::Execution {
+                resource: self.resource.clone(),
                 parameters: parameters.clone(),
                 schedule: rss_mdm_policy::schedule::Schedule {
                     trigger: rss_mdm_policy::schedule::Trigger::Once { at: now },
@@ -108,7 +109,10 @@ impl Input {
                 frequency: Frequency::OncePerVersion,
                 run_lifetime_seconds: (self.deadline - now) as u32,
             },
-            Action::ApplyConfiguration => Behavior::Configuration { exit: Exit::Retain },
+            Action::ApplyConfiguration => PolicyAction::Configuration {
+                resource: self.resource.clone(),
+                exit: Exit::Retain,
+            },
         };
         behavior.validate()?;
         Ok(behavior)
@@ -164,7 +168,7 @@ impl Policies {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.manage(Permission::ResourceRead)?;
-        input.behavior(input.deadline.saturating_sub(60))?;
+        input.policy_action(input.deadline.saturating_sub(60))?;
         input.authorize(proof)?;
         let artifact = inspect(
             &self.planning.runtime,
@@ -207,8 +211,8 @@ impl Policies {
             let hash=fingerprint(&(input,proof.user()))?;
             if let Some(receipt)=super::receipts::replay(tx,audit,input.operation_id,&hash).await? {return Ok(receipt);}
             let at=crate::action_admission::now(tx).await?;
-            let behavior=input.behavior(at)?;
-            let frozen=s.freeze_in(tx,&input.resource,&behavior,verified).await?;
+            let behavior=input.policy_action(at)?;
+            let frozen=s.freeze_in(tx,&behavior,verified).await?;
             let snapshot=s.planning.capture_remote_targets_in(tx,&input.targets).await?;
             let tenant=tx.tenant_id().to_string();let id=input.operation_id;let resource=input.resource.id().to_owned();let version=input.resource.version().to_owned();let snapshot=checked_input(serde_json::to_value(snapshot))?;let content=checked_input(serde_json::to_value(frozen))?;let deadline=input.deadline;let author=checked_input(serde_json::to_value(proof.user()))?;
             tx.with_connection(move|c|Box::pin(async move {

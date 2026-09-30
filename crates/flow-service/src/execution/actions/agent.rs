@@ -76,12 +76,13 @@ impl ExecutionService {
                 service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);
             }
             let binding=crate::execution::channels::agent_binding_in(tx,service.agent_store.clone(),p.registration()).await?.ok_or(Error::Forbidden)?;
-            let (script_capable,software_capable)=(binding.script(),binding.software());
+            let (script_capable,software_capable,enrollment_capable)=(binding.script(),binding.software(),binding.enrollment());
             let versions=crate::planning::policies::admission::agent_versions_in(tx,p.registration()).await?;
             for id in versions {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
                 let target=super::model::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
+                    db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Script(_) if script_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,now).await?,
                     _ => (),
@@ -93,7 +94,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Script(_) => script_capable, db::ScheduledPolicy::Software(_) => software_capable };
+                let capable=match &plan { db::ScheduledPolicy::Script(_) => script_capable, db::ScheduledPolicy::Software(_) => software_capable, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_in(service,tx,&run.target,now).await?;
                 if plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
@@ -145,6 +146,15 @@ impl ExecutionService {
             let mut permit=None;
             let mut software_audit=None;
             match input.event() {
+                wire::TaskEvent::EnrollmentResult { outcome } => {
+                    if !matches!(plan,db::ScheduledPolicy::Enrollment(_)) { return Err(Error::Malformed.into()); }
+                    if *outcome==wire::EnrollmentEntryOutcome::Unknown {
+                        run.state.uncertain_result(input.attempt_id())?;
+                    } else {
+                        run.state.result(input.attempt_id(),*outcome==wire::EnrollmentEntryOutcome::Opened)?;
+                    }
+                    run.result=Some(json!({"entryOutcome":outcome}));
+                },
                 wire::TaskEvent::Received=>run.state.received(input.attempt_id(),now)?,
                 wire::TaskEvent::Start=>{
                     if run.state.execution!=Execution::NotStarted{return Err(Error::Conflict.into());}
@@ -268,6 +278,7 @@ impl ExecutionService {
             let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
             if now>=expiry { return Err(Error::Forbidden.into()); }
             match plan {
+                db::ScheduledPolicy::Enrollment(_) => Err(Error::NotFound.into()),
                 db::ScheduledPolicy::Script(script) => {
                     if key.is_some() { return Err(Error::Malformed.into()); }
                     script.frozen.artifact().map_err(Into::into)

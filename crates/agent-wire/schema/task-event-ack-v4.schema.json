@@ -1,18 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v3/task-claim-response.schema.json",
+  "$id": "https://rss.example/mdm/agent/v4/task-event-ack.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "wireVersion",
-    "task",
-    "cancellations"
+    "accepted",
+    "permit",
+    "cancelRequested"
   ],
   "properties": {
     "wireVersion": {
-      "const": 3
+      "const": 4
     },
-    "task": {
+    "accepted": {
+      "const": true
+    },
+    "permit": {
       "oneOf": [
         {
           "type": "null"
@@ -55,7 +59,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 3
+                      "const": 4
                     },
                     "tenantId": {
                       "type": "string",
@@ -264,7 +268,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 3
+                      "const": 4
                     },
                     "tenantId": {
                       "type": "string",
@@ -937,6 +941,144 @@
                       }
                     }
                   }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "wireVersion",
+                    "tenantId",
+                    "deviceId",
+                    "registrationId",
+                    "generation",
+                    "taskId",
+                    "attemptId",
+                    "permit",
+                    "expiresAt",
+                    "platform",
+                    "architecture",
+                    "organization",
+                    "entry"
+                  ],
+                  "properties": {
+                    "wireVersion": {
+                      "const": 4
+                    },
+                    "tenantId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      }
+                    },
+                    "deviceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[^\\p{Cc}]+$"
+                    },
+                    "registrationId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      }
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9223372036854775807
+                    },
+                    "taskId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      }
+                    },
+                    "attemptId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      }
+                    },
+                    "permit": {
+                      "enum": [
+                        "offer",
+                        "start"
+                      ]
+                    },
+                    "expiresAt": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9223372036854775807
+                    },
+                    "platform": {
+                      "enum": [
+                        "windows",
+                        "macos"
+                      ]
+                    },
+                    "architecture": {
+                      "enum": [
+                        "x86_64",
+                        "aarch64"
+                      ]
+                    },
+                    "organization": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      }
+                    },
+                    "entry": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "kind",
+                            "server"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "windows"
+                            },
+                            "server": {
+                              "type": "string",
+                              "maxLength": 2048,
+                              "pattern": "^https://[^/@?#\\s]+/?$"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "kind",
+                            "url"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "macos"
+                            },
+                            "url": {
+                              "type": "string",
+                              "maxLength": 2048,
+                              "pattern": "^https://[^/@?#\\s]+(?:/[^#\\s]*)?$"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
                 }
               ]
             },
@@ -953,35 +1095,8 @@
         }
       ]
     },
-    "cancellations": {
-      "type": "array",
-      "maxItems": 128,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "taskId",
-          "attemptId"
-        ],
-        "properties": {
-          "taskId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            "not": {
-              "const": "00000000-0000-0000-0000-000000000000"
-            }
-          },
-          "attemptId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            "not": {
-              "const": "00000000-0000-0000-0000-000000000000"
-            }
-          }
-        }
-      }
+    "cancelRequested": {
+      "type": "boolean"
     }
   }
 }

@@ -210,6 +210,7 @@ async fn prepare_on(
     let signed = apple.signer.sign(
         &profile::enrollment(
             &profile::EnrollmentProfile {
+                agent_installation: apple.agent_identity.is_some(),
                 scep_url: &apple.config.scep_url,
                 scep_provisioner: &apple.config.scep_provisioner,
                 apns_topic: &apple.config.apns_topic,
@@ -231,8 +232,8 @@ async fn prepare_on(
     )?;
     let registration: String = old.try_get("registration").map_err(db)?;
     let deadline = after.min(now + 3600);
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(password_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
-        .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(apple.authority.issuer_fingerprint().as_slice()).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(password_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
+        .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(apple.authority.issuer_fingerprint().as_slice()).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,certificate,phase,request,state,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'renew',$5,'pending',to_timestamp($6))")
         .bind(tenant).bind(id.to_string()).bind(&registration).bind(generation).bind(request).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(&registration).execute(&mut *c).await.map_err(db)?;

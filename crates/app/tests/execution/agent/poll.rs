@@ -35,9 +35,9 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
         let response = agent_call(
             router,
             Method::POST,
-            "/api/agent/v3/tasks/claim",
+            "/api/agent/v4/tasks/claim",
             Some(case_credential()),
-            Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+            Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
         )
         .await?;
         ensure!(response.0 == StatusCode::OK, "poll paging: {response:?}");

@@ -269,7 +269,7 @@ pub async fn send_on(
         response.commands.extend(request.commands);
         pending = true;
     }
-    let rows=sqlx::query("SELECT o.id::text,o.request::text,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.request->'task'->>'kind' IN ('state_verify','firewall') AND o.gateway_accepted AND d.status IN('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.session=$4 AND o.request->'task'->>'kind'='state_verify') ORDER BY o.id LIMIT 64")
+    let rows=sqlx::query("SELECT o.id::text,o.request::text,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.request->'task'->>'kind' IN ('state_verify','firewall','agent_install') AND o.gateway_accepted AND d.status IN('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.session=$4 AND o.request->'task'->>'kind'='state_verify') ORDER BY o.id LIMIT 64")
  .bind(&tenant).bind(&reg).bind(p.generation()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let op: Create = serde_json::from_str(&row.try_get::<String, _>("request").map_err(db)?)
@@ -278,7 +278,9 @@ pub async fn send_on(
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
         let at = now(c).await?;
-        if !approval.valid(c, op.task.permission(), at).await? {
+        if !approval.valid(c, op.task.permission(), at).await?
+            || !approval.dispatch_ready(c).await?
+        {
             continue;
         }
         let id: String = row.try_get("id").map_err(db)?;
@@ -289,12 +291,13 @@ pub async fn send_on(
             continue;
         };
         let native = crate::collection::store::allocate_commands_in(c, p, 1).await?;
-        let Some(command) = command_for(c, p, &op.task, native, phase, session).await? else {
+        let Some(command) = command_for(c, p, &op, native, phase, session).await? else {
             continue;
         };
         let uri = match &command {
             Command::Get { items, .. } => items[0].target.clone().ok_or_else(protocol)?,
             Command::Replace { .. } => rss_mdm_windows_mdm::configuration::FIREWALL_URI.into(),
+            Command::AgentInstall { command, .. } => command.target().map_err(|_| protocol())?,
             _ => return Err(protocol()),
         };
         let mut request = response.clone();
@@ -317,7 +320,17 @@ fn next_phase(
     session: i64,
 ) -> std::result::Result<NextPhase, Error> {
     let Some(old) = old else {
-        return Ok((Some((1, AttemptPhase::Execute)), false));
+        return Ok((
+            Some((
+                1,
+                if matches!(task, Task::AgentInstall { .. }) {
+                    AttemptPhase::Prepare
+                } else {
+                    AttemptPhase::Execute
+                },
+            )),
+            false,
+        ));
     };
     let ordinal = old
         .try_get::<i64, _>("ordinal")
@@ -328,6 +341,17 @@ fn next_phase(
     let status: Option<i32> = old.try_get("status").map_err(db)?;
     let same = old.try_get::<i64, _>("session").map_err(db)? == session;
     match task {
+        Task::AgentInstall { .. }
+            if phase == AttemptPhase::Prepare
+                && matches!(status, Some(200 | 201))
+                && old
+                    .try_get::<Option<bool>, _>("receipt_accepted")
+                    .map_err(db)?
+                    == Some(true) =>
+        {
+            Ok((Some((ordinal, AttemptPhase::Execute)), false))
+        }
+        Task::AgentInstall { .. } => Ok((None, same && status.is_none())),
         Task::Firewall { .. }
             if phase == AttemptPhase::Execute
                 && status == Some(200)
@@ -353,14 +377,34 @@ fn next_phase(
 async fn command_for(
     c: &mut PgConnection,
     p: &DevicePrincipal,
-    task: &Task,
+    request: &Create,
     native: u32,
     phase: AttemptPhase,
     session: i64,
 ) -> std::result::Result<Option<Command>, Error> {
     let tenant = p.tenant().to_string();
     let reg = p.registration().to_string();
-    let command = match task {
+    let command = match &request.task {
+        Task::AgentInstall { package } => {
+            let crate::planning::policies::agent_install::Identity::Windows { product, .. } =
+                package.identity
+            else {
+                return Ok(None);
+            };
+            let installer = rss_mdm_windows_mdm::agent_install::Installer::new(
+                &product.to_string(),
+                &package.version,
+                &package.url(request.operation_id),
+                package.artifact.sha256,
+                &request.operation_id.to_string(),
+            )
+            .map_err(|_| protocol())?;
+            if phase == AttemptPhase::Prepare {
+                installer.prepare(native)
+            } else {
+                installer.install(native)
+            }
+        }
         Task::ProfileInstall { .. } | Task::ProfileRemove { .. } => return Err(Error::Unsupported),
         Task::StateVerify { field, .. } => get(
             native,

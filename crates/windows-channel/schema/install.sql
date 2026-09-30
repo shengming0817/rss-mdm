@@ -137,6 +137,7 @@ CREATE TABLE mdm_windows.collections (
  request_message bigint NOT NULL CHECK(request_message BETWEEN 1 AND 8),
  first_command bigint NOT NULL CHECK(first_command BETWEEN 1024 AND 4294967294),
  request bytea NOT NULL CHECK(octet_length(request) BETWEEN 1 AND 32768),
+ channel_state jsonb CHECK(octet_length(channel_state::text)<=8192),
  PRIMARY KEY(tenant_id,id)
 );
 CREATE INDEX windows_collection_session ON mdm_windows.collections(tenant_id,registration,session_id,first_command,id);

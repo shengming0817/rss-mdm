@@ -1,4 +1,5 @@
 //! Apple MDM protocol, SCEP lifecycle and APNs transport.
+mod agent_collection;
 pub mod attempt;
 mod checkin;
 pub mod collection;
@@ -36,6 +37,8 @@ pub struct Webhook {
     pub id: String,
 }
 pub struct Apple {
+    pub(crate) agent_identity:
+        Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
     pub(crate) config: Config,
     pub(crate) authority: certificate::AppleDeviceTrust,
     pub(crate) signer: certificate::ProfileSigner,
@@ -53,6 +56,7 @@ impl Apple {
         push: push::Push,
         challenge_key: ring::hmac::Key,
         notify_key: ring::hmac::Key,
+        agent_identity: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
     ) -> Self {
         let configuration = Sha256::digest(
             serde_json::to_vec(&(
@@ -69,6 +73,7 @@ impl Apple {
         )
         .into();
         Self {
+            agent_identity,
             config,
             authority,
             signer,
@@ -77,6 +82,13 @@ impl Apple {
             challenge_key,
             notify_key,
             configuration,
+        }
+    }
+    pub(crate) fn access_rights(&self) -> i32 {
+        if self.agent_identity.is_some() {
+            19 | 256 | 4096
+        } else {
+            19
         }
     }
     pub fn signed_firewall(
@@ -112,6 +124,10 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
         axum::Router::new()
             .route("/checkin", put(checkin::checkin))
             .route("/mdm", put(checkin::manage))
+            .route(
+                "/api/agent/v4/managed-registrations",
+                axum::routing::post(checkin::register_agent),
+            )
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
         envelope,

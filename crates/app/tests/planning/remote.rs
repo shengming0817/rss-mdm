@@ -31,7 +31,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
     .await?;
     let id = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let input = json!({"operationId":id,"resource":policy_definition(resource,case_empty_scope())["resource"],"targets":{"kind":"scope","id":scope},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
+    let input = json!({"operationId":id,"resource":policy_definition(resource,case_empty_scope())["action"]["resource"],"targets":{"kind":"scope","id":scope},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
     let before = pg(&format!(
         "SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{}'",
         case_tenant()
@@ -168,7 +168,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
     let mut devices = crate::test_support::agent::bulk_task_agents(case_device_id(), 129)?;
     devices.extend((0..171).map(|n| format!("unregistered-{n:04}")));
     let bulk = Uuid::new_v4();
-    post(author,router,"/api/v2/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,case_empty_scope())["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+    post(author,router,"/api/v2/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,case_empty_scope())["action"]["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
     let mut owner = worker(base).await?;
     checkpoint(bulk, false).await?;
     crate::test_support::stop_worker(owner).await?;

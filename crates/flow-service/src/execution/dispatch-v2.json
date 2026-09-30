@@ -115,6 +115,167 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "package"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "agent_install"
+                },
+                "package": {
+                  "type": "object",
+                  "required": [
+                    "identity",
+                    "target",
+                    "version",
+                    "artifact",
+                    "source",
+                    "content_origin"
+                  ],
+                  "properties": {
+                    "identity": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "platform",
+                            "product",
+                            "publisher"
+                          ],
+                          "properties": {
+                            "platform": {
+                              "const": "windows"
+                            },
+                            "product": {
+                              "type": "string",
+                              "format": "uuid"
+                            },
+                            "publisher": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "platform",
+                            "receipt",
+                            "bundle",
+                            "team"
+                          ],
+                          "properties": {
+                            "platform": {
+                              "const": "macos"
+                            },
+                            "receipt": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "bundle": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "team": {
+                              "type": "string",
+                              "pattern": "^[A-Z0-9]{10}$"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "target": {
+                      "enum": [
+                        "windows_x86_64",
+                        "windows_aarch64",
+                        "macos_x86_64",
+                        "macos_aarch64"
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifact": {
+                      "type": "object",
+                      "required": [
+                        "reference",
+                        "origin",
+                        "length",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "reference": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "origin": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "length": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "sha256": {
+                          "type": "array",
+                          "minItems": 32,
+                          "maxItems": 32,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "source": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "revision",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "revision": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "sha256": {
+                          "type": "array",
+                          "minItems": 32,
+                          "maxItems": 32,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "content_origin": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
             }
           ]
         }

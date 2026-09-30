@@ -229,7 +229,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     )
     .await?;
     let policy_path = format!("/api/v2/policies/{policy}");
-    let definition = json!({"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"scope":scope,"behavior":{"kind":"configuration","exit":"retain"}});
+    let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"kind":"configuration","exit":"retain"}});
     let mut assigned = definition.clone();
     let empty_scope = uuid::Uuid::new_v4();
     let empty = call(

@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[test]
 fn targets_and_enablement_do_not_create_execution_versions() {
     let id = Uuid::new_v4();
-    let definition:Definition=serde_json::from_value(json!({"resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"scope":"11111111-1111-1111-1111-111111111111","behavior":{"kind":"execution","parameters":{},"runLifetimeSeconds":300}})).unwrap();
+    let definition:Definition=serde_json::from_value(json!({"scope":"11111111-1111-1111-1111-111111111111","action": {"resource": {"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"execution","parameters":{},"runLifetimeSeconds":300}})).unwrap();
     let first = Policy::apply(
         id,
         None,
@@ -50,7 +50,7 @@ fn targets_and_enablement_do_not_create_execution_versions() {
 
 #[test]
 fn invalid_restored_aggregate_cannot_produce_checked_change() {
-    let definition:Definition=serde_json::from_value(json!({"resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"scope":Uuid::new_v4(),"behavior":{"kind":"configuration"}})).unwrap();
+    let definition:Definition=serde_json::from_value(json!({"scope":Uuid::new_v4(),"action": {"resource": {"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration"}})).unwrap();
     let id = Uuid::new_v4();
     for (revision, number, version) in [
         (0, 0, Uuid::nil()),

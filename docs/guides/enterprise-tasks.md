@@ -1,6 +1,6 @@
 # 企业脚本、采集模板与任务
 
-Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v3/resources/{id}`，Agent 使用 `/api/agent/v3` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
+Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v3/resources/{id}`，Agent 使用 `/api/agent/v4` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
 
 ## 配置与内容
 
@@ -49,16 +49,15 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
   "action": "put",
   "enabled": true,
   "definition": {
-    "resource": {"id": "script", "version": "v1", "platform": "macos", "architecture": "aarch64", "variant": "default"},
     "scope": "11111111-1111-1111-1111-111111111111",
-    "behavior": {"kind": "execution", "parameters": {}, "runLifetimeSeconds": 300}
+    "action": {"resource": {"id": "script", "version": "v1", "platform": "macos", "architecture": "aarch64", "variant": "default"},"kind": "execution", "parameters": {}, "runLifetimeSeconds": 300}
   }
 }
 ```
 
 默认签入触发、每执行版本一次、没有结束时间。显式设备也通过 Scope 的直接设备来源表达。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
 
-脚本分配需要 PolicyWrite、ResourceRead、ScopeRead 与设备范围 ScriptExecute；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件批准。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v3` 或 `software.execute.v3`；领取、下载和启动均重新核对凭据、注册世代和当前分配。
+脚本分配需要 PolicyWrite、ResourceRead、ScopeRead 与设备范围 ScriptExecute；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件批准。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v4` 或 `software.execute.v4`；领取、下载和启动均重新核对凭据、注册世代和当前分配。
 
 `frequency` 为 `once_per_version`、`once_per_entry` 或 `every_trigger`。可选 `schedule` 包含 trigger、notBefore、until、jitterSeconds、window 和 misfire。trigger 支持 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration、check_in(minimumSeconds)。`until` 可省略。misfire 为 `{"kind":"coalesce_one"}`（默认）或 `{"kind":"skip","maxLatenessSeconds":30}`；窗口可跨午夜，星期按开始日计算，DST gap 跳过、fold 取较早时刻。
 
@@ -76,7 +75,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 ## Agent 状态与结果
 
-1. `POST /api/agent/v3/tasks/claim`：wireVersion=3、operationId，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
+1. `POST /api/agent/v4/tasks/claim`：wireVersion=4、operationId，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
 2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、企业批准及任务权限。客户端最终核对长度/hash。
 3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion、operationId、attemptId、event。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
 4. 返回 result（exitCode、quality、output、diagnostics）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
@@ -98,8 +97,22 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 ## 软件分配与灰度
 
-同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`behavior.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。`admissionOperation` 必须是当前企业软件版本批准的 operation；撤销后重新批准，需要管理员以新 operation 更新 Policy，生成新的执行版本，旧版本不会自动复活。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 暂停新任务，`enable` 恢复；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
+同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`action.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。`admissionOperation` 必须是当前企业软件版本批准的 operation；撤销后重新批准，需要管理员以新 operation 更新 Policy，生成新的执行版本，旧版本不会自动复活。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 暂停新任务，`enable` 恢复；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
 
 Agent 只收到单次可执行任务，不消费 Policy、Scope、灰度、Catalog 身份或企业批准 operation。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。`startMode:user_initiated` 表示可选任务须经可信本地用户操作后才能请求 Start，`automatic` 表示可自动开始。Offer 仅用于准备和下载，过期后不能继续取内容；Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
 
 `GET /api/v2/policies/{id}/software/rollout` 返回每阶段当前总目标、已回报、等待用户、未知、等待重启、明确失败、核实成功和无可用软件能力设备数，以及暂停、时间与可选门槛。自选任务被领取且尚未启动、Offer 仍有效时，逐 Run 的 `userAction` 与灰度统计显示 `waiting_user`。阶段历史按稳定 Scope 身份归属，重排阶段不会复用其他 Scope 的结果。Policy 预览和设备页另外返回服务端计算的闭合 `taskAdmission` 原因，不把单纯 Scope 命中称为可执行。读取要求 PolicyRead 与全设备 OperationRead；这些是当前动态目标的统计，历史任务证据不被重算。真实设备身份、可信用户交互和软件执行适配由 #2564 消费本协议，平台 T3 由 #2480/#2481 验收。
+
+## 通道接入策略
+
+MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
+
+`action:{kind:"ensure_agent_installed",resource:{kind:"software",id,version,variants},admissionOperation,runLifetimeSeconds}` 仅引用当前批准的固定 Agent 软件。发布需要覆盖未来成员的全设备 SoftwareDeploy 与 Enrollment 授权；它们随策略冻结，后续执行仍核对实际权限。Windows 采用固定 ProductID 的 Add/Exec；macOS 采用固定 PKG Manifest。版本、SHA-256、发布身份、无自定义参数和无依赖均需匹配部署 pin。已有 Agent 不自动升级，Scope 退出阻止尚未派发的新安装；已派发安装可在原期限内完成独立 Agent 注册，但当前策略版本、实际权限、软件批准和来源世代仍须有效。Scope 退出不卸载 Agent。重叠策略和重复报告共享来源注册下的一次安装；结果未知先继续查询，不重新运行安装器。单个操作仍受原始期限、取消及普通命令容量限制。
+
+安装配置默认关闭。部署 `agent_installation`：`content_origin` 为公开 HTTPS 内容服务根地址；`packages` 按 `windows_x86_64`、`windows_aarch64`、`macos_x86_64`、`macos_aarch64` 选择实际发布组合，每项包含 `identity`、`package`、`version`、`sha256`（32 个字节的 JSON 数组）。Windows identity 为 `{platform:"windows",product:"ProductID UUID",publisher:"签名发布者"}`；macOS 为 `{platform:"macos",receipt:"PKG receipt",bundle:"Agent bundle ID",team:"10 字符 Team ID"}`。这些值必须与普通 Software 目录中审核、上传、激活和批准的 release 相同。同平台不同架构必须使用同一产品身份。
+
+Apple 新注册 profile 在启用该能力时申请已安装应用查询与企业应用安装 AccessRights；既有 profile 不会因服务器配置更新获得权限，需通过正常注册流程更新。采集要求 macOS 12+ 的明确 IsAppleSilicon 结果；Windows 只对明确的 64 位架构证据选择包。固定内容下载只暴露批准的包，不承载秘密，并复用单段 Range/ETag 和撤销检查。应分别读取操作中的原生 delivery、installation、独立 agentRegistration 与 capabilities；Acknowledged 不能证明安装完成。macOS 的 InstalledApplicationList 只证明同 bundle/version 的应用存在，不能核实签名 Team ID 或 PKG receipt，因此采集、策略诊断及原生 installation 均保持 unknown，不判 already_satisfied，也不据此重装。独立 Agent 注册及能力仍单独显示；配置中的 receipt/team 是批准产物的身份约束，不是设备侧签名证明。
+
+`action:{kind:"request_mdm_enrollment",organization:"本租户 UUID",runLifetimeSeconds}` 使用部署 `enrollment_entries:{windows:"https://发现服务域名",macos:"https://注册页面"}`，需要全设备 Enrollment 权限和 Agent 的 `mdm.enrollment.v4` 能力。任务有签名 Offer/Start permit，Windows 打开标准注册 UI，macOS 打开 HTTPS 注册页面，保留系统、账户和用户确认。`enrollment_result` 的 `opened`、`user_required`、`third_party_conflict`、`unsupported`、`failed`、`unknown` 分开保存；取消使用独立的 `{kind:"cancelled"}` 事件。opened 不证明 MDM 已注册。自动触发在同一 Agent 注册下去重；未知执行阻止重试，管理员显式 rerun 仍受当前权限、观察、期限和取消约束。
+
+两种动作分别配置与启停，不依赖另一通道先完成，也不使用跨通道设备关联。物理设备关联由 #2578 持有；生产 Agent 和安装包由独立客户端任务消费本契约。

@@ -28,3 +28,7 @@ pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
 pub mod storage;
+
+/// Exact read-only execution authority required by native Agent registration.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");

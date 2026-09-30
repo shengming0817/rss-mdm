@@ -1,10 +1,11 @@
-//! Agent V3 ingress; request fields carry no tenant or registration authority.
+//! Agent V4 ingress; request fields carry no tenant or registration authority.
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_flow_service::{Error, Failure};
 use rss_mdm_inventory_service::collection;
 use rss_mdm_registration_service::{device, enrollment};
 mod bindings;
 mod database;
+mod managed;
 pub use bindings::Bindings;
 pub use database::Store;
 mod content;
@@ -373,6 +374,18 @@ async fn report_inner(
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
+    let scope = if matches!(input.body(), wire::ReportBody::MdmEnrollment { .. }) {
+        crate::device::scope_dataset(
+            principal.tenant(),
+            principal.registration(),
+            InventorySource::AgentBuiltin.as_str(),
+            Uuid::parse_str(scope.epoch().as_str()).map_err(|_| Error::Malformed)?,
+            FieldKey::MdmEnrollment.as_str(),
+        )
+        .map_err(Error::from)?
+    } else {
+        scope
+    };
     let batch = batch(&input)?;
     let fingerprint = batch.fingerprint(&scope).map_err(|_| Error::Malformed)?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
@@ -382,7 +395,7 @@ async fn report_inner(
         |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
                 |(principal, scope, _input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;crate::collection::agent::accept_in(c,principal,scope,batch).await.map_err(Error::from)})).await?;
-            let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
+            let result = match input.body() { wire::ReportBody::Snapshot(_) | wire::ReportBody::MdmEnrollment { .. } => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
             let fact = rss_mdm_audit_integration::Fact::business(audit,
                 &format!("agent-report:{}", input.report_id()), fingerprint.as_slice(), 202, "success", None)
                 .and_then(|fact| fact.with_details(serde_json::json!({"reportId":input.report_id(),"collectionResult":result,"receivedAt":received_at})))
@@ -475,24 +488,7 @@ async fn status_inner(
 }
 
 fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentError> {
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    let version = value
-        .get("wireVersion")
-        .and_then(Value::as_u64)
-        .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if version != u64::from(wire::WIRE_VERSION) {
-        return Err(AgentError::Wire(wire::ErrorCode::UnsupportedWire));
-    }
-    let capabilities = value
-        .get("capabilities")
-        .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    let capabilities: Vec<wire::Capability> = serde_json::from_value(capabilities.clone())
-        .map_err(|_| AgentError::Wire(wire::ErrorCode::UnsupportedCapability))?;
-    if !wire::supported_capabilities(&capabilities) {
-        return Err(AgentError::Wire(wire::ErrorCode::UnsupportedCapability));
-    }
-    serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
+    wire::RegistrationRequest::decode(body).map_err(AgentError::Wire)
 }
 fn json_content_type(headers: &HeaderMap) -> Result<(), AgentError> {
     if headers.get_all(header::CONTENT_TYPE).iter().count() != 1
@@ -557,6 +553,12 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
         })
         .collect::<Result<Vec<_>, AgentError>>()?;
     let body = match input.body() {
+        wire::ReportBody::MdmEnrollment { state } => Body::Snapshot(vec![Change::upsert(
+            Id::new(FieldKey::MdmEnrollment.as_str()).expect("fixed field"),
+            rss_mdm_inventory::CollectedValue::Known(state.as_str().into())
+                .encode(FieldKey::MdmEnrollment)
+                .map_err(|_| Error::Malformed)?,
+        )]),
         wire::ReportBody::Snapshot(_) => Body::Snapshot(changes),
         wire::ReportBody::Partial(_) => Body::Partial(changes),
         wire::ReportBody::Failed { code } => Body::Failed {
@@ -572,7 +574,11 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
         Id::new(input.report_id().to_string()).map_err(|_| Error::Malformed)?,
         input.sequence(),
         rss_contract::Timepoint::try_from(input.observed_at()).map_err(|_| Error::Malformed)?,
-        rss_mdm_inventory::coverage(),
+        if matches!(input.body(), wire::ReportBody::MdmEnrollment { .. }) {
+            rss_mdm_inventory::channel_coverage(FieldKey::MdmEnrollment)
+        } else {
+            rss_mdm_inventory::coverage()
+        },
         body,
     )
     .map_err(|_| Error::Malformed.into())

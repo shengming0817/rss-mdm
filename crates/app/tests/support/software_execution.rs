@@ -51,8 +51,8 @@ pub(crate) async fn event_with(
             Value::Null
         };
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v3/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
-        Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v4/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
+        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) async fn claim(router: &Router) -> Result<Value> {
     claim_with(router, case_credential()).await
@@ -63,9 +63,9 @@ pub(crate) async fn claim_with(router: &Router, credential: &str) -> Result<Valu
             let response = agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v3/tasks/claim",
+                "/api/agent/v4/tasks/claim",
                 Some(credential),
-                Some(json!({"wireVersion":3,"operationId":Uuid::new_v4()})),
+                Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
             )
             .await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
@@ -106,7 +106,7 @@ pub(crate) enum Platform {
 }
 
 /// A real authorized session, one Agent/Scope, and an approved dependency/root pair.
-/// Behavior assertions belong to callers; only the requested platform is prepared.
+/// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
     pub(crate) base: Value,
     pub(crate) router: Router,
@@ -195,8 +195,8 @@ impl Fixture {
             .await?;
         ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
         author.operation = None;
-        let registration=agent_call(&router,Method::POST,"/api/agent/v3/registrations",None,
-            Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.basic.v3","software.execute.v3"]}))).await?;
+        let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,
+            Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.basic.v4","software.execute.v4"]}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "registration: {registration:?}"
@@ -405,5 +405,5 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     Ok(Some(stack))
 }
 pub(crate) fn authored(resource: Uuid, scope: Uuid, intent: &str, operation: &Value) -> Value {
-    json!({"resource":{"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"scope":scope,"behavior":{"kind":"software","intent":intent,"admissionOperation":operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})
+    json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":intent,"admissionOperation":operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})
 }

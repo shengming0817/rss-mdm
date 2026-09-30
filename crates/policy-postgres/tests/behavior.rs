@@ -199,7 +199,7 @@ async fn admission_rejects_schema_and_reachable_privilege_drift() {
 #[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
 async fn explicit_trigger_does_not_edit_configuration() {
     let mut definition = definition();
-    definition.behavior = serde_json::from_value(
+    definition.action = serde_json::from_value(
         serde_json::json!({"kind":"execution","parameters":{},"runLifetimeSeconds":300}),
     )
     .unwrap();

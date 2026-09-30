@@ -483,3 +483,44 @@ pub async fn lock_reference_in(
         crate::error::decode_domain("store::lock_reference_in", stored.resource.state(version))?;
     Ok(Ok((value.clone(), state)))
 }
+
+/// Check one immutable active version on a caller-owned tenant connection.
+/// Uses the same resource lock as publication; never commits or grants authority.
+pub async fn active_version_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: &Id,
+    version: &Id,
+    digest: [u8; 32],
+) -> Result<bool, PgError> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
+            .fetch_one(&mut *c)
+            .await?;
+    if current.as_deref() != Some(&tenant.to_string()) {
+        return Err(STORAGE.fault("store::active_version_on"));
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")
+        .bind(format!("mdm_resource:{tenant}:resource:{}", id.as_str()))
+        .execute(&mut *c)
+        .await?;
+    let row=sqlx::query("SELECT a.document,a.digest,v.document AS version_document,v.digest AS version_digest FROM mdm_resource.aggregates a JOIN mdm_resource.immutable v ON(v.tenant_id,v.owner)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.id=$2 AND v.kind='version' AND v.key=$3")
+        .bind(tenant.to_string()).bind(id.as_str()).bind(version.as_str()).fetch_optional(c).await?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let header = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
+    let bytes = STORAGE.checked(
+        row.try_get("version_document")?,
+        row.try_get("version_digest")?,
+    )?;
+    let stored = codec::read_version(&bytes)?;
+    if stored.tenant() != tenant
+        || stored.resource() != id
+        || stored.label() != version
+        || stored.digest().bytes() != digest
+    {
+        return Ok(false);
+    }
+    codec::active_header(&header, tenant, id, version)
+}

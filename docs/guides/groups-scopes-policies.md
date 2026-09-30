@@ -1,6 +1,6 @@
 # 组、范围与 Policy
 
-Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配资源。管理入口是 `/api/v2`，资源入口是 `/api/v3`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
+Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v2`，资源入口是 `/api/v3`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
 动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。预览保存独立计算结果，不发布正式成员、不产生执行。计算检查点固定输入水位并分页恢复；新输入合并到待处理水位，旧计算完成后自动追赶。
 
@@ -13,3 +13,5 @@ Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制
 后台任务返回稳定 task 身份；冲突导致替代任务时，状态返回 replacement_task。结果页的 nextCursor 原样续读，不能用固定前 N 台设备代替分页。Group/Scope 任务与派生结果除管理权限外还要求全设备 inventory_read，每页重验。
 
 已发布策略归组织持有，发布者离职或会话过期不会使策略失效。停用或修改分配需要当前管理员授权。命令失败、命令到期与持续分配状态分别保存；缺少注册或能力不会删除配置分配。脚本 Unknown 不自动重试，退出不虚构副作用撤销。
+
+通道接入使用 `ensure_agent_installed` 与 `request_mdm_enrollment` 两个独立 Action。当前来源注册世代的明确安装/注册观察经动态 Group 和 Scope 触发；Unknown、来源失败和其它组织冲突都不视为缺失，也不用最后连接时间或任意 TTL 推断缺失。发布后保留实际 SoftwareDeploy/Enrollment 授权依据并在执行时重验；浏览器会话退出不撤回分配，权限撤回会阻止新副作用。两端拥有独立 DeviceId、注册、数据与策略，详见[企业任务](enterprise-tasks.md)。

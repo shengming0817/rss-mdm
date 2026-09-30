@@ -464,7 +464,7 @@ pub(crate) async fn wait_agent_status(
             let (status, body) = agent_call(
                 router,
                 Method::GET,
-                &format!("/api/agent/v3/reports/{report_id}"),
+                &format!("/api/agent/v4/reports/{report_id}"),
                 Some(credential),
                 None,
             )
@@ -581,3 +581,5 @@ pub(crate) fn secret(label: &str) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     Sha256::digest(case::name(label).as_bytes()).into()
 }
+
+pub(crate) mod channel_onboarding;

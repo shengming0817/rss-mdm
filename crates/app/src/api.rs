@@ -157,15 +157,34 @@ pub(crate) fn from_compiled(
         .strip_prefix("https://")
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
+    let native_agent = execution.agent_installation.clone();
     let windows = config
         .native_protocols
         .windows
-        .map(|config| crate::windows::Windows::load(config, clock.unix_seconds()?).map(Arc::new))
+        .map(|config| {
+            crate::windows::Windows::load(
+                config,
+                clock.unix_seconds()?,
+                native_agent
+                    .identity(rss_mdm_policy::Platform::Windows)
+                    .cloned(),
+            )
+            .map(Arc::new)
+        })
         .transpose()?;
     let apple = config
         .native_protocols
         .apple
-        .map(|config| crate::apple::Apple::load(config, clock.unix_seconds()?).map(Arc::new))
+        .map(|config| {
+            crate::apple::Apple::load(
+                config,
+                clock.unix_seconds()?,
+                native_agent
+                    .identity(rss_mdm_policy::Platform::Macos)
+                    .cloned(),
+            )
+            .map(Arc::new)
+        })
         .transpose()?;
     let content_writer = execution.content.clone();
     let state = Arc::new(Assembly {
@@ -390,7 +409,7 @@ pub(crate) fn from_state(
             apple_boundary,
         ))
         .nest(
-            "/api/agent/v3",
+            "/api/agent/v4",
             rss_mdm_agent_channel::router(agent, agent_boundary.clone()).merge(
                 rss_mdm_agent_channel::task_router(
                     Arc::new(rss_mdm_agent_channel::TaskState {

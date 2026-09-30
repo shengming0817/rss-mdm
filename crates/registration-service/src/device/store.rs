@@ -309,21 +309,46 @@ pub async fn bind_in(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     retirement: &dyn crate::Retirement,
 ) -> Result<RegistrationReceipt, Error> {
+    bind_authorized_in(
+        tx,
+        admin.tenant_id(),
+        credential,
+        command,
+        device,
+        ids,
+        facts,
+        Some(retirement),
+    )
+    .await
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one shared registration mutation for user and policy authority"
+)]
+pub(crate) async fn bind_authorized_in(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    credential: &VerifiedChannelCredential,
+    command: &BindRegistration,
+    device: String,
+    ids: [Uuid; 3],
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    retirement: Option<&dyn crate::Retirement>,
+) -> Result<RegistrationReceipt, Error> {
+    if credential.tenant.to_string() != tenant {
+        return Err(Error::Forbidden);
+    }
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
-        .bind(format!(
-            "request:{}:{}",
-            admin.tenant_id(),
-            command.request_id
-        ))
+        .bind(format!("request:{}:{}", tenant, command.request_id))
         .execute(&mut *tx)
         .await
         .map_err(db)?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid)")
-            .bind(admin.tenant_id()).bind(command.request_id.to_string()).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
+            .bind(tenant).bind(command.request_id.to_string()).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
     let request_source: String = sqlx::query_scalar(
         "SELECT source FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2::uuid",
     )
-    .bind(admin.tenant_id())
+    .bind(tenant)
     .bind(command.request_id.to_string())
     .fetch_optional(&mut *tx)
     .await
@@ -332,33 +357,33 @@ pub async fn bind_in(
     if request_source != command.source.as_str() || command.source != credential.source {
         return Err(Error::Forbidden);
     }
-    lock_channel(tx, admin.tenant_id(), &device, credential.channel).await?;
+    lock_channel(tx, tenant, &device, credential.channel).await?;
     let current:i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3")
-            .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
+            .bind(tenant).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
     if current != command.expected_generation {
         return Err(Error::Conflict);
     }
     let generation = current.checked_add(1).ok_or(Error::Conflict)?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND channel=$2 AND locator=$3)")
-            .bind(admin.tenant_id()).bind(credential.channel.as_str()).bind(locator(credential)).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
+            .bind(tenant).bind(credential.channel.as_str()).bind(locator(credential)).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
     // Registration row locks serialize authorization and replacement in a consistent order.
     let active = sqlx::query("SELECT id::text AS id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND state='active' FOR UPDATE")
-            .bind(admin.tenant_id()).bind(&device).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?;
+            .bind(tenant).bind(&device).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = active {
         crate::lifecycle::retire(
             tx,
             facts,
-            admin.tenant_id(),
+            tenant,
             uuid(&row, "id")?,
             "superseded",
-            retirement,
+            retirement.ok_or(Error::Conflict)?,
         )
         .await?;
     }
     sqlx::query(
         "INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING",
     )
-    .bind(admin.tenant_id())
+    .bind(tenant)
     .bind(&device)
     .execute(&mut *tx)
     .await
@@ -374,12 +399,12 @@ pub async fn bind_in(
         epoch: ids[2],
     };
     sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,'active')")
-            .bind(admin.tenant_id()).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).execute(&mut *tx).await.map_err(db)?;
+            .bind(tenant).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,'active')")
-            .bind(admin.tenant_id()).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut *tx).await.map_err(unique_or_db)?;
+            .bind(tenant).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut *tx).await.map_err(unique_or_db)?;
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,$5,true)")
-            .bind(admin.tenant_id()).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).bind(coverage_key()).execute(&mut *tx).await.map_err(db)?;
-    enterprise_sources(tx, admin.tenant_id(), &receipt).await?;
+            .bind(tenant).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).bind(coverage_key()).execute(&mut *tx).await.map_err(db)?;
+    enterprise_sources(tx, tenant, &receipt).await?;
     Ok(receipt)
 }
 

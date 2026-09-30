@@ -93,6 +93,7 @@ pub async fn download(
     let (attempt, replayed) = prepared(c, apple, auth, proof.tenant_id(), &deadline).await?;
     let bytes = apple.signer.sign(
         &profile::enrollment(&profile::EnrollmentProfile {
+                agent_installation: apple.agent_identity.is_some(),
             scep_url: &apple.config.scep_url,
             scep_provisioner: &apple.config.scep_provisioner,
             apns_topic: &apple.config.apns_topic,
@@ -104,7 +105,7 @@ pub async fn download(
     Ok::<_, Error>((attempt, replayed, bytes))
 
                 })).await?;
-            let fingerprint = rss_mdm_registration_service::enrollment::digest(&(auth.id, auth.version, attempt, &apple.configuration));
+            let fingerprint = rss_mdm_registration_service::enrollment::digest(&(auth.id, auth.version, attempt, &apple.configuration, apple.access_rights()));
             let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-profile:{attempt}"),
                 fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(Error::from)?;
             app.audit_store.append(tx, &fact, replayed).await.map_err(Error::from)?;
@@ -134,19 +135,20 @@ async fn prepared(
     tenant: &str,
     deadline: &str,
 ) -> Result<(Uuid, bool), Error> {
-    let old=sqlx::query("SELECT id::text,state,configuration FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND password_version=$3 FOR UPDATE")
+    let old=sqlx::query("SELECT id::text,state,configuration,access_rights FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND password_version=$3 FOR UPDATE")
         .bind(tenant).bind(auth.id.to_string()).bind(auth.version).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = old {
         if row.try_get::<String, _>("state").map_err(db)? != "prepared"
             || row.try_get::<Vec<u8>, _>("configuration").map_err(db)? != apple.configuration
+            || row.try_get::<i32, _>("access_rights").map_err(db)? != apple.access_rights()
         {
             return Err(Error::Conflict);
         }
         return uuid(&row, "id").map(|id| (id, true)).map_err(Error::from);
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz)")
-        .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(apple.authority.issuer_fingerprint().as_slice()).bind(auth.version).bind(deadline).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,access_rights) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8)")
+        .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(apple.authority.issuer_fingerprint().as_slice()).bind(auth.version).bind(deadline).bind(apple.access_rights()).execute(&mut *tx).await.map_err(db)?;
     Ok((id, false))
 }
 pub async fn challenge(
@@ -498,8 +500,8 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     persist_leaf(tx, &tenant, leaf).await?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='bound',registration=$3::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(&tenant).bind(leaf.attempt().to_string()).bind(receipt.registration.to_string()).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state) VALUES($1::uuid,$2::uuid,$3,'pending_token')")
-        .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) SELECT $1::uuid,$2::uuid,$3,'pending_token',access_rights FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$4")
+        .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
     crate::notify(tx, "apple").await.map_err(db)?;
     rss_mdm_registration_service::enrollment::store::mark_bound_in(tx, &tenant, auth, false)
         .await?;

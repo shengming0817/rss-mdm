@@ -8,7 +8,7 @@ use crate::{
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
-use rss_mdm_policy::{Behavior, Definition, Exit, Frequency, ResourceBinding, SoftwareIntent};
+use rss_mdm_policy::{Action, Definition, Exit, Frequency, ResourceBinding, SoftwareIntent};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,9 @@ use sqlx::Row;
 use uuid::Uuid;
 
 pub mod admission;
+pub mod agent_install;
+pub mod enrollment;
+pub mod onboarding;
 pub mod preview;
 pub mod reconcile;
 pub mod rerun;
@@ -40,6 +43,12 @@ pub enum Frozen {
     Software {
         action: Box<FrozenSoftwareAction>,
     },
+    AgentInstall {
+        action: Box<agent_install::FrozenInstall>,
+    },
+    MdmEnrollment {
+        action: Box<enrollment::FrozenEnrollment>,
+    },
 }
 pub struct Policies {
     pub planning: std::sync::Arc<super::Planning>,
@@ -59,7 +68,9 @@ impl Policies {
         proof.manage(Permission::PolicyWrite)?;
         // Verify content outside the database transaction, then bind that proof again at publication.
         let artifact = if let Change::Put { definition, .. } = &op.input {
-            proof.manage(Permission::ResourceRead)?;
+            if definition.action.resource().is_some() {
+                proof.manage(Permission::ResourceRead)?;
+            }
             definition.validate()?;
             authorize(proof, definition)?;
             inspect(
@@ -69,16 +80,22 @@ impl Policies {
                 |ctx, tx| {
                     Box::pin(async move {
                         let (s, d) = *ctx;
-                        let version = s.resource_in(tx, &d.resource).await?;
-                        if matches!(d.behavior, Behavior::Software { .. }) {
-                            if d.resource.software().is_none()
+                        let Some(binding) = d.action.resource() else {
+                            return Ok(None);
+                        };
+                        let version = s.resource_in(tx, binding).await?;
+                        if matches!(
+                            d.action,
+                            Action::Software { .. } | Action::EnsureAgentInstalled { .. }
+                        ) {
+                            if binding.software().is_none()
                                 || version.kind() != resource::Kind::Software
                             {
                                 return Err(Error::Malformed.into());
                             }
                             Ok(None)
                         } else {
-                            let variant = variant(&version, &d.resource)?;
+                            let variant = variant(&version, binding)?;
                             Ok(match variant.declaration() {
                                 resource::Declaration::Script { artifact, .. } => {
                                     Some(artifact.clone())
@@ -117,7 +134,7 @@ impl Policies {
                     let (s, p, id, op, audit, verified) = *ctx;
                     let authorization = crate::action_admission::current(tx, p).await?;
                     authorization.require(p, Permission::PolicyWrite, None)?;
-                    if matches!(op.input, Change::Put { .. }) {
+                    if matches!(&op.input, Change::Put { definition, .. } if definition.action.resource().is_some()) {
                         authorization.require(p, Permission::ResourceRead, None)?;
                     }
                     crate::transaction::lock(tx).await?;
@@ -148,14 +165,18 @@ impl Policies {
                     let policy = changed_policy.policy;
                     authorize_snapshot(&authorization, p, &policy.definition)?;
                     if changed {
-                        let frozen = s
+                        let frozen = if matches!(policy.definition.action, Action::EnsureAgentInstalled { .. }) {
+                            Frozen::AgentInstall { action: Box::new(s.freeze_agent_in(tx,p,&authorization,&policy.definition.action).await?) }
+                        } else if matches!(policy.definition.action, Action::RequestMdmEnrollment { .. }) {
+                            if s.execution.signer.is_none() { return Err(Error::Unsupported.into()); }
+                            Frozen::MdmEnrollment { action: Box::new(enrollment::freeze(p, &authorization, &policy.definition.action, &s.execution.enrollment_entries)?) }
+                        } else { s
                             .freeze_in(
                                 tx,
-                                &policy.definition.resource,
-                                &policy.definition.behavior,
+                                &policy.definition.action,
                                 verified,
                             )
-                            .await?;
+                            .await? };
                         storage::write_in(
                             &s.planning.policy_store,
                             tx,
@@ -217,21 +238,21 @@ impl Policies {
     pub async fn freeze_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        binding: &ResourceBinding,
-        behavior: &Behavior,
+        action: &Action,
         verified: Option<&rss_mdm_content_service::Verified>,
     ) -> Result<Frozen> {
+        let binding = action.resource().ok_or(Error::Unsupported)?;
         let version = self.resource_in(tx, binding).await?;
         if let (
             ResourceBinding::Software(selection),
-            Behavior::Software {
+            Action::Software {
                 intent,
                 admission_operation,
                 schedule,
                 run_lifetime_seconds,
                 ..
             },
-        ) = (binding, behavior)
+        ) = (binding, action)
         {
             if version.kind() != resource::Kind::Software {
                 return Err(Error::Malformed.into());
@@ -296,6 +317,7 @@ impl Policies {
             if approval != Some(*admission_operation) {
                 return Err(Error::Conflict.into());
             }
+            let action_definition = action;
             let action = FrozenSoftwareAction {
                 resource_digest: version.digest().bytes(),
                 resource: binding.id().to_owned(),
@@ -308,9 +330,8 @@ impl Policies {
             };
             let draft = software::SoftwareExecutionPolicy::draft(
                 Definition {
-                    resource: binding.clone(),
                     scope: Uuid::nil(),
-                    behavior: behavior.clone(),
+                    action: action_definition.clone(),
                 },
                 action.clone(),
             );
@@ -351,13 +372,14 @@ impl Policies {
         }
         let v = variant(&version, binding)?;
         let exact = binding.exact().ok_or(Error::Malformed)?;
-        match (behavior, v.declaration()) {
+        match (action, v.declaration()) {
             (
-                Behavior::Execution {
+                Action::Execution {
                     parameters,
                     schedule,
                     frequency,
                     run_lifetime_seconds,
+                    ..
                 },
                 resource::Declaration::Script {
                     artifact,
@@ -399,7 +421,7 @@ impl Policies {
                 })
             }
             (
-                Behavior::Configuration { exit },
+                Action::Configuration { exit, .. },
                 resource::Declaration::Configuration { remove, .. },
             ) => {
                 if matches!(exit, Exit::Remove) && remove.is_none() {
@@ -428,11 +450,15 @@ pub fn authorize_snapshot(
     proof: &AuthorizedPrincipal,
     definition: &Definition,
 ) -> std::result::Result<(), Error> {
-    let permission = match definition.behavior {
-        Behavior::Execution { .. } => Permission::ScriptExecute,
-        Behavior::Configuration { .. } => Permission::FirewallWrite,
-        Behavior::Software { .. } => Permission::SoftwareDeploy,
+    let permission = match definition.action {
+        Action::Execution { .. } => Permission::ScriptExecute,
+        Action::Configuration { .. } => Permission::FirewallWrite,
+        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
+        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
     };
+    if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
+        snapshot.require_all_devices(proof, Permission::Enrollment)?;
+    }
     snapshot.require(proof, Permission::ScopeRead, None)?;
     snapshot.require_all_devices(proof, permission)?;
     Ok(())
@@ -441,11 +467,15 @@ pub fn authorize(
     proof: &AuthorizedPrincipal,
     definition: &Definition,
 ) -> std::result::Result<(), Error> {
-    let permission = match definition.behavior {
-        Behavior::Execution { .. } => Permission::ScriptExecute,
-        Behavior::Configuration { .. } => Permission::FirewallWrite,
-        Behavior::Software { .. } => Permission::SoftwareDeploy,
+    let permission = match definition.action {
+        Action::Execution { .. } => Permission::ScriptExecute,
+        Action::Configuration { .. } => Permission::FirewallWrite,
+        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
+        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
     };
+    if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
+        proof.require_all_devices(Permission::Enrollment)?;
+    }
     proof.manage(Permission::ScopeRead)?;
     proof.require_all_devices(permission).map_err(Error::from)
 }

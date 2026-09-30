@@ -277,3 +277,38 @@ pub(crate) fn restore(
         }),
     )
 }
+
+pub(crate) fn active_header(
+    bytes: &[u8],
+    tenant: TenantId,
+    resource: &Id,
+    version: &Id,
+) -> Result<bool, PgError> {
+    let value: Value = STORAGE.decode(bytes)?;
+    let a = array(&value, 6)?;
+    if n(&a[0])? != 1
+        || s(&a[1])? != tenant.to_string()
+        || s(&a[2])? != resource.as_str()
+        || read_kind(&a[3])? != Kind::Software
+    {
+        return Err(STORAGE.fault("codec::active_header"));
+    }
+    let states = a[5]
+        .as_array()
+        .filter(|v| v.len() <= 10000)
+        .ok_or_else(|| STORAGE.fault("codec::active_header"))?;
+    let mut keys = std::collections::BTreeSet::new();
+    let mut active = false;
+    for entry in states {
+        let entry = array(entry, 2)?;
+        let key = id(&entry[0])?;
+        let state = read_state(&entry[1])?;
+        if !keys.insert(key.clone()) {
+            return Err(STORAGE.fault("codec::active_header"));
+        }
+        if &key == version {
+            active = state == State::Active;
+        }
+    }
+    Ok(active)
+}

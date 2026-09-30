@@ -7,7 +7,9 @@ use crate::test_support::*;
 #[ignore = "MODULE=agent.registration: capability binding, re-registration and commit recovery"]
 async fn registration_binding_and_replay() -> Result<()> {
     let fixture = authority::Authority::open().await?;
-    let owned_router = crate::test_support::agent::router(&fixture).await?;
+    let owned_router = app_with_access(&fixture.base, fixture.access.clone())
+        .await?
+        .0;
     let router = &owned_router;
     let mut session = fixture.browser("other")?;
     let browser = &mut session;
@@ -29,12 +31,34 @@ async fn registration_binding_and_replay() -> Result<()> {
             .0
             == StatusCode::NOT_FOUND
     );
+    for path in [
+        "/api/agent/v3/registrations",
+        "/api/agent/v3/reports",
+        "/api/agent/v3/tasks/claim",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(path)
+                    .header("host", "mdm.example.test")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {credential}"))
+                    .body(Body::from(r#"{"wireVersion":3}"#))?,
+            )
+            .await?;
+        ensure!(
+            response.status() == StatusCode::NOT_FOUND,
+            "retired Agent route survived: {path}"
+        );
+    }
     let mut unsupported_wire = registration_request.clone();
     unsupported_wire["wireVersion"] = json!(1);
     let response = agent_call(
         router,
         Method::POST,
-        "/api/agent/v3/registrations",
+        "/api/agent/v4/registrations",
         None,
         Some(unsupported_wire),
     )
@@ -45,7 +69,7 @@ async fn registration_binding_and_replay() -> Result<()> {
     let response = agent_call(
         router,
         Method::POST,
-        "/api/agent/v3/registrations",
+        "/api/agent/v4/registrations",
         None,
         Some(unsupported_capability),
     )
@@ -61,7 +85,7 @@ async fn registration_binding_and_replay() -> Result<()> {
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v3/registrations",
+            "/api/agent/v4/registrations",
             None,
             Some(registration_request)
         )
@@ -70,12 +94,12 @@ async fn registration_binding_and_replay() -> Result<()> {
         "registration replay was not recovered"
     );
     let report_id = uuid::Uuid::new_v4();
-    let prior = json!({"wireVersion":3,"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
+    let prior = json!({"wireVersion":4,"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v3/reports",
+            "/api/agent/v4/reports",
             Some(credential),
             Some(prior)
         )
@@ -105,8 +129,8 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let agent = crate::test_support::agent::register(router, browser).await?;
     let credential = agent.credential;
     let report_id = uuid::Uuid::new_v4();
-    ensure!(agent_call(router, Method::POST, "/api/agent/v3/reports", Some(credential),
-        Some(json!({"wireVersion":3,"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::ACCEPTED);
+    ensure!(agent_call(router, Method::POST, "/api/agent/v4/reports", Some(credential),
+        Some(json!({"wireVersion":4,"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::ACCEPTED);
     let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
     let next_credential = &crate::test_support::credential("replacement");
     browser.operation = Some(uuid::Uuid::new_v4());
@@ -120,12 +144,12 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         .await?;
     ensure!(status == StatusCode::OK);
     let next_operation = uuid::Uuid::new_v4();
-    let next_registration = json!({"wireVersion":3,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3"]});
+    let next_registration = json!({"wireVersion":4,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4"]});
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     let rolled_back = agent_call(
         router,
         Method::POST,
-        "/api/agent/v3/registrations",
+        "/api/agent/v4/registrations",
         None,
         Some(next_registration.clone()),
     )
@@ -139,7 +163,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let unknown = agent_call(
         router,
         Method::POST,
-        "/api/agent/v3/registrations",
+        "/api/agent/v4/registrations",
         None,
         Some(next_registration.clone()),
     )
@@ -150,7 +174,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let recovered = agent_call(
         router,
         Method::POST,
-        "/api/agent/v3/registrations",
+        "/api/agent/v4/registrations",
         None,
         Some(next_registration),
     )
@@ -164,12 +188,12 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         recovered.1 == stored_receipt,
         "registration ACK-loss retry did not recover the committed receipt"
     );
-    ensure!(agent_call(router, Method::POST, "/api/agent/v3/reports", Some(credential), Some(json!({"wireVersion":3,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
+    ensure!(agent_call(router, Method::POST, "/api/agent/v4/reports", Some(credential), Some(json!({"wireVersion":4,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
     ensure!(
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v3/reports/{report_id}"),
+            &format!("/api/agent/v4/reports/{report_id}"),
             Some(credential),
             None
         )

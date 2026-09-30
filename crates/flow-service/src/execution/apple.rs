@@ -1,6 +1,7 @@
 //! Apple tasks share the command reducer, approval, outbox and operation authority.
 use super::*;
 use crate::device::DevicePrincipal;
+use crate::planning::policies;
 use rss_mdm_apple_mdm::{profile, protocol as wire};
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -110,6 +111,7 @@ impl ExecutionService {
                         })
                     })
                     .await??;
+                    crate::transaction::lock(tx).await?;
                     storage::lock(tx, p.device()).await?;
                     let participant = apple.clone();
                     let principal = p.clone();
@@ -132,6 +134,9 @@ impl ExecutionService {
                         )
                         .await?;
                     }
+                    service
+                        .reconcile_agent_install_in(tx, p.device(), audit)
+                        .await?;
                     let response = send(service, tx, apple.clone(), p).await?;
                     service
                         .audit_store
@@ -153,7 +158,8 @@ async fn eligible(
 ) -> Result<bool> {
     if op.registration != p.registration()
         || op.registration_generation != p.generation()
-        || op.request.profile_target().is_none()
+        || (op.request.profile_target().is_none()
+            && !matches!(op.request.task, Task::AgentInstall { .. }))
     {
         return Err(Error::Unauthorized.into());
     }
@@ -227,8 +233,19 @@ async fn receive(
         .map_err(Error::from)?;
     let event = match (phase.as_str(), status) {
         (_, wire::Status::NotNow) => return Ok(()),
+        ("observe", wire::Status::Error)
+            if matches!(op.request.task, Task::AgentInstall { .. }) =>
+        {
+            return Ok(());
+        }
         (_, wire::Status::Error) => dc::DeviceEvent::Rejected,
         ("execute", wire::Status::Acknowledged) => dc::DeviceEvent::Received,
+        ("observe", wire::Status::Acknowledged)
+            if matches!(op.request.task, Task::AgentInstall { .. }) =>
+        {
+            // InstalledApplicationList cannot verify the pinned team or package receipt.
+            return Ok(());
+        }
         ("observe", wire::Status::Acknowledged) => {
             let (profile, present) = op.request.profile_target().ok_or(Error::Conflict)?;
             let identifier = profile::identifier(&service.tenant.to_string(), &op.device);
@@ -264,7 +281,7 @@ async fn send(
     let registration = p.registration().to_string();
     let generation = p.generation();
     let ids=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.request->'task'->>'kind' IN ('profile_install','profile_remove') AND d.status IN ('published','received') ORDER BY o.id LIMIT 64")
+        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.request->'task'->>'kind' IN ('profile_install','profile_remove','agent_install') AND d.status IN ('published','received') ORDER BY o.id LIMIT 64")
             .bind(tenant).bind(registration).bind(generation).fetch_all(c).await
     })).await?;
     for id in ids {
@@ -272,17 +289,28 @@ async fn send(
         if !eligible(service, tx, p, &op).await? {
             continue;
         }
+        let approval = op.approval.clone();
+        if !tx
+            .with_connection(move |c| Box::pin(async move { Ok(approval.dispatch_ready(c).await) }))
+            .await??
+        {
+            continue;
+        }
         if let Some(bytes) = send_one(tx, apple.clone(), p, &op).await? {
             return Ok(bytes);
         }
     }
     let principal = p.clone();
-    Ok(tx
+    let reply = tx
         .with_connection(move |c| {
             Box::pin(async move { Ok(apple.collection(c, &principal).await) })
         })
         .await?
-        .map_err(Error::from)?)
+        .map_err(Error::from)?;
+    for fact in &reply.facts {
+        service.audit_store.append_in(tx, fact, false).await?;
+    }
+    Ok(reply.bytes)
 }
 async fn send_one(
     tx: &mut PgTransaction<'_>,
@@ -293,9 +321,23 @@ async fn send_one(
     let command = super::channels::AppleCommand {
         operation: op.id,
         deadline: op.request.deadline,
-        task: match op.request.task {
-            Task::ProfileInstall { enabled } => super::channels::ProfileTask::Install { enabled },
-            Task::ProfileRemove { .. } => super::channels::ProfileTask::Remove,
+        task: match &op.request.task {
+            Task::AgentInstall { package } => {
+                let policies::agent_install::Identity::Macos { bundle, .. } = &package.identity
+                else {
+                    return Err(Error::Unsupported.into());
+                };
+                super::channels::NativeTask::AgentInstall {
+                    bundle: bundle.clone(),
+                    version: package.version.clone(),
+                    url: package.url(op.id),
+                    sha256: package.artifact.sha256,
+                }
+            }
+            Task::ProfileInstall { enabled } => {
+                super::channels::NativeTask::Install { enabled: *enabled }
+            }
+            Task::ProfileRemove { .. } => super::channels::NativeTask::Remove,
             _ => return Err(Error::Unsupported.into()),
         },
     };

@@ -363,6 +363,7 @@ GRANT UPDATE(registration_generation) ON TABLE mdm_commands.devices TO mdm_comma
 GRANT UPDATE(recovery_after) ON TABLE mdm_commands.devices TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.operations TO mdm_command_runtime;
+GRANT SELECT ON TABLE mdm_commands.operations TO mdm_flow_runtime;
 
 GRANT UPDATE(approval) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
@@ -628,4 +629,10 @@ GRANT SELECT ON TABLE rss_transactional_messaging.storage_lineage TO rss_tmsg_re
 GRANT UPDATE(singleton) ON TABLE rss_transactional_messaging.storage_lineage TO rss_tmsg_relay;
 
 GRANT SELECT,UPDATE ON TABLE rss_transactional_messaging.tenant_epoch TO rss_tmsg_relay;
+
+-- Native peer registration reads frozen install authority under the access/audit transaction.
+GRANT USAGE ON SCHEMA mdm_commands,mdm_policy,mdm_resource,mdm_software,mdm_planning TO mdm_access;
+GRANT SELECT ON TABLE mdm_commands.operations,mdm_commands.attempts,mdm_policy.policies,mdm_policy.versions,mdm_resource.aggregates,mdm_resource.immutable,mdm_software.sources,mdm_software.approvals TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_planning.scope_admission(uuid,text),mdm_commands.installation_status(uuid) TO mdm_access;
+
 COMMIT;

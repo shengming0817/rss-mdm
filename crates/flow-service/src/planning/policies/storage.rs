@@ -43,7 +43,7 @@ pub async fn write_in(
             return Err(Error::NotFound.into());
         }
     }
-    if let Behavior::Software { rollout, .. } = &p.definition.behavior {
+    if let Action::Software { rollout, .. } = &p.definition.action {
         let tenant = tx.tenant_id().to_string();
         let scopes: Vec<Uuid> = rollout.stages.iter().map(|s| s.scope).collect();
         let count: i64 = tx.with_connection(move |c| Box::pin(async move {
@@ -70,9 +70,15 @@ pub async fn enqueue_change_in(
     policy: &Policy,
     old: Option<&Policy>,
 ) -> Result<()> {
-    if matches!(policy.definition.behavior, Behavior::Configuration { .. })
-        || old.is_some_and(|p| matches!(p.definition.behavior, Behavior::Configuration { .. }))
-    {
+    if matches!(
+        policy.definition.action,
+        Action::Configuration { .. } | Action::EnsureAgentInstalled { .. }
+    ) || old.is_some_and(|p| {
+        matches!(
+            p.definition.action,
+            Action::Configuration { .. } | Action::EnsureAgentInstalled { .. }
+        )
+    }) {
         crate::automation::jobs::enqueue_job_in(
             tx,
             Uuid::new_v4(),

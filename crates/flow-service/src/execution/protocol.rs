@@ -54,6 +54,7 @@ impl ExecutionService {
                         .await?
                         .map_err(Error::from)?;
                     settle_reports(s, tx, p, m.header.session_id).await?;
+                    s.reconcile_agent_install_in(tx, p.device(), a).await?;
                     if !matches!(
                         a.snapshot().management_result,
                         Some(rss_mdm_audit_integration::ManagementResult::Replayed)
@@ -86,7 +87,7 @@ async fn settle_reports(
     let tenant = s.tenant.to_string();
     let registration = p.registration().to_string();
     let generation = p.generation();
-    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT DISTINCT o.id::text FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.session=$4 AND a.phase=$5 AND a.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id::text LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).bind(AttemptPhase::Execute.as_str()).fetch_all(c).await})).await?;
+    let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT DISTINCT o.id::text FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.session=$4 AND (a.phase=$5 OR(o.request->'task'->>'kind'='agent_install' AND a.phase='prepare' AND a.status>=400)) AND a.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id::text LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).bind(AttemptPhase::Execute.as_str()).fetch_all(c).await})).await?;
     for id in ids {
         settle_one(s, tx, &id).await?;
     }
@@ -104,7 +105,8 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: &str) 
         return Ok(());
     }
     let tenant = s.tenant.to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT status,value,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid AND phase=$3 ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).bind(AttemptPhase::Execute.as_str()).fetch_optional(c).await})).await?;
+    let agent_install = matches!(op.request.task, Task::AgentInstall { .. });
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT status,value,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid AND (phase=$3 OR($4 AND phase='prepare' AND status>=400)) ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).bind(AttemptPhase::Execute.as_str()).bind(agent_install).fetch_optional(c).await})).await?;
     let Some(row) = row else { return Ok(()) };
     if row.try_get::<Option<bool>, _>("receipt_accepted")? != Some(true) {
         return Ok(());
@@ -169,7 +171,7 @@ pub async fn observation(
             return Err(Error::Unsupported.into());
         }
         Task::StateVerify { .. } => execute,
-        Task::Firewall { .. } => phases
+        Task::AgentInstall { .. } | Task::Firewall { .. } => phases
             .iter()
             .find(|(p, _)| *p == AttemptPhase::Observe)
             .map(|(_, r)| *r),

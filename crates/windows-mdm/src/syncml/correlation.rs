@@ -46,6 +46,10 @@ pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, Se
                     .map(|i| i.target.clone().ok_or(E::Structure))
                     .collect::<Result<Vec<_>>>()?,
             ),
+            Command::AgentInstall { command, .. } => (
+                CommandName::parse(command.name())?,
+                vec![command.item()?.target.ok_or(E::Structure)?],
+            ),
             Command::Replace { .. } => (
                 CommandName::Replace,
                 vec![crate::configuration::FIREWALL_URI.into()],

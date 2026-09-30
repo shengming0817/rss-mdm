@@ -24,6 +24,9 @@ impl ExecutionService {
         input: &Create,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
+        if matches!(input.task, Task::AgentInstall { .. }) {
+            return Err(Error::Unsupported);
+        }
         proof.require(input.task.permission(), Some(device))?;
         let failure = Mutex::new(None);
         let timer = recovery::Timer::new();
@@ -91,6 +94,9 @@ impl ExecutionService {
         input: &Create,
         audit: &RequestAudit,
     ) -> Result<Value> {
+        if matches!(input.task, Task::AgentInstall { .. }) {
+            return Err(Error::Unsupported.into());
+        }
         storage::admit(tx).await?;
         require_tenant(self.tenant, proof)?;
         let auth = storage::authorized(tx, proof, device, input.task.permission()).await?;
@@ -154,7 +160,8 @@ impl ExecutionService {
         let request = checked_input(serde_json::to_string(input))?;
         let (source, policy_version, remote_operation) = match &approval {
             ExecutionAuthority::User { .. } => ("direct", None, None),
-            ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version), None),
+            ExecutionAuthority::AgentInstall { version, .. }
+            | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version), None),
             ExecutionAuthority::RemoteOperation { operation, .. } => {
                 ("remote_operation", None, Some(*operation))
             }
@@ -189,7 +196,7 @@ impl ExecutionService {
             if op.device!=device{return Err(Error::Forbidden.into());}
             let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(tx,&op,now).await?;
-            let observation=protocol::observation(tx,service.apple_store.clone(),&op,command.status()).await?;
+            let observation=if matches!(op.request.task,Task::AgentInstall{..}) {super::agent_install::installation_observation(tx,service.apple_store.clone(),service.agent_store.clone(),&op).await?}else{protocol::observation(tx,service.apple_store.clone(),&op,command.status()).await?};
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
             Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
         }),crate::transaction::TransactionOwner::Execution).await

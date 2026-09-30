@@ -1,5 +1,6 @@
 //! Native collection is the durable product intake; RSS owns receipts and projection.
 pub mod agent;
+pub mod channel;
 pub mod enterprise;
 pub mod read;
 use crate::{Error, Failure};
@@ -300,4 +301,14 @@ pub struct EnterpriseAttempt {
 pub enum CollectionError {
     #[error("report correlation or value conflict")]
     CorrelationConflict,
+}
+
+/// Quality of an independently snapshotted channel fact.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChannelAttempt {
+    pub field: FieldKey,
+    pub quality: Quality,
+    pub received_at: i64,
+    pub evidence: Option<channel::AgentEvidence>,
 }

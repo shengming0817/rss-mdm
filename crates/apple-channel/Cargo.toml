@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-agent-wire.workspace=true
 thiserror.workspace=true
 rss-mdm-flow-service.workspace=true
 rss-mdm-registration-service.workspace=true

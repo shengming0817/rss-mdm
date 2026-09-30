@@ -35,7 +35,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let expired = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v4/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -53,7 +53,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v4/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -73,7 +73,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let prerequisite = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
+            "/api/agent/v4/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -98,7 +98,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let denied = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v4/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -143,7 +143,7 @@ async fn uninstall_content_permission() -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=0%2Fremove",
+            "/api/agent/v4/tasks/{}/content?attempt={}&artifact=0%2Fremove",
             removal_task["payload"]["taskId"].as_str().unwrap(),
             removal_task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -177,8 +177,8 @@ async fn windows_variant_content() -> Result<()> {
     let first_operation = fixture.first_operation;
     let windows_policy = Uuid::new_v4();
     write(&mut author,&router,&format!("/api/v2/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
-        "definition":{"resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"scope":windows_scope,
-        "behavior":{"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
+        "definition":{"scope":windows_scope,
+        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
     let windows_page = author
         .call(
@@ -204,7 +204,7 @@ async fn windows_variant_content() -> Result<()> {
     let windows_content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v3/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v4/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             windows_task["payload"]["taskId"].as_str().unwrap(),
             windows_task["payload"]["attemptId"].as_str().unwrap()
         ))

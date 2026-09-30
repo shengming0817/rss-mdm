@@ -76,15 +76,15 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v3/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":3,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v4/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":4,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
-        "/api/agent/v3/tasks/claim",
+        "/api/agent/v4/tasks/claim",
         Some(case_credential()),
-        Some(json!({"wireVersion":3,"operationId":operation})),
+        Some(json!({"wireVersion":4,"operationId":operation})),
     )
     .await
 }
@@ -104,7 +104,7 @@ pub(crate) async fn claim(router: &Router) -> Result<Value> {
     .await?
 }
 pub(crate) fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
-    json!({"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"scope":scope,"behavior":{"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
+    json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
 }
 pub(crate) struct Fixture {
     pub(crate) base: Value,
@@ -120,6 +120,9 @@ impl Fixture {
     pub(crate) async fn new() -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        Self::from_config(base).await
+    }
+    pub(crate) async fn from_config(base: Value) -> Result<Self> {
         let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(
             base["task_signing"]["private_key_file"].as_str().unwrap(),
         )?)
@@ -190,6 +193,10 @@ impl Fixture {
         })
     }
     pub(crate) async fn register(&mut self) -> Result<Value> {
+        self.register_profile(json!(["inventory.basic.v4", "task.execute.v4"]))
+            .await
+    }
+    pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {
         let router = &self.router;
         let author = &mut self.author;
         author.operation = Some(Uuid::new_v4());
@@ -202,11 +209,9 @@ impl Fixture {
         )
         .await?;
         author.operation = None;
-        let registration=agent_call(router,Method::POST,"/api/agent/v3/registrations",None,Some(json!({"wireVersion":3,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v3","task.execute.v3"]}))).await?;
+        let registration=agent_call(router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
         ensure!(
-            registration.0 == StatusCode::CREATED
-                && registration.1["capabilities"]
-                    == json!(["inventory.basic.v3", "task.execute.v3"]),
+            registration.0 == StatusCode::CREATED && registration.1["capabilities"] == capabilities,
             "task registration: {registration:?}"
         );
         Ok(registration.1)

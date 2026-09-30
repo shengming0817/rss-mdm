@@ -246,3 +246,70 @@ async fn authenticate(
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+pub async fn register_agent(
+    State(app): State<Arc<HttpState>>,
+    Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
+    Extension(audit): Extension<RequestAudit>,
+    headers: axum::http::HeaderMap,
+    bytes: Bytes,
+) -> Result<axum::response::Response, Error> {
+    use axum::response::IntoResponse;
+    if bytes.len() > 16384
+        || headers.keys().any(|k| {
+            k.as_str() == "forwarded"
+                || k.as_str().starts_with("x-forwarded-")
+                || k.as_str().starts_with("x-ssl-")
+                || matches!(k.as_str(), "x-client-cert" | "x-device-id" | "x-tenant-id")
+        })
+    {
+        return Err(Error::Malformed);
+    }
+    if headers.get_all("content-type").iter().count() != 1
+        || headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .map(str::trim)
+            != Some("application/json")
+    {
+        return Err(Error::Malformed);
+    }
+    let leaf = app
+        .apple()?
+        .authority
+        .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    bound(&app, &leaf).await?;
+    let principal = app
+        .devices
+        .management_principal(&app.mount.credential(leaf.fingerprint()))
+        .await?;
+    let input = match rss_mdm_agent_wire::ManagedRegistrationRequest::decode(&bytes) {
+        Ok(input) => input,
+        Err(code) => {
+            let mut response = Error::Malformed.into_response();
+            response
+                .extensions_mut()
+                .insert(rss_mdm_agent_wire::ErrorBody { code });
+            return Ok(response);
+        }
+    };
+    let (receipt, replay) = app
+        .execution
+        .managed_registration(
+            &principal,
+            rss_mdm_inventory::ReportSource::MdmApple,
+            &input,
+            &audit,
+        )
+        .await?;
+    Ok((
+        if replay {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        axum::Json(receipt),
+    )
+        .into_response())
+}

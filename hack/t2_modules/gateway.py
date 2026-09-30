@@ -1,4 +1,4 @@
-"""Run the actual login rate profile against a scoped local content server, not a mock Identity."""
+"""Run production admission and Agent streaming rules against actual nginx."""
 import http.client
 import socket
 from pathlib import Path
@@ -17,7 +17,13 @@ def verify(context):
     config=(ROOT/'deployment/nginx.conf').read_text()
     config=config.replace('listen 443 ssl;','listen 8080;').replace('ssl_certificate /private/mdm-tls.crt;','').replace('ssl_certificate_key /private/mdm-tls.key;','')
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
-    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; location / { return 200 "$http_x_forwarded_for"; } }}'
+    stream_paths = ['/api/agent/v4/tasks/task/content', '/api/agent/v4/installations/operation/package']
+    buffered_path = '/api/probe-stream-buffered'
+    stream_body = 'x' * 2048
+    # This real upstream delivers less than one proxy buffer over four seconds.
+    # A buffered control proves the fixture distinguishes early delivery from completion.
+    locations = ''.join('location = ' + path + ' { limit_rate 512; return 200 "' + stream_body + '"; }' for path in [*stream_paths, buffered_path])
+    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
     with context.gateway(config) as (name,port):
         def request(path,forward='',body=None):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
@@ -34,6 +40,23 @@ def verify(context):
             except OSError:pass
             if time.monotonic()>end:raise RuntimeError('gateway startup failed')
             time.sleep(.1)
+        for path in [buffered_path, *stream_paths]:
+            c=http.client.HTTPConnection('127.0.0.1',port,timeout=8)
+            try:
+                started=time.monotonic()
+                c.request('GET',path,headers={'Host':'mdm.example.test'})
+                response=c.getresponse()
+                first=response.read(1)
+                first_seconds=time.monotonic()-started
+                body=first+response.read()
+                total_seconds=time.monotonic()-started
+                if response.status!=200 or body!=stream_body.encode():raise RuntimeError('stream response was incomplete: '+path)
+                if total_seconds<3:raise RuntimeError('upstream did not delay completion')
+                if path==buffered_path:
+                    if first_seconds<3:raise RuntimeError('buffered control did not buffer the slow upstream')
+                elif first_seconds>=2 or total_seconds-first_seconds<2:
+                    raise RuntimeError('Agent content was buffered until completion: '+path)
+            finally:c.close()
         status, forwarded=request('/api/probe','203.0.113.254')
         if status!=200 or not forwarded or forwarded==b'203.0.113.254':raise RuntimeError('gateway failed to overwrite source header')
         statuses=[]
@@ -75,7 +98,7 @@ def verify(context):
         if 200 not in statuses or 429 not in statuses: raise RuntimeError('general API admission is not bounded')
         log=subprocess.run(['docker','logs',name],check=True,capture_output=True,text=True,timeout=10)
         if 'synthetic-sensitive-value' in log.stdout+log.stderr or 'mdm_gateway' not in log.stdout:raise RuntimeError('gateway logging contract failed')
-        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery passed')
+        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery and V4 content streaming passed')
 
 def main(context):
     verify(context)

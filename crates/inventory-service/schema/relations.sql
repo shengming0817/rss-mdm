@@ -31,6 +31,7 @@ ALTER TABLE ONLY mdm_assets.group_fields
 GRANT USAGE ON SCHEMA mdm TO mdm_runtime;
 GRANT USAGE ON SCHEMA mdm TO mdm_api;
 GRANT USAGE ON SCHEMA mdm TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm TO mdm_command_runtime;
 
 GRANT USAGE ON SCHEMA mdm_assets TO mdm_flow_runtime;
 
@@ -98,6 +99,7 @@ GRANT SELECT ON TABLE mdm.asset_clock TO mdm_flow_runtime;
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE mdm.inventory TO mdm_runtime;
 GRANT SELECT ON TABLE mdm.inventory TO mdm_api;
 GRANT SELECT ON TABLE mdm.inventory TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm.inventory TO mdm_command_runtime;
 
 GRANT SELECT ON TABLE mdm.inventory_history TO mdm_flow_runtime;
 

@@ -485,7 +485,7 @@ impl Planning {
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
         let interested=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->>'scope'=$2 AND definition->'behavior'->>'kind'='configuration')").bind(tenant).bind(scope.to_string()).fetch_one(c).await
+            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->>'scope'=$2 AND definition->'action'->>'kind' IN('configuration','ensure_agent_installed'))").bind(tenant).bind(scope.to_string()).fetch_one(c).await
         })).await?;
         if !interested {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
