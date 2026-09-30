@@ -13,7 +13,9 @@ def production_paths():
     return [path for owner in PRODUCERS for path in (ROOT/'crates'/owner/'src').rglob('*.rs')]
 
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
-OWNERS = {'agent_content':'crates/flow-service/src/execution/agent_install.rs','authentication':'crates/management-http/src/boundary.rs','agent_registration': 'crates/agent-channel/src/lib.rs',
+OWNERS = {
+ 'timeline_read': 'crates/management-http/src/boundary.rs',
+ 'audit_search': 'crates/management-http/src/boundary.rs','agent_content':'crates/flow-service/src/execution/agent_install.rs','authentication':'crates/management-http/src/boundary.rs','agent_registration': 'crates/agent-channel/src/lib.rs',
  'agent_report': 'crates/agent-channel/src/lib.rs',
  'agent_report_read': 'crates/agent-channel/src/lib.rs',
  'apple_checkin': 'crates/apple-channel/src/boundary.rs',
@@ -69,6 +71,8 @@ OWNERS = {'agent_content':'crates/flow-service/src/execution/agent_install.rs','
  'windows_policy': 'crates/windows-channel/src/boundary.rs'}
 
 DECLARATIONS = {
+ ('timeline_read','crates/management-http/src/boundary.rs'),
+ ('audit_search','crates/management-http/src/boundary.rs'),
  ('agent_registration','crates/windows-channel/src/boundary.rs'),
  ('agent_registration','crates/apple-channel/src/boundary.rs'),
  ('agent_registration','crates/flow-service/src/execution/managed_registration.rs'),

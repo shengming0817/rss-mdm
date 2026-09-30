@@ -84,6 +84,16 @@ impl Database {
             .map(std::sync::Arc::new)
             .map_err(Error::from)
     }
+    pub(crate) fn timeline(
+        &self,
+        audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+        tenant: rss_request_context::TenantId,
+        key: &[u8],
+    ) -> Result<std::sync::Arc<rss_mdm_timeline_service::Timeline>, Error> {
+        rss_mdm_timeline_service::Timeline::new(self.pool.clone(), audit, tenant, key)
+            .map(std::sync::Arc::new)
+            .map_err(|_| Error::Unavailable(Failure::Database))
+    }
     pub async fn close(&self) {
         self.pool.close().await;
     }
@@ -130,6 +140,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         rss_mdm_apple_channel::ACCESS_CONTRACT,
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,
+        rss_mdm_timeline_service::ACCESS_CONTRACT,
     ];
     let valid = rss_mdm_backend_postgres_support::access_admission::verify(
         &mut tx,
@@ -146,7 +157,11 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-    if !valid || !apple || !flow {
+    let timeline: bool = sqlx::query_scalar(rss_mdm_timeline_service::ACCESS_ADMISSION_SQL)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+    if !valid || !apple || !flow || !timeline {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)

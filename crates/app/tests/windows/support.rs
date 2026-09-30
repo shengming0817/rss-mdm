@@ -204,7 +204,16 @@ impl Host {
         )
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
+        let timeline = store.timeline(
+            store
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
+            identity.tenant,
+            &management.cursor_key,
+        )?;
+        timeline.initialize().await?;
         let app = Arc::new(Assembly {
+            timeline,
             content_writer: execution.content.clone(),
             audit_store: store
                 .audit_store(&crate::config::AuditConfig::Plain)

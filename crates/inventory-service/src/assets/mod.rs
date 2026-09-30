@@ -267,3 +267,25 @@ mod receipts;
 pub const CATALOG_SQL: &str = include_str!("catalog.sql");
 pub const CATALOG_JSON: &str = include_str!("catalog.json");
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");
+
+/// Resolve only a persisted manual-assignment receipt, never a mutable current asset value.
+pub async fn timeline_device_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    actor: &str,
+    operation: Uuid,
+    event_id: &str,
+) -> std::result::Result<Option<String>, sqlx::Error> {
+    use sha2::Digest;
+    // Verify this owner's immutable source key; do not infer ownership from a UUID collision.
+    if event_id
+        != format!(
+            "e-{:x}",
+            Sha256::digest(format!("assets:{actor}:{operation}").as_bytes())
+        )
+    {
+        return Ok(None);
+    }
+    sqlx::query_scalar("SELECT response->'asset'->>'device' FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND response->'asset'->>'kind'='assignment'")
+        .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten)
+}

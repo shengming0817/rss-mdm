@@ -18,6 +18,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
@@ -99,11 +100,17 @@ pub(crate) async fn application_fixture(
             .await?
         }
     };
+    let timeline = access.timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)?;
+    timeline
+        .initialize()
+        .await
+        .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     let plan_runtime = planning.runtime.clone();
     Ok((
         from_compiled(
             compiled,
             AssemblyDependencies {
+                timeline,
                 audit_store,
                 execution: execution.clone(),
                 clock,
@@ -120,6 +127,7 @@ pub(crate) async fn application_fixture(
     ))
 }
 pub(crate) struct AssemblyDependencies {
+    pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) clock: Arc<dyn Clock>,
@@ -138,6 +146,7 @@ pub(crate) fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
+        timeline,
         audit_store,
         execution,
         clock,
@@ -188,6 +197,7 @@ pub(crate) fn from_compiled(
         .transpose()?;
     let content_writer = execution.content.clone();
     let state = Arc::new(Assembly {
+        timeline,
         content_writer,
         audit_store,
         apple,
@@ -310,6 +320,7 @@ pub(crate) fn from_state(
         rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            timeline: state.timeline.clone(),
             identity: state.identity.browser(),
             authorization: state.access.authorization_store(),
             identity_management: state.identity_management.clone(),

@@ -2635,6 +2635,7 @@ dependencies = [
  "rss-mdm-software-release",
  "rss-mdm-software-release-postgres",
  "rss-mdm-software-service",
+ "rss-mdm-timeline-service",
  "rss-mdm-windows-channel",
  "rss-mdm-windows-mdm",
  "rss-mdm-winget-source",
@@ -3053,6 +3054,7 @@ dependencies = [
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-software-service",
+ "rss-mdm-timeline-service",
  "rss-observation",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -3224,6 +3226,31 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-timeline-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ring",
+ "rss-audit-core",
+ "rss-audit-postgres",
+ "rss-contract",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-flow-service",
+ "rss-mdm-inventory-service",
+ "rss-mdm-registration-service",
+ "rss-request-context",
+ "rss-runtime",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
  "uuid",
 ]
 

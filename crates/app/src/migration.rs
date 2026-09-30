@@ -257,6 +257,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "apple-channel-relations-v1",
             rss_mdm_apple_channel::RELATIONS_SQL,
         ),
+        (
+            "timeline-service-schema-v1",
+            rss_mdm_timeline_service::INSTALL_SQL,
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.
