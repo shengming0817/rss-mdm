@@ -618,8 +618,8 @@ pub struct TaskSpec {
     pub content: TaskContent,
     /// Fixed interpreter profile.
     pub profile: ExecutorProfile,
-    /// Bound SQL for the osquery profile; Agent revalidates AST, platform and budget.
-    pub sql: Option<String>,
+    /// Literal parameters for the signed SQL template artifact; no free-form query text.
+    pub sql_parameters: Option<BTreeMap<String, serde_json::Value>>,
     /// Required execution identity.
     pub run_as: ExecutionIdentity,
     /// Literal arguments, with no shell interpolation.
@@ -676,12 +676,25 @@ impl TaskSpec {
             || (self.profile == ExecutorProfile::Osquery
                 && (!self.arguments.is_empty()
                     || !self.environment.is_empty()
-                    || self
-                        .sql
-                        .as_ref()
-                        .is_none_or(|s| s.is_empty() || s.len() > 65536 || s.contains('\0'))
+                    || self.sql_parameters.as_ref().is_none_or(|p| {
+                        p.len() > 32
+                            || !serde_json::to_vec(p).is_ok_and(|b| b.len() <= 65536)
+                            || p.iter().any(|(k, v)| {
+                                k.is_empty()
+                                    || k.len() > 64
+                                    || !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                                    || match v {
+                                        serde_json::Value::String(s) => {
+                                            s.len() > 4096 || s.contains('\0')
+                                        }
+                                        serde_json::Value::Bool(_) => false,
+                                        serde_json::Value::Number(n) => n.as_i64().is_none(),
+                                        _ => true,
+                                    }
+                            })
+                    })
                     || self.run_as != ExecutionIdentity::System))
-            || (self.profile != ExecutorProfile::Osquery && self.sql.is_some())
+            || (self.profile != ExecutorProfile::Osquery && self.sql_parameters.is_some())
         {
             return Err(WireError::InvalidValue);
         }

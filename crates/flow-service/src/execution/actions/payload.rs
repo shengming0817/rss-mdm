@@ -67,12 +67,19 @@ impl FrozenAction {
                 r::ScriptProfile::Bash => wire::ExecutorProfile::Bash,
                 r::ScriptProfile::Osquery => wire::ExecutorProfile::Osquery,
             },
-            sql: spec
-                .sql
-                .as_ref()
-                .map(|sql| sql.render(&self.input.parameters, u32::from(spec.max_rows)))
-                .transpose()
-                .map_err(|_| Error::Malformed)?,
+            sql_parameters: if spec.sql.is_some() {
+                Some(
+                    self.input
+                        .parameters
+                        .as_object()
+                        .ok_or(Error::Malformed)?
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
+            } else {
+                None
+            },
             run_as: match spec.run_as {
                 r::RunAs::System => wire::ExecutionIdentity::System,
                 r::RunAs::LoggedInUser => wire::ExecutionIdentity::LoggedInUser,

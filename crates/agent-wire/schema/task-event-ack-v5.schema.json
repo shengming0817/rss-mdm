@@ -217,14 +217,35 @@
                         "aarch64"
                       ]
                     },
-                    "sql": {
+                    "sqlParameters": {
                       "type": [
-                        "string",
+                        "object",
                         "null"
                       ],
-                      "minLength": 1,
-                      "maxLength": 65536,
-                      "pattern": "^[^\\u0000]*$"
+                      "maxProperties": 32,
+                      "propertyNames": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "pattern": "^[a-zA-Z0-9_]+$"
+                      },
+                      "additionalProperties": {
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4096,
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "integer",
+                            "minimum": -9223372036854775808,
+                            "maximum": 9223372036854775807
+                          }
+                        ]
+                      }
                     }
                   },
                   "allOf": [
@@ -238,7 +259,7 @@
                       },
                       "then": {
                         "required": [
-                          "sql"
+                          "sqlParameters"
                         ],
                         "properties": {
                           "arguments": {
@@ -250,16 +271,14 @@
                           "runAs": {
                             "const": "system"
                           },
-                          "sql": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 65536
+                          "sqlParameters": {
+                            "type": "object"
                           }
                         }
                       },
                       "else": {
                         "properties": {
-                          "sql": {
+                          "sqlParameters": {
                             "type": "null"
                           }
                         }

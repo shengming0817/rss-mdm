@@ -22,7 +22,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v5.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "fd4e2dee25aefb4d65c5d7c8b11cb10b339a0f73cd7f7d92e4fadcc64e326891";
+    "92208fec964a1c4e098cf7e75ee914b2e1dd4df8e5eef2012b051bcb0e0ce5c2";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -666,4 +666,4 @@ pub struct ErrorBody {
 }
 
 /// Shared field and frozen collector contracts owned by Inventory.
-pub use rss_mdm_inventory::{CollectedValue, CollectionDefinition, FieldKey};
+pub use rss_mdm_inventory::{CollectedValue, CollectionDefinition, FieldKey, Scalar};

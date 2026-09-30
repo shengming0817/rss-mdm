@@ -55,7 +55,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
             sha256: [2; 32],
         },
         profile: ExecutorProfile::PosixSh,
-        sql: None,
+        sql_parameters: None,
         run_as: ExecutionIdentity::System,
         arguments: vec!["$(touch /bad)".into()],
         environment: Default::default(),
